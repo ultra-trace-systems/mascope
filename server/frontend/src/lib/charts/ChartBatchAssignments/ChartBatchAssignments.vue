@@ -4,9 +4,7 @@ import { ref, computed, watch, toRaw, nextTick, onUnmounted } from 'vue'
 import Select from 'primevue/select'
 import FloatLabel from 'primevue/floatlabel'
 import ProgressSpinner from 'primevue/progressspinner'
-import Button from 'primevue/button'
 
-import { api } from '@/api'
 import { useApp } from '@/stores'
 import { ToolbarIntensityScale } from '@/lib/toolbars'
 
@@ -20,7 +18,6 @@ const scroller = useSampleScroller()
 
 const plot = ref({})
 const showSpinner = ref(false)
-const computing = ref(false)
 
 const scale = ref({
   mode: 'average',
@@ -39,9 +36,9 @@ const chartSubtitle = computed(() => {
   // data.traces includes a trailing TIC trace.
   const peakCount = data.traces.length ? data.traces.length - 1 : 0
   if (!peakCount) {
-    return 'No batch peaks yet - assign samples to populate the batch overview'
+    return 'Select batch peaks in the Assignments ledger to plot their time series'
   }
-  return `<i>Assignments:</i>\t\t ${peakCount} batch peaks (present in >= ${data.minPresent} samples)`
+  return `<i>Assignments:</i>\t\t ${peakCount} selected batch peak${peakCount === 1 ? '' : 's'}`
 })
 
 const unit = computed(() => (scale.value.mode == 'average' ? '[cps]' : '[counts]'))
@@ -134,25 +131,6 @@ function onSelect({ points }) {
   scroller.scrollToSamples(app.data.sample.selectedIds)
 }
 
-/**
- * Backfill this batch's batch peaks from its samples' existing assignments. The
- * store reloads when the background task emits `peak_assignment_reload`.
- */
-async function computeBatchPeaks() {
-  const batchId = app.data.batch.focusedId
-  if (!batchId || computing.value) return
-  computing.value = true
-  try {
-    await api.http.post(
-      `/batch-peaks/batch/${batchId}/backfill`,
-      {},
-      { use: 'read', type: 'backfill_batch_peaks' }
-    )
-  } finally {
-    computing.value = false
-  }
-}
-
 let syncTimeout = null
 let loadingTimeout = null
 
@@ -228,9 +206,6 @@ watch(
   }
 )
 
-// Load on mount if a batch is already focused.
-if (app.data.batch.focusedId) data.load()
-
 onUnmounted(() => {
   if (loadingTimeout) clearTimeout(loadingTimeout)
   if (syncTimeout) clearTimeout(syncTimeout)
@@ -278,16 +253,6 @@ onUnmounted(() => {
           />
           <label>X-axis</label>
         </FloatLabel>
-        <div style="height: 0.5rem" />
-        <Button
-          label="Compute batch peaks"
-          icon="ph ph-arrows-clockwise"
-          size="small"
-          severity="secondary"
-          :loading="computing"
-          fluid
-          @click="computeBatchPeaks"
-        />
       </template>
     </BaseChartPlotly>
   </figure>

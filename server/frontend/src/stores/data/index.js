@@ -1,5 +1,6 @@
 import { useAcquisition } from './modules/acquisition'
 import { useBatch } from './modules/batch'
+import { useBatchPeakLedger } from './modules/batchPeak'
 import { useInstrument } from './modules/instrument'
 import { useIonizationMechanism, useIonizationMode } from './modules/ionization'
 import {
@@ -31,6 +32,7 @@ export const useData = () => ({
   instrument: useInstrument(),
   template: useTemplate(),
   batch: useBatch(),
+  batchPeak: useBatchPeakLedger(),
   sample: useSample(),
   peak: usePeak(),
   peakAssignment: {

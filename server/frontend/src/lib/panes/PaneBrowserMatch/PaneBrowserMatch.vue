@@ -11,6 +11,7 @@ import { peakAssignmentEnabled } from '@/lib/features'
 import MatchCollectionTable from './MatchCollectionTable.vue'
 import MatchIonTable from './MatchIonTable.vue'
 import PaneBrowserAssignment from './PaneBrowserAssignment.vue'
+import PaneBrowserBatchPeaks from './PaneBrowserBatchPeaks.vue'
 
 const app = useApp()
 
@@ -123,7 +124,13 @@ provide('match-table-height', tableHeight)
         size="small"
       />
     </div>
-    <PaneBrowserAssignment v-if="mode === 'assignments'" />
+    <template v-if="mode === 'assignments'">
+      <!-- Batch-level batch-peak ledger (selects what the Assignments chart plots)
+           at batch level; the per-sample assignments ledger once a sample is
+           focused - mirroring how targets swap collection -> ion by focus. -->
+      <PaneBrowserBatchPeaks v-if="!app.data.sample.focused" />
+      <PaneBrowserAssignment v-else />
+    </template>
     <template v-else>
       <MatchIonTable v-if="app.data.match.collection.focused" />
       <MatchCollectionTable v-else />
