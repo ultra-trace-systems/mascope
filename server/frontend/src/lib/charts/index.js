@@ -1,5 +1,6 @@
 export { ChartAssignmentTimeseries } from './ChartAssignmentTimeseries'
 export { ChartBatchOverview } from './ChartBatchOverview'
+export { ChartBatchAssignments } from './ChartBatchAssignments'
 export { ChartMatchSpectra } from './ChartMatchSpectra'
 export { ChartMatchTimeseries } from './ChartMatchTimeseries'
 export { ChartSampleSpectrum } from './ChartSampleSpectrum'
