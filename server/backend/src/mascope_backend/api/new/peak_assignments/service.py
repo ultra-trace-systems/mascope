@@ -1336,8 +1336,16 @@ async def auto_assign_sample_peaks(
             process_id=gen_id(8),
             parent_id=parent_id,
         )
+        # Fold the freshly-committed Stage-A assignment into the batch peaks so the
+        # batch overview stays current as samples arrive. Lazy import avoids any
+        # import cycle through this service module.
+        from mascope_backend.api.new.peak_assignments.batch_peaks_controller import (
+            fold_sample_into_batch_peaks,
+        )
+
+        await fold_sample_into_batch_peaks(sample_item_id)
     except Exception as e:
-        # Isolate assignment failures from the processing lifecycle.
+        # Isolate assignment / fold-in failures from the processing lifecycle.
         runtime.logger.warning(
             f"Auto peak assignment failed for sample '{sample_item_id}': {e}"
         )
