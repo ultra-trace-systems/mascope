@@ -15,6 +15,9 @@ from sqlalchemy import select
 from mascope_backend.api.new.peak_assignments.batch_peaks_controller import (
     fold_sample_into_batch_peaks,
 )
+from mascope_backend.api.new.peak_assignments.batch_peaks_records import (
+    get_batch_peak_series,
+)
 from mascope_backend.db import (
     BatchPeak,
     BatchPeakOccurrence,
@@ -211,3 +214,37 @@ async def test_refold_is_idempotent(async_session_factory, seeded):
         ).scalars().all()
     assert len(occ) == 2  # not duplicated
     assert len({o.sample_item_id for o in occ}) == 2
+
+
+async def test_series_full_load_applies_occupancy_filter(async_session_factory, seeded):
+    batch, samples = seeded
+    await fold_sample_into_batch_peaks(samples["A"])
+    await fold_sample_into_batch_peaks(samples["B"])
+
+    # Default occupancy (present in >= 2 samples): only the shared 181 peak.
+    res = await get_batch_peak_series(sample_batch_id=batch)
+    assert res["results"] == 1
+    rec = res["data"][0]
+    assert rec["consensus_formula"] == "C6H12O6"
+    assert rec["consensus_tier"] == "identified"
+    assert rec["n_present"] == 2
+    series = rec["peak_series"]
+    assert set(series["sample_item_ids"]) == {samples["A"], samples["B"]}
+    assert set(series["intensities"]) == {5000.0, 4500.0}
+    assert series["tiers"] == ["identified", "identified"]
+
+    # min_n_present=1 keeps every batch peak (181 + 200 + 250 + 300).
+    res_all = await get_batch_peak_series(sample_batch_id=batch, min_n_present=1)
+    assert res_all["results"] == 4
+
+
+async def test_series_sample_slice_ignores_occupancy(async_session_factory, seeded):
+    batch, samples = seeded
+    await fold_sample_into_batch_peaks(samples["A"])
+    await fold_sample_into_batch_peaks(samples["B"])
+
+    # A single-sample slice returns sample A's three peaks, each series limited to A.
+    res = await get_batch_peak_series(sample_item_ids=[samples["A"]])
+    assert res["results"] == 3
+    for rec in res["data"]:
+        assert rec["peak_series"]["sample_item_ids"] == [samples["A"]]
