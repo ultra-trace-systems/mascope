@@ -31,6 +31,7 @@ from mascope_backend.db import (
 )
 from mascope_backend.db.id import gen_id
 
+
 pytestmark = pytest.mark.asyncio
 
 # (peak_id, mz, neutral_formula, ion_formula, role, tier, fit, intensity, mz_err_ppm)
@@ -60,7 +61,12 @@ async def _seed(session, now):
         )
     )
     session.add(
-        Dataset(dataset_id=ds, workspace_id=ws, dataset_name="BP DS", dataset_utc_created=now)
+        Dataset(
+            dataset_id=ds,
+            workspace_id=ws,
+            dataset_name="BP DS",
+            dataset_utc_created=now,
+        )
     )
     session.add(
         SampleBatch(
@@ -139,8 +145,14 @@ async def seeded(async_session_factory, patch_db, pa_sample_view):
 async def _batch_peaks(session_factory, batch):
     async with session_factory() as s:
         return (
-            await s.execute(select(BatchPeak).where(BatchPeak.sample_batch_id == batch))
-        ).scalars().all()
+            (
+                await s.execute(
+                    select(BatchPeak).where(BatchPeak.sample_batch_id == batch)
+                )
+            )
+            .scalars()
+            .all()
+        )
 
 
 async def test_fold_is_append_only_with_cross_sample_consensus(
@@ -158,7 +170,9 @@ async def test_fold_is_append_only_with_cross_sample_consensus(
 
     # --- Fold sample B: B1 snaps to the existing 181 anchor, B2 mints one. ---
     assert await fold_sample_into_batch_peaks(samples["B"]) == batch
-    peaks_b = {p.batch_peak_id: p for p in await _batch_peaks(async_session_factory, batch)}
+    peaks_b = {
+        p.batch_peak_id: p for p in await _batch_peaks(async_session_factory, batch)
+    }
     assert len(peaks_b) == 4  # 181 (shared) + 200 + 250 + 300
 
     # Append-only: the shared anchor keeps its id AND its frozen m/z.
@@ -173,17 +187,23 @@ async def test_fold_is_append_only_with_cross_sample_consensus(
 
     async with async_session_factory() as s:
         occ = (
-            await s.execute(
-                select(BatchPeakOccurrence).where(
-                    BatchPeakOccurrence.batch_peak_id == id181
+            (
+                await s.execute(
+                    select(BatchPeakOccurrence).where(
+                        BatchPeakOccurrence.batch_peak_id == id181
+                    )
                 )
             )
-        ).scalars().all()
+            .scalars()
+            .all()
+        )
     assert len(occ) == 2
     assert {o.sample_item_id for o in occ} == {samples["A"], samples["B"]}
 
 
-async def test_unassigned_peak_is_a_first_class_batch_peak(async_session_factory, seeded):
+async def test_unassigned_peak_is_a_first_class_batch_peak(
+    async_session_factory, seeded
+):
     batch, samples = seeded
     await fold_sample_into_batch_peaks(samples["A"])
     peaks = await _batch_peaks(async_session_factory, batch)
@@ -206,12 +226,16 @@ async def test_refold_is_idempotent(async_session_factory, seeded):
 
     async with async_session_factory() as s:
         occ = (
-            await s.execute(
-                select(BatchPeakOccurrence).where(
-                    BatchPeakOccurrence.batch_peak_id == shared.batch_peak_id
+            (
+                await s.execute(
+                    select(BatchPeakOccurrence).where(
+                        BatchPeakOccurrence.batch_peak_id == shared.batch_peak_id
+                    )
                 )
             )
-        ).scalars().all()
+            .scalars()
+            .all()
+        )
     assert len(occ) == 2  # not duplicated
     assert len({o.sample_item_id for o in occ}) == 2
 

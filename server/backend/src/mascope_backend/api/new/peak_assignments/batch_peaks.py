@@ -29,6 +29,7 @@ from collections import Counter, defaultdict
 from dataclasses import dataclass, field
 from typing import Any, Callable, Iterable, Optional
 
+
 # --- tolerances ---------------------------------------------------------------
 
 #: Extra half-window added to the resolution half-FWHM to absorb residual
@@ -172,14 +173,18 @@ def fold_in_sample(
         idx = anchor_set.find(mz)
         if idx is None:
             anchor = anchor_set.add(Anchor(new_id(), mz, tol_fn(mz)))
-            claimed[anchor.batch_peak_id] = FoldedPeak(anchor.batch_peak_id, p, True, 0.0)
+            claimed[anchor.batch_peak_id] = FoldedPeak(
+                anchor.batch_peak_id, p, True, 0.0
+            )
             continue
         anchor = anchor_set.get(idx)
         d = abs(anchor.mz - mz) / anchor.mz * 1e6
         prev = claimed.get(anchor.batch_peak_id)
         if prev is None or d < prev.mz_error_ppm:
             is_new = prev.is_new_anchor if prev is not None else False
-            claimed[anchor.batch_peak_id] = FoldedPeak(anchor.batch_peak_id, p, is_new, d)
+            claimed[anchor.batch_peak_id] = FoldedPeak(
+                anchor.batch_peak_id, p, is_new, d
+            )
     return list(claimed.values())
 
 
@@ -243,7 +248,9 @@ def compute_consensus(members: Iterable[Any]) -> Consensus:
     members_by_formula: dict[str, list] = defaultdict(list)
     for m in assigned:
         f = _member(m, "assigned_formula")
-        weight_by_formula[f] += _vote_weight(_member(m, "fit_score"), _member(m, "intensity"))
+        weight_by_formula[f] += _vote_weight(
+            _member(m, "fit_score"), _member(m, "intensity")
+        )
         members_by_formula[f].append(m)
 
     total_weight = sum(weight_by_formula.values()) or 1.0
@@ -262,7 +269,11 @@ def compute_consensus(members: Iterable[Any]) -> Consensus:
 
     consensus_tier = _rollup_tier(winner_members)
     best_fit = max(
-        (_member(m, "fit_score") for m in winner_members if _member(m, "fit_score") is not None),
+        (
+            _member(m, "fit_score")
+            for m in winner_members
+            if _member(m, "fit_score") is not None
+        ),
         default=None,
     )
 
@@ -273,12 +284,18 @@ def compute_consensus(members: Iterable[Any]) -> Consensus:
     ) or support_fraction < AMBIGUOUS_SUPPORT
 
     alternatives = [
-        {"formula": f, "evidence_share": round(w / total_weight, 4), "n": len(members_by_formula[f])}
+        {
+            "formula": f,
+            "evidence_share": round(w / total_weight, 4),
+            "n": len(members_by_formula[f]),
+        }
         for f, w in ranked[1:4]
     ]
 
     p_values = [
-        _member(m, "p_correct") for m in winner_members if _member(m, "p_correct") is not None
+        _member(m, "p_correct")
+        for m in winner_members
+        if _member(m, "p_correct") is not None
     ]
     provenance = {
         "n_assigned": len(assigned),
