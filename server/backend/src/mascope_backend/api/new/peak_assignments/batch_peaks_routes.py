@@ -13,6 +13,7 @@ from mascope_backend.api.new.peak_assignments.batch_peaks_controller import (
     compute_batch_peaks,
 )
 from mascope_backend.api.new.peak_assignments.batch_peaks_records import (
+    get_batch_peak_ledger,
     get_batch_peak_series,
 )
 from mascope_backend.api.new.workspaces.dependencies import (
@@ -95,6 +96,35 @@ async def get_batch_peak_series_route(
     else:
         await check_sample_access_bulk(body.sample_item_ids, user, "guest")
     result = await get_batch_peak_series(**body.model_dump())
+    return BatchPeakRecordsResponse.model_validate(result)
+
+
+@batch_peaks_router.get(
+    "/batch/{sample_batch_id}", response_model=BatchPeakRecordsResponse
+)
+@api_route()
+async def get_batch_peak_ledger_route(
+    sample_batch_id: str,
+    tier: str | None = None,
+    min_n_present: int = 2,
+    user: User = Depends(current_active_user),
+) -> BatchPeakRecordsResponse:
+    """List a batch's batch peaks (metadata only) -- the Assignments ledger feed.
+
+    One row per batch peak (consensus m/z, formula, tier, prevalence), without the
+    per-sample series, so a large ledger loads cheaply. The chart fetches series
+    only for the batch peaks the user selects.
+
+    :param sample_batch_id: The unique identifier of the sample batch.
+    :param tier: Optional filter by consensus tier.
+    :param min_n_present: Occupancy floor (keep peaks seen in >= this many samples).
+    :param user: The current authenticated user. Requires workspace guest role.
+    :return: Batch-peak metadata rows.
+    """
+    await check_batch_access(sample_batch_id, user, "guest")
+    result = await get_batch_peak_ledger(
+        sample_batch_id=sample_batch_id, tier=tier, min_n_present=min_n_present
+    )
     return BatchPeakRecordsResponse.model_validate(result)
 
 

@@ -39,47 +39,65 @@ export const useChartAssignmentsData = defineStore('chart.batch.assignments', ()
   const pending = ref(false)
   const resetChart = ref(0)
 
-  // Occupancy filter: only draw batch peaks seen in at least this many samples.
-  const minPresent = ref(2)
-
-  /** Fetch the focused batch's batch peaks. */
-  const load = async () => {
+  /** Fetch series (per-sample intensity arrays) for a set of batch peaks. */
+  const fetchSeries = async (batchPeakIds) => {
     const batchId = app.data.batch.focusedId
-    if (!batchId) {
-      records.value = []
-      return
-    }
+    if (!batchId || !batchPeakIds.length) return []
+    const data = await api.http.post(
+      `/batch-peaks/records/series`,
+      { sample_batch_id: batchId, batch_peak_ids: batchPeakIds },
+      { use: 'read', type: 'load_batch_peak_series' }
+    )
+    return data ?? []
+  }
+
+  /**
+   * Plot only the SELECTED batch peaks (chosen in the ledger). Diffs old/new
+   * selection: drops de-selected records and chunk-fetches newly-selected ones,
+   * so the chart draws exactly the selection -- never all 1000+ batch peaks.
+   */
+  const handlePeaksSelected = async (nextSelected, prevSelected = []) => {
+    records.value = records.value.filter((r) => nextSelected.includes(r.batch_peak_id))
+    const newlySelected = nextSelected.filter((id) => !prevSelected.includes(id))
+    if (!newlySelected.length) return
     pending.value = true
     try {
-      const data = await api.http.post(
-        `/batch-peaks/records/series`,
-        { sample_batch_id: batchId, min_n_present: minPresent.value },
-        { use: 'read', type: 'load_batch_peak_series' }
-      )
-      records.value = data ?? []
+      const chunkSize = 100
+      for (let i = 0; i < newlySelected.length; i += chunkSize) {
+        const chunk = newlySelected.slice(i, i + chunkSize)
+        const newRecords = await fetchSeries(chunk)
+        records.value = records.value.concat(newRecords)
+      }
     } finally {
       pending.value = false
     }
   }
 
-  // Reload on batch change and whenever assignments change (the arrival fold-in
-  // emits peak_assignment_reload after updating batch peaks).
+  // The ledger's multi-selection drives the plotted set.
+  watch(
+    () => app.data.batchPeak.selectedIds,
+    (next, prev) => handlePeaksSelected(next ?? [], prev ?? [])
+  )
+
+  // On batch change, clear the plot (the ledger reloads its own list + selection).
   watch(
     () => app.data.batch.focusedId,
     (id, oldId) => {
       if (id !== oldId) {
         records.value = []
         resetChart.value++
-        load()
       }
     }
   )
-  watch(minPresent, load)
 
-  // Registered once for the store's (session) lifetime: this store is a Pinia
-  // singleton whose setup runs a single time, so the listener must not be tied to
-  // any one component's unmount (the batch view toggles the chart in and out).
-  api.socket.on('peak_assignment_reload', () => load())
+  // When batch peaks change (arrival fold-in / backfill), refetch the current
+  // selection so the plotted traces reflect the new consensus. Registered once for
+  // the store's session lifetime (Pinia singleton; the chart toggles in and out).
+  api.socket.on('peak_assignment_reload', async () => {
+    const selected = app.data.batchPeak.selectedIds ?? []
+    records.value = []
+    await handlePeaksSelected(selected, [])
+  })
 
   // --- X-axis field selection (mirrors ChartBatchOverview) ---
   const inferType = (field) => {
@@ -213,5 +231,5 @@ export const useChartAssignmentsData = defineStore('chart.batch.assignments', ()
     return peakTraces
   })
 
-  return { samples, traces, xFields, xField, resetChart, pending, minPresent, load }
+  return { samples, traces, xFields, xField, resetChart, pending }
 })

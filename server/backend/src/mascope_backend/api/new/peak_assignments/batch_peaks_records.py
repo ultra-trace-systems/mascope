@@ -18,6 +18,24 @@ def _empty_series() -> dict:
     return {"sample_item_ids": [], "intensities": [], "tiers": []}
 
 
+def _batch_peak_meta(bp) -> dict:
+    """The scalar consensus metadata of a batch peak (no per-sample series)."""
+    return {
+        "batch_peak_id": bp.batch_peak_id,
+        "sample_batch_id": bp.sample_batch_id,
+        "ionization_mode_id": bp.ionization_mode_id,
+        "mz": bp.mz,
+        "consensus_formula": bp.consensus_formula,
+        "consensus_ion_formula": bp.consensus_ion_formula,
+        "ionization_mechanism_id": bp.ionization_mechanism_id,
+        "consensus_tier": bp.consensus_tier,
+        "best_fit_score": bp.best_fit_score,
+        "support_fraction": bp.support_fraction,
+        "n_present": bp.n_present,
+        "is_ambiguous": bool(bp.is_ambiguous),
+    }
+
+
 @api_controller()
 async def get_batch_peak_series(
     sample_batch_id: str | None = None,
@@ -95,23 +113,42 @@ async def get_batch_peak_series(
 
         data = [
             {
-                "batch_peak_id": bp.batch_peak_id,
-                "sample_batch_id": bp.sample_batch_id,
-                "ionization_mode_id": bp.ionization_mode_id,
-                "mz": bp.mz,
-                "consensus_formula": bp.consensus_formula,
-                "consensus_ion_formula": bp.consensus_ion_formula,
-                "ionization_mechanism_id": bp.ionization_mechanism_id,
-                "consensus_tier": bp.consensus_tier,
-                "best_fit_score": bp.best_fit_score,
-                "support_fraction": bp.support_fraction,
-                "n_present": bp.n_present,
-                "is_ambiguous": bool(bp.is_ambiguous),
+                **_batch_peak_meta(bp),
                 "peak_series": series_by_peak.get(bp.batch_peak_id, _empty_series()),
             }
             for bp in bp_rows
         ]
 
+    return {
+        "status": "success",
+        "message": f"Retrieved {len(data)} batch peak{'s' if len(data) != 1 else ''}",
+        "results": len(data),
+        "data": data,
+    }
+
+
+@api_controller()
+async def get_batch_peak_ledger(
+    sample_batch_id: str,
+    tier: str | None = None,
+    min_n_present: int = 2,
+) -> dict:
+    """Metadata-only list of a batch's batch peaks -- the ledger table feed.
+
+    One row per batch peak with its consensus (m/z, formula, tier, prevalence) but
+    WITHOUT the per-sample series, so a 1000+ row ledger stays cheap (it never
+    touches the occurrence table). The chart fetches series only for the rows the
+    user selects.
+    """
+    async with async_session() as session:
+        query = select(BatchPeak).where(BatchPeak.sample_batch_id == sample_batch_id)
+        if tier:
+            query = query.where(BatchPeak.consensus_tier == tier)
+        if min_n_present and min_n_present > 1:
+            query = query.where(BatchPeak.n_present >= min_n_present)
+        bp_rows = (await session.execute(query.order_by(BatchPeak.mz))).scalars().all()
+
+    data = [_batch_peak_meta(bp) for bp in bp_rows]
     return {
         "status": "success",
         "message": f"Retrieved {len(data)} batch peak{'s' if len(data) != 1 else ''}",
