@@ -1694,6 +1694,8 @@ __all__ = [
     "MatchRating",
     "PeakAssignmentRun",
     "PeakAssignment",
+    "BatchPeak",
+    "BatchPeakOccurrence",
     "AttributeTemplate",
     "InstrumentFunction",
     "ReferenceSource",
