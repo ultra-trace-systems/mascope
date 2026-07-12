@@ -437,6 +437,12 @@ class SampleBatch(Base):
         cascade="all, delete, delete-orphan",
         passive_deletes=True,
     )
+    batch_peak = relationship(
+        "BatchPeak",
+        back_populates="sample_batch",
+        cascade="all, delete, delete-orphan",
+        passive_deletes=True,
+    )
 
 
 @event.listens_for(SampleBatch, "after_insert")
@@ -605,6 +611,12 @@ class SampleItem(Base):
     )
     peak_assignment = relationship(
         "PeakAssignment",
+        back_populates="sample_item",
+        cascade="all, delete, delete-orphan",
+        passive_deletes=True,
+    )
+    batch_peak_occurrence = relationship(
+        "BatchPeakOccurrence",
         back_populates="sample_item",
         cascade="all, delete, delete-orphan",
         passive_deletes=True,
@@ -1268,6 +1280,159 @@ class PeakAssignment(Base):
         CheckConstraint(
             "fit_score IS NULL OR fit_score BETWEEN 0 AND 1",
             name="fit_score_range",
+        ),
+    )
+
+
+class BatchPeak(Base):
+    """A cross-sample "batch peak": a frozen m/z anchor that gives an assigned
+    species one stable identity across a sample batch, so the batch overview can
+    draw one trace per species (the peak-centric replacement for the target-ion
+    identity of the legacy targeted overview).
+
+    Identity is m/z, not formula: every observed peak in the batch -- assigned or
+    not -- folds into exactly one batch peak, so unassigned m/z still get a
+    batch-level trend. The anchor ``mz`` is FROZEN at creation and its membership
+    tolerance (resolution-adaptive, stored as ``mz_tol_ppm``) never widens, so
+    ``batch_peak_id`` stays a stable identity under incremental sample arrival.
+    Formula and tier are an EVIDENCE-WEIGHTED CONSENSUS of the member peaks'
+    per-sample ``PeakAssignment`` rows (never a fresh assignment of a synthetic
+    consensus spectrum, which cannot be scored honestly).
+
+    Batch peaks are partitioned per ionization mode (the m/z axis and intensity
+    units differ between modes/instruments). Design:
+    ``docs/dev/peak_assignment_batch.md``.
+
+    consensus_tier values mirror ``PeakAssignment.tier``:
+    'identified' | 'candidate' | 'below_assignability' | 'unassigned'.
+    """
+
+    __tablename__ = "batch_peak"
+
+    batch_peak_id: Mapped[str] = mapped_column(String(16), primary_key=True)
+    sample_batch_id: Mapped[str] = mapped_column(
+        String(16),
+        ForeignKey("sample_batch.sample_batch_id", ondelete="CASCADE"),
+        index=True,
+    )
+    ionization_mode_id: Mapped[Optional[str]] = mapped_column(
+        String(16),
+        ForeignKey("ionization_mode.ionization_mode_id", ondelete="SET NULL"),
+        index=True,
+    )
+    # Frozen anchor centre (m/z) and the resolution-adaptive half-window (ppm)
+    # captured when the anchor was created. Membership never re-widens, so a
+    # later sample's peak cannot silently redraw this bin.
+    mz: Mapped[float] = mapped_column(Float)
+    mz_tol_ppm: Mapped[float] = mapped_column(Float)
+    intensity_variable: Mapped[Optional[str]] = mapped_column(String(32))
+    # Evidence-weighted consensus over DETECTED members (see batch_peaks engine).
+    consensus_formula: Mapped[Optional[str]] = mapped_column(String(256))
+    consensus_ion_formula: Mapped[Optional[str]] = mapped_column(String(4096))
+    ionization_mechanism_id: Mapped[Optional[str]] = mapped_column(
+        String(16),
+        ForeignKey(
+            "ionization_mechanism.ionization_mechanism_id", ondelete="SET NULL"
+        ),
+        index=True,
+    )
+    consensus_tier: Mapped[str] = mapped_column(
+        String(24), server_default=text("'unassigned'")
+    )
+    best_fit_score: Mapped[Optional[float]] = mapped_column(Float)
+    # Fraction of DETECTED members whose assignment agrees with consensus_formula.
+    support_fraction: Mapped[Optional[float]] = mapped_column(Float)
+    # Prevalence: number of samples in which this batch peak is observed. Kept
+    # SEPARATE from confidence -- an absent sample is a gap in the trace, never
+    # evidence against the formula.
+    n_present: Mapped[int] = mapped_column(Integer, server_default=text("'0'"))
+    # 1 when the top consensus candidates are within a tie tolerance, or the
+    # member disagreement looks like a co-eluting blend.
+    is_ambiguous: Mapped[int] = mapped_column(Integer, server_default=text("'0'"))
+    alternatives: Mapped[Optional[list]] = mapped_column(JSON)
+    provenance: Mapped[Optional[dict]] = mapped_column(JSON)
+    batch_peak_utc_created: Mapped[Optional[dt]] = mapped_column(
+        TIMESTAMP(timezone=True)
+    )
+    batch_peak_utc_modified: Mapped[Optional[dt]] = mapped_column(
+        TIMESTAMP(timezone=True)
+    )
+
+    # Relationships
+    sample_batch = relationship("SampleBatch", back_populates="batch_peak")
+    batch_peak_occurrence = relationship(
+        "BatchPeakOccurrence",
+        back_populates="batch_peak",
+        cascade="all, delete, delete-orphan",
+        passive_deletes=True,
+    )
+
+    __table_args__ = (
+        # Range-scan support for the fold-in hot path: scope to a batch + mode,
+        # then binary-search the anchor m/z axis.
+        Index(
+            "ix_batch_peak_sample_batch_id_mz",
+            "sample_batch_id",
+            "ionization_mode_id",
+            "mz",
+        ),
+        CheckConstraint(
+            "best_fit_score IS NULL OR best_fit_score BETWEEN 0 AND 1",
+            name="best_fit_score_range",
+        ),
+    )
+
+
+class BatchPeakOccurrence(Base):
+    """One observed sample peak folded into a batch peak -- the sparse per-sample
+    matrix behind the batch overview (batch peak x sample -> intensity/tier).
+
+    Membership is captured append-only at fold-in time. ``sample_peak_id`` equals
+    ``PeakAssignment.sample_peak_id``, so a member's per-sample assignment joins
+    for free (``peak_assignment_id`` records the specific row folded in). Unique
+    on (batch_peak_id, sample_item_id): a batch peak has at most one member per
+    sample -- one y-value per trace per sample.
+    """
+
+    __tablename__ = "batch_peak_occurrence"
+
+    batch_peak_occurrence_id: Mapped[str] = mapped_column(
+        String(32), primary_key=True
+    )
+    batch_peak_id: Mapped[str] = mapped_column(
+        String(16),
+        ForeignKey("batch_peak.batch_peak_id", ondelete="CASCADE"),
+        index=True,
+    )
+    sample_item_id: Mapped[str] = mapped_column(
+        String(16),
+        ForeignKey("sample_item.sample_item_id", ondelete="CASCADE"),
+        index=True,
+    )
+    sample_peak_id: Mapped[str] = mapped_column(String(20))
+    peak_assignment_id: Mapped[Optional[str]] = mapped_column(
+        String(32),
+        ForeignKey("peak_assignment.peak_assignment_id", ondelete="SET NULL"),
+        index=True,
+    )
+    # Denormalized member fields (as MatchIsotope / PeakAssignment do): the peak's
+    # own m/z in this sample (for jitter/QC), its intensity (the chart y-value),
+    # and its per-sample assignment tier / fit / formula folded in.
+    sample_peak_mz: Mapped[float] = mapped_column(Float)
+    intensity: Mapped[Optional[float]] = mapped_column(Float)
+    tier: Mapped[Optional[str]] = mapped_column(String(24))
+    fit_score: Mapped[Optional[float]] = mapped_column(Float)
+    assigned_formula: Mapped[Optional[str]] = mapped_column(String(256))
+
+    # Relationships
+    batch_peak = relationship("BatchPeak", back_populates="batch_peak_occurrence")
+    sample_item = relationship("SampleItem", back_populates="batch_peak_occurrence")
+
+    __table_args__ = (
+        UniqueConstraint(
+            "batch_peak_id",
+            "sample_item_id",
+            name="uq_batch_peak_occurrence_batch_peak_id_sample_item_id",
         ),
     )
 
