@@ -1331,9 +1331,7 @@ class BatchPeak(Base):
     consensus_ion_formula: Mapped[Optional[str]] = mapped_column(String(4096))
     ionization_mechanism_id: Mapped[Optional[str]] = mapped_column(
         String(16),
-        ForeignKey(
-            "ionization_mechanism.ionization_mechanism_id", ondelete="SET NULL"
-        ),
+        ForeignKey("ionization_mechanism.ionization_mechanism_id", ondelete="SET NULL"),
         index=True,
     )
     consensus_tier: Mapped[str] = mapped_column(
@@ -1396,9 +1394,7 @@ class BatchPeakOccurrence(Base):
 
     __tablename__ = "batch_peak_occurrence"
 
-    batch_peak_occurrence_id: Mapped[str] = mapped_column(
-        String(32), primary_key=True
-    )
+    batch_peak_occurrence_id: Mapped[str] = mapped_column(String(32), primary_key=True)
     batch_peak_id: Mapped[str] = mapped_column(
         String(16),
         ForeignKey("batch_peak.batch_peak_id", ondelete="CASCADE"),

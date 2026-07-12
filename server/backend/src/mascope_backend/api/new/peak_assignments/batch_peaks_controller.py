@@ -111,12 +111,16 @@ async def fold_sample_into_batch_peaks(sample_item_id: str) -> str | None:
         # Every observed peak of the run (assigned or not) folds into a batch peak,
         # so no m/z is dropped from the batch view.
         rows = (
-            await session.execute(
-                select(PeakAssignment).where(
-                    PeakAssignment.peak_assignment_run_id == run_id
+            (
+                await session.execute(
+                    select(PeakAssignment).where(
+                        PeakAssignment.peak_assignment_run_id == run_id
+                    )
                 )
             )
-        ).scalars().all()
+            .scalars()
+            .all()
+        )
         if not rows:
             return None
 
@@ -139,13 +143,17 @@ async def fold_sample_into_batch_peaks(sample_item_id: str) -> str | None:
 
         # Existing frozen anchors for this (batch, ionization mode).
         existing = (
-            await session.execute(
-                select(BatchPeak).where(
-                    BatchPeak.sample_batch_id == sample_batch_id,
-                    BatchPeak.ionization_mode_id == ionization_mode_id,
+            (
+                await session.execute(
+                    select(BatchPeak).where(
+                        BatchPeak.sample_batch_id == sample_batch_id,
+                        BatchPeak.ionization_mode_id == ionization_mode_id,
+                    )
                 )
             )
-        ).scalars().all()
+            .scalars()
+            .all()
+        )
         anchor_set = AnchorSet(
             [Anchor(bp.batch_peak_id, bp.mz, bp.mz_tol_ppm) for bp in existing]
         )
@@ -154,18 +162,22 @@ async def fold_sample_into_batch_peaks(sample_item_id: str) -> str | None:
         # anchors it touched so their consensus is recomputed even if it now leaves
         # them.
         prior = (
-            await session.execute(
-                select(BatchPeakOccurrence)
-                .join(
-                    BatchPeak,
-                    BatchPeak.batch_peak_id == BatchPeakOccurrence.batch_peak_id,
-                )
-                .where(
-                    BatchPeakOccurrence.sample_item_id == sample_item_id,
-                    BatchPeak.sample_batch_id == sample_batch_id,
+            (
+                await session.execute(
+                    select(BatchPeakOccurrence)
+                    .join(
+                        BatchPeak,
+                        BatchPeak.batch_peak_id == BatchPeakOccurrence.batch_peak_id,
+                    )
+                    .where(
+                        BatchPeakOccurrence.sample_item_id == sample_item_id,
+                        BatchPeak.sample_batch_id == sample_batch_id,
+                    )
                 )
             )
-        ).scalars().all()
+            .scalars()
+            .all()
+        )
         touched: set[str] = {occ.batch_peak_id for occ in prior}
         for occ in prior:
             await session.delete(occ)
@@ -175,7 +187,11 @@ async def fold_sample_into_batch_peaks(sample_item_id: str) -> str | None:
             await session.flush()
 
         peaks = [
-            {"mz": float(r.sample_peak_mz) * mu_factor, "raw_mz": float(r.sample_peak_mz), "row": r}
+            {
+                "mz": float(r.sample_peak_mz) * mu_factor,
+                "raw_mz": float(r.sample_peak_mz),
+                "row": r,
+            }
             for r in rows
         ]
         now = datetime.now(timezone.utc)
@@ -227,7 +243,9 @@ async def fold_sample_into_batch_peaks(sample_item_id: str) -> str | None:
     return sample_batch_id
 
 
-async def _recompute_consensus(session, batch_peak_ids: set[str], now: datetime) -> None:
+async def _recompute_consensus(
+    session, batch_peak_ids: set[str], now: datetime
+) -> None:
     """Recompute (and persist) the consensus of the given batch peaks from their
     members' per-sample assignments. A batch peak left with no members is deleted.
     """
@@ -299,12 +317,16 @@ async def backfill_sample_batch_peaks(sample_batch_id: str) -> int:
     """
     async with async_session() as session:
         sample_ids = (
-            await session.execute(
-                select(Sample.sample_item_id)
-                .where(Sample.sample_batch_id == sample_batch_id)
-                .order_by(Sample.datetime)
+            (
+                await session.execute(
+                    select(Sample.sample_item_id)
+                    .where(Sample.sample_batch_id == sample_batch_id)
+                    .order_by(Sample.datetime)
+                )
             )
-        ).scalars().all()
+            .scalars()
+            .all()
+        )
 
     folded = 0
     for sample_item_id in sample_ids:

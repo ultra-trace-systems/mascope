@@ -15,6 +15,7 @@ from mascope_backend.api.new.workspaces.dependencies import (
 )
 from mascope_backend.db import User
 
+
 batch_peaks_router = APIRouter(prefix="/api/batch-peaks", tags=["Batch Peaks"])
 
 
