@@ -13,6 +13,7 @@ import pytest_asyncio
 from sqlalchemy import select
 
 from mascope_backend.api.new.peak_assignments.batch_peaks_controller import (
+    backfill_sample_batch_peaks,
     fold_sample_into_batch_peaks,
 )
 from mascope_backend.api.new.peak_assignments.batch_peaks_records import (
@@ -272,3 +273,15 @@ async def test_series_sample_slice_ignores_occupancy(async_session_factory, seed
     assert res["results"] == 3
     for rec in res["data"]:
         assert rec["peak_series"]["sample_item_ids"] == [samples["A"]]
+
+
+async def test_backfill_folds_every_sample_of_the_batch(async_session_factory, seeded):
+    batch, samples = seeded
+    # Backfill from the samples' existing completed runs (no re-assignment).
+    folded = await backfill_sample_batch_peaks(batch)
+    assert folded == 2
+
+    peaks = await _batch_peaks(async_session_factory, batch)
+    assert len(peaks) == 4  # same as folding A and B one by one
+    shared = next(p for p in peaks if p.consensus_formula == "C6H12O6")
+    assert shared.n_present == 2

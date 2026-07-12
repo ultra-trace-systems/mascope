@@ -4,7 +4,9 @@ import { ref, computed, watch, toRaw, nextTick, onUnmounted } from 'vue'
 import Select from 'primevue/select'
 import FloatLabel from 'primevue/floatlabel'
 import ProgressSpinner from 'primevue/progressspinner'
+import Button from 'primevue/button'
 
+import { api } from '@/api'
 import { useApp } from '@/stores'
 import { ToolbarIntensityScale } from '@/lib/toolbars'
 
@@ -18,6 +20,7 @@ const scroller = useSampleScroller()
 
 const plot = ref({})
 const showSpinner = ref(false)
+const computing = ref(false)
 
 const scale = ref({
   mode: 'average',
@@ -129,6 +132,25 @@ function onSelect({ points }) {
   const samples = points.map((i) => app.data.sample.list[i])
   app.data.sample.selected = samples
   scroller.scrollToSamples(app.data.sample.selectedIds)
+}
+
+/**
+ * Backfill this batch's batch peaks from its samples' existing assignments. The
+ * store reloads when the background task emits `peak_assignment_reload`.
+ */
+async function computeBatchPeaks() {
+  const batchId = app.data.batch.focusedId
+  if (!batchId || computing.value) return
+  computing.value = true
+  try {
+    await api.http.post(
+      `/batch-peaks/batch/${batchId}/backfill`,
+      {},
+      { use: 'read', type: 'backfill_batch_peaks' }
+    )
+  } finally {
+    computing.value = false
+  }
 }
 
 let syncTimeout = null
@@ -256,6 +278,16 @@ onUnmounted(() => {
           />
           <label>X-axis</label>
         </FloatLabel>
+        <div style="height: 0.5rem" />
+        <Button
+          label="Compute batch peaks"
+          icon="ph ph-arrows-clockwise"
+          size="small"
+          severity="secondary"
+          :loading="computing"
+          fluid
+          @click="computeBatchPeaks"
+        />
       </template>
     </BaseChartPlotly>
   </figure>

@@ -1171,6 +1171,22 @@ async def _run_sample_assignment(
         await _finalize_run(run.peak_assignment_run_id, "completed")
         await send_progress_user_notification(notification, 1.0)
 
+        # Fold this completed run into the batch peaks so the batch overview
+        # reflects every assignment path: sample arrival, an explicit single-sample
+        # re-assign, and a batch assign (which loops this function). Isolated -- a
+        # fold-in failure must never fail or un-complete the assignment itself.
+        try:
+            from mascope_backend.api.new.peak_assignments.batch_peaks_controller import (
+                fold_sample_into_batch_peaks,
+            )
+
+            await fold_sample_into_batch_peaks(sample_item_id)
+        except Exception as fold_error:  # noqa: BLE001 - fold-in is best-effort
+            runtime.logger.warning(
+                f"Batch-peak fold-in failed for sample '{sample_item_id}' "
+                f"(run '{run.peak_assignment_run_id}'): {fold_error}"
+            )
+
         message = (
             f"Assigned peaks for sample '{sample.sample_item_name}': "
             f"{len(stage_a_assignments)} from the target library, "
@@ -1252,6 +1268,8 @@ async def auto_assign_sample_peaks(
     if not peak_assignment_enabled():
         return
     try:
+        # assign_sample_peaks folds the completed run into the batch peaks itself,
+        # so the batch overview stays current as samples arrive.
         await assign_sample_peaks(
             sample_item_id=sample_item_id,
             config=PeakAssignmentConfig(run_untargeted=False),
@@ -1260,16 +1278,8 @@ async def auto_assign_sample_peaks(
             process_id=gen_id(8),
             parent_id=parent_id,
         )
-        # Fold the freshly-committed Stage-A assignment into the batch peaks so the
-        # batch overview stays current as samples arrive. Lazy import avoids any
-        # import cycle through this service module.
-        from mascope_backend.api.new.peak_assignments.batch_peaks_controller import (
-            fold_sample_into_batch_peaks,
-        )
-
-        await fold_sample_into_batch_peaks(sample_item_id)
     except Exception as e:
-        # Isolate assignment / fold-in failures from the processing lifecycle.
+        # Isolate assignment failures from the processing lifecycle.
         runtime.logger.warning(
             f"Auto peak assignment failed for sample '{sample_item_id}': {e}"
         )

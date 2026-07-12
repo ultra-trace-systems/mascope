@@ -18,6 +18,7 @@ from datetime import datetime, timezone
 
 from sqlalchemy import select
 
+from mascope_backend.api.lib.api_features import api_controller_background_task
 from mascope_backend.api.new.instrument_configs.lib import read_instrument_functions
 from mascope_backend.api.new.peak_assignments.batch_peaks import (
     Anchor,
@@ -338,3 +339,32 @@ async def backfill_sample_batch_peaks(sample_batch_id: str) -> int:
                 f"Batch-peak backfill failed for sample '{sample_item_id}': {exc}"
             )
     return folded
+
+
+@api_controller_background_task(
+    success_notification_rooms=["sample_batch_id"],
+    success_reload=[("peak_assignment", "sample_batch_id")],
+    error_notification_rooms=["sample_batch_id"],
+)
+async def compute_batch_peaks(
+    sample_batch_id: str,
+    independent_transaction: bool = False,
+    user_id: int | None = None,
+    process_id: str | None = None,
+    parent_id: str | None = None,
+) -> dict:
+    """Backfill a batch's batch peaks from its samples' existing completed
+    assignment runs, without re-running assignment.
+
+    This is how a batch assigned before batch peaks existed (or after a bulk
+    import) gets populated into the batch overview. Idempotent -- re-running
+    re-folds each sample. Emits ``peak_assignment_reload`` on success so the
+    Assignments chart refreshes.
+    """
+    folded = await backfill_sample_batch_peaks(sample_batch_id)
+    return {
+        "status": "success",
+        "message": f"Computed batch peaks from {folded} assigned sample(s).",
+        "data": {"samples_folded": folded},
+        "_notification_data": {"sample_batch_id": sample_batch_id},
+    }
