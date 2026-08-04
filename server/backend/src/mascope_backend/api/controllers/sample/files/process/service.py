@@ -73,6 +73,13 @@ from mascope_backend.socket.records.service import (
 # Chosen so that final m/z error tolerance for TOF would be around 1000 ppm
 CALIBRATION_ITERATIONS = 7
 
+#: ApiException status codes a wider m/z error tolerance can actually clear.
+#: The fit warning (200/207) and the 422 "fitting failed" both mean the
+#: spectrum did not yield enough matching calibration peaks. Any other status
+#: is a fault (missing calibration collection, database or pool failure) that
+#: retrying cannot improve.
+RETRYABLE_CALIBRATION_STATUS = (200, 207, 422)
+
 #: Fire-and-forget rematch tasks. asyncio only keeps weak references, so an
 #: unreferenced task can be garbage-collected mid-run; the done-callback below
 #: also surfaces failures that would otherwise die as unretrieved exceptions.
@@ -789,7 +796,9 @@ async def calibrate_with_retry(
     """Calibrate sample with retry logic
 
     If no matching calibration peaks are found, the m/z error tolerance is doubled
-    and the calibration is retried, up to CALIBRATION_ITERATIONS times.
+    and the calibration is retried, up to CALIBRATION_ITERATIONS times. Only the
+    failures a wider tolerance can clear are retried (see
+    RETRYABLE_CALIBRATION_STATUS); any other failure stops the loop at once.
 
     :param sample: Sample dict to calibrate
     :type sample: dict
@@ -811,9 +820,21 @@ async def calibrate_with_retry(
             )
             break
         except ApiException as e:
-            if i == CALIBRATION_ITERATIONS:
+            if e.status_code not in RETRYABLE_CALIBRATION_STATUS:
+                # A fault rather than a data condition: a wider tolerance
+                # cannot clear it, so stop here instead of burning the
+                # remaining attempts on it.
                 runtime.logger.exception(
-                    "Failed to calibrate m/z with m/z tolerance "
+                    "Failed to m/z calibrate sample item "
+                    f"{sample['sample_item_name']}: {e}"
+                )
+                break
+            if i == CALIBRATION_ITERATIONS:
+                # INFO: an expected data condition (a spectrum too poor to
+                # yield calibration peaks), already reported to the user as a
+                # notification, and this fires per sample of every upload.
+                runtime.logger.info(
+                    "Gave up m/z calibration at m/z error tolerance "
                     f"{mz_calibration_params.mz_error_tolerance} "
                     f"for sample item {sample['sample_item_name']}: {e}"
                 )
