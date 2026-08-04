@@ -49,5 +49,5 @@ repository = "https://github.com/ultra-trace-systems/mascope"
 "Bug Tracker" = "https://github.com/ultra-trace-systems/mascope/issues"
 
 [build-system]
-requires = ["uv_build>=0.11.32,<0.12"]
+requires = ["uv_build>=0.12.1,<0.13"]
 build-backend = "uv_build"
