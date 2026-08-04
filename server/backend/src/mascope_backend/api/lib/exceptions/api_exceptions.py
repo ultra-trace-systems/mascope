@@ -15,7 +15,11 @@ from mascope_backend.runtime import runtime
 
 class ApiException(Exception):
     def __init__(self, user_message, tech_message, status_code):
-        super().__init__()
+        # Pass the user message to Exception so str(self) is not empty:
+        # it is what error trackers group on and what plain f"{e}" log lines
+        # render. Only the user-facing message goes here - tech_message can
+        # carry internals and stays off the exception's str().
+        super().__init__(user_message)
         self.user_message = user_message
         self.tech_message = tech_message
         self.status_code = status_code
