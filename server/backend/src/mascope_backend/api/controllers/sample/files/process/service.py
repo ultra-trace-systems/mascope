@@ -74,10 +74,15 @@ from mascope_backend.socket.records.service import (
 CALIBRATION_ITERATIONS = 7
 
 #: ApiException status codes a wider m/z error tolerance can actually clear.
-#: The fit warning (200/207) and the 422 "fitting failed" both mean the
-#: spectrum did not yield enough matching calibration peaks. Any other status
-#: is a fault (missing calibration collection, database or pool failure) that
-#: retrying cannot improve.
+#: 200/207 are the fit warnings, where the spectrum did not yield enough
+#: matching calibration peaks ("Not enough calibration peaks", "No calibration
+#: peaks found"); 422 is a degenerate fit - a zero polynomial coefficient -
+#: which more matches can also resolve. Any other status is a fault (missing
+#: calibration collection, database failure) that retrying cannot improve.
+#: Note this also excludes the transient _RECOVERABLE_STATUS_CODES below:
+#: calibrate_with_retry swallows rather than re-raises, so a pool timeout
+#: during calibration leaves the sample uncalibrated instead of reaching the
+#: pipeline-level retry.
 RETRYABLE_CALIBRATION_STATUS = (200, 207, 422)
 
 #: Fire-and-forget rematch tasks. asyncio only keeps weak references, so an
@@ -831,8 +836,9 @@ async def calibrate_with_retry(
                 break
             if i == CALIBRATION_ITERATIONS:
                 # INFO: an expected data condition (a spectrum too poor to
-                # yield calibration peaks), already reported to the user as a
-                # notification, and this fires per sample of every upload.
+                # yield calibration peaks), and this fires per sample of every
+                # upload. For 200/207 the warning notification has already
+                # reached the user; a 422 degenerate fit is recorded only here.
                 runtime.logger.info(
                     "Gave up m/z calibration at m/z error tolerance "
                     f"{mz_calibration_params.mz_error_tolerance} "
@@ -849,8 +855,8 @@ async def calibrate_with_retry(
                     mz_calibration_params.refine_window = (
                         mz_calibration_params.mz_error_tolerance + 1
                     )
-                # INFO: a retry that usually succeeds; the final give-up above
-                # is what logs at ERROR
+                # INFO: a retry that usually succeeds; the give-up above is
+                # INFO too - only a non-retryable status logs at ERROR
                 runtime.logger.info(
                     "Not enough calibration peaks with m/z error tolerance "
                     f"{old_tolerance}, retrying m/z calibration for sample "
