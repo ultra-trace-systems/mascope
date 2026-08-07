@@ -1,7 +1,7 @@
 name: Build release images
 
 # When a GitHub Release is published, build the images from the tagged commit
-# and push them as ghcr.io/karsa-oy/mascope/<service>:vX.Y.Z.
+# and push them as ghcr.io/ultra-trace-systems/mascope/<service>:vX.Y.Z.
 #
 # It REBUILDS (rather than re-tagging a build image) so the release version
 # bakes into the images: on a tag checkout parse_version() resolves to the tag,

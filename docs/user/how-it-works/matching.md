@@ -10,9 +10,9 @@
 
 --8<-- "_help/matching.md"
 
-The [isotope matching](https://github.com/karsa-oy/mascope/blob/master/libraries/match/src/mascope_match/compute/isotopes.py) workflow establishes high-confidence links between a predefined list of target compositions and detected experimental peaks in sample mass spectra.
+The [isotope matching](https://github.com/ultra-trace-systems/mascope/blob/master/libraries/match/src/mascope_match/compute/isotopes.py) workflow establishes high-confidence links between a predefined list of target compositions and detected experimental peaks in sample mass spectra.
 
-The procedure should be distinguished from unconstrained [composition assignment scoring](https://github.com/karsa-oy/mascope/blob/master/libraries/tools/src/mascope_tools/composition/finder.py) (which screens peaks against wide combinatorial formula spaces).
+The procedure should be distinguished from unconstrained [composition assignment scoring](https://github.com/ultra-trace-systems/mascope/blob/master/libraries/tools/src/mascope_tools/composition/finder.py) (which screens peaks against wide combinatorial formula spaces).
 Instead, this matching engine operates exclusively on a fixed set of target compounds, their designated ionization mechanisms, and their predictable isotopic envelopes.
 
 ## Data Pre-Filtering and Peak Extraction
@@ -61,7 +61,7 @@ If an isotope fails to find an experimental peak that satisfies all constraints,
 
 ## Multi-Level Match Scoring Architecture
 
-Once assignments are completed, the pipeline executes a [bottom-up hierarchical scoring sequence](https://github.com/karsa-oy/mascope/blob/master/server/backend/src/mascope_backend/api/controllers/match/lib/match_aggregate.py) from individual isotopes up to the global sample context, generating metrics bounded strictly between 0.0 and 1.0.
+Once assignments are completed, the pipeline executes a [bottom-up hierarchical scoring sequence](https://github.com/ultra-trace-systems/mascope/blob/master/server/backend/src/mascope_backend/api/controllers/match/lib/match_aggregate.py) from individual isotopes up to the global sample context, generating metrics bounded strictly between 0.0 and 1.0.
 
 ### Target Isotope Match Score
 For unmatched isotopes, the match score is defined as 0.0.

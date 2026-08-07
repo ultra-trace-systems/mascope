@@ -53,7 +53,7 @@ Mascope keeps two kinds of workspace:
 
 The full permission model — every role, the instrument-workspace rules, and
 access tokens for the SDK — is documented in
-[Authorization](https://github.com/karsa-oy/mascope/blob/master/docs/authorization.md).
+[Authorization](https://github.com/ultra-trace-systems/mascope/blob/master/docs/authorization.md).
 
 ## Sample files vs. samples
 

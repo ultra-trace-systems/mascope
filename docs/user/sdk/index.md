@@ -19,7 +19,7 @@ peaks = mascope.load_peaks(dataset="My Dataset", batches="Uronium")
     notebook in about 15 minutes.
 
 Full reference, configuration, and tutorial notebooks: see the
-[SDK readme on GitHub](https://github.com/karsa-oy/mascope/blob/master/libraries/sdk/README.md).
+[SDK readme on GitHub](https://github.com/ultra-trace-systems/mascope/blob/master/libraries/sdk/README.md).
 
 <!-- TODO Phase 3: publish the SDK README content into this section as the single
 source, or keep this page thin and deep-link. See the roadmap. -->

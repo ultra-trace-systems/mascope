@@ -1,4 +1,4 @@
-`KARSA MASCOPE - DESIGN DOC - SDK x PEAK-CENTRIC ASSIGNMENT`
+`ULTRA TRACE MASCOPE - DESIGN DOC - SDK x PEAK-CENTRIC ASSIGNMENT`
 
 # Making the SDK peak-assignment aware (read-first)
 
@@ -21,9 +21,9 @@ It is an engineering design + phased plan, not a user guide.
 
 > **Status (2026-08-03).** The one backend change this plan called for - dropping the
 > dead `run` field from the ledger read (§4.1) - has **landed** on the epic branch (PR
-> [#1696](https://github.com/karsa-oy/mascope/pull/1696), commit `ee6217a9`). Since then
+> [#1696](https://github.com/ultra-trace-systems/mascope/pull/1696), commit `ee6217a9`). Since then
 > the ledger read also gained **pagination** (`limit`/`offset` + `total`) and typed enum
-> filters ([`f1e17f2c`]), and issue [#1725](https://github.com/karsa-oy/mascope/issues/1725)
+> filters ([`f1e17f2c`]), and issue [#1725](https://github.com/ultra-trace-systems/mascope/issues/1725)
 > will move `alternatives`/`provenance` out of the list rows into a per-peak detail
 > fetch. This revision folds those in.
 
@@ -124,7 +124,7 @@ is done).
 `provenance` (JSON).
 
 > **Pending #1725.** `alternatives` + `provenance` are ~74% of the payload (2.8 KB/row
-> vs 0.74 KB core) and are inspector-only. [#1725](https://github.com/karsa-oy/mascope/issues/1725)
+> vs 0.74 KB core) and are inspector-only. [#1725](https://github.com/ultra-trace-systems/mascope/issues/1725)
 > will drop them from the list response and serve them via a per-peak **detail** fetch.
 > The SDK design below fetches **core rows** and treats the two JSON columns as
 > best-effort - present today, sourced from a detail call once #1725 lands (§5.1, §9).
@@ -141,7 +141,7 @@ control, not a one-run-per-sample model).
 ## 4. Integration constraints
 
 1. **Sequencing.** `/api/peak-assignments/*` ships in PR
-   [#1696](https://github.com/karsa-oy/mascope/pull/1696) (`epic/peak-centric-assignment`
+   [#1696](https://github.com/ultra-trace-systems/mascope/pull/1696) (`epic/peak-centric-assignment`
    -> `develop`), not yet on a released `develop`. The SDK compat work must sit on top of
    the epic (or land after #1696 merges); it cannot be exercised against a plain,
    pre-epic `develop` demo stack. The SDK **contract tests** (§7) need a stack whose
@@ -164,7 +164,7 @@ control, not a one-run-per-sample model).
 ### 4.1 Landed: dropped the `run` field from `GET /sample/{id}`
 
 > **Shipped** as commit `ee6217a9` in PR
-> [#1696](https://github.com/karsa-oy/mascope/pull/1696). Kept here for the rationale.
+> [#1696](https://github.com/ultra-trace-systems/mascope/pull/1696). Kept here for the rationale.
 
 The cleanest fit with the existing API was **not** to nest `run` into `data`, but to
 **remove `run` from the `GET /sample/{id}` response entirely**, standardizing it on the
@@ -263,7 +263,7 @@ cheap extra GET, and the standardized envelope unwraps through the ordinary `_ge
 **no `_base.py`/`_http.py` change is needed**.
 
 **`alternatives` / `provenance`.** Nested-object columns today. Once
-[#1725](https://github.com/karsa-oy/mascope/issues/1725) slims the list response they
+[#1725](https://github.com/ultra-trace-systems/mascope/issues/1725) slims the list response they
 leave the ledger, and the SDK will source them on demand via a per-peak detail accessor
 (e.g. `peak_assignments.detail(assignment_id)`) so the bulk `get()` stays cheap. Design
 `get()` **core-first** now, so #1725 is an additive detail method rather than a breaking
@@ -357,8 +357,8 @@ Left out of v1 pending the "should the SDK trigger runs?" decision. If taken up:
 - **`fit_aggregate(sample_id, formula, ionization_mechanism_id)`** - isotope table for a
   composition; the untargeted analogue of `matching.match_compound`, for verifying a
   Stage-B winner. POST but non-mutating, so it could even ship in a read-plus release.
-  Relates to [#1004](https://github.com/karsa-oy/mascope/issues/1004) (score an arbitrary
-  peak+composition) and [#1736](https://github.com/karsa-oy/mascope/issues/1736) (Fit
+  Relates to [#1004](https://github.com/ultra-trace-systems/mascope/issues/1004) (score an arbitrary
+  peak+composition) and [#1736](https://github.com/ultra-trace-systems/mascope/issues/1736) (Fit
   view / composition-verify path).
 - **`verify(...)` / `list_verifications(...)`** - the verification-calibration capture
   loop (append-only labels). `list_verifications` is a pure read and can come first.
@@ -384,18 +384,18 @@ Corresponding notebook follow-up: rewrite `09` to *drive* the server engine
 5. **`alternatives` / `provenance` after #1725.** Confirm the detail-fetch shape (keyed by
    `peak_assignment_id`? batched?) and whether the SDK exposes a separate
    `detail()` accessor or a `get(..., detail=True)` opt-in. Track with
-   [#1725](https://github.com/karsa-oy/mascope/issues/1725).
+   [#1725](https://github.com/ultra-trace-systems/mascope/issues/1725).
 
 **Related tracker issues:**
-[#1725](https://github.com/karsa-oy/mascope/issues/1725) (ledger response slimming -
+[#1725](https://github.com/ultra-trace-systems/mascope/issues/1725) (ledger response slimming -
 reshapes the read),
-[#1494](https://github.com/karsa-oy/mascope/issues/1494) (SDK peak dataframe: add target
+[#1494](https://github.com/ultra-trace-systems/mascope/issues/1494) (SDK peak dataframe: add target
 collection name),
-[#1044](https://github.com/karsa-oy/mascope/issues/1044) (batch-level aggregation /
+[#1044](https://github.com/ultra-trace-systems/mascope/issues/1044) (batch-level aggregation /
 assignment, notebook),
-[#1004](https://github.com/karsa-oy/mascope/issues/1004) (score an arbitrary
+[#1004](https://github.com/ultra-trace-systems/mascope/issues/1004) (score an arbitrary
 peak+composition - the deferred `fit_aggregate`),
-[#1736](https://github.com/karsa-oy/mascope/issues/1736) (Fit view / composition-verify
+[#1736](https://github.com/ultra-trace-systems/mascope/issues/1736) (Fit view / composition-verify
 path).
 
 ---

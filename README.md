@@ -21,7 +21,7 @@ Run Mascope on your machine **with real data to explore**. Docker is the only
 prerequisite. One file, one command:
 
 ```sh
-curl -O https://raw.githubusercontent.com/karsa-oy/mascope/master/docker-compose.demo.yaml
+curl -O https://raw.githubusercontent.com/ultra-trace-systems/mascope/master/docker-compose.demo.yaml
 docker compose -f docker-compose.demo.yaml up
 ```
 
@@ -38,8 +38,8 @@ also run the demo from source with `mascope demo` (see
 
 ## Hosting
 
-- **Managed** - let Karsa run Mascope for you, with no infrastructure to manage.
-  Contact [sales@karsa.fi](mailto:sales@karsa.fi) for a quote.
+- **Managed** - let Ultra Trace run Mascope for you, with no infrastructure to manage.
+  Contact [sales@ultratrace.eu](mailto:sales@ultratrace.eu) for a quote.
 - **Self-host** - Mascope ships as Docker images. Try it locally (above), or see
   [Hosting & deployment](docs/hosting.md) for sharing it on a LAN or in
   production (HTTPS, TLS options, secrets, backups, upgrades).

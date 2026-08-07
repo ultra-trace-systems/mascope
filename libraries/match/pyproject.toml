@@ -2,7 +2,7 @@
 name = "mascope_match"
 version = "0.0.0"
 description = "Mascope's match computation library"
-authors = [{ name = "Karsa Oy", email = "support@karsa.fi" }]
+authors = [{ name = "Ultra Trace Systems Oy", email = "support@ultratrace.eu" }]
 requires-python = ">=3.12,<3.13"
 license.text = "Apache-2.0"
 dependencies = [

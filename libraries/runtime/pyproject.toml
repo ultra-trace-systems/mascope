@@ -1,14 +1,14 @@
 [project]
 name = "mascope_runtime"
 version = "2026.7.28"
-description = "Karsa Mascope's shared runtime util library for config, state and logging"
+description = "Ultra Trace Mascope's shared runtime util library for config, state and logging"
 classifiers = [
     "Topic :: Scientific/Engineering :: Atmospheric Science",
     "Topic :: Software Development :: Libraries :: Python Modules",
 ]
-authors = [{ name = "Karsa Oy", email = "support@karsa.fi" }]
+authors = [{ name = "Ultra Trace Systems Oy", email = "support@ultratrace.eu" }]
 maintainers = [
-    { name = "Oskari Kausiala", email = "oskari.kausiala@karsa.fi" },
+    { name = "Oskari Kausiala", email = "oskari.kausiala@ultratrace.eu" },
 ]
 license.text = "Apache-2.0"
 requires-python = ">=3.12,<3.13"
@@ -28,9 +28,9 @@ logs = ["duckdb>=1.5.5,<2"]
 sentry = ["sentry-sdk>=2,<3"]
 
 [project.urls]
-homepage = "https://karsa.fi/"
-repository = "https://github.com/karsa-oy/mascope"
-"Bug Tracker" = "https://github.com/karsa-oy/mascope/issues"
+homepage = "https://ultratrace.eu/"
+repository = "https://github.com/ultra-trace-systems/mascope"
+"Bug Tracker" = "https://github.com/ultra-trace-systems/mascope/issues"
 
 [build-system]
 requires = ["uv_build>=0.11.32,<0.12"]

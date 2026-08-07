@@ -4,5 +4,5 @@ contact_links:
     url: https://discord.gg/R5kEKJcKe8
     about: Ask questions and chat with the community on Discord.
   - name: Report a security vulnerability
-    url: https://github.com/karsa-oy/mascope/security/policy
+    url: https://github.com/ultra-trace-systems/mascope/security/policy
     about: Please report vulnerabilities privately, not as a public issue.

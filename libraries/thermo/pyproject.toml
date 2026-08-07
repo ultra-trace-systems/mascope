@@ -2,7 +2,7 @@
 name = "mascope_thermo"
 version = "0.0.0"
 description = "Mascope's Thermofisher Orbitrap API"
-authors = [{ name = "Oskari Kausiala", email = "oskari.kausiala@karsa.fi" }]
+authors = [{ name = "Oskari Kausiala", email = "oskari.kausiala@ultratrace.eu" }]
 requires-python = ">=3.12,<3.13"
 dependencies = [
     "mascope_runtime",

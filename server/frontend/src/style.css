@@ -18,7 +18,7 @@
   }
 
   * {
-    font-family: Inter, sans-serif;
+    font-family: 'IBM Plex Sans', sans-serif;
   }
 
   * {
@@ -280,7 +280,7 @@
 
 /* Customize Uppy Dashboard */
 .uppy-Dashboard {
-  font-family: Inter, Arial, sans-serif !important;
+  font-family: 'IBM Plex Sans', Arial, sans-serif !important;
 }
 
 .uppy-Dashboard-overlay {

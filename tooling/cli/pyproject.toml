@@ -6,9 +6,9 @@ classifiers = [
     "Topic :: Scientific/Engineering :: Atmospheric Science",
     "Topic :: Software Development :: Libraries :: Python Modules",
 ]
-authors = [{ name = "Karsa Oy", email = "support@karsa.fi" }]
+authors = [{ name = "Ultra Trace Systems Oy", email = "support@ultratrace.eu" }]
 maintainers = [
-    { name = "Oskari Kausiala", email = "oskari.kausiala@karsa.fi" },
+    { name = "Oskari Kausiala", email = "oskari.kausiala@ultratrace.eu" },
 ]
 license.text = "Apache-2.0"
 readme = "README.md"
@@ -44,9 +44,9 @@ demo = [
 ]
 
 [project.urls]
-homepage = "https://karsa.fi/"
-repository = "https://github.com/karsa-oy/mascope"
-"Bug Tracker" = "https://github.com/karsa-oy/mascope/issues"
+homepage = "https://ultratrace.eu/"
+repository = "https://github.com/ultra-trace-systems/mascope"
+"Bug Tracker" = "https://github.com/ultra-trace-systems/mascope/issues"
 
 [build-system]
 requires = ["uv_build>=0.11.32,<0.12"]

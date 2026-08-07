@@ -29,6 +29,17 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
 
 ### Changed
 
+- Rebranded from Karsa to Ultra Trace: Karsa Oy is now Ultra Trace Systems Oy.
+  The app carries the new Ultra Trace logo, favicon, and color theme (Safety
+  Orange primary on charcoal / off-white surfaces, per the UTS brand
+  guidelines). GitHub URLs moved to the `ultra-trace-systems` organization,
+  Docker images to `ghcr.io/ultra-trace-systems/mascope/...` (the old
+  `ghcr.io/karsa-oy` namespace no longer serves images, so older checkouts
+  should update their compose files), and contact emails to `@ultratrace.eu`.
+  The user docs carry the same branding (charcoal / Safety Orange Material
+  theme, UT logo and favicon), and both the app and the docs now use the
+  brand typeface IBM Plex Sans (replacing Inter), self-hosted as before so
+  nothing is fetched from third-party CDNs.
 - Focusing a peak in the sample spectrum now zooms to an instrument-aware
   window: +/- 0.05 m/z on high-resolution instruments (Orbitrap), keeping the
   previous +/- 0.3 m/z on TOF. Applies regardless of the peak assignment flag.
@@ -903,11 +914,11 @@ update --confirm`; `mascope prod update --snooze N` postpones it. A failed
 
 - First public release
 
-[Unreleased]: https://github.com/karsa-oy/mascope/compare/v1.3.2...master
-[v1.0.0]: https://github.com/karsa-oy/mascope/releases/tag/v1.0.0
-[v1.1.0]: https://github.com/karsa-oy/mascope/releases/tag/v1.1.0
-[v1.1.1]: https://github.com/karsa-oy/mascope/releases/tag/v1.1.1
-[v1.2.0]: https://github.com/karsa-oy/mascope/releases/tag/v1.2.0
-[v1.3.0]: https://github.com/karsa-oy/mascope/releases/tag/v1.3.0
-[v1.3.1]: https://github.com/karsa-oy/mascope/releases/tag/v1.3.1
-[v1.3.2]: https://github.com/karsa-oy/mascope/releases/tag/v1.3.2
+[Unreleased]: https://github.com/ultra-trace-systems/mascope/compare/v1.3.2...master
+[v1.0.0]: https://github.com/ultra-trace-systems/mascope/releases/tag/v1.0.0
+[v1.1.0]: https://github.com/ultra-trace-systems/mascope/releases/tag/v1.1.0
+[v1.1.1]: https://github.com/ultra-trace-systems/mascope/releases/tag/v1.1.1
+[v1.2.0]: https://github.com/ultra-trace-systems/mascope/releases/tag/v1.2.0
+[v1.3.0]: https://github.com/ultra-trace-systems/mascope/releases/tag/v1.3.0
+[v1.3.1]: https://github.com/ultra-trace-systems/mascope/releases/tag/v1.3.1
+[v1.3.2]: https://github.com/ultra-trace-systems/mascope/releases/tag/v1.3.2

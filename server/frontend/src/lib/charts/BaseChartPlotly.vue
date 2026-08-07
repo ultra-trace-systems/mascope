@@ -315,7 +315,7 @@ watch(
 
 <style scoped>
 .plot :deep(*) {
-  font-family: Inter !important;
+  font-family: 'IBM Plex Sans' !important;
 }
 
 /* Override Plotly's fixed-width container to allow shrinking */

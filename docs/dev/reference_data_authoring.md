@@ -1,4 +1,4 @@
-`KARSA MASCOPE - GUIDE - AUTHORING REFERENCE DATA`
+`ULTRA TRACE MASCOPE - GUIDE - AUTHORING REFERENCE DATA`
 
 # Authoring a custom reference compound database
 

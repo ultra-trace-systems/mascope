@@ -4,7 +4,7 @@ import { ref } from 'vue'
 import Toolbar from 'primevue/toolbar'
 
 import { useApp } from '@/stores'
-import { BaseKarsaLogo } from '@/lib/base'
+import { BaseBrandLogo } from '@/lib/base'
 
 import AppFilterChips from './AppFilterChips.vue'
 import LocationShareButton from './LocationShareButton.vue'
@@ -42,7 +42,7 @@ const filtering = ref(false)
       </div>
     </template>
     <template #center>
-      <BaseKarsaLogo v-show="!app.data.batch.focused" />
+      <BaseBrandLogo v-show="!app.data.batch.focused" />
     </template>
     <template #end>
       <div class="row">

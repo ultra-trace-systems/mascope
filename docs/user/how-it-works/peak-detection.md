@@ -1,6 +1,6 @@
 # Peak Detection
 
-The [peak detection algorithm](https://github.com/karsa-oy/mascope/blob/master/libraries/signal/src/mascope_signal/peak.py) is designed to identify and fit ion signals in mass spectra.
+The [peak detection algorithm](https://github.com/ultra-trace-systems/mascope/blob/master/libraries/signal/src/mascope_signal/peak.py) is designed to identify and fit ion signals in mass spectra.
 In Mascope, the peaks are detected in the summed mass spectrum, which is the result of summing across all spectra from all scans.
 
 ## Orbitrap Peak Detection

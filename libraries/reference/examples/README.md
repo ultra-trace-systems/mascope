@@ -1,4 +1,4 @@
-`KARSA MASCOPE - EXAMPLE REFERENCE DATA`
+`ULTRA TRACE MASCOPE - EXAMPLE REFERENCE DATA`
 
 # Example reference database: atmospheric organics
 

@@ -49,7 +49,7 @@ doubles as a monitoring probe. `--json` emits the same data for scripting.
 ## Provisioning
 
 ```sh
-git clone git@github.com:karsa-oy/mascope.git && cd mascope
+git clone git@github.com:ultra-trace-systems/mascope.git && cd mascope
 ./tooling/ubuntu.sh install
 ```
 

@@ -2,10 +2,10 @@
 
 How to run Mascope, from a one-machine trial to a shared production deployment.
 
-## Managed hosting by Karsa
+## Managed hosting by Ultra Trace
 
-The simplest option is to let Karsa host Mascope for you - no servers, updates,
-backups, or TLS to manage. Contact [sales@karsa.fi](mailto:sales@karsa.fi) for a
+The simplest option is to let Ultra Trace host Mascope for you - no servers, updates,
+backups, or TLS to manage. Contact [sales@ultratrace.eu](mailto:sales@ultratrace.eu) for a
 quote.
 
 ## Self-hosting
@@ -36,10 +36,10 @@ reports).
 1. **Install prerequisites** on the host: Docker + Docker Compose, `git`, and
    [uv](https://docs.astral.sh/uv/).
 2. **Get Mascope and pin the release.** Pick the latest version from
-   [Releases](https://github.com/karsa-oy/mascope/releases):
+   [Releases](https://github.com/ultra-trace-systems/mascope/releases):
 
    ```sh
-   git clone https://github.com/karsa-oy/mascope.git
+   git clone https://github.com/ultra-trace-systems/mascope.git
    cd mascope
    git fetch --tags
    git checkout v1.0.0           # the release you want to run

@@ -1,8 +1,8 @@
 [project]
 name = "mascope_backend"
 version = "0.0.0"
-description = "Karsa Mascope"
-authors = [{ name = "Karsa Oy", email = "support@karsa.fi" }]
+description = "Ultra Trace Mascope"
+authors = [{ name = "Ultra Trace Systems Oy", email = "support@ultratrace.eu" }]
 requires-python = ">=3.12,<3.13"
 license.text = "Apache-2.0"
 dependencies = [
@@ -39,7 +39,7 @@ dependencies = [
     "typer>=0.27.0,<0.28",
     "uvicorn>=0.34,<0.35",
     "websocket-client~=1.8",
-    "zarr==2.18.2", # TODO: Resolve dependency issue https://github.com/Karsa-Oy/Mascope/issues/479
+    "zarr==2.18.2", # TODO: Resolve dependency issue https://github.com/ultra-trace-systems/mascope/issues/479
     "numcodecs==0.15.1", # TODO: See issue above
     # Pinned. 4.2.0 fixes the upload-breaking file_dep bug (issue #1159)
     # and improves offset/resume handling. Newer versions are blocked:

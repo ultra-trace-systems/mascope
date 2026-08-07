@@ -1,6 +1,6 @@
 # Instrument Functions
 
-The methodology for [calculating instrument-specific peak shapes and resolution functions](https://github.com/karsa-oy/mascope/blob/master/libraries/signal/src/mascope_signal/instrument_func/fit.py) is based on the approach proposed by [DeCarlo et al, 2016](https://pubs.acs.org/doi/10.1021/ac061249n), which emphasizes estimating these parameters directly from experimental data.
+The methodology for [calculating instrument-specific peak shapes and resolution functions](https://github.com/ultra-trace-systems/mascope/blob/master/libraries/signal/src/mascope_signal/instrument_func/fit.py) is based on the approach proposed by [DeCarlo et al, 2016](https://pubs.acs.org/doi/10.1021/ac061249n), which emphasizes estimating these parameters directly from experimental data.
 The implementation utilizes iterative optimization and statistical weighting to characterize the mass spectrometer's performance across the mass-to-charge ($m/z$) range.
 
 ## Peak Shape Estimation

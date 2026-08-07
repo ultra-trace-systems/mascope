@@ -4,7 +4,7 @@
 # dataset and a ready-to-use login, over http://localhost:8080. Everything lives
 # in named volumes, so this single file is all you need:
 #
-#   curl -O https://raw.githubusercontent.com/karsa-oy/mascope/develop/docker-compose.demo.yaml
+#   curl -O https://raw.githubusercontent.com/ultra-trace-systems/mascope/develop/docker-compose.demo.yaml
 #   docker compose -f docker-compose.demo.yaml up
 #   # open http://localhost:8080  ->  log in  demo@mascope.app / mascope-demo
 #
@@ -54,7 +54,7 @@ services:
       - demo_db:/var/lib/postgresql/data
 
   demo_init:
-    image: ghcr.io/karsa-oy/mascope/backend:${MASCOPE_VERSION:-latest}
+    image: ghcr.io/ultra-trace-systems/mascope/backend:${MASCOPE_VERSION:-latest}
     container_name: mascope_demo_init
     entrypoint: []
     command: ["/bin/bash", "/app/tooling/demo-init.sh"]
@@ -81,7 +81,7 @@ services:
     restart: "no"
 
   backend: &backend
-    image: ghcr.io/karsa-oy/mascope/backend:${MASCOPE_VERSION:-latest}
+    image: ghcr.io/ultra-trace-systems/mascope/backend:${MASCOPE_VERSION:-latest}
     command: "api-server"
     container_name: mascope_demo_backend
     restart: unless-stopped
@@ -123,7 +123,7 @@ services:
     healthcheck: {}
 
   frontend:
-    image: ghcr.io/karsa-oy/mascope/frontend:${MASCOPE_VERSION:-latest}
+    image: ghcr.io/ultra-trace-systems/mascope/frontend:${MASCOPE_VERSION:-latest}
     container_name: mascope_demo_frontend
     restart: unless-stopped
     depends_on:
