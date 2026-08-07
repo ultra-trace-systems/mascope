@@ -46,6 +46,11 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
 
 ### Fixed
 
+- LaTeX math in the user docs now actually renders (previously the raw
+  `$...$` / `$$...$$` source showed on the peak-detection, calibration,
+  matching, and instrument-function pages). Math is rendered by KaTeX,
+  vendored into the docs assets so the docs remain self-contained and
+  air-gapped - no CDN requests.
 - Removing a frontend data store's socket listener no longer detaches every
   other store listening on the same event name; each store now unsubscribes
   only its own handler. Cross-store reload events (e.g. shared batch reloads)

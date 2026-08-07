@@ -65,10 +65,21 @@ theme:
 
 extra_css:
   - assets/uts.css
+  - assets/katex/katex.min.css
+
+# KaTeX is vendored under assets/katex/ (css + js + woff2 fonts) so math
+# renders without any CDN, keeping the docs self-contained and air-gapped.
+extra_javascript:
+  - assets/katex/katex.min.js
+  - assets/katex/contrib/auto-render.min.js
+  - assets/katex-init.js
 
 markdown_extensions:
   - admonition
   - attr_list
+  # Wraps $...$/$$...$$ for the KaTeX renderer (see extra_javascript).
+  - pymdownx.arithmatex:
+      generic: true
   - tables
   - toc:
       permalink: true
