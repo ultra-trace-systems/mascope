@@ -44,8 +44,8 @@
   --md-primary-fg-color: #161718;
   --md-primary-fg-color--light: #30312e;
   --md-primary-fg-color--dark: #000000;
-  --md-accent-fg-color: #ff5a1f;
-  --md-typeset-a-color: #c74a10;
+  --md-accent-fg-color: #ff6700;
+  --md-typeset-a-color: #c75000;
   /* Mermaid diagrams: neutral grey nodes (Material would otherwise derive
      them from the orange accent, which clashes with the diagram text). */
   --md-mermaid-node-bg-color: #f5f5f2;
@@ -59,8 +59,8 @@
   --md-primary-fg-color: #161718;
   --md-primary-fg-color--light: #30312e;
   --md-primary-fg-color--dark: #000000;
-  --md-accent-fg-color: #ff5a1f;
-  --md-typeset-a-color: #ff7a47;
+  --md-accent-fg-color: #ff6700;
+  --md-typeset-a-color: #ff8733;
   --md-footer-bg-color: #101110;
   --md-footer-bg-color--dark: #101110;
   --md-mermaid-node-bg-color: #20211f;
