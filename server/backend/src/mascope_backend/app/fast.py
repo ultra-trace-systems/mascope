@@ -158,6 +158,15 @@ if runtime.mode == "dev":
                 "http://localhost:5173",  # default Vite dev server
             }
         ),
+        # When the dev servers are exposed beyond localhost (`mascope dev run
+        # --host`), the app is browsed via the machine's hostname and the API
+        # sees tailnet page origins; accept them too (mirrors `allowedHosts`
+        # in vite.config.js). Localhost-only dev keeps the strict list above.
+        allow_origin_regex=(
+            r"http://[^/]+\.ts\.net(:\d+)?"
+            if os.environ.get("MASCOPE_DEVHOST")
+            else None
+        ),
         allow_credentials=True,
         allow_methods=["*"],
         allow_headers=["*"],
