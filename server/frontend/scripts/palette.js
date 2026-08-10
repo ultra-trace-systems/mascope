@@ -10,7 +10,7 @@ const jsonPath = './src/palette.json'
 // input colors, from the Ultra Trace brand guidelines
 const colors = {
   // primaries
-  safetyorange: '#FF5A1F',
+  safetyorange: '#FF6700',
   // surfaces
   charcoal: '#161718',
   offwhite: '#F5F5F2'
