@@ -8,8 +8,8 @@ classifiers = [
 ]
 authors = [
     { name = "Oskari Kausiala", email = "oskari.kausiala@ultratrace.eu" },
-    { name = "Philip Chernonog", email = "philip.chernonog@ultratrace.eu" },
-    { name = "Konstantin Tumashevich", email = "konstantin.tumashevich@ultratrace.eu" },
+    { name = "Philip Chernonog" },
+    { name = "Konstantin Tumashevich" },
     ]
 maintainers = [
     { name = "Oskari Kausiala", email = "oskari.kausiala@ultratrace.eu" },

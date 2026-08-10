@@ -19,20 +19,16 @@ authors:
     orcid: "https://orcid.org/0000-0001-6638-7066"
   - given-names: Philip
     family-names: Chernonog
-    email: philip.chernonog@ultratrace.eu
     affiliation: Ultra Trace Systems Oy
   - given-names: Konstantin
     family-names: Tumashevich
-    email: konstantin.tumashevich@ultratrace.eu
     affiliation: Ultra Trace Systems Oy
     orcid: "https://orcid.org/0000-0002-2014-2183"
   - given-names: Matan Bendix
     family-names: Shenhav
-    email: matan@shenhav.fi
     affiliation: Ultra Trace Systems Oy
   - given-names: Alexei
     family-names: Upornikov
-    email: alexei.upornikov@ultratrace.eu
     affiliation: Ultra Trace Systems Oy
 repository-code: "https://github.com/ultra-trace-systems/mascope"
 url: "https://github.com/ultra-trace-systems/mascope"
