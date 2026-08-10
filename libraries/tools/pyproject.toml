@@ -9,11 +9,11 @@ classifiers = [
 ]
 authors = [
     { name = "Oskari Kausiala", email = "oskari.kausiala@ultratrace.eu" },
-    { name = "Konstantin Tumashevich", email = "konstantin.tumashevich@ultratrace.eu" },
+    { name = "Konstantin Tumashevich" },
     ]
 maintainers = [
     { name = "Oskari Kausiala", email = "oskari.kausiala@ultratrace.eu" },
-    { name = "Konstantin Tumashevich", email = "konstantin.tumashevich@ultratrace.eu" },
+    { name = "Konstantin Tumashevich" },
     ]
 license.text = "Apache-2.0"
 requires-python = ">=3.12"
