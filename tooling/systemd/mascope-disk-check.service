@@ -1,6 +1,6 @@
 [Unit]
 Description=Mascope disk-space monitor
-Documentation=https://github.com/karsa-oy/mascope
+Documentation=https://github.com/ultra-trace-systems/mascope
 # Only meaningful once the machine (and its filesystems) are up.
 After=local-fs.target
 

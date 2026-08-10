@@ -36,10 +36,10 @@ reports).
 1. **Install prerequisites** on the host: Docker + Docker Compose, `git`, and
    [uv](https://docs.astral.sh/uv/).
 2. **Get Mascope and pin the release.** Pick the latest version from
-   [Releases](https://github.com/karsa-oy/mascope/releases):
+   [Releases](https://github.com/ultra-trace-systems/mascope/releases):
 
    ```sh
-   git clone https://github.com/karsa-oy/mascope.git
+   git clone https://github.com/ultra-trace-systems/mascope.git
    cd mascope
    git fetch --tags
    git checkout v1.0.0           # the release you want to run

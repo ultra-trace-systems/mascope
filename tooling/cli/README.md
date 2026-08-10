@@ -60,4 +60,4 @@ commands with `MASCOPE_VERSION`; without a pin the stack follows the
 The Mascope source checkout exposes additional developer commands (`dev`,
 `test`, `agent`, `backend`) that operate on the monorepo; they are not part
 of the standalone install. See the
-[repository](https://github.com/karsa-oy/mascope) for the developer guide.
+[repository](https://github.com/ultra-trace-systems/mascope) for the developer guide.

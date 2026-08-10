@@ -1,6 +1,6 @@
 [Unit]
 Description=Mascope unattended update check
-Documentation=https://github.com/karsa-oy/mascope
+Documentation=https://github.com/ultra-trace-systems/mascope
 # An update only makes sense once Docker and the stack are up.
 After=docker.service mascope.service
 Requires=docker.service

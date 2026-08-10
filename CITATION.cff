@@ -34,8 +34,8 @@ authors:
     family-names: Upornikov
     email: alexei.upornikov@karsa.fi
     affiliation: Karsa Oy
-repository-code: "https://github.com/karsa-oy/mascope"
-url: "https://github.com/karsa-oy/mascope"
+repository-code: "https://github.com/ultra-trace-systems/mascope"
+url: "https://github.com/ultra-trace-systems/mascope"
 license: Apache-2.0
 version: 1.0.0
 date-released: "2026-06-29"

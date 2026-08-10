@@ -16,7 +16,7 @@ uploads them to your Mascope server automatically.
    click **Download File Agent
    installer** under **API Access Tokens** (or download
    `Mascope-File-Agent-Setup.exe` from the latest [Mascope release on
-   GitHub](https://github.com/karsa-oy/mascope/releases/latest)).
+   GitHub](https://github.com/ultra-trace-systems/mascope/releases/latest)).
 2. Run the installer. It needs no administrator rights and offers a
    **Start the File Agent automatically when you sign in to Windows**
    checkbox — leave it enabled so the agent survives reboots.

@@ -17,7 +17,7 @@ Before your first import, make sure the following are in place.
 
 **Your access.** An **editor** role (or higher) in the instrument's workspace.
 Guests can view and export but cannot upload or process. See
-[Authorization](https://github.com/karsa-oy/mascope/blob/master/docs/authorization.md).
+[Authorization](https://github.com/ultra-trace-systems/mascope/blob/master/docs/authorization.md).
 Uploading a file for a brand-new instrument creates that instrument's workspace
 and makes you its owner.
 

@@ -46,12 +46,12 @@ _MODE = "prod"
 # Published production image repositories, matching the `image:` fields in
 # docker-compose.yaml. The target release tag is appended to form the full
 # reference the update preflight pulls and inspects.
-_BACKEND_IMAGE = "ghcr.io/karsa-oy/mascope/backend"
-_FRONTEND_IMAGE = "ghcr.io/karsa-oy/mascope/frontend"
+_BACKEND_IMAGE = "ghcr.io/ultra-trace-systems/mascope/backend"
+_FRONTEND_IMAGE = "ghcr.io/ultra-trace-systems/mascope/frontend"
 
 # Repository whose releases the unattended updater tracks. Overridable via
 # MASCOPE_UPDATE_REPO for forks/mirrors.
-_DEFAULT_UPDATE_REPO = "karsa-oy/mascope"
+_DEFAULT_UPDATE_REPO = "ultra-trace-systems/mascope"
 
 prod_app = typer.Typer()
 prod_app.add_typer(prod_db_app, name="db")

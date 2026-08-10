@@ -1,6 +1,6 @@
 # Mass Calibration
 
-Mass-to-charge ratio ($m/z$) [calibration](https://github.com/karsa-oy/mascope/blob/master/server/backend/src/mascope_backend/api/controllers/calibration/lib/calibration_mz_fit.py) is a critical procedure required to ensure high mass accuracy by aligning known peaks (such as reagent ions) m/zs with their theoretical m/zs.
+Mass-to-charge ratio ($m/z$) [calibration](https://github.com/ultra-trace-systems/mascope/blob/master/server/backend/src/mascope_backend/api/controllers/calibration/lib/calibration_mz_fit.py) is a critical procedure required to ensure high mass accuracy by aligning known peaks (such as reagent ions) m/zs with their theoretical m/zs.
 
 ## Candidate Selection and Matching
 
@@ -70,7 +70,7 @@ Once a clean set of paired calibration points is established, the pipeline branc
 
 ### Time-of-Flight (TOF) Multi-Point Calibration
 
-The [TOF architecture](https://github.com/karsa-oy/mascope/blob/master/libraries/tofwerk/src/mascope_tofwerk/calibration.py) maps ion arrival times to mass coordinates using a multi-point regression that requires a minimum of 3 calibration points. 
+The [TOF architecture](https://github.com/ultra-trace-systems/mascope/blob/master/libraries/tofwerk/src/mascope_tofwerk/calibration.py) maps ion arrival times to mass coordinates using a multi-point regression that requires a minimum of 3 calibration points. 
 An initial guess for the relationship is established by computing a linear least-squares regression between the square root of the exact target masses and their corresponding observed time-of-flight values.
 A non-linear least-squares minimization is executed using the Trust Region Reflective algorithm.
 The optimization minimizes a residual function defined as:

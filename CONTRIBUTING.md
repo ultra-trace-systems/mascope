@@ -9,13 +9,13 @@ Mascope is a uv-managed Python monorepo (Python 3.12) with a VueJS frontend (Nod
 **Windows** (requires PowerShell 7):
 
 ```sh
-git clone https://github.com/karsa-oy/mascope.git && cd mascope && .\tooling\windows.ps1 install
+git clone https://github.com/ultra-trace-systems/mascope.git && cd mascope && .\tooling\windows.ps1 install
 ```
 
 **Ubuntu** (22.04 LTS or later):
 
 ```sh
-git clone https://github.com/karsa-oy/mascope.git && cd mascope && ./tooling/ubuntu.sh install
+git clone https://github.com/ultra-trace-systems/mascope.git && cd mascope && ./tooling/ubuntu.sh install
 ```
 
 Then launch the dev environment:

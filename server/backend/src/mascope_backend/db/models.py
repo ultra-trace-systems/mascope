@@ -836,7 +836,7 @@ class TargetIsotope(Base):
     )
     target_isotope_formula: Mapped[str] = mapped_column(
         String(4096)
-    )  # lower length limit #1360 https://github.com/karsa-oy/mascope/issues/1360
+    )  # lower length limit #1360 https://github.com/ultra-trace-systems/mascope/issues/1360
     mz: Mapped[float] = mapped_column(Float)
     relative_abundance: Mapped[float] = mapped_column(Float)
     resolution: Mapped[str] = mapped_column(String(8))

@@ -148,7 +148,7 @@ def test_wait_healthy_times_out(monkeypatch):
 
 def test_latest_release_tag(monkeypatch):
     monkeypatch.setattr(au, "_http_get_json", lambda url, **k: {"tag_name": "v1.4.0"})
-    assert au.latest_release_tag("karsa-oy/mascope") == "v1.4.0"
+    assert au.latest_release_tag("ultra-trace-systems/mascope") == "v1.4.0"
 
 
 def test_latest_release_tag_failure(monkeypatch):
@@ -156,7 +156,7 @@ def test_latest_release_tag_failure(monkeypatch):
         raise urllib.error.URLError("no network")
 
     monkeypatch.setattr(au, "_http_get_json", _boom)
-    assert au.latest_release_tag("karsa-oy/mascope") is None
+    assert au.latest_release_tag("ultra-trace-systems/mascope") is None
 
 
 def test_download_manifest(monkeypatch, tmp_path):
@@ -177,14 +177,16 @@ def test_download_manifest(monkeypatch, tmp_path):
         dest.write_text("{}", encoding="utf-8")
 
     monkeypatch.setattr(au, "_http_download", _fake_download)
-    path = au.download_manifest("karsa-oy/mascope", "v1.4.0", tmp_path)
+    path = au.download_manifest("ultra-trace-systems/mascope", "v1.4.0", tmp_path)
     assert path == tmp_path / au.MANIFEST_FILENAME
 
 
 def test_download_manifest_no_asset(monkeypatch, tmp_path):
     # A release predating the manifest has no matching asset -> None (fallback).
     monkeypatch.setattr(au, "_http_get_json", lambda url, **k: {"assets": []})
-    assert au.download_manifest("karsa-oy/mascope", "v1.2.0", tmp_path) is None
+    assert (
+        au.download_manifest("ultra-trace-systems/mascope", "v1.2.0", tmp_path) is None
+    )
 
 
 # --- _auto orchestration ---

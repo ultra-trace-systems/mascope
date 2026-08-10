@@ -313,7 +313,7 @@ Every `.raw` carries its instrument method as an embedded blob, gated on a
 `method_file_present` flag.
 
 **Dependency ownership.** Upstream is `Sigilweaver/OpenTFRaw`, a **third-party**
-project. `karsa-oy/OpenTFRaw` is our fork, published to PyPI under the separate
+project. `ultra-trace-systems/OpenTFRaw` is our fork, published to PyPI under the separate
 name `mascope-opentfraw`. Mascope currently depends on **upstream** `opentfraw`
 from public PyPI (verified: the installed dist-info names Nathan Riley and
 `Sigilweaver/OpenTFRaw`; there is no `direct_url.json`), having deliberately
