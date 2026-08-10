@@ -29,7 +29,8 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
 
 ### Changed
 
-- Rebranded from Karsa to Ultra Trace: Karsa Oy is now Ultra Trace Systems Oy.
+- Rebranded from Karsa to Ultra Trace: Mascope is now maintained and developed
+  by Ultra Trace Systems Oy.
   The app carries the new Ultra Trace logo, favicon, and color theme (Safety
   Orange primary on charcoal / off-white surfaces, per the UTS brand
   guidelines). GitHub URLs moved to the `ultra-trace-systems` organization,
