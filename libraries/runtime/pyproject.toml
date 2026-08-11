@@ -1,6 +1,6 @@
 [project]
 name = "mascope_runtime"
-version = "2026.7.28"
+version = "2026.8.11"
 description = "Ultra Trace Mascope's shared runtime util library for config, state and logging"
 classifiers = [
     "Topic :: Scientific/Engineering :: Atmospheric Science",
