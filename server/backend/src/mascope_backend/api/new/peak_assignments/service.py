@@ -883,25 +883,29 @@ async def _run_sample_assignment(
 
     match_params = await default_match_params(sample_item_id)
     run = await _create_run(sample_item_id, config)
-    runtime.logger.info(
-        f"Starting peak assignment run '{run.peak_assignment_run_id}' "
-        f"for sample '{sample.sample_item_name}'"
-    )
 
-    notification = UserNotification(
-        process_id=process_id,
-        parent_id=parent_id,
-        type="assign_sample_peaks",
-        status="pending",
-        message=f"Assigning peaks for sample '{sample.sample_item_name}'.",
-        data={
-            "sample_item_id": sample_item_id,
-            "peak_assignment_run_id": run.peak_assignment_run_id,
-            "_user_id": user_id,
-        },
-    )
-
+    # Everything after run creation runs under the failure finalizer: an
+    # exception anywhere past this point must mark the run 'failed', or it
+    # stays 'running' until the startup reaper.
     try:
+        runtime.logger.info(
+            f"Starting peak assignment run '{run.peak_assignment_run_id}' "
+            f"for sample '{sample.sample_item_name}'"
+        )
+
+        notification = UserNotification(
+            process_id=process_id,
+            parent_id=parent_id,
+            type="assign_sample_peaks",
+            status="pending",
+            message=f"Assigning peaks for sample '{sample.sample_item_name}'.",
+            data={
+                "sample_item_id": sample_item_id,
+                "peak_assignment_run_id": run.peak_assignment_run_id,
+                "_user_id": user_id,
+            },
+        )
+
         # -- Load every observed peak of the sample
         peaks_df = _load_sample_peaks(sample)
         await send_progress_user_notification(notification, 0.1)
