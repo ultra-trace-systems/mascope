@@ -43,3 +43,53 @@ identifiers:
   - type: doi
     value: "10.5281/zenodo.21037634"
     description: Concept DOI - always resolves to the latest Mascope release.
+# The paper to cite in preference to the software itself. GitHub's "Cite this
+# repository" widget surfaces this, and reference managers prefer it over the
+# top-level software metadata.
+preferred-citation:
+  type: article
+  title: >-
+    Networked Open-Source Infrastructure for Scalable Analysis of Chemical
+    Ionization Mass Spectrometry Data
+  authors:
+    - given-names: Aleksei
+      family-names: Shcherbinin
+    - given-names: Jiali
+      family-names: Shen
+    - given-names: Oskari
+      family-names: Kausiala
+      orcid: "https://orcid.org/0000-0001-6638-7066"
+    - given-names: Konstantin
+      family-names: Tumashevich
+      orcid: "https://orcid.org/0000-0002-2014-2183"
+    - given-names: Philip
+      family-names: Chernonog
+    - given-names: Sören
+      family-names: Zorn
+    - given-names: Anke
+      family-names: Nölscher
+    - given-names: Tuukka
+      family-names: Petäjä
+    - given-names: Markku
+      family-names: Kulmala
+    - given-names: Juha
+      family-names: Kangasluoma
+    - given-names: Roseline C.
+      family-names: Thakur
+    - given-names: Nina
+      family-names: Sarnela
+    - given-names: Mikael
+      family-names: Ehn
+    - given-names: Mikko
+      family-names: Sipilä
+    - given-names: Henning
+      family-names: Finkenzeller
+    - given-names: Matti
+      family-names: Rissanen
+    - given-names: Xu-Cheng
+      family-names: He
+  journal: ChemRxiv
+  year: 2026
+  month: 7
+  doi: "10.26434/chemrxiv.15005713/v1"
+  url: "https://doi.org/10.26434/chemrxiv.15005713/v1"
