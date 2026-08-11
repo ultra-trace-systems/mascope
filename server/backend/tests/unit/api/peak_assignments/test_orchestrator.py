@@ -22,6 +22,7 @@ these call it with ``user_id=None`` so notification delivery stays on its quiet
 path rather than reaching Socket.IO.
 """
 
+from contextlib import asynccontextmanager
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pandas as pd
@@ -30,6 +31,26 @@ from test_engine import _isotope_row  # same directory; pytest puts it on sys.pa
 
 
 _MOD = "mascope_backend.api.new.peak_assignments.service"
+
+
+def _claim_stub(acquired=True):
+    """A stand-in for the cross-process assignment claim (no DB)."""
+
+    @asynccontextmanager
+    async def _claim(kind, resource_id):
+        yield acquired
+
+    return _claim
+
+
+def _scalar_session(value):
+    """An async_session() context whose scalar() resolves to ``value``."""
+    session = AsyncMock()
+    session.scalar = AsyncMock(return_value=value)
+    ctx = AsyncMock()
+    ctx.__aenter__ = AsyncMock(return_value=session)
+    ctx.__aexit__ = AsyncMock(return_value=False)
+    return ctx
 
 
 def _peaks_df(peak_specs: list[tuple[str, float, float]]) -> pd.DataFrame:
@@ -149,6 +170,7 @@ def _patches(
                 {},
             ),
         ),
+        "claim": patch(f"{_MOD}.assignment_claim", _claim_stub()),
         "session": patch(f"{_MOD}.async_session", side_effect=recorder.session_factory),
         "progress": patch(
             f"{_MOD}.send_progress_user_notification", new_callable=AsyncMock
@@ -604,6 +626,8 @@ class TestSampleAdmissionControl:
         with (
             patch(f"{_MOD}.fetch_sample", AsyncMock(return_value=self._sample())),
             patch(f"{_MOD}._run_sample_assignment", side_effect=_slow_run),
+            patch(f"{_MOD}.assignment_claim", _claim_stub()),
+            patch(f"{_MOD}.async_session", side_effect=lambda: _scalar_session(None)),
         ):
             first = asyncio.create_task(
                 assign_sample_peaks(
@@ -637,6 +661,7 @@ class TestSampleAdmissionControl:
         with (
             patch(f"{_MOD}.fetch_sample", AsyncMock(return_value=self._sample())),
             patch(f"{_MOD}._run_sample_assignment", side_effect=RuntimeError("boom")),
+            patch(f"{_MOD}.assignment_claim", _claim_stub()),
         ):
             # Whether the decorator re-raises or reports the failure is its own
             # concern; what matters here is that the claim does not outlive the run.
@@ -671,6 +696,7 @@ class TestSampleAdmissionControl:
         with (
             patch(f"{_MOD}.fetch_sample", AsyncMock(return_value=self._sample())),
             patch(f"{_MOD}._run_sample_assignment", side_effect=_slow_run),
+            patch(f"{_MOD}.assignment_claim", _claim_stub()),
         ):
             first = asyncio.create_task(
                 assign_sample_peaks(
@@ -691,3 +717,38 @@ class TestSampleAdmissionControl:
             await first
 
         assert other["status"] != "skipped"
+
+    @pytest.mark.asyncio
+    async def test_claim_held_in_another_worker_is_refused_with_the_run(self):
+        """A duplicate in a different process is refused and told which run.
+
+        The in-flight set only sees this worker; the cross-process claim
+        extends the refusal across workers, and the refusal reports the
+        in-flight run it can see so the client can follow the run actually
+        producing the ledger.
+        """
+        from mascope_backend.api.new.peak_assignments.service import (
+            assign_sample_peaks,
+        )
+
+        engine = AsyncMock()
+        with (
+            patch(f"{_MOD}.fetch_sample", AsyncMock(return_value=self._sample())),
+            patch(f"{_MOD}._run_sample_assignment", engine),
+            patch(f"{_MOD}.assignment_claim", _claim_stub(acquired=False)),
+            patch(
+                f"{_MOD}.async_session",
+                side_effect=lambda: _scalar_session("run-elsewhere"),
+            ),
+        ):
+            result = await assign_sample_peaks(
+                sample_item_id="si-1",
+                independent_transaction=True,
+                user_id=None,
+                process_id="proc-1",
+            )
+
+        engine.assert_not_called()
+        assert result["status"] == "skipped"
+        assert "already running" in result["message"]
+        assert result["data"]["peak_assignment_run_id"] == "run-elsewhere"

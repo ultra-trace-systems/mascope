@@ -47,6 +47,7 @@ from mascope_backend.api.new.match.params.lib import (
     apply_match_params,
     isotope_abundance_threshold_expr,
 )
+from mascope_backend.api.new.peak_assignments.admission import assignment_claim
 from mascope_backend.api.new.peak_assignments.calibration_store import (
     load_calibration,
     save_calibration,
@@ -445,6 +446,7 @@ async def recalibrate_instrument(
 # -------------------------------------------------------------------
 # Assignment engine orchestration
 # -------------------------------------------------------------------
+
 
 def ineligible_reason(sample: Sample) -> str | None:
     """Why this sample cannot usefully be assigned, or None if it can.
@@ -872,9 +874,10 @@ async def assign_sample_peaks(
     """
     Run the two-stage peak assignment engine over a sample.
 
-    Refuses immediately when this worker is already assigning the sample, rather
-    than queueing a second full run behind the first - what a double-clicked
-    "Assign peaks" deserves. See :func:`_run_sample_assignment` for the engine.
+    Refuses immediately when the sample is already being assigned - by this
+    worker (in-flight set, no round trip) or by any other process sharing the
+    database (advisory-lock claim) - rather than queueing a second full run
+    behind the first. See :func:`_run_sample_assignment` for the engine.
 
     :param sample_item_id: ID of the sample item to assign
     :param config: Optional run configuration; defaults are used when omitted
@@ -887,24 +890,54 @@ async def assign_sample_peaks(
     # Claimed before the first await: checking and adding either side of one would
     # let two concurrent requests both pass the check.
     if sample_item_id in _sample_assignments_in_flight:
-        sample = await fetch_sample(sample_item_id)
-        message = (
-            f"Peak assignment is already running for sample "
-            f"'{sample.sample_item_name}'."
-        )
-        runtime.logger.info(message)
-        return {"status": "skipped", "message": message}
+        return await _already_running_result(sample_item_id)
     _sample_assignments_in_flight.add(sample_item_id)
     try:
-        return await _run_sample_assignment(
-            sample_item_id=sample_item_id,
-            config=config,
-            user_id=user_id,
-            process_id=process_id,
-            parent_id=parent_id,
-        )
+        async with assignment_claim("sample", sample_item_id) as acquired:
+            if not acquired:
+                # Another worker holds the claim - the same refusal, discovered
+                # one process further out.
+                return await _already_running_result(sample_item_id)
+            return await _run_sample_assignment(
+                sample_item_id=sample_item_id,
+                config=config,
+                user_id=user_id,
+                process_id=process_id,
+                parent_id=parent_id,
+            )
     finally:
         _sample_assignments_in_flight.discard(sample_item_id)
+
+
+async def _already_running_result(sample_item_id: str) -> dict:
+    """Refusal payload for a sample whose assignment is already in flight.
+
+    Reports the in-flight run when one is visible, so a client can follow the
+    run that is actually producing the ledger instead of just being declined.
+    (A cross-worker refusal can race the other worker's run creation, so the
+    id is best-effort.)
+    """
+    sample = await fetch_sample(sample_item_id)
+    async with async_session() as session:
+        in_flight_run_id = await session.scalar(
+            select(PeakAssignmentRun.peak_assignment_run_id)
+            .where(
+                PeakAssignmentRun.sample_item_id == sample_item_id,
+                PeakAssignmentRun.status.in_(("pending", "running")),
+            )
+            .order_by(
+                PeakAssignmentRun.peak_assignment_run_utc_created.desc().nullslast()
+            )
+            .limit(1)
+        )
+    message = (
+        f"Peak assignment is already running for sample '{sample.sample_item_name}'."
+    )
+    runtime.logger.info(message)
+    result: dict = {"status": "skipped", "message": message}
+    if in_flight_run_id is not None:
+        result["data"] = {"peak_assignment_run_id": in_flight_run_id}
+    return result
 
 
 async def _run_sample_assignment(

@@ -23,6 +23,9 @@ bound it:
 - The batch holds a slot in a semaphore for its whole duration and registers
   itself in an in-flight set, so a second assignment of the same batch is
   refused outright rather than silently queued behind a multi-minute run.
+  The set bounds one worker; a cross-process advisory-lock claim
+  (``admission.assignment_claim``) extends the same refusal across every
+  worker sharing the database.
 """
 
 import asyncio
@@ -33,6 +36,7 @@ from mascope_backend.api.controllers.sample.lib.sample_batches_fetch import (
     fetch_sample_batch,
 )
 from mascope_backend.api.lib.api_features import api_controller_background_task
+from mascope_backend.api.new.peak_assignments.admission import assignment_claim
 from mascope_backend.api.new.peak_assignments.config import PeakAssignmentConfig
 from mascope_backend.api.new.peak_assignments.service import (
     assign_sample_peaks,
@@ -101,7 +105,9 @@ async def assign_sample_batch_peaks(
     m/z calibration is unverified - are filtered out by ``ineligible_reason``
     before the engine is called, and counted as skipped.
 
-    Refuses immediately if this worker is already assigning the same batch.
+    Refuses immediately if the batch is already being assigned - by this
+    worker (in-flight set) or by any other process sharing the database
+    (advisory-lock claim).
 
     :param sample_batch_id: ID of the sample batch to assign
     :param config: Optional run configuration applied to every sample. Resolved
@@ -122,13 +128,18 @@ async def assign_sample_batch_peaks(
         return await _already_running_result(sample_batch_id)
     _batch_assignments_in_flight.add(sample_batch_id)
     try:
-        return await _run_batch_assignment(
-            sample_batch_id=sample_batch_id,
-            config=config,
-            user_id=user_id,
-            process_id=process_id,
-            parent_id=parent_id,
-        )
+        async with assignment_claim("batch", sample_batch_id) as acquired:
+            if not acquired:
+                # Another worker holds the claim - the same refusal, discovered
+                # one process further out.
+                return await _already_running_result(sample_batch_id)
+            return await _run_batch_assignment(
+                sample_batch_id=sample_batch_id,
+                config=config,
+                user_id=user_id,
+                process_id=process_id,
+                parent_id=parent_id,
+            )
     finally:
         _batch_assignments_in_flight.discard(sample_batch_id)
 
