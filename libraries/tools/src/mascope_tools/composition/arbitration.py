@@ -25,6 +25,7 @@ tie report are here.
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 from typing import Any, Iterable, Sequence
 
@@ -75,7 +76,7 @@ def _as_formula_fit(candidate: Any) -> tuple[str, float]:
         fit = float(fit)
     except (TypeError, ValueError):
         fit = 0.0
-    if not (fit == fit) or fit < 0.0:  # NaN or negative -> no evidence
+    if math.isnan(fit) or fit < 0.0:  # NaN or negative -> no evidence
         fit = 0.0
     return str(formula), fit
 
