@@ -77,9 +77,20 @@ Questions, help, and discussion happen on Discord - come say hello:
 
 ## Citation
 
-If you use **Mascope** in your research, please cite the software using the
-metadata in [`CITATION.cff`](CITATION.cff) (GitHub's "Cite this repository"
-button) or the archived Zenodo release:
+If you use **Mascope** in your research, please cite the accompanying paper:
+
+> Shcherbinin, A., Shen, J., Kausiala, O., Tumashevich, K., Chernonog, P., Zorn,
+> S., Nölscher, A., Petäjä, T., Kulmala, M., Kangasluoma, J., Thakur, R. C.,
+> Sarnela, N., Ehn, M., Sipilä, M., Finkenzeller, H., Rissanen, M., & He, X.-C.
+> (2026). Networked Open-Source Infrastructure for Scalable Analysis of Chemical
+> Ionization Mass Spectrometry Data. *ChemRxiv*.
+> https://doi.org/10.26434/chemrxiv.15005713/v1
+
+[![ChemRxiv](https://img.shields.io/badge/ChemRxiv-10.26434%2Fchemrxiv.15005713-b31b1b)](https://doi.org/10.26434/chemrxiv.15005713/v1)
+
+You can also cite the software directly using the metadata in
+[`CITATION.cff`](CITATION.cff) (GitHub's "Cite this repository" button) or the
+archived Zenodo release:
 
 [![DOI](https://img.shields.io/badge/DOI-10.5281%2Fzenodo.21037634-blue)](https://doi.org/10.5281/zenodo.21037634)
 
