@@ -16,11 +16,11 @@ as an open decision. Callers can widen or disable it.
 
 from dataclasses import dataclass, field
 
-from sqlalchemy import or_
+from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from mascope_reference.query import _STABLE_ORDER, active_join
-from mascope_reference.schema import reference_compound
+from mascope_reference.schema import reference_compound, reference_source
 from mascope_tools.composition.utils import parse_composition
 
 
@@ -96,6 +96,31 @@ def _within_bound(
     if max_carbon is not None and composition.get("C", 0) > max_carbon:
         return False
     return True
+
+
+async def known_state_fingerprint(session: AsyncSession) -> tuple:
+    """Cheap identity of the active reference state, for caching derived data.
+
+    One row per active source suffices: ingest writes a new
+    ``reference_source`` row per (source, version) and flips ``is_active``,
+    so any change to what :func:`iter_known_compositions` would return also
+    changes this tuple. An empty tuple means no active sources - the known
+    set is empty without scanning ``reference_compound``.
+
+    :param session: Active async session.
+    :return: Sorted tuple of (source id, ingestion timestamp) pairs.
+    """
+    rows = (
+        await session.execute(
+            select(
+                reference_source.c.reference_source_id,
+                reference_source.c.ingested_at,
+            )
+            .where(reference_source.c.is_active.is_(True))
+            .order_by(reference_source.c.reference_source_id)
+        )
+    ).all()
+    return tuple((row.reference_source_id, row.ingested_at) for row in rows)
 
 
 async def iter_known_compositions(

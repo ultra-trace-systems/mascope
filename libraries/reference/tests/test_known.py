@@ -222,3 +222,42 @@ async def test_identity_cap(sync_engine, db_path):
     (comp,) = await _known(db_path, max_identities=3)
     assert comp.formula == "C10H16O3"
     assert len(comp.identities) == 3
+
+
+@pytest.mark.asyncio
+async def test_known_state_fingerprint_tracks_active_sources(sync_engine, db_path):
+    from sqlalchemy import update
+    from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+
+    from mascope_reference.known import known_state_fingerprint
+
+    _seed(
+        sync_engine,
+        [
+            ({"name": "src-a"}, [{"formula": "C10H16O3", "mass": 184.11}]),
+            (
+                {"name": "src-b", "is_active": False},
+                [{"formula": "CH4", "mass": 16.04}],
+            ),
+        ],
+    )
+    engine = create_async_engine(f"sqlite+aiosqlite:///{db_path}")
+    try:
+        async with async_sessionmaker(engine)() as s:
+            before = await known_state_fingerprint(s)
+            # Only the active source contributes.
+            assert len(before) == 1
+            # Activating the second source changes the fingerprint.
+            await s.execute(
+                update(reference_source)
+                .where(reference_source.c.name == "src-b")
+                .values(is_active=True)
+            )
+            after = await known_state_fingerprint(s)
+            assert len(after) == 2
+            assert after != before
+            # Deactivating everything empties it - the no-mirror fast path.
+            await s.execute(update(reference_source).values(is_active=False))
+            assert await known_state_fingerprint(s) == ()
+    finally:
+        await engine.dispose()
