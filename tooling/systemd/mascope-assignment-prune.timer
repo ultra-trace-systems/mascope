@@ -1,0 +1,16 @@
+[Unit]
+Description=Prune superseded Mascope peak-assignment runs nightly
+
+[Timer]
+# Nightly, an hour after the update window opens so the two never contend.
+# Daily keeps each prune's delete batch small (bounded locks and WAL) instead
+# of letting a backlog build up for a weekly burst; when there is nothing to
+# prune the run is a single cheap query.
+OnCalendar=*-*-* 03:30:00
+# Catch up one run if the machine was off at the scheduled time.
+Persistent=true
+# Spread load across a fleet.
+RandomizedDelaySec=15min
+
+[Install]
+WantedBy=timers.target

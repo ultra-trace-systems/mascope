@@ -313,7 +313,9 @@ never superseded automatically either, so re-assigning a sample n times leaves
 n full ledgers. `db/admin/peak_assignments/prune_runs.py` (exposed as the
 `prune_peak_assignment_runs` maintenance script) reclaims them: newest few
 completed runs per sample kept, the rest and stale failures dropped, cascading
-to their rows. **Nothing schedules it** - see `docs/maintaining.md`.
+to their rows. On a provisioned deployment `mascope-assignment-prune.timer`
+runs it nightly (enabled by default, policy in `/etc/mascope/prune.env`);
+elsewhere it is manual - see `docs/maintaining.md`.
 
 **Batch cost is per-sample cost times N**, which makes the batch entry point the
 one place a default matters. `batch.default_batch_config()` is therefore Stage A

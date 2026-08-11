@@ -1,0 +1,25 @@
+[Unit]
+Description=Mascope peak-assignment run retention
+Documentation=https://github.com/ultra-trace-systems/mascope
+# The prune runs inside the backend container, so the stack must be up.
+After=docker.service mascope.service
+Requires=docker.service
+
+[Service]
+Type=oneshot
+# The deploy user and mascope binary path below are filled in by
+# tooling/ubuntu.sh, matching mascope.service. MASCOPE_PATH comes from
+# /etc/environment; retention overrides (MASCOPE_PRUNE_KEEP_PER_SAMPLE etc.)
+# live in the optional /etc/mascope/prune.env - the leading '-' means the unit
+# still starts when that file is absent, running on the documented defaults.
+User=@@USER@@
+EnvironmentFile=/etc/environment
+EnvironmentFile=-/etc/mascope/prune.env
+# --skip-backup on purpose: the prune deletes only superseded derived data
+# (assignment ledgers are recomputable by re-running assignment), and a full
+# pre-script pg_dump per timer firing would itself accumulate without bound -
+# the exact failure mode this timer exists to prevent. It runs whether or not
+# the peak_assignment feature flag is on: retention policy does not depend on
+# the flag (ledgers written before opting out still age out), and with an
+# empty table the run is a single cheap query.
+ExecStart=@@MASCOPE_BIN@@ prod db script run prune_peak_assignment_runs --yes --skip-backup
