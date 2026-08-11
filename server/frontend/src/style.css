@@ -181,8 +181,10 @@
   }
 
   .browser .calibration-ok {
-    color: var(--p-text-muted-color);
-    opacity: 0.6;
+    /* Green, not grey: grey reads as "no value", while this is a positive
+       "calibrated" signal. Slightly dimmed so a full column stays calm. */
+    color: var(--p-green-600, #1f9d63);
+    opacity: 0.75;
   }
 
   .browser .spinner {
