@@ -4,6 +4,21 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
 
 ## [Unreleased]
 
+## [1.6.1] - 2026.08.11
+
+### Fixed
+
+- Match result tables no longer grow without bound under match-refresh churn.
+  Match refresh removes and re-persists whole per-sample match sets, so
+  `match_isotope` / `match_ion` / `match_compound` see delete+insert churn far
+  above their live size; with PostgreSQL's default autovacuum settings the
+  freed space was never reused between refresh cycles and the tables bloated
+  (observed ~20x, hundreds of GB of dead space in production). A migration now
+  sets per-table autovacuum thresholds (scale factor 0.01, base threshold
+  100k) so vacuum keeps up with the churn and steady-state size stays a small
+  multiple of the live data. This bounds future growth only - space already
+  leaked must be reclaimed once per server with `VACUUM FULL`.
+
 ## [1.6.0] - 2026.08.11
 
 ### Added
