@@ -29,7 +29,7 @@ class QueryParamsModel(BaseModel):
 
         TODO: This validator is a temporary workaround for symbol-only fields.
         Fix client-side URL encoding instead of server-side workarounds.
-        See GitHub issue: [#1076](https://github.com/karsa-oy/mascope/issues/1076)
+        See GitHub issue: [#1076](https://github.com/ultra-trace-systems/mascope/issues/1076)
         """
         if isinstance(value, str) and value:
             return value.replace(" ", "+")

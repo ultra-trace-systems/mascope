@@ -1,0 +1,25 @@
+{
+  "source": "corroboration_benchmark.py on mascope-demo-dataset-v1 (152 files, 13270 detections)",
+  "method": "offset-decoy: peak presence at a compound's real adduct m/z vs nulls; anchor-swap is the fair null",
+  "adduct_panel": "the 5 mechanisms actually assigned in the demo (verified vs ionization_mechanism table): pos +H+/+NH4+/+(CH4N2O)H+, neg -H+/+Br-. Earlier runs wrongly included +HBrBr- (not a real mechanism) and +CO3- (defined but never assigned).",
+  "null_comparison": {
+    "real_offset_present": 0.4573,
+    "random_offset_present": 0.0080,
+    "anchor_swap_present": 0.2513,
+    "lr_vs_random": 104.3,
+    "lr_vs_swap": 2.5
+  },
+  "by_polarity_lr_vs_swap": { "neg": 9.8, "pos": 2.1 },
+  "per_adduct_lr_vs_swap": {
+    "+Br-":        { "p_real": 0.535, "p_swap": 0.105, "lr": 9.80, "log_odds": 2.28, "n": 3044 },
+    "+NH4+":       { "p_real": 0.513, "p_swap": 0.314, "lr": 2.30, "log_odds": 0.83, "n": 10226 },
+    "+(CH4N2O)H+": { "p_real": 0.379, "p_swap": 0.232, "lr": 2.01, "log_odds": 0.70, "n": 10226 }
+  },
+  "recommendation": "fold as additive per-adduct log-odds on logit(p_correct), capped (<=+3) and shrunk; weights are instrument/library-specific -> calibration store (D6); monoisotopic-only => conservative lower bound",
+  "caveats": [
+    "weights encode Br/Ur reagent chemistry; do not hardcode universally",
+    "'present' is monoisotopic-only, so LRs are a conservative lower bound vs a fit-gated corroboration",
+    "anchor-swap pool includes real primaries -> also conservative",
+    "+Br2-/+Br3-/+NO3-/+CO3- are defined in the library but not assigned in this dataset; if the target collection lacks ion rows for them they'd be untapped corroboration channels (unverified)"
+  ]
+}

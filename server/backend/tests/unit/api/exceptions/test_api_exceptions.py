@@ -142,6 +142,43 @@ class TestProcessExceptionDoesNotLeakInternals:
         assert api_exc.tech_message["detail"] == "collection is locked"
 
 
+class TestApiExceptionStr:
+    """
+    ``str(ApiException)`` must carry the user message: error monitoring
+    groups issues by it, and callers that log a bare ``f"{e}"`` would
+    otherwise record nothing about the cause.
+    """
+
+    def test_str_is_the_user_message(self):
+        exc = ApiException("Calibration warning: few peaks", {"data": {}}, 200)
+
+        assert str(exc) == "Calibration warning: few peaks"
+        assert f"gave up: {exc}" == "gave up: Calibration warning: few peaks"
+
+    def test_str_excludes_the_tech_message(self):
+        secret_path = "/app/.runtime/secrets/jwt_secret_key.txt"
+        exc = ApiException("Upload failed", {"path": secret_path}, 500)
+
+        assert str(exc) == "Upload failed"
+        assert secret_path not in str(exc)
+
+    def test_processed_log_line_names_the_cause(self):
+        records = []
+        sink_id = runtime.logger.add(
+            lambda message: records.append(message.record), level="TRACE"
+        )
+        try:
+            _raise_and_process(
+                ApiException("m/z fitting warning: few peaks", {"data": {}}, 200),
+                context="Warning during Calibration Mz Fit",
+            )
+        finally:
+            runtime.logger.remove(sink_id)
+
+        assert len(records) == 1
+        assert "m/z fitting warning: few peaks" in records[0]["message"]
+
+
 class TestProcessExceptionLogLevels:
     """
     Routine client errors must stay below WARNING (records at WARNING and

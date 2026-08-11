@@ -22,9 +22,9 @@
 AppId={{7C1FBA1E-2C39-4A05-A2F8-6E4B77D5A11C}
 AppName=Mascope File Agent
 AppVersion={#AppVersion}
-AppPublisher=Karsa Oy
-AppPublisherURL=https://karsa.fi
-AppSupportURL=https://github.com/karsa-oy/mascope
+AppPublisher=Ultra Trace Systems Oy
+AppPublisherURL=https://ultratrace.eu
+AppSupportURL=https://github.com/ultra-trace-systems/mascope
 DefaultDirName={autopf}\Mascope File Agent
 PrivilegesRequired=lowest
 DisableProgramGroupPage=yes

@@ -13,6 +13,7 @@ wall-clock (from the Xcalibur audit tag), to the second, and independent of this
 machine's timezone -- not the file mtime.
 """
 
+import json
 from datetime import datetime
 from pathlib import Path
 from queue import Queue
@@ -74,3 +75,35 @@ def test_acquisition_timestamp_is_exact_and_tz_independent(props):
 
 def test_canonical_filename_embeds_the_acquisition_time(props):
     assert "2026.01.09-17h43m57s" in props.filename
+
+
+def test_acquisition_params_are_captured_into_props(props):
+    """Acquisition parameters reach .props via the DLL-free path.
+
+    Written verbatim into .props (which is json.dump'd) and deliberately not
+    into the DB record, so this is the only place the capture is pinned.
+    """
+    params = props.acquisition_params
+    assert params["source"] == "opentfraw"
+    assert params["scans_sampled"] > 0
+    # Method-level settings the trailer carries but no typed field exposes.
+    assert params["constant"]["Application Mode:"] == "Small Molecule"
+    assert params["constant"]["FT Resolution:"] == 120000
+    json.dumps(params)  # .props is written with json.dump
+
+
+def test_acquisition_params_never_fail_ingestion(props, monkeypatch):
+    """Metadata capture is best-effort: a reader that cannot supply the trailer
+    must degrade to {} rather than cost us the file."""
+
+    def boom(self, *args, **kwargs):
+        raise RuntimeError("reader exploded")
+
+    monkeypatch.setattr(
+        "mascope_thermo.backend.OpenTFRawBackend.acquisition_parameters", boom
+    )
+    processor = RawProcessor(
+        socket_client=None, file_queue=Queue(), shutdown_event=Event()
+    )
+    processor.file_to_process = str(KORBI_POS)
+    assert processor._get_sample_file_props().acquisition_params == {}

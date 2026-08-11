@@ -1,7 +1,7 @@
 <script setup>
 import { computed } from 'vue'
 
-import { BaseKarsaLogo } from '@/lib/base'
+import { BaseBrandLogo } from '@/lib/base'
 
 import Dashboard from './Dashboard.vue'
 import ProgressSpinner from 'primevue/progressspinner'
@@ -21,7 +21,7 @@ const ready = computed(() => !app.data.workspace.pending || app.data.workspace.l
   <!-- Loading Spinner  -->
   <div id="loading" v-else>
     <div class="col">
-      <BaseKarsaLogo />
+      <BaseBrandLogo />
       <ProgressSpinner />
       <strong>Loading...</strong>
     </div>

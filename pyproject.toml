@@ -1,8 +1,8 @@
 [project]
 name = "mascope"
 version = "0.0.0"
-description = "Karsa Mascope"
-authors = [{ name = "Karsa Oy", email = "support@karsa.fi" }]
+description = "Ultra Trace Mascope"
+authors = [{ name = "Ultra Trace Systems Oy", email = "support@ultratrace.eu" }]
 requires-python = ">=3.12,<3.13"
 license.text = "Apache-2.0"
 dependencies = [
@@ -14,6 +14,7 @@ dependencies = [
     "mascope_runtime",
     "mascope_chem",
     "mascope_match",
+    "mascope_reference",
     "mascope_sdk",
     "mascope_signal",
     "mascope_tofwerk",
@@ -28,7 +29,7 @@ mascope-backend = "mascope_backend.main:exec"
 
 [dependency-groups]
 # Small standalone group so CI can install the linter without the heavy dev deps.
-lint = ["ruff>=0.16.0,<0.17"]
+lint = ["ruff>=0.16.1,<0.17"]
 # Standalone group for building the user documentation site (docs/user ->
 # static HTML). Kept out of `dev` so `mkdocs serve` / `mkdocs build --strict`
 # can be installed on their own (CI, image build) without the heavy dev deps.
@@ -48,6 +49,10 @@ dev = [
     "pytest-alembic>=0.12,<0.13",
     "pytest~=9.1",
     "pytest-asyncio>=1.4.0,<2",
+    # Async SQLite driver for mascope_reference's query-layer tests. They
+    # importorskip on it, so without it here the whole async read path skips
+    # silently in CI rather than failing.
+    "aiosqlite>=0.20,<1",
 ]
 
 [tool.uv.workspace]
@@ -64,6 +69,7 @@ mascope_cli = { workspace = true }
 mascope_chem = { workspace = true }
 mascope_file = { workspace = true }
 mascope_match = { workspace = true }
+mascope_reference = { workspace = true }
 mascope_sdk = { workspace =  true }
 mascope_signal = { workspace = true }
 mascope_tofwerk = { workspace = true }
@@ -72,7 +78,7 @@ mascope_tools = { workspace = true }
 mascope_runtime = { workspace = true }
 
 [build-system]
-requires = ["uv_build>=0.11.32,<0.12"]
+requires = ["uv_build>=0.12.1,<0.13"]
 build-backend = "uv_build"
 
 [tool.ruff]

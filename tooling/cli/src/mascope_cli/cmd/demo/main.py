@@ -264,6 +264,7 @@ def _run(
             raise typer.Exit(1)
 
     _seed_credentials()
+    _seed_reference_demo()
     _print_access()
 
     if no_launch:
@@ -369,6 +370,24 @@ def _seed_credentials() -> None:
     except Exception as e:  # noqa: BLE001 - surface any seed failure to the user
         runtime.logger.error(f"Failed to seed demo credentials: {e}")
         raise typer.Exit(1)
+
+
+def _seed_reference_demo() -> None:
+    """Seed the small illustrative reference-compound set into the demo DB.
+
+    Makes the peak-assignment identity annotation visible out of the box. Best
+    effort: a failure here only warns, since the demo is fully usable without
+    reference data.
+    """
+    import asyncio
+
+    runtime.logger.info("Seeding demo reference compounds...")
+    try:
+        from mascope_backend.db.scripts.seed_reference_demo import seed_reference_demo
+
+        asyncio.run(seed_reference_demo())
+    except Exception as e:  # noqa: BLE001 - reference seed is optional for the demo
+        runtime.logger.warning(f"Skipped demo reference seed: {e}")
 
 
 def _print_access() -> None:

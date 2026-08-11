@@ -50,10 +50,26 @@ A user-defined $\text{ppm}$ search window isolates corresponding experimental fe
 Higher isotopic states are only evaluated if their corresponding monoisotopic base peak is successfully matched.
 If a matching peak's relative intensity deviation exceeds a defined intensity tolerance threshold, that specific isotope is excluded from matching.
 
-A joint mathematical scoring routine assigns a final confidence value bounded between 0.0 and 1.0 to rank the candidates.
-The score represents a weighted combination of three distinct sub-metrics.
-Spectral pattern similarity (20% Weight) measures the spectral alignment by calculating the cosine distance between the theoretical relative abundance vector and the observed intensity vector.
-Intensity Accuracy (20% Weight) penalizes candidates based on the average intensity error calculated across all successfully paired isotopic states.
-Mass accuracy (60% Weight) weights the average mass accuracy across the entire isotopic cluster, calculating the linear penalty relative to the maximum allowable parts-per-million match window.
+A joint mathematical scoring routine assigns each candidate a **fit-quality score** bounded
+between 0.0 and 1.0. This score measures *how well the observed data fit the candidate's
+predicted spectrum* — it is a reproducible measurement, **not** a probability of correctness
+(mass alone cannot prove a composition), and deciding *which* of several well-fitting
+candidates is the real one is a separate identification-confidence layer (a distinct
+workstream that builds on this score).
+
+This pipeline scores with **v1** (`score_pattern`): a fixed
+$0.6\,\text{mass} + 0.2\,\text{cosine} + 0.2\,\text{intensity}$ blend over matched peaks
+only, carried on each candidate as `isotopic_pattern_score`. The same module also ships the
+newer **v2** fit score (`score_pattern_v2`), fully documented in
+[`fit_score.md`](fit_score.md). In brief, each predicted isotopologue contributes a Gaussian
+mass likelihood (with a resolution-aware, per-sample-fitted width, valid for both Orbitrap
+and TOF) times an intensity likelihood whose tolerance is set by the peak's own
+signal-to-noise; a predicted peak that is *absent but should have been detectable* is
+penalised, while an undetectable one is excluded; and the per-isotopologue likelihoods are
+combined as a predicted-abundance-weighted geometric mean. Nothing in this pipeline selects
+between the two — the module constant `SCORE_VERSION` records the newest version shipped,
+but no code branches on it. v2 is called directly by the consumers that want the fit score:
+Mascope's peak-assignment engine (Stage A, `score_ions_by_fit`) and the backend's
+`ion_score_v2` adapter behind `MASCOPE_MATCH_SCORE_VERSION=2`.
 
 The highest-scoring formula candidate is assigned as the primary chemical identification, and its corresponding higher isotopes are flagged and linked within the final output data tables to complete the processing sequence.

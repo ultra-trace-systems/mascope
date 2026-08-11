@@ -79,6 +79,12 @@ class HeuristicFilterConfig:
         default_factory=lambda: config.DEFAULT_ELEMENTAL_RATIO_RANGE.copy()
     )
 
+    # Apply the Lewis/Senior structural feasibility cut (Rule 2). Off by default
+    # because `rule_senior` used to be a no-op placeholder: enabling it for every
+    # caller would silently narrow the results of the long-standing composition
+    # search. The peak-centric engine opts in explicitly.
+    use_senior: bool = False
+
 
 @dataclass
 class Result:

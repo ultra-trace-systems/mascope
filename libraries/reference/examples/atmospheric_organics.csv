@@ -1,0 +1,80 @@
+name,formula,reference
+Formic acid,CH2O2,
+Acetic acid,C2H4O2,
+Glycolaldehyde,C2H4O2,
+Glyoxal,C2H2O2,
+Glyoxylic acid,C2H2O3,
+Glycolic acid,C2H4O3,
+Oxalic acid,C2H2O4,Kawamura and Ikushima 1993
+Propionic acid,C3H6O2,
+Hydroxyacetone,C3H6O2,
+Methylglyoxal,C3H4O2,
+Pyruvic acid,C3H4O3,
+Lactic acid,C3H6O3,
+Glyceric acid,C3H6O4,
+Glycerol,C3H8O3,
+Malonic acid,C3H4O4,Kawamura and Ikushima 1993
+Maleic acid,C4H4O4,Kawamura and Ikushima 1993
+Fumaric acid,C4H4O4,Kawamura and Ikushima 1993
+Succinic acid,C4H6O4,Kawamura and Ikushima 1993
+Methylmalonic acid,C4H6O4,Kawamura and Ikushima 1993
+Malic acid,C4H6O5,
+Meso-erythritol,C4H10O4,
+2-Methylglyceric acid,C4H8O4,Claeys et al. 2004
+Tartaric acid,C4H6O6,
+Glutaric acid,C5H8O4,Kawamura and Ikushima 1993
+Methylsuccinic acid,C5H8O4,Kawamura and Ikushima 1993
+Dimethylmalonic acid,C5H8O4,Kawamura and Ikushima 1993
+2-Oxoglutaric acid,C5H6O5,
+3-Hydroxyglutaric acid,C5H8O5,Claeys et al. 2004
+2-Methylthreitol,C5H12O4,Claeys et al. 2004
+2-Methylerythritol,C5H12O4,Claeys et al. 2004
+cis C5-alkene triol,C5H10O3,Wang et al. 2005
+Isoprene epoxydiol (IEPOX),C5H10O3,Paulot et al. 2009
+Adipic acid,C6H10O4,Kawamura and Ikushima 1993
+2-Methylglutaric acid,C6H10O4,Kawamura and Ikushima 1993
+Citric acid,C6H8O7,
+Isocitric acid,C6H8O7,
+Levoglucosan,C6H10O5,Simoneit et al. 1999
+Mannosan,C6H10O5,Simoneit et al. 1999
+Galactosan,C6H10O5,Simoneit et al. 1999
+4-Nitrocatechol,C6H5NO4,Iinuma et al. 2010
+Pimelic acid,C7H12O4,Kawamura and Ikushima 1993
+3-Methyladipic acid,C7H12O4,Kawamura and Ikushima 1993
+Terebic acid,C7H10O4,Claeys et al. 2009
+Benzoic acid,C7H6O2,
+Salicylic acid,C7H6O3,
+4-Hydroxybenzoic acid,C7H6O3,
+Protocatechuic acid,C7H6O4,
+Gallic acid,C7H6O5,
+Suberic acid,C8H14O4,Kawamura and Ikushima 1993
+Norpinic acid,C8H12O4,Yu et al. 1999
+Terpenylic acid,C8H12O4,Claeys et al. 2009
+Diaterpenylic acid,C8H12O5,Claeys et al. 2009
+3-MBTCA,C8H12O6,Szmigielski et al. 2007
+Phthalic acid,C8H6O4,Kawamura and Ikushima 1993
+Isophthalic acid,C8H6O4,
+Terephthalic acid,C8H6O4,
+Vanillin,C8H8O3,Simoneit et al. 1999
+Vanillic acid,C8H8O4,Simoneit et al. 1999
+Azelaic acid,C9H16O4,Kawamura and Ikushima 1993
+Pinic acid,C9H14O4,Yu et al. 1999
+Norpinonic acid,C9H14O3,Yu et al. 1999
+p-Coumaric acid,C9H8O3,
+Caffeic acid,C9H8O4,
+Syringaldehyde,C9H10O4,Simoneit et al. 1999
+Syringic acid,C9H10O5,Simoneit et al. 1999
+Sebacic acid,C10H18O4,Kawamura and Ikushima 1993
+alpha-Pinene,C10H16,
+Limonene,C10H16,
+Camphor,C10H16O,
+Verbenone,C10H14O,
+Myrtenal,C10H14O,
+Pinonaldehyde,C10H16O2,Yu et al. 1999
+Pinonic acid,C10H16O3,Yu et al. 1999
+Limononic acid,C10H16O3,
+10-Hydroxypinonic acid,C10H16O4,Yu et al. 1999
+Ferulic acid,C10H10O4,
+Methanesulfonic acid,CH4O3S,Saltzman et al. 1983
+Sulfuric acid,H2O4S,
+Nitric acid,HNO3,

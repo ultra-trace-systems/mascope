@@ -86,7 +86,7 @@ services:
       - postgres_password
 
   db_init:
-    image: ghcr.io/karsa-oy/mascope/backend:${MASCOPE_VERSION:-latest}
+    image: ghcr.io/ultra-trace-systems/mascope/backend:${MASCOPE_VERSION:-latest}
     container_name: mascope_prod_db_init
     build:
       dockerfile: server/backend/Dockerfile
@@ -116,7 +116,7 @@ services:
 
   backend: &backend
     command: "api-server"
-    image: ghcr.io/karsa-oy/mascope/backend:${MASCOPE_VERSION:-latest}
+    image: ghcr.io/ultra-trace-systems/mascope/backend:${MASCOPE_VERSION:-latest}
     container_name: ${MASCOPE_BACKEND_CONTAINER_NAME:-mascope_prod_backend}
     restart: unless-stopped
     logging: *default-logging
@@ -176,7 +176,7 @@ services:
     healthcheck: {} # Disable inherited from backend healthcheck
     ports: []
   frontend:
-    image: ghcr.io/karsa-oy/mascope/frontend:${MASCOPE_VERSION:-latest}
+    image: ghcr.io/ultra-trace-systems/mascope/frontend:${MASCOPE_VERSION:-latest}
     container_name: ${MASCOPE_FRONTEND_CONTAINER_NAME:-mascope_prod_frontend}
     restart: unless-stopped
     logging: *default-logging

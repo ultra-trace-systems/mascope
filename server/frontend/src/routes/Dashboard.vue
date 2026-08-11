@@ -11,6 +11,7 @@ import TabPanels from 'primevue/tabpanels'
 import TabPanel from 'primevue/tabpanel'
 
 import { ToolbarAppFilters } from '@/lib/toolbars'
+import { peakAssignmentEnabled } from '@/lib/features'
 import {
   PaneProgress,
   PaneBrowserSample,
@@ -81,7 +82,13 @@ const tabs = computed(() => [
     `
   },
   {
-    label: 'Match',
+    // Renamed to "Fit" only where peak-centric assignment is on: there the
+    // Sample view owns assignment and this tab is purely fit verification.
+    // Without the feature it is the long-standing Match tab.
+    label: peakAssignmentEnabled ? 'Fit' : 'Match',
+    // Internal tab value stays 'match' so existing app.ui.tab.active === 'match'
+    // callers and the TabPanel value keep working; only the label is renamed.
+    value: 'match',
     icon: 'pi pi-verified',
     disabled: !app.data.match.visualized.ion,
     // Card body comes from the shared docs snippet (docs/user/_help/matching.md)
@@ -113,7 +120,7 @@ const tabs = computed(() => [
         }
       "
     >
-      <SplitterPanel :size="app.ui.split.left" :minSize="30">
+      <SplitterPanel :size="app.ui.split.left" :minSize="10">
         <Splitter
           layout="vertical"
           stateStorage="local"
@@ -125,21 +132,21 @@ const tabs = computed(() => [
             }
           "
         >
-          <SplitterPanel :size="app.ui.split.top">
+          <SplitterPanel :size="app.ui.split.top" :minSize="10">
             <PaneBrowserSample />
           </SplitterPanel>
-          <SplitterPanel :size="app.ui.split.bottom">
+          <SplitterPanel :size="app.ui.split.bottom" :minSize="10">
             <PaneBrowserMatch />
           </SplitterPanel>
         </Splitter>
       </SplitterPanel>
-      <SplitterPanel :size="app.ui.split.right" :minSize="30">
+      <SplitterPanel :size="app.ui.split.right" :minSize="10">
         <Panel id="charts">
           <Tabs v-model:value="app.ui.tab.active">
             <TabList>
               <Tab
-                v-for="{ icon, label, disabled, help, doc, helpKey, title } in tabs"
-                :value="label.toLowerCase()"
+                v-for="{ icon, label, value, disabled, help, doc, helpKey, title } in tabs"
+                :value="value ?? label.toLowerCase()"
                 :key="label"
                 :disabled="disabled"
                 :pt="app.ui.help.bottom(help ?? { helpKey, title }, doc ? { doc } : undefined)"

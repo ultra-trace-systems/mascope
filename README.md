@@ -21,7 +21,7 @@ Run Mascope on your machine **with real data to explore**. Docker is the only
 prerequisite. One file, one command:
 
 ```sh
-curl -O https://raw.githubusercontent.com/karsa-oy/mascope/master/docker-compose.demo.yaml
+curl -O https://raw.githubusercontent.com/ultra-trace-systems/mascope/master/docker-compose.demo.yaml
 docker compose -f docker-compose.demo.yaml up
 ```
 
@@ -38,8 +38,8 @@ also run the demo from source with `mascope demo` (see
 
 ## Hosting
 
-- **Managed** - let Karsa run Mascope for you, with no infrastructure to manage.
-  Contact [sales@karsa.fi](mailto:sales@karsa.fi) for a quote.
+- **Managed** - let Ultra Trace run Mascope for you, with no infrastructure to manage.
+  Contact [sales@ultratrace.eu](mailto:sales@ultratrace.eu) for a quote.
 - **Self-host** - Mascope ships as Docker images. Try it locally (above), or see
   [Hosting & deployment](docs/hosting.md) for sharing it on a LAN or in
   production (HTTPS, TLS options, secrets, backups, upgrades).
@@ -77,9 +77,20 @@ Questions, help, and discussion happen on Discord - come say hello:
 
 ## Citation
 
-If you use **Mascope** in your research, please cite the software using the
-metadata in [`CITATION.cff`](CITATION.cff) (GitHub's "Cite this repository"
-button) or the archived Zenodo release:
+If you use **Mascope** in your research, please cite the accompanying paper:
+
+> Shcherbinin, A., Shen, J., Kausiala, O., Tumashevich, K., Chernonog, P., Zorn,
+> S., Nölscher, A., Petäjä, T., Kulmala, M., Kangasluoma, J., Thakur, R. C.,
+> Sarnela, N., Ehn, M., Sipilä, M., Finkenzeller, H., Rissanen, M., & He, X.-C.
+> (2026). Networked Open-Source Infrastructure for Scalable Analysis of Chemical
+> Ionization Mass Spectrometry Data. *ChemRxiv*.
+> https://doi.org/10.26434/chemrxiv.15005713/v1
+
+[![ChemRxiv](https://img.shields.io/badge/ChemRxiv-10.26434%2Fchemrxiv.15005713-b31b1b)](https://doi.org/10.26434/chemrxiv.15005713/v1)
+
+You can also cite the software directly using the metadata in
+[`CITATION.cff`](CITATION.cff) (GitHub's "Cite this repository" button) or the
+archived Zenodo release:
 
 [![DOI](https://img.shields.io/badge/DOI-10.5281%2Fzenodo.21037634-blue)](https://doi.org/10.5281/zenodo.21037634)
 

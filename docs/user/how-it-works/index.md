@@ -45,3 +45,7 @@ The calibration process is detailed in [calibration documentation](calibration.m
 ### Isotopic Matching
 Detected peaks are matched to candidate elemental compositions by comparing measured m/z values and observed isotopic distributions with theoretical patterns.
 The foundational matching rules and assignment criteria are expanded in [matching documentation](matching.md).
+
+### Peak Assignment & Confidence
+Taking the peak-first view, every detected peak is assigned its most likely composition — from the known target library first, then via untargeted composition search — each with a reproducible **fit score**, a graded **chemical plausibility**, and a **confidence tier**.
+The scoring, the Seven Golden Rules plausibility, candidate arbitration and the confidence tiers (with literature references) are described in [peak assignment documentation](peak-assignment.md).

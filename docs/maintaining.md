@@ -49,7 +49,7 @@ doubles as a monitoring probe. `--json` emits the same data for scripting.
 ## Provisioning
 
 ```sh
-git clone git@github.com:karsa-oy/mascope.git && cd mascope
+git clone git@github.com:ultra-trace-systems/mascope.git && cd mascope
 ./tooling/ubuntu.sh install
 ```
 
@@ -378,7 +378,87 @@ Unset or `0` (the default) keeps the errors-only behavior; values outside
 GlitchTip's Postgres growth on the monitoring box before raising it -
 transactions are far more numerous than errors.
 
-## Files and secrets
+## Optional features
+
+**Peak assignment** (assign a chemical composition to every peak - see
+[the user docs](user/how-it-works/peak-assignment.md)) ships **off**. A server
+that leaves it off is unaffected by it: samples process exactly as before, the
+UI is unchanged, and the `/api/peak-assignments` write routes refuse to launch
+runs (403; the read routes stay open, so results from an earlier opted-in
+period remain visible). To enable it on a deployment, set it in the env's
+config toml:
+
+```toml
+[meta]
+peak_assignment = true
+```
+
+then rebuild and restart the stack (`mascope prod up --build`). The rebuild
+matters: the frontend bakes the flag in at image build time, so a plain
+restart flips only the backend and leaves the UI on the old setting.
+`MASCOPE_PEAK_ASSIGNMENT=1` in `/etc/environment` flips the backend without
+editing the toml (remember host env vars apply at login - start the stack from
+a fresh shell), but the frontend still needs the toml value and a rebuild.
+Enabling it means every newly processed sample also gets a database-stage
+assignment run, which adds processing time and one database row per detected
+peak per run, so watch disk after turning it on (see
+[Disk space](#disk-space)). Existing samples are not assigned retroactively;
+run assignment explicitly from the UI for those.
+
+### Reclaiming assignment runs
+
+Each assignment run writes **one row per observed peak** of its sample -
+including peaks it could not assign, because the ledger is deliberately
+complete - and re-assigning a sample adds a whole new run beside the old one.
+Nothing removes them automatically, so on a server where assignment is re-run
+routinely `peak_assignment` grows without bound.
+
+```sh
+MASCOPE_PRUNE_DRY_RUN=1 mascope prod db script run prune_peak_assignment_runs
+mascope prod db script run prune_peak_assignment_runs
+```
+
+The dry run reports what it would delete and changes nothing. A real run keeps
+the newest few completed runs per sample (so a result can still be compared
+against the one it replaced) and drops the rest, plus failed runs past a short
+grace period; deleting a run cascades to its rows. Tune with
+`MASCOPE_PRUNE_KEEP_PER_SAMPLE` (default 3), `MASCOPE_PRUNE_KEEP_FAILED_HOURS`
+(default 24) and `MASCOPE_PRUNE_KEEP_RUNNING_HOURS` (default 72, floored at 12
+so runs that may still be executing cannot be pruned out from under a worker).
+
+Deleting rows returns space to Postgres for reuse but not to the filesystem;
+`VACUUM FULL peak_assignment` (or `pg_repack`) afterwards does that, and takes
+an exclusive lock while it runs.
+
+There is no timer for this yet - run it when the disk monitor flags growth, or
+add it to your own cron alongside the backup job.
+
+### Loading reference chemistry data
+
+Peak assignment can additionally match against a mirror of public chemistry
+databases, so a peak gets a named identity and not just a formula. The mirror is
+optional: with none loaded, assignment works exactly as described above and
+simply reports no identities.
+
+**`mascope reference` is not available on a server.** It is registered only when
+the CLI runs from a monorepo checkout, because it pulls the chemistry
+dependencies that are deliberately kept out of the operator install - so
+reinstalling the CLI does not expose it. A deployed backend image already ships
+those dependencies, so load reference data by running the ingest inside the
+backend container instead:
+
+```sh
+docker compose exec backend python -m mascope_backend.db.scripts.reference_sync custom /data/my_list.csv --name my-list --version 2026-07
+```
+
+Mount the dump into the backend service first; the path is resolved inside the
+container. `custom` is the adapter for hand-authored CSV/TSV lists - the public
+databases have their own adapters, and each load is versioned.
+
+A load replaces the active version of that source only once it has successfully
+read records, so a dump the adapter cannot parse leaves the existing mirror
+serving rather than emptying it. Re-running the same source is how you update
+it; prior versions stay on disk until pruned.
 
 | Path | What |
 |---|---|

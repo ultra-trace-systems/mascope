@@ -170,6 +170,69 @@ export const useMatchVisualized = defineStore('app.data.match.visualized', () =>
     })
   }
 
+  // Verify a peak assignment in the Fit view via the composition-driven
+  // endpoints (B2). Works for ANY assignment -- database or untargeted -- by
+  // scoring the assigned formula + ionization mechanism on the fly, so no
+  // persisted target_ion_id is needed. Populates the isotope table (aggregate)
+  // and triggers the sum-spectrum + time-series traces (visualize, via socket).
+  //
+  // NOT WIRED TO ANY UI YET: no component calls this. The planned "Verify fit"
+  // button was dropped when the Fit view was slated for retirement -- see
+  // docs/dev/peak_assignment_frontend.md (Open threads / F6) before deleting
+  // or re-implementing this.
+  async function verifyAssignment(assignment) {
+    const sample_item_id = sample.focused?.sample_item_id
+    if (!sample_item_id || !assignment?.assigned_formula || !assignment?.ionization_mechanism_id) {
+      return
+    }
+    // Initialize the UI match params (peak_min_intensity, tolerances) the Fit
+    // charts read; the targeted path does this during its ion load, the
+    // composition path otherwise leaves matchParams.ui undefined.
+    matchParams.set()
+    const body = {
+      assigned_formula: assignment.assigned_formula,
+      ionization_mechanism_id: assignment.ionization_mechanism_id
+    }
+
+    const response = await api.http.post(
+      `/peak-assignments/sample/${sample_item_id}/fit/aggregate`,
+      body,
+      { use: 'read', type: 'load_composition_fit' }
+    )
+    if (!response?.match_ions?.[0]) {
+      isotopes.value = []
+      isotopeSelected.value = null
+      return
+    }
+    ion.value = response.match_ions[0]
+    isotopes.value = response.match_isotopes.map((isotope) => ({
+      ...isotope,
+      color: null,
+      mz: isotope.mz.toFixed(4)
+    }))
+    isotopeSelected.value = null
+    // A composition has no persisted ion/collection; clear the cache so the
+    // sample-focus watcher does not try to reload it as a target ion.
+    Object.assign(cache, {
+      sampleId: sample_item_id,
+      ionId: null,
+      isotopeId: null,
+      collectionId: null
+    })
+
+    ui.chart.clear()
+    await api.http.post(
+      `/peak-assignments/sample/${sample_item_id}/fit/visualize`,
+      {
+        ...body,
+        peak_min_intensity: matchParams.ui.peak_min_intensity,
+        mz_tolerance: matchParams.ui.mz_tolerance,
+        isotope_ratio_tolerance: matchParams.ui.isotope_ratio_tolerance
+      },
+      { use: 'process', type: 'visualize_composition_focus' }
+    )
+  }
+
   // Clear visualization when dataset changes
   const dataset = useDataset()
   watch(() => dataset.focused, clear)
@@ -204,6 +267,7 @@ export const useMatchVisualized = defineStore('app.data.match.visualized', () =>
     instrumentType,
     // actions
     set: debounce(set),
+    verifyAssignment,
     reload,
     clear
   }

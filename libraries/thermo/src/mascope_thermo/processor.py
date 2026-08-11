@@ -90,6 +90,29 @@ class RawProcessor(BaseFileProcessor):
         return float(times.max()) if times.size else 0.0  # [s]
 
     @property
+    @with_file_context
+    def acquisition_params(self) -> dict:
+        """Acquisition parameters reported by the instrument.
+
+        Sampled from the per-scan trailer; see
+        ``ReaderBackend.acquisition_parameters``. Capturing this must never cost
+        us a file, so any reader failure degrades to an empty dict and a
+        warning rather than failing ingestion.
+
+        :return: Acquisition parameter summary, or {} if unavailable
+        :rtype: dict
+        """
+        try:
+            return self.file_handle.acquisition_parameters()
+        except Exception:
+            _log.warning(
+                "Could not read acquisition parameters for %s",
+                self.file_to_process,
+                exc_info=True,
+            )
+            return {}
+
+    @property
     def method_file(self) -> str:
         """Instrument method file name.
 

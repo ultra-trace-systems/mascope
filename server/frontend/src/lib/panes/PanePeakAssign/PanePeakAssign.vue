@@ -1,520 +1,715 @@
 <script setup>
-import { ref, reactive, computed, watch, watchEffect, onMounted, onUnmounted } from 'vue'
-import { watchDebounced } from '@vueuse/core'
+import { computed, ref, watch } from 'vue'
 
-import Panel from 'primevue/panel'
-import TabMenu from 'primevue/tabmenu'
-import FloatLabel from 'primevue/floatlabel'
+import Button from 'primevue/button'
+import Select from 'primevue/select'
 import InputText from 'primevue/inputtext'
-import InputNumber from 'primevue/inputnumber'
-import DataTable from 'primevue/datatable'
-import Column from 'primevue/column'
-import ProgressSpinner from 'primevue/progressspinner'
-import MultiSelect from 'primevue/multiselect'
 
 import { useApp } from '@/stores'
-import { api } from '@/api'
-import { BaseMatchTag } from '@/lib/base'
-import { PopoverTargetCompoundAdd } from '@/lib/dialogs'
+import { BaseTierTag, BaseVerdictBadge } from '@/lib/base'
 import { num } from '@/lib/formatters'
-
-import { usePreview } from './preview.js'
+import { formatIsotopeFormula } from '@/lib/chem'
+import { EVIDENCE_LEVELS } from '@/lib/verification'
 
 const app = useApp()
 
-const preview = usePreview()
+// Toggles the Sample view's bottom pane between the time series (default) and
+// the Re-search panel. Owned by the parent (PaneTabSample); the inspector only
+// flips it on.
+const showSearch = defineModel('showSearch', { type: Boolean, default: false })
 
-const PARAMS_STORAGE_KEY = 'mascope.peakAssign.params'
+// The committed assignment for the focused peak (from the latest run).
+const focusedAssignment = computed(() =>
+  app.data.peakAssignment.peak.forPeak(app.data.peak.focused?.peak_id)
+)
 
-function loadStoredParams() {
+// --- Verification (labelling) capture -------------------------------------
+// The current verdict for the focused assignment (by stable identity), plus a
+// small confirm/reject/unsure form. See docs/dev/verification_capture_frontend.md.
+const verification = computed(() =>
+  app.data.peakAssignment.verification.forAssignment(focusedAssignment.value)
+)
+
+const editing = ref(false) // form open despite an existing verdict (re-verify)
+const evidenceLevel = ref(null)
+const note = ref('')
+const submitting = ref(false)
+const pendingVerdict = ref(null) // which button is mid-submit
+const denied = ref(false) // 403: not an editor on this sample
+
+// Show the capture form when there is no verdict yet, or the user chose to edit.
+const showVerifyForm = computed(() => !denied.value && (!verification.value || editing.value))
+
+function startEdit() {
+  evidenceLevel.value = verification.value?.evidence_level ?? null
+  note.value = verification.value?.note ?? ''
+  editing.value = true
+}
+
+async function submitVerdict(verdict) {
+  // Confirm requires an evidence level (also enforced server-side).
+  if (verdict === 'confirmed' && !evidenceLevel.value) return
+  submitting.value = true
+  pendingVerdict.value = verdict
   try {
-    const stored = localStorage.getItem(PARAMS_STORAGE_KEY)
-    if (stored) return JSON.parse(stored)
-  } catch {}
-  return null
-}
-
-function saveParams(mzPrecision, formulaRange) {
-  try {
-    localStorage.setItem(PARAMS_STORAGE_KEY, JSON.stringify({ mzPrecision, formulaRange }))
-  } catch {}
-}
-
-defineProps({
-  height: {
-    type: Number,
-    required: true
-  }
-})
-
-// TODO: make global params store
-const chemConfig = ref(null)
-const ionMechs = ref([])
-const params = reactive({
-  mzPrecision: null,
-  formulaRange: null
-})
-const formulaRangeModel = ref('')
-const results = ref([])
-const totalMatches = ref(0)
-const displayedMatches = ref(0)
-const loading = ref(false)
-const lastRequestParams = ref(null)
-
-// Regex pattern for formula range validation: "C0-100 H0-100 Cl0-10"
-// Supports:
-//   - Standard elements: C0-100, Cl0-10
-//   - Isotope notation: [15N]0-1, [13C]0-5
-//   - Custom elements (caret prefix): ^N0-1
-const ELEMENT_PATTERN = '(?:[A-Z][a-z]?|\\^[A-Z][a-z]?|\\[\\d*[A-Z][a-z]?\\])'
-const RANGE_PATTERN = '\\d+-\\d+'
-const FORMULA_RANGE_PATTERN = new RegExp(
-  `^(${ELEMENT_PATTERN}${RANGE_PATTERN})(\\s+${ELEMENT_PATTERN}${RANGE_PATTERN})*$`
-)
-
-const isFormulaRangeValid = computed(() => {
-  if (!formulaRangeModel.value) return true // Empty is handled elsewhere
-  return FORMULA_RANGE_PATTERN.test(formulaRangeModel.value.trim())
-})
-
-onMounted(() => {
-  // Load configuration from api on component creation
-  api.http
-    .get('/params', {
-      type: 'read_params'
+    await app.data.peakAssignment.verification.verify({
+      peak_assignment_id: focusedAssignment.value.peak_assignment_id,
+      verdict,
+      evidence_level: evidenceLevel.value || null,
+      note: note.value?.trim() || null
     })
-    .then(({ data }) => {
-      // Store the cheminfo config
-      chemConfig.value = data?.data?.params?.cheminfo_config
-      // Initialize parameters: prefer localStorage, fall back to API defaults
-      if (chemConfig.value) {
-        const stored = loadStoredParams()
-        params.mzPrecision = stored?.mzPrecision ?? chemConfig.value.DEFAULT_MZ_PRECISION
-        params.formulaRange = stored?.formulaRange ?? chemConfig.value.DEFAULT_FORMULA_RANGE
-        formulaRangeModel.value = params.formulaRange
-      }
-    })
-    .catch((err) => {
-      console.error('Error fetching params:', err)
-    })
-})
-
-const updateFormulaRange = () => {
-  if (isFormulaRangeValid.value) {
-    params.formulaRange = formulaRangeModel.value.trim()
+    editing.value = false
+    note.value = ''
+  } catch (error) {
+    // The http layer already toasts; only 403 changes the UI (hide the control).
+    if (error?.response?.status === 403) denied.value = true
+  } finally {
+    submitting.value = false
+    pendingVerdict.value = null
   }
 }
 
-// Set up notification handler for composition match results
-const notificationHandler = app.ui.notification.on('match_compositions_by_mz', (payload) => {
-  if (payload.status === 'error') {
-    loading.value = false
-    return
-  }
-  if (!payload) return
-
-  // Only process results if they match current focus
-  const isFocusedSample = payload?.data?.sample_item_id === app.data.sample.focusedId
-  const isFocusedMz = payload?.data?.mz === app.data.peak.focused?.mz
-  if (!isFocusedSample || !isFocusedMz) return
-
-  // Process successful results
-  if (payload.status === 'success') {
-    if (payload.data?.data) {
-      totalMatches.value = payload?.data?.total || 0
-      displayedMatches.value = payload?.data?.results || 0
-
-      results.value = payload.data.data.map((res) => {
-        const existing = app.data.target.compound.list.filter(
-          ({ target_compound_formula }) => target_compound_formula === res.target_compound_formula
-        )
-        return { ...res, existing }
-      })
-    }
-    loading.value = false
-  }
-})
-
-// Clean up event listener when component is unmounted
-onUnmounted(() => {
-  notificationHandler?.unmount?.()
-})
-
-// Synchronize formulaRangeModel with params.formulaRange when the latter changes
+// Fresh form per peak (each judgment is independent); re-evaluate editor access
+// per sample.
 watch(
-  () => params.formulaRange,
-  (newValue) => {
-    if (formulaRangeModel.value !== newValue) {
-      formulaRangeModel.value = newValue
-    }
-  }
-)
-
-// Persist params to localStorage when they change
-watch(
-  () => ({ mzPrecision: params.mzPrecision, formulaRange: params.formulaRange }),
-  ({ mzPrecision, formulaRange }) => {
-    if (mzPrecision != null && formulaRange && FORMULA_RANGE_PATTERN.test(formulaRange.trim())) {
-      saveParams(mzPrecision, formulaRange)
-    }
-  }
-)
-
-// Initialize ionization mechanisms and reset params to defaults when batch focus changes
-watchEffect(() => {
-  // Only proceed if chemConfig is loaded
-  if (!chemConfig.value) return
-  if (!app.data.sample.focused) return
-  const ionMode = app.data.ionization.mode.list.find(
-    (im) => im.ionization_mode_id === app.data.sample.focused.ionization_mode_id
-  )
-  ionMechs.value = ionMode.ionization_mechanism_ids.map((id) =>
-    app.data.ionization.mechanism.list.find(
-      ({ ionization_mechanism_id }) => id === ionization_mechanism_id
-    )
-  )
-})
-
-// Debounced API request that triggers when any dependency changes (single computed object `deps`)
-watchDebounced(
+  () => app.data.peak.focused?.peak_id,
   () => {
-    // Only track dependencies if chemConfig is loaded
-    if (!chemConfig.value) return {}
-
-    return {
-      peakFocused: app.data.peak.focused ? app.data.peak.focused.mz : null,
-      sampleId: app.data.sample.focusedId,
-      mzPrecision: params.mzPrecision,
-      formulaRange: params.formulaRange,
-      ionMechanismIds: ionMechs.value.map((m) => m.ionization_mechanism_id).join(',')
-    }
-  },
-  // The callback function that runs 800ms after dependencies stop changing
-  async (deps) => {
-    // Skip if config not loaded or no peak selected
-    if (!chemConfig.value || !deps.peakFocused || !deps.mzPrecision || !deps.formulaRange) {
-      results.value = []
-      loading.value = false
-      lastRequestParams.value = null
-      return
-    }
-    // Create a comparable string of current parameters
-    const currentParams = JSON.stringify(deps)
-    // Skip if parameters haven't changed from last request
-    if (lastRequestParams.value === currentParams) {
-      return
-    }
-    // Store current params before making request
-    lastRequestParams.value = currentParams
-
-    // Update UI to show loading state immediately
-    loading.value = true
-    results.value = []
-    totalMatches.value = 0
-    displayedMatches.value = 0
-
-    // Make the request to start the background task
-    await api.http.post(
-      `/cheminfo/mz/match/sample/${deps.sampleId}`,
-      {
-        mz: app.data.peak.focused.mz,
-        sample_item_id: deps.sampleId,
-        ionization_mechanism_ids: ionMechs.value.map(
-          ({ ionization_mechanism_id }) => ionization_mechanism_id
-        ),
-        mz_precision: deps.mzPrecision,
-        formula_ranges: deps.formulaRange,
-        match_params: app.data.match.params.typeDefaults
-      },
-      {
-        use: 'read',
-        type: 'match_compositions_by_mz'
-      }
-    )
-  },
-  // Options: debounce delay, deep comparison for proper nested reactivity
-  {
-    debounce: computed(() => chemConfig.value.DEBOUNCE_DELAY_MS),
-    deep: true
+    editing.value = false
+    evidenceLevel.value = null
+    note.value = ''
+  }
+)
+watch(
+  () => app.data.sample.focusedId,
+  () => {
+    denied.value = false
   }
 )
 
-function getIsotopeRows(data) {
-  // Find the isotope with the highest relative abundance to use as reference
-  const maxIdx = data.children.reduce(
-    (maxI, r, i, arr) =>
-      (r.relative_abundance ?? 0) > (arr[maxI].relative_abundance ?? 0) ? i : maxI,
-    0
+// Arbitration / chemistry provenance: chemical plausibility (Seven Golden
+// Rules), arbitration confidence, calibrated P(correct), and a tie flag.
+const provenance = computed(() => focusedAssignment.value?.provenance ?? null)
+
+const fitPercent = new Intl.NumberFormat('en-US', {
+  style: 'percent',
+  minimumFractionDigits: 0,
+  maximumFractionDigits: 0
+})
+const formatFit = (value) =>
+  value != null && !Number.isNaN(value) ? fitPercent.format(value) : '-'
+
+// Adduct-corroboration signal (P3): present only when the compound was seen via
+// several adducts (co-occurrence) -- winner-only, calibrated assignments. The
+// boost is already folded into p_correct, so the badge is purely informational.
+const corroboration = computed(() => provenance.value?.corroboration ?? null)
+const corroborationTooltip = computed(() => {
+  const c = corroboration.value
+  if (!c) return ''
+  const adducts = (c.adducts ?? []).join(', ')
+  return (
+    `Seen via ${c.n_adducts} adducts${adducts ? ` (${adducts})` : ''}. ` +
+    'Independent corroborating evidence, already folded into P(correct).'
   )
-  // Store the abundance and intensity of the main isotope with each record
-  // to allow scaling peak trace heights in the preview
-  const mainIsotopeAbundance = data.children[maxIdx]?.relative_abundance
-  // Find the height of the main isotope peak from peak store
-  const mainIsotopeIntensity =
-    app.data.peak.list.find((peak) => peak.mz === data.children[maxIdx]?.sample_peak_mz)?.height ||
-    0
-  return data.children.map((record) => ({
-    ...record,
-    close: (Math.abs(record.mz - app.data.peak.focused?.mz) * 1e6) / record.mz < params.mzPrecision,
-    abundance_reference: mainIsotopeAbundance,
-    intensity_reference: mainIsotopeIntensity
-  }))
+})
+
+// The isotopologue family (M0 + M+1, M+2 ...) of the focused assignment.
+const family = computed(() => app.data.peakAssignment.peak.familyOf(focusedAssignment.value))
+
+// Main isotope (M0) of the family; theoretical abundances are relative to it.
+const m0 = computed(
+  () => family.value.find((f) => f.role === 'M0' || f.isotope_label === 'M0') ?? null
+)
+
+// Compact substitution label (e.g. "[15N]", "[81Br][2H]") from the full
+// isotopologue formula; falls back to the M0/M+1 offset label.
+const isoLabel = (iso) =>
+  iso.isotope_formula ? formatIsotopeFormula(iso.isotope_formula) : iso.isotope_label || '-'
+
+// Theoretical (predicted) relative abundance of an isotopologue as a fraction
+// of M0, recovered from the stored errors:
+//   theoretical_rel = observed_rel / (1 + abundance_error),  observed_rel = I / I(M0)
+const theoreticalRel = (iso) => {
+  const base = m0.value?.sample_peak_intensity
+  if (!base || base <= 0 || iso.sample_peak_intensity == null) return null
+  const observed = iso.sample_peak_intensity / base
+  const denom = 1 + (iso.abundance_error ?? 0)
+  return denom > 0 ? observed / denom : null
+}
+const relAbuFmt = new Intl.NumberFormat('en-US', {
+  style: 'percent',
+  minimumFractionDigits: 0,
+  maximumFractionDigits: 1
+})
+const formatRel = (value) => (value != null ? relAbuFmt.format(value) : '-')
+
+// Focus the peak behind an isotopologue row. The engine stringifies peak_id
+// into sample_peak_id, so the join has to coerce both sides -- and a miss must
+// leave the focus alone rather than clear it, which is what focus() would do
+// with an id that resolves to nothing.
+const focusIsotopePeak = (iso) => {
+  const peak = app.data.peak.list.find(
+    (p) => String(p.peak_id) === String(iso.sample_peak_id)
+  )
+  if (peak) app.data.peak.focus(peak)
 }
 
-const expanded = ref({})
+// Per-isotopologue match quality; M0 is the reference and never "poor".
+const isPoorMatch = (iso) => {
+  if (iso.role === 'M0' || iso.isotope_label === 'M0') return false
+  const ab = iso.abundance_error != null ? 1 - Math.min(1, Math.abs(iso.abundance_error)) : 1
+  const mz = iso.mz_error_ppm != null ? Math.max(0, 1 - 0.01 * Math.abs(iso.mz_error_ppm)) : 1
+  return ab * mz < 0.5
+}
+
+// Stats for a close alternative (runner-up), surfaced on hover. Database-stage
+// runner-ups carry fit + m/z error + plausibility; untargeted runner-ups are
+// formula-only (the untargeted search returns competitor names without
+// per-candidate fit), so fit reads "not scored" for them.
+const altTooltip = (alt) => {
+  const lines = [
+    `fit: ${alt.fit_score != null ? formatFit(alt.fit_score) : '— not scored (untargeted)'}`
+  ]
+  if (alt.mz_error_ppm != null) {
+    lines.push(`m/z error: ${num.mzError.format(alt.mz_error_ppm)} ppm`)
+  }
+  lines.push(`plausibility: ${alt.plausibility != null ? formatFit(alt.plausibility) : '—'}`)
+  if (alt.source) lines.push(`source: ${alt.source}`)
+  return lines.join('\n')
+}
 </script>
 
 <template>
-  <Panel
+  <div
     v-if="app.data.peak.list.length > 0"
-    class="browser"
-    style="border: none; flex-grow: 1; max-width: 900px"
-    :pt="
-      ({ content: { style: { padding: 0 } } },
-      app.ui.help.top(`
+    class="assign-root col"
+    style="gap: 1rem; align-items: stretch; width: 100%"
+    v-help.top="{
+      message: `
         <h1>Peak Assignment</h1>
-
         <p>
-        Assign a composition to the currently selected peak based on the m/z value,
-        ionization mechanisms and allowed ranges of atom counts.
+        The committed assignment for the selected peak: its fitted composition,
+        confidence tier, evidence, isotopologue family and close alternatives.
         </p>
-
         <p>
-        Select peaks by clicking rows in the peak browser to the left, or by clicking
-        the vertical grey peak lines in the spectrum chart.
-        </p>
-      `))
-    "
+        Select peaks by clicking rows in the ledger, or the vertical grey peak
+        lines in the spectrum chart. Use <b>Re-search</b> to search compositions
+        for the peak on demand.
+        </p>`
+    }"
   >
-    <template #header>
-      <TabMenu
-        :model="[{ label: 'Assign Peak', icon: 'pi ph ph-magnifying-glass' }]"
-        style="overflow: hidden"
-      />
-    </template>
-    <template #icons>
-      <span style="opacity: 0.5" v-if="app.data.peak.focused">
-        Showing {{ displayedMatches }} {{ displayedMatches === 1 ? 'match' : 'matches' }} out of
-        {{ totalMatches }} potential {{ totalMatches === 1 ? 'compound' : 'compounds' }} for peak
-        {{ num.mz.format(app.data.peak.focused.mz) }}
-      </span>
-    </template>
-    <div class="col" style="gap: 1rem; align-items: stretch; max-width: 900px">
-      <menu class="topbar">
-        <FloatLabel style="flex: 0 0 80px">
-          <InputNumber v-model="params.mzPrecision" id="mzPrecision" :min="1" :max="100" fluid />
-          <label for="mzPrecision">m/z precision</label>
-        </FloatLabel>
-        <FloatLabel style="flex-grow: 1">
-          <InputText
-            v-model="formulaRangeModel"
-            id="formulaRange"
-            fluid
-            :invalid="!isFormulaRangeValid"
-            @blur="updateFormulaRange"
-            @keydown.enter="updateFormulaRange"
-            v-tooltip.bottom="{
-              value: 'Format: Element + range, e.g. C0-100 H0-200 [15N]0-1 ^N0-1',
-              showDelay: 500
-            }"
+      <section v-if="focusedAssignment" class="inspector">
+        <div class="insp-head">
+          <div class="insp-formula">
+            {{ focusedAssignment.assigned_formula || 'Unassigned' }}
+          </div>
+          <BaseTierTag
+            :tier="focusedAssignment.tier"
+            :fit-score="focusedAssignment.fit_score"
+            :role="focusedAssignment.role"
+            :source="focusedAssignment.source"
           />
-          <label for="formulaRange">formula range</label>
-        </FloatLabel>
-        <FloatLabel style="min-width: 100px; max-width: 200px">
-          <MultiSelect
-            id="ionmechs"
-            v-model="ionMechs"
-            dataKey="ionization_mechanism_id"
-            :options="app.data.ionization.mechanism.list"
-            optionLabel="ionization_mechanism"
-            fluid
-          />
-          <label for="ionmechs">Ion. Mechanisms</label>
-        </FloatLabel>
-      </menu>
-      <DataTable
-        v-if="!loading && results.length > 0"
-        :value="results"
-        dataKey="target_compound_formula"
-        sortField="match.match_score"
-        :sortOrder="-1"
-        scrollable
-        :scrollHeight="`${height - 100}px`"
-        size="small"
-        v-model:expandedRows="expanded"
-        :virtualScrollerOptions="{ itemSize: 35.5 }"
-      >
-        <Column expander />
-        <Column field="target_compound_formula" header="Formula" sortable />
-        <Column field="cheminfo.target_compound_unsaturation" sortable>
-          <template #header>
-            <span v-tooltip="{ value: 'Degree of unsaturation', showDelay: 500 }"><b>DBE</b></span>
-          </template>
-        </Column>
-        <Column field="cheminfo.target_isotope_mz" header="Isotope m/z" sortable>
-          <template #body="{ data }">
-            {{ num.mz.format(data.cheminfo.target_isotope_mz) }}
-          </template>
-        </Column>
-        <Column
-          field="cheminfo.ionization_mechanism.ionization_mechanism"
-          header="Mech."
-          sortable
-        />
-        <Column field="cheminfo.target_isotope_mz_error_ppm" header="Error (ppm)" sortable>
-          <template #body="{ data }">
-            {{ num.mzError.format(data.cheminfo.target_isotope_mz_error_ppm) }}
-          </template>
-        </Column>
-        <Column field="match_score" sortable>
-          <template #header>
+        </div>
+        <div
+          class="insp-sub"
+          v-if="
+            focusedAssignment.ion_formula ||
+            focusedAssignment.isotope_label ||
+            focusedAssignment.source
+          "
+        >
+          <span v-if="focusedAssignment.ion_formula">{{ focusedAssignment.ion_formula }}</span>
+          <span v-if="focusedAssignment.isotope_label">
+            &middot; {{ focusedAssignment.isotope_label }}</span
+          >
+          <span v-if="focusedAssignment.source" class="src">
+            &middot; {{ focusedAssignment.source }}</span
+          >
+        </div>
+        <div class="evidence">
+          <div class="ev">
+            <span class="k">fit</span>
+            <span class="v">{{ formatFit(focusedAssignment.fit_score) }}</span>
+          </div>
+          <div class="ev" v-if="focusedAssignment.mz_error_ppm != null">
+            <span class="k">m/z error</span>
+            <span class="v">{{ num.mzError.format(focusedAssignment.mz_error_ppm) }} ppm</span>
+          </div>
+          <div class="ev" v-if="focusedAssignment.abundance_error != null">
+            <span class="k">abund. error</span>
+            <span class="v">{{
+              num.relativeAbundanceError.format(focusedAssignment.abundance_error)
+            }}</span>
+          </div>
+          <div class="ev" v-if="focusedAssignment.isotope_label">
+            <span class="k">isotope</span>
+            <span class="v">{{ focusedAssignment.isotope_label }}</span>
+          </div>
+          <div class="ev" v-if="provenance?.plausibility != null">
+            <span class="k" v-tooltip.top="'Chemical plausibility (Seven Golden Rules)'"
+              >plausibility</span
+            >
+            <span class="v">{{ formatFit(provenance.plausibility) }}</span>
+          </div>
+          <div class="ev" v-if="provenance?.confidence != null">
             <span
-              class="pi ph ph-seal-percent"
-              v-tooltip="{ value: 'Match score', showDelay: 500 }"
-            />
-          </template>
-          <template #body="{ data }">
-            <BaseMatchTag
-              :match-score="data?.match_score"
-              :match-category="data?.match_category"
-              :alarming="data?.alarming"
-              nofade
-            />
-          </template>
-        </Column>
-        <Column field="existing" sortable>
-          <template #header>
+              class="k"
+              v-tooltip.top="'Arbitration confidence: winner share of fit x plausibility'"
+              >confidence</span
+            >
+            <span class="v"
+              >{{ formatFit(provenance.confidence)
+              }}<span
+                v-if="provenance.is_tie"
+                class="tie-flag"
+                v-tooltip.top="'Runner-up too close to call'"
+                >&nbsp;tie</span
+              ></span
+            >
+          </div>
+          <div class="ev" v-if="provenance && provenance.calibrated !== undefined">
             <span
-              class="pi pi-info-circle"
-              v-tooltip.left="{ value: 'Compound info', showDelay: 500 }"
-            />
-          </template>
-          <template #body="{ data }">
+              class="k"
+              v-tooltip.top="'Calibrated probability the assignment is correct'"
+              >P(correct)</span
+            >
+            <span class="v" v-if="provenance.p_correct != null">
+              {{ formatFit(provenance.p_correct)
+              }}<span
+                v-if="provenance.calibration?.provisional"
+                class="prov-flag"
+                v-tooltip.top="'Provisional calibration curve - directionally right, not hardened'"
+                >&nbsp;prov.</span
+              ></span
+            >
             <span
-              v-if="data.existing.length > 0"
-              class="ph pi ph-database"
+              class="v uncal"
+              v-else
+              v-tooltip.top="'No calibration curve for this instrument'"
+              >uncalibrated</span
+            >
+          </div>
+        </div>
+        <div
+          v-if="corroboration && corroboration.n_adducts > 1"
+          class="corroboration"
+          v-tooltip.top="corroborationTooltip"
+        >
+          <span class="pi ph ph-link-simple" />
+          Supported by {{ corroboration.n_adducts }} adducts
+        </div>
+        <div v-if="family.length > 1" class="isotopologues">
+          <div class="alts-label">Isotopologues</div>
+          <div class="iso-head">
+            <span>iso</span><span>m/z</span><span>ppm</span
+            ><span v-tooltip.top="'Theoretical relative abundance (fraction of M0)'">abu.</span>
+          </div>
+          <div class="iso-rows">
+            <div
+              v-for="iso in family"
+              :key="iso.peak_assignment_id"
+              class="iso-row"
+              :class="{
+                current: iso.sample_peak_id === focusedAssignment.sample_peak_id,
+                poor: isPoorMatch(iso)
+              }"
               v-tooltip.left="
-                `Found in DB: ${data.existing
-                  .map(
-                    (comp) =>
-                      `${comp?.target_compound_name?.length > 0 ? comp.target_compound_name : 'Unnamed'}`
-                  )
-                  .join(', ')}`
+                isPoorMatch(iso)
+                  ? 'Poorly matched isotopologue (abundance / m/z off) - click to focus'
+                  : 'Focus this isotopologue peak'
               "
+              @click="focusIsotopePeak(iso)"
+            >
+              <span class="iso-label" v-tooltip.left="iso.isotope_formula || iso.isotope_label"
+                ><span v-if="isPoorMatch(iso)" class="pi ph ph-warning poor-icon" />{{
+                  isoLabel(iso)
+                }}</span
+              >
+              <span class="iso-mz">{{ num.mz.format(iso.sample_peak_mz) }}</span>
+              <span class="iso-err">{{
+                iso.mz_error_ppm != null ? `${num.mzError.format(iso.mz_error_ppm)}` : '—'
+              }}</span>
+              <span class="iso-rel">{{ formatRel(theoreticalRel(iso)) }}</span>
+            </div>
+          </div>
+        </div>
+        <div v-if="focusedAssignment.alternatives?.length" class="alts">
+          <div class="alts-label">
+            Close alternatives
+            <span class="alts-count">{{ focusedAssignment.alternatives.length }}</span>
+          </div>
+          <div class="alts-list">
+            <div
+              v-for="(alt, i) in focusedAssignment.alternatives"
+              :key="i"
+              class="alt"
+              v-tooltip.left="altTooltip(alt)"
+            >
+              <span class="f">{{ alt.assigned_formula || alt.ion_formula || '?' }}</span>
+              <span class="s">
+                <span v-if="alt.fit_score != null"
+                  >fit {{ formatFit(alt.fit_score)
+                  }}<span v-if="alt.mz_error_ppm != null">
+                    &middot; {{ num.mzError.format(alt.mz_error_ppm) }} ppm</span
+                  ></span
+                >
+                <span v-else-if="alt.plausibility != null">plaus {{ formatFit(alt.plausibility) }}</span>
+                <span v-else class="no-stats"><span class="pi ph ph-info" /></span>
+              </span>
+            </div>
+          </div>
+        </div>
+        <div class="verify">
+          <div class="alts-label">Verification</div>
+          <div v-if="verification && !editing" class="verify-current">
+            <BaseVerdictBadge :record="verification" />
+            <Button
+              v-if="!denied"
+              label="edit"
+              size="small"
+              text
+              severity="secondary"
+              icon="pi ph ph-pencil-simple"
+              v-tooltip.top="'Change the verdict'"
+              @click="startEdit"
             />
-          </template>
-        </Column>
-        <Column>
-          <template #body="{ data }">
-            <PopoverTargetCompoundAdd
-              :formula="data.target_compound_formula"
-              :formula-editable="false"
+          </div>
+          <template v-else-if="showVerifyForm">
+            <div class="verify-buttons">
+              <Button
+                label="Confirm"
+                icon="pi ph ph-check-circle"
+                size="small"
+                severity="success"
+                :disabled="submitting || !evidenceLevel"
+                :loading="submitting && pendingVerdict === 'confirmed'"
+                v-tooltip.top="!evidenceLevel ? 'Pick an evidence level to confirm' : ''"
+                @click="submitVerdict('confirmed')"
+              />
+              <Button
+                label="Reject"
+                icon="pi ph ph-x-circle"
+                size="small"
+                severity="danger"
+                :disabled="submitting"
+                :loading="submitting && pendingVerdict === 'rejected'"
+                @click="submitVerdict('rejected')"
+              />
+              <Button
+                label="Unsure"
+                icon="pi ph ph-question"
+                size="small"
+                severity="secondary"
+                :disabled="submitting"
+                :loading="submitting && pendingVerdict === 'unsure'"
+                @click="submitVerdict('unsure')"
+              />
+            </div>
+            <Select
+              v-model="evidenceLevel"
+              :options="EVIDENCE_LEVELS"
+              optionLabel="label"
+              optionValue="value"
+              placeholder="Evidence level (required to confirm)"
+              size="small"
+              showClear
+              fluid
             />
+            <InputText v-model="note" placeholder="Note (optional)" size="small" fluid />
+            <div v-if="editing" class="verify-edit-actions">
+              <Button
+                label="Cancel"
+                size="small"
+                text
+                severity="secondary"
+                @click="editing = false"
+              />
+            </div>
           </template>
-        </Column>
-        <template #expansion="{ data }">
-          <DataTable
-            :value="getIsotopeRows(data)"
-            dataKey="mz"
-            selectionMode="single"
-            v-model:selection="preview.peak"
-            sortField="mz"
+          <div v-else-if="denied" class="verify-denied">
+            <span class="pi ph ph-lock-simple" /> Editor access is required to verify.
+          </div>
+        </div>
+        <div class="insp-actions">
+          <Button
+            :label="showSearch ? 'Hide search' : 'Re-search'"
             size="small"
-            style="margin-left: 3rem; margin-right: 10rem"
-          >
-            <Column field="close" sortable>
-              <template #header>
-                <span class="pi pi-info-circle" v-tooltip.left="'Peak info'" />
-              </template>
-              <template #body="{ data }">
-                <span
-                  class="pi ph ph-crosshair"
-                  v-if="data.close"
-                  v-tooltip.left="'Within tolerance of searched peak'"
-                />
-              </template>
-            </Column>
-            <Column field="relative_abundance" header="Rel. Abu." sortable>
-              <template #body="{ data }">
-                {{ num.relativeAbundance.format(data.relative_abundance) }}
-              </template>
-            </Column>
-            <Column field="mz" header="Isotope m/z" sortable>
-              <template #body="{ data }">
-                {{ num.mz.format(data.mz) }}
-              </template>
-            </Column>
-            <Column field="match_mz_error" header="Error (ppm)" sortable>
-              <template #body="{ data }">
-                {{ num.mzError.format(data.match_mz_error) }}
-              </template>
-            </Column>
-            <Column field="match_score" sortable>
-              <template #header>
-                <span class="pi ph ph-seal-percent" v-tooltip="'Match score'" />
-              </template>
-              <template #body="{ data }">
-                <BaseMatchTag
-                  :match-score="data?.match_score"
-                  :match-category="data?.match_category"
-                  :alarming="data?.alarming"
-                  nofade
-                />
-              </template>
-            </Column>
-          </DataTable>
-        </template>
-      </DataTable>
-      <div
-        v-else-if="!app.data.peak.focused"
-        class="center"
-        style="width: 100%; max-width: 900px; height: 200px"
-      >
-        <div class="col" style="gap: 1rem; max-width: 45ch; text-align: center">
-          <strong>
-            <span class="pi ph ph-info" />
-            No peak selected</strong
-          >
-          <i style="opacity: 0.6">
-            Select peaks by clicking rows in the peak browser to the left, or by clicking in the
-            spectrum chart.
-          </i>
+            text
+            :severity="showSearch ? 'primary' : 'secondary'"
+            icon="pi ph ph-magnifying-glass"
+            v-tooltip.top="'Search compositions for this peak in the panel below'"
+            @click="showSearch = !showSearch"
+          />
         </div>
-      </div>
-      <div
-        v-if="app.data.peak.focused && !loading && results.length === 0"
-        class="center"
-        style="width: 100%; height: 220px"
-      >
-        <div class="col" style="gap: 1rem; max-width: 45ch; text-align: center">
-          <strong>
-            <span class="pi ph ph-info" />
-            No results found
-          </strong>
-          <i style="opacity: 0.6"> Consider broadening the m/z precision or formula range. </i>
+      </section>
+      <section v-else-if="app.data.peak.focused" class="inspector">
+        <div class="insp-head">
+          <div class="insp-formula">Unassigned</div>
+          <BaseTierTag tier="unassigned" />
         </div>
-      </div>
-      <div v-if="loading" class="center" style="width: 100%; height: 220px">
-        <div class="col">
-          <ProgressSpinner />
+        <div class="insp-sub">m/z {{ num.mz.format(app.data.peak.focused.mz) }}</div>
+        <div class="insp-actions">
+          <Button
+            :label="showSearch ? 'Hide search' : 'Re-search'"
+            size="small"
+            text
+            :severity="showSearch ? 'primary' : 'secondary'"
+            icon="pi ph ph-magnifying-glass"
+            v-tooltip.top="'Search compositions for this peak in the panel below'"
+            @click="showSearch = !showSearch"
+          />
+        </div>
+      </section>
+      <div v-else class="center no-peak">
+        <div class="col" style="gap: 0.75rem; max-width: 40ch; text-align: center; opacity: 0.6">
+          <span class="pi ph ph-cursor-click" style="font-size: 1.4rem" />
+          <i>Select a peak in the spectrum or ledger to inspect its assignment.</i>
         </div>
       </div>
     </div>
-  </Panel>
 </template>
 
 <style scoped>
-.topbar {
-  justify-content: space-between;
-  padding: 0;
-  margin: 0;
-  display: flex;
-  flex-flow: row nowrap;
-  gap: 1rem;
-  width: 100%;
+.assign-root {
+  /* Breathing room from the splitter gutter on the right. */
+  padding: 0 0.75rem 0 0;
 }
 
-:deep(.p-panel-header) {
-  display: flex !important;
+/* Peak inspector: the committed assignment for the focused peak. */
+.inspector {
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+  padding: 0.9rem 1rem;
+  border: 1px solid var(--p-content-border-color, #e3e6ec);
+  border-radius: 8px;
+  background: var(--p-content-background, transparent);
+  width: 100%;
+}
+.insp-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+}
+.insp-formula {
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 1.35rem;
+  font-weight: 700;
+}
+.insp-sub {
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 0.9rem;
+  opacity: 0.7;
+}
+.insp-sub .src {
+  text-transform: capitalize;
+}
+.evidence {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.4rem 1rem;
+}
+.ev {
+  display: flex;
+  flex-direction: column;
+  font-family: var(--font-mono, ui-monospace, monospace);
+}
+.ev .k {
+  font-size: 0.68rem;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  opacity: 0.55;
+}
+.ev .v {
+  font-size: 0.98rem;
+  font-variant-numeric: tabular-nums;
+}
+.alts {
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+}
+.alts-label {
+  font-size: 0.7rem;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  opacity: 0.55;
+}
+.alt {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 0.6rem;
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 0.86rem;
+  padding: 0.15rem 0.2rem;
+  border-bottom: 1px solid var(--p-content-border-color, #eef0f4);
+  border-radius: 3px;
+  cursor: default;
+}
+.alt:hover {
+  background: var(--p-content-hover-background, rgba(127, 127, 127, 0.12));
+}
+.alt .s {
+  opacity: 0.6;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.alt .no-stats {
+  opacity: 0.5;
+}
+.insp-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 0.5rem;
+}
+
+/* Verification (labelling) capture. Confirm / Reject / Unsure share equal width
+   -> equal prominence (reject is a first-class negative label, not an
+   afterthought). */
+.verify {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+}
+.verify-current {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+.verify-buttons {
+  display: flex;
+  gap: 0.4rem;
+}
+.verify-buttons > :deep(.p-button) {
+  flex: 1;
+}
+.verify-edit-actions {
+  display: flex;
+  justify-content: flex-end;
+}
+.verify-denied {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  font-size: 0.78rem;
+  opacity: 0.7;
+}
+
+/* Isotopologue envelope of the focused assignment (M0 + M+1, M+2 ...). */
+.isotopologues {
+  display: flex;
+  flex-direction: column;
+  gap: 0.1rem;
+}
+.iso-head,
+.iso-row {
+  display: grid;
+  /* Fixed content tracks + a trailing spacer so the numeric columns stay snug
+     instead of the m/z column stretching across the full-width card. */
+  grid-template-columns: 4.5rem 6rem 3.5rem 3.5rem 1fr;
+  gap: 0.5rem;
+  align-items: baseline;
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 0.85rem;
+  padding: 0.15rem 0.3rem;
+}
+.iso-head {
+  font-size: 0.68rem;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  opacity: 0.5;
+}
+.iso-rows {
+  display: flex;
+  flex-direction: column;
+  gap: 0.1rem;
+  max-height: 12rem;
+  overflow-y: auto;
+}
+.iso-row {
+  border-radius: 4px;
+  cursor: pointer;
+  font-variant-numeric: tabular-nums;
+}
+.iso-row:hover {
+  background: var(--p-content-hover-background, rgba(127, 127, 127, 0.12));
+}
+.iso-row.current {
+  background: color-mix(in srgb, var(--p-primary-color, #6366f1) 14%, transparent);
+}
+.iso-row .iso-label {
+  font-weight: 600;
+  display: inline-flex;
+  align-items: center;
+}
+.iso-row .iso-err,
+.iso-row .iso-rel {
+  opacity: 0.7;
+  text-align: right;
+}
+/* Right-align the numeric columns (m/z, ppm, abu.) and their headers so the
+   values form a tidy block instead of drifting apart. */
+.iso-row .iso-mz,
+.iso-head span:not(:first-child) {
+  text-align: right;
+}
+.iso-row.poor {
+  color: var(--p-surface-400, #9aa2b1);
+}
+.poor-icon {
+  color: var(--p-orange-500, #f59e0b);
+  font-size: 0.68rem;
+  margin-right: 0.2rem;
+}
+.tie-flag {
+  color: var(--p-orange-500, #f59e0b);
+  font-weight: 600;
+  font-size: 0.72rem;
+}
+.prov-flag {
+  color: var(--p-orange-500, #f59e0b);
+  font-size: 0.66rem;
+}
+/* Adduct-corroboration badge: a real compound seen via several adducts. */
+.corroboration {
+  align-self: start;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  font-size: 0.74rem;
+  padding: 0.12rem 0.55rem;
+  border-radius: 100px;
+  color: var(--p-teal-600, #0d9488);
+  background: color-mix(in srgb, var(--p-teal-500, #14b8a6) 12%, transparent);
+  border: 1px solid color-mix(in srgb, var(--p-teal-500, #14b8a6) 32%, transparent);
+  cursor: default;
+}
+.corroboration .pi {
+  font-size: 0.8rem;
+}
+.ev .v.uncal {
+  opacity: 0.55;
+  font-style: italic;
+}
+.alts-list {
+  display: flex;
+  flex-direction: column;
+  max-height: 11rem;
+  overflow-y: auto;
+}
+.alts-count {
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 0.6rem;
+  opacity: 0.6;
+  border: 1px solid var(--p-content-border-color, #e3e6ec);
+  border-radius: 100px;
+  padding: 0 0.35rem;
+  margin-left: 0.2rem;
+}
+.no-peak {
+  display: grid;
+  place-items: center;
+  min-height: 8rem;
 }
 </style>

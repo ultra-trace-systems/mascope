@@ -134,6 +134,8 @@ async def compute_match_isotopes(
             match_mz_error=np.nan,
             match_score=unmatched_isotope_params.match_score,
             sample_peak_tof=np.nan,
+            signal_to_noise=np.nan,  # carried for the v2 (SNR-aware) match score
+            is_satellite=False,  # v2 treats satellite-matched isotopologues as absent
         )
 
         # Ensure sample_peak_id dtype is an object
@@ -222,6 +224,17 @@ async def load_peaks(
         time_scan = m_compute.get_scan_timestamps(filename, polarity=polarity)
         peaks = peaks.sel(time=time_scan, method="nearest")
 
+    # Carry signal_to_noise (per m/z) as a coord on the peaks array so the SNR-aware
+    # v2 match score can use it. Defensive: any issue degrades to no-SNR (v2 proxy),
+    # never affects matching or the v1 score.
+    try:
+        for _var in ("signal_to_noise", "is_satellite"):
+            if _var in peak_timeseries:
+                vals = peak_timeseries[_var].sel(mz=peaks["mz"]).values
+                peaks = peaks.assign_coords({_var: ("mz", vals)})
+    except Exception:  # noqa: BLE001 — best-effort; degrades to no-SNR / v2 proxy
+        pass
+
     return peaks
 
 
@@ -237,11 +250,18 @@ def _parse_and_filter_peaks(peaks: "xarray.DataArray") -> dict:  # type: ignore 
     peak_intensities = peaks.mean(dim="time").values
     non_zero_mask = peak_intensities > 0
 
+    # signal_to_noise / is_satellite (per m/z) are carried as coords by load_peaks when
+    # available; pass through for the v2 score (None when absent -> v2 proxy / no-op).
+    snr = peaks["signal_to_noise"].values if "signal_to_noise" in peaks.coords else None
+    sat = peaks["is_satellite"].values if "is_satellite" in peaks.coords else None
+
     return {
         "peak_intensities": peak_intensities[non_zero_mask],
         "peak_mzs": peaks.mz.values[non_zero_mask],
         "peak_ids": peaks.peak_id.values[non_zero_mask],
         "peak_tofs": peaks.tof.values[non_zero_mask],
+        "signal_to_noise": snr[non_zero_mask] if snr is not None else None,
+        "is_satellite": sat[non_zero_mask] if sat is not None else None,
         "non_zero_mask": non_zero_mask,
     }
 
@@ -348,22 +368,21 @@ def _match_assign(match_isotope_df: pd.DataFrame, parsed_peaks: dict) -> pd.Data
     # --- Assign matched peak data to match_isotope_df ---
     matched_mask = matched_peak_indices >= 0
     matched_indices = matched_peak_indices[matched_mask]
-    match_isotope_df.loc[
-        matched_mask,
-        [
-            "sample_peak_id",
-            "sample_peak_mz",
-            "sample_peak_tof",
-            "sample_peak_intensity",
-        ],
-    ] = pd.DataFrame(
-        {
-            "sample_peak_id": peak_ids[matched_indices],
-            "sample_peak_mz": peak_mzs[matched_indices],
-            "sample_peak_tof": peak_tofs[matched_indices],
-            "sample_peak_intensity": peak_intensities[matched_indices],
-        },
-        index=match_isotope_df.index[matched_mask],
+    assign_cols = {
+        "sample_peak_id": peak_ids[matched_indices],
+        "sample_peak_mz": peak_mzs[matched_indices],
+        "sample_peak_tof": peak_tofs[matched_indices],
+        "sample_peak_intensity": peak_intensities[matched_indices],
+    }
+    # Attach the matched peaks' signal_to_noise / is_satellite when carried (for v2).
+    peak_snr = parsed_peaks.get("signal_to_noise")
+    if peak_snr is not None:
+        assign_cols["signal_to_noise"] = np.asarray(peak_snr)[matched_indices]
+    peak_sat = parsed_peaks.get("is_satellite")
+    if peak_sat is not None:
+        assign_cols["is_satellite"] = np.asarray(peak_sat)[matched_indices]
+    match_isotope_df.loc[matched_mask, list(assign_cols)] = pd.DataFrame(
+        assign_cols, index=match_isotope_df.index[matched_mask]
     )
 
     # --- Store matched peak indices for later calculations ---

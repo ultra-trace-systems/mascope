@@ -1,6 +1,6 @@
 # Mass Calibration
 
-Mass-to-charge ratio ($m/z$) [calibration](https://github.com/karsa-oy/mascope/blob/master/server/backend/src/mascope_backend/api/controllers/calibration/lib/calibration_mz_fit.py) is a critical procedure required to ensure high mass accuracy by aligning known peaks (such as reagent ions) m/zs with their theoretical m/zs.
+Mass-to-charge ratio ($m/z$) [calibration](https://github.com/ultra-trace-systems/mascope/blob/master/server/backend/src/mascope_backend/api/controllers/calibration/lib/calibration_mz_fit.py) is a critical procedure required to ensure high mass accuracy by aligning known peaks (such as reagent ions) m/zs with their theoretical m/zs.
 
 ## Candidate Selection and Matching
 
@@ -10,6 +10,9 @@ Detected peaks are extracted from the sample file and filtered based on their si
 
 Reference compounds are pulled from a calibration target collection, generating a list of exact theoretical isotopic masses based on the designated ionization mechanisms and instrument.
 Peaks are only retained if their observed mass coordinates lie within a parts-per-million refinement window relative to any target isotopic mass.
+
+On Orbitrap data, a local-dominance guard additionally rejects any candidate that lies close to a much stronger peak.
+Fourier-transform centroiding of short transients produces weak sidelobe ("satellite") peaks around every intense centroid; these can carry a high signal-to-noise ratio while being orders of magnitude weaker than their parent, and would otherwise anchor the calibration to a slightly shifted mass whenever the true calibrant falls outside the refinement window.
 
 To avoid isobaric interference, adjacent candidate peaks are checked for Full-Width at Half-Maximum (FWHM) overlap.
 Each peak is given an expected width envelope, and any overlapping pairs are discarded to keep only clean calibration points.
@@ -70,7 +73,7 @@ Once a clean set of paired calibration points is established, the pipeline branc
 
 ### Time-of-Flight (TOF) Multi-Point Calibration
 
-The [TOF architecture](https://github.com/karsa-oy/mascope/blob/master/libraries/tofwerk/src/mascope_tofwerk/calibration.py) maps ion arrival times to mass coordinates using a multi-point regression that requires a minimum of 3 calibration points. 
+The [TOF architecture](https://github.com/ultra-trace-systems/mascope/blob/master/libraries/tofwerk/src/mascope_tofwerk/calibration.py) maps ion arrival times to mass coordinates using a multi-point regression that requires a minimum of 3 calibration points. 
 An initial guess for the relationship is established by computing a linear least-squares regression between the square root of the exact target masses and their corresponding observed time-of-flight values.
 A non-linear least-squares minimization is executed using the Trust Region Reflective algorithm.
 The optimization minimizes a residual function defined as:

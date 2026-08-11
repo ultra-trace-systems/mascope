@@ -6,7 +6,7 @@ We are committed to making participation in the Mascope community a harassment-f
 
 ## Reporting
 
-Instances of unacceptable behavior may be reported to the maintainers at **support@karsa.fi**.
+Instances of unacceptable behavior may be reported to the maintainers at **support@ultratrace.eu**.
 All complaints will be reviewed and investigated promptly and fairly, and the privacy of the reporter will be respected.
 
 ## Enforcement

@@ -17,6 +17,13 @@ class CheminfoQueryBody(BaseModel):
     ionization_mechanism_ids: list[str] = Field(
         ..., description="The ionization mechanism IDs to query against"
     )
+    known_only: bool = Field(
+        False,
+        description=(
+            "When true, keep only compositions whose formula matches a known "
+            "reference compound (the suspect-screening prior). Defaults to false."
+        ),
+    )
 
 
 class CheminfoMatchedQueryBody(CheminfoQueryBody):

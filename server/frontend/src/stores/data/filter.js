@@ -11,6 +11,8 @@ export const useFilter = defineStore(`app.filter`, () => {
   const target_collection = shallowRef([])
   const match_collection = shallowRef([])
   const match_ion = shallowRef([])
+  const peak_assignment_run = shallowRef([])
+  const peak_assignment = shallowRef([])
   const dataset = shallowRef([])
 
   const allFilters = {
@@ -21,6 +23,8 @@ export const useFilter = defineStore(`app.filter`, () => {
     target_collection,
     match_collection,
     match_ion,
+    peak_assignment_run,
+    peak_assignment,
     ionization_mechanism,
     peak
   }

@@ -10,7 +10,7 @@ import { useToast } from 'primevue/usetoast'
 import { api } from '@/api'
 import { runtime } from '@/lib/runtime.js'
 import { beautifySnakeCase } from '@/lib/utils'
-import { BaseKarsaLogo } from '@/lib/base'
+import { BaseBrandLogo } from '@/lib/base'
 import BaseUpdateBanner from '@/lib/base/BaseUpdateBanner.vue'
 import { useApp } from '@/stores'
 import { useLocation } from '@/lib/location'
@@ -72,7 +72,7 @@ app.ui.notification
     style="min-height: 80vh"
   >
     <Panel style="width: 500px">
-      <BaseKarsaLogo />
+      <BaseBrandLogo />
       <div style="margin-top: 2rem" />
       <PaneOwnerSignup v-if="app.auth.requiresOwner" />
       <PaneLogin v-else />
@@ -81,7 +81,7 @@ app.ui.notification
 
   <!-- Loading - Checking authentication and registration status -->
   <div v-else class="col" style="min-height: 80vh; justify-content: center">
-    <BaseKarsaLogo />
+    <BaseBrandLogo />
     <ProgressSpinner />
     <strong>Identifying user...</strong>
   </div>

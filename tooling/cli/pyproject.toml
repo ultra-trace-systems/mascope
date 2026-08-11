@@ -1,14 +1,14 @@
 [project]
 name = "mascope_cli"
-version = "2026.7.28"
+version = "2026.8.11"
 description = "Mascope's operations CLI: install, launch and back up a Mascope deployment."
 classifiers = [
     "Topic :: Scientific/Engineering :: Atmospheric Science",
     "Topic :: Software Development :: Libraries :: Python Modules",
 ]
-authors = [{ name = "Karsa Oy", email = "support@karsa.fi" }]
+authors = [{ name = "Ultra Trace Systems Oy", email = "support@ultratrace.eu" }]
 maintainers = [
-    { name = "Oskari Kausiala", email = "oskari.kausiala@karsa.fi" },
+    { name = "Oskari Kausiala", email = "oskari.kausiala@ultratrace.eu" },
 ]
 license.text = "Apache-2.0"
 readme = "README.md"
@@ -16,9 +16,9 @@ requires-python = ">=3.12,<3.13"
 # Operator surface only (init, prod, env, demo, logs, cert). Developer
 # commands live behind the `dev` extra and a source-checkout gate in main.py.
 dependencies = [
-    # >=2026.7.28: `logs query` passes the service/json_output kwargs added
-    # to RuntimeLogging.query in that release.
-    "mascope_runtime[logs]>=2026.7.28",
+    # >=2026.8.11: MetaConfig carries the peak_assignment flag added in that
+    # release, which the bundled base.mascope.toml now sets.
+    "mascope_runtime[logs]>=2026.8.11",
     "typer>=0.27.0,<0.28",
     "rich>=15.0.0,<16",
 ]
@@ -27,13 +27,15 @@ dependencies = [
 mascope = "mascope_cli.main:app"
 
 [project.optional-dependencies]
-# `mascope dev migrate` / `mascope dev db` / `mascope fleet` — monorepo
+# `mascope dev migrate` / `mascope dev db` / `mascope fleet` / `mascope reference`
+# — monorepo
 # development only.
 dev = [
     "alembic>=1.18.1",
     "sqlalchemy~=2.0",
     "psycopg2-binary>=2.9.12",
     "pyyaml>=6,<7",
+    "mascope_reference",
 ]
 # `mascope demo build-bundle` / `verify` peak comparison (imported lazily).
 demo = [
@@ -42,10 +44,10 @@ demo = [
 ]
 
 [project.urls]
-homepage = "https://karsa.fi/"
-repository = "https://github.com/karsa-oy/mascope"
-"Bug Tracker" = "https://github.com/karsa-oy/mascope/issues"
+homepage = "https://ultratrace.eu/"
+repository = "https://github.com/ultra-trace-systems/mascope"
+"Bug Tracker" = "https://github.com/ultra-trace-systems/mascope/issues"
 
 [build-system]
-requires = ["uv_build>=0.11.32,<0.12"]
+requires = ["uv_build>=0.12.1,<0.13"]
 build-backend = "uv_build"

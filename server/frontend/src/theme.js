@@ -13,7 +13,7 @@ const semantic = (color) =>
 
 export default definePreset(Aura, {
   primitive: Object.fromEntries(
-    ['mossgreen', 'burgundyred', 'coolgrey', 'warmgrey', 'lightblue'].map((color) => [
+    ['safetyorange', 'charcoal', 'offwhite'].map((color) => [
       color,
       Object.fromEntries(
         palette
@@ -23,18 +23,18 @@ export default definePreset(Aura, {
     ])
   ),
   semantic: {
-    primary: semantic('mossgreen'),
+    primary: semantic('safetyorange'),
     colorScheme: {
       dark: {
         surface: {
           0: '#ffffff',
-          ...semantic('coolgrey')
+          ...semantic('charcoal')
         }
       },
       light: {
         surface: {
           0: '#ffffff',
-          ...semantic('warmgrey')
+          ...semantic('offwhite')
         }
       }
     }

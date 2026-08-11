@@ -21,6 +21,9 @@ from mascope_backend.db import configure_database_engine, dispose_engine
 from mascope_backend.db.admin.batch.reset_processing_status import (
     reset_stuck_processing_batches,
 )
+from mascope_backend.db.admin.peak_assignments.reset_running_runs import (
+    reset_running_peak_assignment_runs,
+)
 from mascope_backend.runtime import runtime
 from mascope_file.gc import gc_filestore
 
@@ -61,6 +64,9 @@ async def init_main_process() -> None:
     try:
         runtime.logger.info("Main process: resetting stuck processing batches")
         await reset_stuck_processing_batches()
+
+        runtime.logger.info("Main process: resetting interrupted assignment runs")
+        await reset_running_peak_assignment_runs()
 
         runtime.logger.info("Main process: initializing acquisition datasets")
         await create_acquisition_datasets()

@@ -1,14 +1,32 @@
 <script setup>
-import { watch, computed, provide } from 'vue'
+import { ref, watch, computed, provide } from 'vue'
 
 import { useWindowSize } from '@vueuse/core'
 
+import SelectButton from 'primevue/selectbutton'
+
 import { useApp } from '@/stores'
+import { peakAssignmentEnabled } from '@/lib/features'
 
 import MatchCollectionTable from './MatchCollectionTable.vue'
 import MatchIonTable from './MatchIonTable.vue'
+import PaneBrowserAssignment from './PaneBrowserAssignment.vue'
 
 const app = useApp()
+
+// Coexistence toggle: the legacy targeted view vs. the peak-centric assignment
+// ledger. Targeted is on a retire path (docs/dev/peak_assignment_frontend.md).
+const MODE_KEY = 'mascope.browserMatch.mode'
+// With peak-centric assignment off there is only the targeted view, so the
+// toggle is hidden and the mode is pinned regardless of any stored preference.
+const mode = ref(
+  peakAssignmentEnabled ? localStorage.getItem(MODE_KEY) || 'targets' : 'targets'
+)
+const modeOptions = [
+  { label: 'Targets', value: 'targets' },
+  { label: 'Assignments', value: 'assignments' }
+]
+watch(mode, (value) => localStorage.setItem(MODE_KEY, value))
 
 /**
  * Utility function to allow scrolling to matches in the watchers below
@@ -94,6 +112,39 @@ provide('match-table-height', tableHeight)
 </script>
 
 <template>
-  <MatchIonTable v-if="app.data.match.collection.focused" />
-  <MatchCollectionTable v-else />
+  <div class="browser-switch">
+    <div v-if="peakAssignmentEnabled" class="switch-bar">
+      <SelectButton
+        v-model="mode"
+        :options="modeOptions"
+        optionLabel="label"
+        optionValue="value"
+        :allowEmpty="false"
+        size="small"
+      />
+    </div>
+    <PaneBrowserAssignment v-if="mode === 'assignments'" />
+    <template v-else>
+      <MatchIonTable v-if="app.data.match.collection.focused" />
+      <MatchCollectionTable v-else />
+    </template>
+  </div>
 </template>
+
+<style scoped>
+.browser-switch {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+}
+.switch-bar {
+  display: flex;
+  justify-content: center;
+  padding: 0.35rem;
+}
+.browser-switch > :not(.switch-bar) {
+  flex: 1 1 auto;
+  min-height: 0;
+}
+</style>

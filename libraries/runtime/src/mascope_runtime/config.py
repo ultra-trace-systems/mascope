@@ -43,6 +43,11 @@ class MetaConfig(BaseModel):
     description: str = "Mascope configuration"  # Description for `mascope env list`
     api_port: int = 8090  # API port
     filestore: str = r"./filestore"  # filestore path
+    # Peak-centric assignment (docs/dev/peak_assignment_paradigm.md). Off by
+    # default so the targeted workflow stays exactly as it was; the backend
+    # reads it via `peak_assignment_enabled()` and the frontend via
+    # `runtime.meta`, so one switch gates both sides.
+    peak_assignment: bool = False
 
 
 class DatabaseConfig(BaseModel):

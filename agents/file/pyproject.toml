@@ -2,7 +2,7 @@
 name = "mascope_file_agent"
 version = "0.0.0"
 description = "Mascope's instrument machine agent. Sends sample files to the Mascope server."
-authors = [{ name = "Karsa Oy", email = "support@karsa.fi" }]
+authors = [{ name = "Ultra Trace Systems Oy", email = "support@ultratrace.eu" }]
 requires-python = ">=3.12,<3.13"
 license = "Apache-2.0"
 dependencies = [

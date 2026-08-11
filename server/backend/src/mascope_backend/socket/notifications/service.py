@@ -192,6 +192,27 @@ async def send_progress_user_notification(
                 f"Copying sample {item_index + 1}/{total_samples} to new batch."
             )
 
+    # Single-sample peak assignment drives its own progress bar. When nested
+    # under a batch assignment (parent_id set) the batch-level bar tracks
+    # progress instead, so the per-sample stream stays quiet and does not stack
+    # a jumble of overlapping bars.
+    if (
+        notification_copy.type == "assign_sample_peaks"
+        and increment
+        and notification_copy.parent_id is None
+    ):
+        notification_copy.progress = increment * 100
+
+    if notification_copy.type == "assign_sample_batch_peaks":
+        if total_samples is not None and item_index is not None:
+            # increment is None on the pre-sample tick and 1.0 once the sample is
+            # assigned, so the bar steps from item_index/N to (item_index + 1)/N.
+            inc = increment if increment is not None else 0.0
+            notification_copy.progress = ((item_index + inc) / total_samples) * 100
+            notification_copy.message = (
+                f"Assigning peaks, processing sample {item_index + 1}/{total_samples}"
+            )
+
     # Emit to all specified rooms with optional smart routing
     for room_id in room_ids:
         await emit_user_notification(

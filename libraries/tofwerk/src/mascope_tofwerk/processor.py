@@ -51,6 +51,21 @@ class H5Processor(BaseFileProcessor):
         return self._strip_filepath(self.file_to_process)
 
     @property
+    def acquisition_params(self) -> dict:
+        """Acquisition parameters reported by the instrument.
+
+        Not implemented for TofDaq h5 files yet, so reported as empty. The h5
+        root attributes and the untouched ``Instrument Data`` group (voltages,
+        pressures, temperatures) are the natural source when the Orbitrap
+        capture has shown which parameters are worth modelling; there is no
+        committed h5 fixture to develop it against today.
+
+        :return: Empty dict
+        :rtype: dict
+        """
+        return {}
+
+    @property
     def _is_blank_measurement(self) -> bool:
         """Determine if the file being processed is a blank/zero measurement
 

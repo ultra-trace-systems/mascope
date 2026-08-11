@@ -33,9 +33,11 @@ import asyncio
 from sqlalchemy import select
 
 from mascope_backend.db import (
+    MatchIon,
     MatchIsotope,
     SampleFile,
     SampleItem,
+    TargetIon,
     TargetIsotope,
     async_session,
     configure_database_engine,
@@ -99,6 +101,47 @@ def get_golden_peaks() -> list[dict]:
     :return: One dict per found isotope peak.
     """
     return asyncio.run(_query_golden_peaks())
+
+
+async def _query_golden_ions() -> list[dict]:
+    """Read the per-ION match scores from the active database, ordered stably.
+
+    This is the level at which the consolidated v2 match score operates (the
+    legacy per-isotopologue ``MatchIsotope.match_score`` is unchanged by it), so a
+    golden ``ions.parquet`` is needed to compare v1 vs v2 scoring."""
+    await configure_database_engine()
+    stmt = (
+        select(
+            SampleFile.filename,
+            MatchIon.target_ion_id,
+            TargetIon.target_ion_formula,
+            MatchIon.match_score,
+            MatchIon.match_category,
+        )
+        .join(TargetIon, TargetIon.target_ion_id == MatchIon.target_ion_id)
+        .join(SampleItem, SampleItem.sample_item_id == MatchIon.sample_item_id)
+        .join(SampleFile, SampleFile.sample_file_id == SampleItem.sample_file_id)
+        .where(MatchIon.match_score > 0)
+        .order_by(SampleFile.filename, TargetIon.target_ion_formula)
+    )
+    async with async_session() as session:
+        rows = (await session.execute(stmt)).all()
+
+    return [
+        {
+            "filename": row.filename,
+            "target_ion_id": row.target_ion_id,
+            "target_ion_formula": row.target_ion_formula,
+            "match_score": row.match_score,
+            "match_category": row.match_category,
+        }
+        for row in rows
+    ]
+
+
+def get_golden_ions() -> list[dict]:
+    """Fetch the golden per-ION match rows (the level the v2 score operates at)."""
+    return asyncio.run(_query_golden_ions())
 
 
 def main() -> None:

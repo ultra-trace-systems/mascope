@@ -3,6 +3,9 @@
 import re
 from typing import Any
 
+from mascope_backend.api.new.peak_assignments.config import (
+    peak_assignment_enabled as _peak_assignment_enabled,
+)
 from mascope_backend.runtime import runtime
 from mascope_backend.socket.records import emit_record_reload
 
@@ -117,6 +120,12 @@ async def handle_reloads(
     :param result: Controller function result
     """
     for record_type, room_key in reload_events:
+        if record_type == "peak_assignment" and not _peak_assignment_enabled():
+            # The reload lists are static decorator args, so the ingest
+            # controllers declare this reload unconditionally - but with the
+            # feature off no assignment can be written, so the event would be
+            # pure noise on every ingest for a deployment that never opted in.
+            continue
         rooms = resolve_rooms(room_key, kwargs, result)
         if not rooms:
             # INFO: fires on every affected API call while a route's reload

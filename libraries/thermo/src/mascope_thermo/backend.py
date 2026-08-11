@@ -22,6 +22,7 @@ reader_pipeline.md``.
 
 from __future__ import annotations
 
+import math
 import os
 import re
 from datetime import datetime
@@ -97,6 +98,18 @@ class ReaderBackend(Protocol):
         ms_type: MsType | None = "Ms",
     ) -> dict:
         """Per-scan trailer table ``{"header_labels": [...], "settings": {...}}``."""
+        ...
+
+    def acquisition_parameters(self, max_scans: int = ...) -> dict:
+        """Method-level acquisition parameters sampled from the per-scan trailer.
+
+        Returns ``{"source", "scans_sampled", "constant", "varying"}`` -- see
+        :func:`_summarize_acquisition_parameters`. This is deliberately an
+        untyped capture of whatever the instrument reports rather than a fixed
+        field set: it exists to record what acquisitions actually carry, so a
+        structured acquisition-method schema can later be designed from
+        evidence instead of guesswork.
+        """
         ...
 
     def scan_statistics(
@@ -291,6 +304,95 @@ _OTF_TRAILER_FIELDS = (
     ("isolation_width", "Isolation Width (m/z)"),
     ("collision_energy", "Collision Energy"),
 )
+
+# Default number of scans sampled by acquisition_parameters(). The trailer is
+# read per scan, so this is a cost/confidence trade: enough spread to catch a
+# value that drifts over the run, few enough to stay negligible against peak
+# detection.
+_ACQUISITION_PARAM_SCANS = 5
+
+
+def _json_safe(value):
+    """Coerce a trailer value into something ``json.dump`` can write.
+
+    Trailer values arrive as plain scalars from OpenTFRaw, as boxed .NET types
+    from the Thermo DLLs, and occasionally as numpy scalars. ``.props`` is
+    written with ``json.dump``, so anything not natively serializable is
+    stringified rather than allowed to fail the whole file.
+    """
+    if isinstance(value, (bytes, bytearray)):
+        return bytes(value).decode("utf-8", errors="replace")
+    # numpy (and .NET) scalars expose .item(); unwrap before the isinstance
+    # checks below, since np.int64/np.bool_ do not subclass int/bool.
+    if hasattr(value, "item") and not isinstance(value, (str, bool, int, float)):
+        try:
+            value = value.item()
+        except Exception:
+            return str(value)
+    if value is None or isinstance(value, (bool, int, str)):
+        return value
+    if isinstance(value, float):
+        # NaN/Infinity are accepted by Python's json but are not valid JSON.
+        return value if math.isfinite(value) else str(value)
+    return str(value)
+
+
+def _sample_evenly(items: list, count: int) -> list:
+    """Up to *count* items spread evenly across *items*, endpoints included."""
+    if count <= 0 or not items:
+        return []
+    if len(items) <= count:
+        return list(items)
+    step = (len(items) - 1) / (count - 1) if count > 1 else 0
+    return [items[round(i * step)] for i in range(count)]
+
+
+def _summarize_acquisition_parameters(source: str, per_scan: list[dict]) -> dict:
+    """Split sampled per-scan trailers into method-level and per-scan parameters.
+
+    A trailer mixes settings that describe the acquisition *method* (resolution,
+    AGC target, source voltages, application mode) with values measured per
+    *scan* (ion injection time, charge state, precursor m/z). Only keys whose
+    value is identical across every sampled scan are reported under
+    ``constant`` -- those are the method-level candidates. Keys that differed
+    are reported by name only under ``varying``, because one scan's measurement
+    is not method metadata and storing it would invite exactly that mistake.
+
+    Values are kept verbatim, so their type depends on the backend: Thermo's
+    ``GetTrailerExtraInformation().Values`` is a .NET ``string[]`` and reports
+    everything as text, while OpenTFRaw parses the same trailer into typed
+    scalars. Normalising them here would mean deciding the type of 70+
+    heterogeneous instrument fields, which is the schema call this capture
+    exists to defer -- hence ``source``, so a reader can normalise per backend.
+
+    :param source: Backend that produced the trailers ("opentfraw"/"thermo").
+    :param per_scan: Trailer dicts, one per sampled scan.
+    :return: ``{"source", "scans_sampled", "constant", "varying"}``
+    :rtype: dict
+    """
+    per_scan = [scan for scan in per_scan if scan]
+    if not per_scan:
+        return {"source": source, "scans_sampled": 0, "constant": {}, "varying": []}
+
+    first, *rest = per_scan
+    constant = {key: _json_safe(value) for key, value in first.items()}
+    varying: set[str] = set()
+
+    for scan in rest:
+        for key in list(constant):
+            if key not in scan or _json_safe(scan[key]) != constant[key]:
+                del constant[key]
+                varying.add(key)
+        # A key absent from the first scan cannot be treated as constant.
+        varying.update(key for key in scan if key not in constant)
+
+    return {
+        "source": source,
+        "scans_sampled": len(per_scan),
+        "constant": constant,
+        "varying": sorted(varying),
+    }
+
 
 # Output grid resolution (constant ppm) for average_profile. Fine enough to
 # sample per-peak FWHM (~4-8 ppm on Orbitrap) at many points while collapsing
@@ -505,6 +607,14 @@ class ThermoBackend:
                 header_labels = list(header.Labels)
             settings[i] = list(header.Values)
         return {"header_labels": header_labels, "settings": settings}
+
+    def acquisition_parameters(self, max_scans: int = _ACQUISITION_PARAM_SCANS) -> dict:
+        selector = self._selector(None, None, None, "Ms")
+        per_scan = []
+        for i in _sample_evenly(list(selector.scan_indices_1based), max_scans):
+            header = self._raw.GetTrailerExtraInformation(i)
+            per_scan.append(dict(zip(list(header.Labels), list(header.Values))))
+        return _summarize_acquisition_parameters("thermo", per_scan)
 
     def scan_statistics(
         self,
@@ -1033,6 +1143,19 @@ class OpenTFRawBackend:
             for s in selected
         }
         return {"header_labels": header_labels, "settings": settings}
+
+    def acquisition_parameters(self, max_scans: int = _ACQUISITION_PARAM_SCANS) -> dict:
+        # scan_parameters() is the instrument's own trailer-extra table -- far
+        # richer than the typed subset _OTF_TRAILER_FIELDS surfaces (tens of
+        # entries: application mode, FT resolution, AGC target, S-Lens RF, FAIMS
+        # state, source CID). Read it directly rather than widening
+        # _OTF_TRAILER_FIELDS, whose shape scan_acquisition_settings() pins.
+        scan_numbers = [int(s["scan_number"]) for s in self._selected(ms_type="Ms")]
+        per_scan = [
+            self._raw.scan_parameters(n) or {}
+            for n in _sample_evenly(scan_numbers, max_scans)
+        ]
+        return _summarize_acquisition_parameters("opentfraw", per_scan)
 
     def scan_statistics(
         self,

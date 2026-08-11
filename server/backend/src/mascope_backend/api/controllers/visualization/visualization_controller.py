@@ -74,6 +74,38 @@ async def visualize_ion_focus(
     isotope_task = _fetch_isotopes(sample_item_id, target_ion_id)
     sample, isotopes = await asyncio.gather(sample_task, isotope_task)
 
+    await emit_isotope_visualization(
+        sample,
+        isotopes,
+        peak_min_intensity=peak_min_intensity,
+        mz_tolerance=mz_tolerance,
+        isotope_ratio_tolerance=isotope_ratio_tolerance,
+        user_id=user_id,
+        sid=sid,
+    )
+
+
+async def emit_isotope_visualization(
+    sample: Sample,
+    isotopes: list,
+    *,
+    peak_min_intensity: float,
+    mz_tolerance: float,
+    isotope_ratio_tolerance: float,
+    user_id: int | None,
+    sid: str | None,
+) -> None:
+    """Compute and emit the sum-spectrum and time-series traces for a set of
+    isotopes against a sample.
+
+    The isotope source is deliberately abstracted: `visualize_ion_focus` passes
+    the persisted target ion's matched isotopes, while the peak-centric engine
+    passes isotopes computed on the fly from an assigned composition (so an
+    untargeted assignment - which has no target_ion_id - can still be verified in
+    the Fit view). Each isotope must carry the attributes `_process_isotope`
+    reads: mz, relative_abundance, target_isotope_id, sample_peak_mz,
+    sample_peak_intensity, match_score, match_mz_error, match_abundance_error.
+    """
     # -- Extract data for IsotopeContext --- #
     (
         peak_timeseries,

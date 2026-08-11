@@ -10,13 +10,16 @@ import Ripple from 'primevue/ripple'
 
 import 'primeicons/primeicons.css'
 import '@phosphor-icons/web/regular'
-// Self-hosted Inter (weight 400, matching the former Google Fonts stylesheet);
-// fonts must not be fetched from third-party CDNs (GDPR: IP disclosure to Google)
-import '@fontsource/inter'
+// Self-hosted IBM Plex Sans (brand-guideline weights: 400 body, 500 labels,
+// 700 headings); fonts must not be fetched from third-party CDNs (GDPR: IP
+// disclosure to Google)
+import '@fontsource/ibm-plex-sans/400.css'
+import '@fontsource/ibm-plex-sans/500.css'
+import '@fontsource/ibm-plex-sans/700.css'
 
 import App from './App.vue'
 import router from './routes'
-import Karsa from './theme.js'
+import UltraTrace from './theme.js'
 
 import { useHelp } from './stores/ui/help'
 
@@ -29,7 +32,7 @@ app.use(router)
 app.use(PrimeVue, {
   // theme
   theme: {
-    preset: Karsa,
+    preset: UltraTrace,
     options: {
       prefix: 'p',
       darkModeSelector: '.darkmode',

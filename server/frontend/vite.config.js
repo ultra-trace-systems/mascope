@@ -33,6 +33,10 @@ export default defineConfig({
   server: {
     // expose dev server to local network if option is set
     host: process.env.MASCOPE_DEVHOST ? '0.0.0.0' : 'localhost',
+    // accept tailnet hostnames, so an instance on a remote agent host can be
+    // browsed from other tailnet machines via `tailscale serve` (which proxies
+    // to localhost, but forwards the *.ts.net Host header)
+    allowedHosts: ['.ts.net'],
     // listen port; overridden per-instance so several checkouts can run
     // their own dev server on one machine (see `mascope dev run --instance`)
     port: Number(process.env.MASCOPE_FRONTEND_PORT) || 5173,

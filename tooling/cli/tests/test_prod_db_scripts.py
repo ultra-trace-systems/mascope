@@ -58,3 +58,19 @@ def test_uses_the_current_dockerfile_path_first():
     assert (
         "/root/.local/share/uv/tools/mascope/bin/python" in scripts._PYTHON_CANDIDATES
     )
+
+
+def test_prune_env_vars_are_forwarded_into_the_container():
+    # The prod runner only passes allowlisted env vars through `docker exec -e`;
+    # a var missing from the list is silently unset inside the container. For
+    # the prune script that silence is dangerous: the documented
+    # MASCOPE_PRUNE_DRY_RUN=1 recipe would delete for real. Guard every var
+    # prune_peak_assignment_runs reads (see its `run()` in
+    # mascope_backend/db/scripts/prune_peak_assignment_runs.py).
+    for var in (
+        "MASCOPE_PRUNE_DRY_RUN",
+        "MASCOPE_PRUNE_KEEP_PER_SAMPLE",
+        "MASCOPE_PRUNE_KEEP_FAILED_HOURS",
+        "MASCOPE_PRUNE_KEEP_RUNNING_HOURS",
+    ):
+        assert var in scripts._FORWARDED_ENV_VARS

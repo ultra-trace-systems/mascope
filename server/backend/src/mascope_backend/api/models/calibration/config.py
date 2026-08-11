@@ -21,9 +21,13 @@ class CalibrationConfig(BaseModel):
     TOF_DEFAULT_REFINE_WINDOW: int = 100
     TOF_SNR_THRESHOLD: float = 10.0
 
-    # Orbi calibration parameters
+    # Orbi calibration parameters. The refine window must be wide enough to
+    # contain the true calibrant centroid under a realistic instrument-side
+    # calibration offset (offsets beyond 10 ppm occur in practice); when the
+    # true centroid is outside the window, the only in-window candidates are
+    # its FTMS sidelobes and the fit anchors to the wrong m/z.
     ORBI_MZ_ERROR_TOLERANCE: int = 5  # in ppm
-    ORBI_DEFAULT_REFINE_WINDOW: int = 10
+    ORBI_DEFAULT_REFINE_WINDOW: int = 50
     ORBI_SNR_THRESHOLD: float = 50.0
 
 

@@ -41,7 +41,7 @@ def test_replace_atom_with_isotope():
     # Cases that should raise ValueError
     error_cases = [
         ("C6H12O6+", "15N"),  # no nitrogen in formula
-        ("C6H12O6+", "Karsa"),  # invalid isotope label
+        ("C6H12O6+", "Ultra"),  # invalid isotope label
     ]
     for ion, isotope_label in error_cases:
         with pytest.raises(ValueError):

@@ -1,10 +1,18 @@
 # Target Isotope Matching
 
+> **This page describes the legacy *targeted* match** (do these known compounds appear in
+> the sample?), which remains the default for the target-matching workflow. The peak-first
+> question — assign a composition and a confidence to *every* peak — and the consolidated
+> **fit score** that scores it are described in
+> [Peak Assignment & Identification Confidence](peak-assignment.md). The isotope-level
+> scoring below is being superseded by that fit score (see
+> [the "Fit score" note](#a-note-on-scoring-the-fit-score) at the end of this page).
+
 --8<-- "_help/matching.md"
 
-The [isotope matching](https://github.com/karsa-oy/mascope/blob/master/libraries/match/src/mascope_match/compute/isotopes.py) workflow establishes high-confidence links between a predefined list of target compositions and detected experimental peaks in sample mass spectra.
+The [isotope matching](https://github.com/ultra-trace-systems/mascope/blob/master/libraries/match/src/mascope_match/compute/isotopes.py) workflow establishes high-confidence links between a predefined list of target compositions and detected experimental peaks in sample mass spectra.
 
-The procedure should be distinguished from unconstrained [composition assignment scoring](https://github.com/karsa-oy/mascope/blob/master/libraries/tools/src/mascope_tools/composition/finder.py) (which screens peaks against wide combinatorial formula spaces).
+The procedure should be distinguished from unconstrained [composition assignment scoring](https://github.com/ultra-trace-systems/mascope/blob/master/libraries/tools/src/mascope_tools/composition/finder.py) (which screens peaks against wide combinatorial formula spaces).
 Instead, this matching engine operates exclusively on a fixed set of target compounds, their designated ionization mechanisms, and their predictable isotopic envelopes.
 
 ## Data Pre-Filtering and Peak Extraction
@@ -53,7 +61,7 @@ If an isotope fails to find an experimental peak that satisfies all constraints,
 
 ## Multi-Level Match Scoring Architecture
 
-Once assignments are completed, the pipeline executes a [bottom-up hierarchical scoring sequence](https://github.com/karsa-oy/mascope/blob/master/server/backend/src/mascope_backend/api/controllers/match/lib/match_aggregate.py) from individual isotopes up to the global sample context, generating metrics bounded strictly between 0.0 and 1.0.
+Once assignments are completed, the pipeline executes a [bottom-up hierarchical scoring sequence](https://github.com/ultra-trace-systems/mascope/blob/master/server/backend/src/mascope_backend/api/controllers/match/lib/match_aggregate.py) from individual isotopes up to the global sample context, generating metrics bounded strictly between 0.0 and 1.0.
 
 ### Target Isotope Match Score
 For unmatched isotopes, the match score is defined as 0.0.
@@ -94,3 +102,21 @@ $$\text{matchScore}_{\text{collection}} = \max\left(\text{matchScore}_{\text{com
 Finally, the global match score assigned to an experimental sample item is established by the maximum match score among all target collections linked to it:
 
 $$\text{matchScore}_{\text{sample}} = \max\left(\text{matchScore}_{\text{collection}}\right)$$
+
+## A note on scoring: the fit score
+
+The per-isotopologue score above (a fixed mass-penalty × abundance-penalty, summed over the
+envelope) is the **legacy v1** scoring. It has three known weaknesses: it ignores predicted
+isotopologues that should have been visible but were not, it judges intensities without
+reference to noise, and its mass penalty uses a fixed window rather than the instrument's
+measured accuracy.
+
+These are all addressed by the consolidated **fit score** (`score_pattern_v2`): a Gaussian
+mass likelihood whose width is the *fitted* per-sample mass accuracy (so it is fair on both
+Orbitrap and TOF), an intensity likelihood scaled by each peak's signal-to-noise, a
+detectability gate that only penalises an absent peak when it should have been seen, and an
+abundance-weighted geometric-mean aggregation. On the reference dataset this improves both
+ranking (ROC-AUC) and calibration over v1. The fit score is the scoring engine of
+[peak assignment](peak-assignment.md); its full model, parameters and literature references
+are in the developer reference, `libraries/tools/docs/fit_score.md`. The legacy v1
+score is retained for the targeted path and documented above for reference.

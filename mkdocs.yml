@@ -34,16 +34,25 @@ theme:
   name: material
   # No web fonts: the default (Roboto) is fetched from Google Fonts at view
   # time, which leaks visits and breaks air-gapped deployments. The docs are
-  # bundled to be self-contained, so use the system font stack instead.
+  # bundled to be self-contained: IBM Plex Sans (per the Ultra Trace brand
+  # guidelines) is self-hosted from assets/fonts/ via assets/uts.css.
   font: false
+  logo: assets/logo.png
+  favicon: assets/favicon.png
   palette:
+    # `custom` disables Material's built-in color rules so the Ultra Trace
+    # brand colors in assets/uts.css take effect.
     - media: "(prefers-color-scheme: light)"
       scheme: default
+      primary: custom
+      accent: custom
       toggle:
         icon: material/weather-night
         name: Switch to dark mode
     - media: "(prefers-color-scheme: dark)"
       scheme: slate
+      primary: custom
+      accent: custom
       toggle:
         icon: material/weather-sunny
         name: Switch to light mode
@@ -54,9 +63,23 @@ theme:
     - search.suggest
     - content.code.copy
 
+extra_css:
+  - assets/uts.css
+  - assets/katex/katex.min.css
+
+# KaTeX is vendored under assets/katex/ (css + js + woff2 fonts) so math
+# renders without any CDN, keeping the docs self-contained and air-gapped.
+extra_javascript:
+  - assets/katex/katex.min.js
+  - assets/katex/contrib/auto-render.min.js
+  - assets/katex-init.js
+
 markdown_extensions:
   - admonition
   - attr_list
+  # Wraps $...$/$$...$$ for the KaTeX renderer (see extra_javascript).
+  - pymdownx.arithmatex:
+      generic: true
   - tables
   - toc:
       permalink: true
@@ -86,6 +109,7 @@ nav:
       - Peak detection: how-it-works/peak-detection.md
       - Calibration: how-it-works/calibration.md
       - Matching: how-it-works/matching.md
+      - Peak assignment: how-it-works/peak-assignment.md
   - Guides:
       - Overview: guides/index.md
       - Import data files: guides/import-files.md

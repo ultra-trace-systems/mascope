@@ -4,6 +4,7 @@ import { ref, reactive, computed, toRaw, watch, watchEffect, nextTick } from 'vu
 import { useApp } from '@/stores'
 import { usePreview } from '@/lib/panes'
 import { ToolbarIntensityScale } from '@/lib/toolbars'
+import { instrumentType as getInstrumentType } from '@/lib/utils'
 
 import BaseChartPlotly from '../BaseChartPlotly.vue'
 import { useChartData } from './data.js'
@@ -32,6 +33,13 @@ const unit = computed(() =>
   scale.value.mode == 'average' ? 'counts/s' : 'counts'
 )
 const sampleLength = computed(() => app.data.sample.focused.length) // duration in seconds
+
+// Half-width of the m/z window the spectrum zooms to on peak focus. Orbitrap
+// peaks are far narrower than TOF, so a tight window keeps the selected
+// isotopologue centered instead of showing a wide, mostly-empty span.
+const mzHalfWindow = computed(() =>
+  getInstrumentType(app.data.sample.focused?.instrument) === 'tof' ? 0.3 : 0.05
+)
 
 const traces = computed(() =>
   scale.value.mode === 'average'
@@ -90,7 +98,10 @@ watchEffect(() => {
     const mz = preview.peak?.mz ?? app.data.peak.focused.mz
     const factor = scale.value.mode == 'sum' ? sampleLength.value : 1
     const height = factor * app.data.peak.focused.height
-    zoom.rangeX = { range: [mz - 0.3, mz + 0.3], autorange: false }
+    zoom.rangeX = {
+      range: [mz - mzHalfWindow.value, mz + mzHalfWindow.value],
+      autorange: false
+    }
     zoom.rangeY = scale.value.log
       ? { range: null, autorange: true }
       : { range: [0, height * 1.2], autorange: false }

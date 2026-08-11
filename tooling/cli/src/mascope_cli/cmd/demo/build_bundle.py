@@ -122,6 +122,20 @@ def _opentfraw_version() -> str | None:
     return None
 
 
+def _match_score_version() -> int | None:
+    """The match-score implementation behind expected/ions.parquet (1 = legacy
+    Sum(score*rel_ab), 2 = consolidated mascope_tools v2), so a bundle self-identifies
+    which scorer produced its goldens. Best-effort; None if the backend is unavailable."""
+    try:
+        from mascope_backend.api.controllers.match.lib.match_score_v2 import (
+            match_score_version,
+        )
+
+        return match_score_version()
+    except Exception:
+        return None
+
+
 def _copy_raw(raw_dir: Path, out_dir: Path) -> tuple[list[dict], list[dict]]:
     """
     Copy + de-identify raw files into ``out_dir/raw``.
@@ -364,7 +378,10 @@ def export_goldens(out_dir: Path) -> dict | None:
 
     # Lazy import: pulls the backend DB graph (needs MASCOPE_ENV + the postgres
     # secret, both present in the demo flow). Mirrors `_seed_credentials`.
-    from mascope_backend.db.scripts.export_goldens import get_golden_peaks
+    from mascope_backend.db.scripts.export_goldens import (
+        get_golden_ions,
+        get_golden_peaks,
+    )
 
     rows = get_golden_peaks()
     if not rows:
@@ -378,12 +395,24 @@ def export_goldens(out_dir: Path) -> dict | None:
     dest_dir.mkdir(parents=True, exist_ok=True)
     peaks_path = dest_dir / "peaks.parquet"
     pd.DataFrame(rows).to_parquet(peaks_path, index=False)
-
     runtime.logger.success(f"Exported {len(rows)} golden peak(s) to {peaks_path}")
-    return {
+
+    expected = {
         "peaks": "expected/peaks.parquet",
         "sha256": bundles.sha256_file(peaks_path),
     }
+
+    # Per-ION scores: this is the level the consolidated v2 match score operates at
+    # (the per-isotopologue peaks.parquet above is unchanged by it).
+    ion_rows = get_golden_ions()
+    if ion_rows:
+        ions_path = dest_dir / "ions.parquet"
+        pd.DataFrame(ion_rows).to_parquet(ions_path, index=False)
+        runtime.logger.success(f"Exported {len(ion_rows)} golden ion(s) to {ions_path}")
+        expected["ions"] = "expected/ions.parquet"
+        expected["ions_sha256"] = bundles.sha256_file(ions_path)
+
+    return expected
 
 
 def build(
@@ -470,6 +499,7 @@ def build(
         "produced_with": {
             "mascope_version": runtime.parse_version(),
             "opentfraw_version": _opentfraw_version(),
+            "match_score_version": _match_score_version(),
         },
         "raw": raw_entries,
         # Preserve hand-tuned tolerances across a refresh; default on first build.

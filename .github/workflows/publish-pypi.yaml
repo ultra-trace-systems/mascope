@@ -47,18 +47,19 @@ jobs:
         with:
           version: "0.11.2"
 
-      # mascope-sdk goes first: mascope-tools depends on it, so when a single
-      # commit bumps both, the SDK release must exist before the tools wheel
-      # is resolved and tested.
+      # Packages publish in dependency order. Each step drops its published
+      # wheel into a shared local wheelhouse (see publish-package.sh), so a
+      # later package's install check resolves a sibling bumped in the same
+      # commit locally instead of racing PyPI's index propagation.
+      #
+      # mascope-sdk goes first: mascope-tools depends on it.
       - name: Publish mascope-sdk (if the version is new)
         run: bash .github/scripts/publish-package.sh libraries/sdk mascope-sdk mascope_sdk
 
       - name: Publish mascope-tools (if the version is new)
         run: bash .github/scripts/publish-package.sh libraries/tools mascope-tools mascope_tools
 
-      # mascope-runtime before mascope-cli: the CLI depends on it, so when a
-      # single commit bumps both, the runtime release must exist before the
-      # CLI wheel is resolved and tested.
+      # mascope-runtime before mascope-cli: the CLI depends on it.
       - name: Publish mascope-runtime (if the version is new)
         run: bash .github/scripts/publish-package.sh libraries/runtime mascope-runtime mascope_runtime
 

@@ -577,6 +577,18 @@ class SampleItem(Base):
         cascade="all, delete, delete-orphan",
         passive_deletes=True,
     )
+    peak_assignment_run = relationship(
+        "PeakAssignmentRun",
+        back_populates="sample_item",
+        cascade="all, delete, delete-orphan",
+        passive_deletes=True,
+    )
+    peak_assignment = relationship(
+        "PeakAssignment",
+        back_populates="sample_item",
+        cascade="all, delete, delete-orphan",
+        passive_deletes=True,
+    )
 
 
 @event.listens_for(SampleItem, "after_update")
@@ -824,7 +836,7 @@ class TargetIsotope(Base):
     )
     target_isotope_formula: Mapped[str] = mapped_column(
         String(4096)
-    )  # lower length limit #1360 https://github.com/karsa-oy/mascope/issues/1360
+    )  # lower length limit #1360 https://github.com/ultra-trace-systems/mascope/issues/1360
     mz: Mapped[float] = mapped_column(Float)
     relative_abundance: Mapped[float] = mapped_column(Float)
     resolution: Mapped[str] = mapped_column(String(8))
@@ -1094,6 +1106,144 @@ class MatchIsotope(Base):
     )
 
 
+class PeakAssignmentRun(Base):
+    """One peak-centric assignment run over a sample.
+
+    Stores the engine version and the full configuration (search ranges,
+    heuristics, ppm tolerances, stage toggles) so runs are reproducible and
+    comparable. PeakAssignment rows belong to exactly one run.
+
+    status values: 'pending', 'running', 'completed', 'failed'.
+    """
+
+    __tablename__ = "peak_assignment_run"
+
+    peak_assignment_run_id: Mapped[str] = mapped_column(String(16), primary_key=True)
+    sample_item_id: Mapped[str] = mapped_column(
+        String(16),
+        ForeignKey("sample_item.sample_item_id", ondelete="CASCADE"),
+        index=True,
+    )
+    engine_version: Mapped[str] = mapped_column(String(64))
+    status: Mapped[str] = mapped_column(String(20), server_default=text("'pending'"))
+    config: Mapped[Optional[dict]] = mapped_column(JSON)
+    error: Mapped[Optional[str]] = mapped_column(Text)
+    peak_assignment_run_utc_created: Mapped[Optional[dt]] = mapped_column(
+        TIMESTAMP(timezone=True)
+    )
+    peak_assignment_run_utc_completed: Mapped[Optional[dt]] = mapped_column(
+        TIMESTAMP(timezone=True)
+    )
+
+    # Relationships
+    sample_item = relationship("SampleItem", back_populates="peak_assignment_run")
+    peak_assignment = relationship(
+        "PeakAssignment",
+        back_populates="peak_assignment_run",
+        cascade="all, delete, delete-orphan",
+        passive_deletes=True,
+    )
+
+
+class PeakAssignment(Base):
+    """Per-peak assignment result for one observed sample peak in a run.
+
+    The unit of result is the observed peak (identified by sample_item_id +
+    sample_peak_id, with mz/intensity/tof denormalized as in MatchIsotope).
+    The assignment may reference a known target (target_compound_id /
+    target_ion_id set, source='database') or a discovered composition
+    (source='untargeted'). Every peak of the sample gets exactly one row per
+    run - the single-owner-per-peak invariant is enforced by the unique
+    constraint on (peak_assignment_run_id, sample_peak_id).
+
+    role values: 'M0', 'iso_child', 'reagent', 'artifact', 'unassigned'.
+    source values: 'database', 'untargeted' (NULL when unassigned).
+    tier values: 'identified', 'candidate', 'below_assignability', 'unassigned'.
+    """
+
+    __tablename__ = "peak_assignment"
+
+    peak_assignment_id: Mapped[str] = mapped_column(String(32), primary_key=True)
+    peak_assignment_run_id: Mapped[str] = mapped_column(
+        String(16),
+        ForeignKey(
+            "peak_assignment_run.peak_assignment_run_id",
+            ondelete="CASCADE",
+        ),
+        index=True,
+    )
+    sample_item_id: Mapped[str] = mapped_column(
+        String(16),
+        ForeignKey("sample_item.sample_item_id", ondelete="CASCADE"),
+        index=True,
+    )
+    sample_peak_id: Mapped[str] = mapped_column(String(20), index=True)
+    sample_peak_mz: Mapped[float] = mapped_column(Float)
+    sample_peak_intensity: Mapped[float] = mapped_column(Float)
+    sample_peak_tof: Mapped[Optional[float]] = mapped_column(Float)
+    role: Mapped[str] = mapped_column(String(16), server_default=text("'unassigned'"))
+    assigned_formula: Mapped[Optional[str]] = mapped_column(String(256))
+    ion_formula: Mapped[Optional[str]] = mapped_column(String(4096))
+    ionization_mechanism_id: Mapped[Optional[str]] = mapped_column(
+        String(16),
+        ForeignKey(
+            "ionization_mechanism.ionization_mechanism_id",
+            ondelete="SET NULL",
+        ),
+        index=True,
+    )
+    isotope_label: Mapped[Optional[str]] = mapped_column(String(64))
+    # Full isotopologue formula of the matched isotope (e.g. "[15N]CH5BrNO+"),
+    # from which the UI renders the compact substitution label ("[15N]").
+    # NULL for untargeted satellites without a predicted formula and for
+    # unassigned peaks. Mirrors target_isotope.target_isotope_formula.
+    isotope_formula: Mapped[Optional[str]] = mapped_column(String(256))
+    source: Mapped[Optional[str]] = mapped_column(String(16))
+    # The fit score (mascope_tools score_pattern_v2): how well the observed data
+    # fit this assignment's predicted pattern. [0, 1], 1.0 = perfect; NULL for an
+    # unassigned peak. Named `fit_score` (not match/probability) deliberately -- it
+    # is a measurement, not an identification confidence. See fit_score.md.
+    fit_score: Mapped[Optional[float]] = mapped_column(Float)
+    mz_error_ppm: Mapped[Optional[float]] = mapped_column(Float)
+    abundance_error: Mapped[Optional[float]] = mapped_column(Float)
+    tier: Mapped[str] = mapped_column(String(24), server_default=text("'unassigned'"))
+    target_compound_id: Mapped[Optional[str]] = mapped_column(
+        String(16),
+        ForeignKey("target_compound.target_compound_id", ondelete="SET NULL"),
+        index=True,
+    )
+    target_ion_id: Mapped[Optional[str]] = mapped_column(
+        String(16),
+        ForeignKey("target_ion.target_ion_id", ondelete="SET NULL"),
+        index=True,
+    )
+    owner_peak_assignment_id: Mapped[Optional[str]] = mapped_column(
+        String(32),
+        ForeignKey("peak_assignment.peak_assignment_id", ondelete="SET NULL"),
+        index=True,
+    )
+    alternatives: Mapped[Optional[list]] = mapped_column(JSON)
+    provenance: Mapped[Optional[dict]] = mapped_column(JSON)
+
+    # Relationships
+    peak_assignment_run = relationship(
+        "PeakAssignmentRun", back_populates="peak_assignment"
+    )
+    sample_item = relationship("SampleItem", back_populates="peak_assignment")
+
+    __table_args__ = (
+        UniqueConstraint(
+            "peak_assignment_run_id",
+            "sample_peak_id",
+            name="uq_peak_assignment_run_id_sample_peak_id",
+        ),
+        CheckConstraint(
+            "fit_score IS NULL OR fit_score BETWEEN 0 AND 1",
+            name="fit_score_range",
+        ),
+    )
+
+
 class AttributeTemplate(Base):
     """Attribute template for additional sample metadata."""
 
@@ -1121,6 +1271,209 @@ class InstrumentFunction(Base):
     sample_file = relationship("SampleFile", back_populates="instrument_function")
 
 
+# ---------------------------------------------------------------------------
+# Reference chemistry databases (public-database integration)
+# ---------------------------------------------------------------------------
+
+
+class ReferenceSource(Base):
+    """One ingested public-database source at one version.
+
+    Records provenance for the mirrored reference compounds: which source, which
+    release, under what license, and how many records. A source can have several
+    rows over time (versioned loads for reproducibility); ``is_active`` marks the
+    one that queries read, and re-ingesting a source flips the previous load
+    inactive.
+    """
+
+    __tablename__ = "reference_source"
+
+    reference_source_id: Mapped[int] = mapped_column(
+        Integer, primary_key=True, autoincrement=True
+    )
+    name: Mapped[str] = mapped_column(String(64), index=True)
+    version: Mapped[str] = mapped_column(String(128))
+    license: Mapped[str] = mapped_column(String(64))
+    record_count: Mapped[int] = mapped_column(Integer, default=0)
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True, index=True)
+    ingested_at: Mapped[dt] = mapped_column(TIMESTAMP(timezone=True))
+
+    # Relationships
+    reference_compound = relationship(
+        "ReferenceCompound",
+        back_populates="reference_source",
+        cascade="all, delete",
+        passive_deletes=True,
+    )
+
+
+class ReferenceCompound(Base):
+    """One compound as it appears in one source version.
+
+    Landing table for annotation lookups: ``formula`` (canonical Hill order) and
+    ``monoisotopic_mass`` are computed on ingest and indexed so annotation is an
+    indexed lookup rather than a scan. ``inchikey`` is the cross-source dedup key.
+    One row per (compound, source) preserves provenance and the per-record
+    ``license`` (load-bearing for mixed-license sources and commercial use).
+    """
+
+    __tablename__ = "reference_compound"
+
+    reference_compound_id: Mapped[int] = mapped_column(
+        Integer, primary_key=True, autoincrement=True
+    )
+    reference_source_id: Mapped[int] = mapped_column(
+        Integer,
+        ForeignKey("reference_source.reference_source_id", ondelete="CASCADE"),
+        index=True,
+    )
+    formula: Mapped[str] = mapped_column(String(512), index=True)
+    monoisotopic_mass: Mapped[Optional[float]] = mapped_column(Float, index=True)
+    # Intrinsic charge of the stored species; NULL/0 means neutral. Recorded so
+    # permanently charged species (choline, quaternary ammoniums) can be
+    # represented, but deliberately NOT matched: Stage A pairs neutral formulas
+    # with ionization mechanisms, so charged rows are excluded from
+    # iter_known_compositions until intrinsic-charge analytes are supported
+    # (issue #1726). Nothing writes it yet - ingest still rejects
+    # charge-suffixed formulas.
+    charge: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    inchikey: Mapped[Optional[str]] = mapped_column(String(27), index=True)
+    name: Mapped[Optional[str]] = mapped_column(Text)
+    smiles: Mapped[Optional[str]] = mapped_column(Text)
+    inchi: Mapped[Optional[str]] = mapped_column(Text)
+    source_native_id: Mapped[str] = mapped_column(String(128))
+    xrefs: Mapped[Optional[dict]] = mapped_column(JSON)
+    license: Mapped[str] = mapped_column(String(64))
+
+    # Relationships
+    reference_source = relationship(
+        "ReferenceSource", back_populates="reference_compound"
+    )
+
+
+class AssignmentCalibration(Base):
+    """Stored score -> P(correct) calibration per instrument (the D6 calibration store).
+
+    Moves the assignment-confidence calibration out of the in-code registry so a curve can be
+    (re)fit per deployment -- e.g. a user runs known standards + near-mass decoys on their
+    instrument -- without a code change. Holds the Platt parameters ``a``/``b`` plus the
+    per-adduct corroboration log-odds (keyed by adduct notation, e.g. ``{"+Br-": 2.28}``) and the
+    provenance mirrored from :class:`mascope_tools.composition.calibration.Calibration`.
+
+    Keyed by ``(instrument, score_version)`` because a curve is only valid for the fit-score
+    version it was fit against; ``is_active`` marks the row the loader reads (refitting flips the
+    previous one inactive). When the table has no active row the loader falls back to the in-code
+    provisional curve, so this is additive and safe to ship empty.
+    """
+
+    __tablename__ = "assignment_calibration"
+
+    assignment_calibration_id: Mapped[int] = mapped_column(
+        Integer, primary_key=True, autoincrement=True
+    )
+    instrument: Mapped[str] = mapped_column(String(32), index=True)
+    score_version: Mapped[int] = mapped_column(Integer, index=True)
+    a: Mapped[float] = mapped_column(Float)
+    b: Mapped[float] = mapped_column(Float)
+    n_pos: Mapped[int] = mapped_column(Integer, default=0)
+    n_neg: Mapped[int] = mapped_column(Integer, default=0)
+    ece: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    source: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    provisional: Mapped[bool] = mapped_column(Boolean, default=True)
+    corroboration_weights: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True, index=True)
+    fit_utc: Mapped[Optional[dt]] = mapped_column(
+        TIMESTAMP(timezone=True), nullable=True
+    )
+    created_utc: Mapped[dt] = mapped_column(
+        TIMESTAMP(timezone=True), default=lambda: dt.now(timezone.utc)
+    )
+
+    __table_args__ = (
+        Index(
+            "ix_assignment_calibration_active",
+            "instrument",
+            "score_version",
+            "is_active",
+        ),
+    )
+
+
+class AssignmentVerification(Base):
+    """A user's verdict on a peak-centric assignment (verification-calibration loop, V1).
+
+    Human-in-the-loop confirmation/rejection of an identification: the honest source of the
+    labelled golden set that later refits the confidence calibration
+    (``docs/dev/verification_calibration_loop.md``). Append-only (keep every verdict for audit;
+    the current one is the latest by ``verified_utc``).
+
+    Keyed to the **stable identity** of what was judged -- ``sample_item_id`` + ``sample_peak_id``
+    (an observed-peak id, stable across assignment runs) + ``assigned_formula`` +
+    ``ionization_mechanism_id`` -- so a label survives re-runs that churn run-scoped rows. The
+    run-scoped ``peak_assignment_id`` / ``peak_assignment_run_id`` are provenance (the row deletes to
+    NULL on a re-run). ``fit_score`` / ``evidence`` / ``p_correct`` are **snapshotted at verification
+    time**: the calibration pair must be pinned to the score the user actually judged.
+
+    ``evidence_level`` records *why* the user is confident (the guardrail against a
+    confirmation-bias loop): a reference-standard confirmation is weighted far above a visual guess.
+    """
+
+    __tablename__ = "assignment_verification"
+
+    assignment_verification_id: Mapped[str] = mapped_column(
+        String(32), primary_key=True
+    )
+    sample_item_id: Mapped[str] = mapped_column(
+        String(16),
+        ForeignKey("sample_item.sample_item_id", ondelete="CASCADE"),
+        index=True,
+    )
+    # Provenance link to the judged assignment row; SET NULL so the label outlives a re-run.
+    peak_assignment_id: Mapped[Optional[str]] = mapped_column(
+        String(32),
+        ForeignKey("peak_assignment.peak_assignment_id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+    peak_assignment_run_id: Mapped[Optional[str]] = mapped_column(
+        String(16), nullable=True
+    )
+    # Stable identity (survives re-runs): observed peak + judged formula/adduct.
+    sample_peak_id: Mapped[str] = mapped_column(String(20), index=True)
+    assigned_formula: Mapped[Optional[str]] = mapped_column(String(256))
+    ionization_mechanism_id: Mapped[Optional[str]] = mapped_column(String(16))
+    verdict: Mapped[str] = mapped_column(String(16))
+    evidence_level: Mapped[Optional[str]] = mapped_column(String(24), nullable=True)
+    # Score snapshot at verification time (p_correct null when uncalibrated).
+    fit_score: Mapped[Optional[float]] = mapped_column(Float)
+    evidence: Mapped[Optional[float]] = mapped_column(Float)
+    p_correct: Mapped[Optional[float]] = mapped_column(Float)
+    note: Mapped[Optional[str]] = mapped_column(Text)
+    context: Mapped[Optional[dict]] = mapped_column(JSON)
+    verified_by: Mapped[Optional[int]] = mapped_column(
+        Integer, ForeignKey("user.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    verified_utc: Mapped[dt] = mapped_column(
+        TIMESTAMP(timezone=True), default=lambda: dt.now(timezone.utc)
+    )
+
+    __table_args__ = (
+        CheckConstraint(
+            "verdict IN ('confirmed', 'rejected', 'unsure')", name="verdict_valid"
+        ),
+        CheckConstraint(
+            "evidence_level IS NULL OR evidence_level IN "
+            "('reference_standard', 'msms', 'orthogonal', 'pattern', 'visual')",
+            name="evidence_level_valid",
+        ),
+        Index(
+            "ix_assignment_verification_identity",
+            "sample_item_id",
+            "sample_peak_id",
+        ),
+    )
+
+
 __all__ = [
     "Base",
     "Workspace",
@@ -1146,6 +1499,12 @@ __all__ = [
     "MatchIon",
     "MatchIsotope",
     "MatchRating",
+    "PeakAssignmentRun",
+    "PeakAssignment",
     "AttributeTemplate",
     "InstrumentFunction",
+    "ReferenceSource",
+    "ReferenceCompound",
+    "AssignmentCalibration",
+    "AssignmentVerification",
 ]

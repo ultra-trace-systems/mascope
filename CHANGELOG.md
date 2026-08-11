@@ -4,6 +4,64 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
 
 ## [Unreleased]
 
+## [1.6.0] - 2026.08.11
+
+### Added
+
+- Public chemistry database integration, phases 0-2 (foundations through suspect-screening sources). A new `mascope_reference` library mirrors free-to-use public databases (PubChem, EPA CompTox, ChEBI, HMDB, LIPID MAPS, COCONUT, NORMAN) into `reference_source` / `reference_compound` tables, normalizing every source formula to the same canonical Hill order the de novo engine uses. Ingest a versioned snapshot with `mascope reference sync <source> <dump> --version <tag>` (see `mascope reference sources` / `status`) - a source-checkout command, because it pulls the chemistry dependencies deliberately kept out of the operator CLI; a wheel-installed deployment runs the same ingest inside the backend container instead (`docker compose exec backend python -m mascope_backend.db.scripts.reference_sync ...`, see `docs/dev/reference_data_authoring.md`). Composition results can be annotated with known reference compounds sharing each formula (name, structure, cross-references, source, license), collapsed one-per-compound on InChIKey - either by passing `known_only: true` for a suspect-screening prior that keeps only formulas backed by a known compound, or by opting into peak-centric assignment. Without one of those the composition search is not annotated at all, so its response keeps exactly the shape existing SDK clients already parse. The peak-assignment table surfaces the matched identity, and `mascope demo` seeds a small illustrative reference set so the annotation is visible without downloading a public-database dump. Custom reference data - e.g. published atmospheric peak lists not yet in the public databases - can be authored as a flat CSV/TSV and loaded with `mascope reference sync custom <file> --name <list>` (see `docs/dev/reference_data_authoring.md`). De novo scoring is untouched. `reference_compound` also carries a nullable `charge` column so permanently charged species (choline, quaternary ammoniums) can later be represented - recorded only: ingest still rejects charge-suffixed formulas and Stage A matches neutral formulas exclusively. Design: `docs/dev/public_database_integration.md`.
+- Peak-centric assignment (first iteration): a sample's peaks can now each be assigned a chemical composition, inverting the target-first workflow. A new background engine matches every peak against the known target library (Stage A) and runs an untargeted composition search over the unexplained remainder (Stage B), then persists one row per observed peak with formula, adduct, isotope role, evidence, and a confidence tier (`identified` / `candidate` / `below_assignability` / `unassigned`). Results are stored in the new `peak_assignment_run` / `peak_assignment` tables (single-owner-per-peak enforced per run, full config recorded for reproducibility) and served by `/api/peak-assignments/sample/{id}` endpoints. **Off by default**: set `peak_assignment = true` under `[meta]` in your env toml (or `MASCOPE_PEAK_ASSIGNMENT=1`) to enable it. Until you do, the targeted workflow is unchanged - no assignment runs on sample ingest, the composition search keeps reporting the legacy match score and its previous response shape, and the Sample tab keeps its peak ledger. The flag also gates the API writes: with it off, the `/api/peak-assignments` write routes (assign, verify, recalibrate) return 403, while the read routes stay open so ledgers written while the feature was on remain inspectable after opting out. The frontend bakes the flag in at build time, so changing it on a deployment means rebuilding the frontend image. Assignment can be launched per sample or per batch, both with a configurable run (untargeted stage on/off, m/z precision, formula range, peak and alternative caps); a **batch** run defaults to the database stage only, since its cost scales with the number of samples, and skips blank and uncalibrated samples. Each run writes one row per observed peak, so re-running assignment accumulates rows: `mascope prod db script run prune_peak_assignment_runs` reclaims superseded runs (see `docs/maintaining.md`). Design and phased plan in `docs/dev/peak_assignment_paradigm.md`.
+- Peak assignment Stage A now also matches against the reference mirror
+  (curated and public chemistry databases loaded via `mascope_reference`),
+  not just the curated target library. Reference formulas are bounded to
+  atmospheric compositions (elements in C/H/N/O/S, C <= 40, monoisotopic mass
+  <= 700 Da) and expanded through the existing ion / isotopologue path, so a
+  peak can be assigned a known composition even when no curated target covers
+  it. When a curated target wins a peak the reference identities ride alongside
+  it in `provenance.reference_identities`; when only the reference set matches,
+  the assignment carries the reference identities and null target linkage. One
+  formula can carry many identities (isomers), preserved as a one-to-many list.
+- `mascope_reference.iter_known_compositions` - a bulk provider that yields the
+  active, deduplicated known compositions (formula -> identities) for Stage A,
+  with license, element, carbon, mass, and per-formula identity-count bounds.
+- An example curated reference database,
+  `libraries/reference/examples/atmospheric_organics.csv` (79 atmospheric
+  organics with 17 shared-formula isomer sets), for exercising the reference
+  path end to end and as a template for hand-authored lists. Referenced from the
+  reference-data authoring guide.
+
+### Changed
+
+- Rebranded from Karsa to Ultra Trace: Mascope is now maintained and developed
+  by Ultra Trace Systems Oy.
+  The app carries the new Ultra Trace logo, favicon, and color theme (Safety
+  Orange primary on charcoal / off-white surfaces, per the UTS brand
+  guidelines). GitHub URLs moved to the `ultra-trace-systems` organization,
+  Docker images to `ghcr.io/ultra-trace-systems/mascope/...` (the old
+  `ghcr.io/karsa-oy` namespace no longer serves images, so older checkouts
+  should update their compose files), and contact emails to `@ultratrace.eu`.
+  The user docs carry the same branding (charcoal / Safety Orange Material
+  theme, UT logo and favicon), and both the app and the docs now use the
+  brand typeface IBM Plex Sans (replacing Inter), self-hosted as before so
+  nothing is fetched from third-party CDNs.
+- Focusing a peak in the sample spectrum now zooms to an instrument-aware
+  window: +/- 0.05 m/z on high-resolution instruments (Orbitrap), keeping the
+  previous +/- 0.3 m/z on TOF. Applies regardless of the peak assignment flag.
+
+### Fixed
+
+- LaTeX math in the user docs now actually renders (previously the raw
+  `$...$` / `$$...$$` source showed on the peak-detection, calibration,
+  matching, and instrument-function pages). Math is rendered by KaTeX,
+  vendored into the docs assets so the docs remain self-contained and
+  air-gapped - no CDN requests.
+- Removing a frontend data store's socket listener no longer detaches every
+  other store listening on the same event name; each store now unsubscribes
+  only its own handler. Cross-store reload events (e.g. shared batch reloads)
+  survive pane teardown.
+- Computed isotope match records serialize their signal-to-noise column as
+  null instead of NaN when the sample file carries no SNR data, keeping the
+  composition-search match response valid JSON.
+
 ## [1.5.0] - 2026.08.02
 
 ### Added
@@ -77,7 +135,7 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
 - The "Download File Agent installer" button in the sidebar's Settings tab
   is now always visible to editors, like the "Pair an agent" button,
   instead of appearing only while "File Agent" is the selected token type.
-- `mascope logs query --max N` now returns the N *most recent* matching
+- `mascope logs query --max N` now returns the N _most recent_ matching
   lines (still printed oldest-first) instead of the N oldest, matching the
   "show me the last N errors" intent.
 - The interactive API docs and OpenAPI schema (`/docs`, `/redoc`,
@@ -864,11 +922,11 @@ update --confirm`; `mascope prod update --snooze N` postpones it. A failed
 
 - First public release
 
-[Unreleased]: https://github.com/karsa-oy/mascope/compare/v1.3.2...master
-[v1.0.0]: https://github.com/karsa-oy/mascope/releases/tag/v1.0.0
-[v1.1.0]: https://github.com/karsa-oy/mascope/releases/tag/v1.1.0
-[v1.1.1]: https://github.com/karsa-oy/mascope/releases/tag/v1.1.1
-[v1.2.0]: https://github.com/karsa-oy/mascope/releases/tag/v1.2.0
-[v1.3.0]: https://github.com/karsa-oy/mascope/releases/tag/v1.3.0
-[v1.3.1]: https://github.com/karsa-oy/mascope/releases/tag/v1.3.1
-[v1.3.2]: https://github.com/karsa-oy/mascope/releases/tag/v1.3.2
+[Unreleased]: https://github.com/ultra-trace-systems/mascope/compare/v1.3.2...master
+[v1.0.0]: https://github.com/ultra-trace-systems/mascope/releases/tag/v1.0.0
+[v1.1.0]: https://github.com/ultra-trace-systems/mascope/releases/tag/v1.1.0
+[v1.1.1]: https://github.com/ultra-trace-systems/mascope/releases/tag/v1.1.1
+[v1.2.0]: https://github.com/ultra-trace-systems/mascope/releases/tag/v1.2.0
+[v1.3.0]: https://github.com/ultra-trace-systems/mascope/releases/tag/v1.3.0
+[v1.3.1]: https://github.com/ultra-trace-systems/mascope/releases/tag/v1.3.1
+[v1.3.2]: https://github.com/ultra-trace-systems/mascope/releases/tag/v1.3.2

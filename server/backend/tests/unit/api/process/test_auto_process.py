@@ -124,6 +124,7 @@ def _base_patches():
         ),
         "calibrate": patch(f"{_SVC}.calibrate_with_retry", new_callable=AsyncMock),
         "match": patch(f"{_SVC}.match_compute_sample", new_callable=AsyncMock),
+        "assign": patch(f"{_SVC}.auto_assign_sample_peaks", new_callable=AsyncMock),
         "fetch_affected": patch(
             f"{_SVC}.fetch_affected_sample_data", new_callable=AsyncMock
         ),
@@ -279,6 +280,8 @@ async def test_calibrates_when_calibration_collection_is_set():
         process_id="proc-001",
     )
     mocks["match"].assert_called_once()
+    # Stage-A peak assignment runs for the processed sample
+    mocks["assign"].assert_called_once()
 
 
 @pytest.mark.asyncio
@@ -319,6 +322,8 @@ async def test_skips_calibration_for_blank_file():
     mocks["calibrate"].assert_not_called()
     # Match should still run
     mocks["match"].assert_called_once()
+    # Stage-A peak assignment runs even for a blank file (the engine skips it internally)
+    mocks["assign"].assert_called_once()
 
 
 @pytest.mark.asyncio
@@ -358,6 +363,7 @@ async def test_skips_calibration_when_no_calibration_collection():
 
     mocks["calibrate"].assert_not_called()
     mocks["match"].assert_called_once()
+    mocks["assign"].assert_called_once()
 
 
 @pytest.mark.asyncio
@@ -425,6 +431,7 @@ async def test_processes_multiple_ionization_modes():
 
     assert mocks["calibrate"].call_count == 2
     assert mocks["match"].call_count == 2
+    assert mocks["assign"].call_count == 2
 
 
 @pytest.mark.asyncio

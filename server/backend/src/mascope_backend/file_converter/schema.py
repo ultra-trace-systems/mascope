@@ -6,6 +6,23 @@ class SampleFileProps(BaseModel):
 
     filename: str = Field(description="Name of the file being processed")
 
+    acquisition_params: dict = Field(
+        default_factory=dict,
+        description=(
+            "Acquisition parameters reported by the instrument, sampled from the "
+            "per-scan trailer: {source, scans_sampled, constant, varying}. "
+            "'constant' holds the values identical across every sampled scan "
+            "(the method-level candidates); 'varying' lists the names of keys "
+            "that differed, without values. Deliberately untyped and stored only "
+            "in .props -- it is evidence for designing a structured "
+            "acquisition-method schema, not itself that schema. Empty when the "
+            "reader cannot supply it. Values are stored verbatim, so their type "
+            "depends on 'source': the Thermo backend reports every trailer value "
+            "as text while OpenTFRaw parses them into typed scalars. Normalise "
+            "per 'source' when analysing across a mixed corpus."
+        ),
+    )
+
     interval: float = Field(
         description="Mean measurement interval in seconds, i.e. length of a spectrum in the sample."
     )

@@ -1,11 +1,11 @@
 {
   "name": "mascope",
   "author": {
-    "name": "www.karsa.fi",
-    "email": "support@karsa.fi"
+    "name": "www.ultratrace.eu",
+    "email": "support@ultratrace.eu"
   },
-  "description": "Karsa Mascope",
-  "homepage": "https://www.karsa.fi",
+  "description": "Ultra Trace Mascope",
+  "homepage": "https://www.ultratrace.eu",
   "version": "2.0",
   "private": true,
   "type": "module",
@@ -35,7 +35,7 @@
   },
   "dependencies": {
     "@floating-ui/vue": "^1.1.9",
-    "@fontsource/inter": "^5.3.0",
+    "@fontsource/ibm-plex-sans": "^5.3.0",
     "@phosphor-icons/web": "^2.1.2",
     "@primevue/themes": "^4.5.4",
     "@uppy/core": "^5.2.0",
@@ -43,10 +43,10 @@
     "@uppy/drop-target": "^4.1.0",
     "@uppy/tus": "^5.1.1",
     "@uppy/vue": "^3.2.0",
-    "@vueuse/core": "^14.3.0",
-    "axios": "^1.18.1",
+    "@vueuse/core": "^14.4.0",
+    "axios": "^1.19.0",
     "chart.js": "^4.5.1",
-    "pinia": "^3.0.4",
+    "pinia": "^4.0.2",
     "plotly.js-dist-min": "^3.7.0",
     "primeicons": "^8.0.0",
     "primevue": "^4.5.4",
@@ -55,7 +55,7 @@
     "vue-router": "^5.2.0"
   },
   "devDependencies": {
-    "@playwright/test": "^1.62.0",
+    "@playwright/test": "^1.62.1",
     "@rushstack/eslint-patch": "^1.16.1",
     "@types/node": "^26.1.2",
     "@vitejs/plugin-vue": "^6.0.8",
@@ -67,7 +67,7 @@
     "eslint-plugin-vue": "^10.10.0",
     "happy-dom": "^20.11.1",
     "prettier": "^3.9.6",
-    "vite": "^8.1.5",
+    "vite": "^8.2.0",
     "vitest": "^4.1.9"
   },
   "overrides": {}

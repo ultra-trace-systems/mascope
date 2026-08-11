@@ -7,12 +7,12 @@ classifiers = [
     "Topic :: Software Development :: Libraries :: Python Modules",
 ]
 authors = [
-    { name = "Oskari Kausiala", email = "oskari.kausiala@karsa.fi" },
-    { name = "Philip Chernonog", email = "philip.chernonog@karsa.fi" },
-    { name = "Konstantin Tumashevich", email = "konstantin.tumashevich@karsa.fi" },
+    { name = "Oskari Kausiala", email = "oskari.kausiala@ultratrace.eu" },
+    { name = "Philip Chernonog" },
+    { name = "Konstantin Tumashevich" },
     ]
 maintainers = [
-    { name = "Oskari Kausiala", email = "oskari.kausiala@karsa.fi" },
+    { name = "Oskari Kausiala", email = "oskari.kausiala@ultratrace.eu" },
     ]
 license.text = "Apache-2.0"
 readme = "README.md"
@@ -26,11 +26,11 @@ dependencies = [
 ]
 
 [project.urls]
-homepage = "https://karsa.fi/"
-repository = "https://github.com/karsa-oy/mascope"
-documentation = "https://github.com/karsa-oy/mascope"
-"Bug Tracker" = "https://github.com/karsa-oy/mascope/issues"
+homepage = "https://ultratrace.eu/"
+repository = "https://github.com/ultra-trace-systems/mascope"
+documentation = "https://github.com/ultra-trace-systems/mascope"
+"Bug Tracker" = "https://github.com/ultra-trace-systems/mascope/issues"
 
 [build-system]
-requires = ["uv_build>=0.11.32,<0.12"]
+requires = ["uv_build>=0.12.1,<0.13"]
 build-backend = "uv_build"

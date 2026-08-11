@@ -177,7 +177,12 @@ export const useEvents = (name, key, refs, methods, events, logger, deps = null)
     api.socket.on(`${name}_${operation}`, handleRecordEvent)
   })
 
-  // Register cross-store reload events (e.g., match_reload for sample store)
+  // Register cross-store reload events (e.g., match_reload for sample store).
+  // Each listener is kept so cleanup can remove exactly its own: an event name
+  // may be another store's auto-registered reload channel (one store's
+  // `<name>_reload` is a legitimate cross-store event for another), and an
+  // unqualified off() would drop that store's listener too.
+  const crossStoreHandlers = new Map()
   events.forEach((event) => {
     // Safety: prevent duplicate registration of store's own reload
     if (event === `${name}_reload`) {
@@ -186,9 +191,11 @@ export const useEvents = (name, key, refs, methods, events, logger, deps = null)
       )
       return
     }
-    api.socket.on(event, async () => {
+    const handler = async () => {
       await handleReload(event)
-    })
+    }
+    crossStoreHandlers.set(event, handler)
+    api.socket.on(event, handler)
   })
 
   // Cleanup function
@@ -201,8 +208,8 @@ export const useEvents = (name, key, refs, methods, events, logger, deps = null)
     })
 
     // Cleanup cross-store events
-    events.forEach((event) => {
-      api.socket.off(event)
+    crossStoreHandlers.forEach((handler, event) => {
+      api.socket.off(event, handler)
     })
   }
 

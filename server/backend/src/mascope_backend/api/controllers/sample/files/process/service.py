@@ -51,6 +51,9 @@ from mascope_backend.api.models.sample.items.sample_item_pydantic_model import (
 from mascope_backend.api.new.ionization.modes.util import (
     resolve_ionization_modes_by_tokens,
 )
+from mascope_backend.api.new.peak_assignments.service import (
+    auto_assign_sample_peaks,
+)
 from mascope_backend.db import (
     IonizationMode,
     SampleBatch,
@@ -69,6 +72,18 @@ from mascope_backend.socket.records.service import (
 # Number of calibration fitting attempts before giving up
 # Chosen so that final m/z error tolerance for TOF would be around 1000 ppm
 CALIBRATION_ITERATIONS = 7
+
+#: ApiException status codes a wider m/z error tolerance can actually clear.
+#: 200/207 are the fit warnings, where the spectrum did not yield enough
+#: matching calibration peaks ("Not enough calibration peaks", "No calibration
+#: peaks found"); 422 is a degenerate fit - a zero polynomial coefficient -
+#: which more matches can also resolve. Any other status is a fault (missing
+#: calibration collection, database failure) that retrying cannot improve.
+#: Note this also excludes the transient _RECOVERABLE_STATUS_CODES below:
+#: calibrate_with_retry swallows rather than re-raises, so a pool timeout
+#: during calibration leaves the sample uncalibrated instead of reaching the
+#: pipeline-level retry.
+RETRYABLE_CALIBRATION_STATUS = (200, 207, 422)
 
 #: Fire-and-forget rematch tasks. asyncio only keeps weak references, so an
 #: unreferenced task can be garbage-collected mid-run; the done-callback below
@@ -163,9 +178,15 @@ async def _rematch_when_slot_free(**kwargs) -> dict:
 
 @api_controller_background_task(
     success_notification_rooms=["instrument"],
-    success_reload=[("match", "affected_sample_batch_ids")],
+    success_reload=[
+        ("match", "affected_sample_batch_ids"),
+        ("peak_assignment", "affected_sample_batch_ids"),
+    ],
     error_notification_rooms=["instrument"],
-    error_reload=[("match", "affected_sample_batch_ids")],
+    error_reload=[
+        ("match", "affected_sample_batch_ids"),
+        ("peak_assignment", "affected_sample_batch_ids"),
+    ],
 )
 async def auto_process_sample_file(
     sample_file_id: str,
@@ -323,6 +344,15 @@ async def _auto_process_sample_file(
             parent_id=process_id,
         )
 
+        # Assign peaks (Stage A / database-first only) for the new sample. Runs
+        # after matching, isolates its own failures, and lets the parent emit the
+        # peak_assignment_reload below.
+        await auto_assign_sample_peaks(
+            sample_item_id=sample_item_id,
+            user_id=user_id,
+            parent_id=process_id,
+        )
+
     # --- Schedule rematch tasks for other affected samples --- #
     acquisition_sample_item_ids = {
         sample["sample_item_id"] for sample in acquisition_samples
@@ -378,9 +408,15 @@ async def _auto_process_sample_file(
 
 @api_controller_background_task(
     success_notification_rooms=["user_id"],
-    success_reload=[("match", "affected_sample_batch_ids")],
+    success_reload=[
+        ("match", "affected_sample_batch_ids"),
+        ("peak_assignment", "affected_sample_batch_ids"),
+    ],
     error_notification_rooms=["user_id"],
-    error_reload=[("match", "affected_sample_batch_ids")],
+    error_reload=[
+        ("match", "affected_sample_batch_ids"),
+        ("peak_assignment", "affected_sample_batch_ids"),
+    ],
 )
 async def re_process_sample_files(
     sample_file_ids: list[str],
@@ -765,7 +801,9 @@ async def calibrate_with_retry(
     """Calibrate sample with retry logic
 
     If no matching calibration peaks are found, the m/z error tolerance is doubled
-    and the calibration is retried, up to CALIBRATION_ITERATIONS times.
+    and the calibration is retried, up to CALIBRATION_ITERATIONS times. Only the
+    failures a wider tolerance can clear are retried (see
+    RETRYABLE_CALIBRATION_STATUS); any other failure stops the loop at once.
 
     :param sample: Sample dict to calibrate
     :type sample: dict
@@ -787,9 +825,22 @@ async def calibrate_with_retry(
             )
             break
         except ApiException as e:
-            if i == CALIBRATION_ITERATIONS:
+            if e.status_code not in RETRYABLE_CALIBRATION_STATUS:
+                # A fault rather than a data condition: a wider tolerance
+                # cannot clear it, so stop here instead of burning the
+                # remaining attempts on it.
                 runtime.logger.exception(
-                    "Failed to calibrate m/z with m/z tolerance "
+                    "Failed to m/z calibrate sample item "
+                    f"{sample['sample_item_name']}: {e}"
+                )
+                break
+            if i == CALIBRATION_ITERATIONS:
+                # INFO: an expected data condition (a spectrum too poor to
+                # yield calibration peaks), and this fires per sample of every
+                # upload. For 200/207 the warning notification has already
+                # reached the user; a 422 degenerate fit is recorded only here.
+                runtime.logger.info(
+                    "Gave up m/z calibration at m/z error tolerance "
                     f"{mz_calibration_params.mz_error_tolerance} "
                     f"for sample item {sample['sample_item_name']}: {e}"
                 )
@@ -804,8 +855,8 @@ async def calibrate_with_retry(
                     mz_calibration_params.refine_window = (
                         mz_calibration_params.mz_error_tolerance + 1
                     )
-                # INFO: a retry that usually succeeds; the final give-up above
-                # is what logs at ERROR
+                # INFO: a retry that usually succeeds; the give-up above is
+                # INFO too - only a non-retryable status logs at ERROR
                 runtime.logger.info(
                     "Not enough calibration peaks with m/z error tolerance "
                     f"{old_tolerance}, retrying m/z calibration for sample "

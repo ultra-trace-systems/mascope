@@ -53,7 +53,7 @@ const SERVICE_CONFIGS = [
 // Fixed-name asset uploaded to every GitHub release by CI, so this
 // URL always resolves to the newest released installer
 const FILE_AGENT_DOWNLOAD_URL =
-  'https://github.com/karsa-oy/mascope/releases/latest/download/Mascope-File-Agent-Setup.exe'
+  'https://github.com/ultra-trace-systems/mascope/releases/latest/download/Mascope-File-Agent-Setup.exe'
 
 const token = ref(null)
 const selectedTokenType = ref('mascope_sdk')

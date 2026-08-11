@@ -3,6 +3,7 @@ log
 __pycache__
 build
 dist
+.wheelhouse
 *.egg-info
 .ipynb_checkpoints
 

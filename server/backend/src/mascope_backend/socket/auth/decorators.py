@@ -15,7 +15,7 @@ from mascope_backend.socket.auth.exceptions import (
     SocketForbiddenError,
     SocketUnauthenticatedError,
 )
-from mascope_backend.socket.storage import get_session_user
+from mascope_backend.socket.storage import SocketSessionError, get_session_user
 
 
 def socket_auth(minimum_role: str, service_name: Optional[str] = None):
@@ -49,8 +49,13 @@ def socket_auth(minimum_role: str, service_name: Optional[str] = None):
 
                 return await handler(sid, *args, **kwargs)
 
-            except SocketAuthError as e:
-                # Expected rejection (expired session, insufficient role)
+            except (SocketAuthError, SocketSessionError) as e:
+                # Expected rejection (expired session, insufficient role).
+                # SocketSessionError belongs here too: `connect` accepts
+                # unauthenticated sockets, so every event a client emits
+                # without a stored session lands on it. The genuine session
+                # faults (corrupt data, Redis down) are already reported at
+                # ERROR where they happen, in get_session_user.
                 runtime.logger.info(f"Socket auth error for {sid}: {str(e)}")
 
             except Exception:

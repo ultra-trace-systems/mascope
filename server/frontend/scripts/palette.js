@@ -7,15 +7,13 @@ import * as prettier from 'prettier'
 // output path
 const jsonPath = './src/palette.json'
 
-// input colors
+// input colors, from the Ultra Trace brand guidelines
 const colors = {
   // primaries
-  mossgreen: '#435532',
-  burgundyred: '#610316',
+  safetyorange: '#FF6700',
   // surfaces
-  coolgrey: '#454752',
-  warmgrey: '#CAC7B8',
-  lightblue: '#E3E6F5'
+  charcoal: '#161718',
+  offwhite: '#F5F5F2'
 }
 
 // shades

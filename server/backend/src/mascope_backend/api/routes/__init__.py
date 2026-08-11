@@ -10,6 +10,9 @@ from mascope_backend.api.new.ionization.modes.routes import (
 )
 from mascope_backend.api.new.match.records.routes import match_records_router
 from mascope_backend.api.new.params import params_router
+from mascope_backend.api.new.peak_assignments.routes import (
+    peak_assignments_router,
+)
 from mascope_backend.api.new.roles.routes import roles_router
 from mascope_backend.api.new.temp.routes import temp_router
 from mascope_backend.api.new.users.admin.routes import admin_router
@@ -125,6 +128,7 @@ routers = [
     match_ions_router,
     match_rating_router,
     match_isotopes_router,
+    peak_assignments_router,
     visualization_router,
     temp_router,
     cheminfo_router,

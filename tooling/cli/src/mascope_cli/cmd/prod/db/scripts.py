@@ -40,13 +40,21 @@ _PYTHON_CANDIDATES = [
 ]
 
 # Environment variables forwarded from the host into the backend container
-# when running scripts via `docker exec -e`.
+# when running scripts via `docker exec -e`. A script env var missing from
+# this list is silently unset inside the container - the documented
+# MASCOPE_PRUNE_DRY_RUN=1 recipe would delete for real - so every variable a
+# script reads must be listed here.
 _FORWARDED_ENV_VARS = [
     "MIN_DATETIME",
     "UTC_OFFSET_HOURS",
     "ALLOW_MATCHED_LOSS",
     "DRY_RUN",
     "BATCH_SIZE",
+    # prune_peak_assignment_runs
+    "MASCOPE_PRUNE_DRY_RUN",
+    "MASCOPE_PRUNE_KEEP_PER_SAMPLE",
+    "MASCOPE_PRUNE_KEEP_FAILED_HOURS",
+    "MASCOPE_PRUNE_KEEP_RUNNING_HOURS",
 ]
 
 
