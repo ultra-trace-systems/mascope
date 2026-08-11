@@ -1133,7 +1133,10 @@ class PeakAssignmentRun(Base):
     heuristics, ppm tolerances, stage toggles) so runs are reproducible and
     comparable. PeakAssignment rows belong to exactly one run.
 
-    status values: 'pending', 'running', 'completed', 'failed'.
+    status values: 'pending', 'running', 'completed', 'failed', 'cancelled'.
+    'cancelled' is terminal like 'failed' - the read model serves only
+    'completed' runs, and retention reclaims both after the failed grace - but
+    kept distinct so an interrupted run is not reported as an engine error.
     """
 
     __tablename__ = "peak_assignment_run"

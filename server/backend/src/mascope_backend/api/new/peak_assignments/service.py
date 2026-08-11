@@ -1141,6 +1141,23 @@ async def _run_sample_assignment(
                 "peak_assignment_run_id": run.peak_assignment_run_id,
             },
         }
+    except asyncio.CancelledError:
+        # CancelledError is a BaseException, so the failure handler below never
+        # sees it - without this branch a cancelled run stayed 'running' until
+        # the startup reaper, invisible to the read model and (correctly)
+        # refused by the retention prune. Finalize to the distinct 'cancelled'
+        # state and re-raise so cancellation still propagates. Shielded: the
+        # task is already cancelled, and a second cancellation arriving during
+        # the finalizer's own awaits must not abort the terminal write.
+        await asyncio.shield(
+            _finalize_run(
+                run.peak_assignment_run_id, "cancelled", error="Run was cancelled"
+            )
+        )
+        runtime.logger.info(
+            f"Peak assignment run '{run.peak_assignment_run_id}' was cancelled"
+        )
+        raise
     except Exception as e:
         await _finalize_run(run.peak_assignment_run_id, "failed", error=str(e))
         runtime.logger.error(
