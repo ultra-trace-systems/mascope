@@ -26,6 +26,8 @@ Everything below assumes an Ubuntu host provisioned with
 | **Require a new password from every user** | Manage users in the app, or `mascope prod db script run require_password_change` |
 | **Disk monitor status / run now** | `systemctl list-timers mascope-disk-check.timer` / `sudo systemctl start mascope-disk-check.service` |
 | Disk monitor history | `journalctl -u mascope-disk-check.service` |
+| Assignment-run retention status / run now | `systemctl list-timers mascope-assignment-prune.timer` / `sudo systemctl start mascope-assignment-prune.service` |
+| Assignment-run retention history | `journalctl -u mascope-assignment-prune.service` |
 
 ## Health at a glance
 
@@ -502,29 +504,38 @@ run assignment explicitly from the UI for those.
 
 Each assignment run writes **one row per observed peak** of its sample -
 including peaks it could not assign, because the ledger is deliberately
-complete - and re-assigning a sample adds a whole new run beside the old one.
-Nothing removes them automatically, so on a server where assignment is re-run
-routinely `peak_assignment` grows without bound.
+complete - and re-assigning a sample adds a whole new run beside the old one,
+so on a server where assignment is re-run routinely `peak_assignment` grows
+without bound.
+
+A deployment provisioned by `tooling/ubuntu.sh` handles this automatically:
+`mascope-assignment-prune.timer` runs a retention pass nightly at 03:30 and is
+**enabled by default**. Each pass keeps the newest few completed runs per
+sample (so a result can still be compared against the one it replaced) and
+drops the rest, plus failed runs past a short grace period; deleting a run
+cascades to its rows. It deletes only superseded derived data - assignments
+are recomputable by re-running assignment - and it runs whether or not the
+`peak_assignment` flag is enabled, since ledgers written before opting out
+still age out and an empty table costs one cheap query. Tune the policy in
+`/etc/mascope/prune.env` with `MASCOPE_PRUNE_KEEP_PER_SAMPLE` (default 3),
+`MASCOPE_PRUNE_KEEP_FAILED_HOURS` (default 24) and
+`MASCOPE_PRUNE_KEEP_RUNNING_HOURS` (default 72, floored at 12 so runs that may
+still be executing cannot be pruned out from under a worker); disable it
+entirely with `sudo systemctl disable --now mascope-assignment-prune.timer`.
+
+The same pass can always be run by hand, e.g. ahead of schedule when the disk
+monitor flags growth:
 
 ```sh
 MASCOPE_PRUNE_DRY_RUN=1 mascope prod db script run prune_peak_assignment_runs
 mascope prod db script run prune_peak_assignment_runs
 ```
 
-The dry run reports what it would delete and changes nothing. A real run keeps
-the newest few completed runs per sample (so a result can still be compared
-against the one it replaced) and drops the rest, plus failed runs past a short
-grace period; deleting a run cascades to its rows. Tune with
-`MASCOPE_PRUNE_KEEP_PER_SAMPLE` (default 3), `MASCOPE_PRUNE_KEEP_FAILED_HOURS`
-(default 24) and `MASCOPE_PRUNE_KEEP_RUNNING_HOURS` (default 72, floored at 12
-so runs that may still be executing cannot be pruned out from under a worker).
+The dry run reports what it would delete and changes nothing.
 
 Deleting rows returns space to Postgres for reuse but not to the filesystem;
 `VACUUM FULL peak_assignment` (or `pg_repack`) afterwards does that, and takes
 an exclusive lock while it runs.
-
-There is no timer for this yet - run it when the disk monitor flags growth, or
-add it to your own cron alongside the backup job.
 
 ### Loading reference chemistry data
 
