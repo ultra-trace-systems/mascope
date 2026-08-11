@@ -7,6 +7,7 @@ aggregates a batch status. All external dependencies are mocked - no DB, file
 I/O, or Socket.IO required (mirrors test_auto_process.py).
 """
 
+from contextlib import asynccontextmanager
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -16,6 +17,16 @@ import pytest
 _MOD = "mascope_backend.api.new.peak_assignments.batch"
 _NOTIF = "mascope_backend.socket.notifications"
 _UTILS = "mascope_backend.api.lib.utils"
+
+
+def _claim_stub(acquired=True):
+    """A stand-in for the cross-process assignment claim (no DB)."""
+
+    @asynccontextmanager
+    async def _claim(kind, resource_id):
+        yield acquired
+
+    return _claim
 
 
 # ---------------------------------------------------------------------------
@@ -64,6 +75,7 @@ def _base_patches(samples, batch=None):
     return {
         "fetch_batch": patch(f"{_MOD}.fetch_sample_batch", new_callable=AsyncMock),
         "assign": patch(f"{_MOD}.assign_sample_peaks", new_callable=AsyncMock),
+        "claim": patch(f"{_MOD}.assignment_claim", _claim_stub()),
         "async_session": patch(f"{_MOD}.async_session"),
         "progress": patch(
             f"{_MOD}.send_progress_user_notification", new_callable=AsyncMock
@@ -388,3 +400,32 @@ async def test_two_concurrent_requests_for_one_batch_refuse_one():
     assert mocks["assign"].call_count == len(samples)
     # And the marker is clean afterwards.
     assert "batch-1" not in batch_module._batch_assignments_in_flight
+
+
+@pytest.mark.asyncio
+async def test_claim_held_in_another_worker_refuses_the_batch():
+    """A duplicate in a different process is refused, not queued.
+
+    The in-flight set only sees this worker; the cross-process claim is what
+    extends the refusal across every worker sharing the database. Here the
+    local set is clean but the claim reports another holder.
+    """
+    from mascope_backend.api.new.peak_assignments.batch import (
+        assign_sample_batch_peaks,
+    )
+
+    samples = [_make_sample("si-1")]
+    patches = _base_patches(samples)
+    patches["claim"] = patch(f"{_MOD}.assignment_claim", _claim_stub(acquired=False))
+    mocks = _start(patches, samples)
+
+    result = await assign_sample_batch_peaks(
+        sample_batch_id="batch-1",
+        independent_transaction=True,
+        user_id=42,
+        process_id="proc-1",
+    )
+
+    mocks["assign"].assert_not_called()
+    assert result["status"] == "skipped"
+    assert "already running" in result["message"]
