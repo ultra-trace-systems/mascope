@@ -32,7 +32,6 @@ MAX_RETRIES = 5  # Number of retries for fetching data from server
 
 # Satellite peak detection defaults
 NEUTRON_MASS = 1.00866491606  # Da
-DEFAULT_TIGHT_WINDOW_PPM = 3.0  # ppm
 
 
 def create_cache_folder():
@@ -324,12 +323,14 @@ def filter_centroids(
 
 def flag_satellite_peaks(
     peaks: pd.DataFrame,
-    base_peak_percentile: float = 99.9,
-    top_n_bases: int | None = 5,
+    base_peak_percentile: float = 99.0,
+    top_n_bases: int | None = 20,
     window_ppm: float = 350.0,
     ratio_max: float = 0.04,
     ratio_min: float = 1e-6,
     symmetry_tolerance_ppm: float = 1.5,
+    symmetry_ratio_similarity_min: float = 0.25,
+    tight_window_ppm: float = 25.0,
     isotope_tolerance_ppm: float = 2.0,
     charge_range: tuple[int, int] = (1, 2),
 ) -> pd.DataFrame:
@@ -338,7 +339,12 @@ def flag_satellite_peaks(
 
     Heuristics:
     - Satellites are much weaker than the base peak and lie around them.
-    - They tend to appear symmetrically around the base.
+    - They tend to appear as mirror pairs around the base: matching offsets
+      are strong evidence even when the pair's intensities differ severalfold
+      (real FTMS sidelobe pairs are intensity-asymmetric, so the similarity
+      gate must stay loose).
+    - Weak unpaired peaks very close to the base are sidelobes too; short
+      transients push them out to tens of ppm, hence the tight window default.
     - Isotopes (+1.003355/z) are excluded.
 
     :param peaks: DataFrame containing peaks with 'mz' and 'intensity' columns.
@@ -355,6 +361,12 @@ def flag_satellite_peaks(
     :type ratio_min: float, optional
     :param symmetry_tolerance_ppm: Tolerance for symmetric pairing around the base peak in ppm.
     :type symmetry_tolerance_ppm: float, optional
+    :param symmetry_ratio_similarity_min: Minimum intensity-ratio similarity
+        (min/max of the pair's base-relative ratios) for a mirror pair to count.
+    :type symmetry_ratio_similarity_min: float, optional
+    :param tight_window_ppm: Window around the base within which weak unpaired
+        peaks are flagged as single-sided satellites.
+    :type tight_window_ppm: float, optional
     :param isotope_tolerance_ppm: Tolerance for excluding +1 isotopes in ppm.
     :type isotope_tolerance_ppm: float, optional
     :param charge_range: Range of charge states to consider for isotopes.
@@ -506,7 +518,7 @@ def flag_satellite_peaks(
                 r_ratio = intensity_sorted[r_i] / parent_intensity
                 l_ratio = intensity_sorted[l_i] / parent_intensity
                 ratio_similarity = min(r_ratio, l_ratio) / max(r_ratio, l_ratio)
-                if ratio_similarity >= 0.5:
+                if ratio_similarity >= symmetry_ratio_similarity_min:
                     is_satellite_sorted[r_i] = True
                     is_satellite_sorted[l_i] = True
 
@@ -515,7 +527,7 @@ def flag_satellite_peaks(
         unresolved = cand_idx[~is_satellite_sorted[cand_idx]]
         if unresolved.size:
             tight_window_da = ppm_to_da_local(
-                parent_mz, min(win_ppm * 0.5, DEFAULT_TIGHT_WINDOW_PPM)
+                parent_mz, min(win_ppm * 0.5, tight_window_ppm)
             )
             near_mask = np.abs(mz_sorted[unresolved] - parent_mz) <= tight_window_da
             weak_mask = (intensity_sorted[unresolved] / parent_intensity) <= ratio_hi
