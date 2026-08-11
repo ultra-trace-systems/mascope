@@ -106,9 +106,9 @@ If the total count of candidates exceeds $20$, the array is trimmed to keep only
 For each validated base peak with coordinates $(m/z_{\text{parent}}, I_{\text{parent}})$, a localized search range is established.
 A bounding mass tolerance $\Delta m/z_{\text{win}}$ is computed:
 
-  $$\Delta m/z_{\text{win}} = m/z_{\text{parent}} \cdot 350 \cdot 10^{-6}$$
+  $$\Delta m/z_{\text{win}} = m/z_{\text{parent}} \cdot 100 \cdot 10^{-6}$$
 
-where $350\text{ ppm}$ is the experimentally obtained window size for satellite detection.
+where $100\text{ ppm}$ is the experimentally obtained window size for satellite detection: measured side-lobe families extend to roughly $\pm 70\text{ ppm}$ around the parent, while a wider window mostly adds chance pairings in dense spectra.
 Candidates are restricted to the domain $m/z_{\text{parent}} \pm \Delta m/z_{\text{win}}$, excluding the parent itself.
 Candidates must show a relative intensity ratio ($r = I_{\text{candidate}} / I_{\text{parent}}$) that falls strictly within the bounds of emperically derived range $10^{-6}$ to $0.04$.
 
@@ -134,6 +134,7 @@ If a symmetric pair is paired successfully, their relative intensity ratios to t
 The similarity threshold is deliberately loose: measured Fourier-transform side-lobe pairs mirror in position to well under a ppm while their intensities routinely differ severalfold, so a matching mirror offset is treated as the primary evidence.
 If the similarity threshold is achieved, both peaks are formally flagged as satellites.
 
-Any remaining unflagged candidate that fails the symmetry criteria can still be categorized as a satellite if it represents a shoulder peak adjacent to the parent peak within a mass window of $\pm 25\text{ ppm}$; short measurement transients broaden the side-lobe forest to tens of ppm around the parent centroid.
+Any remaining unflagged candidate that fails the symmetry criteria can still be categorized as a satellite if it represents a shoulder peak adjacent to the parent peak within a mass window of $\pm 8\text{ ppm}$ - roughly one peak width, where a weak neighbor cannot be a resolved real peak.
+More distant satellites require the mirror-pair evidence above, since dense spectra carry genuine weak peaks at tens of ppm from strong ones.
 
 Following evaluation across all base peaks, the boolean status is mapped back to the original index positions and appended to the output dataset.

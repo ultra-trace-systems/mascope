@@ -325,12 +325,12 @@ def flag_satellite_peaks(
     peaks: pd.DataFrame,
     base_peak_percentile: float = 99.0,
     top_n_bases: int | None = 20,
-    window_ppm: float = 350.0,
+    window_ppm: float = 100.0,
     ratio_max: float = 0.04,
     ratio_min: float = 1e-6,
     symmetry_tolerance_ppm: float = 1.5,
     symmetry_ratio_similarity_min: float = 0.25,
-    tight_window_ppm: float = 25.0,
+    tight_window_ppm: float = 8.0,
     isotope_tolerance_ppm: float = 2.0,
     charge_range: tuple[int, int] = (1, 2),
 ) -> pd.DataFrame:
@@ -343,8 +343,10 @@ def flag_satellite_peaks(
       are strong evidence even when the pair's intensities differ severalfold
       (real FTMS sidelobe pairs are intensity-asymmetric, so the similarity
       gate must stay loose).
-    - Weak unpaired peaks very close to the base are sidelobes too; short
-      transients push them out to tens of ppm, hence the tight window default.
+    - Weak unpaired peaks within roughly one peak width of the base are
+      unresolvable shoulders and safe to flag single-sided; anything farther
+      needs the mirror-pair evidence (dense spectra carry real weak peaks
+      at tens of ppm from strong ones).
     - Isotopes (+1.003355/z) are excluded.
 
     :param peaks: DataFrame containing peaks with 'mz' and 'intensity' columns.
