@@ -84,13 +84,13 @@ const heights = computed(() => [
         }
       "
     >
-      <SplitterPanel :size="50">
+      <SplitterPanel :size="50" :minSize="10">
         <div class="row">
           <MatchIsotopeTable />
           <ChartMatchSpectra v-model="scale" :sidebarOpen="sidebarOpen" :height="heights[0]" />
         </div>
       </SplitterPanel>
-      <SplitterPanel :size="50">
+      <SplitterPanel :size="50" :minSize="10">
         <div style="height: 1rem" />
         <ChartMatchTimeseries v-model="scale" :height="heights[1]" />
       </SplitterPanel>

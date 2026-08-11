@@ -63,17 +63,17 @@ const showSearch = ref(false)
       "
     >
       <template v-if="peakAssignmentEnabled">
-        <SplitterPanel :size="55">
+        <SplitterPanel :size="55" :minSize="10">
           <Splitter class="top-splitter">
-            <SplitterPanel :size="42" class="inspector-panel">
+            <SplitterPanel :size="42" class="inspector-panel" :minSize="10">
               <PanePeakAssign v-model:showSearch="showSearch" />
             </SplitterPanel>
-            <SplitterPanel :size="58">
+            <SplitterPanel :size="58" :minSize="10">
               <ChartSampleSpectrum :height="topHeight" />
             </SplitterPanel>
           </Splitter>
         </SplitterPanel>
-        <SplitterPanel :size="45">
+        <SplitterPanel :size="45" :minSize="10">
           <PanePeakSearch
             v-if="showSearch"
             :height="bottomHeight"
@@ -83,10 +83,10 @@ const showSearch = ref(false)
         </SplitterPanel>
       </template>
       <template v-else>
-        <SplitterPanel>
+        <SplitterPanel :minSize="10">
           <ChartSampleSpectrum :height="legacyTopHeight" />
         </SplitterPanel>
-        <SplitterPanel>
+        <SplitterPanel :minSize="10">
           <div class="row">
             <PaneBrowserPeak :height="legacyBottomHeight - 3" />
             <PanePeakSearch :height="legacyBottomHeight - 3" embedded />
