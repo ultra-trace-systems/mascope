@@ -164,6 +164,27 @@
     width: 8ch;
   }
 
+  .browser .calibration-column {
+    width: 5ch;
+  }
+
+  .browser .calibration-badge {
+    cursor: pointer;
+  }
+
+  .browser .calibration-failed {
+    color: var(--p-amber-500, #f59e0b);
+  }
+
+  .browser .calibration-unverified {
+    color: var(--p-text-muted-color);
+  }
+
+  .browser .calibration-ok {
+    color: var(--p-text-muted-color);
+    opacity: 0.6;
+  }
+
   .browser .spinner {
     display: grid;
     place-items: center;

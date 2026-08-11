@@ -31,17 +31,28 @@ _SAMPLE = {
 
 
 async def _run(side_effect) -> tuple[AsyncMock, list]:
-    """Run calibrate_with_retry against a mocked calibration, capturing logs."""
+    """Run calibrate_with_retry against a mocked calibration, capturing logs.
+
+    Also mocks the failure recorder so no database is needed; the mock and the
+    return value are exposed as attributes on the returned calibrate mock
+    (``recorder`` / ``result``) for outcome assertions.
+    """
     records = []
     sink_id = runtime.logger.add(
         lambda message: records.append(message.record), level="TRACE"
     )
     calibrate = AsyncMock(side_effect=side_effect)
+    recorder = AsyncMock()
     try:
-        with patch(f"{_SVC}.calibration_mz_calibrate_sample", calibrate):
-            await calibrate_with_retry(sample=_SAMPLE)
+        with (
+            patch(f"{_SVC}.calibration_mz_calibrate_sample", calibrate),
+            patch(f"{_SVC}._record_calibration_failure", recorder),
+        ):
+            result = await calibrate_with_retry(sample=_SAMPLE, sample_file_id="sf-001")
     finally:
         runtime.logger.remove(sink_id)
+    calibrate.recorder = recorder
+    calibrate.result = result
     return calibrate, records
 
 
@@ -108,3 +119,32 @@ async def test_tolerance_doubles_between_attempts():
     assert len(calls) == CALIBRATION_ITERATIONS
     for previous, current in zip(calls, calls[1:]):
         assert current == previous * 2
+
+
+@pytest.mark.asyncio
+async def test_success_returns_true_and_records_nothing():
+    calibrate, _ = await _run(None)
+
+    assert calibrate.result is True
+    calibrate.recorder.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_give_up_records_failure_and_returns_false():
+    """The persisted marker is what makes the failure visible in the UI."""
+    calibrate, _ = await _run(ApiException("m/z fitting warning: few peaks", {}, 200))
+
+    assert calibrate.result is False
+    calibrate.recorder.assert_awaited_once()
+    kwargs = calibrate.recorder.await_args.kwargs
+    assert calibrate.recorder.await_args.args[0] == "sf-001"
+    assert kwargs["attempts"] == CALIBRATION_ITERATIONS
+
+
+@pytest.mark.asyncio
+async def test_fault_records_failure_and_returns_false():
+    calibrate, _ = await _run(ApiException("Database failed", {}, 500))
+
+    assert calibrate.result is False
+    calibrate.recorder.assert_awaited_once()
+    assert calibrate.recorder.await_args.kwargs["attempts"] == 1

@@ -276,12 +276,54 @@ async def test_calibrates_when_calibration_collection_is_set():
 
     mocks["calibrate"].assert_called_once_with(
         sample=sample_item,
+        sample_file_id=sample_file.sample_file_id,
         user_id=42,
         process_id="proc-001",
     )
     mocks["match"].assert_called_once()
     # Stage-A peak assignment runs for the processed sample
     mocks["assign"].assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_failed_calibration_skips_matching_and_assignment():
+    """A given-up calibration must not match/assign on the uncalibrated axis."""
+    from mascope_backend.api.controllers.sample.files.process.service import (
+        auto_process_sample_file,
+    )
+
+    sample_file = _make_sample_file(instrument_function_id="ifunc-001")
+    ion_mode = _make_ionization_mode(calibration_collection_id="cal-001")
+    dataset = _make_dataset()
+    batch = _make_batch()
+    sample_item = _make_sample_item()
+
+    patches = _base_patches()
+    mocks = {k: p.start() for k, p in patches.items()}
+
+    mocks["fetch_sample_file"].return_value = sample_file
+    mocks["get_acquisition_dataset"].return_value = {"data": dataset}
+    mocks["create_batches"].return_value = ([sample_item], [batch])
+    mocks["fetch_affected"].return_value = _make_affected_data([sample_item])
+    mocks["calibrate"].return_value = False
+
+    mock_session = AsyncMock()
+    mock_session.get = AsyncMock(return_value=ion_mode)
+    mock_ctx = AsyncMock()
+    mock_ctx.__aenter__ = AsyncMock(return_value=mock_session)
+    mock_ctx.__aexit__ = AsyncMock(return_value=False)
+    mocks["async_session"].return_value = mock_ctx
+
+    await auto_process_sample_file(
+        sample_file_id="sf-001",
+        independent_transaction=True,
+        user_id=42,
+        process_id="proc-001",
+    )
+
+    mocks["calibrate"].assert_called_once()
+    mocks["match"].assert_not_called()
+    mocks["assign"].assert_not_called()
 
 
 @pytest.mark.asyncio
