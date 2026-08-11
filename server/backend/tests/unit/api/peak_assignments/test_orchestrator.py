@@ -395,6 +395,56 @@ class TestRunFinalization:
         assert (run_id, status) == ("run-1", "failed")
 
     @pytest.mark.asyncio
+    async def test_cancelled_run_is_finalized_cancelled(self):
+        """A cancelled run must reach a terminal state without a restart.
+
+        CancelledError is a BaseException, so the ordinary failure handler
+        never sees it - a mid-flight cancel used to leave the row 'running'
+        forever on a worker that never restarts, invisible to the read model
+        and refused by the retention prune. The cancellation itself must still
+        propagate to the caller, and the in-flight claim must be released.
+        """
+        import asyncio
+
+        from mascope_backend.api.new.peak_assignments.config import (
+            PeakAssignmentConfig,
+        )
+        from mascope_backend.api.new.peak_assignments.service import (
+            _sample_assignments_in_flight,
+            assign_sample_peaks,
+        )
+
+        peaks = _peaks_df([("p1", 181.0707, 10000.0)])
+        recorder = _Recorder()
+        mocks = _start(_patches(recorder, peaks, _stage_a_rows()))
+
+        started = asyncio.Event()
+
+        async def _hang(*args, **kwargs):
+            started.set()
+            await asyncio.Event().wait()
+
+        mocks["matcher"].side_effect = _hang
+
+        task = asyncio.create_task(
+            assign_sample_peaks(
+                sample_item_id="si-1",
+                config=PeakAssignmentConfig(run_untargeted=False),
+                independent_transaction=True,
+                user_id=None,
+                process_id="proc-1",
+            )
+        )
+        await started.wait()
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+        mocks["finalize"].assert_awaited_once()
+        assert mocks["finalize"].await_args.args[:2] == ("run-1", "cancelled")
+        assert "si-1" not in _sample_assignments_in_flight
+
+    @pytest.mark.asyncio
     async def test_failure_before_the_first_stage_finalizes_the_run_failed(self):
         """The run record must be covered by the finalizer from the moment it
         exists.
