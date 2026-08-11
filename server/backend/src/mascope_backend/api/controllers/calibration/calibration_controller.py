@@ -51,6 +51,7 @@ from mascope_backend.api.models.calibration.calibration_pydantic_model import (
     CalibrationFitParams,
     MzCalibrationParams,
 )
+from mascope_backend.api.models.calibration.config import calibration_config
 from mascope_backend.api.models.sample.files.sample_file_pydantic_model import (
     SampleFileUpdate,
 )
@@ -62,6 +63,43 @@ from mascope_backend.socket.notifications import (
     send_progress_user_notification,
 )
 from mascope_signal.compute import get_sum_signal
+
+
+def warn_on_acquisition_drift(
+    fit: dict | None, instrument: str | None, filename: str
+) -> None:
+    """
+    Report acquisition-side m/z drift after a fit has been applied.
+
+    The one-point fit silently corrects however far off the instrument writes
+    its m/z axis, so a drifting instrument keeps producing green results while
+    its internal calibration degrades. When the fit's pre-calibration error
+    exceeds ``ACQUISITION_DRIFT_WARNING_PPM``, log at WARNING - exported to
+    error monitoring as operator signal that the instrument needs retuning.
+
+    The warning message carries only the instrument and the drift rounded to
+    whole ppm, so monitoring groups a drift episode into one issue per
+    magnitude instead of one per sample; the per-file detail follows at INFO.
+
+    :param fit: Applied fit dict (with the ``quality`` block when available).
+    :param instrument: Instrument name for the warning message.
+    :param filename: Sample filename, logged at INFO for drill-down.
+    """
+    quality = (fit or {}).get("quality") or {}
+    pre_fit = quality.get("pre_fit_mz_error_ppm")
+    limit = calibration_config.ACQUISITION_DRIFT_WARNING_PPM
+    if pre_fit is None or abs(pre_fit) <= limit:
+        return
+    runtime.logger.warning(
+        f"Acquisition m/z drift beyond {limit:g} ppm on instrument "
+        f"'{instrument or 'unknown'}': pre-calibration error {round(pre_fit):+d} "
+        "ppm. The applied calibration corrects it, but the instrument's "
+        "internal m/z calibration likely needs retuning."
+    )
+    runtime.logger.info(
+        f"Acquisition drift detail: file '{filename}' was {pre_fit:+.2f} ppm "
+        "off before calibration."
+    )
 
 
 async def reset_mz_calibration(sample_file) -> bool:
@@ -584,6 +622,7 @@ async def calibration_mz_calibrate_sample(
         process_id=gen_id(8),
         parent_id=process_id,
     )
+    warn_on_acquisition_drift(fit, sample.instrument, sample.filename)
     await send_progress_user_notification(notification, 0.95)
 
     return {
