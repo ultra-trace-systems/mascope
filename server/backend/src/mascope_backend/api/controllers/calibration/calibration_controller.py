@@ -106,6 +106,29 @@ async def get_mz_calibration(
     }
 
 
+@api_controller()
+async def get_default_calibration_params(sample_item_id: str) -> dict:
+    """
+    Instrument-appropriate default m/z calibration parameters for a sample.
+
+    The UI calibration dialog seeds its parameter fields from this, so an
+    Orbitrap sample starts from the same instrument defaults the automatic
+    pipeline uses instead of one hardcoded parameter set.
+
+    :param sample_item_id: ID of the sample item.
+    :type sample_item_id: str
+    :raises NotFoundException: If the sample is not found.
+    :return: Dict with the default parameter values under ``data.params``.
+    :rtype: dict
+    """
+    sample = await fetch_sample(sample_item_id)
+    params = calibration_params_factory(filename=sample.filename)
+    return {
+        "message": "Default calibration parameters retrieved successfully.",
+        "data": {"params": params.model_dump()},
+    }
+
+
 @api_controller_background_task(
     success_notification_rooms=["user_id"],
     error_notification_rooms=["user_id"],
