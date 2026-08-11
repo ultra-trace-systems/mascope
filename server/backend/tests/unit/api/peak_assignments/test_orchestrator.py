@@ -51,6 +51,9 @@ def _sample() -> MagicMock:
     sample.polarity = "positive"
     sample.instrument_function_id = "if-1"
     sample.instrument = "orbi"
+    # No calibration record at all is eligible (matching the batch partition
+    # and the targeted gate, which treat absent calibration as verified).
+    sample.mz_calibration = None
     return sample
 
 
@@ -501,6 +504,65 @@ class TestRunFinalization:
             )
 
         assert mocks["finalize"].await_args.args[:2] == ("run-1", "failed")
+
+
+class TestEligibilityGate:
+    """The per-sample path refuses exactly what the batch partition skips.
+
+    Fit scores are computed from mass errors, so a sample whose m/z
+    calibration is unverified must not receive a confidently-tiered ledger;
+    a blank sample has no peaks to assign. Both skips must be *returned*, not
+    raised: the returned payload carries the _notification_data the
+    decorator's success path turns into a reload, which a raised warning
+    silently dropped. Neither may leave a run row behind.
+    """
+
+    @pytest.mark.asyncio
+    async def test_unverified_calibration_is_refused_without_a_run(self):
+        sample = _sample()
+        sample.mz_calibration = {"verified": False}
+        recorder = _Recorder()
+        mocks = _start(_patches(recorder, _peaks_df([]), _stage_a_rows()))
+        mocks["fetch_sample"].return_value = sample
+
+        result = await _run()
+
+        assert result["status"] == "skipped"
+        assert "calibration" in result["message"]
+        assert result["_notification_data"]["sample_item_id"] == "si-1"
+        mocks["create_run"].assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_blank_sample_skip_delivers_notification_data(self):
+        sample = _sample()
+        sample.instrument_function_id = None
+        recorder = _Recorder()
+        mocks = _start(_patches(recorder, _peaks_df([]), _stage_a_rows()))
+        mocks["fetch_sample"].return_value = sample
+
+        result = await _run()
+
+        assert result["status"] == "skipped"
+        assert result["_notification_data"] == {
+            "sample_batch_id": "sb-1",
+            "sample_item_id": "si-1",
+        }
+        mocks["create_run"].assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_verified_calibration_proceeds(self):
+        sample = _sample()
+        sample.mz_calibration = {"verified": True}
+        recorder = _Recorder()
+        mocks = _start(
+            _patches(recorder, _peaks_df([("p1", 181.0707, 10000.0)]), _stage_a_rows())
+        )
+        mocks["fetch_sample"].return_value = sample
+
+        result = await _run()
+
+        assert result["status"] == "success"
+        mocks["create_run"].assert_called_once()
 
 
 class TestSampleAdmissionControl:
