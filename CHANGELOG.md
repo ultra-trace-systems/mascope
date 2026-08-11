@@ -4,6 +4,8 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
 
 ## [Unreleased]
 
+## [1.6.0] - 2026.08.11
+
 ### Added
 
 - Public chemistry database integration, phases 0-2 (foundations through suspect-screening sources). A new `mascope_reference` library mirrors free-to-use public databases (PubChem, EPA CompTox, ChEBI, HMDB, LIPID MAPS, COCONUT, NORMAN) into `reference_source` / `reference_compound` tables, normalizing every source formula to the same canonical Hill order the de novo engine uses. Ingest a versioned snapshot with `mascope reference sync <source> <dump> --version <tag>` (see `mascope reference sources` / `status`) - a source-checkout command, because it pulls the chemistry dependencies deliberately kept out of the operator CLI; a wheel-installed deployment runs the same ingest inside the backend container instead (`docker compose exec backend python -m mascope_backend.db.scripts.reference_sync ...`, see `docs/dev/reference_data_authoring.md`). Composition results can be annotated with known reference compounds sharing each formula (name, structure, cross-references, source, license), collapsed one-per-compound on InChIKey - either by passing `known_only: true` for a suspect-screening prior that keeps only formulas backed by a known compound, or by opting into peak-centric assignment. Without one of those the composition search is not annotated at all, so its response keeps exactly the shape existing SDK clients already parse. The peak-assignment table surfaces the matched identity, and `mascope demo` seeds a small illustrative reference set so the annotation is visible without downloading a public-database dump. Custom reference data - e.g. published atmospheric peak lists not yet in the public databases - can be authored as a flat CSV/TSV and loaded with `mascope reference sync custom <file> --name <list>` (see `docs/dev/reference_data_authoring.md`). De novo scoring is untouched. `reference_compound` also carries a nullable `charge` column so permanently charged species (choline, quaternary ammoniums) can later be represented - recorded only: ingest still rejects charge-suffixed formulas and Stage A matches neutral formulas exclusively. Design: `docs/dev/public_database_integration.md`.
@@ -133,7 +135,7 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
 - The "Download File Agent installer" button in the sidebar's Settings tab
   is now always visible to editors, like the "Pair an agent" button,
   instead of appearing only while "File Agent" is the selected token type.
-- `mascope logs query --max N` now returns the N *most recent* matching
+- `mascope logs query --max N` now returns the N _most recent_ matching
   lines (still printed oldest-first) instead of the N oldest, matching the
   "show me the last N errors" intent.
 - The interactive API docs and OpenAPI schema (`/docs`, `/redoc`,
