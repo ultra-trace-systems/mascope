@@ -9,7 +9,7 @@ quaternary ammoniums) can later be represented - recorded, not matched; see
 issue #1726. No data is ingested by this migration - schema only.
 
 Revision ID: c4f7a2e9b1d8
-Revises: f2d8b5c3a9e1
+Revises: e4b7a2c8d1f6
 Create Date: 2026-07-07 12:00:00.000000
 
 """
