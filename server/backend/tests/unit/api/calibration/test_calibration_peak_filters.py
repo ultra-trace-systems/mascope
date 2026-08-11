@@ -71,7 +71,7 @@ class TestFilterMzsBySnrAndPolarity:
 
 class TestFilterMzsByRefineWindow:
     """Tests for _filter_mzs_by_refine_window.
-    Orbitrap default refine_window is 10 ppm, TOF default is 100 ppm.
+    The conftest handler is built with refine_window=100 ppm.
     Tests use the Orbitrap handler, but the logic is the same for both.
 
     Expected behaviors:
@@ -185,3 +185,106 @@ class TestRemoveOverlappingMzs:
         )
 
         np.testing.assert_array_equal(test_mzs, peak_mzs)
+
+
+def _dominance_peak_data(mzs, heights, polarity="+"):
+    """Minimal peak dataset for _filter_dominated_peaks."""
+    import xarray as xr
+
+    mzs = np.asarray(mzs, dtype=np.float64)
+    return xr.Dataset(
+        data_vars={
+            "sum_peak_heights": ("mz", np.asarray(heights, dtype=np.float64)),
+            "polarity": ("mz", np.array([polarity] * len(mzs))),
+            "signal_to_noise": ("mz", np.full(len(mzs), 100.0)),
+        },
+        coords={"mz": ("mz", mzs)},
+    )
+
+
+class TestFilterDominatedPeaks:
+    """Tests for _filter_dominated_peaks (Orbitrap local-dominance guard).
+
+    Orbi handler: dominance window 100 ppm, dominance ratio 10.
+    At mz=100, 100 ppm = 0.01.
+
+    Expected behaviors:
+    - A weak peak within the window of a >=10x stronger peak is rejected,
+      even when the stronger peak is not itself a candidate (out of the
+      refine window or below SNR).
+    - The dominant peak itself is kept.
+    - Isolated peaks and comparable-intensity neighbors are kept.
+    - The guard is a no-op for handlers with dominance window 0 (TOF).
+    """
+
+    def setup_method(self):
+        self.orbi_handler = get_test_calibration_handler("orbitrap", "+")
+        self.tof_handler = get_test_calibration_handler("tofwerk", "+")
+
+    def test_sidelobe_of_stronger_neighbor_rejected(self):
+        # Candidate at 100.000 is 100x weaker than the peak 50 ppm away.
+        peak_data = _dominance_peak_data([100.0, 100.005], [1e5, 1e7])
+        candidates = np.array([100.0])
+
+        kept = self.orbi_handler._filter_dominated_peaks(candidates, peak_data)
+
+        assert kept.size == 0, "Expected the dominated sidelobe to be rejected"
+
+    def test_dominant_peak_is_kept(self):
+        peak_data = _dominance_peak_data([100.0, 100.005], [1e5, 1e7])
+        candidates = np.array([100.005])
+
+        kept = self.orbi_handler._filter_dominated_peaks(candidates, peak_data)
+
+        np.testing.assert_array_equal(kept, candidates)
+
+    def test_comparable_neighbors_both_kept(self):
+        # 5x ratio is below the 10x dominance ratio.
+        peak_data = _dominance_peak_data([100.0, 100.005], [2e6, 1e7])
+        candidates = np.array([100.0, 100.005])
+
+        kept = self.orbi_handler._filter_dominated_peaks(candidates, peak_data)
+
+        np.testing.assert_array_equal(kept, candidates)
+
+    def test_strong_peak_outside_window_does_not_dominate(self):
+        # 200 ppm separation is outside the 100 ppm dominance window.
+        peak_data = _dominance_peak_data([100.0, 100.02], [1e5, 1e7])
+        candidates = np.array([100.0])
+
+        kept = self.orbi_handler._filter_dominated_peaks(candidates, peak_data)
+
+        np.testing.assert_array_equal(kept, candidates)
+
+    def test_opposite_polarity_does_not_dominate(self):
+        import xarray as xr
+
+        peak_data = xr.Dataset(
+            data_vars={
+                "sum_peak_heights": ("mz", np.array([1e5, 1e7])),
+                "polarity": ("mz", np.array(["+", "-"])),
+                "signal_to_noise": ("mz", np.full(2, 100.0)),
+            },
+            coords={"mz": ("mz", np.array([100.0, 100.005]))},
+        )
+        candidates = np.array([100.0])
+
+        kept = self.orbi_handler._filter_dominated_peaks(candidates, peak_data)
+
+        np.testing.assert_array_equal(kept, candidates)
+
+    def test_tof_guard_disabled(self):
+        peak_data = _dominance_peak_data([100.0, 100.005], [1e5, 1e7])
+        candidates = np.array([100.0])
+
+        kept = self.tof_handler._filter_dominated_peaks(candidates, peak_data)
+
+        np.testing.assert_array_equal(kept, candidates)
+
+    def test_empty_candidates_returns_empty(self):
+        peak_data = _dominance_peak_data([100.0], [1e7])
+        candidates = np.array([])
+
+        kept = self.orbi_handler._filter_dominated_peaks(candidates, peak_data)
+
+        assert kept.size == 0
