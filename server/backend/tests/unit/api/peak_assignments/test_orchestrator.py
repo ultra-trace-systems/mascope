@@ -130,9 +130,13 @@ def _patches(
         "calibration": patch(
             f"{_MOD}.load_calibration", new_callable=AsyncMock, return_value=None
         ),
-        "ionizations": patch(
-            f"{_MOD}._fetch_untargeted_ionizations",
+        "mechanisms": patch(
+            f"{_MOD}._fetch_sample_mechanisms",
             new_callable=AsyncMock,
+            return_value=(["im-1"], [MagicMock()]),
+        ),
+        "ionizations": patch(
+            f"{_MOD}._untargeted_ionization_notations",
             return_value=(["+H+"], {"+H+": "+H+"}),
         ),
         "compositions": patch(

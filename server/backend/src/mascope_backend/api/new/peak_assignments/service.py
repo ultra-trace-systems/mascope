@@ -14,6 +14,7 @@ read model ("every peak in sample X with its formula and confidence"):
 """
 
 import asyncio
+from collections import OrderedDict
 from dataclasses import asdict
 from datetime import datetime as dt
 from datetime import timezone
@@ -85,7 +86,7 @@ from mascope_backend.socket.notifications import (
 )
 from mascope_file.name import get_instrument_type
 from mascope_match import compute_match_isotopes
-from mascope_reference import iter_known_compositions
+from mascope_reference import iter_known_compositions, known_state_fingerprint
 from mascope_tools.composition import CompositionSearchConfig, HeuristicFilterConfig
 from mascope_tools.composition.calibration import (
     InsufficientCalibrationData,
@@ -447,8 +448,51 @@ async def recalibrate_instrument(
 # -------------------------------------------------------------------
 
 
+async def _fetch_sample_mechanisms(
+    sample: Sample,
+) -> tuple[list[str], list[SimpleNamespace]]:
+    """Resolve the sample's ionization mechanisms once per run.
+
+    Every stage of a run needs the same mechanism set, so it is fetched here
+    once and threaded through rather than re-queried per stage (which also
+    used to open a second pooled connection inside an already-open session).
+    The mechanism rows are detached into plain namespaces so downstream
+    CPU-bound work can use them off the event loop.
+
+    :param sample: Sample model object
+    :return: (all mechanism ids of the sample's ionization mode,
+        polarity-matching mechanism rows as detached namespaces)
+    """
+    mechanism_ids = await fetch_sample_ionization_mechanism_ids(sample.sample_item_id)
+    async with async_session() as session:
+        mechanisms = (
+            (
+                await session.execute(
+                    select(IonizationMechanism).where(
+                        IonizationMechanism.ionization_mechanism_id.in_(mechanism_ids),
+                        IonizationMechanism.ionization_mechanism_polarity
+                        == sample.polarity,
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+    mechanism_specs = [
+        SimpleNamespace(
+            ionization_mechanism_id=m.ionization_mechanism_id,
+            ionization_mechanism=m.ionization_mechanism,
+            ionization_mechanism_polarity=m.ionization_mechanism_polarity,
+        )
+        for m in mechanisms
+    ]
+    return mechanism_ids, mechanism_specs
+
+
 async def _fetch_known_target_isotopes(
-    sample: Sample, isotope_abundance_threshold: float
+    sample: Sample,
+    isotope_abundance_threshold: float,
+    ionization_mechanism_ids: list[str],
 ) -> pd.DataFrame:
     """
     Fetch the full known-isotopologue set for a sample (Stage A input).
@@ -461,12 +505,11 @@ async def _fetch_known_target_isotopes(
     :param sample: Sample model object
     :param isotope_abundance_threshold: Minimum relative abundance for a
         target isotope to participate
+    :param ionization_mechanism_ids: The sample's mechanism ids, resolved
+        once per run by :func:`_fetch_sample_mechanisms`
     :return: DataFrame of target isotopes with compound/ion metadata
     """
     async with async_session() as session:
-        ionization_mechanism_ids = await fetch_sample_ionization_mechanism_ids(
-            sample.sample_item_id
-        )
         resolution_type = (
             "LOW" if get_instrument_type(sample.filename) == "tof" else "HIGH"
         )
@@ -597,8 +640,21 @@ def _build_reference_isotopes_df(
     return pd.DataFrame(rows)
 
 
+# The expanded reference frame is identical for every run over the same
+# (reference state, mechanism set, resolution, abundance floor), so a Stage-A
+# batch of N samples should pay the IsoSpec expansion once, not N times. The
+# key's reference part comes from known_state_fingerprint, so a re-synced or
+# (de)activated source invalidates naturally. A handful of entries covers a
+# deployment's realistic (instrument, polarity, threshold) combinations.
+_REFERENCE_ISOTOPE_CACHE_MAX = 8
+_reference_isotope_cache: OrderedDict[tuple, pd.DataFrame] = OrderedDict()
+_reference_isotope_cache_lock = asyncio.Lock()
+
+
 async def _fetch_reference_known_isotopes(
-    sample: Sample, isotope_abundance_threshold: float
+    sample: Sample,
+    isotope_abundance_threshold: float,
+    mechanisms: list[SimpleNamespace],
 ) -> pd.DataFrame:
     """Reference-database contribution to the Stage A known set.
 
@@ -608,55 +664,64 @@ async def _fetch_reference_known_isotopes(
     data or the sample has no matching ionization mechanisms - so the seam is a
     no-op until a reference database is loaded.
 
+    The expansion is cached across runs (see the cache note above); the lock
+    makes concurrent runs with the same key wait for one build instead of
+    duplicating it.
+
     :param sample: Sample model object.
     :param isotope_abundance_threshold: Minimum relative abundance for a
         reference isotope to participate.
+    :param mechanisms: The sample's polarity-matching mechanisms, resolved
+        once per run by :func:`_fetch_sample_mechanisms`.
     :return: DataFrame in the known-isotope shape, or empty.
     """
-    async with async_session() as session:
-        mechanism_ids = await fetch_sample_ionization_mechanism_ids(
-            sample.sample_item_id
-        )
-        mechanisms = (
-            (
-                await session.execute(
-                    select(IonizationMechanism).where(
-                        IonizationMechanism.ionization_mechanism_id.in_(mechanism_ids),
-                        IonizationMechanism.ionization_mechanism_polarity
-                        == sample.polarity,
-                    )
-                )
-            )
-            .scalars()
-            .all()
-        )
-        known = await iter_known_compositions(session)
-
-    if not known or not mechanisms:
+    if not mechanisms:
         return pd.DataFrame()
 
-    # Detach the mechanism fields the CPU build needs so it can run off-loop.
-    mech_specs = [
-        SimpleNamespace(
-            ionization_mechanism_id=m.ionization_mechanism_id,
-            ionization_mechanism=m.ionization_mechanism,
-            ionization_mechanism_polarity=m.ionization_mechanism_polarity,
-        )
-        for m in mechanisms
-    ]
+    async with async_session() as session:
+        fingerprint = await known_state_fingerprint(session)
+    if not fingerprint:
+        # No active reference sources: nothing to expand, and nothing worth a
+        # cache slot either.
+        return pd.DataFrame()
+
     resolution_type = "LOW" if get_instrument_type(sample.filename) == "tof" else "HIGH"
-    reference_isotopes_df = await asyncio.to_thread(
-        _build_reference_isotopes_df,
-        known,
-        mech_specs,
+    cache_key = (
+        fingerprint,
+        tuple(sorted(m.ionization_mechanism_id for m in mechanisms)),
         resolution_type,
         isotope_abundance_threshold,
     )
-    runtime.logger.info(
-        f"Built {len(reference_isotopes_df)} reference known isotopes from "
-        f"{len(known)} reference formulas for sample '{sample.sample_item_name}'"
-    )
-    return reference_isotopes_df
+
+    async with _reference_isotope_cache_lock:
+        cached = _reference_isotope_cache.get(cache_key)
+        if cached is not None:
+            _reference_isotope_cache.move_to_end(cache_key)
+            runtime.logger.debug(
+                f"Reference isotope cache hit for sample '{sample.sample_item_name}'"
+            )
+            return cached.copy()
+
+        async with async_session() as session:
+            known = await iter_known_compositions(session)
+        if not known:
+            reference_isotopes_df = pd.DataFrame()
+        else:
+            reference_isotopes_df = await asyncio.to_thread(
+                _build_reference_isotopes_df,
+                known,
+                mechanisms,
+                resolution_type,
+                isotope_abundance_threshold,
+            )
+        runtime.logger.info(
+            f"Built {len(reference_isotopes_df)} reference known isotopes from "
+            f"{len(known)} reference formulas for sample '{sample.sample_item_name}'"
+        )
+        _reference_isotope_cache[cache_key] = reference_isotopes_df
+        while len(_reference_isotope_cache) > _REFERENCE_ISOTOPE_CACHE_MAX:
+            _reference_isotope_cache.popitem(last=False)
+        return reference_isotopes_df.copy()
 
 
 def _combine_known_isotopes(
@@ -681,32 +746,17 @@ def _combine_known_isotopes(
     return combined
 
 
-async def _fetch_untargeted_ionizations(
-    sample: Sample,
+def _untargeted_ionization_notations(
+    mechanisms: list[SimpleNamespace],
 ) -> tuple[list[str], dict[str, str]]:
     """
     Resolve the sample's ionization mechanisms into the explicit-isotope
     notation used by the composition finder.
 
-    :param sample: Sample model object
+    :param mechanisms: The sample's polarity-matching mechanisms, resolved
+        once per run by :func:`_fetch_sample_mechanisms`
     :return: (explicit notation strings, notation -> mechanism id mapping)
     """
-    mechanism_ids = await fetch_sample_ionization_mechanism_ids(sample.sample_item_id)
-    async with async_session() as session:
-        mechanisms = (
-            (
-                await session.execute(
-                    select(IonizationMechanism).where(
-                        IonizationMechanism.ionization_mechanism_id.in_(mechanism_ids),
-                        IonizationMechanism.ionization_mechanism_polarity
-                        == sample.polarity,
-                    )
-                )
-            )
-            .scalars()
-            .all()
-        )
-
     notations: list[str] = []
     mechanism_id_by_notation: dict[str, str] = {}
     for mechanism in mechanisms:
@@ -910,14 +960,18 @@ async def _run_sample_assignment(
         peaks_df = _load_sample_peaks(sample)
         await send_progress_user_notification(notification, 0.1)
 
+        # -- Resolve the sample's mechanism set once; every stage below
+        # consumes the same resolution.
+        mechanism_ids, mechanisms = await _fetch_sample_mechanisms(sample)
+
         # -- Stage A: database-first assignment from the known composition set:
         # the curated target library plus (when loaded) the reference mirror.
         stage_a_assignments: list[dict] = []
         target_isotopes_df = await _fetch_known_target_isotopes(
-            sample, match_params.isotope_abundance_threshold
+            sample, match_params.isotope_abundance_threshold, mechanism_ids
         )
         reference_isotopes_df = await _fetch_reference_known_isotopes(
-            sample, match_params.isotope_abundance_threshold
+            sample, match_params.isotope_abundance_threshold, mechanisms
         )
         known_isotopes_df = _combine_known_isotopes(
             target_isotopes_df, reference_isotopes_df
@@ -978,8 +1032,8 @@ async def _run_sample_assignment(
                 config.max_untargeted_peaks, "intensity"
             ).sort_values("mz")
 
-            notations, mechanism_id_by_notation = await _fetch_untargeted_ionizations(
-                sample
+            notations, mechanism_id_by_notation = _untargeted_ionization_notations(
+                mechanisms
             )
             if remainder_df.empty or not notations:
                 skip_reason = (
