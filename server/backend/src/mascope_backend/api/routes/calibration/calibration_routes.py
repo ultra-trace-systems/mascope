@@ -5,6 +5,7 @@ from mascope_backend.api.controllers.calibration.calibration_controller import (
     calibration_mz_calibrate_batch,
     calibration_mz_calibrate_sample,
     calibration_mz_fit,
+    get_default_calibration_params,
     get_mz_calibration,
 )
 from mascope_backend.api.controllers.sample.files.sample_files_controller import (
@@ -49,6 +50,24 @@ async def get_mz_calibration_route(
     :rtype: dict
     """
     return await get_mz_calibration(**query_params.model_dump())
+
+
+@calibration_router.get("/default_params")
+@api_route()
+async def get_default_calibration_params_route(
+    sample_item_id: str = Query(..., description="Sample item ID"),
+    user=Depends(guest_user),
+):
+    """Instrument-appropriate default m/z calibration parameters for a sample.
+
+    :param sample_item_id: The sample item ID.
+    :type sample_item_id: str
+    :param user: The current authenticated user, defaults to Depends(guest_user).
+    :type user: User, optional
+    :return: The default calibration parameter values.
+    :rtype: dict
+    """
+    return await get_default_calibration_params(sample_item_id=sample_item_id)
 
 
 @calibration_router.post("/mz_fit")
