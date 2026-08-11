@@ -34,7 +34,6 @@ from mascope_backend.api.lib.api_features import (
 )
 from mascope_backend.api.lib.exceptions.api_exceptions import (
     NotFoundException,
-    raise_api_warning,
 )
 from mascope_backend.api.new.cheminfo.utils import (
     to_custom_element_format,
@@ -489,6 +488,27 @@ async def _fetch_sample_mechanisms(
     return mechanism_ids, mechanism_specs
 
 
+def ineligible_reason(sample: Sample) -> str | None:
+    """Why this sample cannot usefully be assigned, or None if it can.
+
+    Mirrors the eligibility checks the targeted controllers apply
+    (``match_compute_batch`` and the rematch verified-calibration gate): a
+    blank sample carries no peaks, and a sample whose m/z calibration exists
+    but is unverified would produce mass errors - and therefore fit scores and
+    tiers - that mean nothing. Shared by the batch partition and the
+    per-sample guard so one sample assigned from the sample menu is refused on
+    exactly the condition a batch would have skipped it under.
+
+    :param sample: Sample to test.
+    :return: A short reason string, or None when the sample is eligible.
+    """
+    if sample.instrument_function_id is None:
+        return "blank sample (no peaks)"
+    if sample.mz_calibration and not sample.mz_calibration.get("verified", False):
+        return "m/z calibration not verified"
+    return None
+
+
 async def _fetch_known_target_isotopes(
     sample: Sample,
     isotope_abundance_threshold: float,
@@ -915,16 +935,18 @@ async def _run_sample_assignment(
     sample = await fetch_sample(sample_item_id)
     config = config or PeakAssignmentConfig()
 
-    if sample.instrument_function_id is None:
-        # Blank samples carry no peaks; nothing to assign
-        warning_message = (
-            f"Sample '{sample.sample_item_name}' has no peaks. "
-            "Peak assignment is skipped."
+    if (reason := ineligible_reason(sample)) is not None:
+        # Returned rather than raised: raise_api_warning always raises, which
+        # made the skip payload unreachable and its _notification_data - the
+        # reload the decorator's success path delivers - silently lost. The
+        # batch path reports its skips through returns for the same reason.
+        message = (
+            f"Peak assignment skipped for sample '{sample.sample_item_name}': {reason}."
         )
-        raise_api_warning(warning_message, {"sample_item_id": sample_item_id})
+        runtime.logger.warning(message)
         return {
             "status": "skipped",
-            "message": warning_message,
+            "message": message,
             "_notification_data": {
                 "sample_batch_id": sample.sample_batch_id,
                 "sample_item_id": sample_item_id,
