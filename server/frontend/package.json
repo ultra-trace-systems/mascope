@@ -55,6 +55,7 @@
     "vue-router": "^5.2.0"
   },
   "devDependencies": {
+    "@eslint/js": "^10.0.1",
     "@playwright/test": "^1.62.1",
     "@rushstack/eslint-patch": "^1.16.1",
     "@types/node": "^26.1.2",
@@ -63,8 +64,9 @@
     "@vue/eslint-config-prettier": "^10.2.0",
     "@vue/test-utils": "^2.4.11",
     "chroma-js": "^3.2.0",
-    "eslint": "^9.39.2",
+    "eslint": "^10.8.1",
     "eslint-plugin-vue": "^10.10.0",
+    "globals": "^17.9.0",
     "happy-dom": "^20.11.1",
     "prettier": "^3.9.6",
     "vite": "^8.2.0",
