@@ -391,6 +391,31 @@ class TestRunFinalization:
         assert (run_id, status) == ("run-1", "failed")
 
     @pytest.mark.asyncio
+    async def test_failure_before_the_first_stage_finalizes_the_run_failed(self):
+        """The run record must be covered by the finalizer from the moment it
+        exists.
+
+        The gap this pins: notification construction sits between run creation
+        and the assignment stages, and a crash there used to leak the run as
+        'running' until the startup reaper.
+        """
+        from mascope_backend.api.new.peak_assignments.config import (
+            PeakAssignmentConfig,
+        )
+
+        peaks = _peaks_df([("p1", 181.0707, 10000.0)])
+        recorder = _Recorder()
+        mocks = _start(_patches(recorder, peaks, _stage_a_rows()))
+        with patch(
+            f"{_MOD}.UserNotification",
+            side_effect=RuntimeError("notification exploded"),
+        ):
+            await _run(PeakAssignmentConfig(run_untargeted=False))
+
+        mocks["finalize"].assert_awaited_once()
+        assert mocks["finalize"].await_args.args[:2] == ("run-1", "failed")
+
+    @pytest.mark.asyncio
     async def test_failure_propagates_to_a_batch_caller(self):
         """The batch counts failures by catching, so the error must reach it.
 
