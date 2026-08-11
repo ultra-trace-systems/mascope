@@ -11,6 +11,9 @@ Detected peaks are extracted from the sample file and filtered based on their si
 Reference compounds are pulled from a calibration target collection, generating a list of exact theoretical isotopic masses based on the designated ionization mechanisms and instrument.
 Peaks are only retained if their observed mass coordinates lie within a parts-per-million refinement window relative to any target isotopic mass.
 
+On Orbitrap data, a local-dominance guard additionally rejects any candidate that lies close to a much stronger peak.
+Fourier-transform centroiding of short transients produces weak sidelobe ("satellite") peaks around every intense centroid; these can carry a high signal-to-noise ratio while being orders of magnitude weaker than their parent, and would otherwise anchor the calibration to a slightly shifted mass whenever the true calibrant falls outside the refinement window.
+
 To avoid isobaric interference, adjacent candidate peaks are checked for Full-Width at Half-Maximum (FWHM) overlap.
 Each peak is given an expected width envelope, and any overlapping pairs are discarded to keep only clean calibration points.
 

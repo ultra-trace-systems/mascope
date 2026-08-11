@@ -70,8 +70,27 @@ TOF_MINIMUM_CALIBRATION_POINTS = 3
 ORBI_MINIMUM_CALIBRATION_POINTS = 1
 LARGE_SAMPLE_SIZE_THRESHOLD = 5
 
+#: Local-dominance guard for Orbitrap candidate peaks. FTMS centroiding of
+#: short transients leaves weak sidelobe ("satellite") peaks around every
+#: intense centroid; they can carry SNR far above the calibration threshold
+#: while being orders of magnitude weaker than their parent. A candidate is
+#: rejected when a peak at least ORBI_DOMINANCE_RATIO times more intense lies
+#: within ORBI_DOMINANCE_WINDOW_PPM: either that stronger peak is the real
+#: calibrant (and wins the max-intensity match itself), or the candidate is
+#: its sidelobe - in both cases the candidate must not anchor the fit. Real
+#: calibrants are unaffected because sidelobes are never within a factor
+#: ORBI_DOMINANCE_RATIO of their parent's intensity.
+ORBI_DOMINANCE_WINDOW_PPM = 100.0
+ORBI_DOMINANCE_RATIO = 10.0
+
 
 class BaseCalibrationHandler:
+    #: Local-dominance guard (see ORBI_DOMINANCE_WINDOW_PPM). Disabled here
+    #: (window 0); instrument handlers whose peak lists carry sidelobe
+    #: artifacts override these.
+    _dominance_window_ppm: float = 0.0
+    _dominance_ratio: float = 0.0
+
     def __init__(
         self,
         filename: str,
@@ -190,6 +209,8 @@ class BaseCalibrationHandler:
             threshold are retained.
         - m/z proximity: Only peaks within the refine window (in ppm) of any target
             m/z are retained.
+        - Local dominance: peaks in the shadow of a much stronger nearby peak
+            (sidelobe artifacts) are rejected.
         - Instrument resolution: peaks that are too close to each other based on
             the instrument resolution.
 
@@ -205,6 +226,7 @@ class BaseCalibrationHandler:
             candidate_mzs,
             np.asarray(target_mzs),
         )
+        candidate_mzs = self._filter_dominated_peaks(candidate_mzs, peak_data)
         candidate_mzs = await self._filter_overlapping_peaks(candidate_mzs)
 
         peak_timeseries = await self._load_peak_timeseries(candidate_mzs)
@@ -218,6 +240,54 @@ class BaseCalibrationHandler:
         polarity_mask = peak_data.polarity == self.params.polarity
         snr_mask = peak_data.signal_to_noise.values >= self.params.snr_threshold
         return all_mzs[polarity_mask & snr_mask]
+
+    def _filter_dominated_peaks(
+        self,
+        peak_mzs: np.ndarray,
+        peak_data,
+    ) -> np.ndarray:
+        """Reject candidates that sit in the shadow of a much stronger peak.
+
+        A candidate is dominated when a same-polarity peak at least
+        ``_dominance_ratio`` times more intense lies within
+        ``_dominance_window_ppm`` of it. Such candidates are sidelobe
+        artifacts of the stronger peak (or minor peaks unresolvable from its
+        sidelobes) and must not anchor the fit. The comparison runs against
+        the full same-polarity peak list without the SNR gate, so a true
+        calibrant outside the refine window still disqualifies its in-window
+        sidelobes. No-op when the handler's dominance window is 0.
+
+        :param peak_mzs: Candidate calibration peak m/z values.
+        :type peak_mzs: np.ndarray
+        :param peak_data: Full peak dataset with mz, polarity and
+            sum_peak_heights.
+        :return: Candidates without dominated peaks.
+        :rtype: np.ndarray
+        """
+        if self._dominance_window_ppm <= 0 or peak_mzs.size == 0:
+            return peak_mzs
+
+        polarity_mask = (peak_data.polarity == self.params.polarity).values
+        all_mzs = peak_data.mz.values[polarity_mask]
+        all_heights = np.nan_to_num(
+            peak_data.sum_peak_heights.values[polarity_mask], nan=0.0
+        )
+
+        order = np.argsort(all_mzs)
+        sorted_mzs = all_mzs[order]
+        sorted_heights = all_heights[order]
+
+        keep_mask = np.ones(peak_mzs.size, dtype=bool)
+        for i, mz in enumerate(peak_mzs):
+            window = self._dominance_window_ppm * 1e-6 * mz
+            lo = np.searchsorted(sorted_mzs, mz - window, side="left")
+            hi = np.searchsorted(sorted_mzs, mz + window, side="right")
+            neighborhood = sorted_heights[lo:hi]
+            if neighborhood.size == 0:
+                continue
+            own_height = neighborhood[np.argmin(np.abs(sorted_mzs[lo:hi] - mz))]
+            keep_mask[i] = neighborhood.max() < self._dominance_ratio * own_height
+        return peak_mzs[keep_mask]
 
     def _filter_mzs_by_refine_window(
         self,
@@ -686,6 +756,9 @@ class TofCalibrationHandler(BaseCalibrationHandler):
 
 
 class OrbiCalibrationHandler(BaseCalibrationHandler):
+    _dominance_window_ppm = ORBI_DOMINANCE_WINDOW_PPM
+    _dominance_ratio = ORBI_DOMINANCE_RATIO
+
     @property
     def _minimum_calibration_points(self) -> int:
         return ORBI_MINIMUM_CALIBRATION_POINTS
