@@ -16,6 +16,7 @@ from sqlalchemy import and_, func, select
 
 from mascope_backend.api.controllers.calibration.lib.calibration_mz_fit import (
     calibration_params_factory,
+    fit_quality,
     get_calibration_handler,
 )
 from mascope_backend.api.controllers.match.match_controller import match_remove_sample
@@ -203,6 +204,12 @@ async def calibration_mz_fit(
     )
     await calibration_handler.fit()
     calibration_data = calibration_handler.to_dict()
+    if calibration_data.get("fit") is not None:
+        # Travels inside the fit dict through apply into the persisted
+        # sample_file.mz_calibration record.
+        calibration_data["fit"]["quality"] = fit_quality(
+            calibration_data.get("stats"), calibration_parameters
+        )
 
     # --- Build shared notification payload ---
     notification_data = {
@@ -335,7 +342,7 @@ async def calibration_mz_apply(
     updated_mz_axis = get_sum_signal(filename).mz.values
     new_mz_range = [updated_mz_axis[0], updated_mz_axis[-1]]
 
-    fit.update({"verified": True})
+    fit.update({"status": "ok", "verified": True})
 
     await send_progress_user_notification(notification, 0.3)
 

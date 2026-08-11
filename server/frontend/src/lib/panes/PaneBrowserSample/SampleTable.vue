@@ -12,6 +12,7 @@ import { FilterMatchMode } from '@primevue/core/api'
 
 import { BaseTabbedPanel, BaseMatchTag, BaseCopyableField } from '@/lib/base'
 import { DialogSampleOp, DialogCalibration } from '@/lib/dialogs'
+import { calibrationStatus } from '@/lib/calibrationStatus'
 import { clone } from '@/lib/utils'
 import { num } from '@/lib/formatters'
 import { useApp } from '@/stores'
@@ -117,6 +118,13 @@ const onKeyDown = (event) => {
 const { height } = useWindowSize()
 const padding = 100
 const tableHeight = computed(() => ((height.value - padding) * app.ui.split.top) / 100 - 50)
+
+// Open the calibration dialog for one sample (badge click), reusing the
+// context-menu "Recalibrate" plumbing.
+const openCalibration = (sample) => {
+  contextMenu.row = sample
+  contextMenu.dialog.calibration = true
+}
 </script>
 
 <template>
@@ -133,7 +141,8 @@ const tableHeight = computed(() => ((height.value - padding) * app.ui.split.top)
     :loading="app.data.sample.pending"
     :status="batchStatus"
     :pt="
-      app.ui.help.right(`
+      app.ui.help.right(
+        `
         <h1>Sample Browser: Samples</h1>
 
         <p>Shows all samples in the currently opened batch (${app.data.batch.focused.sample_batch_name}).</p>
@@ -142,7 +151,11 @@ const tableHeight = computed(() => ((height.value - padding) * app.ui.split.top)
 
         <p>Right click on selected sample(s) to perform actions such as copy, cut and delete.</p>
       `,
-        { doc: app.ui.help.docUrl('guides/import-files/#build-your-batch-from-the-acquisition-samples') }
+        {
+          doc: app.ui.help.docUrl(
+            'guides/import-files/#build-your-batch-from-the-acquisition-samples'
+          )
+        }
       )
     "
   >
@@ -215,6 +228,24 @@ const tableHeight = computed(() => ((height.value - padding) * app.ui.split.top)
                 ? `Total peak intensity: ${num.peakIntensity.format(data.match.sample_peak_intensity_sum)} (cps)`
                 : 'No peak intensity data'
             "
+          />
+        </template>
+      </Column>
+
+      <Column class="calibration-column">
+        <template #header>
+          <span class="pi ph ph-scales" v-tooltip.top="'m/z calibration status'" />
+        </template>
+        <template #body="{ data }">
+          <span
+            v-if="calibrationStatus(data.mz_calibration)"
+            class="pi ph ph-scales calibration-badge"
+            :class="`calibration-${calibrationStatus(data.mz_calibration).state}`"
+            v-tooltip="{
+              value: calibrationStatus(data.mz_calibration).tooltip,
+              showDelay: 500
+            }"
+            @click.stop="openCalibration(data)"
           />
         </template>
       </Column>

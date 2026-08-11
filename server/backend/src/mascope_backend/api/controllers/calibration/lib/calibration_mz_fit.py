@@ -24,6 +24,7 @@ General calibration workflow:
    rewriting relevant m/z coordinates in the sample file.
 """
 
+import math
 from abc import abstractmethod
 from itertools import combinations
 
@@ -950,3 +951,55 @@ def calibration_params_factory(filename: str, **kwargs) -> MzCalibrationParams:
             return OrbiCalibrationParams(**kwargs)
         case _:
             raise ValueError(f"Unknown instrument type: {instrument_type}")
+
+
+def _finite_or_none(value) -> float | None:
+    """Coerce to a JSON-safe float: None for non-numeric or non-finite values."""
+    try:
+        value = float(value)
+    except (TypeError, ValueError):
+        return None
+    return value if math.isfinite(value) else None
+
+
+def fit_quality(
+    stats: list[dict] | None, params: MzCalibrationParams | None
+) -> dict | None:
+    """
+    Compact fit-quality summary derived from a handler's per-point stats.
+
+    Stored inside the persisted ``sample_file.mz_calibration`` record so the
+    quality of an applied fit (how many calibration points anchored it, and the
+    mean absolute m/z error before and after, in ppm) stays inspectable after
+    the fact without refitting. A sidelobe-anchored or single-point fit is
+    visible here even though it applied without warnings.
+
+    The handlers append an aggregate summary row (no ``mz`` key) after the
+    per-point rows; stats lists without one (warning paths) yield point counts
+    only. Values are coerced to JSON-safe floats: the record is stored in a
+    JSON column, so numpy scalars and NaN must not leak through.
+
+    :param stats: Handler ``stats`` list (per-point rows + summary row).
+    :param params: Resolved calibration params the fit ran with.
+    :return: Quality dict, or None when there are no stats at all.
+    """
+    if not stats:
+        return None
+    summary = stats[-1] if "mz" not in stats[-1] else None
+    point_rows = stats[:-1] if summary is not None else stats
+    return {
+        "n_points": len(point_rows),
+        "pre_fit_mz_error_ppm": (
+            _finite_or_none(summary.get("match_mz_error")) if summary else None
+        ),
+        "post_fit_mz_error_ppm": (
+            _finite_or_none(summary.get("calibration_mz_error")) if summary else None
+        ),
+        "calibrant_to_tic": (
+            _finite_or_none(summary.get("calibrant_to_tic")) if summary else None
+        ),
+        "mz_error_tolerance": (
+            _finite_or_none(params.mz_error_tolerance) if params else None
+        ),
+        "refine_window": _finite_or_none(params.refine_window) if params else None,
+    }

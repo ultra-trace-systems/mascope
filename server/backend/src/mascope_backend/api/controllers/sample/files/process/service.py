@@ -7,7 +7,7 @@ Handles automated creation of ACQUISITION datasets, batches, and sample items, a
 import asyncio
 
 from sqlalchemy import delete, select
-from sqlalchemy.exc import InterfaceError, OperationalError
+from sqlalchemy.exc import InterfaceError, OperationalError, SQLAlchemyError
 from sqlalchemy.exc import TimeoutError as SQLAlchemyTimeoutError
 
 from mascope_backend.api.controllers.calibration.calibration_controller import (
@@ -313,11 +313,22 @@ async def _auto_process_sample_file(
             and ionization_mode.calibration_collection_id
             and not is_blank_sample_file
         ):
-            await calibrate_with_retry(
+            calibrated = await calibrate_with_retry(
                 sample=sample,
+                sample_file_id=sample_file.sample_file_id,
                 user_id=user_id,
                 process_id=process_id,
             )
+            if not calibrated:
+                # The failure marker written by calibrate_with_retry would
+                # trip the verified gate in match_compute_sample as a raised
+                # warning, failing the whole pipeline; skip matching and
+                # assignment explicitly - both assume a calibrated m/z axis.
+                runtime.logger.info(
+                    "Skipping matching and peak assignment for sample "
+                    f"'{sample['sample_item_name']}': m/z calibration failed."
+                )
+                continue
         elif is_blank_sample_file:
             runtime.logger.info(
                 "Skipping m/z calibration for blank file "
@@ -795,9 +806,53 @@ async def create_acquisition_batches_and_items(
     return acquisition_samples, acquisition_sample_batches
 
 
-async def calibrate_with_retry(
-    sample: dict, user_id: int | None = None, process_id: str | None = None
+async def _record_calibration_failure(
+    sample_file_id: str | None,
+    error: Exception,
+    attempts: int,
+    mz_error_tolerance: float | None,
 ) -> None:
+    """
+    Persist a failed-calibration marker on the sample file.
+
+    A given-up calibration otherwise leaves ``mz_calibration`` NULL, which is
+    indistinguishable from "calibration not applicable" (blank files, modes
+    without a calibration collection): the sample silently matches on the
+    uncalibrated axis and nothing in the UI points at it. The marker record
+    (``status: "failed"``, ``verified: False``) makes the outcome visible to
+    the sample browser and trips the verified gate in the match computation.
+
+    Never overwrites an existing record: an applied fit must survive a later
+    failed re-attempt. Best-effort - a database error here is logged, not
+    raised, so it cannot fail the surrounding pipeline.
+    """
+    if sample_file_id is None:
+        return
+    try:
+        async with async_session() as session:
+            sample_file = await session.get(SampleFile, sample_file_id)
+            if sample_file is None or sample_file.mz_calibration is not None:
+                return
+            sample_file.mz_calibration = {
+                "status": "failed",
+                "verified": False,
+                "error": str(error),
+                "attempts": attempts,
+                "mz_error_tolerance": mz_error_tolerance,
+            }
+            await session.commit()
+    except SQLAlchemyError:
+        runtime.logger.exception(
+            f"Failed to record calibration failure for sample file {sample_file_id}"
+        )
+
+
+async def calibrate_with_retry(
+    sample: dict,
+    sample_file_id: str | None = None,
+    user_id: int | None = None,
+    process_id: str | None = None,
+) -> bool:
     """Calibrate sample with retry logic
 
     If no matching calibration peaks are found, the m/z error tolerance is doubled
@@ -805,12 +860,20 @@ async def calibrate_with_retry(
     failures a wider tolerance can clear are retried (see
     RETRYABLE_CALIBRATION_STATUS); any other failure stops the loop at once.
 
+    When every attempt fails, the outcome is persisted on the sample file via
+    :func:`_record_calibration_failure` and ``False`` is returned so the caller
+    can skip steps that assume a calibrated m/z axis (matching, assignment).
+
     :param sample: Sample dict to calibrate
     :type sample: dict
+    :param sample_file_id: Sample file to mark when calibration fails
+    :type sample_file_id: str | None, optional
     :param user_id: Current user triggered operation (for user notifications)
     :type user_id: int | None, optional
     :param process_id: Process ID for tracking
     :type process_id: str | None, optional
+    :return: True when a fit was applied, False when calibration was given up.
+    :rtype: bool
     """
     mz_calibration_params = calibration_params_factory(sample["filename"])
     for i in range(1, CALIBRATION_ITERATIONS + 1):
@@ -823,7 +886,7 @@ async def calibrate_with_retry(
                 process_id=gen_id(8),
                 parent_id=process_id,
             )
-            break
+            return True
         except ApiException as e:
             if e.status_code not in RETRYABLE_CALIBRATION_STATUS:
                 # A fault rather than a data condition: a wider tolerance
@@ -833,7 +896,13 @@ async def calibrate_with_retry(
                     "Failed to m/z calibrate sample item "
                     f"{sample['sample_item_name']}: {e}"
                 )
-                break
+                await _record_calibration_failure(
+                    sample_file_id,
+                    e,
+                    attempts=i,
+                    mz_error_tolerance=mz_calibration_params.mz_error_tolerance,
+                )
+                return False
             if i == CALIBRATION_ITERATIONS:
                 # INFO: an expected data condition (a spectrum too poor to
                 # yield calibration peaks), and this fires per sample of every
@@ -844,6 +913,13 @@ async def calibrate_with_retry(
                     f"{mz_calibration_params.mz_error_tolerance} "
                     f"for sample item {sample['sample_item_name']}: {e}"
                 )
+                await _record_calibration_failure(
+                    sample_file_id,
+                    e,
+                    attempts=i,
+                    mz_error_tolerance=mz_calibration_params.mz_error_tolerance,
+                )
+                return False
             else:
                 # Double the m/z error tolerance, check refinement window limits, then retry
                 old_tolerance = mz_calibration_params.mz_error_tolerance
@@ -863,3 +939,6 @@ async def calibrate_with_retry(
                     f"{sample['sample_item_name']} with "
                     f"mz_error_tolerance={mz_calibration_params.mz_error_tolerance}."
                 )
+    # Unreachable: the final iteration always returns above. Kept so the
+    # signature honestly never yields None.
+    return False
