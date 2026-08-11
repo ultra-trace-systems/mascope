@@ -19,7 +19,7 @@ dependencies = [
     # >=2026.7.28: `logs query` passes the service/json_output kwargs added
     # to RuntimeLogging.query in that release.
     "mascope_runtime[logs]>=2026.7.28",
-    "typer>=0.27.0,<0.28",
+    "typer>=0.27.1,<0.28",
     "rich>=15.0.0,<16",
 ]
 
