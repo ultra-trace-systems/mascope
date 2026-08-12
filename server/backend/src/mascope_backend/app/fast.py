@@ -116,8 +116,15 @@ async def logger_middleware(request: Request, call_next):
     # Surface the timing to browser devtools / API clients
     response.headers["Server-Timing"] = f"app;dur={duration_ms}"
 
-    # add logging context
-    client_host = request.client.host if request.client else "unknown"
+    # add logging context. The direct peer is the nginx container, not the
+    # client: nginx forwards the real client address in X-Real-IP and always
+    # overwrites the header, so through the proxy it cannot be spoofed. The
+    # rate limiter derives its per-client key from the same header.
+    client_host = (
+        request.headers.get("x-real-ip")
+        or (request.client.host if request.client else None)
+        or "unknown"
+    )
 
     with runtime.logger.contextualize(
         path=request.url.path,
