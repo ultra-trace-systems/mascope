@@ -4,6 +4,15 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
 
 ## [Unreleased]
 
+### Added
+
+- SDK: new example notebook `10_batch_stages.ipynb` - splits a batch timeline
+  into time-range stages (e.g. background / exposure / recovery), averages
+  ion- and compound-level intensities across the samples of each stage,
+  normalises by each sample's TIC, and compares stages with grouped bar charts
+  and a log2 fold-change heatmap against a reference stage. The batch-level
+  counterpart of `05_peaks_by_stage.ipynb`.
+
 ### Changed
 
 - SDK: name matching now follows a single contract everywhere. A plain string

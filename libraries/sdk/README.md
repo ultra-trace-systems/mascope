@@ -81,6 +81,7 @@ This creates a `tutorials/` folder with the following notebooks:
 | 7   | `07_background_subtraction.ipynb`  | Subtract a background sample (matched ions or m/z bins) |
 | 8   | `08_correlation_analysis.ipynb`    | Find co-varying peaks via correlation and clustering    |
 | 9   | `09_composition_assignment.ipynb`  | Assign elemental compositions to unmatched peaks        |
+| 10  | `10_batch_stages.ipynb`            | Split a batch into stages and compare per-stage averages |
 
 Open them in VS Code (or any Jupyter-compatible IDE) and run the cells. Each notebook is self-contained, just make sure your `.env` credentials are set up first (see [Configuration](#configuration)).
 
