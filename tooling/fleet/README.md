@@ -1,17 +1,16 @@
 # Fleet configuration (Ansible)
 
-Codifies the production servers' host-level configuration — the things the
-July 2026 remediation established by hand — so drift becomes a weekly diff
-instead of a months-later incident:
+Codifies the host-level configuration a Mascope production fleet depends on,
+so drift becomes a weekly diff instead of a months-later incident:
 
 | Role | Owns |
 |---|---|
 | `sshd_hardening` | `/etc/ssh/sshd_config.d/00-tailnet-hardening.conf` (key-only SSH, no root passwords) |
 | `firewall` | ufw policies, tailnet SSH rule, Cloudflare-only 443, the canonical `MASCOPE NAT` masquerade block |
-| `docker_daemon` | `/etc/docker/daemon.json` with `iptables: false` (load-bearing — see `docs/maintaining.md`) |
+| `docker_daemon` | `/etc/docker/daemon.json` with `iptables: false` (load-bearing: with stock Docker, published ports bypass ufw) |
 | `unattended_upgrades` | unattended security updates enabled |
 
-The monitoring box (`ops`) is deliberately **not** in the fleet group — it
+The monitoring box is deliberately **not** in the fleet group — it
 runs a different network model (stock Docker + `DOCKER-USER` rules).
 
 ## One-time setup (WSL on the admin workstation)
@@ -57,7 +56,7 @@ gitignored there too.
 
 ## Sudo passwords: the vault (recommended)
 
-The fleet has **no NOPASSWD sudo** and each server has its **own** sudo
+The fleet model assumes **no NOPASSWD sudo** and a per-server sudo
 password, so a single `-K` prompt cannot drive a whole-fleet run. Ansible Vault
 solves this: store the per-host passwords once in an encrypted file, then unlock
 them all with one prompt.
@@ -110,12 +109,11 @@ ansible-playbook site.yml --check --diff -K --limit <host>
   Mascope stack** (~30 s outage on that server). It only fires when
   `daemon.json` actually changed, which should be never once converged — but
   treat a non-empty diff there with respect and apply per-server.
-- The first-ever run is a **migration**, not a no-op: servers provisioned
-  before this role carry a hand-written `MASCOPE NAT` block (removed and
-  replaced by the ansible-managed block, same semantics), and the two
-  oldest-provisioned servers still persist equivalent NAT rules via
-  `iptables-persistent` — harmless duplication that can be retired
-  separately (see the private fleet docs for which servers).
+- The first-ever run on a long-lived server is a **migration**, not a no-op:
+  a server provisioned before this role existed may carry a hand-written
+  `MASCOPE NAT` block (removed and replaced by the ansible-managed block, same
+  semantics) or persist equivalent NAT rules via `iptables-persistent` —
+  harmless duplication that can be retired separately.
 - Cloudflare ranges are fetched live at run time; rules for ranges Cloudflare
   has *withdrawn* are not auto-pruned (same behavior as
   `tooling/ufw-allow-cf.sh`) — prune manually on the rare CF delisting.

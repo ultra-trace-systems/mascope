@@ -1,6 +1,6 @@
 # Uptime Kuma (external uptime + TLS-expiry monitoring) for the Mascope fleet.
 #
-# Deploy on the internal monitoring box ("ops"), reachable from LAN + tailnet
+# Deploy on the internal monitoring box, reachable from LAN + tailnet
 # only, plain HTTP. Concrete host addresses are deliberately not in this public
 # repo - see the private fleet docs. Copy this directory to /opt/uptime-kuma on
 # the box, then `docker compose up -d` and open port 3001 in a browser to create

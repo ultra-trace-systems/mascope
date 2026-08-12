@@ -1697,7 +1697,7 @@ backups (GDPR Art. 32).
 which mascope   # /home/<user>/.local/bin/mascope
 which docker    # /usr/bin/docker
 which restic    # /usr/bin/restic (installed by tooling/ubuntu.sh)
-echo $MASCOPE_PATH   # e.g. /home/karsa/Mascope (from /etc/environment)
+echo $MASCOPE_PATH   # e.g. /home/<deploy-user>/mascope (from /etc/environment)
 ```
 
 ### Setup
@@ -1773,8 +1773,8 @@ echo $MASCOPE_PATH   # e.g. /home/karsa/Mascope (from /etc/environment)
 
    ```
    SHELL=/usr/bin/bash
-   PATH=/home/karsa/.local/bin:/usr/bin:/usr/local/bin
-   MASCOPE_PATH=/home/karsa/Mascope
+   PATH=/home/<deploy-user>/.local/bin:/usr/bin:/usr/local/bin
+   MASCOPE_PATH=/home/<deploy-user>/mascope
 
    # Nightly backup at 4 AM: local dump + prune + encrypted off-site push
    0 4 * * * $MASCOPE_PATH/tooling/backup-cron.sh 2>&1 | logger -t mascope-backup
