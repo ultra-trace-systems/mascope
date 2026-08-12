@@ -84,7 +84,7 @@ export const useUser = defineStore('app.data.user', () => {
       ),
     resetPassword: (user) =>
       sudo((role) =>
-        api.http.get(`/users/${role}/${user.id}/reset-password`, {
+        api.http.post(`/users/${role}/${user.id}/reset-password`, null, {
           use: 'read',
           type: 'reset_password'
         })

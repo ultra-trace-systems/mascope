@@ -101,7 +101,11 @@ async def owner_update_user_route(
     )
 
 
-@owner_router.get("/{user_id}/reset-password")
+# POST, not GET: resetting a password changes state, and the SameSite=lax
+# auth cookie rides on cross-site top-level GET navigations - as a GET, a
+# crafted link could reset a user's password with the owner's ambient
+# credentials.
+@owner_router.post("/{user_id}/reset-password")
 @api_route()
 async def owner_reset_user_password(
     user_id: int = Path(..., description="ID of the user to reset password"),
