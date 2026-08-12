@@ -264,7 +264,7 @@ async def process_sample_item_route(
     }
 
 
-@sample_items_router.get("/{sample_item_id}/export_peak_data")
+@sample_items_router.post("/{sample_item_id}/export_peak_data")
 @api_route(status_code=202)
 async def sample_item_export_peaks_route(
     sample_item_id: str,

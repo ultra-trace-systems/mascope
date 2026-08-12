@@ -19,7 +19,7 @@ from mascope_backend.db.id import gen_id
 sample_batches_export_router = APIRouter(tags=["Sample Batches Export"])
 
 
-@sample_batches_export_router.get("/{sample_batch_id}/export/spreadsheet")
+@sample_batches_export_router.post("/{sample_batch_id}/export/spreadsheet")
 @api_route(status_code=202)
 async def sample_batch_export_spreadsheet_route(
     sample_batch_id: str,

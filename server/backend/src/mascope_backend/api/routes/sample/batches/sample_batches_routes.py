@@ -322,7 +322,7 @@ async def copy_sample_batch_route(
     }
 
 
-@sample_batches_router.get("/{sample_batch_id}/export_peaks")
+@sample_batches_router.post("/{sample_batch_id}/export_peaks")
 @api_route(status_code=202)
 async def sample_batch_export_peaks_route(
     sample_batch_id: str,

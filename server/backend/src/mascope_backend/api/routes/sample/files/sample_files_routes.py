@@ -233,7 +233,7 @@ async def get_sample_file_peaks_route(
     return await get_sample_file_peaks(sample_file_id, **query_params.model_dump())
 
 
-@sample_files_router.get("/{sample_file_id}/peaks/compute")
+@sample_files_router.post("/{sample_file_id}/peaks/compute")
 @api_route(status_code=202)
 async def compute_sample_file_peaks_route(
     sample_file_id: str,

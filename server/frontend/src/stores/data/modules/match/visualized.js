@@ -157,17 +157,21 @@ export const useMatchVisualized = defineStore('app.data.match.visualized', () =>
     ui.chart.clear()
 
     // Load visualization data
-    await api.http.get(`/visualization/ion_focus`, {
-      params: {
-        sample_item_id: sample_item_id,
-        target_ion_id: target_ion_id,
-        peak_min_intensity: matchParams.ui.peak_min_intensity,
-        mz_tolerance: matchParams.ui.mz_tolerance,
-        isotope_ratio_tolerance: matchParams.ui.isotope_ratio_tolerance
-      },
-      use: 'read',
-      type: 'read_visualized_ion'
-    })
+    await api.http.post(
+      `/visualization/ion_focus`,
+      {},
+      {
+        params: {
+          sample_item_id: sample_item_id,
+          target_ion_id: target_ion_id,
+          peak_min_intensity: matchParams.ui.peak_min_intensity,
+          mz_tolerance: matchParams.ui.mz_tolerance,
+          isotope_ratio_tolerance: matchParams.ui.isotope_ratio_tolerance
+        },
+        use: 'read',
+        type: 'read_visualized_ion'
+      }
+    )
   }
 
   // Verify a peak assignment in the Fit view via the composition-driven
