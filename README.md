@@ -65,6 +65,15 @@ also run the demo from source with `mascope demo` (see
 | **Hosting & deployment**           | [Hosting](docs/hosting.md) (managed, local, LAN/production)                                     |
 | **Demo dataset & reproducibility** | [Demo dataset](docs/demo_dataset.md)                                                            |
 
+## Ecosystem
+
+- **[Peaky](https://github.com/ultra-trace-systems/peaky)** - an AI-native analysis
+  toolbox built on the Mascope SDK: untargeted chemical-formula assignment,
+  time-series clustering, Van Krevelen plots, and PDF reports, driven in plain
+  language through a coding agent such as [Claude Code](https://claude.com/claude-code).
+  It is the SDK-powered, AI-driven power-user path - a complement to the web app,
+  with Mascope as the system of record and Mascope's scoring as the only scorer.
+
 ## Community
 
 Questions, help, and discussion happen on Discord - come say hello:
