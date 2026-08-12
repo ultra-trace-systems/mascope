@@ -29,7 +29,7 @@ mascope-backend = "mascope_backend.main:exec"
 
 [dependency-groups]
 # Small standalone group so CI can install the linter without the heavy dev deps.
-lint = ["ruff>=0.16.1,<0.17"]
+lint = ["ruff>=0.16.2,<0.17"]
 # Standalone group for building the user documentation site (docs/user ->
 # static HTML). Kept out of `dev` so `mkdocs serve` / `mkdocs build --strict`
 # can be installed on their own (CI, image build) without the heavy dev deps.

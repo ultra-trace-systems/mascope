@@ -31,7 +31,7 @@ dependencies = [
 # ipykernel lets editors run the notebooks without a separate install.
 examples = [
     "plotly>=5.18.0",
-    "nbformat>=5.7.0",
+    "nbformat>=5.11.0",
     "matplotlib>=3.8.0",
     "numpy>=1.24.0",
     "scipy>=1.11.0",
