@@ -25,6 +25,19 @@ dependencies = [
     "python-dotenv>=1.0.0",
 ]
 
+[project.optional-dependencies]
+# Everything the bundled example notebooks import beyond the core
+# dependencies. nbformat is required by plotly's notebook renderer and
+# ipykernel lets editors run the notebooks without a separate install.
+examples = [
+    "plotly>=5.18.0",
+    "nbformat>=5.7.0",
+    "matplotlib>=3.8.0",
+    "numpy>=1.24.0",
+    "scipy>=1.11.0",
+    "ipykernel>=6.29.0",
+]
+
 [project.urls]
 homepage = "https://ultratrace.eu/"
 repository = "https://github.com/ultra-trace-systems/mascope"

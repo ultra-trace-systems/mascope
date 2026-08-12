@@ -106,14 +106,16 @@ Open a terminal **inside VS Code** (press `` Ctrl+` `` or go to
 
 ```
 uv init --python 3.14
-uv add mascope_sdk
+uv add "mascope_sdk[examples]"
 ```
 
 This does three things automatically:
 
 1. Downloads and installs Python 3.14 (if not already present)
 2. Creates a virtual environment (`.venv` folder) in your project
-3. Installs the Mascope SDK with all its dependencies
+3. Installs the Mascope SDK with all its dependencies - the `[examples]`
+   extra also brings the plotting and analysis libraries (plotly, matplotlib,
+   numpy, scipy) used by the tutorial notebooks
 
 ![uv init and install](images/uv-init-install.png)
 
@@ -217,9 +219,10 @@ the cell and press `Shift+Enter` to run it.
 ![Run the first cell](images/vscode-run-cell.png)
 
 !!! note
-    When you run a notebook cell for the first time, you will be prompted to
-    install the `ipykernel` and `pip` packages. These are required to run
-    Jupyter notebooks in VS Code. **Click "Install".**
+    When you run a notebook cell for the first time, VS Code may prompt you to
+    install the `ipykernel` and `pip` packages, which are required to run
+    Jupyter notebooks. If the prompt appears, **click "Install"** (the
+    `[examples]` extra already includes `ipykernel`, so usually it does not).
 
 ![Install ipykernel and pip](images/vscode-install-ipykernel.png)
 
