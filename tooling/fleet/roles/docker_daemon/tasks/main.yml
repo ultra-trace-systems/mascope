@@ -1,7 +1,7 @@
 ---
 # LOAD-BEARING: with stock Docker, published container ports (the app's 443)
-# bypass ufw entirely and the Cloudflare-only rules are cosmetic. See
-# docs/maintaining.md and the July 2026 incident notes in the fleet docs.
+# bypass ufw entirely and the Cloudflare-only rules are cosmetic (Docker's
+# DNAT runs before ufw's INPUT chain - see tooling/monitoring/README.md).
 - name: Docker must not manage iptables
   ansible.builtin.copy:
     src: daemon.json

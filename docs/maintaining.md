@@ -325,7 +325,7 @@ guard above), the same as the documented rollback flow.
 
 Beyond the healthchecks.io dead-man's-switch pings (backups, disk monitor), a
 small self-hosted stack gives error tracking and external uptime monitoring. It
-runs off the Mascope servers - typically on the internal backup box. See
+runs off the Mascope servers - typically on a separate internal machine. See
 [`tooling/monitoring/`](../tooling/monitoring/README.md) for the full deploy
 runbook (GlitchTip + Uptime Kuma, LAN-only).
 
@@ -345,7 +345,7 @@ entirely on one environment variable:
 ```sh
 # on each Mascope server: append to /etc/environment (read by mascope.service),
 # then bring the stack up again so the containers pick it up:
-MASCOPE_SENTRY_DSN=http://<public_key>@<ops-tailnet-ip>:8000/<project_id>
+MASCOPE_SENTRY_DSN=http://<public_key>@<monitoring-tailnet-ip>:8000/<project_id>
 ```
 
 The DSN targets the monitoring box's **tailnet IP** — events travel over

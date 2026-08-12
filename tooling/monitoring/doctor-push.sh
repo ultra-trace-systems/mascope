@@ -9,7 +9,9 @@ export PATH="$HOME/.local/bin:$PATH"
 cd "$HOME/mascope" 2>/dev/null || true
 
 TOKEN="__TOKEN__"
-BASE="http://ops:3001/api/push/${TOKEN}"
+# Uptime Kuma as reachable from this server, e.g. http://<monitoring-tailnet-ip>:3001
+KUMA_URL="__KUMA_URL__"
+BASE="${KUMA_URL}/api/push/${TOKEN}"
 
 disk=$(df -P "$HOME/mascope" 2>/dev/null | awk 'NR==2{gsub("%","",$5); print $5}')
 dockerdisk=$(df -P /var/lib/docker 2>/dev/null | awk 'NR==2{gsub("%","",$5); print $5}')
