@@ -1,6 +1,6 @@
 [project]
 name = "mascope_sdk"
-version = "2026.7.7"
+version = "2026.8.12"
 description = "Mascope's public SDK library, wrapping the app's REST API."
 classifiers = [
     "Topic :: Scientific/Engineering :: Atmospheric Science",
