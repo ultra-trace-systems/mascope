@@ -113,10 +113,14 @@ export const useBatch = defineStore('app.data.batch', () => {
         }
       ),
     exportPeaks: async ({ sample_batch_id }) =>
-      api.http.get(`/sample/batches/${sample_batch_id}/export_peaks`, {
-        use: 'process',
-        type: 'export_batch_peaks'
-      }),
+      api.http.post(
+        `/sample/batches/${sample_batch_id}/export_peaks`,
+        {},
+        {
+          use: 'process',
+          type: 'export_batch_peaks'
+        }
+      ),
     /**
      * Export sample batch and its samples' match data to Excel spreadsheet.
      *
@@ -129,10 +133,14 @@ export const useBatch = defineStore('app.data.batch', () => {
      * @param {string} params.sample_batch_id - Sample batch unique identifier
      */
     exportSpreadsheet: async ({ sample_batch_id }) => {
-      return await api.http.get(`/sample/batches/${sample_batch_id}/export/spreadsheet`, {
-        use: 'process',
-        type: 'export_batch_spreadsheet'
-      })
+      return await api.http.post(
+        `/sample/batches/${sample_batch_id}/export/spreadsheet`,
+        {},
+        {
+          use: 'process',
+          type: 'export_batch_spreadsheet'
+        }
+      )
     }
   }
 })

@@ -22,7 +22,7 @@ from mascope_backend.db.id import gen_id
 visualization_router = APIRouter(prefix="/api/visualization", tags=["Visualization"])
 
 
-@visualization_router.get("/ion_focus")
+@visualization_router.post("/ion_focus")
 @api_route(status_code=202)
 async def visualization_ion_focus_route(
     request: Request,
