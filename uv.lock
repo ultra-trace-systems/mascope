@@ -1772,7 +1772,7 @@ provides-extras = ["logs", "sentry"]
 
 [[package]]
 name = "mascope-sdk"
-version = "2026.7.7"
+version = "2026.8.12"
 source = { editable = "libraries/sdk" }
 dependencies = [
     { name = "loguru" },
@@ -1782,14 +1782,31 @@ dependencies = [
     { name = "tqdm" },
 ]
 
+[package.optional-dependencies]
+examples = [
+    { name = "ipykernel" },
+    { name = "matplotlib" },
+    { name = "nbformat" },
+    { name = "numpy" },
+    { name = "plotly" },
+    { name = "scipy" },
+]
+
 [package.metadata]
 requires-dist = [
+    { name = "ipykernel", marker = "extra == 'examples'", specifier = ">=6.29.0" },
     { name = "loguru", specifier = ">=0.7.3" },
+    { name = "matplotlib", marker = "extra == 'examples'", specifier = ">=3.8.0" },
+    { name = "nbformat", marker = "extra == 'examples'", specifier = ">=5.7.0" },
+    { name = "numpy", marker = "extra == 'examples'", specifier = ">=1.24.0" },
     { name = "pandas", specifier = ">=2.0.0" },
+    { name = "plotly", marker = "extra == 'examples'", specifier = ">=5.18.0" },
     { name = "python-dotenv", specifier = ">=1.0.0" },
     { name = "requests", specifier = ">=2.34.2,<3" },
+    { name = "scipy", marker = "extra == 'examples'", specifier = ">=1.11.0" },
     { name = "tqdm", specifier = ">=4.70.0" },
 ]
+provides-extras = ["examples"]
 
 [[package]]
 name = "mascope-signal"

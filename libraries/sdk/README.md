@@ -56,9 +56,19 @@ Or with [uv](https://github.com/astral-sh/uv):
 uv add mascope_sdk
 ```
 
+To run the bundled [tutorial notebooks](#tutorial-notebooks), install with the
+`examples` extra instead - it adds the plotting and analysis libraries the
+notebooks use (plotly + nbformat, matplotlib, numpy, scipy, ipykernel):
+
+```bash
+pip install "mascope_sdk[examples]"   # or: uv add "mascope_sdk[examples]"
+```
+
 ## Tutorial Notebooks
 
 The best way to learn the SDK is to walk through the bundled example notebooks. They cover everything from basic setup to advanced analysis workflows.
+
+The notebooks need the `examples` extra (see [Installation](#installation)): `pip install "mascope_sdk[examples]"`.
 
 Copy them to your project directory:
 
@@ -81,6 +91,7 @@ This creates a `tutorials/` folder with the following notebooks:
 | 7   | `07_background_subtraction.ipynb`  | Subtract a background sample (matched ions or m/z bins) |
 | 8   | `08_correlation_analysis.ipynb`    | Find co-varying peaks via correlation and clustering    |
 | 9   | `09_composition_assignment.ipynb`  | Assign elemental compositions to unmatched peaks        |
+| 10  | `10_batch_stages.ipynb`            | Split a batch into stages and compare per-stage averages |
 
 Open them in VS Code (or any Jupyter-compatible IDE) and run the cells. Each notebook is self-contained, just make sure your `.env` credentials are set up first (see [Configuration](#configuration)).
 
@@ -313,9 +324,11 @@ mascope = MascopeClient(workspace="My Workspace")
 ### Resources
 
 All `list()` methods accept names (or substrings) instead of IDs and return `pd.DataFrame | None`.
-Name filters use `pandas.Series.str.contains` under the hood, so they accept
-plain substrings **or** regular expressions (case-insensitive). For example,
-`batches="2025|2026"` matches batch names containing "2025" or "2026".
+A plain string filters case-insensitively as a **literal substring** — regex
+metacharacters carry no special meaning, so a name like `"Sample (A)"` matches
+as-is. To filter with a regular expression, pass a compiled pattern; case
+comes from its flags. For example,
+`batches=re.compile("2025|2026")` matches batch names containing "2025" or "2026".
 
 #### `mascope.datasets`
 
@@ -545,5 +558,5 @@ mascope_sdk/
 - **`client.py`** owns the public API. High-level loaders (`load_peaks`, etc.) are thin wrappers that delegate to `_loaders.py`.
 - **`resources/`** contains one class per API domain. Each resource inherits `BaseResource` which provides `_get()` / `_post()` helpers and automatic datetime column coercion.
 - **`_concurrent.py`** centralises `ThreadPoolExecutor` usage with `run_concurrent()`, which handles progress bars (tqdm), `None`-filtering, future cancellation on error, and the `max_workers <= 8` guard.
-- **`_resolve.py`** handles name -> ID resolution with substring/regex matching (used by resources and loaders).
+- **`_resolve.py`** handles name matching (literal substring for strings, regex for compiled patterns) and name -> ID resolution (used by resources and loaders).
 - **Underscore-prefixed modules** (`_http`, `_loaders`, `_concurrent`, `_resolve`, `_agents`) are internal — not part of the public API.

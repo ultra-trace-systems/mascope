@@ -7,41 +7,8 @@ import pandas as pd
 from loguru import logger
 
 from ._concurrent import run_concurrent
+from ._resolve import _name_mask
 from .client import MascopeClient
-
-
-def _name_mask(
-    series: "pd.Series", pattern: "str | re.Pattern", *, exact: bool
-) -> "pd.Series":
-    """Boolean mask selecting rows whose name matches ``pattern``.
-
-    A plain string is matched case-insensitively as a **literal substring**:
-    regex metacharacters carry no special meaning, so ``"Sample (A)"`` matches
-    the batch literally named ``"Sample (A)"`` rather than being interpreted as
-    a regex group. Set ``exact`` to require the whole name to equal the string.
-
-    To match with a regular expression, pass a **compiled pattern**
-    (``re.compile(...)``); it is used as-is, so control case-sensitivity through
-    its flags (e.g. ``re.compile("2025|2026", re.IGNORECASE)``). ``exact`` does
-    not apply to compiled patterns -- anchor them instead (``r"^name$"``).
-
-    :param series: Series of names to match against.
-    :param pattern: Literal substring (``str``) or compiled regex.
-    :param exact: Require a full-string match instead of a substring match.
-                  Only valid for string patterns.
-    :return: Boolean mask aligned with ``series``.
-    :raises ValueError: If ``exact`` is combined with a compiled pattern.
-    """
-    if isinstance(pattern, re.Pattern):
-        if exact:
-            raise ValueError(
-                "exact=True cannot be combined with a compiled regex pattern; "
-                "anchor the pattern instead, e.g. re.compile(r'^name$')."
-            )
-        return series.str.contains(pattern, na=False)
-    if exact:
-        return series.str.casefold() == pattern.casefold()
-    return series.str.contains(re.escape(pattern), case=False, na=False)
 
 
 def _resolve_sample(client: MascopeClient, sample: str) -> str:
@@ -120,7 +87,7 @@ def _confirm_sample_count(count: int, threshold: int) -> None:
 
 def _collect_sample_tasks(
     client: MascopeClient,
-    dataset: str,
+    dataset: "str | re.Pattern",
     batches: "str | re.Pattern | None" = None,
     samples: "str | re.Pattern | None" = None,
     *,
@@ -129,7 +96,8 @@ def _collect_sample_tasks(
     """Resolve dataset/batches and collect (sample_row, batch_name) pairs.
 
     :param client: The MascopeClient instance.
-    :param dataset: Dataset name, substring, or regex pattern (or ID).
+    :param dataset: Dataset name or literal substring (or ID); pass a compiled
+      ``re.Pattern`` to match by regex.
     :param batches: Optional case-insensitive filter on batch names. A string is
       a literal substring (or full-name match when ``exact`` is True); a
       compiled ``re.Pattern`` is used as a regex. See :func:`_name_mask`.
@@ -193,7 +161,7 @@ def _collect_sample_tasks(
 
 def load_peaks(
     client: MascopeClient,
-    dataset: str,
+    dataset: "str | re.Pattern",
     batches: "str | re.Pattern | None" = None,
     *,
     samples: "str | re.Pattern | None" = None,
@@ -216,8 +184,9 @@ def load_peaks(
 
     :param client: The MascopeClient instance.
     :type client: MascopeClient
-    :param dataset: Dataset name (or substring) or dataset ID.
-    :type dataset: str
+    :param dataset: Dataset name or literal substring (or dataset ID); pass a
+                    compiled ``re.Pattern`` to match by regex.
+    :type dataset: str | re.Pattern
     :param batches: Optional case-insensitive filter on batch names. A string is
                     a literal substring, so it can select several batches at once
                     (e.g. ``"blank"`` matches every batch whose name contains
@@ -494,7 +463,7 @@ _NAME_COLUMNS = {
 
 def load_peak_timeseries(
     client: MascopeClient,
-    dataset: str,
+    dataset: "str | re.Pattern",
     batches: "str | re.Pattern | None" = None,
     *,
     samples: "str | re.Pattern | None" = None,
@@ -520,8 +489,9 @@ def load_peak_timeseries(
 
     :param client: The MascopeClient instance.
     :type client: MascopeClient
-    :param dataset: Dataset name (or substring) or dataset ID.
-    :type dataset: str
+    :param dataset: Dataset name or literal substring (or dataset ID); pass a
+                    compiled ``re.Pattern`` to match by regex.
+    :type dataset: str | re.Pattern
     :param batches: Optional case-insensitive filter on batch names. A string is
                     a literal substring; pass a compiled ``re.Pattern`` for regex.
     :type batches: str | re.Pattern, optional

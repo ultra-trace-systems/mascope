@@ -4,6 +4,41 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
 
 ## [Unreleased]
 
+## [1.6.2] - 2026.08.12
+
+### Added
+
+- SDK: new `examples` optional extra (`pip install "mascope_sdk[examples]"`)
+  installs everything the tutorial notebooks import beyond the SDK core:
+  plotly (with nbformat for notebook rendering), matplotlib, numpy, scipy,
+  and ipykernel. Previously a fresh install following the getting-started
+  guide hit missing-import errors in the notebooks (plotly, nbformat,
+  matplotlib, ...); the guide and README now install the SDK with this
+  extra.
+- SDK: new example notebook `10_batch_stages.ipynb` - splits a batch timeline
+  into time-range stages (e.g. background / exposure / recovery), averages
+  ion- and compound-level intensities across the samples of each stage,
+  normalises by each sample's TIC, and compares stages with grouped bar charts
+  and a log2 fold-change heatmap against a reference stage. The batch-level
+  counterpart of `05_peaks_by_stage.ipynb`.
+
+### Changed
+
+- SDK: name matching now follows a single contract everywhere. A plain string
+  passed to name-based lookups (`resolve_id`-backed resolution in
+  `datasets`/`batches`/`samples`/workspace selection, `samples.list(batch=...,
+batches=...)`, and the `load_peaks` / `load_peak_timeseries` filters) is
+  matched as a case-insensitive **literal substring** - regex metacharacters
+  carry no special meaning, so names like `"Sample (A)"` match as-is. To match
+  by regular expression, pass a compiled `re.Pattern` (case-sensitivity from
+  its flags); compiled patterns previously crashed the resolution paths
+  ("cannot set case for compiled regex"). **Behavior change**: raw-regex
+  strings such as `"2026-01|2026-02"` were previously interpreted as regexes
+  by `samples.list` and ID resolution. For now they keep working through a
+  fallback that emits a `DeprecationWarning` when a string only matches as a
+  regex - switch such calls to `re.compile(...)`; the fallback will be removed
+  in a future release.
+
 ## [1.6.1] - 2026.08.11
 
 ### Fixed
