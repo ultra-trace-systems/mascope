@@ -1,5 +1,6 @@
 """Samples resource for the Mascope SDK."""
 
+import re
 from collections.abc import Sequence
 from typing import Any
 
@@ -7,7 +8,7 @@ import pandas as pd
 from loguru import logger
 
 from .._concurrent import run_concurrent
-from .._resolve import resolve_id
+from .._resolve import _match_names, _pattern_text, resolve_id
 from ._base import BaseResource, _coerce_datetime_columns
 from .ms2 import Ms2Resource
 
@@ -65,7 +66,9 @@ class SamplesResource(BaseResource):
                 frames.append(ws_batches)
         return pd.concat(frames, ignore_index=True) if frames else None
 
-    def _resolve_batch_id(self, batch: str, dataset: str | None = None) -> str:
+    def _resolve_batch_id(
+        self, batch: "str | re.Pattern", dataset: str | None = None
+    ) -> str:
         """Resolve a batch name or ID to a single batch ID.
 
         Raises if zero or multiple batches match.
@@ -80,32 +83,34 @@ class SamplesResource(BaseResource):
         )
 
     def _resolve_batch_ids(
-        self, batches: str, dataset: str | None = None
+        self, batches: "str | re.Pattern", dataset: str | None = None
     ) -> Sequence[str]:
-        """Resolve a batch substring to one or more batch IDs."""
+        """Resolve a batch substring or compiled pattern to one or more batch IDs."""
         all_batches = self._get_all_batches(dataset)
         if all_batches is None or all_batches.empty:
             raise ValueError("No batches found.")
 
         # Exact ID match
-        if batches in all_batches["sample_batch_id"].values:
+        if (
+            isinstance(batches, str)
+            and batches in all_batches["sample_batch_id"].values
+        ):
             return [batches]
 
-        matches = all_batches[
-            all_batches["sample_batch_name"].str.contains(batches, case=False, na=False)
-        ]
+        matches = all_batches[_match_names(all_batches["sample_batch_name"], batches)]
         if matches.empty:
             available = all_batches["sample_batch_name"].tolist()
             raise ValueError(
-                f"No batch matching '{batches}'. Available batches: {available}"
+                f"No batch matching '{_pattern_text(batches)}'. "
+                f"Available batches: {available}"
             )
         return matches["sample_batch_id"].tolist()
 
     def list(
         self,
-        batch: str | None = None,
+        batch: "str | re.Pattern | None" = None,
         *,
-        batches: str | None = None,
+        batches: "str | re.Pattern | None" = None,
         dataset: str | None = None,
         drop_columns: Sequence[str] | None = None,
     ) -> pd.DataFrame | None:
@@ -118,15 +123,18 @@ class SamplesResource(BaseResource):
         - ``batches`` resolves to all batches whose name matches the
           given pattern.
 
-        Both accept a plain substring **or** a regular expression
-        (e.g. ``"2026-01|2026-02"``). Matching is case-insensitive.
+        A plain string matches case-insensitively as a **literal substring**
+        (regex metacharacters carry no special meaning); pass a compiled
+        ``re.Pattern`` to match with a regular expression
+        (e.g. ``re.compile("2026-01|2026-02")``), with case-sensitivity
+        controlled by its flags.
 
-        :param batch: Batch name, substring, or regex pattern (or batch ID).
-                      Must match exactly one batch.
-        :type batch: str, optional
-        :param batches: Batch name substring or regex pattern. Returns samples
-                        from every matching batch.
-        :type batches: str, optional
+        :param batch: Batch name or literal substring (or batch ID), or a
+                      compiled regex pattern. Must match exactly one batch.
+        :type batch: str | re.Pattern, optional
+        :param batches: Batch name literal substring or compiled regex pattern.
+                        Returns samples from every matching batch.
+        :type batches: str | re.Pattern, optional
         :param dataset: Optional dataset name or ID to narrow the search.
                           If not provided, searches across all datasets.
         :type dataset: str, optional

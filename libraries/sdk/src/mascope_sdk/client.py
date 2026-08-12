@@ -341,7 +341,8 @@ class MascopeClient:
         If *workspace* is provided, resolves it by exact ID or name match.
         If not provided, auto-selects when exactly one workspace is available.
 
-        :param workspace: Workspace name, substring, regex, or ID.
+        :param workspace: Workspace name or literal substring (or ID); a
+            compiled ``re.Pattern`` matches by regex.
         :raises ConfigurationError: If resolution fails.
         :return: Tuple of (workspace_id, workspace_name).
         """
@@ -374,7 +375,7 @@ class MascopeClient:
 
     def load_peaks(
         self,
-        dataset: str,
+        dataset: "str | re.Pattern",
         batches: "str | re.Pattern | None" = None,
         *,
         samples: "str | re.Pattern | None" = None,
@@ -396,8 +397,9 @@ class MascopeClient:
         Requests are made concurrently for better performance. A progress bar is
         displayed during loading.
 
-        :param dataset: Dataset name, substring, or regex pattern (or ID).
-        :type dataset: str
+        :param dataset: Dataset name or literal substring (or ID); pass a
+                        compiled ``re.Pattern`` to match by regex.
+        :type dataset: str | re.Pattern
         :param batches: Optional case-insensitive filter on batch names. A string
                         is a literal substring and may select several batches at
                         once (e.g. ``"blank"`` matches every batch whose name
@@ -458,10 +460,12 @@ class MascopeClient:
                 batches="Uronium",
             )
 
-            # Filter samples by regex
+            # Filter samples by regex (compiled pattern)
+            import re
+
             peaks = mascope.load_peaks(
                 dataset="My Dataset",
-                samples="blank|control",
+                samples=re.compile("blank|control", re.IGNORECASE),
             )
 
             # Load all peaks, skip confirmation
@@ -488,7 +492,7 @@ class MascopeClient:
 
     def load_peak_timeseries(
         self,
-        dataset: str,
+        dataset: "str | re.Pattern",
         batches: "str | re.Pattern | None" = None,
         *,
         samples: "str | re.Pattern | None" = None,
@@ -513,8 +517,9 @@ class MascopeClient:
         Requests are made concurrently for better performance. Two progress bars
         are displayed: one for peak discovery and one for timeseries loading.
 
-        :param dataset: Dataset name, substring, or regex pattern (or ID).
-        :type dataset: str
+        :param dataset: Dataset name or literal substring (or ID); pass a
+                        compiled ``re.Pattern`` to match by regex.
+        :type dataset: str | re.Pattern
         :param batches: Optional case-insensitive filter on batch names. A string
                         is a literal substring; pass a compiled ``re.Pattern`` for
                         regex.

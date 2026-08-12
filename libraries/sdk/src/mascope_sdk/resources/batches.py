@@ -1,6 +1,7 @@
 """Sample batches resource for the Mascope SDK."""
 
 import json
+import re
 from typing import Any
 
 import pandas as pd
@@ -29,7 +30,7 @@ class BatchesResource(BaseResource):
         batches = mascope.batches.list("ws-123")
     """
 
-    def _resolve_dataset_id(self, dataset: str) -> str:
+    def _resolve_dataset_id(self, dataset: "str | re.Pattern") -> str:
         """Resolve a dataset name or ID to a dataset ID."""
         datasets = self._client.datasets.list()
         return resolve_id(
@@ -40,11 +41,12 @@ class BatchesResource(BaseResource):
             entity_label="dataset",
         )
 
-    def list(self, dataset: str) -> pd.DataFrame | None:
+    def list(self, dataset: "str | re.Pattern") -> pd.DataFrame | None:
         """List all sample batches in a dataset.
 
-        :param dataset: Dataset name (or substring) or dataset ID.
-        :type dataset: str
+        :param dataset: Dataset name or literal substring (or dataset ID); pass
+                        a compiled ``re.Pattern`` to match by regex.
+        :type dataset: str | re.Pattern
         :return: A DataFrame containing sample batch information with columns
                  including ``sample_batch_id`` and ``sample_batch_name``, or
                  None if no batches are found.
