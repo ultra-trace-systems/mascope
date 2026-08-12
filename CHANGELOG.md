@@ -6,6 +6,13 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
 
 ### Added
 
+- SDK: new `examples` optional extra (`pip install "mascope_sdk[examples]"`)
+  installs everything the tutorial notebooks import beyond the SDK core:
+  plotly (with nbformat for notebook rendering), matplotlib, numpy, scipy,
+  and ipykernel. Previously a fresh install following the getting-started
+  guide hit missing-import errors in the notebooks (plotly, nbformat,
+  matplotlib, ...); the guide and README now install the SDK with this
+  extra.
 - SDK: new example notebook `10_batch_stages.ipynb` - splits a batch timeline
   into time-range stages (e.g. background / exposure / recovery), averages
   ion- and compound-level intensities across the samples of each stage,

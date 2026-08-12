@@ -56,9 +56,19 @@ Or with [uv](https://github.com/astral-sh/uv):
 uv add mascope_sdk
 ```
 
+To run the bundled [tutorial notebooks](#tutorial-notebooks), install with the
+`examples` extra instead - it adds the plotting and analysis libraries the
+notebooks use (plotly + nbformat, matplotlib, numpy, scipy, ipykernel):
+
+```bash
+pip install "mascope_sdk[examples]"   # or: uv add "mascope_sdk[examples]"
+```
+
 ## Tutorial Notebooks
 
 The best way to learn the SDK is to walk through the bundled example notebooks. They cover everything from basic setup to advanced analysis workflows.
+
+The notebooks need the `examples` extra (see [Installation](#installation)): `pip install "mascope_sdk[examples]"`.
 
 Copy them to your project directory:
 
