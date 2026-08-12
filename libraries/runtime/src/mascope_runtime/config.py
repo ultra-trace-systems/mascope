@@ -300,6 +300,10 @@ class BackendConfig(ModuleConfig):
     filestreams: str = r"./filestreams"  # path to the file streams folder
     redis: RedisConfig = RedisConfig()
     workers: Literal["auto"] | int = "auto"  # uvicorn workers, auto -  half cpu cores
+    # Size cap (in gigabytes) for a single resumable (tus) upload, advertised
+    # to clients as Tus-Max-Size. Applies per upload: it does not limit how
+    # many files a client may upload, only how large each one may be.
+    tus_max_upload_gb: int = 50
 
     def get_worker_count(self) -> int:
         """
