@@ -4,6 +4,23 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
 
 ## [Unreleased]
 
+### Changed
+
+- SDK: name matching now follows a single contract everywhere. A plain string
+  passed to name-based lookups (`resolve_id`-backed resolution in
+  `datasets`/`batches`/`samples`/workspace selection, `samples.list(batch=...,
+  batches=...)`, and the `load_peaks` / `load_peak_timeseries` filters) is
+  matched as a case-insensitive **literal substring** - regex metacharacters
+  carry no special meaning, so names like `"Sample (A)"` match as-is. To match
+  by regular expression, pass a compiled `re.Pattern` (case-sensitivity from
+  its flags); compiled patterns previously crashed the resolution paths
+  ("cannot set case for compiled regex"). **Behavior change**: raw-regex
+  strings such as `"2026-01|2026-02"` were previously interpreted as regexes
+  by `samples.list` and ID resolution. For now they keep working through a
+  fallback that emits a `DeprecationWarning` when a string only matches as a
+  regex - switch such calls to `re.compile(...)`; the fallback will be removed
+  in a future release.
+
 ## [1.6.1] - 2026.08.11
 
 ### Fixed

@@ -313,9 +313,11 @@ mascope = MascopeClient(workspace="My Workspace")
 ### Resources
 
 All `list()` methods accept names (or substrings) instead of IDs and return `pd.DataFrame | None`.
-Name filters use `pandas.Series.str.contains` under the hood, so they accept
-plain substrings **or** regular expressions (case-insensitive). For example,
-`batches="2025|2026"` matches batch names containing "2025" or "2026".
+A plain string filters case-insensitively as a **literal substring** — regex
+metacharacters carry no special meaning, so a name like `"Sample (A)"` matches
+as-is. To filter with a regular expression, pass a compiled pattern; case
+comes from its flags. For example,
+`batches=re.compile("2025|2026")` matches batch names containing "2025" or "2026".
 
 #### `mascope.datasets`
 
@@ -545,5 +547,5 @@ mascope_sdk/
 - **`client.py`** owns the public API. High-level loaders (`load_peaks`, etc.) are thin wrappers that delegate to `_loaders.py`.
 - **`resources/`** contains one class per API domain. Each resource inherits `BaseResource` which provides `_get()` / `_post()` helpers and automatic datetime column coercion.
 - **`_concurrent.py`** centralises `ThreadPoolExecutor` usage with `run_concurrent()`, which handles progress bars (tqdm), `None`-filtering, future cancellation on error, and the `max_workers <= 8` guard.
-- **`_resolve.py`** handles name -> ID resolution with substring/regex matching (used by resources and loaders).
+- **`_resolve.py`** handles name matching (literal substring for strings, regex for compiled patterns) and name -> ID resolution (used by resources and loaders).
 - **Underscore-prefixed modules** (`_http`, `_loaders`, `_concurrent`, `_resolve`, `_agents`) are internal — not part of the public API.
