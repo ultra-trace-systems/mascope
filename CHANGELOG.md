@@ -57,6 +57,45 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
   looser than the automatic pipeline); it now uses the same instrument
   defaults the pipeline uses, preserving any user-edited values. (#1774)
 
+### Security
+
+- The real client address now survives the Cloudflare proxy: nginx trusts
+  `CF-Connecting-IP` from Cloudflare's published ranges only, so the
+  backend's per-IP login rate limits, the new edge limits below, and the
+  access log all key on the actual client instead of a shared edge address.
+  The backend access log records that address too, instead of the nginx
+  container's internal IP, so requests and failed logins can be tied to
+  their source. (#1783, #1787)
+- The edge bounds what one client can do: per-client request and connection
+  limits (answering 429, so throttling is distinguishable from an outage),
+  a stricter budget on the authentication endpoints, and a 10-minute cap on
+  API requests (uploads get an hour; only Socket.IO keeps its 24-hour
+  timeout, which previously applied to every proxied route). The nginx
+  version is no longer advertised. (#1783)
+- Every resumable-upload (tus) route requires authentication. Previously
+  the generated HEAD, OPTIONS and DELETE handlers accepted anonymous
+  callers, so a leaked upload id let anyone read upload metadata (filename,
+  size, progress) or delete an upload in flight. (#1784)
+- A single resumable upload is capped - 50 GB by default, configurable with
+  `tus_max_upload_gb` (see docs/maintaining.md). Uploads previously had no
+  server-side total-size bound (the nginx body limit bounds one chunk, and
+  the tus library's default cap is 120 GiB), so one transfer could fill the
+  disk. An upload declaring a larger size is refused up front with 413, and
+  the cap is advertised as `Tus-Max-Size`. The cap is per upload: how many
+  files an instrument agent transfers per day is unaffected. (#1784)
+- Resetting another user's password, and the enqueueing/export routes (peak
+  recomputation, peak and spreadsheet exports, the ion-focus
+  visualization), are POST instead of GET. The auth cookie is SameSite=lax,
+  which is sent on cross-site top-level GET navigations - so a crafted link
+  could reset a user's password (account lockout, not credential theft) or
+  spawn heavy background work with a signed-in admin's ambient credentials.
+  Only the bundled frontend calls these routes, so no external client is
+  affected. (#1785, #1786)
+- The deployment env example no longer sets `MASCOPE_COOKIE_SECURE=false`:
+  copied verbatim, it silently dropped the auth cookie's Secure flag on an
+  HTTPS deployment. Unset, the flag follows the runtime mode and is on in
+  production. (#1788)
+
 ## [1.6.2] - 2026.08.12
 
 ### Added
