@@ -251,6 +251,7 @@ Now that you're set up, work through the tutorial notebooks in order:
 | 7   | `07_background_subtraction.ipynb`  | Subtract a background sample (matched ions or m/z bins)   |
 | 8   | `08_correlation_analysis.ipynb`    | Find co-varying peaks via correlation and clustering      |
 | 9   | `09_composition_assignment.ipynb`  | Assign elemental compositions to unmatched peaks          |
+| 10  | `10_batch_stages.ipynb`            | Split a batch into stages and compare per-stage averages  |
 
 For full API documentation and advanced usage, see the
 [SDK overview](index.md).
