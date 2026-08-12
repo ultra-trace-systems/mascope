@@ -92,6 +92,13 @@ It comes preloaded with the published demo dataset and login `demo@mascope.app` 
 
 - Conventional Commits (`type(scope): description`); ASCII-only commit messages,
   no Co-Authored-By trailers.
+- **Anonymize commit messages and PR descriptions** - this repository is public,
+  so text pushed to GitHub must never contain real instrument names or IDs,
+  customer names, internal or customer server hostnames, tailnet/LAN addresses,
+  or raw-data file names that identify a site. Describe them generically
+  instead ("a customer Orbitrap instrument", "a production server", "the LAN
+  agent host") or use neutral placeholders ("server A", "instrument X"). The
+  same applies to issue comments, code comments, and committed test data.
 - **Lint Python before committing** - CI's "Lint and format" job runs
   `ruff check .` and `ruff format --check .` and fails the PR on any violation.
   Run `uv run ruff check --fix . && uv run ruff format .` before you commit.
