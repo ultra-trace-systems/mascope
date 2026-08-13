@@ -58,6 +58,19 @@ jobs:
         working-directory: server/frontend
         run: npm run lint:check
 
+  nginx-config:
+    name: nginx config validation
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Validate nginx configs with nginx -t
+        run: bash tooling/validate-nginx-config.sh
+
   docs:
     name: Docs strict build
     runs-on: ubuntu-latest
