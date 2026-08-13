@@ -4,6 +4,59 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
 
 ## [Unreleased]
 
+### Added
+
+- Sample browser: new m/z calibration status column. Every sample shows a
+  color-coded badge - green: calibrated, with the fit quality in the tooltip
+  (calibration point count, mean |m/z error| before/after the fit); red:
+  automatic calibration failed, with the reason and attempt count, and match
+  computation skipped until the sample is recalibrated; orange: calibrated,
+  but the file arrived with acquisition-side m/z drift (the instrument likely
+  needs retuning); grey: not calibrated (no calibration collection for the
+  ionization mode, or a blank file). Clicking a badge opens the calibration
+  dialog. (#1765, #1773)
+- Calibration outcomes are now persisted on the sample file record: a
+  given-up automatic calibration writes an explicit failed marker (error,
+  attempts, final tolerance) instead of leaving the record empty, and applied
+  fits store a quality block (calibration point count, pre/post-fit mean
+  |m/z error| in ppm, calibrant-to-TIC fraction, parameters used) so the
+  quality of any applied fit stays inspectable after the fact. Samples whose
+  automatic calibration failed skip matching and peak assignment instead of
+  silently matching on an uncalibrated m/z axis. (#1765)
+- Acquisition drift alerting: when an applied fit's pre-calibration error
+  exceeds 10 ppm, a warning is exported to error monitoring (grouped per
+  instrument and drift magnitude) and the sample is badged in the browser.
+  The software corrects the drift, but a drifting instrument needs operator
+  attention; the marker (with the originally observed magnitude) survives
+  re-calibration and is cleared only when re-processing restores the
+  acquisition axis. (#1773)
+- New `GET /api/calibration/default_params` returns a sample's
+  instrument-appropriate default calibration parameters; the calibration
+  dialog seeds its fields from it. (#1774)
+
+### Fixed
+
+- FTMS satellite ("sidelobe") peak flagging now catches real sidelobe
+  patterns; previously it flagged nothing on production Orbitrap data. Real
+  sidelobe mirror pairs are intensity-asymmetric and failed the old
+  similarity gate, and unpaired shoulders were only flagged within 3 ppm of
+  the parent. New defaults: mirror-pair similarity 0.25, single-sided window
+  8 ppm (about one peak width), symmetric search window 100 ppm, base-peak
+  pool widened to the top 20. Flagged sidelobes are excluded from matching,
+  so results change where sidelobes were previously matched as weak
+  isotopologues - the demo dataset goldens are regenerated as bundle v1.2
+  accordingly. (#1772)
+- Re-processing a sample file now recalibrates it from scratch. Orbitrap
+  calibration rescales the file's stored m/z axes in place and tracks the
+  running factor, so a re-processed file silently kept its previous
+  calibration; the acquisition axis is now restored (exact inverse of the
+  stored factor) and both calibration records cleared before the pipeline
+  runs. (#1765)
+- The calibration dialog no longer runs Orbitrap refits with TOF-shaped
+  parameters (refine window 100 ppm, SNR threshold 10 - an order of magnitude
+  looser than the automatic pipeline); it now uses the same instrument
+  defaults the pipeline uses, preserving any user-edited values. (#1774)
+
 ## [1.6.2] - 2026.08.12
 
 ### Added
@@ -38,6 +91,19 @@ batches=...)`, and the `load_peaks` / `load_peak_timeseries` filters) is
   fallback that emits a `DeprecationWarning` when a string only matches as a
   regex - switch such calls to `re.compile(...)`; the fallback will be removed
   in a future release.
+
+### Fixed
+
+- Automatic Orbitrap m/z calibration no longer anchors to FTMS sidelobe
+  ("satellite") peaks. When a file arrives with an instrument-side
+  calibration offset beyond the old 10 ppm refine window, the true calibrant
+  fell outside the window while its weak sidelobes (SNR well above the
+  threshold) remained inside, and the one-point fit anchored to a sidelobe -
+  applying a wrong calibration with no warning (observed as ~12 ppm
+  miscalibrations on a customer Orbitrap instrument). A local-dominance guard
+  now rejects candidates with a >=10x stronger peak within 100 ppm, and the
+  default Orbitrap refine window is widened from 10 to 50 ppm so the true
+  centroid is found on the first attempt. (#1762)
 
 ## [1.6.1] - 2026.08.11
 
