@@ -180,6 +180,11 @@
     color: var(--p-text-muted-color);
   }
 
+  .browser .calibration-none {
+    color: var(--p-text-muted-color);
+    opacity: 0.45;
+  }
+
   .browser .calibration-ok {
     /* Green, not grey: grey reads as "no value", while this is a positive
        "calibrated" signal. Slightly dimmed so a full column stays calm. */

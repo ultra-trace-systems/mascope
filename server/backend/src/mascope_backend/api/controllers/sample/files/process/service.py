@@ -12,6 +12,7 @@ from sqlalchemy.exc import TimeoutError as SQLAlchemyTimeoutError
 
 from mascope_backend.api.controllers.calibration.calibration_controller import (
     calibration_mz_calibrate_sample,
+    reset_mz_calibration,
 )
 from mascope_backend.api.controllers.calibration.lib.calibration_mz_fit import (
     calibration_params_factory,
@@ -558,6 +559,21 @@ async def re_process_sample_files(
 
         # Passed all validations
         valid_sample_files.append(sample_file)
+
+    # --- Reset calibration so re-processing starts from the acquisition axis --- #
+    # Orbitrap calibration is cumulative (the file's m/z axes are rescaled in
+    # place), so without this a re-processed file silently keeps its previous
+    # calibration. A failed reset keeps the old calibration; the file still
+    # re-processes, so log instead of failing the whole request.
+    for sample_file in valid_sample_files:
+        try:
+            await reset_mz_calibration(sample_file)
+        except Exception:  # noqa: BLE001 - reset is best-effort per file
+            runtime.logger.exception(
+                "Failed to reset m/z calibration for "
+                f"'{sample_file.filename}' before re-processing; the previous "
+                "calibration remains in effect."
+            )
 
     # --- Delete existing sample items for valid files --- #
     if valid_sample_files:

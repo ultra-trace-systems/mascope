@@ -3,7 +3,8 @@
  *
  * The backend persists the outcome in `sample_file.mz_calibration`:
  * - `null` - calibration was never attempted (blank file, or the ionization
- *   mode has no calibration collection); nothing to show.
+ *   mode has no calibration collection); shown as a muted "not calibrated"
+ *   badge so the column reads as an explicit state, not a missing value.
  * - `{status: "failed", ...}` - the automatic pipeline gave up; the sample is
  *   uncalibrated and its matches are skipped until it is recalibrated.
  * - `{status: "ok"/verified: true, ...}` - an applied fit, optionally with a
@@ -21,7 +22,17 @@ const ppm = (value) => (value === null || value === undefined ? null : `${value.
  *   Badge descriptor, or null when there is nothing to show.
  */
 export function calibrationStatus(mzCalibration) {
-  if (!mzCalibration) return null
+  if (!mzCalibration) {
+    return {
+      state: 'none',
+      icon: 'ph ph-scales',
+      severity: 'secondary',
+      tooltip:
+        'Not calibrated: no m/z calibration was applied (the ionization mode ' +
+        'has no calibration collection, or the file is a blank). ' +
+        'Click to calibrate manually.'
+    }
+  }
 
   if (mzCalibration.status === 'failed') {
     const attempts = mzCalibration.attempts

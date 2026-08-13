@@ -3,9 +3,13 @@ import { describe, it, expect } from 'vitest'
 import { calibrationStatus } from '@/lib/calibrationStatus'
 
 describe('calibrationStatus', () => {
-  it('returns null when calibration was never attempted', () => {
-    expect(calibrationStatus(null)).toBeNull()
-    expect(calibrationStatus(undefined)).toBeNull()
+  it('shows an explicit not-calibrated badge when calibration was never attempted', () => {
+    for (const value of [null, undefined]) {
+      const status = calibrationStatus(value)
+      expect(status.state).toBe('none')
+      expect(status.tooltip).toContain('Not calibrated')
+      expect(status.tooltip).toContain('no calibration collection')
+    }
   })
 
   it('flags a failed calibration with attempts and error in the tooltip', () => {
