@@ -77,3 +77,38 @@ class TestAcquisitionDriftPpm:
         assert acquisition_drift_ppm({"quality": {"pre_fit_mz_error_ppm": 9.9}}) is None
         assert acquisition_drift_ppm({"quality": {}}) is None
         assert acquisition_drift_ppm(None) is None
+
+
+class TestCarryAcquisitionDrift:
+    def test_fresh_drift_is_stamped_with_magnitude(self):
+        from mascope_backend.api.controllers.calibration.calibration_controller import (
+            carry_acquisition_drift,
+        )
+
+        fit = {"quality": {"pre_fit_mz_error_ppm": 12.6}}
+        carry_acquisition_drift(fit, None)
+
+        assert fit["acquisition_drift"] is True
+        assert fit["acquisition_drift_ppm"] == pytest.approx(12.6)
+
+    def test_marker_survives_recalibration_on_corrected_axis(self):
+        from mascope_backend.api.controllers.calibration.calibration_controller import (
+            carry_acquisition_drift,
+        )
+
+        fit = {"quality": {"pre_fit_mz_error_ppm": 0.35}}
+        previous = {"acquisition_drift": True, "acquisition_drift_ppm": 12.6}
+        carry_acquisition_drift(fit, previous)
+
+        assert fit["acquisition_drift"] is True
+        assert fit["acquisition_drift_ppm"] == pytest.approx(12.6)
+
+    def test_no_marker_without_drift_history(self):
+        from mascope_backend.api.controllers.calibration.calibration_controller import (
+            carry_acquisition_drift,
+        )
+
+        fit = {"quality": {"pre_fit_mz_error_ppm": 0.35}}
+        carry_acquisition_drift(fit, {"status": "ok", "verified": True})
+
+        assert "acquisition_drift" not in fit

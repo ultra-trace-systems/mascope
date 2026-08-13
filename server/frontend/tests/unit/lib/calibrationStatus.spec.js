@@ -83,9 +83,21 @@ describe('calibrationStatus', () => {
 
     expect(status.state).toBe('drifted')
     expect(status.severity).toBe('warn')
-    expect(status.tooltip).toContain('12.47 ppm')
-    expect(status.tooltip).toContain('acquisition-side drift')
+    expect(status.tooltip).toContain('Acquisition drift 12.47 ppm')
     expect(status.tooltip).toContain('retuning')
+  })
+
+  it('shows the original drift after a re-calibration on the corrected axis', () => {
+    const status = calibrationStatus({
+      status: 'ok',
+      verified: true,
+      acquisition_drift: true,
+      acquisition_drift_ppm: 12.6,
+      quality: { n_points: 4, pre_fit_mz_error_ppm: 0.35, post_fit_mz_error_ppm: 0.3 }
+    })
+
+    expect(status.state).toBe('drifted')
+    expect(status.tooltip).toContain('Acquisition drift 12.60 ppm')
   })
 
   it('keeps plain calibrated state without the drift flag', () => {
