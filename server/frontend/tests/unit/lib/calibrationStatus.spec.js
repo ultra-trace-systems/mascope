@@ -72,4 +72,29 @@ describe('calibrationStatus', () => {
       '1 point'
     )
   })
+
+  it('flags acquisition drift on a calibrated sample', () => {
+    const status = calibrationStatus({
+      status: 'ok',
+      verified: true,
+      acquisition_drift: true,
+      quality: { n_points: 6, pre_fit_mz_error_ppm: 12.47, post_fit_mz_error_ppm: 0.35 }
+    })
+
+    expect(status.state).toBe('drifted')
+    expect(status.severity).toBe('warn')
+    expect(status.tooltip).toContain('12.47 ppm')
+    expect(status.tooltip).toContain('acquisition-side drift')
+    expect(status.tooltip).toContain('retuning')
+  })
+
+  it('keeps plain calibrated state without the drift flag', () => {
+    const status = calibrationStatus({
+      status: 'ok',
+      verified: true,
+      quality: { n_points: 6, pre_fit_mz_error_ppm: 12.47 }
+    })
+
+    expect(status.state).toBe('ok')
+  })
 })

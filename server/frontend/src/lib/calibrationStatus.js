@@ -78,6 +78,19 @@ export function calibrationStatus(mzCalibration) {
     }
   }
 
+  if (mzCalibration.acquisition_drift) {
+    const drift = ppm(quality?.pre_fit_mz_error_ppm)
+    return {
+      state: 'drifted',
+      icon: 'ph ph-scales',
+      severity: 'warn',
+      tooltip:
+        `m/z calibrated${detail ? ` (${detail})` : ''}, but the file arrived ` +
+        `${drift ? `${drift} ` : ''}off: acquisition-side drift. The applied ` +
+        'calibration corrects it; the instrument itself likely needs retuning.'
+    }
+  }
+
   return {
     state: 'ok',
     icon: 'ph ph-scales',

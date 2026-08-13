@@ -1,5 +1,7 @@
 """Unit tests for the acquisition-drift warning."""
 
+import pytest
+
 from mascope_backend.api.controllers.calibration.calibration_controller import (
     warn_on_acquisition_drift,
 )
@@ -55,3 +57,23 @@ class TestWarnOnAcquisitionDrift:
         assert _warnings(_capture({"mode": "one-point"})) == []
         assert _warnings(_capture(None)) == []
         assert _warnings(_capture({"quality": {}})) == []
+
+
+class TestAcquisitionDriftPpm:
+    def test_returns_drift_beyond_threshold(self):
+        from mascope_backend.api.controllers.calibration.calibration_controller import (
+            acquisition_drift_ppm,
+        )
+
+        assert acquisition_drift_ppm(
+            {"quality": {"pre_fit_mz_error_ppm": -12.5}}
+        ) == pytest.approx(-12.5)
+
+    def test_none_within_threshold_or_unknown(self):
+        from mascope_backend.api.controllers.calibration.calibration_controller import (
+            acquisition_drift_ppm,
+        )
+
+        assert acquisition_drift_ppm({"quality": {"pre_fit_mz_error_ppm": 9.9}}) is None
+        assert acquisition_drift_ppm({"quality": {}}) is None
+        assert acquisition_drift_ppm(None) is None

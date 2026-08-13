@@ -172,7 +172,14 @@
     cursor: pointer;
   }
 
+  /* Badge semantics: red = calibration failed (needs action), orange =
+     calibrated but the file arrived with acquisition drift (instrument needs
+     retuning), green = calibrated, grey = unverified. */
   .browser .calibration-failed {
+    color: var(--p-red-500, #ef4444);
+  }
+
+  .browser .calibration-drifted {
     color: var(--p-amber-500, #f59e0b);
   }
 
