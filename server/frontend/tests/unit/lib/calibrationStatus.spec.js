@@ -78,6 +78,7 @@ describe('calibrationStatus', () => {
       status: 'ok',
       verified: true,
       acquisition_drift: true,
+      acquisition_drift_ppm: 12.47,
       quality: { n_points: 6, pre_fit_mz_error_ppm: 12.47, post_fit_mz_error_ppm: 0.35 }
     })
 

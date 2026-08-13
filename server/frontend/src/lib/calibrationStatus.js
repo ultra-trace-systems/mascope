@@ -79,7 +79,7 @@ export function calibrationStatus(mzCalibration) {
   }
 
   if (mzCalibration.acquisition_drift) {
-    const drift = ppm(mzCalibration.acquisition_drift_ppm ?? quality?.pre_fit_mz_error_ppm)
+    const drift = ppm(mzCalibration.acquisition_drift_ppm)
     return {
       state: 'drifted',
       icon: 'ph ph-scales',
