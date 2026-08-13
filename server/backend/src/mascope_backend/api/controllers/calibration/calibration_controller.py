@@ -120,6 +120,32 @@ def warn_on_acquisition_drift(
     )
 
 
+def carry_acquisition_drift(fit: dict, previous: dict | None) -> None:
+    """
+    Stamp the acquisition-drift marker on a fit about to be persisted.
+
+    Drift is a property of how the file was acquired, not of the last fit: a
+    re-calibration runs on the already-corrected axis and sees a near-zero
+    pre-fit error, which must not clear the marker. A fresh drift observation
+    sets the flag with its magnitude; otherwise the previous record's marker
+    is carried forward. Only :func:`reset_mz_calibration` (which restores the
+    acquisition axis) clears it, by clearing the whole record.
+
+    :param fit: Fit dict about to be persisted (mutated in place).
+    :param previous: The record being replaced, if any.
+    """
+    drift = acquisition_drift_ppm(fit)
+    if drift is not None:
+        fit.update({"acquisition_drift": True, "acquisition_drift_ppm": drift})
+    elif (previous or {}).get("acquisition_drift"):
+        fit.update(
+            {
+                "acquisition_drift": True,
+                "acquisition_drift_ppm": (previous or {}).get("acquisition_drift_ppm"),
+            }
+        )
+
+
 async def reset_mz_calibration(sample_file) -> bool:
     """
     Restore a sample file's acquisition m/z axis and clear its calibration.
@@ -472,10 +498,7 @@ async def calibration_mz_apply(
     new_mz_range = [updated_mz_axis[0], updated_mz_axis[-1]]
 
     fit.update({"status": "ok", "verified": True})
-    if acquisition_drift_ppm(fit) is not None:
-        # Persisted so the sample browser can badge the sample: the fit is
-        # good, but the file arrived with acquisition-side drift.
-        fit.update({"acquisition_drift": True})
+    carry_acquisition_drift(fit, sample_file.mz_calibration)
 
     await send_progress_user_notification(notification, 0.3)
 
