@@ -18,8 +18,9 @@ const ppm = (value) => (value === null || value === undefined ? null : `${value.
  * Derive the calibration badge for a sample row.
  *
  * @param {object|null|undefined} mzCalibration - `sample.mz_calibration` record
- * @returns {{state: string, icon: string, severity: string, tooltip: string}|null}
- *   Badge descriptor, or null when there is nothing to show.
+ * @returns {{state: string, icon: string, severity: string, tooltip: string,
+ *   clickable: boolean}} Badge descriptor; `clickable` is false when opening
+ *   the calibration dialog cannot help (nothing to calibrate against).
  */
 export function calibrationStatus(mzCalibration) {
   if (!mzCalibration) {
@@ -27,10 +28,10 @@ export function calibrationStatus(mzCalibration) {
       state: 'none',
       icon: 'ph ph-scales',
       severity: 'secondary',
+      clickable: false,
       tooltip:
-        'Not calibrated: no m/z calibration was applied (the ionization mode ' +
-        'has no calibration collection, or the file is a blank). ' +
-        'Click to calibrate manually.'
+        'Not calibrated: the ionization mode has no calibration collection, ' +
+        'or the file is a blank.'
     }
   }
 
@@ -43,6 +44,7 @@ export function calibrationStatus(mzCalibration) {
       state: 'failed',
       icon: 'ph ph-scales',
       severity: 'warn',
+      clickable: true,
       tooltip:
         `m/z calibration failed${attempts}${error}. ` +
         'The sample is uncalibrated and match computation is skipped. ' +
@@ -53,11 +55,11 @@ export function calibrationStatus(mzCalibration) {
   const quality = mzCalibration.quality
   const detail = quality
     ? [
-        `${quality.n_points} calibration point${quality.n_points === 1 ? '' : 's'}`,
+        `${quality.n_points} point${quality.n_points === 1 ? '' : 's'}`,
         quality.pre_fit_mz_error_ppm != null
-          ? `mean |m/z error| ${ppm(quality.pre_fit_mz_error_ppm)} before, ${
+          ? `${ppm(quality.pre_fit_mz_error_ppm)} → ${
               ppm(quality.post_fit_mz_error_ppm) ?? '?'
-            } after`
+            } mean |m/z error|`
           : null
       ]
         .filter(Boolean)
@@ -69,6 +71,7 @@ export function calibrationStatus(mzCalibration) {
       state: 'unverified',
       icon: 'ph ph-scales',
       severity: 'secondary',
+      clickable: true,
       tooltip:
         'm/z calibration is not verified. Click to calibrate manually.' +
         (detail ? ` (${detail})` : '')
@@ -79,6 +82,7 @@ export function calibrationStatus(mzCalibration) {
     state: 'ok',
     icon: 'ph ph-scales',
     severity: 'muted',
+    clickable: true,
     tooltip: `m/z calibrated${detail ? `: ${detail}` : ''}`
   }
 }
