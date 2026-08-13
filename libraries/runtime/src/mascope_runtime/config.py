@@ -16,7 +16,7 @@ import typing
 from pathlib import Path
 from typing import Literal
 
-from pydantic import BaseModel, field_validator
+from pydantic import BaseModel, Field, field_validator
 
 
 if typing.TYPE_CHECKING:
@@ -302,8 +302,9 @@ class BackendConfig(ModuleConfig):
     workers: Literal["auto"] | int = "auto"  # uvicorn workers, auto -  half cpu cores
     # Size cap (in gigabytes) for a single resumable (tus) upload, advertised
     # to clients as Tus-Max-Size. Applies per upload: it does not limit how
-    # many files a client may upload, only how large each one may be.
-    tus_max_upload_gb: int = 50
+    # many files a client may upload, only how large each one may be. Must be
+    # at least 1: a zero or negative cap rejects every upload.
+    tus_max_upload_gb: int = Field(default=50, ge=1)
 
     def get_worker_count(self) -> int:
         """
