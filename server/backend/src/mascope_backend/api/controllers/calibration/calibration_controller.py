@@ -14,6 +14,8 @@ from typing import cast
 
 from sqlalchemy import and_, func, select
 
+import mascope_file.io as m_io
+import mascope_file.name as m_name
 from mascope_backend.api.controllers.calibration.lib.calibration_mz_fit import (
     calibration_params_factory,
     fit_quality,
@@ -60,6 +62,54 @@ from mascope_backend.socket.notifications import (
     send_progress_user_notification,
 )
 from mascope_signal.compute import get_sum_signal
+
+
+async def reset_mz_calibration(sample_file) -> bool:
+    """
+    Restore a sample file's acquisition m/z axis and clear its calibration.
+
+    Orbitrap calibration is cumulative: every apply rescales the stored m/z
+    axes in place and tracks the running factor (zarr props + the database
+    record), so a re-processed file silently keeps its previous calibration.
+    Dividing by the stored factor restores the acquisition axis exactly,
+    after which the pipeline calibrates from scratch like a fresh upload.
+
+    TOF fits are absolute (the m/z axis is recomputed from the invariant TOF
+    axis on every apply), so there is nothing to reset for them.
+
+    :param sample_file: Sample file ORM/DTO object with ``sample_file_id``,
+        ``filename`` and ``mz_calibration``.
+    :return: True when a reset was performed.
+    """
+    if m_name.get_instrument_type(sample_file.filename) != "orbi":
+        return False
+    stored = m_io.read_props(sample_file.filename).get("mz_calibration")
+    factor = ((stored or {}).get("par") or {}).get("calibration_factor")
+    if factor:
+        calibration_handler = get_calibration_handler(
+            filename=sample_file.filename, calibration_params=None, notification=None
+        )
+        await calibration_handler.apply(
+            {
+                "mode": "one-point",
+                "par": {
+                    "old_factor": factor,
+                    "old_factor_scaling": 1.0 / factor,
+                    "calibration_factor": 1.0,
+                },
+            }
+        )
+    if stored is None and sample_file.mz_calibration is None:
+        return False
+    m_io.update_props(sample_file.filename, {"mz_calibration": None})
+    sample_file.mz_calibration = None
+    await update_sample_file(
+        sample_file.sample_file_id, SampleFileUpdate(**sample_file.to_dict())
+    )
+    runtime.logger.info(
+        f"Reset m/z calibration for '{sample_file.filename}' to the acquisition axis."
+    )
+    return True
 
 
 @api_controller()
