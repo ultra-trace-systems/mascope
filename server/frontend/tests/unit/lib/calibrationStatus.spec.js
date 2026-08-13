@@ -7,8 +7,10 @@ describe('calibrationStatus', () => {
     for (const value of [null, undefined]) {
       const status = calibrationStatus(value)
       expect(status.state).toBe('none')
+      expect(status.clickable).toBe(false)
       expect(status.tooltip).toContain('Not calibrated')
       expect(status.tooltip).toContain('no calibration collection')
+      expect(status.tooltip).not.toContain('Click')
     }
   })
 
@@ -42,9 +44,10 @@ describe('calibrationStatus', () => {
     })
 
     expect(status.state).toBe('ok')
-    expect(status.tooltip).toContain('6 calibration points')
-    expect(status.tooltip).toContain('12.53 ppm before')
-    expect(status.tooltip).toContain('0.42 ppm after')
+    expect(status.clickable).toBe(true)
+    expect(status.tooltip).toContain('6 points')
+    expect(status.tooltip).toContain('12.53 ppm')
+    expect(status.tooltip).toContain('0.42 ppm')
   })
 
   it('reports an applied fit without quality as plainly calibrated', () => {
@@ -66,7 +69,7 @@ describe('calibrationStatus', () => {
       'after 1 attempt.'
     )
     expect(calibrationStatus({ verified: true, quality: { n_points: 1 } }).tooltip).toContain(
-      '1 calibration point'
+      '1 point'
     )
   })
 })
