@@ -462,7 +462,7 @@ it; prior versions stay on disk until pruned.
 
 ### Upload size cap
 
-A single resumable (tus) upload is capped at 50 GB by default, so one runaway
+A single resumable (tus) upload is capped at 5 GB by default, so one runaway
 transfer cannot fill the disk. The cap applies **per upload** - it does not
 limit how many files agents or users transfer in a day, only how large each
 one may be. Instruments producing larger single files can raise it in the
@@ -470,7 +470,7 @@ env's config toml:
 
 ```toml
 [backend]
-tus_max_upload_gb = 200
+tus_max_upload_gb = 20
 ```
 
 Clients see the cap as the standard `Tus-Max-Size` header; an upload declared
