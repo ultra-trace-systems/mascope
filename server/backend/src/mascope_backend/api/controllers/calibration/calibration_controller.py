@@ -138,12 +138,12 @@ def carry_acquisition_drift(fit: dict, previous: dict | None) -> None:
     if drift is not None:
         fit.update({"acquisition_drift": True, "acquisition_drift_ppm": drift})
     elif (previous or {}).get("acquisition_drift"):
-        fit.update(
-            {
-                "acquisition_drift": True,
-                "acquisition_drift_ppm": (previous or {}).get("acquisition_drift_ppm"),
-            }
-        )
+        carried = (previous or {}).get("acquisition_drift_ppm")
+        if carried is None:
+            # Records written before the magnitude field: the previous fit's
+            # own pre-fit error is the observation that raised the flag.
+            carried = acquisition_drift_ppm(previous)
+        fit.update({"acquisition_drift": True, "acquisition_drift_ppm": carried})
 
 
 async def reset_mz_calibration(sample_file) -> bool:
