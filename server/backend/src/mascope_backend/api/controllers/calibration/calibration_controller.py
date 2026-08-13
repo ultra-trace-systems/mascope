@@ -65,6 +65,23 @@ from mascope_backend.socket.notifications import (
 from mascope_signal.compute import get_sum_signal
 
 
+def acquisition_drift_ppm(fit: dict | None) -> float | None:
+    """
+    The fit's pre-calibration m/z error when it exceeds the drift threshold.
+
+    :param fit: Fit dict (with the ``quality`` block when available).
+    :return: Signed pre-calibration error in ppm, or None when within
+        ``ACQUISITION_DRIFT_WARNING_PPM`` or unknown.
+    """
+    quality = (fit or {}).get("quality") or {}
+    pre_fit = quality.get("pre_fit_mz_error_ppm")
+    if pre_fit is None:
+        return None
+    if abs(pre_fit) <= calibration_config.ACQUISITION_DRIFT_WARNING_PPM:
+        return None
+    return pre_fit
+
+
 def warn_on_acquisition_drift(
     fit: dict | None, instrument: str | None, filename: str
 ) -> None:
@@ -76,6 +93,8 @@ def warn_on_acquisition_drift(
     its internal calibration degrades. When the fit's pre-calibration error
     exceeds ``ACQUISITION_DRIFT_WARNING_PPM``, log at WARNING - exported to
     error monitoring as operator signal that the instrument needs retuning.
+    (The persisted record carries the ``acquisition_drift`` flag for the
+    sample browser's badge - see ``calibration_mz_apply``.)
 
     The warning message carries only the instrument and the drift rounded to
     whole ppm, so monitoring groups a drift episode into one issue per
@@ -85,10 +104,9 @@ def warn_on_acquisition_drift(
     :param instrument: Instrument name for the warning message.
     :param filename: Sample filename, logged at INFO for drill-down.
     """
-    quality = (fit or {}).get("quality") or {}
-    pre_fit = quality.get("pre_fit_mz_error_ppm")
+    pre_fit = acquisition_drift_ppm(fit)
     limit = calibration_config.ACQUISITION_DRIFT_WARNING_PPM
-    if pre_fit is None or abs(pre_fit) <= limit:
+    if pre_fit is None:
         return
     runtime.logger.warning(
         f"Acquisition m/z drift beyond {limit:g} ppm on instrument "
@@ -454,6 +472,10 @@ async def calibration_mz_apply(
     new_mz_range = [updated_mz_axis[0], updated_mz_axis[-1]]
 
     fit.update({"status": "ok", "verified": True})
+    if acquisition_drift_ppm(fit) is not None:
+        # Persisted so the sample browser can badge the sample: the fit is
+        # good, but the file arrived with acquisition-side drift.
+        fit.update({"acquisition_drift": True})
 
     await send_progress_user_notification(notification, 0.3)
 
