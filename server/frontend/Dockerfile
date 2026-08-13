@@ -66,5 +66,12 @@ COPY server/frontend/nginx.http.conf /etc/nginx/mascope/nginx.http.conf
 COPY server/frontend/docker-entrypoint.sh /docker-entrypoint.sh
 RUN chmod +x /docker-entrypoint.sh
 
+# Load the njs module (bundled in the image) and stage the rate-limit key
+# script. nginx.conf keys the per-client limit zones on a /64-masked client
+# address computed by njs; load_module must be in the main context, which the
+# conf.d-included site config cannot reach, so add it to the base nginx.conf.
+RUN sed -i '1i load_module /etc/nginx/modules/ngx_http_js_module.so;' /etc/nginx/nginx.conf
+COPY server/frontend/ratelimit_key.js /etc/nginx/njs/ratelimit_key.js
+
 # SERVE API & FRONTEND (HTTPS by default; MASCOPE_TLS=off serves HTTP on :80)
 CMD ["/docker-entrypoint.sh"]
