@@ -21,9 +21,9 @@ from mascope_backend.runtime import runtime
 from mascope_backend.socket.storage import redis_storage_client
 
 
-def _client_ip(request: Request) -> str:
+def client_ip(request: Request) -> str:
     """
-    Best-effort client IP for rate-limit keying.
+    Best-effort client IP, used for the rate-limit key and the access log.
 
     Prefer ``X-Real-IP``, which nginx sets to the real peer address and
     overwrites on every request, so a client cannot spoof it (and the backend
@@ -83,7 +83,7 @@ def rate_limit(*, times: int, seconds: int, scope: str):
     """
 
     async def dependency(request: Request) -> None:
-        ip = _client_ip(request)
+        ip = client_ip(request)
         key = f"mascope:ratelimit:{scope}:{ip}"
         try:
             retry_after = await _over_fixed_window(key, times, seconds)
