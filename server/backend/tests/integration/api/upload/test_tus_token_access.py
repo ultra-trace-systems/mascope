@@ -7,9 +7,10 @@ decorator; sample_files_routes stamps their endpoints `token_access`
 instead. These tests pin that stamp down: a file-agent token must pass
 the auth layer on every tus route (creation, chunk transfer, HEAD,
 OPTIONS, DELETE), while the service-name check and anonymous rejection
-keep working. They also pin the per-upload size cap: OPTIONS advertises
-it as Tus-Max-Size, and a creation request declaring a larger
-Upload-Length is refused with 413.
+keep working - including that an anonymous PATCH is refused before its
+body is written. They also pin the per-upload size cap: OPTIONS advertises
+it as Tus-Max-Size, a creation declaring a larger Upload-Length is refused
+with 413, and a deferred-length creation is refused with 411.
 
 The upload is never completed here (chunks stop short of Upload-Length),
 so the file-processing pipeline behind the completion hook stays out of
@@ -26,7 +27,6 @@ from sqlalchemy import delete
 from mascope_backend.api.routes.sample.files import sample_files_routes
 from mascope_backend.app.fast import fast
 from mascope_backend.db import AccessToken
-from mascope_backend.runtime import runtime
 
 
 TUS_URL = "/api/sample/files/upload/tus/"
@@ -163,8 +163,11 @@ async def test_options_advertises_the_configured_max_size(file_agent_token):
     async with _client(headers) as client:
         resp = await client.options(TUS_URL)
     assert resp.status_code == 204
-    expected = runtime.config.tus_max_upload_gb * 1024**3
-    assert resp.headers["tus-max-size"] == str(expected)
+    # Advertise exactly the cap the server enforces (the module global the
+    # router's max_size is built from), so the header can't drift from it.
+    assert resp.headers["tus-max-size"] == str(
+        sample_files_routes._tus_max_upload_bytes
+    )
 
 
 @pytest.mark.asyncio
@@ -179,3 +182,47 @@ async def test_oversized_upload_is_rejected_at_creation(file_agent_token, monkey
         # CREATE_HEADERS declares Upload-Length: 8 > the patched 4-byte cap.
         resp = await client.post(TUS_URL, headers=CREATE_HEADERS)
     assert resp.status_code == 413
+
+
+@pytest.mark.asyncio
+async def test_anonymous_patch_is_rejected():
+    """PATCH rejects anonymous callers before the body is written to disk.
+
+    tuspyserver declares the chunk-writing dependency ahead of its own auth
+    hook, so auth is enforced at the router level to run first. Before that,
+    an anonymous PATCH would create the upload file and stream its body in,
+    then answer 404; now it is 401 with nothing written.
+    """
+    async with _client() as client:
+        resp = await client.patch(
+            f"{TUS_URL}some-upload-id",
+            content=b"attacker",
+            headers={
+                "Tus-Resumable": "1.0.0",
+                "Upload-Offset": "0",
+                "Content-Type": "application/offset+octet-stream",
+            },
+        )
+    assert resp.status_code == 401, resp.text
+
+
+@pytest.mark.asyncio
+async def test_deferred_length_creation_is_rejected(file_agent_token):
+    """A creation that omits Upload-Length (deferred) is refused with 411.
+
+    Deferred uploads declare their size only on a later PATCH, which
+    tuspyserver never re-checks against the cap, so allowing them would let a
+    client bypass the per-upload limit.
+    """
+    headers = {
+        "Authorization": f"Bearer {file_agent_token}",
+        "X-Service-Name": "file-agent",
+    }
+    create = {
+        "Tus-Resumable": "1.0.0",
+        "Upload-Defer-Length": "1",
+        "Upload-Metadata": CREATE_HEADERS["Upload-Metadata"],
+    }
+    async with _client(headers) as client:
+        resp = await client.post(TUS_URL, headers=create)
+    assert resp.status_code == 411, resp.text
