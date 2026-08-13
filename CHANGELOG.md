@@ -72,29 +72,33 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
   API requests (uploads get an hour; only Socket.IO keeps its 24-hour
   timeout, which previously applied to every proxied route). The nginx
   version is no longer advertised. (#1783)
-- Every resumable-upload (tus) route requires authentication. Previously
-  the generated HEAD, OPTIONS and DELETE handlers accepted anonymous
-  callers, so a leaked upload id let anyone read upload metadata (filename,
-  size, progress) or delete an upload in flight. (#1784)
-- A single resumable upload is capped - 50 GB by default, configurable with
-  `tus_max_upload_gb` (see docs/maintaining.md). Uploads previously had no
-  server-side total-size bound (the nginx body limit bounds one chunk, and
-  the tus library's default cap is 120 GiB), so one transfer could fill the
-  disk. An upload declaring a larger size is refused up front with 413, and
-  the cap is advertised as `Tus-Max-Size`. The cap is per upload: how many
-  files an instrument agent transfers per day is unaffected. (#1784)
+- Every resumable-upload (tus) route requires authentication, enforced before
+  the request body is handled. Previously the generated metadata routes (HEAD,
+  OPTIONS, DELETE) accepted anonymous callers - a leaked upload id let anyone
+  read upload metadata (filename, size, progress) or delete an upload in
+  flight - and a chunk upload (PATCH) began writing to disk before the auth
+  check ran. (#1784)
+- A single resumable upload is capped - 5 GB by default, configurable with
+  `tus_max_upload_gb` (see docs/maintaining.md). This lowers the effective
+  ceiling from the tus library's 120 GiB default (the nginx body limit only
+  bounds one chunk), so one runaway transfer cannot fill the disk. An upload
+  declaring a larger size is refused up front with 413. The cap is per upload:
+  how many files an instrument agent transfers per day is unaffected. Separately,
+  nginx now caps a single request body at 100 MB (previously 2.5 GB), so
+  whole-file legacy uploads above that go through the chunked tus route. (#1784)
 - Resetting another user's password, and the enqueueing/export routes (peak
-  recomputation, peak and spreadsheet exports, the ion-focus
-  visualization), are POST instead of GET. The auth cookie is SameSite=lax,
+  recomputation, batch peak aggregation, peak and spreadsheet exports, the
+  ion-focus visualization), are POST instead of GET. The auth cookie is SameSite=lax,
   which is sent on cross-site top-level GET navigations - so a crafted link
   could reset a user's password (account lockout, not credential theft) or
   spawn heavy background work with a signed-in admin's ambient credentials.
   Only the bundled frontend calls these routes, so no external client is
   affected. (#1785, #1786)
-- The deployment env example no longer sets `MASCOPE_COOKIE_SECURE=false`:
-  copied verbatim, it silently dropped the auth cookie's Secure flag on an
-  HTTPS deployment. Unset, the flag follows the runtime mode and is on in
-  production. (#1788)
+- The deployment env example no longer carries `MASCOPE_COOKIE_SECURE`. The
+  production compose does not read it, and the demo compose already defaults it
+  to false for its localhost HTTP, so the line did nothing in the example; the
+  production cookie's Secure flag follows the runtime mode and is on in prod
+  regardless. Removed so it cannot imply it governs the production cookie. (#1788)
 
 ## [1.6.2] - 2026.08.12
 
