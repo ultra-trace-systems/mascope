@@ -18,6 +18,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from mascope_backend.api.lib.exceptions.api_exceptions import handle_exception
+from mascope_backend.api.lib.rate_limit import client_ip
 from mascope_backend.api.routes import routers
 from mascope_backend.db import init_db
 from mascope_backend.runtime import runtime
@@ -116,15 +117,12 @@ async def logger_middleware(request: Request, call_next):
     # Surface the timing to browser devtools / API clients
     response.headers["Server-Timing"] = f"app;dur={duration_ms}"
 
-    # add logging context. The direct peer is the nginx container, not the
-    # client: nginx forwards the real client address in X-Real-IP and always
-    # overwrites the header, so through the proxy it cannot be spoofed. The
-    # rate limiter derives its per-client key from the same header.
-    client_host = (
-        request.headers.get("x-real-ip")
-        or (request.client.host if request.client else None)
-        or "unknown"
-    )
+    # Log the real client address, not the direct peer (the nginx container).
+    # nginx sets X-Real-IP to the restored client and overwrites it, so through
+    # the proxy it cannot be spoofed; the helper falls back to the transport
+    # peer for direct/dev connections. Shared with the rate limiter's
+    # per-client key so the access log and the limiter agree on the client.
+    client_host = client_ip(request)
 
     with runtime.logger.contextualize(
         path=request.url.path,
