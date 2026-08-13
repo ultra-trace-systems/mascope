@@ -14,6 +14,7 @@ credential-stuffing bursts, not to be a precise quota system.
 """
 
 import hashlib
+import ipaddress
 
 from fastapi import HTTPException, Request, status
 
@@ -37,6 +38,37 @@ def client_ip(request: Request) -> str:
     if real_ip:
         return real_ip.strip()
     return request.client.host if request.client else "unknown"
+
+
+def _limit_key_ip(ip: str) -> str:
+    """Client address as a rate-limit key: full IPv4, but the /64 for IPv6.
+
+    A single IPv6 client is routinely assigned a whole /64, so keying the limit
+    on the full /128 would let it evade the per-IP budget by rotating through
+    its own addresses (IPv4 has no spare addresses to rotate). Masking to the
+    /64 network keys all of a client's addresses together. The access log keeps
+    the full address (see :func:`client_ip`); only the limit key is masked, and
+    the edge (nginx) applies the same masking to its own limits.
+
+    A /64 is one LAN segment, so an office or campus network shares one bucket -
+    intended parity with an IPv4-NAT site, not a regression. It does not stop a
+    client that controls a larger /56 or /48; login brute force is capped
+    separately per account (see :func:`rate_limit_login_by_account`).
+
+    :param ip: Client address string from :func:`client_ip`.
+    :return: ``ip`` unchanged for IPv4, an IPv4-mapped address, or a
+        non-address (e.g. ``"unknown"``); the ``/64`` network string (e.g.
+        ``"2001:db8::/64"``) for a native IPv6 address.
+    """
+    try:
+        addr = ipaddress.ip_address(ip)
+        if addr.version == 6 and addr.ipv4_mapped is None:
+            return str(ipaddress.ip_network(f"{ip}/64", strict=False))
+    except ValueError:
+        # Not a bare IP (e.g. "unknown"), or a form ipaddress cannot mask -
+        # key on it unchanged rather than fail the request.
+        pass
+    return ip
 
 
 async def _over_fixed_window(key: str, times: int, seconds: int) -> int | None:
@@ -83,7 +115,7 @@ def rate_limit(*, times: int, seconds: int, scope: str):
     """
 
     async def dependency(request: Request) -> None:
-        ip = client_ip(request)
+        ip = _limit_key_ip(client_ip(request))
         key = f"mascope:ratelimit:{scope}:{ip}"
         try:
             retry_after = await _over_fixed_window(key, times, seconds)
