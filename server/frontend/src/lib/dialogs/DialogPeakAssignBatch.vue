@@ -82,12 +82,12 @@ async function launch() {
   >
     <div class="col" style="gap: 1rem; align-items: stretch">
       <Message severity="warn" :closable="false">
-        Runs over every eligible sample in the batch, in the background. Blank and
-        uncalibrated samples are skipped. It cannot be cancelled once started.
+        Runs over every eligible sample in the batch, in the background. Blank and uncalibrated
+        samples are skipped. It cannot be cancelled once started.
       </Message>
       <Message v-if="config.run_untargeted" severity="warn" :closable="false">
-        The untargeted search runs per sample and is the slowest part of
-        assignment. Across a whole batch this can take a long time.
+        The untargeted search runs per sample and is the slowest part of assignment. Across a whole
+        batch this can take a long time.
       </Message>
       <PeakAssignConfigForm :config="config" :pinned="['run_untargeted']" />
     </div>

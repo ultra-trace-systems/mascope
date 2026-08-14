@@ -56,9 +56,7 @@ describe('HelpPopover hover persistence', () => {
     await nextTick()
     // ...but the popover stays because the pointer is on it.
     expect(wrapper.find('.help-popover').exists()).toBe(true)
-    expect(wrapper.find('.help-learn-more').attributes('href')).toBe(
-      '/docs/how-it-works/matching/'
-    )
+    expect(wrapper.find('.help-learn-more').attributes('href')).toBe('/docs/how-it-works/matching/')
 
     await wrapper.find('.help-popover').trigger('mouseleave')
     await nextTick()

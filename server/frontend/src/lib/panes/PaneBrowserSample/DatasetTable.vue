@@ -53,7 +53,8 @@ const tableHeight = computed(() => ((height.value - padding) * app.ui.split.top)
     icon="pi ph ph-folders"
     :contextMenu="contextMenu"
     :pt="
-      app.ui.help.right(`
+      app.ui.help.right(
+        `
         <h1>Sample Browser: Datasets</h1>
 
         <p>Shows all datasets in the currently selected workspace

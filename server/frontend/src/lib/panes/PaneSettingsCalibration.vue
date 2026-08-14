@@ -44,7 +44,6 @@ const mzCalibrationParams = defineModel('mzCalibrationParams')
   </div>
 </template>
 
-
 <style scoped>
 .calibration-fields {
   display: grid;

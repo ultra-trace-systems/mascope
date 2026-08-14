@@ -70,7 +70,8 @@ const onStatusAction = (batch) => {
     icon="pi pi-folder-open"
     :contextMenu="contextMenu"
     :pt="
-      app.ui.help.right(`
+      app.ui.help.right(
+        `
         <h1>Sample Browser: Batches</h1>
 
         <p>Shows all batches in the currently selected dataset 

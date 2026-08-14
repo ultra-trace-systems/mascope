@@ -66,8 +66,10 @@ function parseConfig(path) {
     const openMatch = trimmed.match(OPEN)
     if (openMatch) {
       const name = openMatch[1]
-      if (open) throw new Error(`${at}: host-only:${name} opened inside host-only:${open} (no nesting)`)
-      if (regions.some((r) => r.name === name)) throw new Error(`${at}: duplicate host-only region name "${name}"`)
+      if (open)
+        throw new Error(`${at}: host-only:${name} opened inside host-only:${open} (no nesting)`)
+      if (regions.some((r) => r.name === name))
+        throw new Error(`${at}: duplicate host-only region name "${name}"`)
       open = name
       regions.push({ name, lines: 0 })
       return
@@ -76,7 +78,8 @@ function parseConfig(path) {
     if (closeMatch) {
       const name = closeMatch[1]
       if (!open) throw new Error(`${at}: host-only:${name} closed without a matching open`)
-      if (name !== open) throw new Error(`${at}: host-only:${name} closes while host-only:${open} is open`)
+      if (name !== open)
+        throw new Error(`${at}: host-only:${name} closes while host-only:${open} is open`)
       open = null
       return
     }
@@ -109,13 +112,15 @@ function divergences(prod, demo) {
   }
   const problems = [
     ...surplus(prod, demo).map((l) => `only in nginx.conf:      ${l}`),
-    ...surplus(demo, prod).map((l) => `only in nginx.http.conf: ${l}`),
+    ...surplus(demo, prod).map((l) => `only in nginx.http.conf: ${l}`)
   ]
   if (problems.length === 0) {
     const n = Math.min(prod.length, demo.length)
     for (let i = 0; i < n; i++) {
       if (prod[i] !== demo[i]) {
-        problems.push(`directive #${i + 1} is placed differently: nginx.conf has "${prod[i]}", nginx.http.conf has "${demo[i]}"`)
+        problems.push(
+          `directive #${i + 1} is placed differently: nginx.conf has "${prod[i]}", nginx.http.conf has "${demo[i]}"`
+        )
         break
       }
     }
@@ -139,11 +144,11 @@ const ONE_SIDED_REGIONS = {
     'tls-cert',
     'tls-listen',
     'tus-timeout', // ditto
-    'upload-timeout', // ditto
+    'upload-timeout' // ditto
   ],
   'nginx.http.conf': [
-    'listen', // plain :80 default_server, no TLS
-  ],
+    'listen' // plain :80 default_server, no TLS
+  ]
 }
 
 describe('nginx twin configs', () => {
@@ -157,22 +162,25 @@ describe('nginx twin configs', () => {
   })
 
   it('carry no undeclared one-sided host-only region', () => {
-    const names = (file) => parseConfig(configPath(file)).regions.map((r) => r.name).sort()
+    const names = (file) =>
+      parseConfig(configPath(file))
+        .regions.map((r) => r.name)
+        .sort()
     const prod = names('nginx.conf')
     const demo = names('nginx.http.conf')
 
     for (const [file, own, other] of [
       ['nginx.conf', prod, demo],
-      ['nginx.http.conf', demo, prod],
+      ['nginx.http.conf', demo, prod]
     ]) {
       const undeclared = own.filter(
-        (n) => !other.includes(n) && !ONE_SIDED_REGIONS[file].includes(n),
+        (n) => !other.includes(n) && !ONE_SIDED_REGIONS[file].includes(n)
       )
       expect(
         undeclared,
         `${file} wraps ${undeclared.join(', ')} as host-only, but the twin has no such ` +
           `region. If that is intended, add it to ONE_SIDED_REGIONS with the reason; ` +
-          `otherwise the directives inside are missing from the other host.`,
+          `otherwise the directives inside are missing from the other host.`
       ).toEqual([])
 
       // A declared name that is gone, or that has since gained a twin, is a
@@ -181,7 +189,7 @@ describe('nginx twin configs', () => {
       expect(
         stale,
         `${file} declares ${stale.join(', ')} as one-sided, but they are absent or ` +
-          `now present in both files - drop them from ONE_SIDED_REGIONS`,
+          `now present in both files - drop them from ONE_SIDED_REGIONS`
       ).toEqual([])
     }
   })

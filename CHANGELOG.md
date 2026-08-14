@@ -6,6 +6,25 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
 
 ### Added
 
+- An owner can now require every account to set a new password, from Manage
+  users or with `mascope prod db script run require_password_change`. The
+  minimum password length was introduced after many accounts already existed
+  and nothing ever re-validated them, so a deployment could carry passwords
+  weaker than its own policy with no way to find out. The requirement is soft:
+  everyone keeps signing in with their existing password and is held at a
+  password screen until they replace it. Nobody is excluded, the acting owner
+  included. Withdraw it with
+  `mascope prod db script run clear_password_change_requirement`; there is
+  deliberately no way to do that over the API.
+- Passwords issued by an administrator are now temporary. Resetting another
+  user's password, and creating an account, both leave that account required to
+  choose its own password at next sign-in, so only its holder ever knows the
+  password in use. The first owner, who chooses their own password during setup,
+  is not asked to change it.
+- The password policy now rejects the most commonly used and breached
+  passwords. The bundled list is filtered to the lengths the 12-character
+  minimum could otherwise accept, so it catches `qwerty123456` and
+  `passwordpassword` without adding character-class rules.
 - New black-box security suite in `security/pentest/`: 41 checks against a
   running deployment, each carrying its OWASP category, CWE and the SOC 2
   Trust Services Criteria it evidences, producing a severity-ranked report in

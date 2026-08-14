@@ -39,9 +39,7 @@ const bottomHeight = computed(() => ((height.value - padding) * bottomSplit.valu
 // The legacy layout passes the raw split percentage as the spectrum height and
 // leaves room for the pane chrome below it.
 const legacyTopHeight = computed(() => topSplit.value)
-const legacyBottomHeight = computed(
-  () => ((height.value - padding) * bottomSplit.value) / 100 - 50
-)
+const legacyBottomHeight = computed(() => ((height.value - padding) * bottomSplit.value) / 100 - 50)
 
 // The bottom pane shows the assignment time series by default; "Re-search" in
 // the inspector flips it to the composition search for the focused peak.
@@ -74,11 +72,7 @@ const showSearch = ref(false)
           </Splitter>
         </SplitterPanel>
         <SplitterPanel :size="45" :minSize="10">
-          <PanePeakSearch
-            v-if="showSearch"
-            :height="bottomHeight"
-            @close="showSearch = false"
-          />
+          <PanePeakSearch v-if="showSearch" :height="bottomHeight" @close="showSearch = false" />
           <ChartAssignmentTimeseries v-else :height="bottomHeight" />
         </SplitterPanel>
       </template>

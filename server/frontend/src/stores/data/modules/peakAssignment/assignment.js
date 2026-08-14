@@ -123,8 +123,7 @@ export const usePeakAssignment = defineStore('app.data.peakAssignment', () => {
   })
 
   // Look up the assignment for a peak by its peak_id.
-  const forPeak = (peakId) =>
-    peakId == null ? null : (byPeakId.value.get(String(peakId)) ?? null)
+  const forPeak = (peakId) => (peakId == null ? null : (byPeakId.value.get(String(peakId)) ?? null))
 
   // Map peak_assignment_id -> record, for owner/child lookups.
   const byId = computed(() => {

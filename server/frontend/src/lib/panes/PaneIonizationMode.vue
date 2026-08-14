@@ -546,7 +546,10 @@ defineExpose({
               <i
                 class="pi pi-lock"
                 style="opacity: 0.4"
-                v-tooltip="{ value: 'Editing ionization modes requires admin access', showDelay: 500 }"
+                v-tooltip="{
+                  value: 'Editing ionization modes requires admin access',
+                  showDelay: 500
+                }"
               />
             </template>
           </div>

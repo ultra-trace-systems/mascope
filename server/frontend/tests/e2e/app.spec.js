@@ -24,9 +24,7 @@ test.describe('app shell (demo data)', () => {
 
     const datasets = (
       await Promise.all(
-        workspaces.map((w) =>
-          api.get(`/workspaces/${w.workspace_id}/datasets`).then((r) => r.data)
-        )
+        workspaces.map((w) => api.get(`/workspaces/${w.workspace_id}/datasets`).then((r) => r.data))
       )
     ).flat()
     expect(datasets.length, 'demo should contain a dataset').toBeGreaterThan(0)
