@@ -99,6 +99,11 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
   to false for its localhost HTTP, so the line did nothing in the example; the
   production cookie's Secure flag follows the runtime mode and is on in prod
   regardless. Removed so it cannot imply it governs the production cookie. (#1788)
+- The HTTP/localhost frontend config now also suppresses the nginx version
+  banner (`server_tokens off`), which previously applied only to the production
+  config. The two configs share a host-agnostic body, and a build check now
+  keeps that body from drifting so a future hardening cannot reach only one of
+  them. (#1796)
 
 ## [1.6.2] - 2026.08.12
 
