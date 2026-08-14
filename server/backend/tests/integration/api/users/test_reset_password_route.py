@@ -42,10 +42,6 @@ async def test_a_reset_password_is_temporary(
         assert stored.must_change_password is True
         assert stored.password_change_reason == "reset"
         assert stored.password_changed_at is not None
-        # Reset so the session-scoped fixture is left as it was found.
-        stored.must_change_password = False
-        stored.password_change_reason = None
-        await session.commit()
 
 
 @pytest.mark.asyncio
@@ -65,9 +61,6 @@ async def test_an_owner_patch_cannot_clear_the_requirement(
     async with async_session_factory() as session:
         stored = await session.get(User, target_id)
         assert stored.must_change_password is True
-        stored.must_change_password = False
-        stored.password_change_reason = None
-        await session.commit()
 
 
 @pytest.mark.asyncio

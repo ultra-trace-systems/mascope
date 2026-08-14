@@ -254,27 +254,21 @@ async def test_owner_requires_a_change_for_every_account(
     data = resp.json()["data"]
     assert data["flagged_count"] == data["total_users"]
 
-    try:
-        async with async_session_factory() as session:
-            rows = (await session.execute(select(User))).scalars().all()
-            # Nobody is exempt, the acting owner included.
-            assert all(user.must_change_password for user in rows)
-            assert all(user.password_change_reason == "policy" for user in rows)
+    async with async_session_factory() as session:
+        rows = (await session.execute(select(User))).scalars().all()
+        # Nobody is exempt, the acting owner included.
+        assert all(user.must_change_password for user in rows)
+        assert all(user.password_change_reason == "policy" for user in rows)
 
-        # Idempotent: a second call reports nothing new to do. The owner is now
-        # behind the gate, so this uses a fresh check rather than the route.
-        from mascope_backend.db.admin.user.require_password_change import (
-            require_password_change_for_all_users,
-        )
+    # Idempotent: a second call reports nothing new to do. The owner is now
+    # behind the gate, so this goes through the helper rather than the route.
+    from mascope_backend.db.admin.user.require_password_change import (
+        require_password_change_for_all_users,
+    )
 
-        again = await require_password_change_for_all_users()
-        assert again["data"]["flagged_count"] == 0
-    finally:
-        from mascope_backend.db.admin.user.require_password_change import (
-            clear_password_change_requirement,
-        )
-
-        await clear_password_change_requirement()
+    again = await require_password_change_for_all_users()
+    assert again["data"]["flagged_count"] == 0
+    # The autouse fixture in this package's conftest releases every account.
 
 
 @pytest.mark.asyncio
