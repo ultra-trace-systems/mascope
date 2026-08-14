@@ -1,0 +1,160 @@
+---
+# Staggered fleet reboot: one server at a time, fail-fast, verified.
+#
+#   ansible-playbook reboot.yml --limit <canary-host> --ask-vault-pass
+#   ansible-playbook reboot.yml --limit <host>,<host> --ask-vault-pass
+#   ansible-playbook reboot.yml --ask-vault-pass                  # all pending
+#
+# Only touches servers that actually have a reboot pending, refuses to reboot
+# while a backup is in flight, and fails the run if a server does not come back
+# healthy on the release it went down with. serial + any_errors_fatal stop the
+# batch at the first bad server instead of marching through the fleet, so run
+# the canary first - use an internal instance rather than a customer's.
+#
+# Sudo is required for the reboot itself, so the vault supplies the become
+# password: pass --ask-vault-pass. Everything else runs as the deploy user.
+#
+# Timing: each server takes its nightly backup somewhere in 23:00-05:00
+# host-local. This playbook refuses to reboot while one is running, but
+# starting a window shortly before a slot can still collide with it - prefer
+# the host's evening.
+- name: Staggered fleet reboot
+  hosts: fleet
+  become: false
+  serial: 1
+  any_errors_fatal: true
+  vars_files:
+    - ["vault.local.yml", "vault.local.example.yml"]
+  vars:
+    mascope_checkout: "{{ ansible_env.HOME }}/mascope"
+    # Override per host in the inventory if an instance is not served at
+    # <name>.mascope.app.
+    app_host: "{{ inventory_hostname }}.mascope.app"
+  tasks:
+    - name: Check whether a reboot is pending
+      ansible.builtin.stat:
+        path: /var/run/reboot-required
+      register: reboot_required
+
+    - name: Report servers with nothing pending
+      ansible.builtin.debug:
+        msg: "No reboot pending - skipping {{ inventory_hostname }}."
+      when: not reboot_required.stat.exists
+
+    - name: Skip servers with nothing pending
+      ansible.builtin.meta: end_host
+      when: not reboot_required.stat.exists
+
+    # The bracket classes stop the pattern from matching this very command:
+    # pgrep -f sees the wrapping shell's own command line too.
+    - name: Look for a backup in flight
+      ansible.builtin.shell:
+        cmd: pgrep -a -f '[r]estic|[p]g_dump|[b]ackup-cron' || true
+      register: backup_running
+      changed_when: false
+
+    - name: Refuse to reboot during a backup
+      ansible.builtin.assert:
+        that: backup_running.stdout | trim | length == 0
+        fail_msg: >-
+          A backup is running on {{ inventory_hostname }}
+          ({{ backup_running.stdout_lines | join('; ') }}). A reboot would kill
+          the restic push and waste the nightly dump. Wait for it to finish, or
+          pick a window outside 23:00-05:00 host-local.
+
+    # Captured before and compared after: the boot unit resolves its own image
+    # tag, so a reboot is exactly when a server can silently change release.
+    - name: Record the running frontend image
+      ansible.builtin.shell:
+        cmd: >-
+          {% raw %}docker inspect --format '{{.Config.Image}}'
+          mascope_prod_frontend{% endraw %}
+      register: image_before
+      changed_when: false
+
+    - name: Reboot and wait for the server to come back
+      ansible.builtin.reboot:
+        reboot_timeout: 900
+        post_reboot_delay: 20
+        msg: Mascope fleet maintenance reboot
+      become: true
+
+    - name: Wait for the backend container to report healthy
+      ansible.builtin.shell:
+        cmd: >-
+          {% raw %}docker inspect --format '{{.State.Health.Status}}'
+          mascope_prod_backend{% endraw %}
+      register: backend_health
+      changed_when: false
+      failed_when: false
+      retries: 40
+      delay: 15
+      until: backend_health.stdout | trim == 'healthy'
+
+    - name: Confirm the backend is healthy
+      ansible.builtin.assert:
+        that: backend_health.stdout | trim == 'healthy'
+        fail_msg: >-
+          The backend on {{ inventory_hostname }} did not reach healthy within
+          10 minutes (last state: '{{ backend_health.stdout | trim }}').
+
+    - name: Record the frontend image after the reboot
+      ansible.builtin.shell:
+        cmd: >-
+          {% raw %}docker inspect --format '{{.Config.Image}}'
+          mascope_prod_frontend{% endraw %}
+      register: image_after
+      changed_when: false
+
+    - name: Confirm the release did not change across the reboot
+      ansible.builtin.assert:
+        that: image_after.stdout | trim == image_before.stdout | trim
+        success_msg: "Release unchanged: {{ image_after.stdout | trim }}"
+        fail_msg: >-
+          {{ inventory_hostname }} came back on a different release:
+          {{ image_before.stdout | trim }} -> {{ image_after.stdout | trim }}.
+          The boot unit resolved a different tag than the one that was running.
+          See "Version pinning" in the fleet overview before continuing.
+
+    # Probe the origin, never the public URL: from a fleet server Cloudflare's
+    # WAF IP gate answers 403 whether the app is healthy or not.
+    - name: Probe the origin API, bypassing Cloudflare
+      ansible.builtin.shell:
+        cmd: >-
+          curl -sk -o /dev/null -w '%{http_code}' -X POST
+          -H 'Content-Type: application/json' -d '{}'
+          --resolve {{ app_host }}:443:127.0.0.1
+          https://{{ app_host }}/api/auth/login
+      register: api_probe
+      changed_when: false
+      failed_when: false
+      retries: 12
+      delay: 10
+      until: api_probe.stdout | trim == '422'
+
+    - name: Confirm the API answers through the frontend
+      ansible.builtin.assert:
+        that: api_probe.stdout | trim == '422'
+        fail_msg: >-
+          The origin API on {{ inventory_hostname }} returned
+          '{{ api_probe.stdout | trim }}' instead of 422. A 502 means nginx is
+          holding a stale backend container IP - restart mascope_prod_frontend
+          and probe again.
+
+    - name: Verify with doctor
+      ansible.builtin.shell:
+        cmd: bash -lc "cd {{ mascope_checkout }} && PYTHONUTF8=1 mascope prod doctor"
+      changed_when: false
+
+    - name: Check the pending-reboot flag cleared
+      ansible.builtin.stat:
+        path: /var/run/reboot-required
+      register: reboot_still_pending
+
+    - name: Note a still-pending reboot
+      ansible.builtin.debug:
+        msg: >-
+          {{ inventory_hostname }} still reports /var/run/reboot-required after
+          rebooting - a package updated during the window. Harmless; it will be
+          picked up next time.
+      when: reboot_still_pending.stat.exists
