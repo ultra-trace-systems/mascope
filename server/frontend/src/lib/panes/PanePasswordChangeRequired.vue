@@ -81,10 +81,12 @@ const submit = async () => {
   <Message severity="secondary" icon="pi pi-info-circle" style="margin-bottom: 1.5rem">
     {{ reason }}
   </Message>
-  <div class="fields">
+  <!-- One field per row: .fields wraps into columns, which reads as three
+       unrelated inputs rather than one ordered sequence. -->
+  <div class="fields" style="flex-flow: column">
     <div class="field">
       <FloatLabel>
-        <Password id="current-password" v-model="form.password.current" required />
+        <Password id="current-password" v-model="form.password.current" fluid required />
         <label for="current-password">Current password</label>
       </FloatLabel>
     </div>
@@ -94,6 +96,7 @@ const submit = async () => {
           id="new-password"
           v-model="form.password.new"
           :invalid="!!form.policyError.value || form.sameAsCurrent.value"
+          fluid
           required
         />
         <label for="new-password">New password</label>
@@ -105,6 +108,7 @@ const submit = async () => {
           id="new-password-verify"
           v-model="form.password.verify"
           :invalid="form.mismatch.value"
+          fluid
           required
           @keyup.enter="submit"
         />
@@ -113,9 +117,16 @@ const submit = async () => {
     </div>
   </div>
 
+  <!-- Until something is typed the rules are requirements, not results: ticking
+       them off against an empty field would claim the user had already met
+       them. -->
   <ul class="policy-checks">
-    <li v-for="check in form.checks.value" :key="check.id" :class="{ ok: check.ok }">
-      <i :class="check.ok ? 'pi pi-check' : 'pi pi-circle'" />
+    <li
+      v-for="check in form.checks.value"
+      :key="check.id"
+      :class="{ ok: check.ok && !!form.password.new }"
+    >
+      <i :class="check.ok && !!form.password.new ? 'pi pi-check' : 'pi pi-circle'" />
       <span>{{ check.label }}</span>
     </li>
   </ul>
