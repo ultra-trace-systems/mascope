@@ -327,9 +327,15 @@ class Runtime:
             f"Secret could not be found using env var {envvar} and path {path}"
         )
 
-    def parse_version(self):
+    def parse_version(self, cwd: str | None = None):
         """
         Construct a version string for the app from git.
+
+        Git is consulted in ``cwd`` when given, otherwise in the process's
+        working directory. Callers that must resolve a specific checkout
+        (rather than wherever the process happens to have been started) pass
+        it explicitly - a deploy launched from a directory outside the
+        checkout otherwise resolves no version at all.
 
         If HEAD is exactly at a release tag (``v*``), that tag IS the version, so
         a pinned release reports its release version:
@@ -357,7 +363,9 @@ class Runtime:
             """
             try:
                 return (
-                    subprocess.check_output(shlex.split(cmd), stderr=subprocess.DEVNULL)
+                    subprocess.check_output(
+                        shlex.split(cmd), stderr=subprocess.DEVNULL, cwd=cwd
+                    )
                     .decode("utf-8")
                     # strip(), not replace("\n", ""): callers such as
                     # `git tag --points-at HEAD` return one item per line, so

@@ -69,6 +69,71 @@ def container_health(label: str, name: str) -> ContainerHealth:
     )
 
 
+# --- Version ---
+
+
+@dataclass
+class RunningImage:
+    """The image tag one container was actually created from."""
+
+    label: str
+    # None when the container is absent, or pinned by digest rather than tag
+    tag: Optional[str]
+
+
+@dataclass
+class VersionStatus:
+    """What the deployment would deploy now versus what it is running."""
+
+    # The tag `mascope prod up` would select (pin, release tag at HEAD, latest)
+    expected: Optional[str]
+    running: list[RunningImage]
+
+    @property
+    def drift(self) -> bool:
+        """
+        Whether a running container is on a different tag than the deployment
+        would deploy.
+
+        This is what a silent channel switch looks like from the outside: the
+        checkout says one release, the containers run another, and the next
+        `up` (a reboot, a restart) moves the stack without anyone asking.
+        """
+        if not self.expected:
+            return False
+        return any(r.tag is not None and r.tag != self.expected for r in self.running)
+
+
+def _image_tag(reference: str) -> Optional[str]:
+    """
+    Tag part of a docker image reference, or None when there is none.
+
+    The registry host may carry a port (`host:5000/repo:tag`), so only the last
+    path segment is inspected; a digest-pinned reference has no tag at all.
+    """
+    name = reference.rsplit("/", 1)[-1]
+    if "@" in name:
+        return None
+    _, sep, tag = name.partition(":")
+    return tag if sep else None
+
+
+def running_image(label: str, name: str) -> RunningImage:
+    """Read the image reference one container was created from."""
+    result = _run(["docker", "inspect", "--format", "{{.Config.Image}}", name])
+    if result.returncode != 0:
+        return RunningImage(label, None)
+    return RunningImage(label, _image_tag(result.stdout.strip()))
+
+
+def version_status(
+    expected: Optional[str], specs: list[tuple[str, str]]
+) -> VersionStatus:
+    """Compare the deploy tag against the tags the given containers run."""
+    running = [running_image(label, name) for label, name in specs]
+    return VersionStatus(expected=expected, running=running)
+
+
 # --- Disk ---
 
 
@@ -200,6 +265,7 @@ class Report:
     """The full doctor report."""
 
     containers: list[ContainerHealth]
+    versions: VersionStatus
     disks: list[DiskUsage]
     updates: UpdateStatus
     backups: BackupStatus
@@ -207,13 +273,22 @@ class Report:
 
     @property
     def ok(self) -> bool:
-        """Healthy stack and no filesystem below its floor (info-only otherwise)."""
-        return all(c.ok for c in self.containers) and not any(d.low for d in self.disks)
+        """
+        Healthy stack, no version drift, and no filesystem below its floor
+        (the remaining sections are info-only).
+        """
+        return (
+            all(c.ok for c in self.containers)
+            and not self.versions.drift
+            and not any(d.low for d in self.disks)
+        )
 
     def to_dict(self) -> dict:
         return {
             "ok": self.ok,
             "containers": [asdict(c) for c in self.containers],
+            # drift is derived, so asdict() does not carry it
+            "versions": {**asdict(self.versions), "drift": self.versions.drift},
             "disks": [asdict(d) for d in self.disks],
             "updates": asdict(self.updates),
             "backups": asdict(self.backups),
@@ -225,6 +300,8 @@ def build_report(
     *,
     mascope_path: str,
     container_specs: list[tuple[str, str]],
+    versioned_specs: list[tuple[str, str]],
+    expected_version: Optional[str],
     disk_specs: list[tuple[str, Path]],
     backups_dir: Path,
     min_free_gb: float,
@@ -233,6 +310,7 @@ def build_report(
     """Assemble the report from injected container names and paths."""
     return Report(
         containers=[container_health(label, name) for label, name in container_specs],
+        versions=version_status(expected_version, versioned_specs),
         disks=[disk_usage(label, path, min_free_gb) for label, path in disk_specs],
         updates=update_status(mascope_path),
         backups=backup_status(backups_dir, now=now),
@@ -247,6 +325,18 @@ def _container_word(c: ContainerHealth) -> str:
     if c.state == "running":
         return c.health or "running"
     return c.state
+
+
+def _version_line(v: VersionStatus) -> str:
+    """One line on the deployed release, spelling out any drift."""
+    expected = v.expected or "unknown"
+    tagged = [r for r in v.running if r.tag is not None]
+    if not tagged:
+        return f"{expected} (no versioned container running)"
+    if not v.drift:
+        return expected
+    running = " · ".join(f"{r.label} {r.tag}" for r in tagged)
+    return f"{running}  DRIFT (this checkout deploys {expected})"
 
 
 def _age_word(hours: Optional[float]) -> str:
@@ -265,6 +355,8 @@ def format_text(report: Report) -> str:
 
     stack = " · ".join(f"{c.label} {_container_word(c)}" for c in report.containers)
     lines.append(("Stack", stack))
+
+    lines.append(("Version", _version_line(report.versions)))
 
     disk_bits = []
     for d in report.disks:

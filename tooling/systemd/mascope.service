@@ -7,6 +7,10 @@ Requires=docker.service
 Type=oneshot
 RemainAfterExit=yes
 User=@@USER@@
+# The deployment checkout. systemd would otherwise start the unit in "/", and
+# CLI behaviour that reads the checkout (notably which release tag is checked
+# out) has no repository to read.
+WorkingDirectory=@@MASCOPE_PATH@@
 EnvironmentFile=/etc/environment
 ExecStart=@@MASCOPE_BIN@@ prod up --detach
 ExecStop=@@MASCOPE_BIN@@ prod down

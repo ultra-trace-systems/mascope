@@ -7,12 +7,16 @@ Requires=docker.service
 
 [Service]
 Type=oneshot
-# The deploy user and mascope binary path below are filled in by
-# tooling/ubuntu.sh, matching mascope.service. MASCOPE_PATH (and LD_PRELOAD)
-# come from /etc/environment; update-specific settings and the release token
-# live in the optional /etc/mascope/update.env (see docs/maintaining.md). The
-# leading '-' means the unit still starts when that file is absent.
+# The deploy user, working directory and mascope binary path below are filled
+# in by tooling/ubuntu.sh, matching mascope.service. MASCOPE_PATH (and
+# LD_PRELOAD) come from /etc/environment; update-specific settings and the
+# release token live in the optional /etc/mascope/update.env (see
+# docs/maintaining.md). The leading '-' means the unit still starts when that
+# file is absent.
 User=@@USER@@
+# The deployment checkout; without it systemd runs the unit in "/", where the
+# CLI cannot read which release tag the deployment has checked out.
+WorkingDirectory=@@MASCOPE_PATH@@
 EnvironmentFile=/etc/environment
 EnvironmentFile=-/etc/mascope/update.env
 ExecStart=@@MASCOPE_BIN@@ prod update --auto

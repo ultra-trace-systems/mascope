@@ -221,8 +221,9 @@ of being discovered months later.
 ## 9. Stack-health push monitors (`mascope prod doctor`)
 
 The HTTP monitors above prove "users can load the app"; they cannot see a
-filling disk, a stale backup, a pending migration, or an unhealthy container
-hiding behind a still-green frontend. `mascope prod doctor` sees all of that
+filling disk, a stale backup, a pending migration, an unhealthy container
+hiding behind a still-green frontend, or a stack running a different release
+than its checkout deploys. `mascope prod doctor` sees all of that
 (exit 0 healthy / 1 unhealthy), and [`doctor-push.sh`](doctor-push.sh) feeds it
 into a Kuma **Push** monitor per server (dead-man's switch: a missed heartbeat
 also alerts, catching servers too broken to even run cron).

@@ -35,7 +35,7 @@ def test_pinned_version_wins(monkeypatch):
 
 def test_release_tag_at_head_deploys_that_release(monkeypatch):
     monkeypatch.setenv("_MASCOPE_VERSION_PINNED", "0")
-    monkeypatch.setattr(prod_main.runtime, "parse_version", lambda: "v2.0.0")
+    monkeypatch.setattr(prod_main.runtime, "parse_version", lambda **kw: "v2.0.0")
     assert prod_main._deploy_version() == "v2.0.0"
 
 
@@ -43,7 +43,7 @@ def test_branch_build_deploys_latest(monkeypatch):
     # A stray branch checkout must never ask for an unpublished image tag.
     monkeypatch.setenv("_MASCOPE_VERSION_PINNED", "0")
     monkeypatch.setattr(
-        prod_main.runtime, "parse_version", lambda: "feat-x-2026.01.01-abc1234"
+        prod_main.runtime, "parse_version", lambda **kw: "feat-x-2026.01.01-abc1234"
     )
     assert prod_main._deploy_version() == "latest"
 
@@ -52,9 +52,56 @@ def test_pip_installed_cli_deploys_latest(monkeypatch):
     # Outside a checkout the CLI's own calver package version (v2026.x.y)
     # must not be mistaken for an app release image tag: deploy `latest`.
     monkeypatch.setenv("_MASCOPE_VERSION_PINNED", "0")
-    monkeypatch.setattr(prod_main.runtime, "parse_version", lambda: "unknown-version")
+    monkeypatch.setattr(
+        prod_main.runtime, "parse_version", lambda **kw: "unknown-version"
+    )
     monkeypatch.setattr("mascope_cli.version.metadata.version", lambda name: "2026.7.7")
     assert prod_main._deploy_version() == "latest"
+
+
+def test_version_is_resolved_from_the_deployment_checkout(monkeypatch):
+    # Not from the process cwd: systemd starts the boot service in "/", where
+    # git would resolve nothing and every reboot would deploy `latest` over
+    # the pinned release.
+    monkeypatch.setenv("_MASCOPE_VERSION_PINNED", "0")
+    monkeypatch.setenv("MASCOPE_PATH", "/srv/mascope")
+    seen = {}
+
+    def fake_parse_version(cwd=None):
+        seen["cwd"] = cwd
+        return "v1.6.1"
+
+    monkeypatch.setattr(prod_main.runtime, "parse_version", fake_parse_version)
+
+    assert prod_main._deploy_version() == "v1.6.1"
+    assert seen["cwd"] == "/srv/mascope"
+
+
+def test_unresolvable_version_warns_before_falling_back(monkeypatch):
+    # The silent fallback is what let a reboot swap release channels unnoticed.
+    monkeypatch.setenv("_MASCOPE_VERSION_PINNED", "0")
+    monkeypatch.setattr(
+        prod_main.runtime, "parse_version", lambda **kw: "unknown-version"
+    )
+    warnings = []
+    monkeypatch.setattr(prod_main.runtime.logger, "warning", warnings.append)
+
+    assert prod_main._deploy_version() == "latest"
+    assert len(warnings) == 1 and "latest" in warnings[0]
+
+
+def test_branch_checkout_does_not_warn(monkeypatch):
+    # Git resolved fine, the checkout is simply not at a release - expected on
+    # a master deployment, so it must not cry wolf.
+    monkeypatch.setenv("_MASCOPE_VERSION_PINNED", "0")
+    monkeypatch.setattr(
+        prod_main.runtime, "parse_version", lambda **kw: "2026.01.01-abc1234"
+    )
+    warnings = []
+    monkeypatch.setattr(prod_main.runtime.logger, "warning", warnings.append)
+
+    assert prod_main._deploy_version() == "latest"
+    assert warnings == []
 
 
 # --- _compose_env ---
@@ -96,7 +143,7 @@ def test_compose_env_run_uses_deploy_version(prod_mode, monkeypatch):
     monkeypatch.setenv("MASCOPE_VERSION", "feat-x-2026.01.01-abc1234")
     monkeypatch.setenv("_MASCOPE_VERSION_PINNED", "0")
     monkeypatch.setattr(
-        prod_main.runtime, "parse_version", lambda: "feat-x-2026.01.01-abc1234"
+        prod_main.runtime, "parse_version", lambda **kw: "feat-x-2026.01.01-abc1234"
     )
 
     env = prod_main._compose_env(building=False)

@@ -15,9 +15,16 @@ operations story see [docs/maintaining.md](../../docs/maintaining.md).
 | `mascope-disk-check.timer` | `mascope-disk-check.timer` | **yes - on by default** | Fire the disk check every 15 minutes. |
 | (see `tooling/disk-check.env.example`) | `/etc/mascope/disk-check.env` (chmod 600) | seeded once | Disk thresholds + optional alert URL. |
 
-Both `.service` files template `@@USER@@` and `@@MASCOPE_BIN@@`; `MASCOPE_PATH`
-and `LD_PRELOAD` come from `/etc/environment`, matching how `ubuntu.sh`
-provisions the box.
+Both `.service` files template `@@USER@@`, `@@MASCOPE_BIN@@` and
+`@@MASCOPE_PATH@@`; `MASCOPE_PATH` and `LD_PRELOAD` come from
+`/etc/environment`, matching how `ubuntu.sh` provisions the box.
+
+`@@MASCOPE_PATH@@` fills the `WorkingDirectory`, which is not cosmetic: systemd
+otherwise starts a unit in `/`, and a deploy launched outside the checkout
+cannot read which release tag is checked out - it would deploy the rolling
+`latest` images instead. After changing any unit here, re-run
+`./tooling/ubuntu.sh install` on the server; a release update does not rewrite
+the installed units.
 
 ## Enabling auto-updates
 
