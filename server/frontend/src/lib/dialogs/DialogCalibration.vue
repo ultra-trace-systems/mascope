@@ -16,7 +16,7 @@ import { useApp } from '@/stores'
 import { useMzFit } from '@/lib/mzFit'
 import { PaneSettingsCalibration } from '@/lib/panes'
 
-const mzFit = useMzFit({ unmount: true })
+const mzFit = useMzFit()
 const confirm = useConfirm()
 
 const app = useApp()

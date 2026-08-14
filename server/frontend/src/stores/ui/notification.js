@@ -1,4 +1,4 @@
-import { reactive, watch, computed, onBeforeUnmount } from 'vue'
+import { reactive, watch, computed, getCurrentScope, onScopeDispose } from 'vue'
 import { defineStore } from 'pinia'
 import { api } from '@/api'
 import { genId } from '@/lib/utils'
@@ -128,11 +128,28 @@ export const useNotification = defineStore('app.ui.notification', () => {
   }
 
   /**
+   * Projects a notification onto the fields the log renders.
+   *
+   * `data` and `error` carry the operation's full result -- match results,
+   * calibration fits, affected-id lists -- and are unbounded in size. The log
+   * holds up to the retention limit for the lifetime of the tab, so keeping
+   * those payloads pins them long after the live consumers of `latest` have
+   * read them. The result is a new object: the notification passed in is the
+   * same one handed to `displayNotification`, which must keep the full payload.
+   *
+   * @param {Object} notification - The notification to project
+   * @returns {Object} - The entry to retain
+   */
+  function toLogEntry({ id, timestamp, type, status, message, process_id, parent_id }) {
+    return { id, timestamp, type, status, message, process_id, parent_id }
+  }
+
+  /**
    * Logs a notification to the log, respecting the retention limit.
    * @param {Object} notification - The notification to log
    */
   function logNotification(notification) {
-    state.log.unshift(notification)
+    state.log.unshift(toLogEntry(notification))
     if (state.log.length > retentionLimit) {
       state.log.pop()
     }
@@ -183,9 +200,14 @@ export const useNotification = defineStore('app.ui.notification', () => {
    * Registers a watcher for notifications.
    * The callback will be triggered for the specified notification type(s).
    *
+   * Registering from a component or effect scope binds the watcher to it: the
+   * callback is dropped when that scope is disposed, so a pane that is opened
+   * and closed repeatedly leaves nothing behind. A caller outside any scope
+   * owns the returned `remove` and must call it itself.
+   *
    * @param {String|Array} trigger - The notification type(s) to watch for
    * @param {Function} callback - The function to call when the notification is received
-   * @returns {Object} - An object containing an `unmount` method to remove the watcher
+   * @returns {Object} - An object containing a `remove` method to unregister the watcher
    */
   function on(trigger, callback) {
     const id = genId()
@@ -194,18 +216,16 @@ export const useNotification = defineStore('app.ui.notification', () => {
     types.forEach((type) => {
       state.watchers.push({ id, type, callback })
     })
-    // Cleanup function to remove watchers when components are unmounted
-    const unmount = () => {
-      // In order to prevent memory leaks, we should remove
-      // listeners when unmounting components. We return a
-      // hook to allow removing listeners in components. This
-      // should NOT be used in stores.
-      onBeforeUnmount(() => {
-        state.watchers = state.watchers.filter((watcher) => watcher.id !== id)
-      })
+
+    const remove = () => {
+      state.watchers = state.watchers.filter((watcher) => watcher.id !== id)
     }
 
-    return { unmount }
+    if (getCurrentScope()) {
+      onScopeDispose(remove)
+    }
+
+    return { remove }
   }
 
   // Automatically trigger registered watchers when a new notification is received

@@ -6,7 +6,7 @@ import { useApp } from '@/stores'
 
 import { applyInstrumentDefaults } from '@/lib/calibrationDefaults'
 
-export const useMzFit = ({ unmount } = { unmount: false }) => {
+export const useMzFit = () => {
   const app = useApp()
 
   // Seed values until the instrument defaults are fetched for a sample.
@@ -102,7 +102,7 @@ export const useMzFit = ({ unmount } = { unmount: false }) => {
     )
   }
 
-  const handler = app.ui.notification.on('calibration_mz_fit', (payload) => {
+  app.ui.notification.on('calibration_mz_fit', (payload) => {
     status.value = payload?.status
     if (payload?.status === 'success') {
       current.value = payload?.data?.fit
@@ -127,9 +127,6 @@ export const useMzFit = ({ unmount } = { unmount: false }) => {
       affectedSamples.value = payload?.error?.detail?.data?.affected_sample_item_ids ?? []
     }
   })
-  if (unmount) {
-    handler.unmount()
-  }
 
   return reactive({
     // state
