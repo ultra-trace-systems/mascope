@@ -78,7 +78,13 @@ const submit = async () => {
 
 <template>
   <h3 style="opacity: 0.7; text-align: center">Set a new password</h3>
-  <Message severity="secondary" icon="pi pi-info-circle" style="margin-bottom: 1.5rem">
+  <!-- flex-shrink: 0 because the pane is a flex column: without it the taller
+       field stack squeezes this down to an unreadable sliver. -->
+  <Message
+    severity="secondary"
+    icon="pi pi-info-circle"
+    style="margin-bottom: 1.5rem; flex-shrink: 0"
+  >
     {{ reason }}
   </Message>
   <!-- One field per row: .fields wraps into columns, which reads as three
