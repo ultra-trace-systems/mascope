@@ -106,6 +106,27 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
   parameters (refine window 100 ppm, SNR threshold 10 - an order of magnitude
   looser than the automatic pipeline); it now uses the same instrument
   defaults the pipeline uses, preserving any user-edited values. (#1774)
+- A tab left open no longer fills up with notification toasts. Each toast is
+  dismissed on its own timer, and a browser throttles those timers in a
+  background tab while notifications keep arriving over the socket, so coming
+  back to a tab that had been processing a batch could mean a wall of toasts
+  at once - enough, in the worst case, to make the view unusable. At most
+  five are shown now; anything beyond that collapses into one summary
+  carrying the highest severity it covers. Nothing is lost - the full history
+  stays in the notification drawer and the sidebar badge still counts every
+  warning and error. (#1809)
+- The notification log no longer retains operation payloads. It kept the last
+  250 notifications in full, including the results attached to them, so a
+  session that ran composition searches held on to their entire result sets
+  for as long as the tab stayed open: 16.6 MB for a representative search
+  history, against 34 KB for the same history now. Log entries keep only what
+  the drawer displays. (#1809)
+- Notification watchers are released when the pane that registered them
+  closes. The cleanup handle a component received registered itself too late
+  to remove anything, so every open/close of the peak search pane left behind
+  a callback that kept running on every matching notification and held that
+  pane's search results with it. Cleanup now follows the component's
+  lifetime. (#1809)
 
 ### Security
 
