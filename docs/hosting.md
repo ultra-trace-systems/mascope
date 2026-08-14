@@ -70,6 +70,28 @@ and the checkout.
      warnings, no client setup. DNS-01 does not require exposing the server to
      the internet.
 
+   **If you put another proxy in front of Mascope** - the Caddy/Traefik option
+   above, or any load balancer - it changes how the built-in abuse limits
+   behave. Mascope's nginx applies per-client request and connection limits to
+   `/api/`, and a stricter budget to `/api/auth/`. It identifies a client by the
+   address the connection comes from, which behind your proxy is *the proxy*, so
+   those limits become one shared budget for everyone instead of a per-client
+   one. Nothing breaks at normal load, but a busy deployment can throttle
+   itself.
+
+   Mascope cannot resolve this for you by trusting `X-Forwarded-For`: it does
+   not know which proxy to believe, and trusting that header from anyone would
+   let a client reaching the server directly pick its own budget. Either:
+
+   - **preserve the source address** - PROXY protocol, or an L4/passthrough
+     mode, so nginx sees the real client (Mascope already does this for
+     Cloudflare, whose address ranges it trusts by name); or
+   - **size the limits for your user base** - raise `limit_req`/`limit_conn` in
+     `server/frontend/nginx.conf` if a shared budget is acceptable.
+
+   This applies to any front proxy, whether Mascope terminates TLS itself or
+   runs with `MASCOPE_TLS=off` behind yours.
+
 5. **Pull the release images and start:**
 
    ```sh
