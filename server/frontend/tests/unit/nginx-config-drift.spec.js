@@ -123,6 +123,29 @@ function divergences(prod, demo) {
   return problems
 }
 
+// Regions that legitimately exist in only one file, and why. Comparing shared
+// bodies alone cannot see these: a directive wrapped in a marker on one side and
+// absent from the other is excluded from both sides of the comparison, so it
+// passes no matter how load-bearing it is. That is how the per-client rate
+// limits came to apply on the TLS host only. Listing the exceptions here forces
+// a new one-sided region to be declared - and therefore noticed in review -
+// instead of disappearing into the diff.
+const ONE_SIDED_REGIONS = {
+  'nginx.conf': [
+    'cloudflare-realip', // Cloudflare restores the client IP; demo has no proxy
+    'hsts', // meaningless without TLS
+    'http-redirect', // the :80 -> :443 vhost
+    'socketio-timeout', // covered by the demo's single long timeout
+    'tls-cert',
+    'tls-listen',
+    'tus-timeout', // ditto
+    'upload-timeout', // ditto
+  ],
+  'nginx.http.conf': [
+    'listen', // plain :80 default_server, no TLS
+  ],
+}
+
 describe('nginx twin configs', () => {
   it('declare well-formed, non-empty host-only markers', () => {
     for (const name of ['nginx.conf', 'nginx.http.conf']) {
@@ -130,6 +153,36 @@ describe('nginx twin configs', () => {
       expect(regions.length, `${name} declares no host-only regions`).toBeGreaterThan(0)
       const empty = regions.filter((r) => r.lines === 0).map((r) => r.name)
       expect(empty, `${name} has empty host-only regions`).toEqual([])
+    }
+  })
+
+  it('carry no undeclared one-sided host-only region', () => {
+    const names = (file) => parseConfig(configPath(file)).regions.map((r) => r.name).sort()
+    const prod = names('nginx.conf')
+    const demo = names('nginx.http.conf')
+
+    for (const [file, own, other] of [
+      ['nginx.conf', prod, demo],
+      ['nginx.http.conf', demo, prod],
+    ]) {
+      const undeclared = own.filter(
+        (n) => !other.includes(n) && !ONE_SIDED_REGIONS[file].includes(n),
+      )
+      expect(
+        undeclared,
+        `${file} wraps ${undeclared.join(', ')} as host-only, but the twin has no such ` +
+          `region. If that is intended, add it to ONE_SIDED_REGIONS with the reason; ` +
+          `otherwise the directives inside are missing from the other host.`,
+      ).toEqual([])
+
+      // A declared name that is gone, or that has since gained a twin, is a
+      // standing permission for a divergence nobody is asking for any more.
+      const stale = ONE_SIDED_REGIONS[file].filter((n) => !own.includes(n) || other.includes(n))
+      expect(
+        stale,
+        `${file} declares ${stale.join(', ')} as one-sided, but they are absent or ` +
+          `now present in both files - drop them from ONE_SIDED_REGIONS`,
+      ).toEqual([])
     }
   })
 
