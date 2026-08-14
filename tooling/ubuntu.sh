@@ -222,9 +222,12 @@ function install_mascope() {
     SYSTEMD_SRC="${ROOT_PATH}/tooling/systemd"
 
     # Boot service: brings the stack up on boot / down on stop. Templated with
-    # the deploy user and the resolved mascope binary.
+    # the deploy user, the resolved mascope binary, and the checkout as the
+    # working directory (systemd's default is "/", where the CLI finds no
+    # repository and so cannot resolve the checked-out release tag).
     sed -e "s|@@USER@@|${USER}|g" \
         -e "s|@@MASCOPE_BIN@@|${MASCOPE_BIN}|g" \
+        -e "s|@@MASCOPE_PATH@@|${ROOT_PATH}|g" \
         "${SYSTEMD_SRC}/mascope.service" \
         | sudo tee /etc/systemd/system/mascope.service > /dev/null
 
@@ -233,6 +236,7 @@ function install_mascope() {
     # the timer when ready (see docs/maintaining.md).
     sed -e "s|@@USER@@|${USER}|g" \
         -e "s|@@MASCOPE_BIN@@|${MASCOPE_BIN}|g" \
+        -e "s|@@MASCOPE_PATH@@|${ROOT_PATH}|g" \
         "${SYSTEMD_SRC}/mascope-update.service" \
         | sudo tee /etc/systemd/system/mascope-update.service > /dev/null
     sudo cp "${SYSTEMD_SRC}/mascope-update.timer" \

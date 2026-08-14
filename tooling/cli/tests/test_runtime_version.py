@@ -92,6 +92,22 @@ def test_outside_a_repo_falls_back_to_unknown(tmp_path, monkeypatch):
     assert runtime.parse_version() == "unknown-version"
 
 
+def test_cwd_argument_resolves_another_checkout(git_repo, tmp_path, monkeypatch):
+    # A prod deploy resolves the deployment checkout explicitly, because the
+    # process it runs in (a systemd unit) starts somewhere else entirely.
+    _git(git_repo, "tag", "v1.2.3")
+    elsewhere = tmp_path / "not-a-repo"
+    elsewhere.mkdir()
+    monkeypatch.chdir(elsewhere)
+
+    assert runtime.parse_version() == "unknown-version"
+    assert runtime.parse_version(cwd=str(git_repo)) == "v1.2.3"
+
+
+def test_cwd_argument_pointing_nowhere_is_unknown(tmp_path):
+    assert runtime.parse_version(cwd=str(tmp_path / "missing")) == "unknown-version"
+
+
 # --- resolve_version: the CLI-level wrapper with a package-version fallback ---
 
 

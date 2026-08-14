@@ -36,15 +36,30 @@ or to poll:
 $ mascope prod doctor
 [OK]
 Stack    backend healthy · frontend healthy · postgres healthy · redis healthy · file_converter running
+Version  v1.6.1
 Disk     state 142 GiB / 61% free   ·   docker 38 GiB / 40% free
 Updates  no pending migration recorded
 Backups  5 local dump(s) · newest 8h ago
 Images   11 images · 6.2GB (2.1GB reclaimable)
 ```
 
-It exits `0` when the stack is healthy and every filesystem is above the
-free-space floor (`MASCOPE_UPDATE_MIN_FREE_GB`), and `1` otherwise - so it
-doubles as a monitoring probe. `--json` emits the same data for scripting.
+It exits `0` when the stack is healthy, the running images match the release
+this deployment would deploy, and every filesystem is above the free-space
+floor (`MASCOPE_UPDATE_MIN_FREE_GB`); `1` otherwise - so it doubles as a
+monitoring probe. `--json` emits the same data for scripting.
+
+**Version** compares the tag the containers are actually running against the
+one this deployment would deploy right now (the `MASCOPE_VERSION` pin, else the
+release tag checked out, else `latest`). A mismatch is reported as drift:
+
+```
+Version  backend latest · frontend latest  DRIFT (this checkout deploys v1.6.1)
+```
+
+Drift means the next `mascope prod up` - a restart, or a reboot - moves the
+stack to a different release than the one it is serving. Resolve it by bringing
+the two into line: `git checkout <tag>` for the release the server should run,
+then `mascope prod update`.
 
 ## Provisioning
 
@@ -59,8 +74,16 @@ and installs the systemd units (below). Re-run with `reinstall` after pulling
 new tooling, or `uninstall` to remove the binary and units.
 
 > The provisioning user is the deploy user. `mascope.service` and
-> `mascope-update.service` run as that user and read `MASCOPE_PATH` /
-> `LD_PRELOAD` from `/etc/environment`.
+> `mascope-update.service` run as that user, from the deployment checkout
+> (`WorkingDirectory`), and read `MASCOPE_PATH` / `LD_PRELOAD` from
+> `/etc/environment`.
+
+> Servers provisioned before `WorkingDirectory` was added got units that
+> systemd ran from `/`: with no repository there, the checked-out release tag
+> could not be read and every boot deployed `latest` instead. Re-run
+> `./tooling/ubuntu.sh install` from the checkout on such a server (it rewrites
+> the units and reloads systemd) - a release update alone does not refresh the
+> installed units. `mascope prod doctor` reports the drift while it lasts.
 
 ## The stack (boot service)
 
@@ -70,6 +93,14 @@ new tooling, or `uninstall` to remove the binary and units.
 sudo systemctl status mascope.service
 sudo systemctl restart mascope.service     # = mascope prod down && up
 ```
+
+It runs from the deployment checkout, so a boot deploys whatever the checkout
+selects - the release tag checked out, or `latest` on a `master` checkout,
+exactly like running `mascope prod up` by hand. To hold a server on one release
+regardless of the checkout, pin it in `/etc/environment`
+(`MASCOPE_VERSION=vX.Y.Z`, read by the unit) - at the cost of editing it by
+hand at every update. A `.env` file in the checkout has no effect: the CLI
+resolves `MASCOPE_VERSION` itself and passes it to compose.
 
 Day to day you can also drive it directly:
 
@@ -490,6 +521,15 @@ larger than the cap is refused up front with HTTP 413.
 **Stack won't start.** `sudo systemctl status mascope.service`, then
 `mascope prod ps` and `mascope prod logs backend`. Confirm Docker is up and the
 secrets in `.runtime/secrets/` exist.
+
+**The stack came back on a different release (e.g. after a reboot).**
+`mascope prod doctor` shows this as `DRIFT`. The version a deploy selects comes
+from the deployment checkout, so check `git -C "$(mascope path)" describe --tags`
+and `systemctl cat mascope.service | grep WorkingDirectory` - a unit without a
+`WorkingDirectory` runs from `/`, finds no repository, and falls back to
+`latest` (re-run `./tooling/ubuntu.sh install` to fix it). The CLI logs a
+warning whenever it cannot resolve a version and falls back:
+`journalctl -u mascope.service | grep -i "rolling 'latest'"`.
 
 **Update timer never fires / always fails.** `systemctl list-timers` to confirm
 it is enabled; `journalctl -u mascope-update.service` for the reason. Exit 2 is

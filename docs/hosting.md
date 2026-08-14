@@ -29,7 +29,10 @@ so over a LAN address features like clipboard access require HTTPS.
 Mascope is deployed from a clone of the repo: the `mascope` CLI drives Docker
 Compose, and the **checked-out git tag selects which release runs** (it sets
 `MASCOPE_VERSION`, which picks the image tag to pull and the version the UI
-reports).
+reports). The same holds when the boot service starts the stack - it runs from
+the checkout - so a reboot brings back the release the checkout is on. Verify
+with `mascope prod doctor`, which flags any mismatch between the running images
+and the checkout.
 
 #### Set up (run the latest release)
 

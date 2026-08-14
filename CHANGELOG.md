@@ -42,6 +42,21 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
 
 ### Fixed
 
+- A production server no longer switches release channel when it restarts. The
+  boot service (`mascope.service`) had no `WorkingDirectory`, so systemd ran it
+  from `/`, where the CLI cannot read the release tag the deployment has
+  checked out - the version resolution fell back to the rolling `latest` build,
+  and a reboot silently replaced the pinned release with an unreleased master
+  build (which, carrying newer migrations, can migrate the production database
+  forward on startup). The units now run from the deployment checkout, the
+  deploy version is resolved from `MASCOPE_PATH` rather than the process
+  working directory, and a deploy that cannot resolve a version says so instead
+  of quietly deploying `latest`. Existing servers need one
+  `./tooling/ubuntu.sh install` to pick up the corrected units.
+- `mascope prod doctor` reports the deployed version and flags drift between
+  the images the containers are running and the release the deployment would
+  deploy - the state above was invisible until someone read the version in the
+  web UI. Drift makes the report exit non-zero, so a monitor catches it.
 - Containerized deployments now receive `MASCOPE_VERSION`, which they never
   did: compose interpolated it into the `image:` tag but never passed it into
   the container environment. Every error reported to GlitchTip therefore

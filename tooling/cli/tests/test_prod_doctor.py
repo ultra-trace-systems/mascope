@@ -67,6 +67,53 @@ def test_container_health_unhealthy_not_ok(monkeypatch):
     assert not doctor.container_health("backend", "b").ok
 
 
+# --- version_status ---
+
+
+def test_image_tag_parsing():
+    assert doctor._image_tag("ghcr.io/org/mascope/backend:v1.6.1") == "v1.6.1"
+    assert doctor._image_tag("registry:5000/org/backend:latest") == "latest"
+    assert doctor._image_tag("backend") is None
+    # digest-pinned references carry no tag
+    assert doctor._image_tag("ghcr.io/org/backend@sha256:abc123") is None
+
+
+def test_version_status_no_drift(monkeypatch):
+    monkeypatch.setattr(
+        doctor,
+        "_run",
+        lambda cmd, **k: _completed(stdout="ghcr.io/org/mascope/backend:v1.6.1\n"),
+    )
+    v = doctor.version_status("v1.6.1", [("backend", "mascope_prod_backend")])
+    assert v.running[0].tag == "v1.6.1"
+    assert v.drift is False
+
+
+def test_version_status_detects_the_reboot_channel_switch(monkeypatch):
+    # The checkout is at a release tag but the containers came back on the
+    # rolling `latest` build - the drift this check exists for.
+    monkeypatch.setattr(
+        doctor,
+        "_run",
+        lambda cmd, **k: _completed(stdout="ghcr.io/org/mascope/frontend:latest\n"),
+    )
+    v = doctor.version_status("v1.6.1", [("frontend", "mascope_prod_frontend")])
+    assert v.drift is True
+
+
+def test_version_status_absent_container_is_not_drift(monkeypatch):
+    monkeypatch.setattr(doctor, "_run", lambda cmd, **k: _completed(returncode=1))
+    v = doctor.version_status("v1.6.1", [("backend", "missing")])
+    assert v.running[0].tag is None and v.drift is False
+
+
+def test_version_status_without_an_expected_tag_is_not_drift(monkeypatch):
+    monkeypatch.setattr(
+        doctor, "_run", lambda cmd, **k: _completed(stdout="org/backend:v1.6.1")
+    )
+    assert doctor.version_status(None, [("backend", "b")]).drift is False
+
+
 # --- disk_usage ---
 
 
@@ -150,6 +197,9 @@ def _healthy_report():
             doctor.ContainerHealth("backend", "b", "running", "healthy"),
             doctor.ContainerHealth("redis", "r", "running", None),
         ],
+        versions=doctor.VersionStatus(
+            "v1.6.1", [doctor.RunningImage("backend", "v1.6.1")]
+        ),
         disks=[doctor.DiskUsage("state", "/x", 142.0, 61.0, False)],
         updates=doctor.UpdateStatus(None, None, None),
         backups=doctor.BackupStatus(5, 8.0),
@@ -178,11 +228,25 @@ def test_report_not_ok_when_disk_low():
     assert report.ok is False
 
 
+def test_report_not_ok_on_version_drift():
+    report = _healthy_report()
+    report.versions.running[0].tag = "latest"
+    assert report.ok is False
+    assert report.to_dict()["versions"]["drift"] is True
+
+
 def test_format_text_contains_sections():
     text = doctor.format_text(_healthy_report())
     assert text.startswith("[OK]")
-    for section in ("Stack", "Disk", "Updates", "Backups", "Images"):
+    for section in ("Stack", "Version", "Disk", "Updates", "Backups", "Images"):
         assert section in text
+
+
+def test_format_text_spells_out_drift():
+    report = _healthy_report()
+    report.versions.running[0].tag = "latest"
+    text = doctor.format_text(report)
+    assert "DRIFT" in text and "v1.6.1" in text and "backend latest" in text
 
 
 # --- command wiring ---
