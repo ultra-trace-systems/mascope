@@ -346,8 +346,8 @@ watch(visible, reset)
           {{ invalidCreated.passwordError }}
         </Message>
         <Message icon="pi pi-info-circle" severity="secondary" style="margin-top: 0.5rem">
-          The password you set here is temporary - the new user must choose their own at first
-          sign in.
+          The password you set here is temporary - the new user must choose their own at first sign
+          in.
         </Message>
       </template>
     </section>

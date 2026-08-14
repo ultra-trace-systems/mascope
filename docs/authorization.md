@@ -94,6 +94,14 @@ User-created workspaces are independent of instrument workspaces. They contain d
 
 Superuser is a special flag on a user account (not a role). Superusers bypass all workspace membership checks — they can access any workspace and any data without being an explicit member. This is intended for system administration and automated services only.
 
+## Passwords
+
+Passwords must be at least **12 characters**. There are no character-class rules — length is the strongest lever, and rules that demand a symbol and a digit mostly produce predictable substitutions. A password is also rejected if it appears in a bundled list of the most commonly used and breached passwords, or if it contains the account's own email address or user name.
+
+A password an administrator issues is **temporary**. Resetting another user's password, and creating a new account, both leave that account required to choose its own password the next time it signs in — so only its holder ever knows the password in use. The account signs in with the issued password as normal and is then held at a password screen until it sets a new one.
+
+An owner can require the same of **every** account at once, from **Manage users**. Use it after tightening the policy, so passwords created under the old rules are brought up to the current ones. It is not a lockout: everyone keeps signing in with their existing password until they replace it. See [maintaining.md](maintaining.md#user-accounts) for the operator's view, including how to undo it.
+
 ## Access tokens
 
 Each user can generate a personal **access token** for programmatic access (e.g. from Jupyter notebooks or the Mascope SDK). The token carries the same global role and workspace memberships as the user account. Tokens can be regenerated at any time, which invalidates the previous one. Admins and owners can also revoke tokens for other users.

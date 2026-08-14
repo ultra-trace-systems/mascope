@@ -69,7 +69,8 @@ const breadcrumb = computed(() => {
     :loading="app.data.match.collection.pending"
     :contextMenu="contextMenu"
     :pt="
-      app.ui.help.right(`
+      app.ui.help.right(
+        `
         <h1>Match Browser: Collections</h1>
 
         <p>Shows the target collections associated

@@ -23,6 +23,7 @@ Everything below assumes an Ubuntu host provisioned with
 | Enable unattended updates | edit `/etc/mascope/update.env`, then `sudo systemctl enable --now mascope-update.timer` |
 | Update history | `cat "$(mascope path)/.runtime/update/status.log"` |
 | Back up now | `mascope prod db backup create` |
+| **Require a new password from every user** | Manage users in the app, or `mascope prod db script run require_password_change` |
 | **Disk monitor status / run now** | `systemctl list-timers mascope-disk-check.timer` / `sudo systemctl start mascope-disk-check.service` |
 | Disk monitor history | `journalctl -u mascope-disk-check.service` |
 
@@ -351,6 +352,65 @@ and the old ones are otherwise left behind, accumulating gigabytes over time -
 especially with unattended updates). The running stack's images are referenced
 and kept; a manual rollback re-pulls the previous release (guarded by the disk
 guard above), the same as the documented rollback flow.
+
+## User accounts
+
+### Requiring a password change
+
+Passwords must meet the policy in [authorization.md](authorization.md#passwords)
+when they are set, but accounts created before a rule was tightened keep whatever
+they had. Requiring a change puts every account through the current policy.
+
+It is a **soft** requirement, not a lockout. Everyone signs in with their existing
+password as usual, and is then held at a password screen until they set a new one
+that passes the policy and differs from the old. Nobody is excluded - the owner
+who triggers it and deactivated accounts included, so a reactivated account cannot
+come back on a pre-policy password.
+
+An owner can do it from **Manage users** in the web interface, which also notifies
+anyone with the app open. On the server:
+
+```sh
+# report what would change, without changing anything
+MASCOPE_REQUIRE_PASSWORD_CHANGE_DRY_RUN=1 mascope prod db script run require_password_change
+
+# require the change
+mascope prod db script run require_password_change
+```
+
+The script sends no live notification - there is no socket server in that process
+- so sessions already open transition when their next request is refused.
+
+**Time it deliberately.** Changing a password revokes that user's API access
+tokens; see below.
+
+### Undoing it
+
+There is no way to withdraw the requirement through the web interface. On the
+server:
+
+```sh
+mascope prod db script run clear_password_change_requirement
+```
+
+Set `MASCOPE_CLEAR_PASSWORD_CHANGE_EMAILS` to a comma-separated list to release
+only some accounts. Note that the pre-script database dump is a whole-database
+restore, not a per-account undo - use the script, not the dump.
+
+Accounts whose password an administrator reset keep that administrator-issued
+password, so releasing them leaves it in place. Reset those accounts again
+instead.
+
+### Effect on API access tokens
+
+When a user changes their password, that user's access tokens are revoked. The
+file-converter token is reissued automatically, but **SDK and notebook tokens and
+instrument-agent pairings are not** - their holders must regenerate or re-pair
+them. Across a whole deployment that adds up, so schedule a deployment-wide
+requirement outside acquisition hours.
+
+Requiring the change does not revoke anything by itself; tokens are revoked per
+user, as each one complies.
 
 ## Monitoring
 

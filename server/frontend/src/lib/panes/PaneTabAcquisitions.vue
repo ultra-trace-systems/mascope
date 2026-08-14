@@ -418,11 +418,7 @@ const currentPageReportTemplate =
               <span class="pi pi-file-arrow-up" /><span>Drag sample files here to upload them</span>
             </i>
             <menu class="bottom-menu">
-              <Button
-                id="uppy-upload-trigger"
-                label="Upload"
-                icon="pi pi-file-arrow-up"
-              />
+              <Button id="uppy-upload-trigger" label="Upload" icon="pi pi-file-arrow-up" />
               <Button
                 v-tooltip.top="processBlockedReason"
                 label="Process selected"

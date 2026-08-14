@@ -99,9 +99,7 @@ test.describe('sample file upload', () => {
     await expect
       .poll(
         async () => {
-          const res = await api.get(
-            '/sample/files?datetime_min=2000-01-01T00:00:00Z&limit=1000'
-          )
+          const res = await api.get('/sample/files?datetime_min=2000-01-01T00:00:00Z&limit=1000')
           sampleFile = (res.data ?? []).find((f) => f.filename.includes(token))
           return Boolean(sampleFile)
         },

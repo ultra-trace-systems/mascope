@@ -61,8 +61,7 @@ export function passwordPolicyChecks(password, { email = null, username = null }
     {
       id: 'common',
       label: 'Not a commonly used password',
-      error:
-        'This password is among the most commonly used ones. Please choose a different one.',
+      error: 'This password is among the most commonly used ones. Please choose a different one.',
       ok: !isCommonPassword(candidate)
     },
     {
