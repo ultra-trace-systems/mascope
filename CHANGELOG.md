@@ -6,6 +6,28 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
 
 ### Added
 
+- New black-box security suite in `security/pentest/`: 41 checks against a
+  running deployment, each carrying its OWASP category, CWE and the SOC 2
+  Trust Services Criteria it evidences, producing a severity-ranked report in
+  Markdown and JSON. It covers recon, security headers, authentication,
+  session and token handling, authorization, injection and traversal, error
+  hygiene, uploads, transport, the Socket.IO surface, and rate limiting. It
+  is standalone - its own dependencies and virtualenv, no imports from the
+  app - so it can be pointed at any deployment. `security/pentest/README.md`
+  covers how to run it and what a run does to its target.
+- The suite refuses to produce a report it cannot attribute: it resolves the
+  build under test before any check runs, from `GET /api/version` or
+  `MASCOPE_PENTEST_BUILD`, and aborts otherwise. Every report also records an
+  observable fingerprint of the served frontend, so a stale image reported as
+  current is visible rather than assumed.
+- Tenant isolation and the realtime access checks are automated rather than
+  verified by hand: the suite provisions two peer accounts, confirms neither
+  can read, modify or subscribe to the other's workspace - over REST and over
+  Socket.IO - and deletes them afterwards. Also covered: whether the client
+  address can be spoofed past the rate limiter, whether a state-changing
+  request is accepted from another origin, and whether the published demo
+  credentials open a deployment that is not the demo stack.
+
 - New `GET /api/version` reports the version of the running deployment, so an
   operator or an audit can tie a deployment to an artifact without shell access
   to the host. It reports `MASCOPE_VERSION`, the same value that selects the
