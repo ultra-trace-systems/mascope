@@ -98,6 +98,10 @@ services:
         condition: service_healthy
     environment:
       MASCOPE_ENV: ${MASCOPE_ENV}
+      # Migrations import the backend runtime, which initializes error
+      # reporting, so this step raises events of its own - a failed migration
+      # is exactly the kind an operator needs attributed to a version.
+      MASCOPE_VERSION: ${MASCOPE_VERSION:-latest}
       MASCOPE_DB_NAME: ${MASCOPE_DB_NAME:-mascope}
       MASCOPE_DB_USER: ${MASCOPE_DB_USER:-mascope_user}
       # pg_dump --compress for the pre-migration dump; empty = pg_dump default
@@ -154,6 +158,10 @@ services:
     environment:
       MASCOPE_ENV: ${MASCOPE_ENV}
       MASCOPE_LOGLEVEL: ${MASCOPE_LOGLEVEL}
+      # Same value that selects the image tag above, so the version the app
+      # reports (GET /api/version, and the Sentry/GlitchTip release) cannot
+      # disagree with the image actually running.
+      MASCOPE_VERSION: ${MASCOPE_VERSION:-latest}
       MASCOPE_DB_NAME: ${MASCOPE_DB_NAME:-mascope}
       MASCOPE_DB_USER: ${MASCOPE_DB_USER:-mascope_user}
       # Opt-in error reporting to a self-hosted GlitchTip/Sentry; empty = off

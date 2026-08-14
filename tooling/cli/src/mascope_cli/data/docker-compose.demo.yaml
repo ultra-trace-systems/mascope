@@ -63,6 +63,9 @@ services:
         condition: service_healthy
     environment: &demo_env
       MASCOPE_ENV: demo
+      # Same value that selects the image tags above, so GET /api/version
+      # reports the image that is actually running.
+      MASCOPE_VERSION: ${MASCOPE_VERSION:-latest}
       # Enables the public demo credential seed (demo-init.sh). This is a demo
       # stack marker; a real deployment never sets it, so the seed fails closed.
       MASCOPE_ALLOW_DEMO_SEED: "1"
