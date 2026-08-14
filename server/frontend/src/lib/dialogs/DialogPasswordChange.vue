@@ -1,5 +1,5 @@
 <script setup>
-import { reactive, computed, watch } from 'vue'
+import { computed, ref, watch } from 'vue'
 
 import FloatLabel from 'primevue/floatlabel'
 import Dialog from 'primevue/dialog'
@@ -8,57 +8,52 @@ import Button from 'primevue/button'
 import Message from 'primevue/message'
 
 import { useApp } from '@/stores'
-import { passwordPolicyError } from '@/lib/password'
+import { getApiErrorMessage } from '@/api/utils'
+import { usePasswordChangeForm } from '@/lib/passwordChange'
 
 const app = useApp()
 
 const visible = defineModel('visible')
 
-const password = reactive({
-  current: null,
-  new: null,
-  verify: null
-})
+const form = usePasswordChangeForm(() => ({
+  email: app.auth.user?.email,
+  username: app.auth.user?.username
+}))
+
+const busy = ref(false)
+const serverError = ref(null)
 
 watch(visible, () => {
-  password.current = null
-  password.new = null
-  password.verify = null
+  form.reset()
+  serverError.value = null
+  busy.value = false
 })
 
-const invalidCurrentPassword = computed(() => password.current && password.current?.length == 0)
-// Mirror the backend password policy so the user gets instant feedback.
-const newPasswordError = computed(() =>
-  password.new
-    ? passwordPolicyError(password.new, {
-        email: app.auth.user?.email,
-        username: app.auth.user?.username
-      })
-    : null
-)
-const invalidNewPassword = computed(() => !!newPasswordError.value)
-const invalidVerifyPassword = computed(() => password.verify && password.verify?.length == 0)
-const mismatchingPasswords = computed(
-  () => password.new && password.verify && password.new !== password.verify
-)
+const message = computed(() => {
+  if (form.policyError.value) return form.policyError.value
+  if (form.sameAsCurrent.value) return 'Your new password must differ from your current one.'
+  if (form.mismatch.value) return 'Your passwords do not match.'
+  return serverError.value
+})
 
-const invalid = computed(
-  () =>
-    !password.current ||
-    !password.new ||
-    !password.verify ||
-    invalidCurrentPassword.value ||
-    invalidNewPassword.value ||
-    invalidVerifyPassword.value ||
-    mismatchingPasswords.value
-)
-
-const execute = () => {
-  app.data.user.updateMeCreds({
-    currentPassword: password.current,
-    newPassword: password.new,
-    verifyNewPassword: password.verify
-  })
+const execute = async () => {
+  if (form.invalid.value || busy.value) return
+  busy.value = true
+  serverError.value = null
+  try {
+    await app.data.user.updateMeCreds({
+      currentPassword: form.password.current,
+      newPassword: form.password.new,
+      verifyNewPassword: form.password.verify
+    })
+  } catch (error) {
+    // Stay open on failure: closing would discard what the user typed and hide
+    // why it was refused.
+    serverError.value = getApiErrorMessage(error, 'Could not change your password.')
+    busy.value = false
+    return
+  }
+  busy.value = false
   visible.value = false
 }
 </script>
@@ -67,37 +62,35 @@ const execute = () => {
   <Dialog v-model:visible="visible" header="Change your password" modal style="width: 400px">
     <section>
       <FloatLabel>
-        <Password
-          id="current-password"
-          v-model="password.current"
-          :invalid="invalidCurrentPassword"
-          fluid
-        />
+        <Password id="current-password" v-model="form.password.current" fluid />
         <label for="current-password">Current password</label>
       </FloatLabel>
       <FloatLabel>
-        <Password id="new-password" v-model="password.new" :invalid="invalidNewPassword" fluid />
+        <Password
+          id="new-password"
+          v-model="form.password.new"
+          :invalid="!!form.policyError.value || form.sameAsCurrent.value"
+          fluid
+        />
         <label for="new-password">New password</label>
       </FloatLabel>
       <FloatLabel>
         <Password
           id="new-password-verify"
-          v-model="password.verify"
-          :invalid="invalidVerifyPassword"
+          v-model="form.password.verify"
+          :invalid="form.mismatch.value"
           fluid
+          @keyup.enter="execute"
         />
         <label for="new-password-verify">Verify new password</label>
       </FloatLabel>
     </section>
     <menu style="margin-top: 2rem">
-      <Message v-if="newPasswordError" icon="pi pi-exclamation-triangle" severity="secondary">
-        {{ newPasswordError }}
+      <Message v-if="message" icon="pi pi-exclamation-triangle" severity="secondary">
+        {{ message }}
       </Message>
-      <Message v-if="mismatchingPasswords" icon="pi pi-exclamation-triangle" severity="secondary">
-        Your passwords do not match.
-      </Message>
-      <Button label="Cancel" @click="visible = false" severity="secondary" />
-      <Button label="Save" @click="execute" :disabled="invalid" />
+      <Button label="Cancel" @click="visible = false" severity="secondary" :disabled="busy" />
+      <Button label="Save" @click="execute" :disabled="form.invalid.value || busy" />
     </menu>
   </Dialog>
 </template>

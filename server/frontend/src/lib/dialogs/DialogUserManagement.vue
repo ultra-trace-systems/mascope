@@ -88,6 +88,36 @@ const user = {
   },
   resetPassword: async (data) => {
     password.value = (await app.data.user.resetPassword(data)).new_password
+  },
+  requirePasswordChange: () => {
+    confirm.require({
+      icon: 'pi pi-exclamation-triangle',
+      header: 'Require a password change',
+      message:
+        'Every Mascope account - including your own - will be asked to set a new password. ' +
+        'Everyone keeps signing in with their current password until they change it. Once a ' +
+        'user changes theirs, their API access tokens (SDK, notebooks, instrument agents) stop ' +
+        'working and must be regenerated or re-paired. You will be asked to set yours ' +
+        'immediately. Only a server administrator can reverse this.',
+      accept: async () => {
+        await app.data.user.requirePasswordChange()
+        close()
+        // The owner is included, so the password screen replaces this view.
+        // Deliberately no user list reload: this account is already required to
+        // change its password, so the request would be refused.
+        await app.auth.identify()
+      },
+      acceptProps: {
+        icon: 'pi pi-key',
+        label: 'Require password change',
+        severity: 'danger'
+      },
+      rejectProps: {
+        icon: 'pi pi-times',
+        label: 'Cancel',
+        severity: 'secondary'
+      }
+    })
   }
 }
 
@@ -165,7 +195,7 @@ watch(visible, reset)
                 "
               />
               <Button
-                v-tooltip.bottom="'Reset Password'"
+                v-tooltip.bottom="'Reset password (issues a temporary one)'"
                 icon="pi pi-key"
                 severity="secondary"
                 text
@@ -177,8 +207,14 @@ watch(visible, reset)
               class="col"
               style="gap: 0; width: min-content; align-items: flex-start"
             >
-              <span style="text-align: left; font-size: smaller; opacity: 0.7">New password:</span>
+              <span style="text-align: left; font-size: smaller; opacity: 0.7"
+                >Temporary password:</span
+              >
               <BaseCopyableField :field="password" @copy="reset" />
+              <span class="temporary-password-note">
+                Share it with {{ data.username }} - they must set their own password at next sign
+                in.
+              </span>
             </div>
             <span v-else>{{ data.email }}</span>
           </template>
@@ -309,10 +345,24 @@ watch(visible, reset)
         >
           {{ invalidCreated.passwordError }}
         </Message>
+        <Message icon="pi pi-info-circle" severity="secondary" style="margin-top: 0.5rem">
+          The password you set here is temporary - the new user must choose their own at first
+          sign in.
+        </Message>
       </template>
     </section>
     <menu style="justify-content: space-between; margin-top: 3rem">
       <Button icon="pi pi-user-plus" label="Add user" @click="user.create" :disabled="created" />
+      <!-- Fully labelled and kept away from the per-row icon buttons: it acts
+           on every account, including this one. -->
+      <Button
+        v-if="app.auth.user.role_name == 'owner'"
+        icon="pi pi-key"
+        label="Require password change for all users"
+        severity="danger"
+        text
+        @click="user.requirePasswordChange"
+      />
       <Button icon="pi pi-times" label="Close" @click="close" severity="secondary" />
     </menu>
   </Dialog>
@@ -321,6 +371,17 @@ watch(visible, reset)
 <style scoped>
 :deep(input) {
   max-width: 160px;
+}
+
+/* The surrounding column is width: min-content, so the note needs an explicit
+   width to wrap instead of stretching the table cell. */
+.temporary-password-note {
+  max-width: 220px;
+  white-space: normal;
+  text-align: left;
+  font-size: smaller;
+  opacity: 0.6;
+  margin-top: 0.35rem;
 }
 
 :deep(.field) > * {

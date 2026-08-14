@@ -1,0 +1,302 @@
+"""
+Integration tests for the forced password change.
+
+An account that owes a password change still authenticates, but the API is
+closed to it until it stores a new one. Two routes stay open - the profile
+read the frontend uses to discover the requirement, and the credentials route
+that clears it - and closing either of them strands the user: the app treats a
+failed profile read as "not signed in", which sends them to the sign-in screen,
+where signing in puts them straight back.
+
+The gate is scoped to the browser session (the auth cookie), so service bearer
+tokens keep working; their strength does not depend on the account password and
+their holders cannot render a password screen.
+
+Every test here uses a throwaway user. The shared ``test_users`` fixture is
+session-scoped, so requiring a password change on one of those would leak into
+unrelated suites.
+"""
+
+import pytest
+import pytest_asyncio
+from httpx import ASGITransport, AsyncClient
+from sqlalchemy import select
+
+from mascope_backend.api.new.auth.config import auth_settings
+from mascope_backend.api.new.auth.exceptions import PASSWORD_CHANGE_REQUIRED_CODE
+from mascope_backend.app.fast import fast
+from mascope_backend.db import User
+
+
+#: Long enough for the policy, not in the blocklist, and containing neither of
+#: the throwaway account's identifiers.
+COMPLIANT_PASSWORD = "sixteen tonnes of quartz"
+ORIGINAL_PASSWORD = "nine bushels of slate"
+
+
+@pytest_asyncio.fixture
+async def flagged_user(async_session_factory, roles):
+    """A throwaway guest account that owes a password change."""
+    from fastapi_users.password import PasswordHelper
+
+    async with async_session_factory() as session:
+        user = User(
+            email="pwgate@test.com",
+            username="pwgate_user",
+            hashed_password=PasswordHelper().hash(ORIGINAL_PASSWORD),
+            is_active=True,
+            is_verified=False,
+            role_id=roles["guest"].role_id,
+            must_change_password=True,
+            password_change_reason="policy",
+        )
+        session.add(user)
+        await session.commit()
+        await session.refresh(user)
+
+    yield user
+
+    async with async_session_factory() as session:
+        stored = await session.get(User, user.id)
+        if stored is not None:
+            await session.delete(stored)
+            await session.commit()
+
+
+@pytest_asyncio.fixture
+async def flagged_client(flagged_user, create_jwt_auth_token):
+    """AsyncClient carrying the flagged account's auth cookie."""
+    token = create_jwt_auth_token(flagged_user)
+    async with AsyncClient(
+        transport=ASGITransport(app=fast),
+        base_url="http://test",
+        cookies={auth_settings.COOKIE_NAME: token},
+    ) as client:
+        yield client
+
+
+def _gate_code(response):
+    """The machine-readable code on an error response, if any."""
+    return (response.json().get("detail") or {}).get("code")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("path", ["/api/workspaces", "/api/samples", "/api/users"])
+async def test_ordinary_routes_are_refused_with_the_gate_code(flagged_client, path):
+    resp = await flagged_client.get(path)
+    assert resp.status_code == 403, resp.text
+    assert _gate_code(resp) == PASSWORD_CHANGE_REQUIRED_CODE
+
+
+@pytest.mark.asyncio
+async def test_an_ordinary_forbidden_carries_no_gate_code(guest_client, test_users):
+    # A plain role refusal shares the 403 status, so the code is the only thing
+    # that distinguishes the two for the client.
+    resp = await guest_client.get("/api/roles/owner")
+    assert resp.status_code == 403
+    assert _gate_code(resp) != PASSWORD_CHANGE_REQUIRED_CODE
+
+
+@pytest.mark.asyncio
+async def test_profile_read_still_answers_and_reports_the_requirement(flagged_client):
+    # The frontend treats anything but 200/401 here as "not signed in", so a
+    # gated profile read would produce a silent sign-in loop.
+    resp = await flagged_client.get("/api/users/me")
+    assert resp.status_code == 200, resp.text
+    data = resp.json()["data"]
+    assert data["must_change_password"] is True
+    assert data["password_change_reason"] == "policy"
+
+
+@pytest.mark.asyncio
+async def test_updating_the_username_is_refused(flagged_client):
+    # Only the credentials route is exempt; the rest of the profile waits.
+    resp = await flagged_client.patch("/api/users/me", json={"username": "renamed"})
+    assert resp.status_code == 403
+    assert _gate_code(resp) == PASSWORD_CHANGE_REQUIRED_CODE
+
+
+@pytest.mark.asyncio
+async def test_changing_the_password_clears_the_requirement(
+    flagged_client, flagged_user, async_session_factory
+):
+    resp = await flagged_client.patch(
+        "/api/users/me/creds",
+        json={
+            "current_password": ORIGINAL_PASSWORD,
+            "new_password": COMPLIANT_PASSWORD,
+            "verify_new_password": COMPLIANT_PASSWORD,
+        },
+    )
+    assert resp.status_code == 200, resp.text
+
+    async with async_session_factory() as session:
+        stored = await session.get(User, flagged_user.id)
+        assert stored.must_change_password is False
+        assert stored.password_change_reason is None
+        assert stored.password_changed_at is not None
+
+    # And the app is open again.
+    assert (await flagged_client.get("/api/workspaces")).status_code == 200
+
+
+@pytest.mark.asyncio
+async def test_a_refused_password_change_leaves_the_requirement_in_place(
+    flagged_client, flagged_user, async_session_factory
+):
+    resp = await flagged_client.patch(
+        "/api/users/me/creds",
+        json={
+            "current_password": ORIGINAL_PASSWORD,
+            "new_password": "qwerty123456",
+            "verify_new_password": "qwerty123456",
+        },
+    )
+    assert resp.status_code == 400, resp.text
+
+    async with async_session_factory() as session:
+        stored = await session.get(User, flagged_user.id)
+        assert stored.must_change_password is True
+
+
+@pytest.mark.asyncio
+async def test_the_wrong_current_password_does_not_clear_the_requirement(
+    flagged_client, flagged_user, async_session_factory
+):
+    resp = await flagged_client.patch(
+        "/api/users/me/creds",
+        json={
+            "current_password": "not the right one",
+            "new_password": COMPLIANT_PASSWORD,
+            "verify_new_password": COMPLIANT_PASSWORD,
+        },
+    )
+    assert resp.status_code >= 400
+
+    async with async_session_factory() as session:
+        stored = await session.get(User, flagged_user.id)
+        assert stored.must_change_password is True
+
+
+@pytest.mark.asyncio
+async def test_many_accounts_behind_one_address_can_all_comply(
+    async_session_factory, roles, create_jwt_auth_token
+):
+    # The per-address budget on the credentials route used to be 10/hour. After
+    # a deployment-wide requirement this route is the only way back into the
+    # app, so a shared office address would have locked everyone out on the
+    # eleventh attempt. The real budget is per account.
+    from fastapi_users.password import PasswordHelper
+
+    created = []
+    async with async_session_factory() as session:
+        for index in range(12):
+            user = User(
+                email=f"pwgate{index}@test.com",
+                username=f"pwgate_user_{index}",
+                hashed_password=PasswordHelper().hash(ORIGINAL_PASSWORD),
+                is_active=True,
+                is_verified=False,
+                role_id=roles["guest"].role_id,
+                must_change_password=True,
+                password_change_reason="policy",
+            )
+            session.add(user)
+            created.append(user)
+        await session.commit()
+        for user in created:
+            await session.refresh(user)
+
+    try:
+        for user in created:
+            async with AsyncClient(
+                transport=ASGITransport(app=fast),
+                base_url="http://test",
+                cookies={auth_settings.COOKIE_NAME: create_jwt_auth_token(user)},
+            ) as client:
+                resp = await client.patch(
+                    "/api/users/me/creds",
+                    json={
+                        "current_password": ORIGINAL_PASSWORD,
+                        "new_password": COMPLIANT_PASSWORD,
+                        "verify_new_password": COMPLIANT_PASSWORD,
+                    },
+                )
+                assert resp.status_code == 200, f"{user.username}: {resp.text}"
+    finally:
+        async with async_session_factory() as session:
+            for user in created:
+                stored = await session.get(User, user.id)
+                if stored is not None:
+                    await session.delete(stored)
+            await session.commit()
+
+
+@pytest.mark.asyncio
+async def test_anonymous_requests_are_still_unauthorized(flagged_user):
+    # The gate must not turn a missing session into a 403; that would tell an
+    # anonymous caller that the account exists.
+    async with AsyncClient(
+        transport=ASGITransport(app=fast), base_url="http://test"
+    ) as client:
+        resp = await client.get("/api/workspaces")
+    assert resp.status_code == 401
+
+
+@pytest.mark.asyncio
+async def test_owner_requires_a_change_for_every_account(
+    owner_client, test_users, async_session_factory
+):
+    resp = await owner_client.post(
+        "/api/users/owner/require-password-change", json={"confirm": True}
+    )
+    assert resp.status_code == 200, resp.text
+    data = resp.json()["data"]
+    assert data["flagged_count"] == data["total_users"]
+
+    try:
+        async with async_session_factory() as session:
+            rows = (await session.execute(select(User))).scalars().all()
+            # Nobody is exempt, the acting owner included.
+            assert all(user.must_change_password for user in rows)
+            assert all(user.password_change_reason == "policy" for user in rows)
+
+        # Idempotent: a second call reports nothing new to do. The owner is now
+        # behind the gate, so this uses a fresh check rather than the route.
+        from mascope_backend.db.admin.user.require_password_change import (
+            require_password_change_for_all_users,
+        )
+
+        again = await require_password_change_for_all_users()
+        assert again["data"]["flagged_count"] == 0
+    finally:
+        from mascope_backend.db.admin.user.require_password_change import (
+            clear_password_change_requirement,
+        )
+
+        await clear_password_change_requirement()
+
+
+@pytest.mark.asyncio
+async def test_the_owner_route_refuses_an_unacknowledged_call(owner_client):
+    assert (
+        await owner_client.post("/api/users/owner/require-password-change")
+    ).status_code == 422
+    assert (
+        await owner_client.post(
+            "/api/users/owner/require-password-change", json={"confirm": False}
+        )
+    ).status_code == 422
+    # State-changing, so not reachable by navigation.
+    assert (
+        await owner_client.get("/api/users/owner/require-password-change")
+    ).status_code == 405
+
+
+@pytest.mark.asyncio
+async def test_only_an_owner_may_require_a_password_change(admin_client, editor_client):
+    for client in (admin_client, editor_client):
+        resp = await client.post(
+            "/api/users/owner/require-password-change", json={"confirm": True}
+        )
+        assert resp.status_code == 403, resp.text

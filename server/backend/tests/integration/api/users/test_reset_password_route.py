@@ -13,6 +13,7 @@ import pytest
 from httpx import ASGITransport, AsyncClient
 
 from mascope_backend.app.fast import fast
+from mascope_backend.db import User
 
 
 @pytest.mark.asyncio
@@ -22,6 +23,51 @@ async def test_admin_resets_editor_password_via_post(admin_client, test_users):
     )
     assert resp.status_code == 200, resp.text
     assert resp.json()["data"]["new_password"]
+
+
+@pytest.mark.asyncio
+async def test_a_reset_password_is_temporary(
+    admin_client, test_users, async_session_factory
+):
+    # The generated password is one the administrator has seen and will read out
+    # to its owner, so the account must replace it before it can do anything.
+    # Asserted against the row rather than the response, whose shape the user
+    # management dialog depends on.
+    target_id = test_users["editor"].id
+    resp = await admin_client.post(f"/api/users/admin/{target_id}/reset-password")
+    assert resp.status_code == 200, resp.text
+
+    async with async_session_factory() as session:
+        stored = await session.get(User, target_id)
+        assert stored.must_change_password is True
+        assert stored.password_change_reason == "reset"
+        assert stored.password_changed_at is not None
+        # Reset so the session-scoped fixture is left as it was found.
+        stored.must_change_password = False
+        stored.password_change_reason = None
+        await session.commit()
+
+
+@pytest.mark.asyncio
+async def test_an_owner_patch_cannot_clear_the_requirement(
+    owner_client, test_users, async_session_factory
+):
+    # UserUpdate accepts a password, so without arming on every password write
+    # an administrator could hand out a password and quietly leave the account
+    # free to keep it.
+    target_id = test_users["admin"].id
+    resp = await owner_client.patch(
+        f"/api/users/owner/{target_id}",
+        json={"password": "sixteen tonnes of quartz"},
+    )
+    assert resp.status_code == 200, resp.text
+
+    async with async_session_factory() as session:
+        stored = await session.get(User, target_id)
+        assert stored.must_change_password is True
+        stored.must_change_password = False
+        stored.password_change_reason = None
+        await session.commit()
 
 
 @pytest.mark.asyncio

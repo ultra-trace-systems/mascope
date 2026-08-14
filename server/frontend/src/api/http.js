@@ -115,6 +115,23 @@ function handleServerError(error) {
   const { method, url, headers } = error?.config || {}
   const type = headers?.['X-Type'] ?? 'unknown'
 
+  // The account owes a password change. Matched on the code rather than the
+  // status: this is a 403 so the client is not sent back to the sign-in screen
+  // (the session is fine, the action is not), and prose is not a contract.
+  // Reachable only mid-session or in a stale tab - at sign-in the auth store
+  // learns the flag from /users/me and never issues these requests.
+  if (error?.response?.data?.detail?.code === 'password_change_required') {
+    const app = useApp()
+    if (app.auth.requirePasswordChange()) {
+      app.ui.notification.push({
+        type,
+        status: 'warning',
+        message: 'Your account needs a new password before you can continue.'
+      })
+    }
+    return Promise.reject(error)
+  }
+
   // Any unhandled 401 triggers auth check
   if (error?.response?.status === 401) {
     return handleUnauthorizedError(error)
