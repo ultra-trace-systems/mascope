@@ -6,6 +6,12 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
 
 ### Added
 
+- New `GET /api/version` reports the version of the running deployment, so an
+  operator or an audit can tie a deployment to an artifact without shell access
+  to the host. It reports `MASCOPE_VERSION`, the same value that selects the
+  image tag, so it always names the tag that was deployed. Admin-gated as least
+  privilege for an operational endpoint; the login screen already shows the
+  version, so this is not a confidentiality boundary.
 - Sample browser: new m/z calibration status column. Every sample shows a
   color-coded badge - green: calibrated, with the fit quality in the tooltip
   (calibration point count, mean |m/z error| before/after the fit); red:
@@ -36,6 +42,13 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
 
 ### Fixed
 
+- Containerized deployments now receive `MASCOPE_VERSION`, which they never
+  did: compose interpolated it into the `image:` tag but never passed it into
+  the container environment. Every error reported to GlitchTip therefore
+  carried no release, so events could not be grouped or attributed to a
+  version, and the runtime had no version to report. Both compose files now
+  set it from the same value that selects the image tag, so the reported
+  version cannot drift from the image actually running.
 - FTMS satellite ("sidelobe") peak flagging now catches real sidelobe
   patterns; previously it flagged nothing on production Orbitrap data. Real
   sidelobe mirror pairs are intensity-asymmetric and failed the old
