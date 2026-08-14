@@ -89,6 +89,19 @@ export const useUser = defineStore('app.data.user', () => {
           type: 'reset_password'
         })
       ),
+    // Owner-only, with no admin equivalent, so it deliberately does not go
+    // through sudo() - that would send an admin to a /users/admin/... path
+    // which does not exist. The button is gated on the owner role in
+    // DialogUserManagement.vue and the route is gated on owner_user.
+    requirePasswordChange: () =>
+      api.http.post(
+        `/users/owner/require-password-change`,
+        { confirm: true },
+        {
+          use: 'update',
+          type: 'require_password_change'
+        }
+      ),
     deleteAccessTokens: (user) =>
       sudo((role) =>
         api.http.delete(`/users/${role}/${user.id}/access-tokens`, {

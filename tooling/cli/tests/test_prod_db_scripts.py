@@ -74,3 +74,16 @@ def test_prune_env_vars_are_forwarded_into_the_container():
         "MASCOPE_PRUNE_KEEP_RUNNING_HOURS",
     ):
         assert var in scripts._FORWARDED_ENV_VARS
+
+
+def test_password_change_env_vars_are_forwarded_into_the_container():
+    # Same trap as above, with the same shape of consequence: an unforwarded
+    # MASCOPE_REQUIRE_PASSWORD_CHANGE_DRY_RUN arrives unset inside the
+    # container, so the documented dry run would require a password change on
+    # every account for real. The email list narrows which accounts the undo
+    # releases; unset, it would release all of them.
+    for var in (
+        "MASCOPE_REQUIRE_PASSWORD_CHANGE_DRY_RUN",
+        "MASCOPE_CLEAR_PASSWORD_CHANGE_EMAILS",
+    ):
+        assert var in scripts._FORWARDED_ENV_VARS

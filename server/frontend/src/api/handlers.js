@@ -102,7 +102,15 @@ export default {
         case 401:
           return null
         default:
+          // Anything else is treated as "not signed in", which puts the app
+          // back on the sign-in screen - where signing in leads straight back
+          // here. Notify, so that loop is diagnosable rather than silent.
           unhandled(response)
+          app.ui.notification.push({
+            type: 'identify_user',
+            message: data?.error || 'Could not confirm who you are signed in as.',
+            status: 'error'
+          })
           return null
       }
     }

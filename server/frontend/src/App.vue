@@ -16,7 +16,7 @@ import { useApp } from '@/stores'
 import { useLocation } from '@/lib/location'
 import { useUpdate } from '@/lib/update'
 import { createToaster } from '@/lib/toaster'
-import { PaneLogin, PaneOwnerSignup } from '@/lib/panes'
+import { PaneLogin, PaneOwnerSignup, PanePasswordChangeRequired } from '@/lib/panes'
 
 const { connected } = api
 
@@ -62,8 +62,19 @@ app.ui.notification.on('*', (notification) => {
 </script>
 
 <template>
+  <!-- Mandatory password change - authenticated, but held out of the app.
+       Must come before the authenticated branch, being a refinement of it, and
+       cannot be folded into the anonymous branch below: that one waits on
+       requiresOwner, which is only ever resolved for an anonymous visitor. -->
+  <div v-if="app.auth.mustChangePassword" class="center" style="min-height: 80vh">
+    <Panel style="width: 500px">
+      <BaseBrandLogo />
+      <div style="margin-top: 2rem" />
+      <PanePasswordChangeRequired />
+    </Panel>
+  </div>
   <!-- App Routes - Authenticated user -->
-  <RouterView v-if="app.auth.user" />
+  <RouterView v-else-if="app.auth.user" />
   <!-- Login / Owner Setup Screen - No authenticated user  -->
   <div
     v-else-if="app.auth.user == false && app.auth.requiresOwner !== null"

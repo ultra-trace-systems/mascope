@@ -102,6 +102,12 @@ async def _upsert_demo_user(session) -> User:
         await session.execute(select(User).where(User.email == DEMO_EMAIL))
     ).scalar_one_or_none()
 
+    # The demo account never owes a password change, on either branch. Its
+    # published password cannot pass the password policy (DEMO_USERNAME is a
+    # substring of it), so a demo user held behind the mandatory change screen
+    # is one nobody can get past - including the end-to-end suite. Setting it on
+    # the reset branch too means restarting the demo stack repairs a demo
+    # database where the requirement was applied.
     if user is None:
         user = User(
             email=DEMO_EMAIL,
@@ -111,6 +117,9 @@ async def _upsert_demo_user(session) -> User:
             is_verified=True,
             is_superuser=True,
             role_id=role_id,
+            must_change_password=False,
+            password_change_reason=None,
+            password_changed_at=datetime.now(timezone.utc),
         )
         session.add(user)
         runtime.logger.info(f"Created demo user '{DEMO_EMAIL}'")
@@ -121,6 +130,9 @@ async def _upsert_demo_user(session) -> User:
         user.is_verified = True
         user.is_superuser = True
         user.role_id = role_id
+        user.must_change_password = False
+        user.password_change_reason = None
+        user.password_changed_at = datetime.now(timezone.utc)
         runtime.logger.info(f"Reset demo user '{DEMO_EMAIL}'")
 
     await session.flush()

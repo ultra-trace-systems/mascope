@@ -76,6 +76,11 @@ async def register_first_owner_route(
         raise InvalidUsernameException()
 
     # --- Create owner user (privileges are set in schema validation) ---
+    # No forced password change: this form is filled in by the account holder,
+    # so the password is already one only they know.
     return await register_user(
-        user_create=first_owner_create, user_manager=user_manager, safe=False
+        user_create=first_owner_create,
+        user_manager=user_manager,
+        safe=False,
+        require_password_change=False,
     )

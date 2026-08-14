@@ -219,6 +219,75 @@ def rate_limit_login_by_account(
     return dependency
 
 
+def _user_limit_key(user_id: int, scope: str) -> str:
+    """Redis key for a per-account counter on an authenticated route."""
+    return f"mascope:ratelimit:{scope}:user:{user_id}"
+
+
+async def enforce_user_rate_limit(
+    user_id: int, *, times: int, seconds: int, scope: str
+) -> None:
+    """
+    Limit an authenticated route per account rather than per client address.
+
+    :func:`rate_limit` keys on the client address, which shares one bucket
+    across an office or campus network (see :func:`_limit_key_ip`). That is the
+    wrong shape for a route every user of a deployment may have to pass through
+    at once - a forced password change leaves the credentials route as the only
+    way back into the app, and a per-address budget would let a handful of
+    colleagues behind one NAT exhaust it for everyone else. Keying on the
+    account also makes the limit strictly tighter for the oracle it protects,
+    which only ever reveals the caller's own password.
+
+    Called from the route body rather than exposed as a dependency: it needs the
+    authenticated user, and this module is imported by the auth package, so
+    depending on the auth dependencies here would be circular.
+
+    Fails open on Redis errors like :func:`rate_limit`.
+
+    :param user_id: The authenticated account's id.
+    :param times: Maximum number of requests allowed within the window.
+    :param seconds: Window length in seconds.
+    :param scope: Namespacing label so different endpoints count independently.
+    :raises HTTPException: 429 when the account is over its budget.
+    """
+    key = _user_limit_key(user_id, scope)
+    try:
+        retry_after = await _over_fixed_window(key, times, seconds)
+    except Exception:
+        # Fail open on Redis errors, but make the gap visible.
+        runtime.logger.exception(f"Rate limit check failed for scope '{scope}'")
+        return
+    if retry_after is not None:
+        # Expected throttling, not a server fault.
+        runtime.logger.info(
+            f"Rate limit exceeded for scope '{scope}' by user id {user_id}"
+        )
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail="Too many attempts. Please wait a few minutes and try again.",
+            headers={"Retry-After": str(retry_after)},
+        )
+
+
+async def clear_user_rate_limit(user_id: int, *, scope: str) -> None:
+    """
+    Reset a per-account counter after the operation it guards succeeded.
+
+    Keeps the limiter counting only failed attempts, so a user who mistypes
+    their current password twice and then succeeds carries no burnt budget into
+    their next change. Best-effort: the counter self-expires anyway, so a Redis
+    error here is logged and swallowed rather than failing the request.
+
+    :param user_id: The authenticated account's id.
+    :param scope: Namespacing label; must match the limiter's ``scope``.
+    """
+    try:
+        await redis_storage_client.client.delete(_user_limit_key(user_id, scope))
+    except Exception:
+        runtime.logger.exception(f"Failed to clear rate limit for scope '{scope}'")
+
+
 async def clear_login_rate_limit(
     identifier: str, *, scope: str = "auth-login-account"
 ) -> None:

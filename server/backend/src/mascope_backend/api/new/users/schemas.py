@@ -44,6 +44,21 @@ class UserRead(schemas.BaseUser[int]):
     registered_at: datetime = Field(
         ..., description="Timestamp indicating when the user registered."
     )
+    must_change_password: bool = Field(
+        ...,
+        description=(
+            "True while the account must set a new password before it can use the "
+            "application. Read-only: set by an administrator action or by account "
+            "creation, cleared only by the account holder's own password change."
+        ),
+    )
+    password_change_reason: Optional[str] = Field(
+        None,
+        description=(
+            "Why a password change is pending: 'policy', 'reset' or 'new_account'. "
+            "Null when nothing is pending."
+        ),
+    )
 
     model_config = {
         "from_attributes": True  # Allows Pydantic to work with SQLAlchemy models
@@ -243,6 +258,9 @@ class UserUpdate(schemas.BaseUserUpdate):
         :return: Filtered dictionary containing only allowed fields.
         :rtype: dict
         """
+        # must_change_password is deliberately absent: it is written by
+        # UserManager (armed by any password write, cleared only by the account
+        # holder's own change), never by a request body.
         allowed_fields = {
             "email",
             "password",

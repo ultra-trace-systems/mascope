@@ -8,6 +8,7 @@ such as access token cleanup for external services like Jupyter.
 """
 
 import os
+from datetime import datetime, timezone
 from typing import Any, Dict, Optional, Union
 
 from fastapi import Request, Response
@@ -22,6 +23,9 @@ from mascope_backend.api.new.auth.config import auth_settings
 from mascope_backend.api.new.users import exceptions
 from mascope_backend.api.new.users.access_token.service import delete_user_access_tokens
 from mascope_backend.api.new.users.schemas import UserCreate, UserRead, UserUpdate
+from mascope_backend.api.new.users.user_manager.common_passwords import (
+    is_common_password,
+)
 from mascope_backend.db import Role, User, async_session
 from mascope_backend.runtime import runtime
 from mascope_backend.socket.auth import (
@@ -89,6 +93,19 @@ class UserManager(IntegerIDMixin, BaseUserManager[User, int]):
                 )
             )
 
+        # A password long enough to clear the length check can still be one of
+        # the most-used strings in circulation ("qwerty123456",
+        # "passwordpassword"). Checked after the length rule, so a short common
+        # password is told the thing it can act on, and before the identifier
+        # rules, since it is a set lookup rather than two substring scans.
+        if is_common_password(password):
+            raise InvalidPasswordException(
+                reason=(
+                    "This password is among the most commonly used ones. "
+                    "Please choose a different one."
+                )
+            )
+
         lowered = password.lower()
         # Reject passwords that just echo the account's own identifiers. Only
         # check identifiers of a meaningful length: a 1-3 char local-part/username
@@ -147,6 +164,8 @@ class UserManager(IntegerIDMixin, BaseUserManager[User, int]):
         user_create: UserCreate,
         safe: bool = False,
         request: Optional[Request] = None,
+        *,
+        require_password_change: bool = True,
     ) -> models.UP:
         """
         Create a user in database.
@@ -158,6 +177,11 @@ class UserManager(IntegerIDMixin, BaseUserManager[User, int]):
         will be ignored during the creation, defaults to False.
         :param request: Optional FastAPI request that
         triggered the operation, defaults to None.
+        :param require_password_change: Whether the new account must replace its
+        password before it can use the application. True for accounts an
+        administrator creates, since the administrator chose the password. The
+        first-owner bootstrap passes False: that form is filled in by the
+        account holder themselves.
         :raises UserAlreadyExists: A user already exists with the same e-mail.
         :return: A new user.
         """
@@ -174,6 +198,11 @@ class UserManager(IntegerIDMixin, BaseUserManager[User, int]):
         )
         password = user_dict.pop("password")
         user_dict["hashed_password"] = self.password_helper.hash(password)
+        user_dict["password_changed_at"] = datetime.now(timezone.utc)
+        user_dict["must_change_password"] = require_password_change
+        user_dict["password_change_reason"] = (
+            "new_account" if require_password_change else None
+        )
 
         created_user = await self.user_db.create(user_dict)
 
@@ -229,6 +258,74 @@ class UserManager(IntegerIDMixin, BaseUserManager[User, int]):
                     f"Removed file-converter token for {updated_user.username}"
                 )
 
+        return updated_user
+
+    async def _update(self, user: models.UP, update_dict: Dict[str, Any]) -> models.UP:
+        """
+        Apply an update, requiring a password change whenever a password is written.
+
+        Every password write in FastAPI Users funnels through here, and a write
+        that reaches this point did not necessarily come from the account
+        holder: both `UserUpdate` and the administrator reset carry a
+        `password` field. Requiring a change is therefore the safe default, and
+        the one path that proves the holder knew the old password clears the
+        flag instead - see :meth:`set_own_password`. Anything else added later
+        gets the safe behaviour without having to remember this.
+
+        The flag rides in the same update as the hash, so the two can never
+        disagree.
+
+        :param user: The user being updated.
+        :param update_dict: The fields to write; a ``password`` key is plaintext.
+        :return: The updated user.
+        """
+        if update_dict.get("password") is None:
+            return await super()._update(user, update_dict)
+        return await super()._update(
+            user,
+            {
+                **update_dict,
+                "must_change_password": True,
+                "password_change_reason": "reset",
+                "password_changed_at": datetime.now(timezone.utc),
+            },
+        )
+
+    async def set_own_password(
+        self,
+        user: models.UP,
+        password: str,
+        request: Optional[Request] = None,
+    ) -> models.UP:
+        """
+        Store a password the account holder chose for themselves.
+
+        The only path that clears a pending forced password change, and reached
+        only from the self-service credentials route, which proves the holder
+        knew the old password by authenticating them first. Deliberately does
+        not go through :meth:`_update`, whose job is the opposite.
+
+        Written as a single update and reported through ``on_after_update`` so
+        token revocation and the record broadcast observe the cleared flag
+        rather than a value corrected afterwards.
+
+        :param user: The account holder.
+        :param password: The new plaintext password.
+        :param request: Optional FastAPI request that triggered the operation.
+        :raises InvalidPasswordException: If the password fails the policy.
+        :return: The updated user.
+        """
+        await self.validate_password(password, user)
+        updated_user = await self.user_db.update(
+            user,
+            {
+                "hashed_password": self.password_helper.hash(password),
+                "must_change_password": False,
+                "password_change_reason": None,
+                "password_changed_at": datetime.now(timezone.utc),
+            },
+        )
+        await self.on_after_update(updated_user, {"password": password}, request)
         return updated_user
 
     async def on_after_register(self, user: User, request: Optional[Request] = None):
@@ -339,6 +436,14 @@ class UserManager(IntegerIDMixin, BaseUserManager[User, int]):
         if "password" in update_dict:
             runtime.logger.info(f"User `{user.username}` password was changed.")
             await delete_user_access_tokens(user_id=user.id)
+            # Uploads need the file-converter token, and it is otherwise only
+            # minted at login or on promotion to editor, so the wipe above would
+            # leave editor+ users unable to upload until their next sign-in. SDK
+            # and instrument-agent tokens stay revoked on purpose: those are
+            # handed out explicitly and their holders re-pair.
+            editor_level = auth_settings.ROLE_ACCESS_LEVELS.get("editor")
+            if user.role_id is not None and user.role_id >= editor_level:
+                await regenerate_access_token(user=user, service_name="file-converter")
 
         user_dict = await self._get_user_dict_with_role(user)
         validated_user_dict = UserRead.model_validate(user_dict).model_dump()

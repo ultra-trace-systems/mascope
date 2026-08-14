@@ -182,6 +182,7 @@ async def register_user(
     user_create: UserCreate,
     user_manager: UserManager,
     safe: bool = True,
+    require_password_change: bool = True,
 ) -> dict:
     """
     Registers a new user in Mascope.
@@ -193,6 +194,10 @@ async def register_user(
     :param safe: If True, sensitive fields (is_superuser, is_active, is_verified)
                 will be restricted during creation, defaults to True
     :type safe: bool
+    :param require_password_change: Whether the account must replace its password
+                before it can use the application, defaults to True because an
+                administrator chose the password they are handing over.
+    :type require_password_change: bool
     :raises UsernameAlreadyExistsException: If the username already exists.
     :raises UserAlreadyExists: If a user with the same email already exists.
     :return: The registered user's details.
@@ -207,7 +212,11 @@ async def register_user(
     )
 
     # --- Create the user ---
-    created_user = await user_manager.create(user_create=user_create, safe=safe)
+    created_user = await user_manager.create(
+        user_create=user_create,
+        safe=safe,
+        require_password_change=require_password_change,
+    )
 
     # --- Auto-add to system workspaces with matching global role ---
     role_name = next(
