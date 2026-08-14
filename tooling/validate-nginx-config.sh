@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 #
 # Validate the production and demo nginx configs with `nginx -t` in the real
-# base image. CI runs this on every PR because no other job loads
+# base image. CI runs this on every PR because no other job runs `nginx -t` on
 # server/frontend/nginx.conf: the demo/e2e stack selects nginx.http.conf
 # (MASCOPE_TLS=off) and the prod compose is built but never started, so a syntax
 # or directive error in the production config would otherwise ship green and
