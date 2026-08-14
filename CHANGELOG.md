@@ -72,6 +72,29 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
 
 ### Security
 
+- The Socket.IO handshake now rejects cross-site origins. It ran with
+  `cors_allowed_origins="*"`, which makes Engine.IO skip the origin check
+  entirely and reflect any `Origin` back with `Allow-Credentials: true`, so a
+  hostile page could open a *credentialed* realtime connection and only the
+  browser's `SameSite=lax` cookie default stood in the way. Production now
+  accepts only the deployment's own origin, reconstructed per request from
+  `X-Forwarded-Proto` + `X-Forwarded-Host` so any hostname works without
+  configuration; development names the Vite dev-server origins. The file
+  converter now suppresses the `Origin` its websocket library synthesises
+  from the connect URL, so it stays outside the check as a service client
+  rather than depending on that value happening to match. nginx also
+  forwards the browser's scheme rather than its own listener's, so a
+  deployment behind someone else's TLS terminator reports the origin the
+  browser actually used. The REST and realtime policies now come from one
+  module so they cannot drift apart.
+- The edge rate limits apply on every host, not only the TLS one. The
+  per-client `limit_req`/`limit_conn` tier - including the stricter bucket in
+  front of `/api/auth/` - lived only in the HTTPS config, so a deployment
+  serving this image with `MASCOPE_TLS=off` behind its own TLS terminator
+  silently lost the whole edge tier and fell back to the backend's Redis
+  limiter, which fails open when Redis is unavailable. Nothing in the limiter
+  needs TLS: it keys on `$remote_addr`, so it now lives in the body both
+  configs share.
 - The real client address now survives the Cloudflare proxy: nginx trusts
   `CF-Connecting-IP` from Cloudflare's published ranges only, so the
   backend's per-IP login rate limits, the new edge limits below, and the

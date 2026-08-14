@@ -21,6 +21,7 @@ from mascope_backend.api.lib.exceptions.api_exceptions import handle_exception
 from mascope_backend.api.lib.rate_limit import client_ip
 from mascope_backend.api.routes import routers
 from mascope_backend.db import init_db
+from mascope_backend.origins import dev_origin_regex, dev_origins
 from mascope_backend.runtime import runtime
 from mascope_backend.socket.storage import redis_storage_client
 
@@ -154,24 +155,10 @@ async def logger_middleware(request: Request, call_next):
 if runtime.mode == "dev":
     fast.add_middleware(
         CORSMiddleware,
-        # Per-worktree instances run the Vite dev server on 5173 + slot and
-        # export MASCOPE_FRONTEND_PORT; honour it so instances past slot 0 are
-        # reachable from their own frontend, falling back to the default port.
-        allow_origins=list(
-            {
-                f"http://localhost:{os.environ.get('MASCOPE_FRONTEND_PORT', '5173')}",
-                "http://localhost:5173",  # default Vite dev server
-            }
-        ),
-        # When the dev servers are exposed beyond localhost (`mascope dev run
-        # --host`), the app is browsed via the machine's hostname and the API
-        # sees tailnet page origins; accept them too (mirrors `allowedHosts`
-        # in vite.config.js). Localhost-only dev keeps the strict list above.
-        allow_origin_regex=(
-            r"http://[^/]+\.ts\.net(:\d+)?"
-            if os.environ.get("MASCOPE_DEVHOST")
-            else None
-        ),
+        # Shared with the Socket.IO origin check (mascope_backend.origins), so
+        # the two surfaces cannot drift into accepting different origins.
+        allow_origins=dev_origins(),
+        allow_origin_regex=dev_origin_regex(),
         allow_credentials=True,
         allow_methods=["*"],
         allow_headers=["*"],

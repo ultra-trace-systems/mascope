@@ -5,6 +5,7 @@ import math
 
 import socketio
 
+from mascope_backend.origins import is_allowed_dev_origin
 from mascope_backend.runtime import runtime
 from mascope_backend.socket.logging import get_socket_logger
 
@@ -40,6 +41,40 @@ class _NanSafeJson:
         return _json.loads(*args, **kwargs)
 
 
+def _allowed_origins():
+    """
+    Origin policy for the Socket.IO handshake.
+
+    Engine.IO refuses a handshake whose ``Origin`` is not allowed, which is the
+    only server-side cross-site check the realtime channel has: the auth cookie
+    is ``SameSite=lax``, so without this the browser's default is the sole thing
+    standing between a hostile page and a credentialed connection.
+
+    In production the app is same-origin, so ``None`` is exactly right - Engine.IO
+    then allows only the deployment's own origin, reconstructed per request from
+    ``X-Forwarded-Proto`` + ``X-Forwarded-Host`` (nginx sets both; without the
+    latter it would compare against the upstream name and refuse every browser).
+    Deriving it per request keeps the check host-agnostic, so a deployment on any
+    hostname works with no configuration. The accepted set is that forwarded
+    origin *plus* the unforwarded one the request arrived with, which behind
+    nginx is the internal upstream name - reachable only from inside the Docker
+    network, since the backend publishes no host port.
+
+    Development serves the app from Vite on another port, so those origins are
+    named explicitly. A predicate rather than a list because the tailnet case is
+    a pattern; Engine.IO calls it with the origin (and the WSGI environ, which we
+    do not need).
+
+    Note that ``[]`` would be wrong for "deny all": Engine.IO skips validation
+    entirely when the setting is an empty list.
+
+    :return: A predicate in dev, or ``None`` to enforce same-origin in prod.
+    """
+    if runtime.mode == "dev":
+        return lambda origin, *_: is_allowed_dev_origin(origin)
+    return None
+
+
 def create_socket_server() -> socketio.AsyncServer:
     """
     Create Socket.IO server with Redis for multi-worker coordination.
@@ -67,7 +102,7 @@ def create_socket_server() -> socketio.AsyncServer:
 
     return socketio.AsyncServer(
         async_mode="asgi",  # run in ASGI mode
-        cors_allowed_origins="*",  # allow all origins
+        cors_allowed_origins=_allowed_origins(),
         json=_NanSafeJson,  # emit valid JSON (NaN/Infinity -> null); see class docstring
         client_manager=client_manager,  # Redis manager for multi-worker
         namespaces=[
