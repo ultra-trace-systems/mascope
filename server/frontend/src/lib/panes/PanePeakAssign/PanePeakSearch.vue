@@ -1,5 +1,5 @@
 <script setup>
-import { ref, reactive, computed, watch, watchEffect, onMounted, onUnmounted } from 'vue'
+import { ref, reactive, computed, watch, watchEffect, onMounted } from 'vue'
 import { watchDebounced } from '@vueuse/core'
 
 import FloatLabel from 'primevue/floatlabel'
@@ -113,7 +113,7 @@ const updateFormulaRange = () => {
   }
 }
 
-const notificationHandler = app.ui.notification.on('match_compositions_by_mz', (payload) => {
+app.ui.notification.on('match_compositions_by_mz', (payload) => {
   if (payload.status === 'error') {
     loading.value = false
     return
@@ -138,10 +138,6 @@ const notificationHandler = app.ui.notification.on('match_compositions_by_mz', (
     }
     loading.value = false
   }
-})
-
-onUnmounted(() => {
-  notificationHandler?.unmount?.()
 })
 
 watch(
