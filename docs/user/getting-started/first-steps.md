@@ -19,9 +19,9 @@ ask them.
 
 Right after signing in you may land on **Set a new password** instead of the
 dashboard. That happens when your account was created with a password someone
-else chose, when an administrator issued you a temporary one, or when the
-password rules were tightened after your account was made. It is not a sign that
-anything is wrong.
+else chose, when an administrator issued you a temporary one, or when an
+administrator has asked everyone to set a new password. It is not a sign that
+anything is wrong, and the screen itself says which of the three applies.
 
 Enter your current password, then choose a new one. It must be at least 12
 characters, must differ from your current password, and cannot be a commonly used

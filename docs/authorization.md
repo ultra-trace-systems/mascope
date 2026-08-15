@@ -100,7 +100,7 @@ Passwords must be at least **12 characters**. There are no character-class rules
 
 A password an administrator issues is **temporary**. Resetting another user's password, and creating a new account, both leave that account required to choose its own password the next time it signs in — so only its holder ever knows the password in use. The account signs in with the issued password as normal and is then held at a password screen until it sets a new one.
 
-An owner can require the same of **every** account at once, from **Manage users**. Use it after tightening the policy, so passwords created under the old rules are brought up to the current ones. It is not a lockout: everyone keeps signing in with their existing password until they replace it. See [maintaining.md](maintaining.md#user-accounts) for the operator's view, including how to undo it.
+An owner can require the same of **every** account at once, from **Manage users**. It puts every account through the current policy, whatever the reason for asking — a tightened rule, a periodic refresh, or a concern about credentials. It is not a lockout: everyone keeps signing in with their existing password until they replace it. See [maintaining.md](maintaining.md#user-accounts) for the operator's view, including how to undo it.
 
 ## Access tokens
 

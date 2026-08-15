@@ -1,3 +1,5 @@
+import { randomUUID } from 'node:crypto'
+
 import { test as base, expect } from '@playwright/test'
 
 import { env } from './fixtures/env'
@@ -27,7 +29,10 @@ import { env } from './fixtures/env'
 const field = (page, id) => page.locator(`input#${id}, #${id} input`).first()
 
 const throwaway = () => {
-  const suffix = Math.random().toString(36).slice(2, 8)
+  // Only needs to be unique across parallel runs, but it names an account, so
+  // it reads as a credential to a scanner. randomUUID costs nothing here and
+  // keeps the distinction from mattering.
+  const suffix = randomUUID().slice(0, 8)
   return {
     email: `pwgate-${suffix}@example.com`,
     username: `pwgate ${suffix}`,

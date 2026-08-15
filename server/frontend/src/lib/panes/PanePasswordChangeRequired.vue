@@ -23,8 +23,12 @@ const serverError = ref(null)
 // Stated as a property of the system, or of how the account was set up - never
 // of the person reading it.
 const REASONS = {
+  // Deliberately does not name a cause. An administrator can require this for
+  // any reason - a tightened policy, a periodic refresh, a credential concern -
+  // and the application is not told which, so claiming one would eventually be
+  // false.
   policy:
-    'Mascope now requires stronger passwords than it did when your account was created. Set a new one to continue.',
+    'A password change has been requested by an administrator. Set a new password to continue.',
   reset:
     'You were given a temporary password by an administrator. Choose your own password to continue.',
   new_account:

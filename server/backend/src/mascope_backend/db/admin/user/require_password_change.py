@@ -1,10 +1,12 @@
 """
 Database operations for the deployment-wide forced password change.
 
-Requiring a change puts every account through the current password policy, which
-is how a deployment brings passwords created under an older, weaker policy up to
-it. It is a soft requirement: the accounts keep signing in with their existing
-password and are held at a mandatory password screen until they replace it.
+Requiring a change puts every account through the current password policy. An
+operator may ask for that for any reason - a tightened rule, a periodic refresh,
+a concern about exposed credentials - and nothing here records which, so no
+message should claim one. It is a soft requirement: the accounts keep signing in
+with their existing password and are held at a mandatory password screen until
+they replace it.
 
 Entry Points:
 - Async: `require_password_change_for_all_users()`, `clear_password_change_requirement()`

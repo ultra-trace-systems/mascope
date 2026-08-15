@@ -357,9 +357,11 @@ guard above), the same as the documented rollback flow.
 
 ### Requiring a password change
 
-Passwords must meet the policy in [authorization.md](authorization.md#passwords)
-when they are set, but accounts created before a rule was tightened keep whatever
-they had. Requiring a change puts every account through the current policy.
+Requiring a change puts every account through the password policy in
+[authorization.md](authorization.md#passwords). Reach for it whenever you want
+every password re-set - after tightening a rule, on a periodic refresh, or if you
+suspect credentials are exposed. Accounts keep whatever password they had until
+then: the policy is only enforced at the moment one is set.
 
 It is a **soft** requirement, not a lockout. Everyone signs in with their existing
 password as usual, and is then held at a password screen until they set a new one

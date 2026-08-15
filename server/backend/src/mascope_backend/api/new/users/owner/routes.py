@@ -85,11 +85,11 @@ async def owner_require_password_change_route(
     """
     Require every user account to set a new password before continuing.
 
-    Puts every account through the current password policy, which is how a
-    deployment brings passwords created under an older policy up to it. Nobody
-    is excluded, the calling owner included. Everyone keeps signing in with
-    their existing password and is held at a mandatory password screen until
-    they replace it.
+    Puts every account through the current password policy, for whatever reason
+    the owner has - a tightened rule, a periodic refresh, a concern about
+    exposed credentials. Nobody is excluded, the calling owner included.
+    Everyone keeps signing in with their existing password and is held at a
+    mandatory password screen until they replace it.
 
     There is no counterpart to undo this over HTTP - withdrawing the
     requirement is a maintenance script run on the server.
