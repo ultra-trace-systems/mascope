@@ -369,7 +369,11 @@ const formatFit = (value) =>
           {{ num.mz.format(data.cheminfo.target_isotope_mz) }}
         </template>
       </Column>
-      <Column field="cheminfo.ionization_mechanism.ionization_mechanism" header="Mech." sortable />
+      <Column
+        field="cheminfo.ionization_mechanism.ionization_mechanism"
+        header="Mech."
+        sortable
+      />
       <Column field="cheminfo.target_isotope_mz_error_ppm" header="Error (ppm)" sortable>
         <template #body="{ data }">
           {{ num.mzError.format(data.cheminfo.target_isotope_mz_error_ppm) }}
@@ -534,7 +538,10 @@ const formatFit = (value) =>
         </i>
       </div>
     </div>
-    <div v-else-if="!loading && results.length === 0" class="center search-placeholder">
+    <div
+      v-else-if="!loading && results.length === 0"
+      class="center search-placeholder"
+    >
       <div class="col" style="gap: 1rem; max-width: 45ch; text-align: center">
         <strong> <span class="pi ph ph-info" /> No results found </strong>
         <i style="opacity: 0.6"> Consider broadening the m/z precision or formula range. </i>

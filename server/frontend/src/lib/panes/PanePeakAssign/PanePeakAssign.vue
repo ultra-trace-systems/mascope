@@ -147,7 +147,9 @@ const formatRel = (value) => (value != null ? relAbuFmt.format(value) : '-')
 // leave the focus alone rather than clear it, which is what focus() would do
 // with an id that resolves to nothing.
 const focusIsotopePeak = (iso) => {
-  const peak = app.data.peak.list.find((p) => String(p.peak_id) === String(iso.sample_peak_id))
+  const peak = app.data.peak.list.find(
+    (p) => String(p.peak_id) === String(iso.sample_peak_id)
+  )
   if (peak) app.data.peak.focus(peak)
 }
 
@@ -195,272 +197,275 @@ const altTooltip = (alt) => {
         </p>`
     }"
   >
-    <section v-if="focusedAssignment" class="inspector">
-      <div class="insp-head">
-        <div class="insp-formula">
-          {{ focusedAssignment.assigned_formula || 'Unassigned' }}
+      <section v-if="focusedAssignment" class="inspector">
+        <div class="insp-head">
+          <div class="insp-formula">
+            {{ focusedAssignment.assigned_formula || 'Unassigned' }}
+          </div>
+          <BaseTierTag
+            :tier="focusedAssignment.tier"
+            :fit-score="focusedAssignment.fit_score"
+            :role="focusedAssignment.role"
+            :source="focusedAssignment.source"
+          />
         </div>
-        <BaseTierTag
-          :tier="focusedAssignment.tier"
-          :fit-score="focusedAssignment.fit_score"
-          :role="focusedAssignment.role"
-          :source="focusedAssignment.source"
-        />
-      </div>
-      <div
-        class="insp-sub"
-        v-if="
-          focusedAssignment.ion_formula ||
-          focusedAssignment.isotope_label ||
-          focusedAssignment.source
-        "
-      >
-        <span v-if="focusedAssignment.ion_formula">{{ focusedAssignment.ion_formula }}</span>
-        <span v-if="focusedAssignment.isotope_label">
-          &middot; {{ focusedAssignment.isotope_label }}</span
+        <div
+          class="insp-sub"
+          v-if="
+            focusedAssignment.ion_formula ||
+            focusedAssignment.isotope_label ||
+            focusedAssignment.source
+          "
         >
-        <span v-if="focusedAssignment.source" class="src">
-          &middot; {{ focusedAssignment.source }}</span
-        >
-      </div>
-      <div class="evidence">
-        <div class="ev">
-          <span class="k">fit</span>
-          <span class="v">{{ formatFit(focusedAssignment.fit_score) }}</span>
-        </div>
-        <div class="ev" v-if="focusedAssignment.mz_error_ppm != null">
-          <span class="k">m/z error</span>
-          <span class="v">{{ num.mzError.format(focusedAssignment.mz_error_ppm) }} ppm</span>
-        </div>
-        <div class="ev" v-if="focusedAssignment.abundance_error != null">
-          <span class="k">abund. error</span>
-          <span class="v">{{
-            num.relativeAbundanceError.format(focusedAssignment.abundance_error)
-          }}</span>
-        </div>
-        <div class="ev" v-if="focusedAssignment.isotope_label">
-          <span class="k">isotope</span>
-          <span class="v">{{ focusedAssignment.isotope_label }}</span>
-        </div>
-        <div class="ev" v-if="provenance?.plausibility != null">
-          <span class="k" v-tooltip.top="'Chemical plausibility (Seven Golden Rules)'"
-            >plausibility</span
+          <span v-if="focusedAssignment.ion_formula">{{ focusedAssignment.ion_formula }}</span>
+          <span v-if="focusedAssignment.isotope_label">
+            &middot; {{ focusedAssignment.isotope_label }}</span
           >
-          <span class="v">{{ formatFit(provenance.plausibility) }}</span>
-        </div>
-        <div class="ev" v-if="provenance?.confidence != null">
-          <span
-            class="k"
-            v-tooltip.top="'Arbitration confidence: winner share of fit x plausibility'"
-            >confidence</span
-          >
-          <span class="v"
-            >{{ formatFit(provenance.confidence)
-            }}<span
-              v-if="provenance.is_tie"
-              class="tie-flag"
-              v-tooltip.top="'Runner-up too close to call'"
-              >&nbsp;tie</span
-            ></span
+          <span v-if="focusedAssignment.source" class="src">
+            &middot; {{ focusedAssignment.source }}</span
           >
         </div>
-        <div class="ev" v-if="provenance && provenance.calibrated !== undefined">
-          <span class="k" v-tooltip.top="'Calibrated probability the assignment is correct'"
-            >P(correct)</span
-          >
-          <span class="v" v-if="provenance.p_correct != null">
-            {{ formatFit(provenance.p_correct)
-            }}<span
-              v-if="provenance.calibration?.provisional"
-              class="prov-flag"
-              v-tooltip.top="'Provisional calibration curve - directionally right, not hardened'"
-              >&nbsp;prov.</span
-            ></span
-          >
-          <span class="v uncal" v-else v-tooltip.top="'No calibration curve for this instrument'"
-            >uncalibrated</span
-          >
-        </div>
-      </div>
-      <div
-        v-if="corroboration && corroboration.n_adducts > 1"
-        class="corroboration"
-        v-tooltip.top="corroborationTooltip"
-      >
-        <span class="pi ph ph-link-simple" />
-        Supported by {{ corroboration.n_adducts }} adducts
-      </div>
-      <div v-if="family.length > 1" class="isotopologues">
-        <div class="alts-label">Isotopologues</div>
-        <div class="iso-head">
-          <span>iso</span><span>m/z</span><span>ppm</span
-          ><span v-tooltip.top="'Theoretical relative abundance (fraction of M0)'">abu.</span>
-        </div>
-        <div class="iso-rows">
-          <div
-            v-for="iso in family"
-            :key="iso.peak_assignment_id"
-            class="iso-row"
-            :class="{
-              current: iso.sample_peak_id === focusedAssignment.sample_peak_id,
-              poor: isPoorMatch(iso)
-            }"
-            v-tooltip.left="
-              isPoorMatch(iso)
-                ? 'Poorly matched isotopologue (abundance / m/z off) - click to focus'
-                : 'Focus this isotopologue peak'
-            "
-            @click="focusIsotopePeak(iso)"
-          >
-            <span class="iso-label" v-tooltip.left="iso.isotope_formula || iso.isotope_label"
-              ><span v-if="isPoorMatch(iso)" class="pi ph ph-warning poor-icon" />{{
-                isoLabel(iso)
-              }}</span
-            >
-            <span class="iso-mz">{{ num.mz.format(iso.sample_peak_mz) }}</span>
-            <span class="iso-err">{{
-              iso.mz_error_ppm != null ? `${num.mzError.format(iso.mz_error_ppm)}` : '—'
+        <div class="evidence">
+          <div class="ev">
+            <span class="k">fit</span>
+            <span class="v">{{ formatFit(focusedAssignment.fit_score) }}</span>
+          </div>
+          <div class="ev" v-if="focusedAssignment.mz_error_ppm != null">
+            <span class="k">m/z error</span>
+            <span class="v">{{ num.mzError.format(focusedAssignment.mz_error_ppm) }} ppm</span>
+          </div>
+          <div class="ev" v-if="focusedAssignment.abundance_error != null">
+            <span class="k">abund. error</span>
+            <span class="v">{{
+              num.relativeAbundanceError.format(focusedAssignment.abundance_error)
             }}</span>
-            <span class="iso-rel">{{ formatRel(theoreticalRel(iso)) }}</span>
+          </div>
+          <div class="ev" v-if="focusedAssignment.isotope_label">
+            <span class="k">isotope</span>
+            <span class="v">{{ focusedAssignment.isotope_label }}</span>
+          </div>
+          <div class="ev" v-if="provenance?.plausibility != null">
+            <span class="k" v-tooltip.top="'Chemical plausibility (Seven Golden Rules)'"
+              >plausibility</span
+            >
+            <span class="v">{{ formatFit(provenance.plausibility) }}</span>
+          </div>
+          <div class="ev" v-if="provenance?.confidence != null">
+            <span
+              class="k"
+              v-tooltip.top="'Arbitration confidence: winner share of fit x plausibility'"
+              >confidence</span
+            >
+            <span class="v"
+              >{{ formatFit(provenance.confidence)
+              }}<span
+                v-if="provenance.is_tie"
+                class="tie-flag"
+                v-tooltip.top="'Runner-up too close to call'"
+                >&nbsp;tie</span
+              ></span
+            >
+          </div>
+          <div class="ev" v-if="provenance && provenance.calibrated !== undefined">
+            <span
+              class="k"
+              v-tooltip.top="'Calibrated probability the assignment is correct'"
+              >P(correct)</span
+            >
+            <span class="v" v-if="provenance.p_correct != null">
+              {{ formatFit(provenance.p_correct)
+              }}<span
+                v-if="provenance.calibration?.provisional"
+                class="prov-flag"
+                v-tooltip.top="'Provisional calibration curve - directionally right, not hardened'"
+                >&nbsp;prov.</span
+              ></span
+            >
+            <span
+              class="v uncal"
+              v-else
+              v-tooltip.top="'No calibration curve for this instrument'"
+              >uncalibrated</span
+            >
           </div>
         </div>
-      </div>
-      <div v-if="focusedAssignment.alternatives?.length" class="alts">
-        <div class="alts-label">
-          Close alternatives
-          <span class="alts-count">{{ focusedAssignment.alternatives.length }}</span>
+        <div
+          v-if="corroboration && corroboration.n_adducts > 1"
+          class="corroboration"
+          v-tooltip.top="corroborationTooltip"
+        >
+          <span class="pi ph ph-link-simple" />
+          Supported by {{ corroboration.n_adducts }} adducts
         </div>
-        <div class="alts-list">
-          <div
-            v-for="(alt, i) in focusedAssignment.alternatives"
-            :key="i"
-            class="alt"
-            v-tooltip.left="altTooltip(alt)"
-          >
-            <span class="f">{{ alt.assigned_formula || alt.ion_formula || '?' }}</span>
-            <span class="s">
-              <span v-if="alt.fit_score != null"
-                >fit {{ formatFit(alt.fit_score)
-                }}<span v-if="alt.mz_error_ppm != null">
-                  &middot; {{ num.mzError.format(alt.mz_error_ppm) }} ppm</span
-                ></span
+        <div v-if="family.length > 1" class="isotopologues">
+          <div class="alts-label">Isotopologues</div>
+          <div class="iso-head">
+            <span>iso</span><span>m/z</span><span>ppm</span
+            ><span v-tooltip.top="'Theoretical relative abundance (fraction of M0)'">abu.</span>
+          </div>
+          <div class="iso-rows">
+            <div
+              v-for="iso in family"
+              :key="iso.peak_assignment_id"
+              class="iso-row"
+              :class="{
+                current: iso.sample_peak_id === focusedAssignment.sample_peak_id,
+                poor: isPoorMatch(iso)
+              }"
+              v-tooltip.left="
+                isPoorMatch(iso)
+                  ? 'Poorly matched isotopologue (abundance / m/z off) - click to focus'
+                  : 'Focus this isotopologue peak'
+              "
+              @click="focusIsotopePeak(iso)"
+            >
+              <span class="iso-label" v-tooltip.left="iso.isotope_formula || iso.isotope_label"
+                ><span v-if="isPoorMatch(iso)" class="pi ph ph-warning poor-icon" />{{
+                  isoLabel(iso)
+                }}</span
               >
-              <span v-else-if="alt.plausibility != null"
-                >plaus {{ formatFit(alt.plausibility) }}</span
-              >
-              <span v-else class="no-stats"><span class="pi ph ph-info" /></span>
-            </span>
+              <span class="iso-mz">{{ num.mz.format(iso.sample_peak_mz) }}</span>
+              <span class="iso-err">{{
+                iso.mz_error_ppm != null ? `${num.mzError.format(iso.mz_error_ppm)}` : '—'
+              }}</span>
+              <span class="iso-rel">{{ formatRel(theoreticalRel(iso)) }}</span>
+            </div>
           </div>
         </div>
-      </div>
-      <div class="verify">
-        <div class="alts-label">Verification</div>
-        <div v-if="verification && !editing" class="verify-current">
-          <BaseVerdictBadge :record="verification" />
-          <Button
-            v-if="!denied"
-            label="edit"
-            size="small"
-            text
-            severity="secondary"
-            icon="pi ph ph-pencil-simple"
-            v-tooltip.top="'Change the verdict'"
-            @click="startEdit"
-          />
-        </div>
-        <template v-else-if="showVerifyForm">
-          <div class="verify-buttons">
-            <Button
-              label="Confirm"
-              icon="pi ph ph-check-circle"
-              size="small"
-              severity="success"
-              :disabled="submitting || !evidenceLevel"
-              :loading="submitting && pendingVerdict === 'confirmed'"
-              v-tooltip.top="!evidenceLevel ? 'Pick an evidence level to confirm' : ''"
-              @click="submitVerdict('confirmed')"
-            />
-            <Button
-              label="Reject"
-              icon="pi ph ph-x-circle"
-              size="small"
-              severity="danger"
-              :disabled="submitting"
-              :loading="submitting && pendingVerdict === 'rejected'"
-              @click="submitVerdict('rejected')"
-            />
-            <Button
-              label="Unsure"
-              icon="pi ph ph-question"
-              size="small"
-              severity="secondary"
-              :disabled="submitting"
-              :loading="submitting && pendingVerdict === 'unsure'"
-              @click="submitVerdict('unsure')"
-            />
+        <div v-if="focusedAssignment.alternatives?.length" class="alts">
+          <div class="alts-label">
+            Close alternatives
+            <span class="alts-count">{{ focusedAssignment.alternatives.length }}</span>
           </div>
-          <Select
-            v-model="evidenceLevel"
-            :options="EVIDENCE_LEVELS"
-            optionLabel="label"
-            optionValue="value"
-            placeholder="Evidence level (required to confirm)"
-            size="small"
-            showClear
-            fluid
-          />
-          <InputText v-model="note" placeholder="Note (optional)" size="small" fluid />
-          <div v-if="editing" class="verify-edit-actions">
+          <div class="alts-list">
+            <div
+              v-for="(alt, i) in focusedAssignment.alternatives"
+              :key="i"
+              class="alt"
+              v-tooltip.left="altTooltip(alt)"
+            >
+              <span class="f">{{ alt.assigned_formula || alt.ion_formula || '?' }}</span>
+              <span class="s">
+                <span v-if="alt.fit_score != null"
+                  >fit {{ formatFit(alt.fit_score)
+                  }}<span v-if="alt.mz_error_ppm != null">
+                    &middot; {{ num.mzError.format(alt.mz_error_ppm) }} ppm</span
+                  ></span
+                >
+                <span v-else-if="alt.plausibility != null">plaus {{ formatFit(alt.plausibility) }}</span>
+                <span v-else class="no-stats"><span class="pi ph ph-info" /></span>
+              </span>
+            </div>
+          </div>
+        </div>
+        <div class="verify">
+          <div class="alts-label">Verification</div>
+          <div v-if="verification && !editing" class="verify-current">
+            <BaseVerdictBadge :record="verification" />
             <Button
-              label="Cancel"
+              v-if="!denied"
+              label="edit"
               size="small"
               text
               severity="secondary"
-              @click="editing = false"
+              icon="pi ph ph-pencil-simple"
+              v-tooltip.top="'Change the verdict'"
+              @click="startEdit"
             />
           </div>
-        </template>
-        <div v-else-if="denied" class="verify-denied">
-          <span class="pi ph ph-lock-simple" /> Editor access is required to verify.
+          <template v-else-if="showVerifyForm">
+            <div class="verify-buttons">
+              <Button
+                label="Confirm"
+                icon="pi ph ph-check-circle"
+                size="small"
+                severity="success"
+                :disabled="submitting || !evidenceLevel"
+                :loading="submitting && pendingVerdict === 'confirmed'"
+                v-tooltip.top="!evidenceLevel ? 'Pick an evidence level to confirm' : ''"
+                @click="submitVerdict('confirmed')"
+              />
+              <Button
+                label="Reject"
+                icon="pi ph ph-x-circle"
+                size="small"
+                severity="danger"
+                :disabled="submitting"
+                :loading="submitting && pendingVerdict === 'rejected'"
+                @click="submitVerdict('rejected')"
+              />
+              <Button
+                label="Unsure"
+                icon="pi ph ph-question"
+                size="small"
+                severity="secondary"
+                :disabled="submitting"
+                :loading="submitting && pendingVerdict === 'unsure'"
+                @click="submitVerdict('unsure')"
+              />
+            </div>
+            <Select
+              v-model="evidenceLevel"
+              :options="EVIDENCE_LEVELS"
+              optionLabel="label"
+              optionValue="value"
+              placeholder="Evidence level (required to confirm)"
+              size="small"
+              showClear
+              fluid
+            />
+            <InputText v-model="note" placeholder="Note (optional)" size="small" fluid />
+            <div v-if="editing" class="verify-edit-actions">
+              <Button
+                label="Cancel"
+                size="small"
+                text
+                severity="secondary"
+                @click="editing = false"
+              />
+            </div>
+          </template>
+          <div v-else-if="denied" class="verify-denied">
+            <span class="pi ph ph-lock-simple" /> Editor access is required to verify.
+          </div>
+        </div>
+        <div class="insp-actions">
+          <Button
+            :label="showSearch ? 'Hide search' : 'Re-search'"
+            size="small"
+            text
+            :severity="showSearch ? 'primary' : 'secondary'"
+            icon="pi ph ph-magnifying-glass"
+            v-tooltip.top="'Search compositions for this peak in the panel below'"
+            @click="showSearch = !showSearch"
+          />
+        </div>
+      </section>
+      <section v-else-if="app.data.peak.focused" class="inspector">
+        <div class="insp-head">
+          <div class="insp-formula">Unassigned</div>
+          <BaseTierTag tier="unassigned" />
+        </div>
+        <div class="insp-sub">m/z {{ num.mz.format(app.data.peak.focused.mz) }}</div>
+        <div class="insp-actions">
+          <Button
+            :label="showSearch ? 'Hide search' : 'Re-search'"
+            size="small"
+            text
+            :severity="showSearch ? 'primary' : 'secondary'"
+            icon="pi ph ph-magnifying-glass"
+            v-tooltip.top="'Search compositions for this peak in the panel below'"
+            @click="showSearch = !showSearch"
+          />
+        </div>
+      </section>
+      <div v-else class="center no-peak">
+        <div class="col" style="gap: 0.75rem; max-width: 40ch; text-align: center; opacity: 0.6">
+          <span class="pi ph ph-cursor-click" style="font-size: 1.4rem" />
+          <i>Select a peak in the spectrum or ledger to inspect its assignment.</i>
         </div>
       </div>
-      <div class="insp-actions">
-        <Button
-          :label="showSearch ? 'Hide search' : 'Re-search'"
-          size="small"
-          text
-          :severity="showSearch ? 'primary' : 'secondary'"
-          icon="pi ph ph-magnifying-glass"
-          v-tooltip.top="'Search compositions for this peak in the panel below'"
-          @click="showSearch = !showSearch"
-        />
-      </div>
-    </section>
-    <section v-else-if="app.data.peak.focused" class="inspector">
-      <div class="insp-head">
-        <div class="insp-formula">Unassigned</div>
-        <BaseTierTag tier="unassigned" />
-      </div>
-      <div class="insp-sub">m/z {{ num.mz.format(app.data.peak.focused.mz) }}</div>
-      <div class="insp-actions">
-        <Button
-          :label="showSearch ? 'Hide search' : 'Re-search'"
-          size="small"
-          text
-          :severity="showSearch ? 'primary' : 'secondary'"
-          icon="pi ph ph-magnifying-glass"
-          v-tooltip.top="'Search compositions for this peak in the panel below'"
-          @click="showSearch = !showSearch"
-        />
-      </div>
-    </section>
-    <div v-else class="center no-peak">
-      <div class="col" style="gap: 0.75rem; max-width: 40ch; text-align: center; opacity: 0.6">
-        <span class="pi ph ph-cursor-click" style="font-size: 1.4rem" />
-        <i>Select a peak in the spectrum or ledger to inspect its assignment.</i>
-      </div>
     </div>
-  </div>
 </template>
 
 <style scoped>

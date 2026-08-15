@@ -181,13 +181,7 @@ onBeforeUnmount(() => {
           {{ num.peakIntensity.format(data.area) }}
         </template>
       </Column>
-      <Column
-        v-if="!peakAssignmentEnabled"
-        field="match"
-        header="formula"
-        sortable
-        style="height: 20px"
-      >
+      <Column v-if="!peakAssignmentEnabled" field="match" header="formula" sortable style="height: 20px">
         <template #body="{ data }">
           <div class="formula-buttons">
             <Button
@@ -225,11 +219,7 @@ onBeforeUnmount(() => {
           </div>
         </template>
       </Column>
-      <Column
-        v-if="peakAssignmentEnabled"
-        header="assignment"
-        style="height: 20px; min-width: 9rem"
-      >
+      <Column v-if="peakAssignmentEnabled" header="assignment" style="height: 20px; min-width: 9rem">
         <template #body="{ data }">
           <div v-if="assignmentFor(data)" class="assignment-cell">
             <span class="formula" v-if="assignmentFor(data).assigned_formula">

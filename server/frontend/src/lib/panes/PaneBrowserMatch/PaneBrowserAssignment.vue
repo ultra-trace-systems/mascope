@@ -258,10 +258,9 @@ const selectedRow = computed({
     if (exact) return exact
     // Folded: a focused isotopologue child maps to its M0 row.
     const assignment = assignments.value.forPeak(focused.peak_id)
-    const ownerId = assignment?.role === 'iso_child' ? assignment.owner_peak_assignment_id : null
-    return ownerId != null
-      ? (rows.value.find((r) => r.peak_assignment_id === ownerId) ?? null)
-      : null
+    const ownerId =
+      assignment?.role === 'iso_child' ? assignment.owner_peak_assignment_id : null
+    return ownerId != null ? (rows.value.find((r) => r.peak_assignment_id === ownerId) ?? null) : null
   },
   set: (row) => {
     if (row) focusPeak(row)
@@ -317,7 +316,9 @@ const isoCount = (row) => assignments.value.childrenOf(row.peak_assignment_id).l
     <div v-if="!app.data.sample.focused" class="center empty">
       <div class="col" style="gap: 0.5rem; text-align: center; max-width: 40ch">
         <strong><span class="pi ph ph-hand-pointing" /> No sample selected</strong>
-        <i style="opacity: 0.6"> Select a sample to view or run its peak assignments. </i>
+        <i style="opacity: 0.6">
+          Select a sample to view or run its peak assignments.
+        </i>
       </div>
     </div>
     <div v-else-if="!runs.list.length" class="center empty">
@@ -356,9 +357,7 @@ const isoCount = (row) => assignments.value.childrenOf(row.peak_assignment_id).l
               dim: activeTiers.size && !activeTiers.has(t.key)
             }
           ]"
-          v-tooltip.top="
-            activeTiers.has(t.key) ? `Showing only ${t.label}` : `Filter to ${t.label}`
-          "
+          v-tooltip.top="activeTiers.has(t.key) ? `Showing only ${t.label}` : `Filter to ${t.label}`"
           @click="toggleTier(t.key)"
         >
           <b>{{ t.count }}</b> {{ t.label }}
@@ -386,7 +385,12 @@ const isoCount = (row) => assignments.value.childrenOf(row.peak_assignment_id).l
         <Column field="sample_peak_mz" header="m/z" sortable style="min-width: 6rem">
           <template #body="{ data }">{{ num.mz.format(data.sample_peak_mz) }}</template>
         </Column>
-        <Column field="sample_peak_intensity" header="intensity" sortable style="min-width: 5rem">
+        <Column
+          field="sample_peak_intensity"
+          header="intensity"
+          sortable
+          style="min-width: 5rem"
+        >
           <template #body="{ data }">
             {{
               data.sample_peak_intensity != null
@@ -399,11 +403,9 @@ const isoCount = (row) => assignments.value.childrenOf(row.peak_assignment_id).l
           <template #body="{ data }">
             <span v-if="data.isChild" class="child-cell">
               <span class="child-caret">&#8627;</span>
-              <span
-                class="child-label"
-                v-tooltip.top="data.isotope_formula || data.isotope_label"
-                >{{ childLabel(data) }}</span
-              >
+              <span class="child-label" v-tooltip.top="data.isotope_formula || data.isotope_label">{{
+                childLabel(data)
+              }}</span>
             </span>
             <span v-else>
               <span class="formula">{{ data.assigned_formula || '—' }}</span>
@@ -488,7 +490,12 @@ const isoCount = (row) => assignments.value.childrenOf(row.peak_assignment_id).l
       </DataTable>
     </div>
 
-    <Dialog v-model:visible="configVisible" modal header="Assign peaks" :style="{ width: '26rem' }">
+    <Dialog
+      v-model:visible="configVisible"
+      modal
+      header="Assign peaks"
+      :style="{ width: '26rem' }"
+    >
       <PeakAssignConfigForm :config="config" :pinned="['run_untargeted']" />
       <template #footer>
         <Button label="Cancel" text severity="secondary" @click="configVisible = false" />
@@ -525,10 +532,7 @@ const isoCount = (row) => assignments.value.childrenOf(row.peak_assignment_id).l
   color: inherit;
   font-family: inherit;
   cursor: pointer;
-  transition:
-    opacity 0.12s,
-    border-color 0.12s,
-    background 0.12s;
+  transition: opacity 0.12s, border-color 0.12s, background 0.12s;
 }
 .tier-stat:hover {
   border-color: var(--p-primary-color, #6366f1);

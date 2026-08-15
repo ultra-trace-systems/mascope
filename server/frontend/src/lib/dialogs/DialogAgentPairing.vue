@@ -30,9 +30,7 @@ watch(visible, () => {
 })
 
 // Codes look like ABC-123; accept letters/digits with optional dash
-const invalidCode = computed(
-  () => !code.value || code.value.replace(/[^a-zA-Z0-9]/g, '').length < 6
-)
+const invalidCode = computed(() => !code.value || code.value.replace(/[^a-zA-Z0-9]/g, '').length < 6)
 
 const approve = async () => {
   busy.value = true
@@ -72,8 +70,8 @@ const approve = async () => {
     <section v-else>
       <Message icon="pi pi-check-circle" severity="success">
         Paired {{ SERVICE_LABELS[approved.service_name] || approved.service_name
-        }}<template v-if="approved.machine_name"> on {{ approved.machine_name }}</template
-        >. The agent will receive its token within a few seconds.
+        }}<template v-if="approved.machine_name"> on {{ approved.machine_name }}</template>. The
+        agent will receive its token within a few seconds.
       </Message>
     </section>
     <menu style="margin-top: 2rem">

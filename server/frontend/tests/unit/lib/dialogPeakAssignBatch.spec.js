@@ -55,7 +55,9 @@ const GLOBAL_STUBS = {
 }
 
 async function mountDialog() {
-  const { default: DialogPeakAssignBatch } = await import('@/lib/dialogs/DialogPeakAssignBatch.vue')
+  const { default: DialogPeakAssignBatch } = await import(
+    '@/lib/dialogs/DialogPeakAssignBatch.vue'
+  )
   return mount(DialogPeakAssignBatch, {
     props: { visible: true, batch: BATCH },
     global: { stubs: GLOBAL_STUBS }
@@ -108,8 +110,9 @@ describe('DialogPeakAssignBatch', () => {
   })
 
   it('does nothing without a batch', async () => {
-    const { default: DialogPeakAssignBatch } =
-      await import('@/lib/dialogs/DialogPeakAssignBatch.vue')
+    const { default: DialogPeakAssignBatch } = await import(
+      '@/lib/dialogs/DialogPeakAssignBatch.vue'
+    )
     const wrapper = mount(DialogPeakAssignBatch, {
       props: { visible: true, batch: null },
       global: { stubs: GLOBAL_STUBS }
