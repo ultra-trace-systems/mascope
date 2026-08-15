@@ -10,6 +10,7 @@ import { BaseParamField } from '@/lib/base'
 const chartSettings = ref()
 const scale = defineModel('scale')
 const yMode = defineModel('yMode')
+
 </script>
 
 <template>

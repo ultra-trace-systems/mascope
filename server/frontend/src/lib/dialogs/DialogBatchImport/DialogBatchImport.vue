@@ -232,11 +232,7 @@ const submit = () => {
               </li>
               </ul>
             `,
-              {
-                doc: app.ui.help.docUrl(
-                  'guides/import-files/#alternative-process-raw-files-by-hand'
-                )
-              }
+              { doc: app.ui.help.docUrl('guides/import-files/#alternative-process-raw-files-by-hand') }
             )
           "
         >

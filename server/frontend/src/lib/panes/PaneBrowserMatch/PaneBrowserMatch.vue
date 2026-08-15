@@ -19,7 +19,9 @@ const app = useApp()
 const MODE_KEY = 'mascope.browserMatch.mode'
 // With peak-centric assignment off there is only the targeted view, so the
 // toggle is hidden and the mode is pinned regardless of any stored preference.
-const mode = ref(peakAssignmentEnabled ? localStorage.getItem(MODE_KEY) || 'targets' : 'targets')
+const mode = ref(
+  peakAssignmentEnabled ? localStorage.getItem(MODE_KEY) || 'targets' : 'targets'
+)
 const modeOptions = [
   { label: 'Targets', value: 'targets' },
   { label: 'Assignments', value: 'assignments' }
