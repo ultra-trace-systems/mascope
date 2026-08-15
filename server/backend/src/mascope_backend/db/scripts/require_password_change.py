@@ -1,11 +1,11 @@
 """
 Maintenance script to require every user account to set a new password.
 
-Puts every account through the current password policy, which is how a
-deployment brings passwords created under an older, weaker policy up to it. The
-requirement is soft: accounts keep signing in with their existing password and
-are held at a mandatory password screen until they replace it. Nobody is
-excluded, including deactivated accounts and whoever runs this.
+Puts every account through the current password policy, for whatever reason the
+operator has - a tightened rule, a periodic refresh, a concern about exposed
+credentials. The requirement is soft: accounts keep signing in with their
+existing password and are held at a mandatory password screen until they replace
+it. Nobody is excluded, including deactivated accounts and whoever runs this.
 
 Emits no live notification - there is no socket server in this process - so
 sessions that are already open transition when their next request is refused.
