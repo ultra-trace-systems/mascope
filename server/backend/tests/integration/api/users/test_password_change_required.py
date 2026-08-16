@@ -394,20 +394,11 @@ async def test_the_owner_route_refuses_an_unacknowledged_call(owner_client):
             "/api/users/owner/require-password-change", json={"confirm": False}
         )
     ).status_code == 422
-    # Acknowledgement is Literal[True], which narrows pydantic's bool coercion:
-    # a plain `bool` field accepts every string below as true, so a client that
-    # sent "yes" would have fired a deployment-wide action. Note the boundary -
-    # JSON `1` is still accepted, because a literal bool schema cannot carry
-    # `strict` and rejecting it would need StrictBool plus a validator again.
-    # Both `1` and `true` are explicit values, so the gap is a shape question,
-    # not a safety one; the "empty or accidental request" case is what matters
-    # and is covered above.
-    for truthy in ("true", "yes", "on"):
-        assert (
-            await owner_client.post(
-                "/api/users/owner/require-password-change", json={"confirm": truthy}
-            )
-        ).status_code == 422, f"{truthy!r} was accepted as acknowledgement"
+    # What the acknowledgement accepts is a schema property, tested without HTTP
+    # in tests/unit/api/users/test_require_password_change_schema.py. Asserting
+    # it here would spend this route's rate-limit budget, and that budget lives
+    # in Redis on a one-hour window that outlives the test run - so the
+    # assertions would pass or 429 depending on what ran in the last hour.
     # State-changing, so not reachable by navigation.
     assert (
         await owner_client.get("/api/users/owner/require-password-change")
