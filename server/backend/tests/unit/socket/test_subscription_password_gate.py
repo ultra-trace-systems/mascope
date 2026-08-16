@@ -16,6 +16,11 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+# Import order matters, and only here. Entering the graph through socket.auth
+# leaves that package half-built when user_manager.service imports
+# authenticate_socket_connection from it, so the handler import below fails on
+# its own. Importing the auth stack first lets socket.auth complete once.
+import mascope_backend.api.new.auth  # noqa: F401
 from mascope_backend.socket.events.handlers.default.subscription import subscribe
 
 
