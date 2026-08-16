@@ -23,7 +23,7 @@ Date: 2026-08-14
 import asyncio
 import os
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 
 from mascope_backend.db import User, async_session, configure_database_engine
 from mascope_backend.db.admin.user.require_password_change import (
@@ -49,8 +49,25 @@ async def run_clear() -> None:
     async with async_session() as session:
         query = select(User).where(User.must_change_password.is_(True))
         if emails is not None:
-            query = query.where(User.email.in_(emails))
+            # Case-insensitive, like login: the casing an operator knows an
+            # account by is not necessarily the casing it was stored with.
+            query = query.where(
+                func.lower(User.email).in_([email.lower() for email in emails])
+            )
         affected_users = list((await session.execute(query)).scalars().all())
+
+    if emails is not None:
+        # Name every requested address that matches nothing, instead of letting
+        # it vanish into a smaller count: the operator is typing addresses from
+        # memory, and a typo that releases nobody must not read as success.
+        matched = {user.email.lower() for user in affected_users}
+        for email in emails:
+            if email.lower() not in matched:
+                runtime.logger.warning(
+                    f"'{email}' matches no account with a pending password "
+                    "change - check the address, or the account may not be "
+                    "flagged."
+                )
 
     if not affected_users:
         runtime.logger.info(

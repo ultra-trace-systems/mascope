@@ -106,6 +106,9 @@ async def clear_password_change_requirement(
     accounts again rather than clearing them here.
 
     :param emails: Restrict to these addresses; all accounts when omitted.
+        Compared case-insensitively: login accepts any casing of an address
+        (FastAPI Users lowercases both sides), so the casing an operator knows
+        an account by is not necessarily the casing it was stored with.
     :return: Operation results with the count of accounts released.
     :rtype: dict
     """
@@ -117,7 +120,9 @@ async def clear_password_change_requirement(
         .execution_options(synchronize_session=False)
     )
     if emails is not None:
-        statement = statement.where(User.email.in_(list(emails)))
+        statement = statement.where(
+            func.lower(User.email).in_([email.lower() for email in emails])
+        )
 
     async with async_session() as session:
         cleared = (await session.execute(statement)).all()

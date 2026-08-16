@@ -28,11 +28,15 @@ import os
 
 from sqlalchemy import func, select
 
-from mascope_backend.api.new.auth.config import auth_settings
+# The role names come from mascope_backend.roles, not the auth config that
+# re-exports them: importing the auth package reads the JWT secret at import
+# time, and the CLI discovers scripts by importing them on the host - where
+# that secret may be absent - silently dropping this script from the list.
 from mascope_backend.db import User, async_session, configure_database_engine
 from mascope_backend.db.admin.user.require_password_change import (
     require_password_change_for_all_users,
 )
+from mascope_backend.roles import ROLE_ACCESS_LEVELS
 from mascope_backend.runtime import runtime
 
 
@@ -85,9 +89,7 @@ def display_affected_users(users: list[User], total_users: int) -> None:
     :param users: List of User model instances
     :param total_users: Total number of user accounts
     """
-    role_names = {
-        level: name for name, level in auth_settings.ROLE_ACCESS_LEVELS.items()
-    }
+    role_names = {level: name for name, level in ROLE_ACCESS_LEVELS.items()}
     by_role: dict[str, int] = {}
     for user in users:
         by_role[role_names.get(user.role_id, "unknown")] = (

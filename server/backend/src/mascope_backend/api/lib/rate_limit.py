@@ -265,19 +265,24 @@ async def enforce_user_rate_limit(
         )
         raise HTTPException(
             status_code=status.HTTP_429_TOO_MANY_REQUESTS,
-            detail="Too many attempts. Please wait a few minutes and try again.",
+            # No duration promise: the true wait is the window remainder in
+            # the Retry-After header, which can be most of an hour.
+            detail="Too many attempts. Please wait and try again.",
             headers={"Retry-After": str(retry_after)},
         )
 
 
 async def clear_user_rate_limit(user_id: int, *, scope: str) -> None:
     """
-    Reset a per-account counter after the operation it guards succeeded.
+    Reset a per-account counter once the caller proved they are the account.
 
-    Keeps the limiter counting only failed attempts, so a user who mistypes
-    their current password twice and then succeeds carries no burnt budget into
-    their next change. Best-effort: the counter self-expires anyway, so a Redis
-    error here is logged and swallowed rather than failing the request.
+    Keeps the limiter counting only *failed* attempts - the same semantics as
+    :func:`clear_login_rate_limit` - so a user who mistypes their current
+    password twice and then gets it right carries no burnt budget, and a
+    refusal of the *new* password (a policy rejection is not an oracle guess)
+    cannot strand them at the mandatory password screen. Best-effort: the
+    counter self-expires anyway, so a Redis error here is logged and swallowed
+    rather than failing the request.
 
     :param user_id: The authenticated account's id.
     :param scope: Namespacing label; must match the limiter's ``scope``.
@@ -286,6 +291,39 @@ async def clear_user_rate_limit(user_id: int, *, scope: str) -> None:
         await redis_storage_client.client.delete(_user_limit_key(user_id, scope))
     except Exception:
         runtime.logger.exception(f"Failed to clear rate limit for scope '{scope}'")
+
+
+async def refund_ip_rate_limit(request: Request, *, scope: str) -> None:
+    """
+    Take one request back out of a per-IP fixed window after it succeeded.
+
+    The :func:`rate_limit` dependency counts every request at the door, before
+    the handler can know its outcome. That is the wrong accounting for a route
+    whose legitimate traffic is a burst of successes behind one address: after
+    a deployment-wide forced password change, every user of a NAT'd site files
+    exactly one successful credentials change, and an un-refunded window would
+    spend its whole budget on compliance and throttle the stragglers. Refunding
+    successes keeps the backstop counting only failures and floods, which is
+    what a backstop is for.
+
+    Best-effort like the limiter itself: on a Redis error the refund is
+    skipped and the window self-expires.
+
+    :param request: The request whose earlier increment is being refunded;
+        must be the same request the limiting dependency counted.
+    :param scope: Namespacing label; must match the limiting dependency's.
+    """
+    key = f"mascope:ratelimit:{scope}:{_limit_key_ip(client_ip(request))}"
+    try:
+        client = redis_storage_client.client
+        count = await client.decr(key)
+        if count < 0:
+            # The window expired between the increment and this refund; a
+            # negative counter would hand out free requests in the next
+            # window, so drop the key instead of keeping the credit.
+            await client.delete(key)
+    except Exception:
+        runtime.logger.exception(f"Failed to refund rate limit for scope '{scope}'")
 
 
 async def clear_login_rate_limit(
