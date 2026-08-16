@@ -1,10 +1,16 @@
-from pydantic import BaseModel, Field, field_validator
+from typing import Literal
+
+from pydantic import BaseModel, Field
 
 
 class RequirePasswordChange(BaseModel):
     """Acknowledgement body for the deployment-wide password-change trigger."""
 
-    confirm: bool = Field(
+    #: ``Literal[True]`` rather than ``bool`` plus a validator: it says the same
+    #: thing in the type, and is stricter than the validator it replaces, which
+    #: inherited pydantic's lax bool coercion and so accepted ``1`` and
+    #: ``"true"`` as acknowledgement.
+    confirm: Literal[True] = Field(
         ...,
         description=(
             "Must be true. Required so the endpoint cannot be fired by an empty "
@@ -12,13 +18,3 @@ class RequirePasswordChange(BaseModel):
             "interface that offers it."
         ),
     )
-
-    @field_validator("confirm")
-    @classmethod
-    def validate_confirm(cls, confirm: bool) -> bool:
-        """Reject anything but an explicit acknowledgement."""
-        if not confirm:
-            raise ValueError(
-                "Set 'confirm' to true to require a password change for all users."
-            )
-        return confirm
