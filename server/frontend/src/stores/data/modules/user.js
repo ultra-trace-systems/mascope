@@ -72,7 +72,10 @@ export const useUser = defineStore('app.data.user', () => {
         },
         {
           use: 'update',
-          type: 'update_password'
+          type: 'update_password',
+          // Both password forms show the server's message next to the fields,
+          // so the generic error toast would repeat it word for word.
+          errors: 'inline'
         }
       ),
     delete: (user) =>

@@ -37,12 +37,20 @@ export const useAuth = defineStore('app.auth', () => {
     }
   }
 
+  // The profile re-read in flight for the gate, if any. A sweep refuses every
+  // open store sync at once, and each rejection lands here - one re-read
+  // serves them all.
+  let gateIdentify = null
+
   /**
    * React to an API call refused because the account owes a password change.
    *
-   * Re-reads the profile so the app swaps to the password screen. Deliberately
-   * not cleared by identify() while the flag is still set: a late rejection
-   * arriving after the re-read would otherwise re-arm the notice.
+   * Re-reads the profile so the app swaps to the password screen, sharing one
+   * in-flight read across a burst of rejections. A failed re-read is caught
+   * and forgotten: the /users/me failure raises its own notification, and the
+   * next refused call retries. Deliberately not cleared by identify() while
+   * the flag is still set: a late rejection arriving after the re-read would
+   * otherwise re-arm the notice.
    *
    * @returns {boolean} True only for the first rejection, so the caller
    * notifies once.
@@ -50,7 +58,13 @@ export const useAuth = defineStore('app.auth', () => {
   const requirePasswordChange = () => {
     const first = !gateNoticeShown.value
     gateNoticeShown.value = true
-    identify()
+    if (!gateIdentify) {
+      gateIdentify = identify()
+        .catch(() => {})
+        .finally(() => {
+          gateIdentify = null
+        })
+    }
     return first
   }
 

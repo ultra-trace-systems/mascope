@@ -1,4 +1,5 @@
 import { api } from '@/api'
+import { useAuth } from '@/stores/auth'
 
 /**
  * Manages socket record events with deduplication and targeted updates.
@@ -165,6 +166,16 @@ export const useEvents = (name, key, refs, methods, events, logger, deps = null)
   }
 
   const handleReload = async (event) => {
+    // Reload broadcasts reach every connected socket, and the socket connects
+    // before login - so this fires in tabs that are signed out or held at the
+    // password gate. Fetching from those would 401/403 and surface a "session
+    // expired" notice on a screen that never had a session; they resync
+    // through the login callbacks when they become able to use the app.
+    const auth = useAuth()
+    if (!auth.user || typeof auth.user !== 'object' || auth.user.must_change_password) {
+      logger.debug('ignoring reload while signed out or awaiting a password change')
+      return
+    }
     await sync({ context: 'socket event', event })
     await reloadRecord()
   }

@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest'
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 
-import { MIN_PASSWORD_LENGTH, isCommonPassword } from '@/lib/password'
+import { MIN_PASSWORD_LENGTH, passwordPolicyError } from '@/lib/password'
 
 // Drift guard for the twin password policies. The rules are implemented once in
 // the backend (UserManager.validate_password, the authority) and mirrored in
@@ -63,10 +63,15 @@ describe('password policy drift', () => {
   })
 
   it('minimum identifier length matches the backend', () => {
-    // Not exported, so exercise it through behaviour: a 3-character username
-    // must not match, a 4-character one must.
+    // Not exported, so pin the backend constant and exercise the frontend at
+    // the boundary it implies: a 4-character username must match, a
+    // 3-character one must not. The shared case table pins the backend's own
+    // behaviour at the same boundary.
     expect(backendConstant('min_identifier_len')).toBe(4)
-    expect(isCommonPassword('kimberley crescent')).toBe(false)
+    expect(passwordPolicyError('the abcd farm road', { username: 'abcd' })).toBe(
+      'Password must not contain your username.'
+    )
+    expect(passwordPolicyError('the abc farm road', { username: 'abc' })).toBeNull()
   })
 })
 

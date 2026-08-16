@@ -56,7 +56,10 @@ export function passwordPolicyChecks(password, { email = null, username = null }
       id: 'length',
       label: `At least ${MIN_PASSWORD_LENGTH} characters`,
       error: `Password must be at least ${MIN_PASSWORD_LENGTH} characters long.`,
-      ok: candidate.length >= MIN_PASSWORD_LENGTH
+      // Count codepoints, not UTF-16 units, because the backend's len() counts
+      // codepoints: .length would tick this rule green for twelve UTF-16 units
+      // of six astral characters that the server then refuses as six.
+      ok: [...candidate].length >= MIN_PASSWORD_LENGTH
     },
     {
       id: 'common',

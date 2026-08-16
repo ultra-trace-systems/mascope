@@ -100,6 +100,33 @@ describe('auth store: forced password change', () => {
     expect(auth.requirePasswordChange()).toBe(false)
   })
 
+  it('shares one profile re-read across a burst of rejections', async () => {
+    // A sweep refuses every open store sync at once; each rejection calls
+    // requirePasswordChange(), but one /users/me re-read serves them all.
+    await identifyAs(GATED_USER)
+    http.get.mockClear()
+    http.get.mockResolvedValue(GATED_USER)
+    auth.requirePasswordChange()
+    auth.requirePasswordChange()
+    auth.requirePasswordChange()
+    expect(http.get).toHaveBeenCalledTimes(1)
+  })
+
+  it('survives a failed re-read and retries it on the next rejection', async () => {
+    // The re-read can fail (the sweep is likely run in a maintenance window);
+    // the rejection must not go unhandled, and must not wedge the shared
+    // in-flight slot so that later rejections could never retry.
+    await identifyAs(GATED_USER)
+    http.get.mockClear()
+    http.get.mockRejectedValueOnce(new Error('backend restarting'))
+    auth.requirePasswordChange()
+    await new Promise((resolve) => setTimeout(resolve))
+
+    http.get.mockResolvedValue(GATED_USER)
+    auth.requirePasswordChange()
+    expect(http.get).toHaveBeenCalledTimes(2)
+  })
+
   it('re-arms the notice only after the requirement has cleared', async () => {
     await identifyAs(GATED_USER)
     http.get.mockResolvedValue(GATED_USER)
