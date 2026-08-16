@@ -23,6 +23,15 @@ async def subscribe(sid, room):
     (``user_can_subscribe_to_room``). A user that lacks access to the room's
     resource is silently not joined - never receiving another tenant's data.
 
+    An account owing a forced password change is held to its own ``user-{id}``
+    room, for the same reason the REST dependencies refuse it: without this it
+    would keep reading over the socket exactly what the API has just started
+    refusing. The personal room is the single exemption because it is how the
+    gated tab hears that it has been gated, and that it has been released - the
+    owner sweep and the credentials route both emit there. The handshake stays
+    open for the same reason: refusing it would leave the SPA with no channel
+    at all, and nothing to receive the release on.
+
     Performs dual registration on success:
     - Socket.IO room (for event routing via AsyncRedisManager)
     - Redis tracking (for cross-worker membership queries)
@@ -50,6 +59,15 @@ async def subscribe(sid, room):
     if user is None or not await user_can_subscribe_to_room(room, user):
         runtime.logger.warning(
             f"Denied room subscription: user {user_id} -> room '{room}'"
+        )
+        return
+
+    # Checked after the ACL so the log says which boundary refused, and using
+    # the user already loaded above rather than a second query.
+    if user.must_change_password and room != f"user-{user_id}":
+        runtime.logger.warning(
+            f"Denied room subscription: user {user_id} owes a password change "
+            f"-> room '{room}'"
         )
         return
 
