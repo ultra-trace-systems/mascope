@@ -185,7 +185,9 @@ async def test_many_accounts_behind_one_address_can_all_comply(
     # The per-address budget on the credentials route used to be 10/hour. After
     # a deployment-wide requirement this route is the only way back into the
     # app, so a shared office address would have locked everyone out on the
-    # eleventh attempt. The real budget is per account.
+    # eleventh attempt. The real budget is per account. Counts for real against
+    # this package's in-memory limiter backend; in the default ASGI setup the
+    # limiter fails open and this test would pass vacuously.
     from fastapi_users.password import PasswordHelper
 
     created = []
@@ -230,6 +232,115 @@ async def test_many_accounts_behind_one_address_can_all_comply(
                 if stored is not None:
                     await session.delete(stored)
             await session.commit()
+
+
+@pytest.mark.asyncio
+async def test_wrong_password_guesses_exhaust_the_account_budget(flagged_client):
+    # The per-account limiter is the oracle protection: 20 consecutive failed
+    # current-password verifications refuse the 21st attempt outright. Runs
+    # against the in-memory limiter backend from this package's conftest - in
+    # the default ASGI setup the limiter fails open and asserts nothing.
+    body = {
+        "current_password": "not the right one",
+        "new_password": COMPLIANT_PASSWORD,
+        "verify_new_password": COMPLIANT_PASSWORD,
+    }
+    for attempt in range(20):
+        resp = await flagged_client.patch("/api/users/me/creds", json=body)
+        assert resp.status_code != 429, f"attempt {attempt}: {resp.text}"
+    resp = await flagged_client.patch("/api/users/me/creds", json=body)
+    assert resp.status_code == 429, resp.text
+    assert resp.headers.get("Retry-After") is not None
+
+
+@pytest.mark.asyncio
+async def test_policy_rejections_do_not_burn_the_account_budget(flagged_client):
+    # A refusal of the NEW password is not an oracle guess - the browser's
+    # blocklist is only the head of the server's, so a user can run into
+    # server-only rejections repeatedly with a green client-side checklist.
+    # Proving the current password resets the budget, so more than 20 such
+    # attempts stay possible; anything else strands them at the mandatory
+    # password screen.
+    body = {
+        "current_password": ORIGINAL_PASSWORD,
+        "new_password": "qwerty123456",
+        "verify_new_password": "qwerty123456",
+    }
+    for attempt in range(25):
+        resp = await flagged_client.patch("/api/users/me/creds", json=body)
+        assert resp.status_code == 400, f"attempt {attempt}: {resp.text}"
+
+
+@pytest.mark.asyncio
+async def test_a_successful_change_leaves_no_burnt_budget(
+    flagged_client, live_rate_limiter
+):
+    # The per-account counter is cleared and the per-IP backstop increment is
+    # refunded on success, so a whole site complying with a forced change in
+    # the same hour spends nothing but its failures. Asserted on the limiter
+    # backend directly: exercising the 100-request backstop end to end would
+    # need a hundred accounts.
+    resp = await flagged_client.patch(
+        "/api/users/me/creds",
+        json={
+            "current_password": ORIGINAL_PASSWORD,
+            "new_password": COMPLIANT_PASSWORD,
+            "verify_new_password": COMPLIANT_PASSWORD,
+        },
+    )
+    assert resp.status_code == 200, resp.text
+
+    burnt = {
+        key: count
+        for key, count in live_rate_limiter.values.items()
+        if key.startswith("mascope:ratelimit:creds-change") and count > 0
+    }
+    assert burnt == {}
+
+
+@pytest.mark.asyncio
+async def test_targeted_clear_matches_emails_case_insensitively(
+    async_session_factory, roles
+):
+    # Login accepts any casing of an address (FastAPI Users lowercases both
+    # sides), so the casing an operator knows an account by is not necessarily
+    # the casing it was stored with. The targeted undo must not silently
+    # release nobody over that mismatch.
+    from fastapi_users.password import PasswordHelper
+
+    from mascope_backend.db.admin.user.require_password_change import (
+        clear_password_change_requirement,
+    )
+
+    async with async_session_factory() as session:
+        user = User(
+            email="PwGate.Case@Test.com",
+            username="pwgate_case_user",
+            hashed_password=PasswordHelper().hash(ORIGINAL_PASSWORD),
+            is_active=True,
+            is_verified=False,
+            role_id=roles["guest"].role_id,
+            must_change_password=True,
+            password_change_reason="policy",
+        )
+        session.add(user)
+        await session.commit()
+        await session.refresh(user)
+
+    try:
+        result = await clear_password_change_requirement(["pwgate.case@test.com"])
+        assert result["data"]["cleared_count"] == 1
+        assert result["data"]["user_ids"] == [user.id]
+
+        async with async_session_factory() as session:
+            stored = await session.get(User, user.id)
+            assert stored.must_change_password is False
+    finally:
+        async with async_session_factory() as session:
+            stored = await session.get(User, user.id)
+            if stored is not None:
+                await session.delete(stored)
+                await session.commit()
 
 
 @pytest.mark.asyncio

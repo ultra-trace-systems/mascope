@@ -5,8 +5,11 @@ The gate lives in the two dependencies every authenticated route resolves
 through, rather than in ``role_based_access``: most routes depend on
 ``current_active_user`` directly and never reach the role helper, so gating
 there would leave the bulk of the API open. These tests assert the structure
-that makes it work - no route binds an ungated dependency, and only the two
-routes that let a user out of the gate bypass it.
+that makes it work - no route binds an ungated dependency, only the two routes
+that let a user out of the gate bypass it, and every route that resolves no
+gated identity at all is on an explicit known-ungated list, so an identity
+dependency created outside this module (a fresh ``fastapi_users.current_user``
+closure, a library router's own internals) cannot slip in unnoticed.
 
 Structural on purpose: they walk whatever routes the app has registered, so a
 route added later is covered without anyone remembering to come back here.
@@ -32,13 +35,36 @@ EXEMPT_WRAPPERS = {
     deps.password_gate_exempt_guest_user,
 }
 
-#: The complete set of routes reachable while a password change is pending.
+#: The routes that bypass the gate through an exempt wrapper, asserted as an
+#: exact set: a third entry appearing here is a hole, not an improvement.
 #: ``GET /api/users/me`` is how the frontend discovers the pending change, and
-#: the credentials route is how the user clears it. Asserted as an exact set:
-#: a third entry appearing here is a hole, not an improvement.
+#: the credentials route is how the user clears it. Not quite the complete set
+#: of routes a gated account can reach: logout stays reachable through
+#: fastapi-users' own token dependency (see ``KNOWN_UNGATED_ROUTES``) -
+#: deliberately, since the password screen's Log out button depends on it.
 EXPECTED_EXEMPT_ROUTES = {
     ("GET", "/api/users/me"),
     ("PATCH", "/api/users/me/creds"),
+}
+
+#: Every route that resolves no raw dependency at all, asserted as an exact
+#: set below. Everything here is either anonymous by design (login, the
+#: first-owner bootstrap, instrument-agent pairing), authenticated by
+#: fastapi-users' own token dependency (logout, which a gated account must be
+#: able to call - the password screen offers Log out), or tus protocol
+#: plumbing whose authentication lives on the sibling methods of the same
+#: router. A new entry appearing here means a route resolves its identity
+#: outside auth.dependencies - gate it, or justify it on this list.
+KNOWN_UNGATED_ROUTES = {
+    ("POST", "/login"),
+    ("POST", "/logout"),
+    ("POST", "/pairing/start"),
+    ("POST", "/pairing/poll"),
+    ("GET", "/api/users/first-owner/status"),
+    ("POST", "/api/users/first-owner"),
+    ("HEAD", "/api/sample/files/upload/tus/{uuid}"),
+    ("OPTIONS", "/api/sample/files/upload/tus/"),
+    ("DELETE", "/api/sample/files/upload/tus/{uuid}"),
 }
 
 
@@ -106,6 +132,24 @@ def test_only_the_password_change_routes_bypass_the_gate():
         if parents & EXEMPT_WRAPPERS
     }
     assert exempt == EXPECTED_EXEMPT_ROUTES
+
+
+def test_every_route_is_gated_or_known_ungated():
+    # Closed-world complement of the tests above. Those prove that routes
+    # binding the raw dependencies do so through a gated or exempt wrapper -
+    # but a route resolving its identity any other way (a fresh
+    # fastapi_users.current_user(...) closure, a library router's internal
+    # dependency) binds neither raw object and is invisible to them. Requiring
+    # the remainder to match an explicit list turns such a route into a loud
+    # failure instead of a silently ungated endpoint.
+    bound = _routes_binding_raw_dependency()
+    unbound = {
+        (method, route.path)
+        for route in _api_routes()
+        for method in route.methods
+        if (method, route.path) not in bound
+    }
+    assert unbound == KNOWN_UNGATED_ROUTES
 
 
 def test_ungated_dependencies_are_not_exported():
