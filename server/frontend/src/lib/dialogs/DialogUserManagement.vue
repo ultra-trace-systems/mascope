@@ -100,12 +100,23 @@ const user = {
         'working and must be regenerated or re-paired. You will be asked to set yours ' +
         'immediately. Only a server administrator can reverse this.',
       accept: async () => {
-        await app.data.user.requirePasswordChange()
+        // PrimeVue does not await this callback, so a rejection here would be
+        // unhandled - and the dialog would sit open with nothing explaining
+        // that nothing happened.
+        try {
+          await app.data.user.requirePasswordChange()
+        } catch {
+          // The http layer already raised the error notification; keep the
+          // dialog open so the owner can retry or close it themselves.
+          return
+        }
         close()
         // The owner is included, so the password screen replaces this view.
         // Deliberately no user list reload: this account is already required to
-        // change its password, so the request would be refused.
-        await app.auth.identify()
+        // change its password, so the request would be refused. A failed
+        // profile re-read is caught: the gate intercepts the next request
+        // anyway.
+        await app.auth.identify().catch(() => {})
       },
       acceptProps: {
         icon: 'pi pi-key',

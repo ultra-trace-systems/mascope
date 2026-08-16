@@ -43,13 +43,19 @@ function handleRequestData(config) {
     })
   }
   // handler
-  let use, type
-  ;({ use, type, ...config } = config)
+  let use, type, errors
+  ;({ use, type, errors, ...config } = config)
   if (use) {
     config.headers['X-Handler'] = use
   }
   if (type) {
     config.headers['X-Type'] = type
+  }
+  // errors: 'inline' - the caller renders server failures itself (a form with
+  // its own message area), so the generic error toast would say the same thing
+  // twice. Carried as a header so the response interceptor can read it back.
+  if (errors) {
+    config.headers['X-Errors'] = errors
   }
   return config
 }
@@ -137,15 +143,22 @@ function handleServerError(error) {
     return handleUnauthorizedError(error)
   }
 
+  // The caller renders failures itself (see handleRequestData): skip the
+  // toasts below, which would repeat its inline message word for word. 401s
+  // are handled above regardless - session expiry replaces the caller's view.
+  const inlineErrors = headers?.['X-Errors'] === 'inline'
+
   // Handle timeout errors (no response from server)
   if (error.code === 'ECONNABORTED' || !error.response) {
     console.error(`⏱️ [api:http] ${type} ${method} ${url} timeout or network error`, error)
-    const app = useApp()
-    app.ui.notification.push({
-      type,
-      status: 'error',
-      message: 'Request timed out. Please try again or contact support.'
-    })
+    if (!inlineErrors) {
+      const app = useApp()
+      app.ui.notification.push({
+        type,
+        status: 'error',
+        message: 'Request timed out. Please try again or contact support.'
+      })
+    }
     return Promise.reject(error)
   }
 
@@ -157,12 +170,14 @@ function handleServerError(error) {
     error
   )
   // emit notification to users
-  const app = useApp()
-  app.ui.notification.push({
-    type,
-    status: 'error',
-    message
-  })
+  if (!inlineErrors) {
+    const app = useApp()
+    app.ui.notification.push({
+      type,
+      status: 'error',
+      message
+    })
+  }
   // throw
   return Promise.reject(error)
 }

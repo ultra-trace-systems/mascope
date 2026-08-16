@@ -4,6 +4,7 @@ import { ref } from 'vue'
 import Uppy from '@uppy/core'
 import Tus from '@uppy/tus'
 
+import { useAuth } from './auth'
 import { useIonizationMode } from './data/modules/ionization'
 import { useUi } from './ui'
 
@@ -126,22 +127,40 @@ export const useUppy = defineStore('app.uppy', () => {
 
     // Handle failed uploads
     if (result.failed.length > 0) {
+      const auth = useAuth()
       result.failed.forEach((file) => {
-        // Extract api error message from TUS error string
-        const errorMessage = (() => {
+        // Extract the api error payload from the TUS error string
+        const payload = (() => {
           try {
             const jsonStr = file.error?.split('response text: ')[1]?.split(', request id:')[0]
-            return jsonStr ? JSON.parse(jsonStr).error : 'Upload failed'
+            return jsonStr ? JSON.parse(jsonStr) : null
           } catch {
-            return 'Upload failed'
+            return null
           }
         })()
+
+        // The password gate's 403 arrives here, not through the axios
+        // interceptor that normally recognises it - tus speaks its own XHR.
+        // Swap the app to the password screen and explain once, instead of
+        // reporting a broken upload with the gate's prose as the reason.
+        if (payload?.detail?.code === 'password_change_required') {
+          if (auth.requirePasswordChange()) {
+            ui.notification.push({
+              type: 'sample_file_upload',
+              process_id,
+              status: 'warning',
+              message: 'Your account needs a new password before you can continue.'
+            })
+          }
+          console.error(`Upload refused for ${file.name}: password change required`)
+          return
+        }
 
         ui.notification.push({
           type: 'sample_file_upload',
           process_id,
           status: 'error',
-          message: `${file.name}: ${errorMessage}`
+          message: `${file.name}: ${payload?.error || 'Upload failed'}`
         })
 
         console.error(`Upload failed for ${file.name}:`, file.error)

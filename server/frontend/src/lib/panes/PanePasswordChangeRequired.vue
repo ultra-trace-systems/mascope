@@ -75,6 +75,10 @@ const submit = async () => {
   } catch {
     serverError.value = 'Your password was changed. Reloading...'
     setTimeout(() => window.location.reload(), 1500)
+    // Stay busy through the reload: the fields still hold the now-stale
+    // current password, and re-enabling Set password would let a second click
+    // repaint this reassurance as "Current password is incorrect."
+    return
   }
   busy.value = false
 }
