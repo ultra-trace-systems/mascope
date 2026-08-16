@@ -8,12 +8,11 @@ message should claim one. It is a soft requirement: the accounts keep signing in
 with their existing password and are held at a mandatory password screen until
 they replace it.
 
-Entry Points:
-- Async: `require_password_change_for_all_users()`, `clear_password_change_requirement()`
-- Sync: `run_require_password_change_for_all_users()`, `run_clear_password_change_requirement()`
+Entry Points: `require_password_change_for_all_users()` and
+`clear_password_change_requirement()`, both async. The owner route and both
+maintenance scripts await them directly.
 """
 
-import asyncio
 from typing import Optional, Sequence
 
 from sqlalchemy import func, select, update
@@ -146,26 +145,3 @@ async def clear_password_change_requirement(
             "user_ids": [user_id for (user_id,) in cleared],
         },
     }
-
-
-def run_require_password_change_for_all_users() -> dict:
-    """
-    Synchronous entry point for requiring a deployment-wide password change.
-
-    :return: Operation results
-    :rtype: dict
-    """
-    return asyncio.run(require_password_change_for_all_users())
-
-
-def run_clear_password_change_requirement(
-    emails: Optional[Sequence[str]] = None,
-) -> dict:
-    """
-    Synchronous entry point for withdrawing a password-change requirement.
-
-    :param emails: Restrict to these addresses; all accounts when omitted.
-    :return: Operation results
-    :rtype: dict
-    """
-    return asyncio.run(clear_password_change_requirement(emails))

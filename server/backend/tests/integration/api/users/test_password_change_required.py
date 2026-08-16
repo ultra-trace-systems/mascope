@@ -394,6 +394,14 @@ async def test_the_owner_route_refuses_an_unacknowledged_call(owner_client):
             "/api/users/owner/require-password-change", json={"confirm": False}
         )
     ).status_code == 422
+    # Acknowledgement is Literal[True], so pydantic's lax bool coercion does not
+    # apply: a truthy stand-in is not an acknowledgement of a fleet-wide action.
+    for truthy in (1, "true", "yes"):
+        assert (
+            await owner_client.post(
+                "/api/users/owner/require-password-change", json={"confirm": truthy}
+            )
+        ).status_code == 422, f"{truthy!r} was accepted as acknowledgement"
     # State-changing, so not reachable by navigation.
     assert (
         await owner_client.get("/api/users/owner/require-password-change")
