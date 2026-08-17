@@ -58,19 +58,24 @@ EXPECTED_EXEMPT_ROUTES = {
 #:   bootstrap, instrument-agent pairing, and logout (authenticated by
 #:   fastapi-users' own token dependency, and reachable by a gated account
 #:   because the password screen offers Log out).
-#: - The three tus methods, which are **genuinely unauthenticated** and are an
-#:   open question, not a resolved one. An earlier version of this comment said
-#:   their "authentication lives on the sibling methods of the same router";
-#:   that is wrong. Probed unauthenticated against a running backend, HEAD
-#:   answers 404 (its handler ran), OPTIONS and DELETE answer 204, while POST
-#:   and PATCH answer 401 - those two are gated because `get_upload_handler`
-#:   depends on `current_active_user`, which the other three never reach.
-#:   Tracked with the options in #1814; measured on every pentest run by
-#:   UPLOAD-03, which is the check that will notice if this widens.
+#: - The three tus methods, which **are** authenticated - by a dependency on the
+#:   router that wraps the generated one, which this test cannot see. That is the
+#:   whole reason they appear here: the walk below inspects each route's own
+#:   dependants, and a router-level dependency is not among them. Verified
+#:   against a live backend on this branch: OPTIONS, HEAD and DELETE all answer
+#:   401 unauthenticated, as do POST and PATCH.
+#:
+#: That second entry has now been mis-explained twice in opposite directions -
+#: first as authentication living "on the sibling methods", then as no
+#: authentication at all. Both were inferences from source. The second came from
+#: probing a deployment that predated the fix, which is the more instructive
+#: mistake: a live probe is only evidence about the build it hit. UPLOAD-03 in the
+#: pentest suite is the durable check, and it fails against builds released
+#: before 2026-08-12.
 #:
 #: The distinction matters because this test cannot see it: a route pinned here
 #: is invisible to the assertions below forever after, so a wrong justification
-#: is more durable than a missing one.
+#: is more durable than a missing one - in either direction.
 KNOWN_UNGATED_ROUTES = {
     ("POST", "/login"),
     ("POST", "/logout"),
