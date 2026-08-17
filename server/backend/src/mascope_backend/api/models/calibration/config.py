@@ -16,6 +16,11 @@ class CalibrationConfig(BaseModel):
     DEFAULT_PEAK_INTENSITY_MIN: float = 0.0
     DEFAULT_ISOTOPE_ABUNDANCE_MIN: float = 0.15
 
+    # Pre-calibration m/z error above which the applied fit is reported as
+    # acquisition-side drift: the software corrects it, but the instrument's
+    # internal calibration is off and an operator should retune it.
+    ACQUISITION_DRIFT_WARNING_PPM: float = 10.0
+
     # TOF calibration parameters
     TOF_MZ_ERROR_TOLERANCE: int = 15  # in ppm
     TOF_DEFAULT_REFINE_WINDOW: int = 100

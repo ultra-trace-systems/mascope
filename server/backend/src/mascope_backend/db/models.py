@@ -209,6 +209,26 @@ class User(SQLAlchemyBaseUserTable[int], Base):
     registered_at: Mapped[dt] = mapped_column(
         TIMESTAMP(timezone=True), default=lambda: dt.now(timezone.utc), nullable=False
     )
+    # While True the account still authenticates, but every cookie-authenticated
+    # route is closed to it until it stores a password that passes the current
+    # policy. Armed by any password someone else writes (see UserManager._update)
+    # and by the owner's deployment-wide sweep; cleared only by
+    # UserManager.set_own_password. Deliberately absent from the user API write
+    # schemas - see the field whitelists in api/new/users/schemas.py.
+    must_change_password: Mapped[bool] = mapped_column(
+        Boolean, default=False, server_default=text("false"), nullable=False
+    )
+    # Why the change is pending: "policy", "reset" or "new_account". Drives the
+    # wording on the password screen. NULL when nothing is pending.
+    password_change_reason: Mapped[Optional[str]] = mapped_column(
+        String(32), nullable=True
+    )
+    # When this account's password was last written. NULL means it has not been
+    # written since this column was introduced, which is also the selector for
+    # "never set under the current policy".
+    password_changed_at: Mapped[Optional[dt]] = mapped_column(
+        TIMESTAMP(timezone=True), nullable=True
+    )
 
     # Relationships
     role = relationship("Role", back_populates="user")
@@ -1113,7 +1133,10 @@ class PeakAssignmentRun(Base):
     heuristics, ppm tolerances, stage toggles) so runs are reproducible and
     comparable. PeakAssignment rows belong to exactly one run.
 
-    status values: 'pending', 'running', 'completed', 'failed'.
+    status values: 'pending', 'running', 'completed', 'failed', 'cancelled'.
+    'cancelled' is terminal like 'failed' - the read model serves only
+    'completed' runs, and retention reclaims both after the failed grace - but
+    kept distinct so an interrupted run is not reported as an engine error.
     """
 
     __tablename__ = "peak_assignment_run"

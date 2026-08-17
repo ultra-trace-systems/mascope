@@ -29,7 +29,10 @@ so over a LAN address features like clipboard access require HTTPS.
 Mascope is deployed from a clone of the repo: the `mascope` CLI drives Docker
 Compose, and the **checked-out git tag selects which release runs** (it sets
 `MASCOPE_VERSION`, which picks the image tag to pull and the version the UI
-reports).
+reports). The same holds when the boot service starts the stack - it runs from
+the checkout - so a reboot brings back the release the checkout is on. Verify
+with `mascope prod doctor`, which flags any mismatch between the running images
+and the checkout.
 
 #### Set up (run the latest release)
 
@@ -67,6 +70,28 @@ reports).
      warnings, no client setup. DNS-01 does not require exposing the server to
      the internet.
 
+   **If you put another proxy in front of Mascope** - the Caddy/Traefik option
+   above, or any load balancer - it changes how the built-in abuse limits
+   behave. Mascope's nginx applies per-client request and connection limits to
+   `/api/`, and a stricter budget to `/api/auth/`. It identifies a client by the
+   address the connection comes from, which behind your proxy is *the proxy*, so
+   those limits become one shared budget for everyone instead of a per-client
+   one. Nothing breaks at normal load, but a busy deployment can throttle
+   itself.
+
+   Mascope cannot resolve this for you by trusting `X-Forwarded-For`: it does
+   not know which proxy to believe, and trusting that header from anyone would
+   let a client reaching the server directly pick its own budget. Either:
+
+   - **preserve the source address** - PROXY protocol, or an L4/passthrough
+     mode, so nginx sees the real client (Mascope already does this for
+     Cloudflare, whose address ranges it trusts by name); or
+   - **size the limits for your user base** - raise `limit_req`/`limit_conn` in
+     `server/frontend/nginx.conf` if a shared budget is acceptable.
+
+   This applies to any front proxy, whether Mascope terminates TLS itself or
+   runs with `MASCOPE_TLS=off` behind yours.
+
 5. **Pull the release images and start:**
 
    ```sh
@@ -76,6 +101,9 @@ reports).
 
    `db_init` creates the database and applies migrations before the app starts.
    Open `https://<host>` and register the first owner account (with `server_owner_secret_key`).
+   The first owner chooses their own password and is not asked to change it. Every
+   account they create afterwards is issued a temporary password that its holder
+   must replace at first sign-in.
 
    The deployment serves the user documentation from the same host at
    `https://<host>/docs/` - it is bundled into the frontend image, so no extra

@@ -84,6 +84,16 @@ def _raise_for_status(response: requests.Response, url: str) -> None:
             status_code=status_code,
             url=url,
         )
+    elif status_code in (411, 413):
+        # Length Required / Payload Too Large: a client error the request can
+        # never satisfy by retrying - e.g. an upload over the per-upload cap.
+        # Raise a terminal (non-retryable) error so callers fail fast with the
+        # server's reason instead of retrying the same rejected request.
+        raise ValidationError(
+            message=message,
+            status_code=status_code,
+            url=url,
+        )
     elif status_code is not None and status_code >= 500:
         raise ServerError(
             message=message,

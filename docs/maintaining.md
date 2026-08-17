@@ -23,8 +23,11 @@ Everything below assumes an Ubuntu host provisioned with
 | Enable unattended updates | edit `/etc/mascope/update.env`, then `sudo systemctl enable --now mascope-update.timer` |
 | Update history | `cat "$(mascope path)/.runtime/update/status.log"` |
 | Back up now | `mascope prod db backup create` |
+| **Require a new password from every user** | Manage users in the app, or `mascope prod db script run require_password_change` |
 | **Disk monitor status / run now** | `systemctl list-timers mascope-disk-check.timer` / `sudo systemctl start mascope-disk-check.service` |
 | Disk monitor history | `journalctl -u mascope-disk-check.service` |
+| Assignment-run retention status / run now | `systemctl list-timers mascope-assignment-prune.timer` / `sudo systemctl start mascope-assignment-prune.service` |
+| Assignment-run retention history | `journalctl -u mascope-assignment-prune.service` |
 
 ## Health at a glance
 
@@ -36,15 +39,30 @@ or to poll:
 $ mascope prod doctor
 [OK]
 Stack    backend healthy · frontend healthy · postgres healthy · redis healthy · file_converter running
+Version  v1.6.1
 Disk     state 142 GiB / 61% free   ·   docker 38 GiB / 40% free
 Updates  no pending migration recorded
 Backups  5 local dump(s) · newest 8h ago
 Images   11 images · 6.2GB (2.1GB reclaimable)
 ```
 
-It exits `0` when the stack is healthy and every filesystem is above the
-free-space floor (`MASCOPE_UPDATE_MIN_FREE_GB`), and `1` otherwise - so it
-doubles as a monitoring probe. `--json` emits the same data for scripting.
+It exits `0` when the stack is healthy, the running images match the release
+this deployment would deploy, and every filesystem is above the free-space
+floor (`MASCOPE_UPDATE_MIN_FREE_GB`); `1` otherwise - so it doubles as a
+monitoring probe. `--json` emits the same data for scripting.
+
+**Version** compares the tag the containers are actually running against the
+one this deployment would deploy right now (the `MASCOPE_VERSION` pin, else the
+release tag checked out, else `latest`). A mismatch is reported as drift:
+
+```
+Version  backend latest · frontend latest  DRIFT (this checkout deploys v1.6.1)
+```
+
+Drift means the next `mascope prod up` - a restart, or a reboot - moves the
+stack to a different release than the one it is serving. Resolve it by bringing
+the two into line: `git checkout <tag>` for the release the server should run,
+then `mascope prod update`.
 
 ## Provisioning
 
@@ -59,8 +77,16 @@ and installs the systemd units (below). Re-run with `reinstall` after pulling
 new tooling, or `uninstall` to remove the binary and units.
 
 > The provisioning user is the deploy user. `mascope.service` and
-> `mascope-update.service` run as that user and read `MASCOPE_PATH` /
-> `LD_PRELOAD` from `/etc/environment`.
+> `mascope-update.service` run as that user, from the deployment checkout
+> (`WorkingDirectory`), and read `MASCOPE_PATH` / `LD_PRELOAD` from
+> `/etc/environment`.
+
+> Servers provisioned before `WorkingDirectory` was added got units that
+> systemd ran from `/`: with no repository there, the checked-out release tag
+> could not be read and every boot deployed `latest` instead. Re-run
+> `./tooling/ubuntu.sh install` from the checkout on such a server (it rewrites
+> the units and reloads systemd) - a release update alone does not refresh the
+> installed units. `mascope prod doctor` reports the drift while it lasts.
 
 ## The stack (boot service)
 
@@ -70,6 +96,14 @@ new tooling, or `uninstall` to remove the binary and units.
 sudo systemctl status mascope.service
 sudo systemctl restart mascope.service     # = mascope prod down && up
 ```
+
+It runs from the deployment checkout, so a boot deploys whatever the checkout
+selects - the release tag checked out, or `latest` on a `master` checkout,
+exactly like running `mascope prod up` by hand. To hold a server on one release
+regardless of the checkout, pin it in `/etc/environment`
+(`MASCOPE_VERSION=vX.Y.Z`, read by the unit) - at the cost of editing it by
+hand at every update. A `.env` file in the checkout has no effect: the CLI
+resolves `MASCOPE_VERSION` itself and passes it to compose.
 
 Day to day you can also drive it directly:
 
@@ -321,11 +355,72 @@ especially with unattended updates). The running stack's images are referenced
 and kept; a manual rollback re-pulls the previous release (guarded by the disk
 guard above), the same as the documented rollback flow.
 
+## User accounts
+
+### Requiring a password change
+
+Requiring a change puts every account through the password policy in
+[authorization.md](authorization.md#passwords). Reach for it whenever you want
+every password re-set - after tightening a rule, on a periodic refresh, or if you
+suspect credentials are exposed. Accounts keep whatever password they had until
+then: the policy is only enforced at the moment one is set.
+
+It is a **soft** requirement, not a lockout. Everyone signs in with their existing
+password as usual, and is then held at a password screen until they set a new one
+that passes the policy and differs from the old. Nobody is excluded - the owner
+who triggers it and deactivated accounts included, so a reactivated account cannot
+come back on a pre-policy password.
+
+An owner can do it from **Manage users** in the web interface, which also notifies
+anyone with the app open. On the server:
+
+```sh
+# report what would change, without changing anything
+MASCOPE_REQUIRE_PASSWORD_CHANGE_DRY_RUN=1 mascope prod db script run require_password_change
+
+# require the change
+mascope prod db script run require_password_change
+```
+
+The script sends no live notification - there is no socket server in that process
+- so sessions already open transition when their next request is refused.
+
+**Time it deliberately.** Changing a password revokes that user's API access
+tokens; see below.
+
+### Undoing it
+
+There is no way to withdraw the requirement through the web interface. On the
+server:
+
+```sh
+mascope prod db script run clear_password_change_requirement
+```
+
+Set `MASCOPE_CLEAR_PASSWORD_CHANGE_EMAILS` to a comma-separated list to release
+only some accounts. Note that the pre-script database dump is a whole-database
+restore, not a per-account undo - use the script, not the dump.
+
+Accounts whose password an administrator reset keep that administrator-issued
+password, so releasing them leaves it in place. Reset those accounts again
+instead.
+
+### Effect on API access tokens
+
+When a user changes their password, that user's access tokens are revoked. The
+file-converter token is reissued automatically, but **SDK and notebook tokens and
+instrument-agent pairings are not** - their holders must regenerate or re-pair
+them. Across a whole deployment that adds up, so schedule a deployment-wide
+requirement outside acquisition hours.
+
+Requiring the change does not revoke anything by itself; tokens are revoked per
+user, as each one complies.
+
 ## Monitoring
 
 Beyond the healthchecks.io dead-man's-switch pings (backups, disk monitor), a
 small self-hosted stack gives error tracking and external uptime monitoring. It
-runs off the Mascope servers - typically on the internal backup box. See
+runs off the Mascope servers - typically on a separate internal machine. See
 [`tooling/monitoring/`](../tooling/monitoring/README.md) for the full deploy
 runbook (GlitchTip + Uptime Kuma, LAN-only).
 
@@ -345,7 +440,7 @@ entirely on one environment variable:
 ```sh
 # on each Mascope server: append to /etc/environment (read by mascope.service),
 # then bring the stack up again so the containers pick it up:
-MASCOPE_SENTRY_DSN=http://<public_key>@<ops-tailnet-ip>:8000/<project_id>
+MASCOPE_SENTRY_DSN=http://<public_key>@<monitoring-tailnet-ip>:8000/<project_id>
 ```
 
 The DSN targets the monitoring box's **tailnet IP** — events travel over
@@ -409,29 +504,38 @@ run assignment explicitly from the UI for those.
 
 Each assignment run writes **one row per observed peak** of its sample -
 including peaks it could not assign, because the ledger is deliberately
-complete - and re-assigning a sample adds a whole new run beside the old one.
-Nothing removes them automatically, so on a server where assignment is re-run
-routinely `peak_assignment` grows without bound.
+complete - and re-assigning a sample adds a whole new run beside the old one,
+so on a server where assignment is re-run routinely `peak_assignment` grows
+without bound.
+
+A deployment provisioned by `tooling/ubuntu.sh` handles this automatically:
+`mascope-assignment-prune.timer` runs a retention pass nightly at 03:30 and is
+**enabled by default**. Each pass keeps the newest few completed runs per
+sample (so a result can still be compared against the one it replaced) and
+drops the rest, plus failed runs past a short grace period; deleting a run
+cascades to its rows. It deletes only superseded derived data - assignments
+are recomputable by re-running assignment - and it runs whether or not the
+`peak_assignment` flag is enabled, since ledgers written before opting out
+still age out and an empty table costs one cheap query. Tune the policy in
+`/etc/mascope/prune.env` with `MASCOPE_PRUNE_KEEP_PER_SAMPLE` (default 3),
+`MASCOPE_PRUNE_KEEP_FAILED_HOURS` (default 24) and
+`MASCOPE_PRUNE_KEEP_RUNNING_HOURS` (default 72, floored at 12 so runs that may
+still be executing cannot be pruned out from under a worker); disable it
+entirely with `sudo systemctl disable --now mascope-assignment-prune.timer`.
+
+The same pass can always be run by hand, e.g. ahead of schedule when the disk
+monitor flags growth:
 
 ```sh
 MASCOPE_PRUNE_DRY_RUN=1 mascope prod db script run prune_peak_assignment_runs
 mascope prod db script run prune_peak_assignment_runs
 ```
 
-The dry run reports what it would delete and changes nothing. A real run keeps
-the newest few completed runs per sample (so a result can still be compared
-against the one it replaced) and drops the rest, plus failed runs past a short
-grace period; deleting a run cascades to its rows. Tune with
-`MASCOPE_PRUNE_KEEP_PER_SAMPLE` (default 3), `MASCOPE_PRUNE_KEEP_FAILED_HOURS`
-(default 24) and `MASCOPE_PRUNE_KEEP_RUNNING_HOURS` (default 72, floored at 12
-so runs that may still be executing cannot be pruned out from under a worker).
+The dry run reports what it would delete and changes nothing.
 
 Deleting rows returns space to Postgres for reuse but not to the filesystem;
 `VACUUM FULL peak_assignment` (or `pg_repack`) afterwards does that, and takes
 an exclusive lock while it runs.
-
-There is no timer for this yet - run it when the disk monitor flags growth, or
-add it to your own cron alongside the backup job.
 
 ### Loading reference chemistry data
 
@@ -460,6 +564,22 @@ read records, so a dump the adapter cannot parse leaves the existing mirror
 serving rather than emptying it. Re-running the same source is how you update
 it; prior versions stay on disk until pruned.
 
+### Upload size cap
+
+A single resumable (tus) upload is capped at 5 GB by default, so one runaway
+transfer cannot fill the disk. The cap applies **per upload** - it does not
+limit how many files agents or users transfer in a day, only how large each
+one may be. Instruments producing larger single files can raise it in the
+env's config toml:
+
+```toml
+[backend]
+tus_max_upload_gb = 20
+```
+
+Clients see the cap as the standard `Tus-Max-Size` header; an upload declared
+larger than the cap is refused up front with HTTP 413.
+
 | Path | What |
 |---|---|
 | `/etc/environment` | `MASCOPE_PATH`, `LD_PRELOAD` (read by the systemd units) |
@@ -474,6 +594,15 @@ it; prior versions stay on disk until pruned.
 **Stack won't start.** `sudo systemctl status mascope.service`, then
 `mascope prod ps` and `mascope prod logs backend`. Confirm Docker is up and the
 secrets in `.runtime/secrets/` exist.
+
+**The stack came back on a different release (e.g. after a reboot).**
+`mascope prod doctor` shows this as `DRIFT`. The version a deploy selects comes
+from the deployment checkout, so check `git -C "$(mascope path)" describe --tags`
+and `systemctl cat mascope.service | grep WorkingDirectory` - a unit without a
+`WorkingDirectory` runs from `/`, finds no repository, and falls back to
+`latest` (re-run `./tooling/ubuntu.sh install` to fix it). The CLI logs a
+warning whenever it cannot resolve a version and falls back:
+`journalctl -u mascope.service | grep -i "rolling 'latest'"`.
 
 **Update timer never fires / always fails.** `systemctl list-timers` to confirm
 it is enabled; `journalctl -u mascope-update.service` for the reason. Exit 2 is

@@ -1,18 +1,53 @@
 # Ionization and acquisition-method configuration - design
 
-Status: **draft for discussion**. No code written yet.
+Status: **design agreed in outline, Phase 0 partially shipped.** The target
+model (sections 4-8) is still a proposal; nothing in it is locked in, and the
+open decisions in section 10 are unanswered.
 
-The opentfraw claims in 2.2, 6.1 and 6.2 were re-derived under adversarial
-verification (11 agents, each dimension's load-bearing claim independently
-refuted or upheld). Two earlier claims in this document were **wrong and have
-been corrected**: the dependency-ownership claim in 6.1, and the consequence
-attributed to the empty `method_file` in 2.2. Nothing was executed against the
-newer version - see the Phase 0 numeric A/B.
+This is a design for extending and clarifying what users currently configure as
+an "ionization mode", and for making the resulting data FAIR. It assumes the
+peak-centric paradigm of `epic/peak-centric-assignment` as the direction of
+travel and calls out the seams where the two meet.
 
-This is a design brainstorm for extending and clarifying what users currently
-configure as an "ionization mode", and for making the resulting data FAIR. It
-assumes the peak-centric paradigm of `epic/peak-centric-assignment` as the
-direction of travel and calls out the seams where the two meet.
+## Picking this up
+
+Read sections 1 and 3 for the thesis, section 9 for the plan, section 10 for
+what still needs a human decision. Current state, last verified 2026-07-28:
+
+| Phase 0 item | State |
+|---|---|
+| 1. Harvest `scan_parameters()` into `.props` | **Shipped** (PR #1723) |
+| 2. Bump opentfraw off 1.2.0 | **Already done on develop** - see below |
+| 3. Populate `method_file` | **Open, unblocked, next** |
+| 4. Fix `delete_instrument_config` fan-out | **Open, needs a decision** (2.2) |
+| 5. File upstream opentfraw issues | **Open** |
+| 6-9. Presets, notation, pane UX, run-config stamp | **Open** |
+
+Phases 1-4 are untouched and gated on section 10.
+
+**Correction to what this document originally said about opentfraw.** It was
+written when `libraries/thermo/pyproject.toml` pinned `opentfraw~=1.2` with the
+lock at 1.2.0. Develop has since moved to `opentfraw~=1.3`, resolving **1.3.7**,
+via a routine dependency-group bump. So `sample_info` and
+`instrument_method_text()` are available *today*, and item 2 needs no work.
+
+Two caveats that bump left behind, neither of them addressed:
+
+- The **numeric A/B this document recommended as the gate for that bump was
+  never run.** The version moved 1.2.0 -> 1.3.7, which includes the 1.3.5
+  allocation-bounds hardening, as an unreviewed dependency update. Peak and
+  centroid output was never compared. Acquisition-parameter output was verified
+  identical across the two versions, and the library suites pass, but that is
+  not the same check.
+- The demo reproducibility manifest may still pin `opentfraw==1.2.0`. If so the
+  nightly reproducibility job is failing. It lives in the shared `MASCOPE_PATH`,
+  not the worktree, so it could not be checked from here.
+
+Earlier drafts of this document also carried two claims that were **wrong and
+have been corrected** under adversarial verification: the dependency-ownership
+claim in 6.1 (upstream is third-party, not ours) and the consequence attributed
+to the empty `method_file` in 2.2 (it does not cause cross-method peak-shape
+reuse in analysis).
 
 ---
 
@@ -320,16 +355,17 @@ from public PyPI (verified: the installed dist-info names Nathan Riley and
 moved off the fork in `f7fba6c6`. So anything missing upstream is a PR we must
 land there, or a decision to re-fork - not something we merge ourselves.
 
-**The accessors are already released upstream; we are simply behind.** PR #18
-(merge `8594c6bf`, 2026-07-08) first shipped in **upstream v1.3.0**; upstream is
-now at v1.3.6. Our `libraries/thermo/pyproject.toml:11` says `opentfraw~=1.2`,
-which under PEP 440 means `>=1.2, ==1.*` and **already permits 1.3.6** - only
-`uv.lock` is stale at 1.2.0. See Phase 0 for the exact change.
+**The accessors are already released upstream, and we already have them.** PR
+#18 (merge `8594c6bf`, 2026-07-08) first shipped in **upstream v1.3.0**.
+`libraries/thermo/pyproject.toml:11` now pins `opentfraw~=1.3` and the lock
+resolves **1.3.7**, so the whole surface below is live today. (This section
+originally described the bump as pending work; see "Picking this up" at the top
+for what that means for Phase 0 item 2 and for the revalidation it skipped.)
 
-At v1.3.6 the Python surface gains 8 members, 0 removals, 0 renames, 0 signature
-changes: `sample_info`, `instrument_method_text()`, `status_log(n)`,
-`error_log()`, `controllers()`, `controller_count`, `computer_name`,
-`acquisition_date`.
+Relative to the old 1.2.0 the Python surface gains 8 members, 0 removals, 0
+renames, 0 signature changes: `sample_info`, `instrument_method_text()`,
+`status_log(n)`, `error_log()`, `controllers()`, `controller_count`,
+`computer_name`, `acquisition_date`.
 
 Two important corrections to the naive reading of that list:
 
@@ -368,8 +404,11 @@ upstream ask, not a plan dependency.
 
 ### 6.2 The richest source needs no version bump at all
 
-The most useful finding of the whole investigation: **`scan_parameters(n)` is
-already available at 1.2.0 and we throw nearly all of it away.**
+The most useful finding of the whole investigation: **`scan_parameters(n)` was
+already available at the old 1.2.0 pin and we threw nearly all of it away.**
+This is the part now shipped, in PR #1723 - see `acquisition_parameters()` in
+`libraries/thermo/src/mascope_thermo/backend.py` and the resulting
+`acquisition_params` block in `.props`.
 
 It returns the instrument's own trailer-extra dictionary - **78 typed entries**
 on the Exploris fixture, including:
@@ -505,48 +544,55 @@ the reverse. Stitch 8.1-8.3 on the epic branch afterwards.
 
 Independently valuable, ships before any of the redesign lands.
 
-1. **Harvest `scan_parameters()` - no bump, no upstream, no schema decision.**
-   78 typed acquisition parameters are already reachable at the pinned 1.2.0
-   (6.2). Widen `_OTF_TRAILER_FIELDS` and store the useful subset. This is the
-   single best effort-to-value item in the document and it blocks on nothing.
+1. ~~**Harvest `scan_parameters()`**~~ - **SHIPPED, PR #1723.** 78 acquisition
+   parameters now reach `.props` per sample file via
+   `ReaderBackend.acquisition_parameters()`. Implemented as a new protocol
+   member rather than by widening `_OTF_TRAILER_FIELDS`, whose shape
+   `scan_acquisition_settings()` pins and which has a live consumer.
 
-2. **Bump opentfraw 1.2.0 -> 1.3.6**, in this order:
-   - `uv lock --upgrade-package opentfraw && uv sync`. No pyproject edit is
-     needed for resolution - `~=1.2` already admits it.
-   - Then raise the floor anyway: `libraries/thermo/pyproject.toml:11` ->
-     `"opentfraw~=1.3"`. The bare-metal install path is **not** lock-constrained
-     (`tooling/ubuntu.sh:210`, `tooling/fleet/update.yml:57` run `uv tool install`
-     with no `--constraints`, unlike the Dockerfile), so without the floor a
-     server could resolve 1.2.x and `AttributeError` at runtime.
-   - Target 1.3.6 rather than the 1.3.0 feature floor: upstream's CHANGELOG
-     records that 1.3.0-1.3.3 shipped stale Rust constraints that break any sdist
-     build path.
-   - **Numeric A/B before merging.** The m/z and intensity functions
-     (`freq_to_mz`, `noise_at`, `read_peaks_only`) are byte-identical between the
-     versions and the rest is allocation-bounds hardening, so risk is low - but
-     that is a source-level inference, nobody ran it, and peak positions feed
-     calibration and assignment. Dump `peaks`/`profile`/`centroid_labels` for a
-     scan sample from `libraries/thermo/tests/test_files/KORBI2_AMB_POS_*.raw`
-     under both versions and assert bit-identical arrays.
-   - Known blockers: the nightly reproducibility test pins
-     `opentfraw==1.2.0` via `.runtime/demo/1.1.0/manifest.json` (refresh with
-     `mascope demo snapshot --update`); `test_raw_processor.py:64` asserts
-     `props.method_file == ""`.
+2. ~~**Bump opentfraw**~~ - **ALREADY DONE on develop**, but not deliberately:
+   it arrived as a routine dependency-group bump, so `opentfraw~=1.3` / 1.3.7 is
+   in place while two things this document asked for were skipped.
+   - **The numeric A/B was never run**, and still should be. The m/z and
+     intensity functions (`freq_to_mz`, `noise_at`, `read_peaks_only`) are
+     byte-identical across the versions and the rest is allocation-bounds
+     hardening, so risk is low - but that is a source-level inference and peak
+     positions feed calibration and assignment. Dump `peaks`/`profile`/
+     `centroid_labels` for a scan sample from
+     `libraries/thermo/tests/test_files/KORBI2_AMB_POS_*.raw` under 1.2.0 and
+     1.3.7 and assert bit-identical arrays. Do this before trusting any
+     downstream result that predates the bump.
+   - **Check the demo reproducibility manifest.** If
+     `.runtime/demo/*/manifest.json` still records `opentfraw==1.2.0`, the
+     nightly reproducibility job is failing; refresh with
+     `mascope demo snapshot --update`. The manifest lives in the shared
+     `MASCOPE_PATH`, not in a worktree.
 
-3. **Populate `method_file` from `sample_info["inst_method"]`.** Note this is not
-   a one-line processor edit: `processor.py` talks to the `ReaderBackend`
-   protocol, which has no such member, so it needs a new protocol method
-   implemented in **both** `OpenTFRawBackend` and `ThermoBackend` (the latter
-   already has the datum as `SampleInformation.InstrumentMethodFile`).
+3. **Populate `method_file` from `sample_info["inst_method"]`.** The next thing
+   to build. `processor.py:116` still returns `""` behind a docstring saying the
+   reader does not expose it - no longer true; on the committed fixture it
+   returns `C:\Xcalibur\methods\5.1 Methods\ambient_pos_massrange40-500.meth`.
+   Not a one-line edit: `processor.py` talks to the `ReaderBackend` protocol,
+   which has no such member, so it needs a new protocol method implemented in
+   **both** `OpenTFRawBackend` and `ThermoBackend` (the latter already has the
+   datum as `SampleInformation.InstrumentMethodFile`). It also requires updating
+   the `test_raw_processor.py` assertion that pins `props.method_file == ""`.
 
-4. **Fix `delete_instrument_config`** to delete by id rather than by
-   `(instrument, method_file)` (2.2). Live data-loss path; worth doing whether or
-   not the rest of this lands.
+4. **Decide what `delete_instrument_config` should do**, then fix it (2.2). The
+   route already takes an id; the service then deliberately fans out to every
+   config sharing `(instrument, method_file)`. With a real method file that is
+   defensible; with `method_file == ""` it means "delete every config for this
+   instrument" and strands every sample file behind an `ondelete="SET NULL"` FK.
+   Either guard the empty-key case or drop the fan-out - **this needs a human
+   call on intent, not a unilateral patch.** Item 3 removes the sharp edge but
+   not the ambiguity.
 
 5. **File the upstream issues** while the rest proceeds: the
    `extract_utf16le_text` mojibake bug with the offset-18006-vs-39064 reproducer,
    and a binding for `method_file_present` (without it we cannot distinguish
-   "no method embedded" from "extraction failed").
+   "no method embedded" from "extraction failed"). Upstream is
+   `Sigilweaver/OpenTFRaw`, third-party - these are contributions, not merges we
+   control.
 6. **Ship an adduct preset library** and one-click setup: ESI+
    (`[M+H]+`, `[M+Na]+`, `[M+K]+`, `[M+NH4]+`, `[2M+H]+`, `[M+H-H2O]+`), ESI-
    (`[M-H]-`, `[M+Cl]-`, `[M+HCOO]-`, `[2M-H]-`), the reagent chemistries we

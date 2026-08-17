@@ -14,6 +14,7 @@ read model ("every peak in sample X with its formula and confidence"):
 """
 
 import asyncio
+from collections import OrderedDict
 from dataclasses import asdict
 from datetime import datetime as dt
 from datetime import timezone
@@ -33,7 +34,6 @@ from mascope_backend.api.lib.api_features import (
 )
 from mascope_backend.api.lib.exceptions.api_exceptions import (
     NotFoundException,
-    raise_api_warning,
 )
 from mascope_backend.api.new.cheminfo.utils import (
     to_custom_element_format,
@@ -47,6 +47,7 @@ from mascope_backend.api.new.match.params.lib import (
     apply_match_params,
     isotope_abundance_threshold_expr,
 )
+from mascope_backend.api.new.peak_assignments.admission import assignment_claim
 from mascope_backend.api.new.peak_assignments.calibration_store import (
     load_calibration,
     save_calibration,
@@ -85,7 +86,7 @@ from mascope_backend.socket.notifications import (
 )
 from mascope_file.name import get_instrument_type
 from mascope_match import compute_match_isotopes
-from mascope_reference import iter_known_compositions
+from mascope_reference import iter_known_compositions, known_state_fingerprint
 from mascope_tools.composition import CompositionSearchConfig, HeuristicFilterConfig
 from mascope_tools.composition.calibration import (
     InsufficientCalibrationData,
@@ -447,8 +448,72 @@ async def recalibrate_instrument(
 # -------------------------------------------------------------------
 
 
+def ineligible_reason(sample: Sample) -> str | None:
+    """Why this sample cannot usefully be assigned, or None if it can.
+
+    Mirrors the eligibility checks the targeted controllers apply
+    (``match_compute_batch`` and the rematch verified-calibration gate): a
+    blank sample carries no peaks, and a sample whose m/z calibration exists
+    but is unverified would produce mass errors - and therefore fit scores and
+    tiers - that mean nothing. Shared by the batch partition and the
+    per-sample guard so one sample assigned from the sample menu is refused on
+    exactly the condition a batch would have skipped it under.
+
+    :param sample: Sample to test.
+    :return: A short reason string, or None when the sample is eligible.
+    """
+    if sample.instrument_function_id is None:
+        return "blank sample (no peaks)"
+    if sample.mz_calibration and not sample.mz_calibration.get("verified", False):
+        return "m/z calibration not verified"
+    return None
+
+
+async def _fetch_sample_mechanisms(
+    sample: Sample,
+) -> tuple[list[str], list[SimpleNamespace]]:
+    """Resolve the sample's ionization mechanisms once per run.
+
+    Every stage of a run needs the same mechanism set, so it is fetched here
+    once and threaded through rather than re-queried per stage (which also
+    used to open a second pooled connection inside an already-open session).
+    The mechanism rows are detached into plain namespaces so downstream
+    CPU-bound work can use them off the event loop.
+
+    :param sample: Sample model object
+    :return: (all mechanism ids of the sample's ionization mode,
+        polarity-matching mechanism rows as detached namespaces)
+    """
+    mechanism_ids = await fetch_sample_ionization_mechanism_ids(sample.sample_item_id)
+    async with async_session() as session:
+        mechanisms = (
+            (
+                await session.execute(
+                    select(IonizationMechanism).where(
+                        IonizationMechanism.ionization_mechanism_id.in_(mechanism_ids),
+                        IonizationMechanism.ionization_mechanism_polarity
+                        == sample.polarity,
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+    mechanism_specs = [
+        SimpleNamespace(
+            ionization_mechanism_id=m.ionization_mechanism_id,
+            ionization_mechanism=m.ionization_mechanism,
+            ionization_mechanism_polarity=m.ionization_mechanism_polarity,
+        )
+        for m in mechanisms
+    ]
+    return mechanism_ids, mechanism_specs
+
+
 async def _fetch_known_target_isotopes(
-    sample: Sample, isotope_abundance_threshold: float
+    sample: Sample,
+    isotope_abundance_threshold: float,
+    ionization_mechanism_ids: list[str],
 ) -> pd.DataFrame:
     """
     Fetch the full known-isotopologue set for a sample (Stage A input).
@@ -461,12 +526,11 @@ async def _fetch_known_target_isotopes(
     :param sample: Sample model object
     :param isotope_abundance_threshold: Minimum relative abundance for a
         target isotope to participate
+    :param ionization_mechanism_ids: The sample's mechanism ids, resolved
+        once per run by :func:`_fetch_sample_mechanisms`
     :return: DataFrame of target isotopes with compound/ion metadata
     """
     async with async_session() as session:
-        ionization_mechanism_ids = await fetch_sample_ionization_mechanism_ids(
-            sample.sample_item_id
-        )
         resolution_type = (
             "LOW" if get_instrument_type(sample.filename) == "tof" else "HIGH"
         )
@@ -597,8 +661,21 @@ def _build_reference_isotopes_df(
     return pd.DataFrame(rows)
 
 
+# The expanded reference frame is identical for every run over the same
+# (reference state, mechanism set, resolution, abundance floor), so a Stage-A
+# batch of N samples should pay the IsoSpec expansion once, not N times. The
+# key's reference part comes from known_state_fingerprint, so a re-synced or
+# (de)activated source invalidates naturally. A handful of entries covers a
+# deployment's realistic (instrument, polarity, threshold) combinations.
+_REFERENCE_ISOTOPE_CACHE_MAX = 8
+_reference_isotope_cache: OrderedDict[tuple, pd.DataFrame] = OrderedDict()
+_reference_isotope_cache_lock = asyncio.Lock()
+
+
 async def _fetch_reference_known_isotopes(
-    sample: Sample, isotope_abundance_threshold: float
+    sample: Sample,
+    isotope_abundance_threshold: float,
+    mechanisms: list[SimpleNamespace],
 ) -> pd.DataFrame:
     """Reference-database contribution to the Stage A known set.
 
@@ -608,55 +685,64 @@ async def _fetch_reference_known_isotopes(
     data or the sample has no matching ionization mechanisms - so the seam is a
     no-op until a reference database is loaded.
 
+    The expansion is cached across runs (see the cache note above); the lock
+    makes concurrent runs with the same key wait for one build instead of
+    duplicating it.
+
     :param sample: Sample model object.
     :param isotope_abundance_threshold: Minimum relative abundance for a
         reference isotope to participate.
+    :param mechanisms: The sample's polarity-matching mechanisms, resolved
+        once per run by :func:`_fetch_sample_mechanisms`.
     :return: DataFrame in the known-isotope shape, or empty.
     """
-    async with async_session() as session:
-        mechanism_ids = await fetch_sample_ionization_mechanism_ids(
-            sample.sample_item_id
-        )
-        mechanisms = (
-            (
-                await session.execute(
-                    select(IonizationMechanism).where(
-                        IonizationMechanism.ionization_mechanism_id.in_(mechanism_ids),
-                        IonizationMechanism.ionization_mechanism_polarity
-                        == sample.polarity,
-                    )
-                )
-            )
-            .scalars()
-            .all()
-        )
-        known = await iter_known_compositions(session)
-
-    if not known or not mechanisms:
+    if not mechanisms:
         return pd.DataFrame()
 
-    # Detach the mechanism fields the CPU build needs so it can run off-loop.
-    mech_specs = [
-        SimpleNamespace(
-            ionization_mechanism_id=m.ionization_mechanism_id,
-            ionization_mechanism=m.ionization_mechanism,
-            ionization_mechanism_polarity=m.ionization_mechanism_polarity,
-        )
-        for m in mechanisms
-    ]
+    async with async_session() as session:
+        fingerprint = await known_state_fingerprint(session)
+    if not fingerprint:
+        # No active reference sources: nothing to expand, and nothing worth a
+        # cache slot either.
+        return pd.DataFrame()
+
     resolution_type = "LOW" if get_instrument_type(sample.filename) == "tof" else "HIGH"
-    reference_isotopes_df = await asyncio.to_thread(
-        _build_reference_isotopes_df,
-        known,
-        mech_specs,
+    cache_key = (
+        fingerprint,
+        tuple(sorted(m.ionization_mechanism_id for m in mechanisms)),
         resolution_type,
         isotope_abundance_threshold,
     )
-    runtime.logger.info(
-        f"Built {len(reference_isotopes_df)} reference known isotopes from "
-        f"{len(known)} reference formulas for sample '{sample.sample_item_name}'"
-    )
-    return reference_isotopes_df
+
+    async with _reference_isotope_cache_lock:
+        cached = _reference_isotope_cache.get(cache_key)
+        if cached is not None:
+            _reference_isotope_cache.move_to_end(cache_key)
+            runtime.logger.debug(
+                f"Reference isotope cache hit for sample '{sample.sample_item_name}'"
+            )
+            return cached.copy()
+
+        async with async_session() as session:
+            known = await iter_known_compositions(session)
+        if not known:
+            reference_isotopes_df = pd.DataFrame()
+        else:
+            reference_isotopes_df = await asyncio.to_thread(
+                _build_reference_isotopes_df,
+                known,
+                mechanisms,
+                resolution_type,
+                isotope_abundance_threshold,
+            )
+        runtime.logger.info(
+            f"Built {len(reference_isotopes_df)} reference known isotopes from "
+            f"{len(known)} reference formulas for sample '{sample.sample_item_name}'"
+        )
+        _reference_isotope_cache[cache_key] = reference_isotopes_df
+        while len(_reference_isotope_cache) > _REFERENCE_ISOTOPE_CACHE_MAX:
+            _reference_isotope_cache.popitem(last=False)
+        return reference_isotopes_df.copy()
 
 
 def _combine_known_isotopes(
@@ -681,32 +767,17 @@ def _combine_known_isotopes(
     return combined
 
 
-async def _fetch_untargeted_ionizations(
-    sample: Sample,
+def _untargeted_ionization_notations(
+    mechanisms: list[SimpleNamespace],
 ) -> tuple[list[str], dict[str, str]]:
     """
     Resolve the sample's ionization mechanisms into the explicit-isotope
     notation used by the composition finder.
 
-    :param sample: Sample model object
+    :param mechanisms: The sample's polarity-matching mechanisms, resolved
+        once per run by :func:`_fetch_sample_mechanisms`
     :return: (explicit notation strings, notation -> mechanism id mapping)
     """
-    mechanism_ids = await fetch_sample_ionization_mechanism_ids(sample.sample_item_id)
-    async with async_session() as session:
-        mechanisms = (
-            (
-                await session.execute(
-                    select(IonizationMechanism).where(
-                        IonizationMechanism.ionization_mechanism_id.in_(mechanism_ids),
-                        IonizationMechanism.ionization_mechanism_polarity
-                        == sample.polarity,
-                    )
-                )
-            )
-            .scalars()
-            .all()
-        )
-
     notations: list[str] = []
     mechanism_id_by_notation: dict[str, str] = {}
     for mechanism in mechanisms:
@@ -803,9 +874,10 @@ async def assign_sample_peaks(
     """
     Run the two-stage peak assignment engine over a sample.
 
-    Refuses immediately when this worker is already assigning the sample, rather
-    than queueing a second full run behind the first - what a double-clicked
-    "Assign peaks" deserves. See :func:`_run_sample_assignment` for the engine.
+    Refuses immediately when the sample is already being assigned - by this
+    worker (in-flight set, no round trip) or by any other process sharing the
+    database (advisory-lock claim) - rather than queueing a second full run
+    behind the first. See :func:`_run_sample_assignment` for the engine.
 
     :param sample_item_id: ID of the sample item to assign
     :param config: Optional run configuration; defaults are used when omitted
@@ -818,24 +890,54 @@ async def assign_sample_peaks(
     # Claimed before the first await: checking and adding either side of one would
     # let two concurrent requests both pass the check.
     if sample_item_id in _sample_assignments_in_flight:
-        sample = await fetch_sample(sample_item_id)
-        message = (
-            f"Peak assignment is already running for sample "
-            f"'{sample.sample_item_name}'."
-        )
-        runtime.logger.info(message)
-        return {"status": "skipped", "message": message}
+        return await _already_running_result(sample_item_id)
     _sample_assignments_in_flight.add(sample_item_id)
     try:
-        return await _run_sample_assignment(
-            sample_item_id=sample_item_id,
-            config=config,
-            user_id=user_id,
-            process_id=process_id,
-            parent_id=parent_id,
-        )
+        async with assignment_claim("sample", sample_item_id) as acquired:
+            if not acquired:
+                # Another worker holds the claim - the same refusal, discovered
+                # one process further out.
+                return await _already_running_result(sample_item_id)
+            return await _run_sample_assignment(
+                sample_item_id=sample_item_id,
+                config=config,
+                user_id=user_id,
+                process_id=process_id,
+                parent_id=parent_id,
+            )
     finally:
         _sample_assignments_in_flight.discard(sample_item_id)
+
+
+async def _already_running_result(sample_item_id: str) -> dict:
+    """Refusal payload for a sample whose assignment is already in flight.
+
+    Reports the in-flight run when one is visible, so a client can follow the
+    run that is actually producing the ledger instead of just being declined.
+    (A cross-worker refusal can race the other worker's run creation, so the
+    id is best-effort.)
+    """
+    sample = await fetch_sample(sample_item_id)
+    async with async_session() as session:
+        in_flight_run_id = await session.scalar(
+            select(PeakAssignmentRun.peak_assignment_run_id)
+            .where(
+                PeakAssignmentRun.sample_item_id == sample_item_id,
+                PeakAssignmentRun.status.in_(("pending", "running")),
+            )
+            .order_by(
+                PeakAssignmentRun.peak_assignment_run_utc_created.desc().nullslast()
+            )
+            .limit(1)
+        )
+    message = (
+        f"Peak assignment is already running for sample '{sample.sample_item_name}'."
+    )
+    runtime.logger.info(message)
+    result: dict = {"status": "skipped", "message": message}
+    if in_flight_run_id is not None:
+        result["data"] = {"peak_assignment_run_id": in_flight_run_id}
+    return result
 
 
 async def _run_sample_assignment(
@@ -865,16 +967,18 @@ async def _run_sample_assignment(
     sample = await fetch_sample(sample_item_id)
     config = config or PeakAssignmentConfig()
 
-    if sample.instrument_function_id is None:
-        # Blank samples carry no peaks; nothing to assign
-        warning_message = (
-            f"Sample '{sample.sample_item_name}' has no peaks. "
-            "Peak assignment is skipped."
+    if (reason := ineligible_reason(sample)) is not None:
+        # Returned rather than raised: raise_api_warning always raises, which
+        # made the skip payload unreachable and its _notification_data - the
+        # reload the decorator's success path delivers - silently lost. The
+        # batch path reports its skips through returns for the same reason.
+        message = (
+            f"Peak assignment skipped for sample '{sample.sample_item_name}': {reason}."
         )
-        raise_api_warning(warning_message, {"sample_item_id": sample_item_id})
+        runtime.logger.warning(message)
         return {
             "status": "skipped",
-            "message": warning_message,
+            "message": message,
             "_notification_data": {
                 "sample_batch_id": sample.sample_batch_id,
                 "sample_item_id": sample_item_id,
@@ -883,37 +987,45 @@ async def _run_sample_assignment(
 
     match_params = await default_match_params(sample_item_id)
     run = await _create_run(sample_item_id, config)
-    runtime.logger.info(
-        f"Starting peak assignment run '{run.peak_assignment_run_id}' "
-        f"for sample '{sample.sample_item_name}'"
-    )
 
-    notification = UserNotification(
-        process_id=process_id,
-        parent_id=parent_id,
-        type="assign_sample_peaks",
-        status="pending",
-        message=f"Assigning peaks for sample '{sample.sample_item_name}'.",
-        data={
-            "sample_item_id": sample_item_id,
-            "peak_assignment_run_id": run.peak_assignment_run_id,
-            "_user_id": user_id,
-        },
-    )
-
+    # Everything after run creation runs under the failure finalizer: an
+    # exception anywhere past this point must mark the run 'failed', or it
+    # stays 'running' until the startup reaper.
     try:
+        runtime.logger.info(
+            f"Starting peak assignment run '{run.peak_assignment_run_id}' "
+            f"for sample '{sample.sample_item_name}'"
+        )
+
+        notification = UserNotification(
+            process_id=process_id,
+            parent_id=parent_id,
+            type="assign_sample_peaks",
+            status="pending",
+            message=f"Assigning peaks for sample '{sample.sample_item_name}'.",
+            data={
+                "sample_item_id": sample_item_id,
+                "peak_assignment_run_id": run.peak_assignment_run_id,
+                "_user_id": user_id,
+            },
+        )
+
         # -- Load every observed peak of the sample
         peaks_df = _load_sample_peaks(sample)
         await send_progress_user_notification(notification, 0.1)
+
+        # -- Resolve the sample's mechanism set once; every stage below
+        # consumes the same resolution.
+        mechanism_ids, mechanisms = await _fetch_sample_mechanisms(sample)
 
         # -- Stage A: database-first assignment from the known composition set:
         # the curated target library plus (when loaded) the reference mirror.
         stage_a_assignments: list[dict] = []
         target_isotopes_df = await _fetch_known_target_isotopes(
-            sample, match_params.isotope_abundance_threshold
+            sample, match_params.isotope_abundance_threshold, mechanism_ids
         )
         reference_isotopes_df = await _fetch_reference_known_isotopes(
-            sample, match_params.isotope_abundance_threshold
+            sample, match_params.isotope_abundance_threshold, mechanisms
         )
         known_isotopes_df = _combine_known_isotopes(
             target_isotopes_df, reference_isotopes_df
@@ -974,8 +1086,8 @@ async def _run_sample_assignment(
                 config.max_untargeted_peaks, "intensity"
             ).sort_values("mz")
 
-            notations, mechanism_id_by_notation = await _fetch_untargeted_ionizations(
-                sample
+            notations, mechanism_id_by_notation = _untargeted_ionization_notations(
+                mechanisms
             )
             if remainder_df.empty or not notations:
                 skip_reason = (
@@ -1083,6 +1195,23 @@ async def _run_sample_assignment(
                 "peak_assignment_run_id": run.peak_assignment_run_id,
             },
         }
+    except asyncio.CancelledError:
+        # CancelledError is a BaseException, so the failure handler below never
+        # sees it - without this branch a cancelled run stayed 'running' until
+        # the startup reaper, invisible to the read model and (correctly)
+        # refused by the retention prune. Finalize to the distinct 'cancelled'
+        # state and re-raise so cancellation still propagates. Shielded: the
+        # task is already cancelled, and a second cancellation arriving during
+        # the finalizer's own awaits must not abort the terminal write.
+        await asyncio.shield(
+            _finalize_run(
+                run.peak_assignment_run_id, "cancelled", error="Run was cancelled"
+            )
+        )
+        runtime.logger.info(
+            f"Peak assignment run '{run.peak_assignment_run_id}' was cancelled"
+        )
+        raise
     except Exception as e:
         await _finalize_run(run.peak_assignment_run_id, "failed", error=str(e))
         runtime.logger.error(

@@ -72,7 +72,10 @@ export const useUser = defineStore('app.data.user', () => {
         },
         {
           use: 'update',
-          type: 'update_password'
+          type: 'update_password',
+          // Both password forms show the server's message next to the fields,
+          // so the generic error toast would repeat it word for word.
+          errors: 'inline'
         }
       ),
     delete: (user) =>
@@ -84,10 +87,23 @@ export const useUser = defineStore('app.data.user', () => {
       ),
     resetPassword: (user) =>
       sudo((role) =>
-        api.http.get(`/users/${role}/${user.id}/reset-password`, {
+        api.http.post(`/users/${role}/${user.id}/reset-password`, null, {
           use: 'read',
           type: 'reset_password'
         })
+      ),
+    // Owner-only, with no admin equivalent, so it deliberately does not go
+    // through sudo() - that would send an admin to a /users/admin/... path
+    // which does not exist. The button is gated on the owner role in
+    // DialogUserManagement.vue and the route is gated on owner_user.
+    requirePasswordChange: () =>
+      api.http.post(
+        `/users/owner/require-password-change`,
+        { confirm: true },
+        {
+          use: 'update',
+          type: 'require_password_change'
+        }
       ),
     deleteAccessTokens: (user) =>
       sudo((role) =>

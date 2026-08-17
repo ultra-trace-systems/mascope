@@ -27,7 +27,7 @@ dependencies = [
     "ruptures>=1.1.10",
     "polars>=1.43.2",
     "pyarrow>=25.0.0",
-    "pyteomics>=5.0",
+    "pyteomics>=5.0.1",
     "tqdm>=4.70.0",
 ]
 
@@ -43,5 +43,5 @@ documentation = "https://github.com/ultra-trace-systems/mascope"
 "Bug Tracker" = "https://github.com/ultra-trace-systems/mascope/issues"
 
 [build-system]
-requires = ["uv_build>=0.12.1,<0.13"]
+requires = ["uv_build>=0.12.3,<0.13"]
 build-backend = "uv_build"

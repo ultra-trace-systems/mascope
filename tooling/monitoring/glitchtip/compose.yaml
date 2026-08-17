@@ -1,6 +1,6 @@
 # GlitchTip (self-hosted error tracking) for the Mascope fleet.
 #
-# Deploy on the internal monitoring box ("ops"), reachable from LAN + tailnet
+# Deploy on the internal monitoring box, reachable from LAN + tailnet
 # only, plain HTTP. Concrete host addresses are deliberately not in this public
 # repo - see the private fleet docs. Copy this directory to /opt/glitchtip on
 # the box, fill in glitchtip.env, then `docker compose up -d`. See ../README.md

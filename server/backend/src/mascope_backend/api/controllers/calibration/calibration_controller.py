@@ -14,8 +14,11 @@ from typing import cast
 
 from sqlalchemy import and_, func, select
 
+import mascope_file.io as m_io
+import mascope_file.name as m_name
 from mascope_backend.api.controllers.calibration.lib.calibration_mz_fit import (
     calibration_params_factory,
+    fit_quality,
     get_calibration_handler,
 )
 from mascope_backend.api.controllers.match.match_controller import match_remove_sample
@@ -48,6 +51,7 @@ from mascope_backend.api.models.calibration.calibration_pydantic_model import (
     CalibrationFitParams,
     MzCalibrationParams,
 )
+from mascope_backend.api.models.calibration.config import calibration_config
 from mascope_backend.api.models.sample.files.sample_file_pydantic_model import (
     SampleFileUpdate,
 )
@@ -59,6 +63,135 @@ from mascope_backend.socket.notifications import (
     send_progress_user_notification,
 )
 from mascope_signal.compute import get_sum_signal
+
+
+def acquisition_drift_ppm(fit: dict | None) -> float | None:
+    """
+    The fit's pre-calibration m/z error when it exceeds the drift threshold.
+
+    :param fit: Fit dict (with the ``quality`` block when available).
+    :return: Signed pre-calibration error in ppm, or None when within
+        ``ACQUISITION_DRIFT_WARNING_PPM`` or unknown.
+    """
+    quality = (fit or {}).get("quality") or {}
+    pre_fit = quality.get("pre_fit_mz_error_ppm")
+    if pre_fit is None:
+        return None
+    if abs(pre_fit) <= calibration_config.ACQUISITION_DRIFT_WARNING_PPM:
+        return None
+    return pre_fit
+
+
+def warn_on_acquisition_drift(
+    fit: dict | None, instrument: str | None, filename: str
+) -> None:
+    """
+    Report acquisition-side m/z drift after a fit has been applied.
+
+    The one-point fit silently corrects however far off the instrument writes
+    its m/z axis, so a drifting instrument keeps producing green results while
+    its internal calibration degrades. When the fit's pre-calibration error
+    exceeds ``ACQUISITION_DRIFT_WARNING_PPM``, log at WARNING - exported to
+    error monitoring as operator signal that the instrument needs retuning.
+    (The persisted record carries the ``acquisition_drift`` flag for the
+    sample browser's badge - see ``calibration_mz_apply``.)
+
+    The warning message carries only the instrument and the drift rounded to
+    whole ppm, so monitoring groups a drift episode into one issue per
+    magnitude instead of one per sample; the per-file detail follows at INFO.
+
+    :param fit: Applied fit dict (with the ``quality`` block when available).
+    :param instrument: Instrument name for the warning message.
+    :param filename: Sample filename, logged at INFO for drill-down.
+    """
+    pre_fit = acquisition_drift_ppm(fit)
+    limit = calibration_config.ACQUISITION_DRIFT_WARNING_PPM
+    if pre_fit is None:
+        return
+    runtime.logger.warning(
+        f"Acquisition m/z drift beyond {limit:g} ppm on instrument "
+        f"'{instrument or 'unknown'}': pre-calibration error {round(pre_fit):+d} "
+        "ppm. The applied calibration corrects it, but the instrument's "
+        "internal m/z calibration likely needs retuning."
+    )
+    runtime.logger.info(
+        f"Acquisition drift detail: file '{filename}' was {pre_fit:+.2f} ppm "
+        "off before calibration."
+    )
+
+
+def carry_acquisition_drift(fit: dict, previous: dict | None) -> None:
+    """
+    Stamp the acquisition-drift marker on a fit about to be persisted.
+
+    Drift is a property of how the file was acquired, not of the last fit: a
+    re-calibration runs on the already-corrected axis and sees a near-zero
+    pre-fit error, which must not clear the marker. A fresh drift observation
+    sets the flag with its magnitude; otherwise the previous record's marker
+    is carried forward. Only :func:`reset_mz_calibration` (which restores the
+    acquisition axis) clears it, by clearing the whole record.
+
+    :param fit: Fit dict about to be persisted (mutated in place).
+    :param previous: The record being replaced, if any.
+    """
+    drift = acquisition_drift_ppm(fit)
+    if drift is not None:
+        fit.update({"acquisition_drift": True, "acquisition_drift_ppm": drift})
+    elif (previous or {}).get("acquisition_drift"):
+        carried = (previous or {}).get("acquisition_drift_ppm")
+        if carried is None:
+            # Records written before the magnitude field: the previous fit's
+            # own pre-fit error is the observation that raised the flag.
+            carried = acquisition_drift_ppm(previous)
+        fit.update({"acquisition_drift": True, "acquisition_drift_ppm": carried})
+
+
+async def reset_mz_calibration(sample_file) -> bool:
+    """
+    Restore a sample file's acquisition m/z axis and clear its calibration.
+
+    Orbitrap calibration is cumulative: every apply rescales the stored m/z
+    axes in place and tracks the running factor (zarr props + the database
+    record), so a re-processed file silently keeps its previous calibration.
+    Dividing by the stored factor restores the acquisition axis exactly,
+    after which the pipeline calibrates from scratch like a fresh upload.
+
+    TOF fits are absolute (the m/z axis is recomputed from the invariant TOF
+    axis on every apply), so there is nothing to reset for them.
+
+    :param sample_file: Sample file ORM/DTO object with ``sample_file_id``,
+        ``filename`` and ``mz_calibration``.
+    :return: True when a reset was performed.
+    """
+    if m_name.get_instrument_type(sample_file.filename) != "orbi":
+        return False
+    stored = m_io.read_props(sample_file.filename).get("mz_calibration")
+    factor = ((stored or {}).get("par") or {}).get("calibration_factor")
+    if factor:
+        calibration_handler = get_calibration_handler(
+            filename=sample_file.filename, calibration_params=None, notification=None
+        )
+        await calibration_handler.apply(
+            {
+                "mode": "one-point",
+                "par": {
+                    "old_factor": factor,
+                    "old_factor_scaling": 1.0 / factor,
+                    "calibration_factor": 1.0,
+                },
+            }
+        )
+    if stored is None and sample_file.mz_calibration is None:
+        return False
+    m_io.update_props(sample_file.filename, {"mz_calibration": None})
+    sample_file.mz_calibration = None
+    await update_sample_file(
+        sample_file.sample_file_id, SampleFileUpdate(**sample_file.to_dict())
+    )
+    runtime.logger.info(
+        f"Reset m/z calibration for '{sample_file.filename}' to the acquisition axis."
+    )
+    return True
 
 
 @api_controller()
@@ -103,6 +236,29 @@ async def get_mz_calibration(
     return {
         "message": "m/z calibration retrieved successfully.",
         "data": {"mz_calibration": mz_calibration} if mz_calibration else {},
+    }
+
+
+@api_controller()
+async def get_default_calibration_params(sample_item_id: str) -> dict:
+    """
+    Instrument-appropriate default m/z calibration parameters for a sample.
+
+    The UI calibration dialog seeds its parameter fields from this, so an
+    Orbitrap sample starts from the same instrument defaults the automatic
+    pipeline uses instead of one hardcoded parameter set.
+
+    :param sample_item_id: ID of the sample item.
+    :type sample_item_id: str
+    :raises NotFoundException: If the sample is not found.
+    :return: Dict with the default parameter values under ``data.params``.
+    :rtype: dict
+    """
+    sample = await fetch_sample(sample_item_id)
+    params = calibration_params_factory(filename=sample.filename)
+    return {
+        "message": "Default calibration parameters retrieved successfully.",
+        "data": {"params": params.model_dump()},
     }
 
 
@@ -203,6 +359,12 @@ async def calibration_mz_fit(
     )
     await calibration_handler.fit()
     calibration_data = calibration_handler.to_dict()
+    if calibration_data.get("fit") is not None:
+        # Travels inside the fit dict through apply into the persisted
+        # sample_file.mz_calibration record.
+        calibration_data["fit"]["quality"] = fit_quality(
+            calibration_data.get("stats"), calibration_parameters
+        )
 
     # --- Build shared notification payload ---
     notification_data = {
@@ -335,7 +497,8 @@ async def calibration_mz_apply(
     updated_mz_axis = get_sum_signal(filename).mz.values
     new_mz_range = [updated_mz_axis[0], updated_mz_axis[-1]]
 
-    fit.update({"verified": True})
+    fit.update({"status": "ok", "verified": True})
+    carry_acquisition_drift(fit, sample_file.mz_calibration)
 
     await send_progress_user_notification(notification, 0.3)
 
@@ -504,6 +667,7 @@ async def calibration_mz_calibrate_sample(
         process_id=gen_id(8),
         parent_id=process_id,
     )
+    warn_on_acquisition_drift(fit, sample.instrument, sample.filename)
     await send_progress_user_notification(notification, 0.95)
 
     return {

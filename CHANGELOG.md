@@ -4,6 +4,228 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
 
 ## [Unreleased]
 
+## [1.7.0] - 2026.08.17
+
+### Added
+
+- An owner can now require every account to set a new password, from Manage
+  users or with `mascope prod db script run require_password_change`. The
+  minimum password length was introduced after many accounts already existed
+  and nothing ever re-validated them, so a deployment could carry passwords
+  weaker than its own policy with no way to find out. The requirement is soft:
+  everyone keeps signing in with their existing password and is held at a
+  password screen until they replace it. No account is excluded, the acting owner
+  included. The requirement closes the API and the realtime channel alike: a
+  pending account can still reach its own profile and the password form, and
+  still receives its own notifications, but cannot read records over either
+  surface. Existing API access tokens (SDK, notebooks, instrument agents) keep
+  working, because their strength does not depend on the account's password and
+  their holders cannot present a password screen; changing the password revokes
+  them, and they must then be regenerated or re-paired. Withdraw the requirement
+  with `mascope prod db script run clear_password_change_requirement`; there is
+  deliberately no way to do that over the API.
+- Passwords issued by an administrator are now temporary. Resetting another
+  user's password, and creating an account, both leave that account required to
+  choose its own password at next sign-in, so only its holder ever knows the
+  password in use. The first owner, who chooses their own password during setup,
+  is not asked to change it.
+- The password policy now rejects the most commonly used and breached
+  passwords. The bundled list is filtered to the lengths the 12-character
+  minimum could otherwise accept, so it catches `qwerty123456` and
+  `passwordpassword` without adding character-class rules.
+- New black-box security suite in `security/pentest/`: 41 checks against a
+  running deployment, each carrying its OWASP category, CWE and the SOC 2
+  Trust Services Criteria it evidences, producing a severity-ranked report in
+  Markdown and JSON. It covers recon, security headers, authentication,
+  session and token handling, authorization, injection and traversal, error
+  hygiene, uploads, transport, the Socket.IO surface, and rate limiting. It
+  is standalone - its own dependencies and virtualenv, no imports from the
+  app - so it can be pointed at any deployment. `security/pentest/README.md`
+  covers how to run it and what a run does to its target.
+- The suite refuses to produce a report it cannot attribute: it resolves the
+  build under test before any check runs, from `GET /api/version` or
+  `MASCOPE_PENTEST_BUILD`, and aborts otherwise. Every report also records an
+  observable fingerprint of the served frontend, so a stale image reported as
+  current is visible rather than assumed.
+- Tenant isolation and the realtime access checks are automated rather than
+  verified by hand: the suite provisions two peer accounts, confirms neither
+  can read, modify or subscribe to the other's workspace - over REST and over
+  Socket.IO - and deletes them afterwards. Also covered: whether the client
+  address can be spoofed past the rate limiter, whether a state-changing
+  request is accepted from another origin, and whether the published demo
+  credentials open a deployment that is not the demo stack.
+
+- New `GET /api/version` reports the version of the running deployment, so an
+  operator or an audit can tie a deployment to an artifact without shell access
+  to the host. It reports `MASCOPE_VERSION`, the same value that selects the
+  image tag, so it always names the tag that was deployed. Admin-gated as least
+  privilege for an operational endpoint; the login screen already shows the
+  version, so this is not a confidentiality boundary.
+- Sample browser: new m/z calibration status column. Every sample shows a
+  color-coded badge - green: calibrated, with the fit quality in the tooltip
+  (calibration point count, mean |m/z error| before/after the fit); red:
+  automatic calibration failed, with the reason and attempt count, and match
+  computation skipped until the sample is recalibrated; orange: calibrated,
+  but the file arrived with acquisition-side m/z drift (the instrument likely
+  needs retuning); grey: not calibrated (no calibration collection for the
+  ionization mode, or a blank file). Clicking a badge opens the calibration
+  dialog. (#1765, #1773)
+- Calibration outcomes are now persisted on the sample file record: a
+  given-up automatic calibration writes an explicit failed marker (error,
+  attempts, final tolerance) instead of leaving the record empty, and applied
+  fits store a quality block (calibration point count, pre/post-fit mean
+  |m/z error| in ppm, calibrant-to-TIC fraction, parameters used) so the
+  quality of any applied fit stays inspectable after the fact. Samples whose
+  automatic calibration failed skip matching and peak assignment instead of
+  silently matching on an uncalibrated m/z axis. (#1765)
+- Acquisition drift alerting: when an applied fit's pre-calibration error
+  exceeds 10 ppm, a warning is exported to error monitoring (grouped per
+  instrument and drift magnitude) and the sample is badged in the browser.
+  The software corrects the drift, but a drifting instrument needs operator
+  attention; the marker (with the originally observed magnitude) survives
+  re-calibration and is cleared only when re-processing restores the
+  acquisition axis. (#1773)
+- New `GET /api/calibration/default_params` returns a sample's
+  instrument-appropriate default calibration parameters; the calibration
+  dialog seeds its fields from it. (#1774)
+
+### Fixed
+
+- A production server no longer switches release channel when it restarts. The
+  boot service (`mascope.service`) had no `WorkingDirectory`, so systemd ran it
+  from `/`, where the CLI cannot read the release tag the deployment has
+  checked out - the version resolution fell back to the rolling `latest` build,
+  and a reboot silently replaced the pinned release with an unreleased master
+  build (which, carrying newer migrations, can migrate the production database
+  forward on startup). The units now run from the deployment checkout, the
+  deploy version is resolved from `MASCOPE_PATH` rather than the process
+  working directory, and a deploy that cannot resolve a version says so instead
+  of quietly deploying `latest`. Existing servers need one
+  `./tooling/ubuntu.sh install` to pick up the corrected units.
+- `mascope prod doctor` reports the deployed version and flags drift between
+  the images the containers are running and the release the deployment would
+  deploy - the state above was invisible until someone read the version in the
+  web UI. Drift makes the report exit non-zero, so a monitor catches it.
+- Containerized deployments now receive `MASCOPE_VERSION`, which they never
+  did: compose interpolated it into the `image:` tag but never passed it into
+  the container environment. Every error reported to GlitchTip therefore
+  carried no release, so events could not be grouped or attributed to a
+  version, and the runtime had no version to report. Both compose files now
+  set it from the same value that selects the image tag, so the reported
+  version cannot drift from the image actually running.
+- FTMS satellite ("sidelobe") peak flagging now catches real sidelobe
+  patterns; previously it flagged nothing on production Orbitrap data. Real
+  sidelobe mirror pairs are intensity-asymmetric and failed the old
+  similarity gate, and unpaired shoulders were only flagged within 3 ppm of
+  the parent. New defaults: mirror-pair similarity 0.25, single-sided window
+  8 ppm (about one peak width), symmetric search window 100 ppm, base-peak
+  pool widened to the top 20. Flagged sidelobes are excluded from matching,
+  so results change where sidelobes were previously matched as weak
+  isotopologues - the demo dataset goldens are regenerated as bundle v1.2
+  accordingly. (#1772)
+- Re-processing a sample file now recalibrates it from scratch. Orbitrap
+  calibration rescales the file's stored m/z axes in place and tracks the
+  running factor, so a re-processed file silently kept its previous
+  calibration; the acquisition axis is now restored (exact inverse of the
+  stored factor) and both calibration records cleared before the pipeline
+  runs. (#1765)
+- The calibration dialog no longer runs Orbitrap refits with TOF-shaped
+  parameters (refine window 100 ppm, SNR threshold 10 - an order of magnitude
+  looser than the automatic pipeline); it now uses the same instrument
+  defaults the pipeline uses, preserving any user-edited values. (#1774)
+- A tab left open no longer fills up with notification toasts. Each toast is
+  dismissed on its own timer, and a browser throttles those timers in a
+  background tab while notifications keep arriving over the socket, so coming
+  back to a tab that had been processing a batch could mean a wall of toasts
+  at once - enough, in the worst case, to make the view unusable. At most
+  five are shown now; anything beyond that collapses into one summary
+  carrying the highest severity it covers. Nothing is lost - the full history
+  stays in the notification drawer and the sidebar badge still counts every
+  warning and error. (#1809)
+- The notification log no longer retains operation payloads. It kept the last
+  250 notifications in full, including the results attached to them, so a
+  session that ran composition searches held on to their entire result sets
+  for as long as the tab stayed open: 16.6 MB for a representative search
+  history, against 34 KB for the same history now. Log entries keep only what
+  the drawer displays. (#1809)
+- Notification watchers are released when the pane that registered them
+  closes. The cleanup handle a component received registered itself too late
+  to remove anything, so every open/close of the peak search pane left behind
+  a callback that kept running on every matching notification and held that
+  pane's search results with it. Cleanup now follows the component's
+  lifetime. (#1809)
+
+### Security
+
+- The Socket.IO handshake now rejects cross-site origins. It ran with
+  `cors_allowed_origins="*"`, which makes Engine.IO skip the origin check
+  entirely and reflect any `Origin` back with `Allow-Credentials: true`, so a
+  hostile page could open a *credentialed* realtime connection and only the
+  browser's `SameSite=lax` cookie default stood in the way. Production now
+  accepts only the deployment's own origin, reconstructed per request from
+  `X-Forwarded-Proto` + `X-Forwarded-Host` so any hostname works without
+  configuration; development names the Vite dev-server origins. The file
+  converter now suppresses the `Origin` its websocket library synthesises
+  from the connect URL, so it stays outside the check as a service client
+  rather than depending on that value happening to match. nginx also
+  forwards the browser's scheme rather than its own listener's, so a
+  deployment behind someone else's TLS terminator reports the origin the
+  browser actually used. The REST and realtime policies now come from one
+  module so they cannot drift apart.
+- The edge rate limits apply on every host, not only the TLS one. The
+  per-client `limit_req`/`limit_conn` tier - including the stricter bucket in
+  front of `/api/auth/` - lived only in the HTTPS config, so a deployment
+  serving this image with `MASCOPE_TLS=off` behind its own TLS terminator
+  silently lost the whole edge tier and fell back to the backend's Redis
+  limiter, which fails open when Redis is unavailable. Nothing in the limiter
+  needs TLS: it keys on `$remote_addr`, so it now lives in the body both
+  configs share.
+- The real client address now survives the Cloudflare proxy: nginx trusts
+  `CF-Connecting-IP` from Cloudflare's published ranges only, so the
+  backend's per-IP login rate limits, the new edge limits below, and the
+  access log all key on the actual client instead of a shared edge address.
+  The backend access log records that address too, instead of the nginx
+  container's internal IP, so requests and failed logins can be tied to
+  their source. (#1783, #1787)
+- The edge bounds what one client can do: per-client request and connection
+  limits (answering 429, so throttling is distinguishable from an outage),
+  a stricter budget on the authentication endpoints, and a 10-minute cap on
+  API requests (uploads get an hour; only Socket.IO keeps its 24-hour
+  timeout, which previously applied to every proxied route). The nginx
+  version is no longer advertised. (#1783)
+- Every resumable-upload (tus) route requires authentication, enforced before
+  the request body is handled. Previously the generated metadata routes (HEAD,
+  OPTIONS, DELETE) accepted anonymous callers - a leaked upload id let anyone
+  read upload metadata (filename, size, progress) or delete an upload in
+  flight - and a chunk upload (PATCH) began writing to disk before the auth
+  check ran. (#1784)
+- A single resumable upload is capped - 5 GB by default, configurable with
+  `tus_max_upload_gb` (see docs/maintaining.md). This lowers the effective
+  ceiling from the tus library's 120 GiB default (the nginx body limit only
+  bounds one chunk), so one runaway transfer cannot fill the disk. An upload
+  declaring a larger size is refused up front with 413. The cap is per upload:
+  how many files an instrument agent transfers per day is unaffected. Separately,
+  nginx now caps a single request body at 100 MB (previously 2.5 GB), so
+  whole-file legacy uploads above that go through the chunked tus route. (#1784)
+- Resetting another user's password, and the enqueueing/export routes (peak
+  recomputation, batch peak aggregation, peak and spreadsheet exports, the
+  ion-focus visualization), are POST instead of GET. The auth cookie is SameSite=lax,
+  which is sent on cross-site top-level GET navigations - so a crafted link
+  could reset a user's password (account lockout, not credential theft) or
+  spawn heavy background work with a signed-in admin's ambient credentials.
+  Only the bundled frontend calls these routes, so no external client is
+  affected. (#1785, #1786)
+- The deployment env example no longer carries `MASCOPE_COOKIE_SECURE`. The
+  production compose does not read it, and the demo compose already defaults it
+  to false for its localhost HTTP, so the line did nothing in the example; the
+  production cookie's Secure flag follows the runtime mode and is on in prod
+  regardless. Removed so it cannot imply it governs the production cookie. (#1788)
+- The HTTP/localhost frontend config now also suppresses the nginx version
+  banner (`server_tokens off`), which previously applied only to the production
+  config. The two configs share a host-agnostic body, and a build check now
+  keeps that body from drifting so a future hardening cannot reach only one of
+  them. (#1796)
+
 ## [1.6.2] - 2026.08.12
 
 ### Added
@@ -38,6 +260,19 @@ batches=...)`, and the `load_peaks` / `load_peak_timeseries` filters) is
   fallback that emits a `DeprecationWarning` when a string only matches as a
   regex - switch such calls to `re.compile(...)`; the fallback will be removed
   in a future release.
+
+### Fixed
+
+- Automatic Orbitrap m/z calibration no longer anchors to FTMS sidelobe
+  ("satellite") peaks. When a file arrives with an instrument-side
+  calibration offset beyond the old 10 ppm refine window, the true calibrant
+  fell outside the window while its weak sidelobes (SNR well above the
+  threshold) remained inside, and the one-point fit anchored to a sidelobe -
+  applying a wrong calibration with no warning (observed as ~12 ppm
+  miscalibrations on a customer Orbitrap instrument). A local-dominance guard
+  now rejects candidates with a >=10x stronger peak within 100 ppm, and the
+  default Orbitrap refine window is widened from 10 to 50 ppm so the true
+  centroid is found on the first attempt. (#1762)
 
 ## [1.6.1] - 2026.08.11
 

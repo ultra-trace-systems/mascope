@@ -15,6 +15,7 @@ from mascope_reference.known import (
     KnownComposition,
     KnownIdentity,
     iter_known_compositions,
+    known_state_fingerprint,
 )
 from mascope_reference.normalize import (
     canonical_formula,
@@ -40,6 +41,7 @@ __all__ = [
     "annotate_formulas",
     "collapse_by_inchikey",
     "iter_known_compositions",
+    "known_state_fingerprint",
     "KnownComposition",
     "KnownIdentity",
     "available_sources",

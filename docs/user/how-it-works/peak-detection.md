@@ -100,15 +100,15 @@ These are formally classified as satellite peaks and must be flagged to prevent 
 
 The algorithm targets artifacts generated exclusively around dominant ionic signals.
 Potential parent components (base peaks) are isolated using an intensity criterion.
-Peaks are classified as base candidates if their intensities meet or exceed a percentile threshold of $99.9\%$.
-If the total count of candidates exceeds $5$, the array is trimmed to keep only the top $5$ most intense parent profiles across the dataset.
+Peaks are classified as base candidates if their intensities meet or exceed a percentile threshold of $99\%$.
+If the total count of candidates exceeds $20$, the array is trimmed to keep only the top $20$ most intense parent profiles across the dataset.
 
 For each validated base peak with coordinates $(m/z_{\text{parent}}, I_{\text{parent}})$, a localized search range is established.
 A bounding mass tolerance $\Delta m/z_{\text{win}}$ is computed:
 
-  $$\Delta m/z_{\text{win}} = m/z_{\text{parent}} \cdot 350 \cdot 10^{-6}$$
+  $$\Delta m/z_{\text{win}} = m/z_{\text{parent}} \cdot 100 \cdot 10^{-6}$$
 
-where $350\text{ ppm}$ is the experimentally obtained window size for satellite detection.
+where $100\text{ ppm}$ is the experimentally obtained window size for satellite detection: measured side-lobe families extend to roughly $\pm 70\text{ ppm}$ around the parent, while a wider window mostly adds chance pairings in dense spectra.
 Candidates are restricted to the domain $m/z_{\text{parent}} \pm \Delta m/z_{\text{win}}$, excluding the parent itself.
 Candidates must show a relative intensity ratio ($r = I_{\text{candidate}} / I_{\text{parent}}$) that falls strictly within the bounds of emperically derived range $10^{-6}$ to $0.04$.
 
@@ -129,10 +129,12 @@ For every right-side mass shift, a binary search scans the left side to look for
 where $1.5\text{ ppm}$ is the experimentally derived mass tolerance for symmetry matching.
 If a symmetric pair is paired successfully, their relative intensity ratios to the parent ($r_{\text{left}}$ and $r_{\text{right}}$) are checked for consistency:
 
-  $$\frac{\min(r_{\text{left}}, r_{\text{right}})}{\max(r_{\text{left}}, r_{\text{right}})} \ge 0.5$$
+  $$\frac{\min(r_{\text{left}}, r_{\text{right}})}{\max(r_{\text{left}}, r_{\text{right}})} \ge 0.25$$
 
-If this similarity threshold is achieved, both peaks are formally flagged as satellites.
+The similarity threshold is deliberately loose: measured Fourier-transform side-lobe pairs mirror in position to well under a ppm while their intensities routinely differ severalfold, so a matching mirror offset is treated as the primary evidence.
+If the similarity threshold is achieved, both peaks are formally flagged as satellites.
 
-Any remaining unflagged candidate that fails the symmetry criteria can still be categorized as a satellite if it represents an immediate shoulder peak adjacent to the parent peak within a narrow mass window of $\pm 5\text{ ppm}$.
+Any remaining unflagged candidate that fails the symmetry criteria can still be categorized as a satellite if it represents a shoulder peak adjacent to the parent peak within a mass window of $\pm 8\text{ ppm}$ - roughly one peak width, where a weak neighbor cannot be a resolved real peak.
+More distant satellites require the mirror-pair evidence above, since dense spectra carry genuine weak peaks at tens of ppm from strong ones.
 
 Following evaluation across all base peaks, the boolean status is mapped back to the original index positions and appended to the output dataset.

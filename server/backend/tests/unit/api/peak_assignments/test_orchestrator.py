@@ -22,6 +22,7 @@ these call it with ``user_id=None`` so notification delivery stays on its quiet
 path rather than reaching Socket.IO.
 """
 
+from contextlib import asynccontextmanager
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pandas as pd
@@ -30,6 +31,26 @@ from test_engine import _isotope_row  # same directory; pytest puts it on sys.pa
 
 
 _MOD = "mascope_backend.api.new.peak_assignments.service"
+
+
+def _claim_stub(acquired=True):
+    """A stand-in for the cross-process assignment claim (no DB)."""
+
+    @asynccontextmanager
+    async def _claim(kind, resource_id):
+        yield acquired
+
+    return _claim
+
+
+def _scalar_session(value):
+    """An async_session() context whose scalar() resolves to ``value``."""
+    session = AsyncMock()
+    session.scalar = AsyncMock(return_value=value)
+    ctx = AsyncMock()
+    ctx.__aenter__ = AsyncMock(return_value=session)
+    ctx.__aexit__ = AsyncMock(return_value=False)
+    return ctx
 
 
 def _peaks_df(peak_specs: list[tuple[str, float, float]]) -> pd.DataFrame:
@@ -51,6 +72,9 @@ def _sample() -> MagicMock:
     sample.polarity = "positive"
     sample.instrument_function_id = "if-1"
     sample.instrument = "orbi"
+    # No calibration record at all is eligible (matching the batch partition
+    # and the targeted gate, which treat absent calibration as verified).
+    sample.mz_calibration = None
     return sample
 
 
@@ -130,9 +154,13 @@ def _patches(
         "calibration": patch(
             f"{_MOD}.load_calibration", new_callable=AsyncMock, return_value=None
         ),
-        "ionizations": patch(
-            f"{_MOD}._fetch_untargeted_ionizations",
+        "mechanisms": patch(
+            f"{_MOD}._fetch_sample_mechanisms",
             new_callable=AsyncMock,
+            return_value=(["im-1"], [MagicMock()]),
+        ),
+        "ionizations": patch(
+            f"{_MOD}._untargeted_ionization_notations",
             return_value=(["+H+"], {"+H+": "+H+"}),
         ),
         "compositions": patch(
@@ -142,6 +170,7 @@ def _patches(
                 {},
             ),
         ),
+        "claim": patch(f"{_MOD}.assignment_claim", _claim_stub()),
         "session": patch(f"{_MOD}.async_session", side_effect=recorder.session_factory),
         "progress": patch(
             f"{_MOD}.send_progress_user_notification", new_callable=AsyncMock
@@ -391,6 +420,81 @@ class TestRunFinalization:
         assert (run_id, status) == ("run-1", "failed")
 
     @pytest.mark.asyncio
+    async def test_cancelled_run_is_finalized_cancelled(self):
+        """A cancelled run must reach a terminal state without a restart.
+
+        CancelledError is a BaseException, so the ordinary failure handler
+        never sees it - a mid-flight cancel used to leave the row 'running'
+        forever on a worker that never restarts, invisible to the read model
+        and refused by the retention prune. The cancellation itself must still
+        propagate to the caller, and the in-flight claim must be released.
+        """
+        import asyncio
+
+        from mascope_backend.api.new.peak_assignments.config import (
+            PeakAssignmentConfig,
+        )
+        from mascope_backend.api.new.peak_assignments.service import (
+            _sample_assignments_in_flight,
+            assign_sample_peaks,
+        )
+
+        peaks = _peaks_df([("p1", 181.0707, 10000.0)])
+        recorder = _Recorder()
+        mocks = _start(_patches(recorder, peaks, _stage_a_rows()))
+
+        started = asyncio.Event()
+
+        async def _hang(*args, **kwargs):
+            started.set()
+            await asyncio.Event().wait()
+
+        mocks["matcher"].side_effect = _hang
+
+        task = asyncio.create_task(
+            assign_sample_peaks(
+                sample_item_id="si-1",
+                config=PeakAssignmentConfig(run_untargeted=False),
+                independent_transaction=True,
+                user_id=None,
+                process_id="proc-1",
+            )
+        )
+        await started.wait()
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+        mocks["finalize"].assert_awaited_once()
+        assert mocks["finalize"].await_args.args[:2] == ("run-1", "cancelled")
+        assert "si-1" not in _sample_assignments_in_flight
+
+    @pytest.mark.asyncio
+    async def test_failure_before_the_first_stage_finalizes_the_run_failed(self):
+        """The run record must be covered by the finalizer from the moment it
+        exists.
+
+        The gap this pins: notification construction sits between run creation
+        and the assignment stages, and a crash there used to leak the run as
+        'running' until the startup reaper.
+        """
+        from mascope_backend.api.new.peak_assignments.config import (
+            PeakAssignmentConfig,
+        )
+
+        peaks = _peaks_df([("p1", 181.0707, 10000.0)])
+        recorder = _Recorder()
+        mocks = _start(_patches(recorder, peaks, _stage_a_rows()))
+        with patch(
+            f"{_MOD}.UserNotification",
+            side_effect=RuntimeError("notification exploded"),
+        ):
+            await _run(PeakAssignmentConfig(run_untargeted=False))
+
+        mocks["finalize"].assert_awaited_once()
+        assert mocks["finalize"].await_args.args[:2] == ("run-1", "failed")
+
+    @pytest.mark.asyncio
     async def test_failure_propagates_to_a_batch_caller(self):
         """The batch counts failures by catching, so the error must reach it.
 
@@ -422,6 +526,65 @@ class TestRunFinalization:
             )
 
         assert mocks["finalize"].await_args.args[:2] == ("run-1", "failed")
+
+
+class TestEligibilityGate:
+    """The per-sample path refuses exactly what the batch partition skips.
+
+    Fit scores are computed from mass errors, so a sample whose m/z
+    calibration is unverified must not receive a confidently-tiered ledger;
+    a blank sample has no peaks to assign. Both skips must be *returned*, not
+    raised: the returned payload carries the _notification_data the
+    decorator's success path turns into a reload, which a raised warning
+    silently dropped. Neither may leave a run row behind.
+    """
+
+    @pytest.mark.asyncio
+    async def test_unverified_calibration_is_refused_without_a_run(self):
+        sample = _sample()
+        sample.mz_calibration = {"verified": False}
+        recorder = _Recorder()
+        mocks = _start(_patches(recorder, _peaks_df([]), _stage_a_rows()))
+        mocks["fetch_sample"].return_value = sample
+
+        result = await _run()
+
+        assert result["status"] == "skipped"
+        assert "calibration" in result["message"]
+        assert result["_notification_data"]["sample_item_id"] == "si-1"
+        mocks["create_run"].assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_blank_sample_skip_delivers_notification_data(self):
+        sample = _sample()
+        sample.instrument_function_id = None
+        recorder = _Recorder()
+        mocks = _start(_patches(recorder, _peaks_df([]), _stage_a_rows()))
+        mocks["fetch_sample"].return_value = sample
+
+        result = await _run()
+
+        assert result["status"] == "skipped"
+        assert result["_notification_data"] == {
+            "sample_batch_id": "sb-1",
+            "sample_item_id": "si-1",
+        }
+        mocks["create_run"].assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_verified_calibration_proceeds(self):
+        sample = _sample()
+        sample.mz_calibration = {"verified": True}
+        recorder = _Recorder()
+        mocks = _start(
+            _patches(recorder, _peaks_df([("p1", 181.0707, 10000.0)]), _stage_a_rows())
+        )
+        mocks["fetch_sample"].return_value = sample
+
+        result = await _run()
+
+        assert result["status"] == "success"
+        mocks["create_run"].assert_called_once()
 
 
 class TestSampleAdmissionControl:
@@ -463,6 +626,8 @@ class TestSampleAdmissionControl:
         with (
             patch(f"{_MOD}.fetch_sample", AsyncMock(return_value=self._sample())),
             patch(f"{_MOD}._run_sample_assignment", side_effect=_slow_run),
+            patch(f"{_MOD}.assignment_claim", _claim_stub()),
+            patch(f"{_MOD}.async_session", side_effect=lambda: _scalar_session(None)),
         ):
             first = asyncio.create_task(
                 assign_sample_peaks(
@@ -496,6 +661,7 @@ class TestSampleAdmissionControl:
         with (
             patch(f"{_MOD}.fetch_sample", AsyncMock(return_value=self._sample())),
             patch(f"{_MOD}._run_sample_assignment", side_effect=RuntimeError("boom")),
+            patch(f"{_MOD}.assignment_claim", _claim_stub()),
         ):
             # Whether the decorator re-raises or reports the failure is its own
             # concern; what matters here is that the claim does not outlive the run.
@@ -530,6 +696,7 @@ class TestSampleAdmissionControl:
         with (
             patch(f"{_MOD}.fetch_sample", AsyncMock(return_value=self._sample())),
             patch(f"{_MOD}._run_sample_assignment", side_effect=_slow_run),
+            patch(f"{_MOD}.assignment_claim", _claim_stub()),
         ):
             first = asyncio.create_task(
                 assign_sample_peaks(
@@ -550,3 +717,38 @@ class TestSampleAdmissionControl:
             await first
 
         assert other["status"] != "skipped"
+
+    @pytest.mark.asyncio
+    async def test_claim_held_in_another_worker_is_refused_with_the_run(self):
+        """A duplicate in a different process is refused and told which run.
+
+        The in-flight set only sees this worker; the cross-process claim
+        extends the refusal across workers, and the refusal reports the
+        in-flight run it can see so the client can follow the run actually
+        producing the ledger.
+        """
+        from mascope_backend.api.new.peak_assignments.service import (
+            assign_sample_peaks,
+        )
+
+        engine = AsyncMock()
+        with (
+            patch(f"{_MOD}.fetch_sample", AsyncMock(return_value=self._sample())),
+            patch(f"{_MOD}._run_sample_assignment", engine),
+            patch(f"{_MOD}.assignment_claim", _claim_stub(acquired=False)),
+            patch(
+                f"{_MOD}.async_session",
+                side_effect=lambda: _scalar_session("run-elsewhere"),
+            ),
+        ):
+            result = await assign_sample_peaks(
+                sample_item_id="si-1",
+                independent_transaction=True,
+                user_id=None,
+                process_id="proc-1",
+            )
+
+        engine.assert_not_called()
+        assert result["status"] == "skipped"
+        assert "already running" in result["message"]
+        assert result["data"]["peak_assignment_run_id"] == "run-elsewhere"

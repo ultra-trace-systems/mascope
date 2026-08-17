@@ -15,6 +15,23 @@ Open your Mascope address and enter your **Email** and **Password**, then click
 created by an administrator, so if you are missing yours (or a password reset),
 ask them.
 
+### If Mascope asks you to set a new password
+
+Right after signing in you may land on **Set a new password** instead of the
+dashboard. That happens when your account was created with a password someone
+else chose, when an administrator issued you a temporary one, or when an
+administrator has asked everyone to set a new password. It is not a sign that
+anything is wrong, and the screen itself says which of the three applies.
+
+Enter your current password, then choose a new one. It must be at least 12
+characters, must differ from your current password, and cannot be a commonly used
+password or contain your email address or user name. The rest of Mascope stays
+unavailable until you set it.
+
+One thing to know: changing your password replaces your API access tokens. If you
+use Mascope from a Jupyter notebook or the SDK, or you have paired an instrument
+agent, you will need to generate a new token or pair again afterwards.
+
 ## The dashboard at a glance
 
 After signing in you land on the dashboard. Everything happens on this one

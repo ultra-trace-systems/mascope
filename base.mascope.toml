@@ -33,6 +33,8 @@ log_path = './logs'
 color = "green"
 # paths
 filestreams = './filestreams'
+# uploads: size cap (GB) for a single resumable upload (see docs/maintaining.md)
+# tus_max_upload_gb = 5
 # scripts
 run = "uv run mascope-backend run api-server"
 

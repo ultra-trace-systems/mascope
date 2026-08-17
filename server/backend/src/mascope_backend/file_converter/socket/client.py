@@ -10,7 +10,18 @@ class FileConverterSocketClient:
 
     def __init__(self, url: str, peak_recompute_queue=None, peak_guard=None):
         self.url = url
-        self.sio = socketio.Client(logger=False, ssl_verify=False)
+        self.sio = socketio.Client(
+            logger=False,
+            ssl_verify=False,
+            # Send no Origin. This is a service-to-service client, not a page, so
+            # it has no origin to speak for - but websocket-client synthesises
+            # one from the URL it dials unless told not to, and the server side
+            # rejects a handshake whose Origin is not the deployment's own (see
+            # mascope_backend.socket.server). Suppressing it keeps the converter
+            # outside that check entirely rather than relying on the synthesised
+            # value happening to match whatever host it connected to.
+            websocket_extra_options={"suppress_origin": True},
+        )
         self.context_manager = FileContextManager()
         self.event_handler = SocketEventHandler(
             self,

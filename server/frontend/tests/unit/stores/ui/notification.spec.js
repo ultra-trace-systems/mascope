@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { nextTick } from 'vue'
+import { nextTick, effectScope, defineComponent, h } from 'vue'
+import { mount } from '@vue/test-utils'
 import { createPinia, setActivePinia } from 'pinia'
 
 // The store registers a socket listener at setup; a stub is all it needs.
@@ -111,5 +112,119 @@ describe('notification store', () => {
 
     expect(store.log).toHaveLength(250)
     expect(store.log[0].message).toBe('m259')
+  })
+
+  it('keeps result payloads out of the log', () => {
+    store.push({
+      type: 'match_compositions_by_mz',
+      status: 'success',
+      message: 'matched',
+      data: { results: [1, 2, 3] },
+      error: { detail: 'x' }
+    })
+
+    expect(store.log[0]).not.toHaveProperty('data.results')
+    expect(store.log[0].data).toBeUndefined()
+    expect(store.log[0].error).toBeUndefined()
+  })
+
+  it('keeps the full payload on the displayed notification', () => {
+    const data = { fit: { slope: 1 }, download: 'report.xlsx' }
+    const error = { detail: { data: { download: 'report.xlsx' } } }
+    store.push({ type: 'calibration_mz_fit', status: 'success', message: 'ok', data, error })
+
+    expect(store.latest.data).toEqual(data)
+    expect(store.latest.error).toEqual(error)
+  })
+
+  it('logs the fields the notification drawer renders', () => {
+    store.push({
+      type: 'mz_fit',
+      status: 'warning',
+      process_id: 'p1',
+      message: 'careful',
+      data: { big: 'payload' }
+    })
+
+    const entry = store.log[0]
+    expect(entry.type).toBe('mz_fit')
+    expect(entry.status).toBe('warning')
+    expect(entry.message).toBe('careful')
+    expect(entry.process_id).toBe('p1')
+    // NotificationPane calls timestamp.toISOString().
+    expect(entry.timestamp).toBeInstanceOf(Date)
+  })
+
+  it('tolerates a notification with no message or payload', () => {
+    store.push({ type: 'x', status: 'success' })
+
+    expect(store.log).toHaveLength(1)
+    expect(store.log[0].message).toBeUndefined()
+  })
+
+  it('drops a watcher when the scope that registered it goes away', async () => {
+    const cb = vi.fn()
+    const scope = effectScope()
+    scope.run(() => store.on('probe', cb))
+
+    store.push({ type: 'probe', status: 'success', message: 'a' })
+    await nextTick()
+    expect(cb).toHaveBeenCalledOnce()
+
+    scope.stop()
+    store.push({ type: 'probe', status: 'success', message: 'b' })
+    await nextTick()
+
+    expect(cb).toHaveBeenCalledOnce()
+  })
+
+  it('does not accumulate watchers across mount cycles', async () => {
+    const cb = vi.fn()
+    const Pane = defineComponent({
+      setup() {
+        store.on('probe', cb)
+        return () => h('div')
+      }
+    })
+
+    for (let i = 0; i < 5; i++) {
+      mount(Pane).unmount()
+    }
+    store.push({ type: 'probe', status: 'success', message: 'a' })
+    await nextTick()
+
+    expect(cb).not.toHaveBeenCalled()
+  })
+
+  it('keeps a watcher registered while its component is mounted', async () => {
+    const cb = vi.fn()
+    const Pane = defineComponent({
+      setup() {
+        store.on('probe', cb)
+        return () => h('div')
+      }
+    })
+
+    const wrapper = mount(Pane)
+    store.push({ type: 'probe', status: 'success', message: 'a' })
+    await nextTick()
+
+    expect(cb).toHaveBeenCalledOnce()
+    wrapper.unmount()
+  })
+
+  it('removes a watcher registered outside any scope on request', async () => {
+    const cb = vi.fn()
+    const handler = store.on('probe', cb)
+
+    store.push({ type: 'probe', status: 'success', message: 'a' })
+    await nextTick()
+    expect(cb).toHaveBeenCalledOnce()
+
+    handler.remove()
+    store.push({ type: 'probe', status: 'success', message: 'b' })
+    await nextTick()
+
+    expect(cb).toHaveBeenCalledOnce()
   })
 })

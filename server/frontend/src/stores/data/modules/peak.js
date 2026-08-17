@@ -52,9 +52,13 @@ export const usePeak = defineStore('app.data.peak', () => {
     ...data,
     // api
     computeAll: ({ sample_file_id }) =>
-      api.http.get(`/sample/files/${sample_file_id}/peaks/compute`, {
-        use: 'read',
-        type: 'compute_all_sample_peaks'
-      })
+      api.http.post(
+        `/sample/files/${sample_file_id}/peaks/compute`,
+        {},
+        {
+          use: 'read',
+          type: 'compute_all_sample_peaks'
+        }
+      )
   }
 })

@@ -14,10 +14,20 @@ operations story see [docs/maintaining.md](../../docs/maintaining.md).
 | `mascope-disk-check.service` | `mascope-disk-check.service` | no (oneshot, run by the timer) | One disk-space check (`tooling/disk-check.sh`). |
 | `mascope-disk-check.timer` | `mascope-disk-check.timer` | **yes - on by default** | Fire the disk check every 15 minutes. |
 | (see `tooling/disk-check.env.example`) | `/etc/mascope/disk-check.env` (chmod 600) | seeded once | Disk thresholds + optional alert URL. |
+| `mascope-assignment-prune.service` | `mascope-assignment-prune.service` | no (oneshot, run by the timer) | One retention pass over peak-assignment runs (`prod db script run prune_peak_assignment_runs`). |
+| `mascope-assignment-prune.timer` | `mascope-assignment-prune.timer` | **yes - on by default** | Fire the retention pass nightly at 03:30. |
+| `prune.env.example` | `/etc/mascope/prune.env` (chmod 600) | seeded once | Retention overrides (keep-per-sample, grace hours). |
 
-Both `.service` files template `@@USER@@` and `@@MASCOPE_BIN@@`; `MASCOPE_PATH`
-and `LD_PRELOAD` come from `/etc/environment`, matching how `ubuntu.sh`
-provisions the box.
+Both `.service` files template `@@USER@@`, `@@MASCOPE_BIN@@` and
+`@@MASCOPE_PATH@@`; `MASCOPE_PATH` and `LD_PRELOAD` come from
+`/etc/environment`, matching how `ubuntu.sh` provisions the box.
+
+`@@MASCOPE_PATH@@` fills the `WorkingDirectory`, which is not cosmetic: systemd
+otherwise starts a unit in `/`, and a deploy launched outside the checkout
+cannot read which release tag is checked out - it would deploy the rolling
+`latest` images instead. After changing any unit here, re-run
+`./tooling/ubuntu.sh install` on the server; a release update does not rewrite
+the installed units.
 
 ## Enabling auto-updates
 
@@ -68,12 +78,29 @@ treats exit 1 ("a filesystem is low") as expected, so systemd does not pile a
 `failed` unit on top of an alert the operator is already handling. Full
 operator docs: [docs/maintaining.md](../../docs/maintaining.md) -> Disk space.
 
+## The assignment-run retention pass
+
+Peak assignment writes one ledger row per observed peak per run and never
+supersedes old runs on its own, so `peak_assignment` grows without bound
+wherever assignment is re-run. The retention timer is therefore **enabled by
+default**: nightly it keeps the newest 3 completed runs per sample and drops
+the rest, plus terminal failed runs past a 24 h grace (in-flight runs are
+protected by a longer, floored grace). It deletes only superseded derived data
+- assignments are recomputable by re-running assignment - and runs whether or
+not the `peak_assignment` feature flag is on, since ledgers written before
+opting out still age out; with an empty table the pass is one cheap query.
+Tune the policy in `/etc/mascope/prune.env`, or disable with
+`sudo systemctl disable --now mascope-assignment-prune.timer`. Full operator
+docs: [docs/maintaining.md](../../docs/maintaining.md) -> Reclaiming
+assignment runs.
+
 ## Inspecting
 
 ```sh
-systemctl list-timers mascope-update.timer mascope-disk-check.timer
+systemctl list-timers mascope-update.timer mascope-disk-check.timer mascope-assignment-prune.timer
 journalctl -u mascope-update.service
 journalctl -u mascope-disk-check.service         # disk check history
+journalctl -u mascope-assignment-prune.service   # retention pass history
 cat "$MASCOPE_PATH/.runtime/update/status.log"   # applied / pending history
 cat "$MASCOPE_PATH/.runtime/update/state.json"   # the current pending update
 ```

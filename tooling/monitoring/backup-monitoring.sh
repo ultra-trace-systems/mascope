@@ -2,7 +2,7 @@
 #
 # Back up the monitoring stack (GlitchTip + Uptime Kuma) on the box that hosts
 # it. Mirrors the pattern of tooling/backup-cron.sh: restic + optional
-# healthchecks.io ping. Run it from root's cron/systemd on the ops box, e.g.:
+# healthchecks.io ping. Run it from root's cron/systemd on the monitoring box, e.g.:
 #   30 4 * * * /opt/monitoring/backup-monitoring.sh 2>&1 | logger -t monitoring-backup
 #
 # What it backs up (and why each is handled differently):

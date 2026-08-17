@@ -57,8 +57,9 @@
 
 # --- canonical container NAT --------------------------------------------
 # One block, ansible-managed. Masquerades container egress via BOTH the WAN
-# interface (internet) and tailscale0 (GlitchTip event delivery to the ops
-# box). Replaces the hand-written July 2026 blocks.
+# interface (internet) and tailscale0 (GlitchTip event delivery to the
+# monitoring box). Replaces any hand-written MASCOPE NAT block from earlier
+# provisioning.
 
 - name: Remove the legacy hand-written MASCOPE NAT block
   ansible.builtin.replace:

@@ -43,13 +43,19 @@ function handleRequestData(config) {
     })
   }
   // handler
-  let use, type
-  ;({ use, type, ...config } = config)
+  let use, type, errors
+  ;({ use, type, errors, ...config } = config)
   if (use) {
     config.headers['X-Handler'] = use
   }
   if (type) {
     config.headers['X-Type'] = type
+  }
+  // errors: 'inline' - the caller renders server failures itself (a form with
+  // its own message area), so the generic error toast would say the same thing
+  // twice. Carried as a header so the response interceptor can read it back.
+  if (errors) {
+    config.headers['X-Errors'] = errors
   }
   return config
 }
@@ -115,20 +121,44 @@ function handleServerError(error) {
   const { method, url, headers } = error?.config || {}
   const type = headers?.['X-Type'] ?? 'unknown'
 
+  // The account owes a password change. Matched on the code rather than the
+  // status: this is a 403 so the client is not sent back to the sign-in screen
+  // (the session is fine, the action is not), and prose is not a contract.
+  // Reachable only mid-session or in a stale tab - at sign-in the auth store
+  // learns the flag from /users/me and never issues these requests.
+  if (error?.response?.data?.detail?.code === 'password_change_required') {
+    const app = useApp()
+    if (app.auth.requirePasswordChange()) {
+      app.ui.notification.push({
+        type,
+        status: 'warning',
+        message: 'Your account needs a new password before you can continue.'
+      })
+    }
+    return Promise.reject(error)
+  }
+
   // Any unhandled 401 triggers auth check
   if (error?.response?.status === 401) {
     return handleUnauthorizedError(error)
   }
 
+  // The caller renders failures itself (see handleRequestData): skip the
+  // toasts below, which would repeat its inline message word for word. 401s
+  // are handled above regardless - session expiry replaces the caller's view.
+  const inlineErrors = headers?.['X-Errors'] === 'inline'
+
   // Handle timeout errors (no response from server)
   if (error.code === 'ECONNABORTED' || !error.response) {
     console.error(`⏱️ [api:http] ${type} ${method} ${url} timeout or network error`, error)
-    const app = useApp()
-    app.ui.notification.push({
-      type,
-      status: 'error',
-      message: 'Request timed out. Please try again or contact support.'
-    })
+    if (!inlineErrors) {
+      const app = useApp()
+      app.ui.notification.push({
+        type,
+        status: 'error',
+        message: 'Request timed out. Please try again or contact support.'
+      })
+    }
     return Promise.reject(error)
   }
 
@@ -140,12 +170,14 @@ function handleServerError(error) {
     error
   )
   // emit notification to users
-  const app = useApp()
-  app.ui.notification.push({
-    type,
-    status: 'error',
-    message
-  })
+  if (!inlineErrors) {
+    const app = useApp()
+    app.ui.notification.push({
+      type,
+      status: 'error',
+      message
+    })
+  }
   // throw
   return Promise.reject(error)
 }

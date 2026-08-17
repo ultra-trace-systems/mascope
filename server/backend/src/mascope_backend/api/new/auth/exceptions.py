@@ -1,5 +1,13 @@
 from fastapi import HTTPException, status
 
+from mascope_backend.api.lib.exceptions.api_exceptions import CodedHTTPException
+
+
+#: Code carried in the error payload's ``detail`` when an account owes a
+#: password change. The frontend branches on this to swap in the mandatory
+#: password screen, so it is part of the API contract.
+PASSWORD_CHANGE_REQUIRED_CODE = "password_change_required"
+
 
 class ForbiddenAccessException(HTTPException):
     """
@@ -10,6 +18,27 @@ class ForbiddenAccessException(HTTPException):
     def __init__(
         self,
         detail: str = "You do not have permission to perform this action.",
+    ):
+        super().__init__(status_code=status.HTTP_403_FORBIDDEN, detail=detail)
+
+
+class PasswordChangeRequiredException(CodedHTTPException):
+    """
+    Exception for an authenticated account that must replace its password (403).
+
+    Not 401: the session is valid and the client must not be sent back to the
+    sign-in screen. What is refused is the action, not the identity. The code is
+    what separates this from an ordinary ForbiddenAccessException, which carries
+    the same status.
+    """
+
+    error_code = PASSWORD_CHANGE_REQUIRED_CODE
+
+    def __init__(
+        self,
+        detail: str = (
+            "You must set a new password before you can continue using Mascope."
+        ),
     ):
         super().__init__(status_code=status.HTTP_403_FORBIDDEN, detail=detail)
 

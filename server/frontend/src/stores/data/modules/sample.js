@@ -121,10 +121,14 @@ export const useSample = defineStore('app.data.sample', () => {
         }
       ),
     exportPeaks: async ({ sample_item_id }) =>
-      api.http.get(`/sample/items/${sample_item_id}/export_peak_data`, {
-        use: 'process',
-        type: 'export_sample_peaks'
-      }),
+      api.http.post(
+        `/sample/items/${sample_item_id}/export_peak_data`,
+        {},
+        {
+          use: 'process',
+          type: 'export_sample_peaks'
+        }
+      ),
     upload: async (files) => {
       const ui = useUi()
       const mainProcessId = genId(8) // Generate a unique ID for the overall upload process

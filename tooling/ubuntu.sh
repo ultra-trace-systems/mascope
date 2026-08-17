@@ -16,9 +16,16 @@ function main() {
 
     write_line "Launching setup script in '${action}' mode"
 
+    # Clearing the runtime state belongs with tearing the install down, not
+    # with putting one in place: state.json carries the server's active
+    # environment, and every deployed server runs a named env rather than
+    # `default`. Re-running `install` to pick up a change to the systemd unit
+    # templates is a documented operation, and it must not silently point the
+    # boot service at a different database.
     if [ "$(action_in 'uninstall' 'reinstall')" ]; then
         uninstall_mascope
         clear_envvars
+        clear_state
     fi
 
     if [ "$(action_in 'install' 'reinstall')" ]; then
@@ -27,14 +34,20 @@ function main() {
     fi
 
     if [ "$(action_in 'install' 'reinstall')" ]; then
-        clear_state
         install_mascope
     fi
 
     write_section "MASCOPE ${action^^} SUCCESSFUL!"
 
-    if [ "$(action_in 'install' 'reinstall')" ]; then
+    # The install adds the user to the `docker` group, which an existing
+    # session does not pick up; a fresh login does. Only offer that when there
+    # is a terminal to log in on - `su` on a key-only deploy account prompts
+    # for a password nobody has, and its failure would otherwise be the
+    # script's exit status even though the install succeeded.
+    if [ "$(action_in 'install' 'reinstall')" ] && [ -t 0 ]; then
         su "${USER}"
+    else
+        write_line "Log out and back in to pick up the new 'docker' group membership."
     fi
 }
 
@@ -147,15 +160,20 @@ function install_tooling() {
     sudo apt install --yes --no-install-recommends libjemalloc2
     set_envvar 'LD_PRELOAD' "/usr/lib/x86_64-linux-gnu/libjemalloc.so.2"
     
-    # configure Redis memory overcommit for background saves
+    # Configure Redis memory overcommit for background saves.
+    # Written to /etc/sysctl.d/ rather than /etc/sysctl.conf: systemd-sysctl
+    # reads the sysctl.d directories, and only reaches /etc/sysctl.conf on
+    # releases that ship an /etc/sysctl.d/99-sysctl.conf symlink pointing at
+    # it. Ubuntu 26.04 dropped that symlink, so appending to /etc/sysctl.conf
+    # applies until the next boot and then silently stops - which strands
+    # postgres if its shared memory request needs the overcommit.
     write_line "configuring Redis memory overcommit"
-    if ! grep -q "vm.overcommit_memory" /etc/sysctl.conf; then
-        sudo bash -c "echo 'vm.overcommit_memory = 1' >> /etc/sysctl.conf"
-        sudo sysctl -p
-        write_line "Redis memory overcommit enabled (vm.overcommit_memory = 1)"
-    else
-        write_line "Redis memory overcommit already configured, skipping."
-    fi
+    sudo tee /etc/sysctl.d/99-mascope.conf > /dev/null <<'EOF'
+# Managed by tooling/ubuntu.sh - Redis background saves need overcommit.
+vm.overcommit_memory = 1
+EOF
+    sudo sysctl --system > /dev/null
+    write_line "Redis memory overcommit enabled (vm.overcommit_memory = $(sysctl -n vm.overcommit_memory))"
 
     if [[ -z $(command -v dotnet) ]]; then
         write_line "dotnet runtime not detected, installing..."
@@ -211,9 +229,21 @@ function install_mascope() {
         --with-executables-from mascope-cli
     uv tool update-shell
 
+    # `uv tool install` links executables into ~/.local/bin and
+    # `uv tool update-shell` only edits the shell profiles, which the running
+    # shell has already sourced. On a freshly created deploy account the
+    # directory did not exist at login, so the stock ~/.profile guard
+    # (`if [ -d "$HOME/.local/bin" ]`) left it off PATH - and the lookup below
+    # then fails on the very first install while succeeding on every re-run.
+    export PATH="${HOME}/.local/bin:${PATH}"
+
     write_section "INSTALLING SYSTEMD UNITS"
 
-    MASCOPE_BIN=$(command -v mascope)
+    # `|| true` so errexit does not kill the script here: without it the
+    # explicit error below is unreachable and a missing binary aborts the run
+    # with no diagnostic, after the binaries are installed but before any
+    # systemd unit is.
+    MASCOPE_BIN=$(command -v mascope || true)
     if [[ -z "${MASCOPE_BIN}" ]]; then
         write_line "ERROR: mascope binary not found on PATH after install"
         exit 1
@@ -222,9 +252,12 @@ function install_mascope() {
     SYSTEMD_SRC="${ROOT_PATH}/tooling/systemd"
 
     # Boot service: brings the stack up on boot / down on stop. Templated with
-    # the deploy user and the resolved mascope binary.
+    # the deploy user, the resolved mascope binary, and the checkout as the
+    # working directory (systemd's default is "/", where the CLI finds no
+    # repository and so cannot resolve the checked-out release tag).
     sed -e "s|@@USER@@|${USER}|g" \
         -e "s|@@MASCOPE_BIN@@|${MASCOPE_BIN}|g" \
+        -e "s|@@MASCOPE_PATH@@|${ROOT_PATH}|g" \
         "${SYSTEMD_SRC}/mascope.service" \
         | sudo tee /etc/systemd/system/mascope.service > /dev/null
 
@@ -233,6 +266,7 @@ function install_mascope() {
     # the timer when ready (see docs/maintaining.md).
     sed -e "s|@@USER@@|${USER}|g" \
         -e "s|@@MASCOPE_BIN@@|${MASCOPE_BIN}|g" \
+        -e "s|@@MASCOPE_PATH@@|${ROOT_PATH}|g" \
         "${SYSTEMD_SRC}/mascope-update.service" \
         | sudo tee /etc/systemd/system/mascope-update.service > /dev/null
     sudo cp "${SYSTEMD_SRC}/mascope-update.timer" \
@@ -247,6 +281,16 @@ function install_mascope() {
         | sudo tee /etc/systemd/system/mascope-disk-check.service > /dev/null
     sudo cp "${SYSTEMD_SRC}/mascope-disk-check.timer" \
         /etc/systemd/system/mascope-disk-check.timer
+
+    # Peak-assignment retention service + timer. Deletes only superseded
+    # derived data on the documented keep-newest policy, so like the disk
+    # monitor it is enabled by default below.
+    sed -e "s|@@USER@@|${USER}|g" \
+        -e "s|@@MASCOPE_BIN@@|${MASCOPE_BIN}|g" \
+        "${SYSTEMD_SRC}/mascope-assignment-prune.service" \
+        | sudo tee /etc/systemd/system/mascope-assignment-prune.service > /dev/null
+    sudo cp "${SYSTEMD_SRC}/mascope-assignment-prune.timer" \
+        /etc/systemd/system/mascope-assignment-prune.timer
 
     # Config (window / grace / release token; disk thresholds / alert URL).
     # Seed once with restricted permissions; never clobber an existing file.
@@ -265,12 +309,21 @@ function install_mascope() {
     else
         write_line "kept existing /etc/mascope/disk-check.env"
     fi
+    if [[ ! -f /etc/mascope/prune.env ]]; then
+        sudo install -m 600 -o "${USER}" -g "${USER}" \
+            "${SYSTEMD_SRC}/prune.env.example" /etc/mascope/prune.env
+        write_line "seeded /etc/mascope/prune.env"
+    else
+        write_line "kept existing /etc/mascope/prune.env"
+    fi
 
     sudo systemctl daemon-reload
     sudo systemctl enable mascope.service
     write_line "mascope.service enabled for user '${USER}' (bin: ${MASCOPE_BIN})"
     sudo systemctl enable --now mascope-disk-check.timer
     write_line "Disk monitor ENABLED (mascope-disk-check.timer, every 15 min). Set HEALTHCHECK_URL in /etc/mascope/disk-check.env to get alerted. See docs/maintaining.md."
+    sudo systemctl enable --now mascope-assignment-prune.timer
+    write_line "Assignment-run retention ENABLED (mascope-assignment-prune.timer, nightly; keeps the newest 3 completed runs per sample). Tune in /etc/mascope/prune.env. See docs/maintaining.md."
     write_line "Auto-updates are INSTALLED but DISABLED. To turn them on: 'sudo systemctl enable --now mascope-update.timer' (no token needed). See docs/maintaining.md."
 }
 
@@ -280,6 +333,7 @@ function uninstall_mascope() {
     # Boot service, auto-update units, and the disk monitor. Files under
     # /etc/mascope/ are left in place so a reinstall keeps the settings/token.
     for unit in mascope-disk-check.timer mascope-disk-check.service \
+        mascope-assignment-prune.timer mascope-assignment-prune.service \
         mascope-update.timer mascope-update.service mascope.service; do
         sudo systemctl stop "$unit" || true
         sudo systemctl disable "$unit" || true

@@ -1,4 +1,4 @@
-import { ref, watch, onMounted } from 'vue'
+import { computed, ref, watch, onMounted } from 'vue'
 import { defineStore } from 'pinia'
 
 import { api } from '@/api'
@@ -6,6 +6,19 @@ import { api } from '@/api'
 export const useAuth = defineStore('app.auth', () => {
   const user = ref(null)
   const requiresOwner = ref(null)
+
+  // A user held behind the mandatory password change is authenticated but not
+  // yet "in" the app. Derived from the user object rather than tracked
+  // separately, so the template branch and the watch below read one source and
+  // cannot disagree. /users/me stays reachable while it is set, and is the only
+  // thing that clears it.
+  const mustChangePassword = computed(() => !!user.value?.must_change_password)
+  const passwordChangeReason = computed(() => user.value?.password_change_reason ?? null)
+
+  // One-shot latch for the "you need a new password" notice, so a burst of
+  // store syncs all being refused at once yields one message rather than
+  // twenty.
+  const gateNoticeShown = ref(false)
 
   // Initial auth checks
   onMounted(async () => {
@@ -19,6 +32,40 @@ export const useAuth = defineStore('app.auth', () => {
         use: 'auth',
         validateStatus: (status) => status < 500
       })) ?? false
+    if (!user.value || !user.value.must_change_password) {
+      gateNoticeShown.value = false
+    }
+  }
+
+  // The profile re-read in flight for the gate, if any. A sweep refuses every
+  // open store sync at once, and each rejection lands here - one re-read
+  // serves them all.
+  let gateIdentify = null
+
+  /**
+   * React to an API call refused because the account owes a password change.
+   *
+   * Re-reads the profile so the app swaps to the password screen, sharing one
+   * in-flight read across a burst of rejections. A failed re-read is caught
+   * and forgotten: the /users/me failure raises its own notification, and the
+   * next refused call retries. Deliberately not cleared by identify() while
+   * the flag is still set: a late rejection arriving after the re-read would
+   * otherwise re-arm the notice.
+   *
+   * @returns {boolean} True only for the first rejection, so the caller
+   * notifies once.
+   */
+  const requirePasswordChange = () => {
+    const first = !gateNoticeShown.value
+    gateNoticeShown.value = true
+    if (!gateIdentify) {
+      gateIdentify = identify()
+        .catch(() => {})
+        .finally(() => {
+          gateIdentify = null
+        })
+    }
+    return first
   }
 
   const login = async ({ email, password }) => {
@@ -76,6 +123,15 @@ export const useAuth = defineStore('app.auth', () => {
     handlers.value.push({ callback })
   }
 
+  // The ID of a user who may actually use the app. A user held behind the
+  // mandatory password change is authenticated but gated, so their stores must
+  // not load behind the password screen - and must load exactly once when it
+  // clears.
+  const sessionId = (candidate) =>
+    candidate && typeof candidate === 'object' && !candidate.must_change_password
+      ? candidate.id
+      : null
+
   // Watch user changes for side effects
   watch(
     () => user.value,
@@ -83,12 +139,15 @@ export const useAuth = defineStore('app.auth', () => {
       // Compare by ID, not object references (prevents false positives on profile updates)
       const oldId = oldUser && typeof oldUser === 'object' ? oldUser.id : null
       const newId = newUser && typeof newUser === 'object' ? newUser.id : null
-      // Fire login callbacks ONLY when user ID changes from null to valid (user login)
-      if (newId && !oldId) {
+      // Fire login callbacks ONLY when the user becomes able to use the app:
+      // either a plain sign-in, or a gated user completing their password change.
+      if (sessionId(newUser) && !sessionId(oldUser)) {
         handlers.value.forEach(({ callback }) => callback())
       }
 
-      // Socket subscriptions to user room - if user ID changed
+      // Socket subscriptions to user room - if user ID changed. Keyed on the
+      // raw ID, not sessionId: a gated tab must stay in its own room, since
+      // that is how it hears about the change that lets it back in.
       if (oldId !== newId) {
         if (oldId) {
           api.socket.removeSubscription(`user-${oldId}`)
@@ -111,7 +170,10 @@ export const useAuth = defineStore('app.auth', () => {
   return {
     user,
     requiresOwner,
+    mustChangePassword,
+    passwordChangeReason,
     identify,
+    requirePasswordChange,
     login,
     logout,
     checkFirstOwner,

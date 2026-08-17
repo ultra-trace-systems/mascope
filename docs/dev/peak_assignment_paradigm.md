@@ -313,7 +313,9 @@ never superseded automatically either, so re-assigning a sample n times leaves
 n full ledgers. `db/admin/peak_assignments/prune_runs.py` (exposed as the
 `prune_peak_assignment_runs` maintenance script) reclaims them: newest few
 completed runs per sample kept, the rest and stale failures dropped, cascading
-to their rows. **Nothing schedules it** - see `docs/maintaining.md`.
+to their rows. On a provisioned deployment `mascope-assignment-prune.timer`
+runs it nightly (enabled by default, policy in `/etc/mascope/prune.env`);
+elsewhere it is manual - see `docs/maintaining.md`.
 
 **Batch cost is per-sample cost times N**, which makes the batch entry point the
 one place a default matters. `batch.default_batch_config()` is therefore Stage A
@@ -326,10 +328,12 @@ rather than driving them through a run that fails.
 batch competes with interactive requests for the same connection pool. Batch
 assignment holds a semaphore slot for its duration (mirroring `_auto_process_gate`
 in the sample auto-processing controller) and refuses a batch already in flight
-instead of queueing it silently behind a multi-minute run. Both are **per
-worker**: with several uvicorn workers, N workers still permit N concurrent batch
-runs. A cross-process bound needs run state in the database - which is also what
-cancellation and resume would need, and is the main reason to add it.
+instead of queueing it silently behind a multi-minute run. The in-process
+guards bound one worker; a session-level Postgres advisory-lock claim
+(`admission.py`) extends the same refusal across processes, held on a
+dedicated connection for the run's duration and released by Postgres itself
+if the process dies. Full cancellation and resume would still need run state
+in the database beyond the per-sample run rows.
 
 **Loading the reference mirror on a server.** Stage A also matches against the
 reference mirror, which is empty until someone loads it (the engine degrades to the

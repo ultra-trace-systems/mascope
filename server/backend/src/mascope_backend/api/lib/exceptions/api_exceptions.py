@@ -25,6 +25,22 @@ class ApiException(Exception):
         self.status_code = status_code
 
 
+class CodedHTTPException(HTTPException):
+    """
+    HTTPException carrying a stable machine-readable code to the client.
+
+    A client that has to react to a specific condition must branch on the code,
+    not on the user-facing prose or on a status code it shares with unrelated
+    failures. ``process_exception`` copies ``error_code`` into the response's
+    ``detail`` object.
+
+    Declared here rather than beside the exceptions that raise it: the auth
+    package imports this module, so the dependency only runs in this direction.
+    """
+
+    error_code: str = ""
+
+
 #: Context prefixes added by the wrapping layers (api_controller,
 #: api_controller_background_task, api_route). Used to detect messages that
 #: already carry an operation context so nesting does not stack prefixes.
@@ -124,6 +140,8 @@ def process_exception(e: Exception, context_message: str) -> ApiException:
 
         case HTTPException():
             status_code = e.status_code
+            if isinstance(e, CodedHTTPException) and e.error_code:
+                tech_message = {"code": e.error_code, "error_id": error_id}
 
             match e:
                 case _ if e.status_code == status.HTTP_401_UNAUTHORIZED:

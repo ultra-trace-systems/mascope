@@ -4,10 +4,12 @@ import { api } from '@/api'
 
 import { useApp } from '@/stores'
 
-export const useMzFit = ({ unmount } = { unmount: false }) => {
+import { applyInstrumentDefaults } from '@/lib/calibrationDefaults'
+
+export const useMzFit = () => {
   const app = useApp()
 
-  //  TODO_configuration default calibration parameters
+  // Seed values until the instrument defaults are fetched for a sample.
   const DEFAULT_MZ_CALIBRATION_PARAMS = {
     match_score_min: 0,
     isotope_abundance_min: 0.15,
@@ -25,6 +27,34 @@ export const useMzFit = ({ unmount } = { unmount: false }) => {
   const affectedBatches = ref([])
   const affectedSamples = ref([])
   const mzCalibrationParams = reactive({ ...DEFAULT_MZ_CALIBRATION_PARAMS })
+  // Defaults the current parameter values were seeded from; used to tell
+  // user-modified fields apart when instrument defaults arrive.
+  let paramsBaseline = { ...DEFAULT_MZ_CALIBRATION_PARAMS }
+
+  let defaultsSampleId = null
+
+  async function loadInstrumentDefaults(sample) {
+    // Instrument-appropriate defaults (Orbitrap vs TOF differ an order of
+    // magnitude in refine window and SNR threshold). User-modified fields
+    // are preserved; untouched fields follow the sample's instrument.
+    if (!sample?.sample_item_id || sample.sample_item_id === defaultsSampleId) return
+    const fetched = (
+      await api.http.get(`/calibration/default_params`, {
+        params: {
+          sample_item_id: sample.sample_item_id
+        },
+        use: 'read',
+        type: 'read_calibration_default_params'
+      })
+    )?.params
+    if (!fetched) return
+    Object.assign(
+      mzCalibrationParams,
+      applyInstrumentDefaults(mzCalibrationParams, paramsBaseline, fetched)
+    )
+    paramsBaseline = { ...fetched }
+    defaultsSampleId = sample.sample_item_id
+  }
 
   async function load(sample) {
     current.value =
@@ -35,6 +65,7 @@ export const useMzFit = ({ unmount } = { unmount: false }) => {
         use: 'read',
         type: 'read_mz_calibration'
       })) ?? current.value
+    await loadInstrumentDefaults(sample)
     active.value = sample
   }
 
@@ -71,7 +102,7 @@ export const useMzFit = ({ unmount } = { unmount: false }) => {
     )
   }
 
-  const handler = app.ui.notification.on('calibration_mz_fit', (payload) => {
+  app.ui.notification.on('calibration_mz_fit', (payload) => {
     status.value = payload?.status
     if (payload?.status === 'success') {
       current.value = payload?.data?.fit
@@ -96,9 +127,6 @@ export const useMzFit = ({ unmount } = { unmount: false }) => {
       affectedSamples.value = payload?.error?.detail?.data?.affected_sample_item_ids ?? []
     }
   })
-  if (unmount) {
-    handler.unmount()
-  }
 
   return reactive({
     // state
@@ -111,6 +139,7 @@ export const useMzFit = ({ unmount } = { unmount: false }) => {
     mzCalibrationParams,
     // actions
     load,
+    loadInstrumentDefaults,
     unload,
     compute,
     apply

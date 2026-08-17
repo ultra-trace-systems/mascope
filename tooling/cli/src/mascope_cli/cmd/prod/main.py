@@ -123,13 +123,31 @@ def _deploy_version() -> str:
     """
     if os.environ.get("_MASCOPE_VERSION_PINNED") == "1":
         return os.environ["MASCOPE_VERSION"]
+    # Resolve git in MASCOPE_PATH - the deployment checkout - rather than the
+    # process's working directory, which is not the checkout when the CLI is
+    # invoked from elsewhere (systemd starts units in "/"). Off the checkout
+    # git resolves nothing, and the fallback below would quietly swap the
+    # pinned release for `latest` on every boot.
+    #
     # Git only, not resolve_version: the CLI's own package version is a
     # calver (e.g. v2026.7.7) in a different series from the app's release
     # image tags (vX.Y.Z), so it must never be used as a deploy tag. A
     # pip-installed CLI without a pin deploys `latest`.
-    version = runtime.parse_version()
+    version = runtime.parse_version(cwd=os.environ.get("MASCOPE_PATH"))
     if re.fullmatch(r"v\d+\.\d+\.\d+", version):
         return version
+    if version == "unknown-version":
+        # Git resolved nothing at all (no checkout, or a directory that is not
+        # a repository). Deploying `latest` is still the only safe published
+        # tag, but it silently changes release channel - and a `latest` build
+        # can carry migrations the pinned release has not seen - so say so.
+        runtime.logger.warning(
+            f"No git checkout found at '{os.environ.get('MASCOPE_PATH')}' - "
+            "cannot tell which release this deployment runs, falling back to "
+            "the rolling 'latest' image tag. Pin the release explicitly with "
+            "MASCOPE_VERSION=vX.Y.Z, or deploy from a checkout at the release "
+            "tag."
+        )
     return "latest"
 
 
@@ -983,13 +1001,15 @@ def doctor(
     """
     One-glance operational status of the deployment.
 
-    Gathers container health, free disk on the state and docker filesystems,
-    the recorded pending update, local backup freshness, and the docker image
-    footprint. Read-only and network-free - safe to run anytime or to poll.
+    Gathers container health, the deployed version, free disk on the state and
+    docker filesystems, the recorded pending update, local backup freshness,
+    and the docker image footprint. Read-only and network-free - safe to run
+    anytime or to poll.
 
-    Exits 0 when everything looks healthy, 1 when a container is not running or
-    a filesystem is below the free-space floor (MASCOPE_UPDATE_MIN_FREE_GB), so
-    it can double as a monitoring probe.
+    Exits 0 when everything looks healthy, 1 when a container is not running,
+    the running images do not match the release this deployment would deploy,
+    or a filesystem is below the free-space floor (MASCOPE_UPDATE_MIN_FREE_GB),
+    so it can double as a monitoring probe.
 
     \b
     Examples:
@@ -1013,6 +1033,13 @@ def doctor(
             file_converter_cfg.get_file_converter_container_name(mode=_MODE),
         ),
     ]
+    # Only the containers built from a Mascope image carry the release tag;
+    # postgres and redis are upstream images on their own versions.
+    versioned_specs = [
+        (label, name)
+        for label, name in container_specs
+        if label in ("backend", "frontend", "file_converter")
+    ]
     disk_specs = [
         ("state", Path(mascope_path) / ".runtime"),
         ("docker", auto_update.docker_root()),
@@ -1021,6 +1048,8 @@ def doctor(
     report = prod_doctor.build_report(
         mascope_path=mascope_path,
         container_specs=container_specs,
+        versioned_specs=versioned_specs,
+        expected_version=_deploy_version(),
         disk_specs=disk_specs,
         backups_dir=db_cfg.get_backups_dir(mode=_MODE),
         min_free_gb=auto_update.min_free_gb(),

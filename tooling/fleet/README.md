@@ -1,17 +1,16 @@
 # Fleet configuration (Ansible)
 
-Codifies the production servers' host-level configuration — the things the
-July 2026 remediation established by hand — so drift becomes a weekly diff
-instead of a months-later incident:
+Codifies the host-level configuration a Mascope production fleet depends on,
+so drift becomes a weekly diff instead of a months-later incident:
 
 | Role | Owns |
 |---|---|
 | `sshd_hardening` | `/etc/ssh/sshd_config.d/00-tailnet-hardening.conf` (key-only SSH, no root passwords) |
 | `firewall` | ufw policies, tailnet SSH rule, Cloudflare-only 443, the canonical `MASCOPE NAT` masquerade block |
-| `docker_daemon` | `/etc/docker/daemon.json` with `iptables: false` (load-bearing — see `docs/maintaining.md`) |
+| `docker_daemon` | `/etc/docker/daemon.json` with `iptables: false` (load-bearing: with stock Docker, published ports bypass ufw) |
 | `unattended_upgrades` | unattended security updates enabled |
 
-The monitoring box (`ops`) is deliberately **not** in the fleet group — it
+The monitoring box is deliberately **not** in the fleet group — it
 runs a different network model (stock Docker + `DOCKER-USER` rules).
 
 ## One-time setup (WSL on the admin workstation)
@@ -57,7 +56,7 @@ gitignored there too.
 
 ## Sudo passwords: the vault (recommended)
 
-The fleet has **no NOPASSWD sudo** and each server has its **own** sudo
+The fleet model assumes **no NOPASSWD sudo** and a per-server sudo
 password, so a single `-K` prompt cannot drive a whole-fleet run. Ansible Vault
 solves this: store the per-host passwords once in an encrypted file, then unlock
 them all with one prompt.
@@ -110,12 +109,11 @@ ansible-playbook site.yml --check --diff -K --limit <host>
   Mascope stack** (~30 s outage on that server). It only fires when
   `daemon.json` actually changed, which should be never once converged — but
   treat a non-empty diff there with respect and apply per-server.
-- The first-ever run is a **migration**, not a no-op: servers provisioned
-  before this role carry a hand-written `MASCOPE NAT` block (removed and
-  replaced by the ansible-managed block, same semantics), and the two
-  oldest-provisioned servers still persist equivalent NAT rules via
-  `iptables-persistent` — harmless duplication that can be retired
-  separately (see the private fleet docs for which servers).
+- The first-ever run on a long-lived server is a **migration**, not a no-op:
+  a server provisioned before this role existed may carry a hand-written
+  `MASCOPE NAT` block (removed and replaced by the ansible-managed block, same
+  semantics) or persist equivalent NAT rules via `iptables-persistent` —
+  harmless duplication that can be retired separately.
 - Cloudflare ranges are fetched live at run time; rules for ranges Cloudflare
   has *withdrawn* are not auto-pruned (same behavior as
   `tooling/ufw-allow-cf.sh`) — prune manually on the rare CF delisting.
@@ -136,8 +134,45 @@ ansible-playbook update.yml -e mascope_version=vX.Y.Z    # rest of the fleet
 The manual per-server equivalent (and its verification checklist) is in
 `docs/maintaining.md` → "Rolling out a release across several servers".
 
+## Rebooting the fleet
+
+Unattended security upgrades install kernel and library updates, but they do
+not take effect until a reboot — and nothing alerts on that, so servers drift
+quietly onto patched-but-not-running code. `reboot.yml` performs the reboot as
+a deliberate, verified operation rather than a scheduled one: an unattended
+reboot that fails to bring the stack back would leave an instance down until
+somebody noticed.
+
+```sh
+ansible-playbook reboot.yml --limit <canary-host> --ask-vault-pass
+ansible-playbook reboot.yml --limit <host>,<host> --ask-vault-pass
+ansible-playbook reboot.yml --ask-vault-pass    # every server with one pending
+```
+
+Per server it skips anything without `/var/run/reboot-required`, refuses to
+proceed while a backup is in flight, reboots, then gates on four checks: the
+backend container reports healthy, the running release is the same one the
+server went down with, the origin API answers `422`, and `mascope prod doctor`
+passes. Any failure stops the batch before the next server is touched.
+
+Two things worth knowing before scheduling a window:
+
+- **Avoid each server's nightly backup slot.** The playbook refuses to reboot
+  while a backup runs, but starting shortly before one still collides; a killed
+  restic push wastes that night's dump. Slots are staggered overnight — see the
+  private fleet docs for the per-server times.
+- **Probe the origin, not the public URL.** Behind the Cloudflare IP gate, a
+  request from one server to another's public URL returns 403 regardless of
+  health. The playbook resolves the app host to `127.0.0.1` for this reason.
+
+Sudo is needed for the reboot itself, so unlike `update.yml` this one does
+require the vault password.
+
 ## Suggested cadence
 
 Weekly `--check --diff` (eyeball the diff, expect empty), plus a check run
 before and after any manual server surgery. A cron wrapper that alerts on
 non-empty diff can come later once the fleet has converged.
+
+Monthly, `reboot.yml` to activate the kernel updates unattended-upgrades has
+already installed — canary first, outside the backup slots.

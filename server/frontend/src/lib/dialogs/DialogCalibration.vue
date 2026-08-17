@@ -16,7 +16,7 @@ import { useApp } from '@/stores'
 import { useMzFit } from '@/lib/mzFit'
 import { PaneSettingsCalibration } from '@/lib/panes'
 
-const mzFit = useMzFit({ unmount: true })
+const mzFit = useMzFit()
 const confirm = useConfirm()
 
 const app = useApp()
@@ -88,8 +88,15 @@ const confirmMessage = computed(() => {
 
 // component initialization logic
 watch(visible, init)
-function init(active) {
+async function init(active) {
   if (active) {
+    // Seed instrument-appropriate parameter defaults for the sample before
+    // snapshotting, so the change does not read as a user edit (which would
+    // trigger a second fit through the unsynced watcher).
+    const sample = batch.value ? previewSample.value : original.value
+    if (sample?.sample_item_id) {
+      await mzFit.loadInstrumentDefaults(sample)
+    }
     // reset state
     state.previous = { ...mzFit.mzCalibrationParams }
     refit()
@@ -100,7 +107,15 @@ const unsynced = computed(() =>
   Object.keys(state.previous).some((key) => state.previous[key] !== mzFit.mzCalibrationParams[key])
 )
 
-watch(previewSample, refit)
+watch(previewSample, async (sample) => {
+  if (sample?.sample_item_id) {
+    await mzFit.loadInstrumentDefaults(sample)
+    // Absorb any default changes into the snapshot so the unsynced watcher
+    // does not treat them as a user edit and fire a second fit.
+    state.previous = { ...mzFit.mzCalibrationParams }
+  }
+  refit()
+})
 
 watch(
   () => mzFit.mzCalibrationParams,

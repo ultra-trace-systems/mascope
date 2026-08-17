@@ -36,7 +36,7 @@ dependencies = [
     "rich>=15.0.0,<16",
     "scipy~=1.13",
     "sqlalchemy~=2.0",
-    "typer>=0.27.0,<0.28",
+    "typer>=0.27.1,<0.28",
     "uvicorn>=0.34,<0.35",
     "websocket-client~=1.8",
     "zarr==2.18.2", # TODO: Resolve dependency issue https://github.com/ultra-trace-systems/mascope/issues/479
@@ -54,5 +54,5 @@ dependencies = [
 ]
 
 [build-system]
-requires = ["uv_build>=0.12.1,<0.13"]
+requires = ["uv_build>=0.12.3,<0.13"]
 build-backend = "uv_build"
