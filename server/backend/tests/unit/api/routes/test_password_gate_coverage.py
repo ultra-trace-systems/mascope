@@ -48,13 +48,29 @@ EXPECTED_EXEMPT_ROUTES = {
 }
 
 #: Every route that resolves no raw dependency at all, asserted as an exact
-#: set below. Everything here is either anonymous by design (login, the
-#: first-owner bootstrap, instrument-agent pairing), authenticated by
-#: fastapi-users' own token dependency (logout, which a gated account must be
-#: able to call - the password screen offers Log out), or tus protocol
-#: plumbing whose authentication lives on the sibling methods of the same
-#: router. A new entry appearing here means a route resolves its identity
+#: set below. A new entry appearing here means a route resolves its identity
 #: outside auth.dependencies - gate it, or justify it on this list.
+#:
+#: Being on this list is not a statement that a route is safe. Two different
+#: reasons are mixed here, and only the first is settled:
+#:
+#: - Anonymous or externally authenticated by design: login, the first-owner
+#:   bootstrap, instrument-agent pairing, and logout (authenticated by
+#:   fastapi-users' own token dependency, and reachable by a gated account
+#:   because the password screen offers Log out).
+#: - The three tus methods, which are **genuinely unauthenticated** and are an
+#:   open question, not a resolved one. An earlier version of this comment said
+#:   their "authentication lives on the sibling methods of the same router";
+#:   that is wrong. Probed unauthenticated against a running backend, HEAD
+#:   answers 404 (its handler ran), OPTIONS and DELETE answer 204, while POST
+#:   and PATCH answer 401 - those two are gated because `get_upload_handler`
+#:   depends on `current_active_user`, which the other three never reach.
+#:   Tracked with the options in #1814; measured on every pentest run by
+#:   UPLOAD-03, which is the check that will notice if this widens.
+#:
+#: The distinction matters because this test cannot see it: a route pinned here
+#: is invisible to the assertions below forever after, so a wrong justification
+#: is more durable than a missing one.
 KNOWN_UNGATED_ROUTES = {
     ("POST", "/login"),
     ("POST", "/logout"),
