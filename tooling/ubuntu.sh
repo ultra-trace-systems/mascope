@@ -225,17 +225,25 @@ function install_mascope() {
     # declared by the requested package itself, and the `mascope` entry point
     # lives in the mascope_cli workspace member (so the standalone PyPI wheel
     # provides it too) - without this flag only mascope-backend gets a shim.
+    # uv links the CLI into ~/.local/bin, which the running shell does not have
+    # on PATH: the stock ~/.profile adds it only `if [ -d ... ]`, false at login
+    # on a freshly created deploy account, and `uv tool update-shell` edits the
+    # profiles for *future* shells rather than this one.
+    #
+    # Put it on PATH before calling uv, not after. `uv tool update-shell` exits
+    # non-zero - an error, not a warning - when the directory is absent from
+    # PATH while the config it would edit already names it. That is every
+    # re-run from a non-login shell: ssh, cron, ansible. Under errexit it kills
+    # the install after the binaries are linked but before a single systemd
+    # unit is written, which is the same end state as having no PATH fix at
+    # all. Exporting first also silences uv's own PATH warning, and makes the
+    # binary lookup below resolve on a first install.
+    mkdir -p "${HOME}/.local/bin"
+    export PATH="${HOME}/.local/bin:${PATH}"
+
     CFLAGS="-std=c17" uv tool install --force --reinstall --python 3.12 . \
         --with-executables-from mascope-cli
     uv tool update-shell
-
-    # `uv tool install` links executables into ~/.local/bin and
-    # `uv tool update-shell` only edits the shell profiles, which the running
-    # shell has already sourced. On a freshly created deploy account the
-    # directory did not exist at login, so the stock ~/.profile guard
-    # (`if [ -d "$HOME/.local/bin" ]`) left it off PATH - and the lookup below
-    # then fails on the very first install while succeeding on every re-run.
-    export PATH="${HOME}/.local/bin:${PATH}"
 
     write_section "INSTALLING SYSTEMD UNITS"
 
