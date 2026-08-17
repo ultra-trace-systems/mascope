@@ -33,8 +33,15 @@ function main() {
 
     write_section "MASCOPE ${action^^} SUCCESSFUL!"
 
-    if [ "$(action_in 'install' 'reinstall')" ]; then
+    # The install adds the user to the `docker` group, which an existing
+    # session does not pick up; a fresh login does. Only offer that when there
+    # is a terminal to log in on - `su` on a key-only deploy account prompts
+    # for a password nobody has, and its failure would otherwise be the
+    # script's exit status even though the install succeeded.
+    if [ "$(action_in 'install' 'reinstall')" ] && [ -t 0 ]; then
         su "${USER}"
+    else
+        write_line "Log out and back in to pick up the new 'docker' group membership."
     fi
 }
 
@@ -147,15 +154,20 @@ function install_tooling() {
     sudo apt install --yes --no-install-recommends libjemalloc2
     set_envvar 'LD_PRELOAD' "/usr/lib/x86_64-linux-gnu/libjemalloc.so.2"
     
-    # configure Redis memory overcommit for background saves
+    # Configure Redis memory overcommit for background saves.
+    # Written to /etc/sysctl.d/ rather than /etc/sysctl.conf: systemd-sysctl
+    # reads the sysctl.d directories, and only reaches /etc/sysctl.conf on
+    # releases that ship an /etc/sysctl.d/99-sysctl.conf symlink pointing at
+    # it. Ubuntu 26.04 dropped that symlink, so appending to /etc/sysctl.conf
+    # applies until the next boot and then silently stops - which strands
+    # postgres if its shared memory request needs the overcommit.
     write_line "configuring Redis memory overcommit"
-    if ! grep -q "vm.overcommit_memory" /etc/sysctl.conf; then
-        sudo bash -c "echo 'vm.overcommit_memory = 1' >> /etc/sysctl.conf"
-        sudo sysctl -p
-        write_line "Redis memory overcommit enabled (vm.overcommit_memory = 1)"
-    else
-        write_line "Redis memory overcommit already configured, skipping."
-    fi
+    sudo tee /etc/sysctl.d/99-mascope.conf > /dev/null <<'EOF'
+# Managed by tooling/ubuntu.sh - Redis background saves need overcommit.
+vm.overcommit_memory = 1
+EOF
+    sudo sysctl --system > /dev/null
+    write_line "Redis memory overcommit enabled (vm.overcommit_memory = $(sysctl -n vm.overcommit_memory))"
 
     if [[ -z $(command -v dotnet) ]]; then
         write_line "dotnet runtime not detected, installing..."
@@ -211,9 +223,21 @@ function install_mascope() {
         --with-executables-from mascope-cli
     uv tool update-shell
 
+    # `uv tool install` links executables into ~/.local/bin and
+    # `uv tool update-shell` only edits the shell profiles, which the running
+    # shell has already sourced. On a freshly created deploy account the
+    # directory did not exist at login, so the stock ~/.profile guard
+    # (`if [ -d "$HOME/.local/bin" ]`) left it off PATH - and the lookup below
+    # then fails on the very first install while succeeding on every re-run.
+    export PATH="${HOME}/.local/bin:${PATH}"
+
     write_section "INSTALLING SYSTEMD UNITS"
 
-    MASCOPE_BIN=$(command -v mascope)
+    # `|| true` so errexit does not kill the script here: without it the
+    # explicit error below is unreachable and a missing binary aborts the run
+    # with no diagnostic, after the binaries are installed but before any
+    # systemd unit is.
+    MASCOPE_BIN=$(command -v mascope || true)
     if [[ -z "${MASCOPE_BIN}" ]]; then
         write_line "ERROR: mascope binary not found on PATH after install"
         exit 1
