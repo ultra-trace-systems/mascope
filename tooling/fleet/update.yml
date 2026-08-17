@@ -48,8 +48,8 @@
     # keeps the CLI in lockstep with the checkout (the stale-CLI drift that
     # once hid `prod doctor`). ~1 min per server, idempotent. Unlike
     # `ubuntu.sh reinstall`, this does NOT clear .runtime/state.json, so the
-    # server's active env is preserved (the reset comes from uninstall's
-    # clear_state, not from the install command).
+    # server's active env is preserved (clear_state runs on the uninstall
+    # side, which reinstall goes through and a bare install does not).
     - name: Reinstall the mascope CLI to match the checkout
       ansible.builtin.shell:
         cmd: >-

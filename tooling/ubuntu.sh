@@ -16,9 +16,16 @@ function main() {
 
     write_line "Launching setup script in '${action}' mode"
 
+    # Clearing the runtime state belongs with tearing the install down, not
+    # with putting one in place: state.json carries the server's active
+    # environment, and every deployed server runs a named env rather than
+    # `default`. Re-running `install` to pick up a change to the systemd unit
+    # templates is a documented operation, and it must not silently point the
+    # boot service at a different database.
     if [ "$(action_in 'uninstall' 'reinstall')" ]; then
         uninstall_mascope
         clear_envvars
+        clear_state
     fi
 
     if [ "$(action_in 'install' 'reinstall')" ]; then
@@ -27,7 +34,6 @@ function main() {
     fi
 
     if [ "$(action_in 'install' 'reinstall')" ]; then
-        clear_state
         install_mascope
     fi
 

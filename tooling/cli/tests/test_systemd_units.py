@@ -44,6 +44,32 @@ def test_every_placeholder_is_substituted_by_the_installer():
             )
 
 
+def test_installing_does_not_clear_the_runtime_state():
+    """
+    Re-running `ubuntu.sh install` is the documented way to pick up a change to
+    the unit templates, so it must leave `.runtime/state.json` alone: that file
+    carries the active environment, and every deployed server runs a named env
+    rather than `default`. Clearing it points the boot service at a different
+    database, which only shows up on the next restart.
+    """
+    installer = INSTALLER.read_text(encoding="utf-8")
+    body = installer[installer.index("function main()") :]
+    main_body = body[: body.index("\n}")]
+
+    for block in re.findall(
+        r"if \[ \"\$\(action_in ([^)]*)\)\" \][^\n]*\n(.*?)\n    fi",
+        main_body,
+        re.DOTALL,
+    ):
+        actions, statements = block
+        if "clear_state" in statements:
+            assert "'uninstall'" in actions, (
+                "clear_state runs in a block reachable by a bare `install`; it "
+                "deletes .runtime/state.json and would reset the server's "
+                "active environment to `default`"
+            )
+
+
 @pytest.mark.parametrize("name", CLI_UNITS)
 def test_cli_units_run_from_the_deployment_checkout(name):
     unit = (SYSTEMD_DIR / name).read_text(encoding="utf-8")
