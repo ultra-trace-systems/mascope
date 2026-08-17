@@ -12,9 +12,15 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
   and nothing ever re-validated them, so a deployment could carry passwords
   weaker than its own policy with no way to find out. The requirement is soft:
   everyone keeps signing in with their existing password and is held at a
-  password screen until they replace it. Nobody is excluded, the acting owner
-  included. Withdraw it with
-  `mascope prod db script run clear_password_change_requirement`; there is
+  password screen until they replace it. No account is excluded, the acting owner
+  included. The requirement closes the API and the realtime channel alike: a
+  pending account can still reach its own profile and the password form, and
+  still receives its own notifications, but cannot read records over either
+  surface. Existing API access tokens (SDK, notebooks, instrument agents) keep
+  working, because their strength does not depend on the account's password and
+  their holders cannot present a password screen; changing the password revokes
+  them, and they must then be regenerated or re-paired. Withdraw the requirement
+  with `mascope prod db script run clear_password_change_requirement`; there is
   deliberately no way to do that over the API.
 - Passwords issued by an administrator are now temporary. Resetting another
   user's password, and creating an account, both leave that account required to
