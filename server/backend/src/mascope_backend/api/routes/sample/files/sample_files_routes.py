@@ -545,30 +545,26 @@ _tus_upload_router = create_tus_router(
 for _route in _tus_upload_router.routes:
     _route.endpoint.token_access = True
 
-# Intended to authenticate every generated tus route before the route body runs:
-# tuspyserver's own `auth=` hook is declared after the chunk-writing dependency on
-# PATCH, so an unauthenticated PATCH would stream its body to disk before the 401,
-# and a router-level dependency normally runs ahead of a route's own.
+# Authenticates every generated tus route before the route body runs, and it is
+# load-bearing: tuspyserver's own `auth=` hook is declared after the chunk-writing
+# dependency on PATCH, so an unauthenticated PATCH would stream its body to disk
+# before the 401. A router-level dependency runs ahead of a route's own, so it
+# covers HEAD/OPTIONS/DELETE too - none of which reach `get_upload_handler`, and
+# which would otherwise answer anonymously.
 #
-# It does not achieve that, and an earlier version of this comment claimed it did.
-# Measured against a running backend, unauthenticated, with `GET /api/workspaces`
-# answering 401 from the same client as a control:
+# Measured on this branch against a live backend, unauthenticated, with
+# `GET /api/workspaces` answering 401 from the same client as a control: OPTIONS,
+# HEAD, DELETE and POST all return 401.
 #
-#   POST    /api/sample/files/upload/tus/          -> 401
-#   PATCH   .../{uuid}                             -> 401
-#   HEAD    .../{uuid}                             -> 404   (handler ran)
-#   OPTIONS /api/sample/files/upload/tus/          -> 204
-#   DELETE  .../{uuid}                             -> 204
+# Do not remove it on the grounds that `get_upload_handler` already requires a
+# session - that only covers POST and PATCH.
 #
-# POST and PATCH are gated because `get_upload_handler` - passed above as
-# `upload_complete_dep` - itself depends on `current_active_user`. HEAD, OPTIONS
-# and DELETE do not use that dependency and reach their handlers with no identity.
-# Why the router-level dependency below fails to reach them is unresolved; it is
-# not visible from this file, and static reading of it has now produced two wrong
-# answers. Do not infer the auth posture of these routes from this source - probe
-# them. UPLOAD-03 in the pentest suite does exactly that on every run.
-#
-# Tracked, with the options, in #1814. Left in place rather than deleted because
-# whether it does anything at all is part of what that issue has to settle.
+# One caution for anyone verifying this, learned the hard way: these routes do not
+# appear in `fast.routes` by path, only underneath an `original_router`, so
+# inspecting the generated router's own dependants shows no identity on
+# HEAD/OPTIONS/DELETE and reads as a gap that is not there. Probe a *running*
+# backend, and pin which build it is - a probe against a deployment predating this
+# comment produced exactly that false conclusion. UPLOAD-03 in the pentest suite
+# checks it on every run, and fails against builds released before 2026-08-12.
 sample_files_upload_router = APIRouter(dependencies=[Depends(current_active_user)])
 sample_files_upload_router.include_router(_tus_upload_router)
