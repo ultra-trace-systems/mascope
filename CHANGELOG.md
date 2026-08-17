@@ -4,6 +4,8 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
 
 ## [Unreleased]
 
+## [1.7.0] - 2026.08.17
+
 ### Added
 
 - An owner can now require every account to set a new password, from Manage
