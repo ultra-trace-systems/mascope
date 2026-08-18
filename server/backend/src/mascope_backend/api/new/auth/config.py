@@ -2,8 +2,6 @@
 Core authentication configuration including JWT, cookies, and access tokens settings.
 """
 
-import hashlib
-import hmac
 import os
 
 from pydantic import BaseModel
@@ -13,23 +11,11 @@ from mascope_backend.api.new.auth.secrets import jwt_secret_key
 from mascope_backend.roles import ROLE_ACCESS_LEVELS as _ROLE_ACCESS_LEVELS
 from mascope_backend.runtime import runtime
 
-
-def _derive_token_secret(purpose: str) -> str:
-    """
-    Derive a purpose-specific token secret from the deployment's JWT secret.
-
-    Domain-separated via HMAC-SHA256 so the reset and verification secrets are
-    unique per deployment, unpredictable, and cryptographically independent of
-    each other and of the JWT signing key - without asking operators to manage
-    extra secret files. (Replaces the former hardcoded ``SECRET_RESET`` /
-    ``SECRET_VERIFY`` constants, which were forgeable defaults.)
-
-    :param purpose: Stable label separating one derived secret from another.
-    :return: Hex-encoded 32-byte secret.
-    """
-    return hmac.new(
-        jwt_secret_key.encode("utf-8"), purpose.encode("utf-8"), hashlib.sha256
-    ).hexdigest()
+# Domain-separated per-deployment secrets (reset, verification) derive from the
+# JWT secret so the values are unique and unforgeable without extra secret
+# files. The derivation lives in mascope_backend.service_token - a leaf module
+# the file-converter process can import without the backend app's import graph.
+from mascope_backend.service_token import derive_token_secret as _derive_token_secret
 
 
 def _resolve_cookie_secure() -> bool:

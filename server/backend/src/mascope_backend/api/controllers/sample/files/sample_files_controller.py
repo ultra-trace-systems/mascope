@@ -745,6 +745,16 @@ async def upload_sample_files(
     :return: Dictionary with files upload results.
     :rtype: dict
     """
+    # Fail before writing anything to the filestore: the converter learns of an
+    # upload only through the socket payload emitted below, so accepting files
+    # while no converter is connected would strand them on disk (the converter's
+    # watcher quarantines files it has no context for).
+    if not await is_service_connected("file-converter"):
+        raise HTTPException(
+            status_code=503,
+            detail="File converter service is not available or not running.",
+        )
+
     successful_uploads: list[dict] = []
     failed_uploads: list[dict] = []
 
@@ -877,6 +887,16 @@ async def upload_sample_file(
     :return: Dictionary with file upload result.
     :rtype: dict
     """
+    # Fail before moving the file into the filestore: the converter learns of
+    # an upload only through the socket payload emitted below, so accepting a
+    # file while no converter is connected would strand it on disk (the
+    # converter's watcher quarantines files it has no context for).
+    if not await is_service_connected("file-converter"):
+        raise HTTPException(
+            status_code=503,
+            detail="File converter service is not available or not running.",
+        )
+
     # Check if filestreams directory exists
     os.makedirs(runtime.config.filestreams, exist_ok=True)
 

@@ -1299,6 +1299,20 @@ mascope dev run backend file-converter       # backend + file-converter
 **Prod** — runs as the `file_converter` container in `docker-compose.yaml`, started automatically
 with `mascope prod up`. No separate command needed.
 
+**Service authentication** — the converter authenticates its `/file-converter` Socket.IO
+namespace with a service token derived from the deployment's `jwt_secret_key`
+(HMAC domain separation, see `mascope_backend/service_token.py`), so **the converter must run
+with the same `jwt_secret_key` as the backend**. The compose files satisfy this by mounting the
+same secret into both containers; a converter run on a separate host needs that secret
+provisioned there too, and the link between converter and backend must be a trusted network
+(or TLS) since the token is presented in the connection handshake. Two operational
+consequences:
+
+- Rotating `jwt_secret_key` requires restarting the converter as well as the backend; a
+  converter left running with the old secret is refused on every reconnect (the backend logs a
+  WARNING naming a stale secret as the likely cause).
+- A converter without the secret file fails at startup rather than connecting unauthenticated.
+
 ## 💾 Database
 
 Mascope uses **PostgreSQL 16** as its primary database, accessed via **SQLAlchemy 2.x** (async,
