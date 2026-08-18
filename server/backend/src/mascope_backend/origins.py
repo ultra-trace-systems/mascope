@@ -8,13 +8,14 @@ on ``5173 + slot`` while the API listens on ``8090 + slot`` - so the dev-server
 origins have to be named explicitly.
 
 Three surfaces read this module: the REST CORS middleware, the Socket.IO
-handshake check, and the REST write-origin guard (the ``origin_guard``
-middleware in :mod:`mascope_backend.app.fast`, which refuses a state-changing
-request that declares a foreign origin). They are separate mechanisms
-(Starlette's CORSMiddleware answers preflights; Socket.IO refuses a handshake
-outright; the guard answers 403), and holding one policy in one place is what
-keeps them from drifting apart into a gap that only shows up as a cross-site
-request nobody rejected.
+handshake predicate (:mod:`mascope_backend.socket.server`), and the REST
+write-origin guard (the ``origin_guard`` middleware in
+:mod:`mascope_backend.app.fast`, which refuses a state-changing request that
+declares a foreign origin). They are separate mechanisms (Starlette's
+CORSMiddleware answers preflights; Socket.IO refuses a handshake outright; the
+guard answers 403), and holding one policy in one place is what keeps them
+from drifting apart into a gap that only shows up as a cross-site request
+nobody rejected.
 
 Kept import-light on purpose, like :mod:`mascope_backend.roles`: the socket
 server imports it during construction, before the API package is importable.
@@ -27,6 +28,12 @@ from urllib.parse import urlsplit
 
 #: Vite's default dev-server port, used when no instance port is exported.
 _DEFAULT_FRONTEND_PORT = "5173"
+
+#: Ports a browser elides when serializing an origin. Folded away during
+#: normalization so an authority spelling the default port out (a Referer with
+#: ``:443``, a proxy synthesizing ``host:port``) still compares equal to the
+#: browser's ``Origin``.
+_DEFAULT_PORTS = {"http": ":80", "https": ":443"}
 
 #: Tailnet hosts, for `mascope dev run --host`: the dev servers bind 0.0.0.0 and
 #: the app is browsed by machine name, so page origins arrive as *.ts.net rather
@@ -82,17 +89,43 @@ def is_allowed_dev_origin(origin: str | None) -> bool:
     return bool(pattern and re.fullmatch(pattern, origin))
 
 
+def _normalize_origin(origin: str) -> str:
+    """Lowercase an origin and fold away an explicitly-spelled default port."""
+    normalized = origin.lower()
+    default = _DEFAULT_PORTS.get(normalized.partition("://")[0])
+    if default and normalized.endswith(default):
+        normalized = normalized[: -len(default)]
+    return normalized
+
+
+def _first_value(header: str | None) -> str | None:
+    """
+    The first element of a possibly comma-joined header value.
+
+    Proxy chains that append rather than overwrite deliver values like
+    ``outer.example.com, inner``; the first element is the outermost hop's,
+    the one describing what the browser saw.
+
+    :param header: The raw header value, or ``None`` when absent.
+    :return: The first element stripped, or ``None`` when absent or empty.
+    """
+    if not header:
+        return None
+    return header.split(",")[0].strip() or None
+
+
 def origin_of(url: str | None) -> str | None:
     """
-    The ``scheme://host[:port]`` origin of an absolute URL, lowercased.
+    The normalized ``scheme://host[:port]`` origin of an absolute URL.
 
     Used to fall back to ``Referer`` when a request carries no ``Origin``:
     the two headers name the same page, they just differ in when browsers
     send them.
 
     :param url: A URL, e.g. a ``Referer`` header value.
-    :return: The origin, or ``None`` when the value has no absolute origin
-        (missing, relative, or unparseable).
+    :return: The origin, lowercased with a default port folded, or ``None``
+        when the value has no absolute origin (missing, relative, or
+        unparseable).
     """
     if not url:
         return None
@@ -102,7 +135,7 @@ def origin_of(url: str | None) -> str | None:
         return None
     if not parts.scheme or not parts.netloc:
         return None
-    return f"{parts.scheme}://{parts.netloc}".lower()
+    return _normalize_origin(f"{parts.scheme}://{parts.netloc}")
 
 
 def own_request_origins(
@@ -114,37 +147,57 @@ def own_request_origins(
     """
     The origins that are "this deployment" for one request.
 
-    Reconstructed per request from the proxy headers, exactly as Engine.IO
-    does for the socket handshake, so a deployment on any hostname works with
-    no configuration. Behind nginx the browser-visible origin is
-    ``X-Forwarded-Proto`` + ``X-Forwarded-Host`` (nginx overwrites both, so a
-    client cannot choose them); the unforwarded ``Host`` is the internal
-    upstream name, reachable only from inside the Docker network, and is
-    included so direct dev/service connections compare against what they
-    actually dialled.
+    Reconstructed per request from the proxy headers, so a deployment on any
+    hostname works with no configuration. Behind a proxy the browser-visible
+    origin is carried by ``X-Forwarded-Proto`` + ``X-Forwarded-Host``; either
+    alone is honoured, the missing half falling back to the request's own
+    scheme or ``Host`` (the same reconstruction Engine.IO applies, consumed
+    from here by the socket handshake predicate). Comma-joined values from an
+    appending proxy chain are read from their first, outermost element, and
+    origins are normalized (lowercased, default port folded).
+
+    When a forwarded header is present the request came through a proxy, and
+    only the reconstructed browser-visible origin is trusted. The unforwarded
+    ``Host`` is then the internal upstream name - *dialled* only from inside
+    the Docker network, but a hostile intranet document on a host of the same
+    name could *claim* it in an ``Origin``, so it stays out of the set. A
+    request with no forwarded headers is a direct dial (dev, tests, service
+    calls) and compares against what it dialled.
+
+    The shipped nginx overwrites ``X-Forwarded-Host`` outright; it normalizes
+    ``X-Forwarded-Proto`` to the two real schemes but honours a client-sent
+    literal (for TLS terminated in front of it), so the proto half is
+    client-influenceable between ``http`` and ``https`` - the host half is
+    not, and inventing an origin still requires controlling the host.
 
     :param scheme: The transport scheme the request arrived on.
     :param host: The request's ``Host`` (authority), or ``None`` if absent.
     :param forwarded_proto: ``X-Forwarded-Proto``, if the proxy set it.
     :param forwarded_host: ``X-Forwarded-Host``, if the proxy set it.
-    :return: Lowercased origins; membership is the "is this us?" test.
+    :return: Normalized origins; membership is the "is this us?" test.
     """
-    origins = set()
-    if host:
-        origins.add(f"{scheme}://{host}".lower())
-    if forwarded_host:
-        origins.add(f"{forwarded_proto or scheme}://{forwarded_host}".lower())
-    return origins
+    forwarded_proto = _first_value(forwarded_proto)
+    forwarded_host = _first_value(forwarded_host)
+    if forwarded_proto or forwarded_host:
+        authority = forwarded_host or host
+        if not authority:
+            return set()
+        return {_normalize_origin(f"{forwarded_proto or scheme}://{authority}")}
+    if not host:
+        return set()
+    return {_normalize_origin(f"{scheme}://{host}")}
 
 
 def is_trusted_write_origin(origin: str, own_origins: set[str], *, dev: bool) -> bool:
     """
-    Whether a state-changing request declaring ``origin`` may proceed.
+    Whether a request declaring ``origin`` may cross the site boundary.
 
+    Decides both the REST write guard and the production socket handshake.
     The deployment's own origin is always trusted; the named dev-server
     origins only in development, where the frontend is served from another
-    port. Everything else - including ``null``, which browsers send from
-    sandboxed documents - is foreign.
+    port. Everything else is foreign - including ``null``, which browsers
+    send from sandboxed documents, and the empty string, a declaration like
+    any other.
 
     :param origin: The origin the request declares (``Origin`` header, or the
         origin of ``Referer`` when absent). Not ``None``: a request declaring
@@ -154,7 +207,7 @@ def is_trusted_write_origin(origin: str, own_origins: set[str], *, dev: bool) ->
     :param dev: Whether the deployment runs in development mode.
     :return: True if the request may proceed.
     """
-    normalized = origin.lower()
+    normalized = _normalize_origin(origin)
     if normalized in own_origins:
         return True
     return dev and is_allowed_dev_origin(normalized)

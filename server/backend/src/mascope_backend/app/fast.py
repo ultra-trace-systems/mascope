@@ -116,6 +116,11 @@ fast = FastAPI(lifespan=lifespan, **_docs_kwargs(runtime.mode))
 #: preflight must be answerable from anywhere, and neither changes state.
 _STATE_CHANGING_METHODS = frozenset({"POST", "PUT", "PATCH", "DELETE"})
 
+#: Read once, like the docs and CORS wiring above and below: a mode change
+#: requires a restart anyway, and the backend's ``runtime.mode`` is a
+#: file-backed read that must not run per request.
+_DEV_MODE = runtime.mode == "dev"
+
 
 # Cross-site write guard. Defined before the logging middleware on purpose:
 # earlier-added middleware sits closer to the app, so refusals travel back out
@@ -138,14 +143,19 @@ async def origin_guard(request: Request, call_next):
     and browsers do send ``Origin`` on cross-site state-changing requests;
     what sends neither header is the non-browser clients - the instrument
     agents' token-authenticated uploads, the file converter, curl - for which
-    an absent declaration is not a mismatch. Socket.IO traffic never reaches
-    this guard (the ASGI wrapper answers it first); its handshake makes the
-    same check itself, from the same policy module.
+    an absent declaration is not a mismatch. A present-but-empty ``Origin``
+    is a declaration, though, and is refused like any other unrecognized
+    value. Socket.IO traffic never reaches this guard (the ASGI wrapper
+    answers it first); its handshake makes the same check itself, from the
+    same policy module.
     """
-    if request.method in _STATE_CHANGING_METHODS:
-        claimed = request.headers.get("Origin") or origin_of(
-            request.headers.get("Referer")
-        )
+    # upper(): the ASGI spec promises an uppercased method, but uvicorn's h11
+    # implementation forwards the request-line token verbatim, and a raw
+    # "patch" must not slip the net.
+    if request.method.upper() in _STATE_CHANGING_METHODS:
+        claimed = request.headers.get("Origin")
+        if claimed is None:
+            claimed = origin_of(request.headers.get("Referer"))
         if claimed is not None and not is_trusted_write_origin(
             claimed,
             own_request_origins(
@@ -154,7 +164,7 @@ async def origin_guard(request: Request, call_next):
                 request.headers.get("X-Forwarded-Proto"),
                 request.headers.get("X-Forwarded-Host"),
             ),
-            dev=runtime.mode == "dev",
+            dev=_DEV_MODE,
         ):
             exc = HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,

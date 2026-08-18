@@ -92,6 +92,17 @@ and the checkout.
    This applies to any front proxy, whether Mascope terminates TLS itself or
    runs with `MASCOPE_TLS=off` behind yours.
 
+   A front proxy must also keep the browser-visible origin intact: pass the
+   browser's `Host` header through unchanged (nginx: `proxy_set_header Host
+   $host;`, Apache: `ProxyPreserveHost On`) - or forward it in
+   `X-Forwarded-Host` - and, when it terminates TLS, send
+   `X-Forwarded-Proto: https`. Mascope refuses state-changing browser
+   requests whose `Origin` does not match the origin it reconstructs from
+   these headers (its CSRF defence), and the Socket.IO handshake applies the
+   same check - behind a proxy that rewrites `Host` and forwards neither
+   header, every write and every realtime connection is refused. Caddy and
+   Traefik do both out of the box.
+
 5. **Pull the release images and start:**
 
    ```sh

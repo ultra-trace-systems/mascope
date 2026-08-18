@@ -96,6 +96,8 @@ def test_tailnet_pattern_is_anchored(monkeypatch):
         ("https://mascope.example.com/app/page?x=1", "https://mascope.example.com"),
         ("http://localhost:8080/", "http://localhost:8080"),
         ("HTTPS://Mascope.Example.COM/Page", "https://mascope.example.com"),
+        # An explicitly-spelled default port folds to the browser serialization
+        ("https://mascope.example.com:443/page", "https://mascope.example.com"),
     ],
 )
 def test_origin_of_extracts_the_origin(url, origin):
@@ -117,15 +119,16 @@ def test_origin_of_yields_none_without_an_absolute_origin(url):
 
 
 def test_own_origins_come_from_the_forwarded_headers_behind_the_proxy():
-    """Behind nginx the browser-visible origin is the forwarded pair.
+    """Behind nginx the browser-visible origin is the forwarded pair - alone.
 
     The unforwarded Host is what proxy_pass leaves: the upstream block's name.
-    It stays in the set (reachable only from inside the Docker network), but
-    the forwarded origin is the one a real browser's Origin must match.
+    Only the upstream is *dialled* by that name, but any intranet document on
+    a host of the same name could *claim* it in an Origin, so it must not be
+    trusted; the forwarded origin is the one a real browser's Origin matches.
     """
     assert origins.own_request_origins(
         "http", "backend", "https", "mascope.example.com"
-    ) == {"https://mascope.example.com", "http://backend"}
+    ) == {"https://mascope.example.com"}
 
 
 def test_own_origins_fall_back_to_the_request_itself():
@@ -141,10 +144,38 @@ def test_own_origins_fall_back_to_the_request_itself():
 def test_own_origins_keep_the_scheme_when_only_the_host_is_forwarded():
     assert origins.own_request_origins(
         "https", "backend", None, "mascope.example.com"
-    ) == {"https://mascope.example.com", "https://backend"}
+    ) == {"https://mascope.example.com"}
 
 
-OWN = {"https://mascope.example.com", "http://backend"}
+def test_own_origins_pair_a_lone_forwarded_proto_with_the_host():
+    """A proxy that preserves Host and forwards only the proto still works.
+
+    The common minimal TLS-termination shape: without the pairing, every
+    browser write from such a deployment would be refused while the socket
+    handshake accepted it.
+    """
+    assert origins.own_request_origins(
+        "http", "mascope.example.com", "https", None
+    ) == {"https://mascope.example.com"}
+
+
+def test_own_origins_read_comma_joined_headers_from_the_outermost_hop():
+    """Chained proxies that append rather than overwrite stay matchable."""
+    assert origins.own_request_origins(
+        "http", "backend", "https, http", "mascope.example.com, internal.example"
+    ) == {"https://mascope.example.com"}
+
+
+def test_own_origins_fold_an_explicit_default_port():
+    """A proxy synthesizing host:port must still match the browser's Origin,
+    which never spells a default port out."""
+    assert origins.own_request_origins(
+        "http", "backend", "https", "mascope.example.com:443"
+    ) == {"https://mascope.example.com"}
+    assert origins.own_request_origins("http", "localhost:80") == {"http://localhost"}
+
+
+OWN = {"https://mascope.example.com"}
 
 
 @pytest.mark.parametrize(
@@ -152,7 +183,7 @@ OWN = {"https://mascope.example.com", "http://backend"}
     [
         "https://mascope.example.com",
         "HTTPS://MASCOPE.EXAMPLE.COM",  # scheme and host compare case-insensitively
-        "http://backend",
+        "https://mascope.example.com:443",  # explicit default port folds away
     ],
 )
 def test_a_write_from_the_deployments_own_origin_is_trusted(origin):
@@ -165,7 +196,9 @@ def test_a_write_from_the_deployments_own_origin_is_trusted(origin):
         "https://attacker.example.invalid",
         "https://mascope.example.com.evil.com",  # suffix trick on the host
         "https://mascope.example.com:8443",  # same host, another port
+        "http://backend",  # the internal upstream name is not "us" to a browser
         "null",  # sandboxed documents declare the opaque origin
+        "",  # declared-but-empty is a declaration, not an absence
     ],
 )
 def test_a_write_from_a_foreign_origin_is_refused(origin):

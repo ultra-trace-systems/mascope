@@ -100,11 +100,18 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
   would vanish silently if the cookie ever needed `SameSite=None`. The backend
   now validates `Origin` (falling back to `Referer` where absent) on POST /
   PUT / PATCH / DELETE against the deployment's own origin, reconstructed per
-  request from the proxy headers exactly as the Socket.IO handshake already
-  does, so any hostname works with no configuration. Requests that declare no
-  origin at all - the instrument agents' token-authenticated uploads, service
-  calls, `curl` - pass unchanged, and the named dev-server origins stay
-  accepted in development. Pentest `CSRF-01` verifies the check.
+  request from the proxy headers, so any hostname served through the shipped
+  nginx works with no configuration; the Socket.IO handshake now consumes the
+  same reconstruction from the shared policy module, one implementation for
+  both surfaces. Behind the proxy only the browser-visible origin counts as
+  the deployment's own - the internal upstream name is no longer accepted.
+  Requests that declare no origin at all - the instrument agents'
+  token-authenticated uploads, service calls, `curl` - pass unchanged, and
+  the named dev-server origins stay accepted in development. **If you front
+  Mascope with your own proxy**, it must preserve the browser's `Host` (or
+  send `X-Forwarded-Host`) and, when it terminates TLS, send
+  `X-Forwarded-Proto: https` - see the hosting guide - or every browser
+  write will be refused. Pentest `CSRF-01` verifies the check.
 - The Content-Security-Policy is now **enforced**; it had shipped as
   Report-Only pending a browser QA pass, which found the app itself clean
   (login, dashboard, batch overview, sample spectrum with Plotly, chart PNG
