@@ -84,17 +84,26 @@ async def connect(sid: str, environ: dict, auth: dict | None) -> bool:
             )
             return False
 
+        # Join the delivery room before registering presence, not after. The
+        # presence key opens the availability gate cluster-wide, and the
+        # emitters target this room; registering first would let another worker
+        # accept an upload and emit into the room in the window before this sid
+        # had joined it, stranding that file. Joining first closes the window.
+        await sio.enter_room(sid, FILE_CONVERTER_ROOM, namespace="/file-converter")
+
         if not await register_service("file-converter", sid):
             # Refuse rather than accept an unregistered connection: the
             # availability checks would report the converter absent for the
-            # socket's whole lifetime. The converter client retries with
-            # backoff, and the next attempt registers afresh.
+            # socket's whole lifetime. Leave the room joined just above - a
+            # rejected connect does not run the disconnect handler, so nothing
+            # else would. The converter client retries with backoff, and the
+            # next attempt registers afresh.
+            await sio.leave_room(sid, FILE_CONVERTER_ROOM, namespace="/file-converter")
             runtime.logger.warning(
                 f"File-converter connection refused: presence registration failed [Worker {worker_pid}]"
             )
             return False
 
-        await sio.enter_room(sid, FILE_CONVERTER_ROOM, namespace="/file-converter")
         # Keep the presence key alive for as long as this connection lives. The
         # key is written with a TTL so it cannot outlive an unclean process
         # death; this refresh is what stops it lapsing while the converter is

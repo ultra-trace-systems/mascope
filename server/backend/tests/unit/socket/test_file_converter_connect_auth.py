@@ -34,7 +34,7 @@ _CONVERTER_ENVIRON = {"HTTP_X_SERVICE_NAME": "file-converter"}
 
 @contextmanager
 def _connect_mocks(register_ok: bool = True):
-    """Mock the connect handler's side effects: presence write, room join, renewal.
+    """Mock the connect handler's side effects: room join/leave, presence, renewal.
 
     ``start_presence_renewal`` spawns a real background task, so it is stubbed
     out here; the accept test asserts it was called once.
@@ -44,14 +44,15 @@ def _connect_mocks(register_ok: bool = True):
             f"{_MODULE}.register_service", new=AsyncMock(return_value=register_ok)
         ) as register,
         patch(f"{_MODULE}.sio.enter_room", new_callable=AsyncMock) as enter_room,
+        patch(f"{_MODULE}.sio.leave_room", new_callable=AsyncMock) as leave_room,
         patch(f"{_MODULE}.start_presence_renewal") as start_renewal,
     ):
-        yield register, enter_room, start_renewal
+        yield register, enter_room, leave_room, start_renewal
 
 
 @pytest.mark.asyncio
 async def test_valid_service_token_is_accepted():
-    with _connect_mocks() as (register, enter_room, start_renewal):
+    with _connect_mocks() as (register, enter_room, leave_room, start_renewal):
         accepted = await connection.connect(
             "sid-1",
             _CONVERTER_ENVIRON,
@@ -63,6 +64,7 @@ async def test_valid_service_token_is_accepted():
     enter_room.assert_awaited_once_with(
         "sid-1", FILE_CONVERTER_ROOM, namespace="/file-converter"
     )
+    leave_room.assert_not_awaited()
     # Presence is kept alive for the life of the connection.
     start_renewal.assert_called_once_with("file-converter", "sid-1")
 
@@ -83,19 +85,20 @@ async def test_valid_service_token_is_accepted():
 )
 async def test_bad_auth_is_rejected(auth):
     """Every malformed or wrong auth shape is refused without side effects."""
-    with _connect_mocks() as (register, enter_room, start_renewal):
+    with _connect_mocks() as (register, enter_room, leave_room, start_renewal):
         accepted = await connection.connect("sid-1", _CONVERTER_ENVIRON, auth)
 
     assert accepted is False
     register.assert_not_awaited()
     enter_room.assert_not_awaited()
+    leave_room.assert_not_awaited()
     start_renewal.assert_not_called()
 
 
 @pytest.mark.asyncio
 async def test_wrong_service_name_is_rejected_even_with_a_valid_token():
     """The service-name gate stays: a valid token on the wrong name is refused."""
-    with _connect_mocks() as (register, enter_room, start_renewal):
+    with _connect_mocks() as (register, enter_room, leave_room, start_renewal):
         accepted = await connection.connect(
             "sid-1",
             {"HTTP_X_SERVICE_NAME": "tof-agent"},
@@ -105,6 +108,7 @@ async def test_wrong_service_name_is_rejected_even_with_a_valid_token():
     assert accepted is False
     register.assert_not_awaited()
     enter_room.assert_not_awaited()
+    leave_room.assert_not_awaited()
     start_renewal.assert_not_called()
 
 
@@ -115,8 +119,16 @@ async def test_failed_registration_refuses_the_connection():
     accepted-but-unregistered converter would read as absent to the
     availability gates for the socket's whole lifetime, while a refused client
     reconnects and registers afresh.
+
+    The room is joined before presence is registered, so a refusal here must
+    also leave it - a rejected connect never runs the disconnect handler.
     """
-    with _connect_mocks(register_ok=False) as (register, enter_room, start_renewal):
+    with _connect_mocks(register_ok=False) as (
+        register,
+        enter_room,
+        leave_room,
+        start_renewal,
+    ):
         accepted = await connection.connect(
             "sid-1",
             _CONVERTER_ENVIRON,
@@ -125,7 +137,12 @@ async def test_failed_registration_refuses_the_connection():
 
     assert accepted is False
     register.assert_awaited_once_with("file-converter", "sid-1")
-    enter_room.assert_not_awaited()
+    enter_room.assert_awaited_once_with(
+        "sid-1", FILE_CONVERTER_ROOM, namespace="/file-converter"
+    )
+    leave_room.assert_awaited_once_with(
+        "sid-1", FILE_CONVERTER_ROOM, namespace="/file-converter"
+    )
     start_renewal.assert_not_called()
 
 
