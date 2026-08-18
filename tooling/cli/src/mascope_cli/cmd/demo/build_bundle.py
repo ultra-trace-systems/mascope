@@ -78,6 +78,12 @@ INSTRUMENT_ALIASES = {"KORBI2": "Orbion"}
 # truncated into a false match.
 _STAMP = re.compile(r"(?<!\d)(\d{14})(?!\d)")
 
+# The human-readable timestamp `RawProcessor.filename` inserts after the first
+# underscore. Only the fallback below needs it: with no compact stamp to key on,
+# the two sides of the comparison differ by exactly this segment, so it has to
+# come out of the database flavour before the names can be matched at all.
+_READABLE_STAMP = re.compile(r"_?\d{4}\.\d{2}\.\d{2}-\d{2}h\d{2}m\d{2}s")
+
 
 def _acquisition_key(name: str) -> str:
     """
@@ -86,9 +92,10 @@ def _acquisition_key(name: str) -> str:
     :param name: Any filename, with or without extension, bundle- or
                  database-flavoured.
     :return: The last 14-digit acquisition stamp in the name, or - if the name
-             carries none - the lowercased name without its raw extension, so
-             unstamped datasets still compare on something rather than
-             collapsing to one key.
+             carries none - the lowercased name with its raw extension and any
+             reconstructed timestamp removed, so a dataset whose published names
+             never matched the de-identification pattern still compares like for
+             like instead of every file looking both missing and foreign.
     """
     stamps = _STAMP.findall(name)
     if stamps:
@@ -96,7 +103,7 @@ def _acquisition_key(name: str) -> str:
     # Not Path.stem: these names are full of dots (the reconstructed
     # `2025.08.11-14h23m50s` segment), and stem would cut at the first of them.
     stripped = name[:-4] if name.lower().endswith(".raw") else name
-    return stripped.lower()
+    return _READABLE_STAMP.sub("", stripped, count=1).lower()
 
 
 def _sample(names: list[str], limit: int = 20) -> str:
@@ -110,7 +117,7 @@ def _sample(names: list[str], limit: int = 20) -> str:
 def check_raw_coverage(
     raw_entries: list[dict],
     ingested: list[str],
-    golden_filenames: "set[str] | list[str]",
+    golden_filenames: "set[str] | list[str] | None",
 ) -> list[str]:
     """
     Check that the demo database covers the bundle's whole raw set.
@@ -129,7 +136,11 @@ def check_raw_coverage(
     :param raw_entries: The manifest ``raw`` block (``{name, sha256, bytes}``).
     :param ingested: Filenames of every ingested sample file
                      (``export_goldens.get_ingested_filenames``).
-    :param golden_filenames: The distinct filenames present in the golden rows.
+    :param golden_filenames: The distinct filenames present in the golden rows,
+                             or ``None`` when this run matched nothing at all -
+                             the ingestion side is still checked, since a
+                             database that does not hold the bundle's files is
+                             not one to capture a snapshot from either.
     :return: Human-readable problem descriptions; empty means full coverage.
     """
     bundle: dict[str, list[str]] = {}
@@ -143,7 +154,7 @@ def check_raw_coverage(
         return counts
 
     in_db = _counts(ingested)
-    in_goldens = _counts(golden_filenames)
+    in_goldens = None if golden_filenames is None else _counts(golden_filenames)
 
     # Surplus bundle names per key: with the usual one-file-per-stamp dataset
     # this is simply "the file is missing"; with a shared stamp it names as many
@@ -153,11 +164,15 @@ def check_raw_coverage(
     never_ingested = [
         n for k, names in bundle.items() for n in names[in_db.get(k, 0) :]
     ]
-    no_goldens = [
-        n
-        for k, names in bundle.items()
-        for n in names[in_goldens.get(k, 0) : in_db.get(k, 0)]
-    ]
+    no_goldens = (
+        []
+        if in_goldens is None
+        else [
+            n
+            for k, names in bundle.items()
+            for n in names[in_goldens.get(k, 0) : in_db.get(k, 0)]
+        ]
+    )
     unexpected = [n for n in ingested if _acquisition_key(n) not in bundle]
 
     problems = []
@@ -482,7 +497,9 @@ def export_goldens(out_dir: Path, raw_entries: list[dict]) -> dict | None:
     Refuses to write ``expected/`` unless the database covers the bundle's whole
     raw set (:func:`check_raw_coverage`): a rebuild can quietly ingest fewer
     files than the bundle contains, and goldens captured from such a run freeze
-    an incomplete expectation that nothing downstream would question.
+    an incomplete expectation that nothing downstream would question. The
+    ingestion side of that check runs even when nothing matched, since the
+    caller goes on to capture the snapshot from the same database.
 
     Requires a populated ``mascope_demo`` database (run ``mascope demo
     --rebuild`` and confirm matching first). The demo callback pins
@@ -507,15 +524,16 @@ def export_goldens(out_dir: Path, raw_entries: list[dict]) -> dict | None:
     )
 
     rows = get_golden_peaks()
-    if not rows:
-        runtime.logger.warning(
-            "No matched peaks in the demo database - skipping golden export. "
-            "Run 'mascope demo --rebuild' and confirm matching before --update."
-        )
-        return None
 
+    # Coverage first, before the no-peaks exit: the caller records the snapshot
+    # either way, so a database that does not hold the bundle's raw set has to
+    # be refused even on the path where matching produced nothing - otherwise
+    # the manifest ends up pairing a fresh snapshot of a partial ingestion with
+    # the previous run's goldens.
     problems = check_raw_coverage(
-        raw_entries, get_ingested_filenames(), {row["filename"] for row in rows}
+        raw_entries,
+        get_ingested_filenames(),
+        {row["filename"] for row in rows} if rows else None,
     )
     if problems:
         raise RuntimeError(
@@ -528,6 +546,13 @@ def export_goldens(out_dir: Path, raw_entries: list[dict]) -> dict | None:
             "<env>/filestreams/failed_files and are retried automatically), "
             "confirm the file count, then re-run --update."
         )
+
+    if not rows:
+        runtime.logger.warning(
+            "No matched peaks in the demo database - skipping golden export. "
+            "Run 'mascope demo --rebuild' and confirm matching before --update."
+        )
+        return None
 
     dest_dir = out_dir / "expected"
     dest_dir.mkdir(parents=True, exist_ok=True)

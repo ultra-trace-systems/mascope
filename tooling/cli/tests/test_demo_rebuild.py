@@ -83,11 +83,11 @@ def test_upload_waits_before_the_first_upload(monkeypatch, bundle):
         _rebuild, "_post_raw", lambda url, raw: events.append(f"post:{raw.name}")
     )
 
-    uploaded = _rebuild.upload_raw(
+    missing = _rebuild.upload_raw(
         converter_baseline="stale-sid", wait_for_converter=True
     )
 
-    assert uploaded == 2
+    assert missing == []
     assert events[0] == "wait:stale-sid"
 
 
@@ -100,17 +100,112 @@ def test_upload_does_not_wait_by_default(monkeypatch, bundle):
     )
     monkeypatch.setattr(_rebuild, "_post_raw", lambda url, raw: None)
 
-    assert _rebuild.upload_raw() == 2
+    assert _rebuild.upload_raw() == []
 
 
-def test_upload_counts_only_successes(monkeypatch, bundle):
+def test_upload_reports_a_file_it_could_never_post(monkeypatch, bundle, no_sleep):
+    """A file the server never received is named, not counted as uploaded."""
     monkeypatch.setattr(
         _rebuild,
         "_post_raw",
         lambda url, raw: None if raw.name.startswith("Orbion_neg") else "HTTP 500",
     )
 
-    assert _rebuild.upload_raw() == 1
+    assert _rebuild.upload_raw() == ["Orbion_pos_Ur_NoRI_1.raw"]
+
+
+def test_upload_retries_a_failed_post(monkeypatch, bundle, no_sleep):
+    """A timeout against a saturated server costs a retry, not the file."""
+    attempts = []
+
+    def _flaky(url, raw):
+        attempts.append(raw.name)
+        # Fails once, then succeeds - the shape of an upload that timed out
+        # client-side while the converter was busy.
+        return "timeout" if attempts.count(raw.name) == 1 else None
+
+    monkeypatch.setattr(_rebuild, "_post_raw", _flaky)
+
+    assert _rebuild.upload_raw() == []
+    assert len(attempts) == 4  # two files, each posted twice
+
+
+def test_upload_retry_skips_a_file_that_did_arrive(monkeypatch, bundle, no_sleep):
+    """A client-side timeout after the server stored the file is not re-posted."""
+    streams, raws = bundle
+    posted = []
+
+    def _times_out_but_lands(url, raw):
+        posted.append(raw.name)
+        # The server stored it despite the client giving up on the response.
+        (streams / raw.name).write_bytes(b"raw")
+        return "timeout"
+
+    monkeypatch.setattr(_rebuild, "_post_raw", _times_out_but_lands)
+
+    missing = _rebuild.upload_raw()
+
+    assert posted == [raws[0].name, raws[1].name]  # one pass only, no re-post
+    assert missing == []
+
+
+# --- reading the upload endpoint's answer -------------------------------------
+
+
+class _Response:
+    """Stand-in for the upload endpoint's response."""
+
+    def __init__(self, payload):
+        self._payload = payload
+
+    def json(self):
+        if self._payload is None:
+            raise ValueError("not JSON")
+        return self._payload
+
+
+def test_body_error_passes_a_clean_upload():
+    assert (
+        _rebuild._body_error(_Response({"status": "success", "message": "ok"})) is None
+    )
+
+
+def test_body_error_catches_a_failure_reported_inside_a_2xx():
+    """The endpoint answers 201 even for a file it could not store."""
+    payload = {
+        "status": "partial",
+        "message": "Uploaded 0 of 1 files successfully",
+        "data": {"failed_uploads": [{"filename": "a.raw", "error": "No space left"}]},
+    }
+
+    assert _rebuild._body_error(_Response(payload)) == "No space left"
+
+
+def test_body_error_ignores_an_unreadable_body():
+    """A body that is not the documented shape is not evidence of failure."""
+    assert _rebuild._body_error(_Response(None)) is None
+    assert _rebuild._body_error(_Response(["unexpected"])) is None
+
+
+# --- clearing a previous run's quarantine -------------------------------------
+
+
+def test_stale_quarantine_is_cleared_before_uploading(bundle):
+    """Leftovers from an earlier rebuild would be re-fed as duplicates."""
+    streams, raws = bundle
+    (streams / "failed_files" / raws[0].name).write_bytes(b"raw")
+
+    assert _rebuild.clear_stale_quarantine() == [raws[0].name]
+    assert not (streams / "failed_files" / raws[0].name).exists()
+
+
+def test_clearing_leaves_files_from_another_bundle_alone(bundle):
+    streams, _ = bundle
+    foreign = streams / "failed_files" / "SomethingElse_20240101000000.raw"
+    foreign.write_bytes(b"raw")
+
+    assert _rebuild.clear_stale_quarantine() == []
+    assert foreign.exists()
 
 
 # --- sweeping the converter's quarantine folder -------------------------------
@@ -187,4 +282,15 @@ def test_sweep_stops_at_its_deadline(bundle, monkeypatch, no_sleep):
     streams, raws = bundle
     (streams / raws[0].name).write_bytes(b"raw")  # never consumed
 
-    assert _rebuild.sweep_failed_uploads(poll=0, deadline=0.05) == []
+    # Giving up on the backstop is not a clean drain: the file is still sitting
+    # in filestreams, so it has to be reported rather than counted as ingested.
+    assert _rebuild.sweep_failed_uploads(poll=0, deadline=0.05) == [raws[0].name]
+
+
+def test_sweep_reports_files_that_never_reached_the_server(bundle, no_sleep):
+    """An upload that never landed leaves no trace in either folder."""
+    _, raws = bundle
+
+    remaining = _rebuild.sweep_failed_uploads(poll=0, never_uploaded=[raws[1].name])
+
+    assert remaining == [raws[1].name]

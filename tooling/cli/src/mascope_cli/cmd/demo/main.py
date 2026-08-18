@@ -561,7 +561,14 @@ def snapshot(
     """
     from mascope_cli.cmd.demo import build_bundle
 
-    build_bundle.build(out_dir=out, raw_dir=raw, update=update, seed=seed)
+    try:
+        build_bundle.build(out_dir=out, raw_dir=raw, update=update, seed=seed)
+    except (RuntimeError, OSError) as e:
+        # A rejected coverage check is a routine authoring outcome with its own
+        # remediation text, and a missing --raw is a usage error; neither is
+        # worth a traceback (matching the sibling flows above).
+        runtime.logger.error(str(e))
+        raise typer.Exit(1)
 
 
 @demo_app.command()
