@@ -2,10 +2,18 @@ from datetime import datetime
 from typing import Optional
 
 from fastapi_users import schemas
-from pydantic import BaseModel, EmailStr, Field, field_validator, model_validator
+from pydantic import (
+    BaseModel,
+    EmailStr,
+    Field,
+    computed_field,
+    field_validator,
+    model_validator,
+)
 
 from mascope_backend.api.models.base_pydantic_model import QueryParamsModel
 from mascope_backend.api.new.auth.config import auth_settings
+from mascope_backend.api.new.auth.mfa import policy
 from mascope_backend.api.new.users.exceptions import InvalidFieldsException
 
 
@@ -60,9 +68,32 @@ class UserRead(schemas.BaseUser[int]):
         ),
     )
 
+    mfa_enabled: bool = Field(
+        False,
+        description=(
+            "True when the account holds a confirmed second authentication "
+            "factor. Read-only: armed and cleared through the two-factor routes "
+            "and the administrative reset, never by a request body."
+        ),
+    )
+
     model_config = {
         "from_attributes": True  # Allows Pydantic to work with SQLAlchemy models
     }
+
+    @computed_field
+    @property
+    def mfa_enrollment_required(self) -> bool:
+        """
+        Whether this account is held out of the application until it enrols.
+
+        Derived rather than stored: it is a function of the deployment's policy
+        and the account's role, both of which change without touching the row.
+        Computed here so every response carrying a user gets it, instead of at
+        each of the three places that build this schema - one of which would
+        eventually be missed, and the miss would read as "no enrolment owed".
+        """
+        return policy.enrollment_required(self.role_id, self.mfa_enabled)
 
     @field_validator("role_name")
     @classmethod

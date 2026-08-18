@@ -6,6 +6,7 @@ from mascope_backend.api.new.auth.dependencies import owner_user
 from mascope_backend.api.new.auth.exceptions import ForbiddenAccessException
 from mascope_backend.api.new.users.access_token.service import delete_user_access_tokens
 from mascope_backend.api.new.users.exceptions import InvalidUsernameException
+from mascope_backend.api.new.users.mfa.service import reset_user_mfa
 from mascope_backend.api.new.users.owner.schemas import RequirePasswordChange
 from mascope_backend.api.new.users.password.service import reset_user_password
 from mascope_backend.api.new.users.schemas import (
@@ -207,6 +208,38 @@ async def owner_reset_user_password(
 
     # Step 2: Reset the user's password
     return await reset_user_password(user_id=user_id, user_manager=user_manager)
+
+
+@owner_router.post("/{user_id}/mfa/reset")
+@api_route()
+async def owner_reset_user_mfa(
+    user_id: int = Path(..., description="ID of the user whose MFA to reset"),
+    user=Depends(owner_user),
+):
+    """
+    Clear a user's second factor. Owners can do this for anyone but themselves.
+
+    Excluding themselves is what keeps this from being a way around the factor
+    rather than a recovery from losing it: an owner who could clear their own
+    would turn any session that reached this route into a permanent bypass. An
+    owner who has genuinely lost their authenticator is recovered by another
+    owner, or by the CLI escape hatch on the host when there is no other owner.
+
+    :param user_id: The account to clear.
+    :param user: The currently authenticated owner user.
+    :return: A success message and the updated user.
+    """
+    # Step 1: Prevent owners from clearing their own factor
+    if user_id == user.id:
+        raise ForbiddenAccessException(
+            detail=(
+                "You cannot reset your own two-factor authentication. Ask another "
+                "owner, or use a recovery code."
+            )
+        )
+
+    # Step 2: Clear the factor
+    return await reset_user_mfa(user_id=user_id)
 
 
 @owner_router.delete("/{user_id}/access-tokens")

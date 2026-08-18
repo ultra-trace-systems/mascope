@@ -28,15 +28,24 @@ RAW_DEPENDENCIES = {
     deps._authenticated_superuser,
 }
 
-#: The wrappers allowed to bind a raw dependency.
+#: The wrappers allowed to bind a raw dependency. Three kinds, and which kind a
+#: wrapper is decides which gate a route escapes:
+#:
+#: - GATED: both interactive gates apply. Nearly every route.
+#: - PASSWORD_EXEMPT: neither gate applies. The way *into* the password screen
+#:   and the way out of it.
+#: - MFA_GATE_EXEMPT: the password gate applies, the enrolment gate does not.
+#:   The way out of the enrolment screen, which must still sit behind the
+#:   password gate - see ``_enforce_mfa_enrolment`` for why that order.
 GATED_WRAPPERS = {deps.current_active_user, deps.current_superuser}
 EXEMPT_WRAPPERS = {
     deps.password_gate_exempt_active_user,
     deps.password_gate_exempt_guest_user,
 }
+MFA_GATE_EXEMPT_WRAPPERS = {deps.mfa_gate_exempt_guest_user}
 
-#: The routes that bypass the gate through an exempt wrapper, asserted as an
-#: exact set: a third entry appearing here is a hole, not an improvement.
+#: The routes that bypass the password gate through an exempt wrapper, asserted
+#: as an exact set: a third entry appearing here is a hole, not an improvement.
 #: ``GET /api/users/me`` is how the frontend discovers the pending change, and
 #: the credentials route is how the user clears it. Not quite the complete set
 #: of routes a gated account can reach: logout stays reachable through
@@ -45,6 +54,17 @@ EXEMPT_WRAPPERS = {
 EXPECTED_EXEMPT_ROUTES = {
     ("GET", "/api/users/me"),
     ("PATCH", "/api/users/me/creds"),
+}
+
+#: The routes an account owing an enrolment can still reach, asserted as an
+#: exact set for the same reason. Exactly the three the enrolment screen needs:
+#: read the state, start enrolling, confirm it. Anything else appearing here
+#: would be reachable by an account the deployment has decided must hold a
+#: second factor and does not.
+EXPECTED_MFA_GATE_EXEMPT_ROUTES = {
+    ("GET", "/mfa/status"),
+    ("POST", "/mfa/enroll"),
+    ("POST", "/mfa/enroll/confirm"),
 }
 
 #: Every route that resolves no raw dependency at all, asserted as an exact
@@ -143,7 +163,7 @@ def test_no_route_binds_an_ungated_user_dependency():
     # A route reaching a raw dependency other than through one of the four
     # wrappers is authenticated but not gated - reachable by an account that
     # owes a password change.
-    allowed = GATED_WRAPPERS | EXEMPT_WRAPPERS
+    allowed = GATED_WRAPPERS | EXEMPT_WRAPPERS | MFA_GATE_EXEMPT_WRAPPERS
     offenders = {
         route: {getattr(parent, "__name__", parent) for parent in parents}
         for route, parents in _routes_binding_raw_dependency().items()
@@ -161,6 +181,27 @@ def test_only_the_password_change_routes_bypass_the_gate():
         if parents & EXEMPT_WRAPPERS
     }
     assert exempt == EXPECTED_EXEMPT_ROUTES
+
+
+def test_only_the_enrolment_routes_bypass_the_enrolment_gate():
+    # Exact-set equality for the same reason as above: the enrolment gate is
+    # only worth anything if the set of routes that escape it is the set needed
+    # to satisfy it.
+    exempt = {
+        route
+        for route, parents in _routes_binding_raw_dependency().items()
+        if parents & MFA_GATE_EXEMPT_WRAPPERS
+    }
+    assert exempt == EXPECTED_MFA_GATE_EXEMPT_ROUTES
+
+
+def test_the_enrolment_exempt_routes_still_sit_behind_the_password_gate():
+    # The wrapper calls the password gate itself rather than binding a gated
+    # wrapper, so nothing above would catch it being dropped.
+    import inspect
+
+    source = inspect.getsource(deps.mfa_gate_exempt_guest_user)
+    assert "_enforce_password_change" in source
 
 
 def test_every_route_is_gated_or_known_ungated():

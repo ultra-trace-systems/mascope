@@ -138,6 +138,15 @@ function handleServerError(error) {
     return Promise.reject(error)
   }
 
+  // The account owes a two-factor enrolment. Matched on the code rather than
+  // the status for the same reason as the password gate above: it is a 403
+  // shared with ordinary permission failures. Reachable in a stale tab, or
+  // when an administrator raises the account's role mid-session.
+  if (error?.response?.data?.detail?.code === 'mfa_enrollment_required') {
+    useApp().auth.requireMfaEnrollment()
+    return Promise.reject(error)
+  }
+
   // The action needs a freshly presented second-factor code. The caller prompts
   // for one and retries, so the generic toast below would announce a failure
   // the user is already being asked to resolve.

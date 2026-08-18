@@ -15,6 +15,14 @@ export const useAuth = defineStore('app.auth', () => {
   const mustChangePassword = computed(() => !!user.value?.must_change_password)
   const passwordChangeReason = computed(() => user.value?.password_change_reason ?? null)
 
+  // The deployment requires a second factor at this account's role and it has
+  // none yet. Authenticated but not yet "in" the app, like the password gate,
+  // and ordered after it: the server enforces the same order, so an account
+  // owing both is shown the password screen first.
+  const mustEnrollMfa = computed(
+    () => !mustChangePassword.value && !!user.value?.mfa_enrollment_required
+  )
+
   // One-shot latch for the "you need a new password" notice, so a burst of
   // store syncs all being refused at once yields one message rather than
   // twenty.
@@ -66,6 +74,25 @@ export const useAuth = defineStore('app.auth', () => {
         })
     }
     return first
+  }
+
+  /**
+   * React to an API call refused because the account owes an enrolment.
+   *
+   * Shares the in-flight profile re-read with the password gate: a sweep
+   * refuses every open store sync at once, and one re-read serves them all.
+   * No notice latch - unlike a password change, which can be imposed
+   * mid-session, this state is visible from the moment the account signs in,
+   * so a toast would only repeat the screen the user is already looking at.
+   */
+  const requireMfaEnrollment = () => {
+    if (!gateIdentify) {
+      gateIdentify = identify()
+        .catch(() => {})
+        .finally(() => {
+          gateIdentify = null
+        })
+    }
   }
 
   // A sign-in that passed the password step and owes a verification code. The
@@ -165,12 +192,15 @@ export const useAuth = defineStore('app.auth', () => {
     handlers.value.push({ callback })
   }
 
-  // The ID of a user who may actually use the app. A user held behind the
-  // mandatory password change is authenticated but gated, so their stores must
-  // not load behind the password screen - and must load exactly once when it
-  // clears.
+  // The ID of a user who may actually use the app. A user held behind either
+  // gate - the mandatory password change or the enrolment requirement - is
+  // authenticated but gated, so their stores must not load behind that screen,
+  // and must load exactly once when it clears.
   const sessionId = (candidate) =>
-    candidate && typeof candidate === 'object' && !candidate.must_change_password
+    candidate &&
+    typeof candidate === 'object' &&
+    !candidate.must_change_password &&
+    !candidate.mfa_enrollment_required
       ? candidate.id
       : null
 
@@ -214,8 +244,10 @@ export const useAuth = defineStore('app.auth', () => {
     requiresOwner,
     mustChangePassword,
     passwordChangeReason,
+    mustEnrollMfa,
     identify,
     requirePasswordChange,
+    requireMfaEnrollment,
     login,
     mfaPending,
     verifyMfa,

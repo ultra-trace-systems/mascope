@@ -6,6 +6,7 @@ from mascope_backend.api.new.auth.dependencies import admin_user
 from mascope_backend.api.new.auth.exceptions import ForbiddenAccessException
 from mascope_backend.api.new.users.access_token.service import delete_user_access_tokens
 from mascope_backend.api.new.users.exceptions import InvalidUsernameException
+from mascope_backend.api.new.users.mfa.service import reset_user_mfa
 from mascope_backend.api.new.users.password.service import reset_user_password
 from mascope_backend.api.new.users.schemas import (
     UserCreate,
@@ -143,6 +144,35 @@ async def admin_reset_user_password(
 
     # Step 2: Reset the user's password
     return await reset_user_password(user_id=user_id, user_manager=user_manager)
+
+
+# POST for the same reason as the password reset above: it changes state, and
+# the SameSite=lax auth cookie rides on cross-site top-level GET navigations.
+@admin_router.post("/{user_id}/mfa/reset")
+@api_route()
+async def admin_reset_user_mfa(
+    user_id: int = Path(..., description="ID of the user whose MFA to reset"),
+    user=Depends(admin_user),
+):
+    """
+    Clear a user's second factor. Admins can do this for `guest` or `editor`
+    accounts only.
+
+    For an authenticator lost together with its recovery codes. The account
+    keeps its password and enrols again; if the deployment requires a factor at
+    that role, it is held at the enrolment screen until it does.
+
+    :param user_id: The account to clear.
+    :param user: The currently authenticated admin user.
+    :return: A success message and the updated user.
+    """
+    # Step 1: Ensure target user role is within allowed limits
+    target_user_role_id = (await get_user(user_id=user_id)).get("data").role_id
+    if target_user_role_id >= auth_settings.ROLE_ACCESS_LEVELS["admin"]:
+        raise ForbiddenAccessException()
+
+    # Step 2: Clear the factor
+    return await reset_user_mfa(user_id=user_id)
 
 
 @admin_router.delete("/{user_id}/access-tokens")

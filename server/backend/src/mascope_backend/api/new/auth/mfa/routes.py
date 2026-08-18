@@ -4,8 +4,11 @@ from fastapi_users.authentication import Strategy
 from mascope_backend.api.lib.api_features import api_route
 from mascope_backend.api.lib.rate_limit import enforce_user_rate_limit, rate_limit
 from mascope_backend.api.new.auth import auth_backend_jwt
-from mascope_backend.api.new.auth.dependencies import guest_user
-from mascope_backend.api.new.auth.mfa import service
+from mascope_backend.api.new.auth.dependencies import (
+    guest_user,
+    mfa_gate_exempt_guest_user,
+)
+from mascope_backend.api.new.auth.mfa import policy, service
 from mascope_backend.api.new.auth.mfa.cookie import (
     clear_pending_cookie,
     read_pending_cookie,
@@ -13,6 +16,7 @@ from mascope_backend.api.new.auth.mfa.cookie import (
 from mascope_backend.api.new.auth.mfa.exceptions import (
     InvalidMfaCodeException,
     InvalidPendingTokenException,
+    MfaRequiredByPolicyException,
 )
 from mascope_backend.api.new.auth.mfa.pending import (
     burn_pending_token,
@@ -113,14 +117,13 @@ async def verify_route(
 
 @mfa_router.get("/status", name="auth:mfa.status")
 @api_route()
-async def status_route(user: User = Depends(guest_user)):
+async def status_route(user: User = Depends(mfa_gate_exempt_guest_user)):
     """
     The calling account's second-factor state.
 
-    Gated like everything else rather than exempt from the forced password
-    change: an account behind that gate is shown the password screen and
-    nothing else, so the settings screen this feeds is unreachable anyway, and
-    exempting it would widen the exempt set for no gain.
+    Reachable from behind the enrolment gate, which is where the enrolment
+    screen reads it. Still behind the password gate: an account owing a password
+    change is shown the password screen and nothing else.
 
     :param user: The current authenticated user.
     :return: Enrollment state and remaining recovery codes.
@@ -181,7 +184,7 @@ async def reauth_route(
 
 @mfa_router.post("/enroll", name="auth:mfa.enroll")
 @api_route()
-async def enroll_route(user: User = Depends(guest_user)):
+async def enroll_route(user: User = Depends(mfa_gate_exempt_guest_user)):
     """
     Begin enrollment and hand back the seed to put into an authenticator app.
 
@@ -202,7 +205,7 @@ async def enroll_route(user: User = Depends(guest_user)):
 @api_route()
 async def enroll_confirm_route(
     body: MfaCodeRequest = Body(...),
-    user: User = Depends(guest_user),
+    user: User = Depends(mfa_gate_exempt_guest_user),
 ):
     """
     Confirm enrollment with the first code and return the recovery codes.
@@ -246,7 +249,10 @@ async def disable_route(
     Turn the second factor off for the calling account.
 
     Requires a current code rather than only a session: a stolen session must
-    not be able to strip the factor that would have stopped it.
+    not be able to strip the factor that would have stopped it. Refused outright
+    when the deployment requires a factor at this account's role - there the way
+    to replace a lost authenticator is an administrative reset, not self-service
+    removal.
 
     :param body: A current code from the authenticator app, or a recovery code.
     :param user: The current authenticated user.
@@ -257,6 +263,11 @@ async def disable_route(
 
     if not user.mfa_enabled:
         return {"message": "Two-factor authentication is already off.", "data": None}
+
+    # Refused before the code is checked, so a correct code cannot be spent on
+    # an action that was never going to be allowed.
+    if policy.required_for_role(user.role_id):
+        raise MfaRequiredByPolicyException()
 
     verified = await service.verify_totp_for_user(user, body.code)
     if not verified:

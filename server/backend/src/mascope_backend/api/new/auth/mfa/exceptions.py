@@ -28,6 +28,53 @@ class MfaReauthRequiredException(CodedHTTPException):
         super().__init__(status_code=status.HTTP_403_FORBIDDEN, detail=detail)
 
 
+#: Code carried in the error payload's ``detail`` when the deployment requires
+#: this account to hold a second factor and it does not yet. The frontend
+#: branches on this to swap in the enrolment screen, so it is part of the API
+#: contract.
+MFA_ENROLLMENT_REQUIRED_CODE = "mfa_enrollment_required"
+
+
+class MfaEnrollmentRequiredException(CodedHTTPException):
+    """
+    The account may not use the application until it enrols (403).
+
+    Not 401, for the same reason as the password gate: the session is valid and
+    the client must not be sent back to the sign-in screen, where signing in
+    would land here again. What is refused is the action, not the identity.
+    """
+
+    error_code = MFA_ENROLLMENT_REQUIRED_CODE
+
+    def __init__(
+        self,
+        detail: str = (
+            "This account must use two-factor authentication. Set it up to continue."
+        ),
+    ):
+        super().__init__(status_code=status.HTTP_403_FORBIDDEN, detail=detail)
+
+
+class MfaRequiredByPolicyException(HTTPException):
+    """
+    Turning the factor off is refused because the deployment requires it (409).
+
+    Separate from the enrolment gate: this account *has* a factor and is trying
+    to give it up, which is a conflict with the policy rather than a missing
+    prerequisite.
+    """
+
+    def __init__(
+        self,
+        detail: str = (
+            "Two-factor authentication is required for this account and cannot "
+            "be turned off. An administrator can reset it if you have lost your "
+            "authenticator."
+        ),
+    ):
+        super().__init__(status_code=status.HTTP_409_CONFLICT, detail=detail)
+
+
 class MfaNotConfiguredException(HTTPException):
     """
     The deployment has no MFA encryption key, so seeds cannot be stored (503).
