@@ -4,6 +4,18 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
 
 ## [Unreleased]
 
+### Fixed
+
+- The "new version of Mascope is available" banner no longer reappears on
+  every tab refocus after a release. nginx served `index.html` with no cache
+  policy, so browsers applied heuristic caching and kept booting the previous
+  build's page for hours after a deploy - which the update check then
+  (correctly) flagged, over and over. `index.html` is now served with
+  `Cache-Control: no-cache` (revalidated with a cheap 304 while unchanged) and
+  the hashed `/assets/` bundles with a one-year lifetime, and the banner's
+  Reload button now refreshes the browser's cached copy of `index.html` before
+  reloading, so it always lands on the new build.
+
 ## [1.7.0] - 2026.08.17
 
 ### Added

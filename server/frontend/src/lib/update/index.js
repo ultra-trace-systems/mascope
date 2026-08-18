@@ -86,7 +86,20 @@ export const useUpdate = defineStore('app.update', () => {
     })
   }
 
-  const reload = () => window.location.reload()
+  /**
+   * Reload onto the new build. The tab typically got here because the browser
+   * held a stale index.html as fresh, so first replace the cached copy
+   * (cache: 'reload' bypasses the HTTP cache and stores the response), then
+   * reload; otherwise the reload can boot the same stale build and re-flag.
+   */
+  const reload = async () => {
+    try {
+      await fetch(window.location.pathname, { cache: 'reload' })
+    } catch {
+      // Offline or transient failure: reload anyway.
+    }
+    window.location.reload()
+  }
 
   return { available, check, start, reload }
 })

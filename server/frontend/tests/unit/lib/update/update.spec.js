@@ -85,3 +85,50 @@ describe('update store: check()', () => {
     expect(update.available).toBe(false)
   })
 })
+
+describe('update store: reload()', () => {
+  beforeEach(() => {
+    setActivePinia(createPinia())
+  })
+
+  afterEach(() => {
+    vi.unstubAllGlobals()
+    vi.restoreAllMocks()
+  })
+
+  it('replaces the cached index.html before reloading the page', async () => {
+    const order = []
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (...args) => {
+        order.push(['fetch', ...args])
+        return { ok: true }
+      })
+    )
+    const reloadSpy = vi.spyOn(window.location, 'reload').mockImplementation(() => {
+      order.push(['reload'])
+    })
+
+    await useUpdate().reload()
+
+    expect(order).toEqual([
+      ['fetch', window.location.pathname, { cache: 'reload' }],
+      ['reload']
+    ])
+    expect(reloadSpy).toHaveBeenCalledTimes(1)
+  })
+
+  it('still reloads when the cache refresh fails', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => {
+        throw new Error('offline')
+      })
+    )
+    const reloadSpy = vi.spyOn(window.location, 'reload').mockImplementation(() => {})
+
+    await useUpdate().reload()
+
+    expect(reloadSpy).toHaveBeenCalledTimes(1)
+  })
+})
