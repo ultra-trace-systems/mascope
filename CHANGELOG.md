@@ -23,6 +23,31 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
 
 ### Fixed
 
+- A demo bundle can no longer be published with goldens that cover only part of
+  its raw files. `mascope demo --rebuild` could quietly ingest fewer files than
+  the bundle contains and still finish with every sample batch `ready`, and
+  `mascope demo snapshot --update` would then capture goldens from that partial
+  run - which is how bundle v1.0.0 shipped with 152 of its 161 files. The
+  goldens export now compares the demo database against the manifest's raw set
+  and refuses to write `expected/` when they disagree, naming the files that
+  are missing and distinguishing "never ingested" from "ingested but matched
+  nothing". The comparison keys on the compact acquisition stamp, the one
+  component shared by the published filename and the filename the converter
+  reconstructs from the file's own metadata.
+- The rebuild uploader no longer races the file-converter's startup. Uploads
+  began as soon as the backend answered HTTP, but the upload endpoint hands each
+  file's processing context to the converter over a socket, and a converter that
+  has not connected yet never receives it - so the first files uploaded failed
+  deep in processing with "not registered in file converter service" and were
+  quarantined, with nothing surfacing the shortfall. The uploader now holds the
+  first upload until a converter has connected (distinguishing a fresh connect
+  from a presence record left behind by a killed run or another worktree), and
+  then keeps sweeping the converter's quarantine folder for the rest of the run,
+  re-uploading its own files and reporting by name any that never made it.
+- The reproducibility test now fails on quarantined files as soon as the
+  pipeline stops moving, naming them and the usual cause, instead of waiting out
+  its stall window to report only that the pipeline stalled.
+
 - The "Learn more" links in help-mode popovers are now reachable. Help cards
   are matched to the pointer purely by geometry, with nothing accounting for
   what covers what, so a popover that overhangs a neighbouring panel - the

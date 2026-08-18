@@ -66,6 +66,11 @@ STABLE_POLLS = 3
 # timeout only delays the diagnosis. Generous (10 min) so a slow but live
 # aggregation is never mistaken for a stall.
 STALL_POLLS = 40
+# A quarantined file never comes back on its own, so once the counters stop
+# moving there is no point waiting out STALL_POLLS to say so: check the
+# converter's failed_files folder after this many frozen polls and fail with the
+# names right away.
+QUARANTINE_CHECK_POLLS = 2
 
 # Python of the in-image mascope uv tool (same path tooling/demo-init.sh uses).
 CONTAINER_PYTHON = "/opt/uv/tools/mascope/bin/python"
@@ -284,6 +289,8 @@ def _wait_for_pipeline(n_files: int) -> None:
         # the stage breakdown instead of idling to the full timeout.
         state = (files_done, batches, processing, matched)
         stalled = stalled + 1 if state == last_state else 0
+        if stalled == QUARANTINE_CHECK_POLLS:
+            _fail_on_quarantined_files(n_files, files_done, batches, matched)
         if stalled >= STALL_POLLS:
             pytest.fail(
                 f"pipeline stalled with no progress for {STALL_POLLS * POLL_S}s: "
@@ -301,6 +308,73 @@ def _wait_for_pipeline(n_files: int) -> None:
         f"{processing} still processing, {matched} matched peak(s)\n"
         + _diagnose_missing_files()
     )
+
+
+def _fail_on_quarantined_files(
+    n_files: int, files_done: int, batches: int, matched: int
+) -> None:
+    """
+    Fail the test if the converter quarantined any of the uploaded files.
+
+    Quarantined files produce no sample items, ever, so a pipeline that has
+    stopped moving with files in ``failed_files`` is finished - it just cannot
+    say so. Naming them (and the usual cause) beats the generic stall message
+    ten minutes later.
+
+    :param n_files: Number of raw files uploaded.
+    :param files_done: Files that have produced sample items so far.
+    :param batches: Sample batches created so far.
+    :param matched: Matched peaks so far.
+    """
+    quarantined = _stream_folders().get("failed", [])
+    if not quarantined:
+        return
+    shown = ", ".join(quarantined[:20]) + (" ..." if len(quarantined) > 20 else "")
+    pytest.fail(
+        f"the file converter quarantined {len(quarantined)} of {n_files} uploaded "
+        f"file(s), which will never produce sample items: {shown}\n"
+        "A file quarantined shortly after the stack came up usually means its "
+        "upload raced the converter's socket connection: the file context the "
+        "upload endpoint emitted reached nobody, and processing failed with "
+        "'not registered in file converter service'. Re-upload those files once "
+        "the stack is idle.\n"
+        f"{files_done}/{n_files} files processed, {batches} batch(es), "
+        f"{matched} matched peak(s)\n" + _diagnose_missing_files()
+    )
+
+
+def _stream_folders() -> dict[str, list[str]]:
+    """
+    List the converter's pending and quarantined stream files.
+
+    The filestreams volume is shared with the backend container, so the listing
+    runs there. Diagnostic only - an unreadable volume yields empty lists rather
+    than an error, so a probe failure never masks the real assertion.
+
+    :return: ``{"pending": [...], "failed": [...]}`` - stream files still
+             waiting in ``filestreams``, and those moved to ``failed_files``.
+    """
+    probe = (
+        "import json, os\n"
+        "from mascope_backend.runtime import runtime\n"
+        "d = runtime.config.filestreams\n"
+        "def ls(p):\n"
+        "    if not os.path.isdir(p):\n"
+        "        return []\n"
+        "    # files only - subfolders like failed_files are not streams\n"
+        "    return sorted(\n"
+        "        f for f in os.listdir(p) if os.path.isfile(os.path.join(p, f))\n"
+        "    )\n"
+        "print(json.dumps({'pending': ls(d),"
+        " 'failed': ls(os.path.join(d, 'failed_files'))}))\n"
+    )
+    try:
+        res = _docker("exec", BACKEND_CONTAINER, CONTAINER_PYTHON, "-c", probe)
+        if res.returncode == 0 and res.stdout.strip():
+            return json.loads(res.stdout.strip().splitlines()[-1])
+    except Exception:  # noqa: BLE001 - diagnostics must never mask the failure
+        pass
+    return {}
 
 
 def _diagnose_missing_files() -> str:
@@ -328,35 +402,17 @@ def _diagnose_missing_files() -> str:
                 f"{len(names)} file(s) converted but auto-processing produced "
                 f"no sample items: {shown}"
             )
-        # The filestreams volume is shared with the backend container; list
-        # the pending and quarantined stream files from there.
-        probe = (
-            "import json, os\n"
-            "from mascope_backend.runtime import runtime\n"
-            "d = runtime.config.filestreams\n"
-            "def ls(p):\n"
-            "    if not os.path.isdir(p):\n"
-            "        return []\n"
-            "    # files only - subfolders like failed_files are not streams\n"
-            "    return sorted(\n"
-            "        f for f in os.listdir(p) if os.path.isfile(os.path.join(p, f))\n"
-            "    )\n"
-            "print(json.dumps({'pending': ls(d),"
-            " 'failed': ls(os.path.join(d, 'failed_files'))}))\n"
-        )
-        res = _docker("exec", BACKEND_CONTAINER, CONTAINER_PYTHON, "-c", probe)
-        if res.returncode == 0 and res.stdout.strip():
-            folders = json.loads(res.stdout.strip().splitlines()[-1])
-            for key, label in (
-                ("pending", "stream file(s) never picked up by the converter"),
-                ("failed", "stream file(s) quarantined in failed_files"),
-            ):
-                if folders.get(key):
-                    lines.append(
-                        f"{len(folders[key])} {label}: " + ", ".join(folders[key][:20])
-                    )
-        else:
-            lines.append(f"(filestreams listing failed: {res.stderr.strip()[:200]})")
+        folders = _stream_folders()
+        if not folders:
+            lines.append("(filestreams listing unavailable)")
+        for key, label in (
+            ("pending", "stream file(s) never picked up by the converter"),
+            ("failed", "stream file(s) quarantined in failed_files"),
+        ):
+            if folders.get(key):
+                lines.append(
+                    f"{len(folders[key])} {label}: " + ", ".join(folders[key][:20])
+                )
     except Exception as e:  # noqa: BLE001 - diagnostics must never mask the failure
         lines.append(f"(diagnostics unavailable: {e})")
     return "\n".join(lines)
