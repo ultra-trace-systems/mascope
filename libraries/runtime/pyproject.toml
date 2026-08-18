@@ -25,7 +25,7 @@ logs = ["duckdb>=1.5.5,<2"]
 # Error reporting to a self-hosted GlitchTip/Sentry. Only needed when
 # MASCOPE_SENTRY_DSN is set; RuntimeLogging installs the sink lazily, so the
 # base install stays lean. See tooling/monitoring/ and docs/maintaining.md.
-sentry = ["sentry-sdk>=2,<3"]
+sentry = ["sentry-sdk>=2.68.0,<3"]
 
 [project.urls]
 homepage = "https://ultratrace.eu/"
