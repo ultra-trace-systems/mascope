@@ -106,7 +106,7 @@ If the total count of candidates exceeds $20$, the array is trimmed to keep only
 For each validated base peak with coordinates $(m/z_{\text{parent}}, I_{\text{parent}})$, a localized search range is established.
 A bounding mass tolerance $\Delta m/z_{\text{win}}$ is computed:
 
-  $$\Delta m/z_{\text{win}} = m/z_{\text{parent}} \cdot 100 \cdot 10^{-6}$$
+$$\Delta m/z_{\text{win}} = m/z_{\text{parent}} \cdot 100 \cdot 10^{-6}$$
 
 where $100\text{ ppm}$ is the experimentally obtained window size for satellite detection: measured side-lobe families extend to roughly $\pm 70\text{ ppm}$ around the parent, while a wider window mostly adds chance pairings in dense spectra.
 Candidates are restricted to the domain $m/z_{\text{parent}} \pm \Delta m/z_{\text{win}}$, excluding the parent itself.
@@ -115,7 +115,7 @@ Candidates must show a relative intensity ratio ($r = I_{\text{candidate}} / I_{
 To prevent the accidental removal of true chemical features, genuine isotopic peaks appearing on the positive mass side ($\Delta m/z > 0$) are shielded from satellite classification.
 Potential nominal mass shifts are calculated dynamically for charges $z$ of $+1$ and $+2$:
 
-  $$\Delta m/z_{\text{iso}} = \frac{m_{\text{neutron}}}{z}$$
+$$\Delta m/z_{\text{iso}} = \frac{m_{\text{neutron}}}{z}$$
 
 where $m_{\text{neutron}}$ is a mass of a neutron.
 A candidate is excluded from the satellite filtering pool if its distance to a predicted isotope line falls within a localized mass tolerance of $2.0\text{ ppm}$.
@@ -124,12 +124,12 @@ True instrument-induced side lobes emerge symmetrically on both sides of a major
 Remaining candidates are split into left-sided ($\Delta m/z < 0$) and right-sided ($\Delta m/z > 0$) sub-arrays.
 For every right-side mass shift, a binary search scans the left side to look for an equivalent negative offset:
 
-  $$\left| \Delta m/z_{\text{right}} - \left|\Delta m/z_{\text{left}}\right| \right| \le m/z_{\text{parent}} \cdot 1.5 \cdot 10^{-6}$$
+$$\left| \Delta m/z_{\text{right}} - \left|\Delta m/z_{\text{left}}\right| \right| \le m/z_{\text{parent}} \cdot 1.5 \cdot 10^{-6}$$
 
 where $1.5\text{ ppm}$ is the experimentally derived mass tolerance for symmetry matching.
 If a symmetric pair is paired successfully, their relative intensity ratios to the parent ($r_{\text{left}}$ and $r_{\text{right}}$) are checked for consistency:
 
-  $$\frac{\min(r_{\text{left}}, r_{\text{right}})}{\max(r_{\text{left}}, r_{\text{right}})} \ge 0.25$$
+$$\frac{\min(r_{\text{left}}, r_{\text{right}})}{\max(r_{\text{left}}, r_{\text{right}})} \ge 0.25$$
 
 The similarity threshold is deliberately loose: measured Fourier-transform side-lobe pairs mirror in position to well under a ppm while their intensities routinely differ severalfold, so a matching mirror offset is treated as the primary evidence.
 If the similarity threshold is achieved, both peaks are formally flagged as satellites.
