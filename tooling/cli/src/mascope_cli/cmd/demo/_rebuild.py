@@ -324,8 +324,16 @@ def upload_raw(
             time.sleep(retry_pause)
             # A file already queued in filestreams did arrive, whatever the
             # client saw; re-posting it would have the converter ingest it a
-            # second time and quarantine the duplicate.
+            # second time and quarantine the duplicate. It counts as uploaded,
+            # or the progress line ends below the total the summary reports.
             arrived = set(_list_files(_filestreams_dir()))
+            landed = [raw for raw in outstanding if raw.name in arrived]
+            if landed:
+                uploaded += len(landed)
+                runtime.logger.info(
+                    f"  {len(landed)} file(s) reached the server despite the "
+                    "error; not re-posting"
+                )
             outstanding = [raw for raw in outstanding if raw.name not in arrived]
 
         failed: list[Path] = []
