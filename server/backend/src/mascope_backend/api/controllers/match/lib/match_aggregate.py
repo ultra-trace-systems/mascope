@@ -36,7 +36,24 @@ MATCH_ISOTOPE_VALUE_COLUMNS = [
     "sample_peak_mz",
     "sample_peak_tof",
     "match_score",
+    "signal_to_noise",
 ]
+
+
+def snr_columns_json_safe(df: pd.DataFrame) -> pd.DataFrame:
+    """Turn NaN in the SNR carrier columns into None before serialization.
+
+    ``signal_to_noise`` rides along on computed and DB-read isotope frames for
+    the v2 score and is NaN whenever a row has no signal-to-noise data (files
+    without noise data, reconstructed unmatched rows, and rows stored before
+    the column existed). NaN is not JSON - starlette refuses to serialize it -
+    so it must leave the frame as None.
+    """
+    df = df.copy()
+    for column in ("signal_to_noise", "is_satellite"):
+        if column in df.columns and df[column].isna().any():
+            df[column] = df[column].astype(object).where(df[column].notna(), None)
+    return df
 
 
 def reconstruct_full_isotope_frame(

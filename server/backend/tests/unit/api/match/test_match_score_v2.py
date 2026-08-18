@@ -1,8 +1,11 @@
 """Unit tests for the v2 match-score backend adapter (mascope_tools).
 
-The DB-read aggregation paths carry no `signal_to_noise` (match_isotope does not persist
-it), so "no SNR column" is a first-class production case, not a degenerate one: it must
-score in `score_pattern_v2`'s no-SNR mode and never through an intensity-derived proxy.
+`match_isotope` persists `signal_to_noise`, but a row's value is None for files
+without noise data and for every row stored before the column existed (no
+backfill), so DB-read frames routinely MIX real values and nulls within one ion.
+The no-SNR fallback is therefore a first-class production case that must apply
+PER ROW - never drag the whole group into no-SNR mode - and must score in
+`score_pattern_v2`'s no-SNR mode, never through an intensity-derived proxy.
 Several tests below pin that the no-SNR answer equals the real-SNR answer.
 """
 
@@ -106,6 +109,31 @@ def test_absent_isotopologue_penalised_without_snr_column():
     assert no_column == pytest.approx(
         ion_score_v2(_ion(0.0, snr=[500, np.nan], **absent), sigma_ppm=0.5), abs=1e-3
     )
+
+
+def test_stored_base_snr_gates_sub_fallback_absent_sibling():
+    # The persisted-SNR payoff (issue #1724): M+1 predicted at 5.5% of base
+    # (~C5) sits below REL_DETECT_NO_SNR, so with no stored SNR its complete
+    # absence is uninformative and the ion scores a clean 1.0. A stored base
+    # SNR turns the real detectability gate on (0.055 * 500 >= k_detect) and
+    # the absence starts costing the candidate. None (not just NaN) is how the
+    # DB delivers a null column, so it must read as "no SNR" too.
+    absent = dict(rel=0.055, me=(0.0, 0.0))
+    without_snr = ion_score_v2(_ion(0.0, snr=[None, None], **absent), sigma_ppm=0.5)
+    assert without_snr == pytest.approx(1.0, abs=1e-6)
+    with_base_snr = ion_score_v2(_ion(0.0, snr=[500.0, None], **absent), sigma_ppm=0.5)
+    assert with_base_snr < without_snr
+
+
+def test_mixed_null_group_keeps_per_row_snr_concessions():
+    # Pre-existing rows have no stored SNR (no backfill), so DB-read frames mix
+    # real values and nulls within one ion. The fallback must be per row: a
+    # noisy M+1 (SNR 3) keeps the mass-width concession its OWN SNR grants even
+    # when the base row's stored SNR is null - the null rows must not drag the
+    # whole group into no-SNR mode.
+    noisy = _ion(110.0, snr=[None, 3.0], me=(0.0, 1.5))
+    all_null = _ion(110.0, snr=[None, None], me=(0.0, 1.5))
+    assert ion_score_v2(noisy, sigma_ppm=0.5) > ion_score_v2(all_null, sigma_ppm=0.5)
 
 
 def test_noise_argument_does_not_change_the_score():

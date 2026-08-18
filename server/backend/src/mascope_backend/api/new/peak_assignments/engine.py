@@ -159,8 +159,8 @@ def score_ions_by_fit(match_isotope_df: pd.DataFrame) -> pd.DataFrame:
     frame.
 
     Real per-peak ``signal_to_noise`` (carried from the filestore by
-    `compute_match_isotopes`) makes this the full v2 fit; without it `ion_score_v2`
-    falls back to its intensity-derived proxy SNR. No-op (returns the frame
+    `compute_match_isotopes`) makes this the full v2 fit; rows without it are
+    scored in `ion_score_v2`'s no-SNR mode. No-op (returns the frame
     unchanged) when empty or missing the required columns.
 
     NOTE: the confidence-tier bands sit on the fit scale --

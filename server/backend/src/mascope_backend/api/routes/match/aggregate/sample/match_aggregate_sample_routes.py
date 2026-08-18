@@ -11,6 +11,9 @@ from mascope_backend.api.controllers.match.aggregate.sample.match_aggregate_samp
     aggregate_sample_match_ion,
     get_sample_and_aggregated_matches,
 )
+from mascope_backend.api.controllers.match.lib.match_aggregate import (
+    snr_columns_json_safe,
+)
 from mascope_backend.api.controllers.sample.items.sample_items_controller import (
     get_sample_item,
 )
@@ -65,7 +68,8 @@ async def aggregate_sample_match_isotope_filtered_data_route(
         match_params=body.match_params,
     )
     if not data.empty:
-        data_dict = data.to_dict("records")
+        # NaN signal_to_noise ("no SNR for this row") must serialize as null.
+        data_dict = snr_columns_json_safe(data).to_dict("records")
         return {
             "results": len(data_dict),
             "message": (

@@ -1104,6 +1104,11 @@ class MatchIsotope(Base):
     match_abundance_error: Mapped[float] = mapped_column(Float)
     match_mz_error: Mapped[float] = mapped_column(Float)
     match_score: Mapped[float] = mapped_column(Float)
+    # Per-peak signal-to-noise of the matched sample peak, when the sample file
+    # carries noise data. NULL means "no SNR for this row" (files without noise
+    # data, sentinel rows, and every row stored before the column existed); the
+    # v2 fit score then falls back to its no-SNR mode for that row.
+    signal_to_noise: Mapped[Optional[float]] = mapped_column(Float)
     match_isotope_utc_created: Mapped[Optional[dt]] = mapped_column(
         TIMESTAMP(timezone=True)
     )

@@ -13,6 +13,7 @@ from mascope_backend.api.controllers.match.lib.match_aggregate import (
     aggregate_match_ions_light,
     compile_samples_df,
     set_ions_match_category,
+    snr_columns_json_safe,
 )
 from mascope_backend.api.controllers.match.lib.match_score_v2 import (
     fit_sample_mass_accuracy,
@@ -49,21 +50,6 @@ from mascope_backend.db.id import gen_id
 from mascope_file.string import norm
 from mascope_match import compute_match_isotopes
 from mascope_match.params import BaseMatchParams
-
-
-def _snr_columns_json_safe(df: pd.DataFrame) -> pd.DataFrame:
-    """Turn NaN in the SNR carrier columns into None before serialization.
-
-    ``signal_to_noise`` rides along on every computed isotope frame for the
-    v2 score and stays NaN whenever the sample file carries no
-    signal-to-noise data. NaN is not JSON - starlette refuses to serialize
-    it - so it must leave the frame as None.
-    """
-    df = df.copy()
-    for column in ("signal_to_noise", "is_satellite"):
-        if column in df.columns and df[column].isna().any():
-            df[column] = df[column].astype(object).where(df[column].notna(), None)
-    return df
 
 
 @api_controller()
@@ -368,7 +354,7 @@ async def aggregate_sample_match_compound(
             "data": {
                 "match_compounds": merged_match_compounds_df.to_dict("records"),
                 "match_ions": match_ions_df.to_dict("records"),
-                "match_isotopes": _snr_columns_json_safe(
+                "match_isotopes": snr_columns_json_safe(
                     filtered_match_isotope_df
                 ).to_dict("records"),
             },
@@ -568,7 +554,7 @@ async def aggregate_sample_match_compounds(
         )
         match_compounds = merged_match_compounds_df.to_dict("records")
         match_ions = match_ions_df.to_dict("records")
-        match_isotopes = _snr_columns_json_safe(filtered_match_isotope_df).to_dict(
+        match_isotopes = snr_columns_json_safe(filtered_match_isotope_df).to_dict(
             "records"
         )
 
