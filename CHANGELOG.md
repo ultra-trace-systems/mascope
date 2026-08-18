@@ -4,6 +4,23 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
 
 ## [Unreleased]
 
+### Changed
+
+- The demo dataset is now bundle **v1.2.1**
+  ([10.5281/zenodo.21994087](https://doi.org/10.5281/zenodo.21994087)),
+  regenerated so its manifest pins the `opentfraw` 1.4.0 raw reader this
+  release moves to. The reproducibility test asserts the running reader matches
+  the version that produced the goldens, so the bundle has to be recut whenever
+  the reader is bumped. Nothing about the measurement changed: the raw files are
+  byte-identical to v1.2.0 and so are the goldens, because 1.4.0's additions
+  (per-scan DIA/wideband flags, `sample_info` headings, an acquisition-end
+  timestamp) touch no decoded spectrum. Verified before the bump: reading all
+  161 raw files under 1.3.7 and 1.4.0 gives identical scans, centroid labels,
+  profiles and trailer parameters, and a full pipeline rebuild reproduces all
+  42,510 golden peaks with zero deviation in m/z, intensity and match score.
+  Pinned runs against older bundles keep working - v1.0.0 through v1.2.0 stay
+  registered.
+
 ### Fixed
 
 - The "Learn more" links in help-mode popovers are now reachable. Help cards
