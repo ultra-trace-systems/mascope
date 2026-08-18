@@ -33,16 +33,15 @@ authors:
 repository-code: "https://github.com/ultra-trace-systems/mascope"
 url: "https://github.com/ultra-trace-systems/mascope"
 license: Apache-2.0
-version: 1.0.0
-date-released: "2026-06-29"
-# Bumped per release: `version` + `doi` (the version DOI) identify this exact
-# release for reproducible citation; the concept DOI under `identifiers` always
-# resolves to the latest version (and is what the README badge links to).
-doi: "10.5281/zenodo.21037635"
-identifiers:
-  - type: doi
-    value: "10.5281/zenodo.21037634"
-    description: Concept DOI - always resolves to the latest Mascope release.
+version: 1.7.1
+date-released: "2026-08-18"
+# Bumped per release (in the same prep commit as the CHANGELOG): `version` +
+# `date-released` identify the release being cut. `doi` is the concept DOI -
+# it always resolves to the latest archived release and is what the README
+# badge links to. The per-version DOI exists only after Zenodo archives the
+# published release, so it is not tracked here; pick it off the Zenodo
+# record's version list when citing one exact release.
+doi: "10.5281/zenodo.21037634"
 # The paper to cite in preference to the software itself. GitHub's "Cite this
 # repository" widget surfaces this, and reference managers prefer it over the
 # top-level software metadata.
