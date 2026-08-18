@@ -11,6 +11,7 @@ import FloatLabel from 'primevue/floatlabel'
 import Message from 'primevue/message'
 import { useConfirm } from 'primevue/useconfirm'
 
+import { api } from '@/api'
 import { useApp } from '@/stores'
 import { BaseCopyableField } from '@/lib/base'
 import { roles, prettyRoleName } from '@/lib/roles'
@@ -31,6 +32,24 @@ const password = ref(null)
 // the administrator has copied it. Shown once and unrecoverable afterwards -
 // same contract as a password reset.
 const createdPassword = ref(null)
+
+// The deployment's two-factor policy, read from the caller's own status route -
+// it reports the policy alongside the account state. Shown so an owner can see
+// what is in force without reading the server's config file; changing it is an
+// operator action on the host, deliberately not a control here.
+const mfaPolicy = ref(null)
+const loadMfaPolicy = async () => {
+  try {
+    mfaPolicy.value = await api.http.get('/auth/mfa/status', {
+      use: 'read',
+      type: 'read_mfa_status'
+    })
+  } catch {
+    // A policy we cannot read is not worth interrupting user management for;
+    // the line simply does not render.
+    mfaPolicy.value = null
+  }
+}
 
 const reset = () => {
   edited.value = null
@@ -167,7 +186,10 @@ const invalidCreated = computed(() => {
   }
 })
 
-watch(visible, reset)
+watch(visible, (open) => {
+  reset()
+  if (open) loadMfaPolicy()
+})
 </script>
 
 <template>
@@ -387,6 +409,25 @@ watch(visible, reset)
         </div>
       </template>
     </section>
+    <Message
+      v-if="mfaPolicy"
+      :icon="mfaPolicy.policy_min_role ? 'pi pi-shield' : 'pi pi-info-circle'"
+      severity="secondary"
+      style="margin-top: 1.5rem"
+    >
+      <template v-if="mfaPolicy.policy_min_role">
+        Two-factor authentication is required for
+        <strong>{{ mfaPolicy.policy_min_role }}</strong> accounts and above. Those accounts are held
+        at a setup screen until they enable it.
+      </template>
+      <template v-else-if="mfaPolicy.available">
+        Two-factor authentication is optional - anyone can enable it for their own account. To
+        require it, set <code>mfa_required_min_role</code> in the server configuration.
+      </template>
+      <template v-else>
+        Two-factor authentication is not configured on this server, so no account can enable it.
+      </template>
+    </Message>
     <menu style="justify-content: space-between; margin-top: 3rem">
       <Button icon="pi pi-user-plus" label="Add user" @click="user.create" :disabled="created" />
       <!-- Fully labelled and kept away from the per-row icon buttons: it acts

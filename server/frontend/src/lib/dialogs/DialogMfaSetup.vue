@@ -34,6 +34,10 @@ const error = ref(null)
 
 const enabled = computed(() => !!status.value?.enabled)
 const available = computed(() => !!status.value?.available)
+// The deployment requires a factor at this account's role. The server
+// refuses to turn one off in that case, so the button is not offered.
+const required = computed(() => !!status.value?.required)
+const policyRole = computed(() => status.value?.policy_min_role ?? null)
 
 const reset = () => {
   step.value = STEPS.scan
@@ -176,18 +180,25 @@ const close = () => {
       <p v-if="status?.unused_recovery_codes != null" style="opacity: 0.7">
         {{ status.unused_recovery_codes }} recovery code(s) remaining.
       </p>
-      <p style="margin-top: 1rem">Enter a current code to turn it off.</p>
-      <FloatLabel style="margin-top: 1.5rem">
-        <InputText
-          id="mfa-disable-code"
-          v-model="code"
-          inputmode="numeric"
-          autocomplete="one-time-code"
-          fluid
-          @keyup.enter="disable"
-        />
-        <label for="mfa-disable-code">Verification or recovery code</label>
-      </FloatLabel>
+      <Message v-if="required" severity="secondary" icon="pi pi-lock" style="margin-top: 1rem">
+        This server requires two-factor authentication for
+        {{ policyRole ? `${policyRole} accounts and above` : 'this account' }}, so it cannot be
+        turned off here. An administrator can reset it if you lose your authenticator.
+      </Message>
+      <template v-else>
+        <p style="margin-top: 1rem">Enter a current code to turn it off.</p>
+        <FloatLabel style="margin-top: 1.5rem">
+          <InputText
+            id="mfa-disable-code"
+            v-model="code"
+            inputmode="numeric"
+            autocomplete="one-time-code"
+            fluid
+            @keyup.enter="disable"
+          />
+          <label for="mfa-disable-code">Verification or recovery code</label>
+        </FloatLabel>
+      </template>
     </template>
 
     <!-- Step 1: hand over the seed. -->
@@ -196,6 +207,11 @@ const close = () => {
         Two-factor authentication asks for a code from your phone in addition to your password, so a
         stolen password is not enough to sign in.
       </p>
+      <Message v-if="required" severity="warn" icon="pi pi-exclamation-triangle">
+        This server requires it for
+        {{ policyRole ? `${policyRole} accounts and above` : 'this account' }}. You will be asked to
+        set it up at your next sign-in.
+      </Message>
     </template>
 
     <!-- Step 2: scan and confirm. -->
@@ -255,6 +271,7 @@ const close = () => {
       <template v-else-if="enabled && step === STEPS.scan">
         <Button label="Close" severity="secondary" text @click="close" />
         <Button
+          v-if="!required"
           label="Turn off"
           severity="danger"
           :disabled="!code.trim() || busy"
