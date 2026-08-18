@@ -73,6 +73,25 @@ def policy_active() -> bool:
     return REQUIRED_LEVEL is not None
 
 
+def required_min_role_name() -> Optional[str]:
+    """
+    The configured threshold as a role name, for showing the policy to a user.
+
+    Read back from the resolved level rather than from the config string, so
+    what is displayed is what is being enforced - a display that re-read the
+    setting could disagree with the running policy after an edit that has not
+    been restarted into.
+
+    :return: The role name, or ``None`` when the requirement is off.
+    """
+    if REQUIRED_LEVEL is None:
+        return None
+    return next(
+        (name for name, level in ROLE_ACCESS_LEVELS.items() if level == REQUIRED_LEVEL),
+        None,
+    )
+
+
 def required_for_role(role_id: Optional[int]) -> bool:
     """
     Whether an account at this role must hold a second factor.

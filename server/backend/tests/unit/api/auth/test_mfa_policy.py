@@ -145,3 +145,37 @@ def test_no_enrolment_is_owed_while_the_policy_is_off(with_policy):
     with_policy(None)
     for role in (GUEST, EDITOR, ADMIN, OWNER):
         assert not policy.enrollment_required(role, mfa_enabled=False)
+
+
+# --- What the status route shows a user ---
+
+
+def test_the_threshold_is_named_for_display(with_policy):
+    # The profile and admin screens explain the requirement in words, so the
+    # level has to map back to the name an operator configured.
+    with_policy(ADMIN)
+    assert policy.required_min_role_name() == "admin"
+    with_policy(GUEST)
+    assert policy.required_min_role_name() == "guest"
+
+
+def test_no_threshold_is_named_while_the_policy_is_off(with_policy):
+    with_policy(None)
+    assert policy.required_min_role_name() is None
+
+
+def test_the_displayed_name_comes_from_the_enforced_level(with_policy):
+    # Read back from REQUIRED_LEVEL, not from the config string: a display that
+    # re-read the setting would show an edit that the running process has not
+    # restarted into, and claim a policy that is not being enforced.
+    with_policy(ADMIN)
+    assert policy.required_min_role_name() == "admin"
+    assert policy.required_for_role(ADMIN)
+    assert not policy.required_for_role(EDITOR)
+
+
+def test_an_unmappable_level_names_nothing_rather_than_guessing(with_policy):
+    # Defensive: a level with no matching role would otherwise render as a
+    # confident but wrong role name.
+    with_policy(999)
+    assert policy.required_min_role_name() is None

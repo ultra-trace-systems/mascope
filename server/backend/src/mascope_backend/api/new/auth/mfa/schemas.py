@@ -25,9 +25,16 @@ class MfaConfirmResponse(BaseModel):
 
 
 class MfaStatusResponse(BaseModel):
-    """The account's second-factor state, for the profile screen."""
+    """The account's second-factor state and the deployment's policy."""
 
     enabled: bool
     available: bool
     confirmed_at: str | None = None
     unused_recovery_codes: int = 0
+    # Whether this account must hold a factor. Drives the profile screen, which
+    # otherwise offers a "turn off" the server would refuse.
+    required: bool = False
+    # The deployment's threshold, by role name, or null when nothing is
+    # required. Not sensitive: it says only that this server asks some of its
+    # own signed-in users for a second factor.
+    policy_min_role: str | None = None

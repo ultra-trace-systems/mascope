@@ -126,12 +126,15 @@ async def status_route(user: User = Depends(mfa_gate_exempt_guest_user)):
     change is shown the password screen and nothing else.
 
     :param user: The current authenticated user.
-    :return: Enrollment state and remaining recovery codes.
+    :return: Enrollment state, remaining recovery codes, and the deployment
+        policy the screen explains itself with.
     """
     return {
         "data": MfaStatusResponse(
             enabled=user.mfa_enabled,
             available=service.mfa_available(),
+            required=policy.required_for_role(user.role_id),
+            policy_min_role=policy.required_min_role_name(),
             confirmed_at=(
                 user.mfa_confirmed_at.isoformat() if user.mfa_confirmed_at else None
             ),
