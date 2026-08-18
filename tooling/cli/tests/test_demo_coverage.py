@@ -36,16 +36,35 @@ def test_acquisition_key_survives_the_rename():
     assert _acquisition_key(_db_name(published)) == "20250811142350"
 
 
-def test_acquisition_key_ignores_the_readable_timestamp():
-    """The reconstructed `2025.08.11-14h23m50s` segment is not a 14-digit run."""
-    assert _acquisition_key("Orbion_2025.08.11-14h23m50s_pos_Ur_NoRI") == (
-        "orbion_2025.08.11-14h23m50s_pos_ur_nori"
-    )
-
-
 def test_acquisition_key_falls_back_to_the_stem():
     """A name with no acquisition stamp still keys on something unique."""
     assert _acquisition_key("Something_Else.raw") == "something_else"
+
+
+def test_unstamped_names_survive_the_rename_too():
+    """
+    The fallback has to key both flavours alike, not just deterministically.
+
+    A bundle whose published names never matched the de-identification pattern
+    has no compact stamp to compare on, but the database flavour still carries
+    the timestamp the converter re-inserts - so the fallback has to drop it, or
+    every file looks both missing and foreign at once.
+    """
+    published = "Orbion_pos_Ur_NoRI.raw"
+    in_db = "Orbion_2025.08.11-14h23m50s_pos_Ur_NoRI"
+
+    assert _acquisition_key(published) == _acquisition_key(in_db)
+
+
+def test_unstamped_full_coverage_is_accepted():
+    """The same asymmetry, at the level the guard actually reports on."""
+    raw = _entries("Orbion_pos_Ur_NoRI.raw", "Orbion_neg_Br_NoRI.raw")
+    ingested = [
+        "Orbion_2025.08.11-14h23m50s_pos_Ur_NoRI",
+        "Orbion_2025.08.11-14h24m10s_neg_Br_NoRI",
+    ]
+
+    assert check_raw_coverage(raw, ingested, set(ingested)) == []
 
 
 def test_acquisition_key_rejects_a_longer_digit_run():
@@ -120,6 +139,34 @@ def test_shared_stamp_is_compared_by_count():
 
     assert len(problems) == 1
     assert "1 of 2 raw file(s) were never ingested" in problems[0]
+
+
+def test_no_goldens_still_checks_the_ingestion_side():
+    """
+    ``None`` goldens = this run matched nothing, but the snapshot is still taken.
+
+    The caller records the snapshot whether or not goldens were captured, so a
+    database missing the bundle's files has to be refused on that path too -
+    only the "ingested but matched nothing" half is meaningless without goldens.
+    """
+    raw = _entries(
+        "Orbion_neg_Br_NoRI_20250811142350.raw",
+        "Orbion_pos_Ur_NoRI_20250811142302.raw",
+    )
+    ingested = [_db_name("Orbion_pos_Ur_NoRI_20250811142302.raw")]
+
+    problems = check_raw_coverage(raw, ingested, None)
+
+    assert len(problems) == 1
+    assert "1 of 2 raw file(s) were never ingested" in problems[0]
+
+
+def test_no_goldens_does_not_fault_a_complete_ingestion():
+    """Nothing matched is not, by itself, a coverage problem."""
+    raw = _entries("Orbion_neg_Br_NoRI_20250811142350.raw")
+    ingested = [_db_name(e["name"]) for e in raw]
+
+    assert check_raw_coverage(raw, ingested, None) == []
 
 
 def test_long_lists_are_truncated():
