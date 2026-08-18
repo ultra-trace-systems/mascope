@@ -59,9 +59,7 @@ def upgrade() -> None:
         ),
         sa.Column("alternatives", sa.JSON(), nullable=True),
         sa.Column("provenance", sa.JSON(), nullable=True),
-        sa.Column(
-            "batch_peak_utc_created", sa.TIMESTAMP(timezone=True), nullable=True
-        ),
+        sa.Column("batch_peak_utc_created", sa.TIMESTAMP(timezone=True), nullable=True),
         sa.Column(
             "batch_peak_utc_modified", sa.TIMESTAMP(timezone=True), nullable=True
         ),
@@ -134,9 +132,7 @@ def upgrade() -> None:
         sa.ForeignKeyConstraint(
             ["peak_assignment_id"],
             ["peak_assignment.peak_assignment_id"],
-            name=op.f(
-                "fk_batch_peak_occurrence_peak_assignment_id_peak_assignment"
-            ),
+            name=op.f("fk_batch_peak_occurrence_peak_assignment_id_peak_assignment"),
             ondelete="SET NULL",
         ),
         sa.ForeignKeyConstraint(
@@ -188,9 +184,7 @@ def downgrade() -> None:
         table_name="batch_peak_occurrence",
     )
     op.drop_table("batch_peak_occurrence")
-    op.drop_index(
-        op.f("ix_batch_peak_sample_batch_id_mz"), table_name="batch_peak"
-    )
+    op.drop_index(op.f("ix_batch_peak_sample_batch_id_mz"), table_name="batch_peak")
     op.drop_index(op.f("ix_batch_peak_sample_batch_id"), table_name="batch_peak")
     op.drop_index(op.f("ix_batch_peak_ionization_mode_id"), table_name="batch_peak")
     op.drop_index(

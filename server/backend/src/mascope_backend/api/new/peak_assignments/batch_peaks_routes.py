@@ -16,6 +16,9 @@ from mascope_backend.api.new.peak_assignments.batch_peaks_records import (
     get_batch_peak_ledger,
     get_batch_peak_series,
 )
+from mascope_backend.api.new.peak_assignments.routes import (
+    require_peak_assignment_enabled,
+)
 from mascope_backend.api.new.workspaces.dependencies import (
     check_batch_access,
     check_sample_access_bulk,
@@ -128,7 +131,14 @@ async def get_batch_peak_ledger_route(
     return BatchPeakRecordsResponse.model_validate(result)
 
 
-@batch_peaks_router.post("/batch/{sample_batch_id}/backfill")
+@batch_peaks_router.post(
+    "/batch/{sample_batch_id}/backfill",
+    # A write: computes and persists batch peaks, so it is gated on the
+    # peak_assignment flag exactly like the assign/verify writes. The read
+    # routes above stay open so ledgers built while the feature was on remain
+    # inspectable after opting out.
+    dependencies=[Depends(require_peak_assignment_enabled)],
+)
 @api_route(status_code=202, token_access=True)
 async def backfill_batch_peaks_route(
     sample_batch_id: str,
