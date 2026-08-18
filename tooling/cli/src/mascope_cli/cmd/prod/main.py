@@ -446,6 +446,30 @@ def _warn_if_cli_stale(*, auto: bool) -> None:
         )
 
 
+def _ensure_secrets() -> None:
+    """
+    Create any secret files the compose file expects but the home does not have.
+
+    Compose refuses to start when a declared secret's source file is missing, so
+    a deployment that predates a newly added secret would fail on an ordinary
+    update. Generating the missing ones here keeps `mascope prod up` working
+    across such an update; existing files are never touched, so this can never
+    rotate a key out from under a running deployment.
+    """
+    import secrets as _secrets
+
+    from mascope_cli.cmd.init import GENERATED_SECRETS
+
+    secrets_dir = Path(runtime.path(".runtime", "secrets"))
+    secrets_dir.mkdir(parents=True, exist_ok=True)
+    for name in GENERATED_SECRETS:
+        target = secrets_dir / name
+        if target.exists():
+            continue
+        target.write_text(_secrets.token_urlsafe(48) + "\n", encoding="utf-8")
+        runtime.logger.warning(f"Created missing secret: {target}")
+
+
 # --- Commands ---
 
 
@@ -475,6 +499,7 @@ def up(
     """
     # Check database bind-mount dirs before starting containers
     check_data_dirs(_MODE)
+    _ensure_secrets()
     args = ["up"]
     if rebuild:
         args.append("--build")

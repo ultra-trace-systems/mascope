@@ -7,10 +7,16 @@ import Select from 'primevue/select'
 import Button from 'primevue/button'
 
 import { api } from '@/api'
-import { getApiErrorMessage } from '@/api/utils'
+import { getApiErrorMessage, needsMfaReauth } from '@/api/utils'
 import { useApp } from '@/stores'
 import { BaseCopyableField, BaseEditableField } from '@/lib/base'
-import { DialogUserManagement, DialogPasswordChange, DialogAgentPairing } from '@/lib/dialogs'
+import {
+  DialogUserManagement,
+  DialogPasswordChange,
+  DialogAgentPairing,
+  DialogMfaSetup,
+  DialogMfaReauth
+} from '@/lib/dialogs'
 import { prettyRoleName, ROLES } from '@/lib/roles'
 
 import { useSidebarMenu } from './state.js'
@@ -23,8 +29,47 @@ const open = computed(() => sidebarMenu.open && sidebarMenu.tab === 'settings')
 const dialog = reactive({
   users: false,
   password: false,
-  pairing: false
+  pairing: false,
+  mfa: false,
+  reauth: false
 })
+
+// The action a step-up prompt is standing in front of, replayed once a code
+// is accepted. Held here rather than passed through the dialog so the dialog
+// stays a prompt and knows nothing about its callers.
+const pendingReauthAction = ref(null)
+
+/**
+ * Run an action, prompting for a second-factor code if the server asks.
+ *
+ * @param {Function} action the call to run, and to retry after verification
+ */
+const withReauth = async (action) => {
+  try {
+    await action()
+  } catch (e) {
+    if (!needsMfaReauth(e)) throw e
+    pendingReauthAction.value = action
+    dialog.reauth = true
+  }
+}
+
+const onReauthVerified = async () => {
+  const action = pendingReauthAction.value
+  pendingReauthAction.value = null
+  if (!action) return
+  try {
+    await action()
+  } catch (e) {
+    // Reported, not re-prompted. The code was just accepted, so a refusal here
+    // is a real failure, and prompting again would loop on it.
+    app.ui.notification.push({
+      type: 'mfa_reauth',
+      status: 'error',
+      message: getApiErrorMessage(e, 'Could not complete the action.')
+    })
+  }
+}
 
 // TODO_config API Token Management
 const SERVICE_CONFIGS = [
@@ -74,7 +119,9 @@ const tokenItems = computed(() =>
   }))
 )
 
-const regenerateToken = async () => {
+const regenerateToken = () => withReauth(_regenerateToken)
+
+const _regenerateToken = async () => {
   const config = currentServiceConfig.value
   if (!config) return
   try {
@@ -84,6 +131,7 @@ const regenerateToken = async () => {
       })
     )?.data?.access_token
   } catch (e) {
+    if (needsMfaReauth(e)) throw e
     app.ui.notification.push({
       type: `${config.id}_token_refresh`,
       status: 'error',
@@ -148,6 +196,13 @@ const vHelpLayer = app.ui.help.directive(layer)
       severity="secondary"
       text
       icon="pi ph ph-lock-key"
+    />
+    <Button
+      label="Two-factor authentication"
+      @click="() => (dialog.mfa = true)"
+      severity="secondary"
+      text
+      icon="pi pi-shield"
     />
   </section>
   <section
@@ -249,6 +304,8 @@ const vHelpLayer = app.ui.help.directive(layer)
   <DialogUserManagement v-model:visible="dialog.users" />
   <DialogPasswordChange v-model:visible="dialog.password" />
   <DialogAgentPairing v-model:visible="dialog.pairing" />
+  <DialogMfaSetup v-model:visible="dialog.mfa" />
+  <DialogMfaReauth v-model:visible="dialog.reauth" @verified="onReauthVerified" />
 </template>
 
 <style scoped>

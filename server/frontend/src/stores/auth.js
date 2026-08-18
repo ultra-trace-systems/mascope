@@ -68,18 +68,60 @@ export const useAuth = defineStore('app.auth', () => {
     return first
   }
 
+  // A sign-in that passed the password step and owes a verification code. The
+  // server holds the half-finished attempt in its own short-lived cookie, so
+  // nothing about it is tracked here beyond which screen to show.
+  const mfaPending = ref(false)
+
   const login = async ({ email, password }) => {
     const params = new URLSearchParams()
     params.append('grant_type', 'password')
     params.append('username', email)
     params.append('password', password)
 
-    await api.http.post('/auth/login', params, {
+    const result = await api.http.post('/auth/login', params, {
       headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
       type: 'user_sign_in',
       use: 'auth'
     })
+    if (result?.mfaRequired) {
+      mfaPending.value = true
+      return
+    }
+    mfaPending.value = false
     await identify()
+  }
+
+  /**
+   * Complete a sign-in by submitting a verification or recovery code.
+   *
+   * Errors are rendered by the caller, so they are re-thrown rather than
+   * notified. A 401 means the half-finished attempt is gone (expired, or spent
+   * by too many wrong codes), which is the one case that returns to the
+   * credentials step - a wrong code is a 400 and leaves the user where they are.
+   *
+   * @param {string} code Verification code or recovery code.
+   */
+  const verifyMfa = async (code) => {
+    try {
+      await api.http.post(
+        '/auth/mfa/verify',
+        { code },
+        { type: 'user_sign_in', use: 'auth', errors: 'inline' }
+      )
+    } catch (error) {
+      if (error?.response?.status === 401) {
+        mfaPending.value = false
+      }
+      throw error
+    }
+    mfaPending.value = false
+    await identify()
+  }
+
+  /** Abandon a half-finished sign-in and return to the credentials step. */
+  const cancelMfa = () => {
+    mfaPending.value = false
   }
 
   const logout = async () => {
@@ -175,6 +217,9 @@ export const useAuth = defineStore('app.auth', () => {
     identify,
     requirePasswordChange,
     login,
+    mfaPending,
+    verifyMfa,
+    cancelMfa,
     logout,
     checkFirstOwner,
     signupFirstOwner,

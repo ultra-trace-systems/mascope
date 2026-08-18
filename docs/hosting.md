@@ -56,12 +56,22 @@ and the checkout.
    head -c 32 /dev/urandom | xxd -p -c 32 > .runtime/secrets/postgres_password.txt
    head -c 32 /dev/urandom | xxd -p -c 32 > .runtime/secrets/jwt_secret_key.txt
    head -c 32 /dev/urandom | xxd -p -c 32 > .runtime/secrets/server_owner_secret_key.txt
+   head -c 32 /dev/urandom | xxd -p -c 32 > .runtime/secrets/mfa_encryption_key.txt
    ```
+
+   `mascope prod up` generates any of these that are missing, so an existing
+   deployment picks up a newly added one on its next start.
 
    `jwt_secret_key` is shared by the backend and the file-converter service (the
    converter derives its service-authentication token from it), so if you ever
    rotate it, restart both containers - a converter running with the old secret
    is refused until restarted.
+
+   `mfa_encryption_key.txt` encrypts stored two-factor seeds. Back it up with
+   the others and **do not rotate it casually**: replacing it makes every
+   enrolled account's seed undecryptable, and each of those users has to sign in
+   with a recovery code and enroll again. Unlike `jwt_secret_key.txt`, which can
+   be rotated freely at the cost of ending open sessions.
 
 4. **Set up TLS** - pick the option that fits your audience:
    - **Self-signed** (`mascope cert gen` writes `mascope.app.pem`/`.key` into

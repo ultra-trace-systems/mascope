@@ -7,6 +7,7 @@ import os
 from pydantic import BaseModel
 
 from mascope_backend.api.new.auth.access_token.config import AccessTokenConfig
+from mascope_backend.api.new.auth.mfa.config import MfaConfig
 from mascope_backend.api.new.auth.secrets import jwt_secret_key
 from mascope_backend.roles import ROLE_ACCESS_LEVELS as _ROLE_ACCESS_LEVELS
 from mascope_backend.runtime import runtime
@@ -103,12 +104,26 @@ class AuthConfig(BaseModel):
         "mascope-users:verify"  # Audience for email verification tokens
     )
 
+    # Signing secret for the token that carries a half-finished login between
+    # the password step and the code step. Derived per-deployment (see above).
+    # Safe to derive from the JWT secret, unlike the seed encryption key in
+    # mfa/secrets.py: these tokens live five minutes, so rotating the JWT secret
+    # costs at most an interrupted sign-in.
+    MFA_PENDING_TOKEN_SECRET: str = _derive_token_secret("mfa-pending")
+    # Cookie carrying that token. Separate name from COOKIE_NAME so
+    # get_enabled_backends, which selects the session backend on the presence of
+    # the auth cookie, can never mistake one for the other.
+    MFA_PENDING_COOKIE_NAME: str = "mascope_mfa_pending"
+
     # Role access levels for RBAC
     # Role names correspond to the role_id values in the database (access_level)
     ROLE_ACCESS_LEVELS: dict = _ROLE_ACCESS_LEVELS  # see mascope_backend.roles
 
     # Access token settings
     access_token: AccessTokenConfig = AccessTokenConfig()
+
+    # Second-factor settings
+    mfa: MfaConfig = MfaConfig()
 
 
 auth_settings = AuthConfig()

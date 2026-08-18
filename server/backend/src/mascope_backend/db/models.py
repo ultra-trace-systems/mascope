@@ -18,6 +18,7 @@ from fastapi_users_db_sqlalchemy.access_token import (
 from sqlalchemy import (
     JSON,
     TIMESTAMP,
+    BigInteger,
     Boolean,
     Float,
     ForeignKey,
@@ -230,10 +231,31 @@ class User(SQLAlchemyBaseUserTable[int], Base):
         TIMESTAMP(timezone=True), nullable=True
     )
 
+    # TOTP seed, encrypted at rest with the deployment's MFA key (see
+    # api/new/auth/mfa/secrets.py). NULL when the account has never begun
+    # enrollment. Present but with mfa_enabled False means enrollment was
+    # started and never confirmed, which must not gate a login.
+    mfa_secret: Mapped[Optional[str]] = mapped_column(String(length=512), nullable=True)
+    # Whether a confirmed second factor gates this account's interactive logins.
+    mfa_enabled: Mapped[bool] = mapped_column(
+        Boolean, default=False, server_default=text("false"), nullable=False
+    )
+    mfa_confirmed_at: Mapped[Optional[dt]] = mapped_column(
+        TIMESTAMP(timezone=True), nullable=True
+    )
+    # Counter of the last accepted TOTP code. Verification tolerates clock drift
+    # by accepting a window of counters, which leaves a code usable for about 90
+    # seconds - long enough to replay if it is observed. Accepting only counters
+    # strictly greater than this one closes that window at first use.
+    mfa_last_timestep: Mapped[Optional[int]] = mapped_column(BigInteger, nullable=True)
+
     # Relationships
     role = relationship("Role", back_populates="user")
     access_token = relationship(
         "AccessToken", back_populates="user", cascade="all, delete, delete-orphan"
+    )
+    recovery_code = relationship(
+        "UserRecoveryCode", back_populates="user", cascade="all, delete, delete-orphan"
     )
     workspace_memberships = relationship(
         "WorkspaceMember",
@@ -333,6 +355,45 @@ class AccessToken(SQLAlchemyBaseAccessTokenTable[int], Base):
 
         # Return number of deleted tokens
         return len(invalid_tokens)
+
+
+class UserRecoveryCode(Base):
+    """
+    Single-use codes that stand in for a TOTP code when the authenticator is
+    lost.
+
+    Stored as a plain SHA-256 digest rather than a password hash: these are
+    high-entropy values the server generates, so there is no brute-force margin
+    a slow KDF would buy, and a digest makes redemption an indexed lookup
+    instead of a hash comparison against every unused row.
+
+    Rows are kept after redemption (``used_at`` set) so a code cannot be
+    re-issued into the same slot, and so an operator can see that recovery
+    happened.
+    """
+
+    __tablename__ = "user_recovery_code"
+    __table_args__ = (
+        UniqueConstraint("user_id", "code_hash", name="uq_recovery_code_user_hash"),
+        Index("ix_user_recovery_code_user_id", "user_id"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    user_id: Mapped[int] = mapped_column(
+        ForeignKey("user.id", ondelete="CASCADE"), nullable=False
+    )
+    code_hash: Mapped[str] = mapped_column(String(length=64), nullable=False)
+    created_at: Mapped[dt] = mapped_column(
+        TIMESTAMP(timezone=True),
+        nullable=False,
+        default=lambda: dt.now(timezone.utc),
+    )
+    used_at: Mapped[Optional[dt]] = mapped_column(
+        TIMESTAMP(timezone=True), nullable=True
+    )
+
+    # Relationships
+    user = relationship("User", back_populates="recovery_code")
 
 
 class Dataset(Base):
@@ -1670,6 +1731,7 @@ __all__ = [
     "User",
     "Role",
     "AccessToken",
+    "UserRecoveryCode",
     "Dataset",
     "SampleBatch",
     "SampleFile",

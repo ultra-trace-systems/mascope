@@ -138,6 +138,13 @@ function handleServerError(error) {
     return Promise.reject(error)
   }
 
+  // The action needs a freshly presented second-factor code. The caller prompts
+  // for one and retries, so the generic toast below would announce a failure
+  // the user is already being asked to resolve.
+  if (error?.response?.data?.detail?.code === 'mfa_reauth_required') {
+    return Promise.reject(error)
+  }
+
   // Any unhandled 401 triggers auth check
   if (error?.response?.status === 401) {
     return handleUnauthorizedError(error)

@@ -8,6 +8,9 @@ import Button from 'primevue/button'
 import Message from 'primevue/message'
 
 import { api } from '@/api'
+import { needsMfaReauth } from '@/api/utils'
+
+import DialogMfaReauth from './DialogMfaReauth.vue'
 
 const SERVICE_LABELS = {
   'tof-agent': 'TOF Agent',
@@ -21,18 +24,25 @@ const code = ref(null)
 const busy = ref(false)
 const error = ref(null)
 const approved = ref(null)
+// Approving mints a year-long agent credential, so the server may ask for a
+// current code first. The prompt sits inside this dialog rather than around
+// it: approving is the only call here that can be refused that way.
+const reauthVisible = ref(false)
 
 watch(visible, () => {
   code.value = null
   busy.value = false
   error.value = null
   approved.value = null
+  reauthVisible.value = false
 })
 
 // Codes look like ABC-123; accept letters/digits with optional dash
-const invalidCode = computed(() => !code.value || code.value.replace(/[^a-zA-Z0-9]/g, '').length < 6)
+const invalidCode = computed(
+  () => !code.value || code.value.replace(/[^a-zA-Z0-9]/g, '').length < 6
+)
 
-const approve = async () => {
+const approve = async (mayPrompt = true) => {
   busy.value = true
   error.value = null
   try {
@@ -41,12 +51,23 @@ const approve = async () => {
     })
     approved.value = response?.data
   } catch (e) {
+    if (needsMfaReauth(e) && mayPrompt) {
+      // Not a failure: the pairing code is still good, the user just has to
+      // confirm they hold the factor. Approval retries once they have.
+      reauthVisible.value = true
+      busy.value = false
+      return
+    }
     error.value =
       e?.response?.data?.detail || e?.response?.data?.error || e?.message || 'Approval failed.'
   } finally {
     busy.value = false
   }
 }
+
+// The retry may not prompt again: the code was just accepted, so a refusal
+// here is a real failure and belongs in `error` rather than in another prompt.
+const onReauthVerified = () => approve(false)
 </script>
 
 <template>
@@ -70,8 +91,8 @@ const approve = async () => {
     <section v-else>
       <Message icon="pi pi-check-circle" severity="success">
         Paired {{ SERVICE_LABELS[approved.service_name] || approved.service_name
-        }}<template v-if="approved.machine_name"> on {{ approved.machine_name }}</template>. The
-        agent will receive its token within a few seconds.
+        }}<template v-if="approved.machine_name"> on {{ approved.machine_name }}</template
+        >. The agent will receive its token within a few seconds.
       </Message>
     </section>
     <menu style="margin-top: 2rem">
@@ -80,9 +101,12 @@ const approve = async () => {
       </Message>
       <template v-if="!approved">
         <Button label="Cancel" @click="visible = false" severity="secondary" />
-        <Button label="Approve" @click="approve" :disabled="invalidCode" :loading="busy" />
+        <!-- Called through a wrapper so the click event is not passed as the
+             may-prompt argument. -->
+        <Button label="Approve" @click="() => approve()" :disabled="invalidCode" :loading="busy" />
       </template>
       <Button v-else label="Done" @click="visible = false" />
     </menu>
   </Dialog>
+  <DialogMfaReauth v-model:visible="reauthVisible" @verified="onReauthVerified" />
 </template>
