@@ -6,11 +6,12 @@ hostile page can open a *credentialed* WebSocket to this deployment and the
 browser's default is all that stops it.
 
 These drive real handshakes through a server built with the production policy
-(:func:`_allowed_origins`), because the risk is not in our predicate - which
-:mod:`tests.unit.test_origins` covers - but in Engine.IO's semantics around it:
-``None`` means "same origin only", the same-origin value is reconstructed per
-request from the proxy headers, and an empty list would silently mean "do not
-check at all".
+(:func:`_allowed_origins`), because the risk is not in our predicates - which
+:mod:`tests.unit.test_origins` covers - but in Engine.IO's semantics around
+them: it consults the predicate only when an ``Origin`` is present (which is
+what keeps originless service clients connecting), it hands over the environ
+the predicate rebuilds the own origin from, and an empty list would silently
+mean "do not check at all".
 """
 
 from types import SimpleNamespace
@@ -18,25 +19,13 @@ from types import SimpleNamespace
 import pytest
 import socketio
 from httpx import ASGITransport, AsyncClient
+from proxy_contract import PROD_HOST, PROXY_HEADERS, UPSTREAM_URL
 
 from mascope_backend.socket.server import _allowed_origins
 
 
-PROD_HOST = "mascope.example.com"
 HANDSHAKE = "/socket.io/?EIO=4&transport=polling"
-
-#: What proxy_pass leaves as the Host: the upstream block's name, not the
-#: browser's. Driving the production cases through this is what makes them
-#: depend on X-Forwarded-Host rather than passing by accident.
-UPSTREAM_URL = "http://backend"
 DEV_API_URL = "http://localhost:8090"
-
-#: Headers nginx attaches, from which Engine.IO rebuilds the browser-visible
-#: origin. Without X-Forwarded-Host it would compare against the upstream name.
-PROXY_HEADERS = {
-    "X-Forwarded-Proto": "https",
-    "X-Forwarded-Host": PROD_HOST,
-}
 
 
 def _server(mode: str, monkeypatch) -> socketio.AsyncServer:
@@ -97,6 +86,26 @@ async def test_production_accepts_its_own_origin(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_production_refuses_the_upstream_name_behind_the_proxy(monkeypatch):
+    """Behind nginx only the browser-visible origin is "us".
+
+    An Origin claiming the internal upstream name could come from a hostile
+    intranet document on a host of the same name, never from this
+    deployment's own pages. Mirrors the REST guard's test, because the two
+    surfaces share the policy.
+    """
+    server = _server("prod", monkeypatch)
+
+    resp = await _handshake(
+        server,
+        {**PROXY_HEADERS, "Origin": UPSTREAM_URL},
+        base_url=UPSTREAM_URL,
+    )
+
+    assert resp.status_code == 400
+
+
+@pytest.mark.asyncio
 async def test_a_client_sending_no_origin_still_connects(monkeypatch):
     """Engine.IO checks only when an ``Origin`` is present.
 
@@ -120,17 +129,28 @@ def test_the_app_server_refuses_a_foreign_origin():
     Every handshake test above builds its own server, so all of them would still
     pass if ``create_socket_server`` stopped passing the policy through - the one
     edit that would silently restore the wide-open behaviour. Exercise the policy
-    the real server holds rather than comparing it to the two known-bad values,
-    so a third way of being wrong is caught too.
+    the real server holds rather than comparing it to known-bad values, so any
+    way of being wrong is caught: both modes hand Engine.IO a predicate, and a
+    foreign origin must be refused whatever environ accompanies it.
     """
     from mascope_backend.socket.server import sio
 
     policy = sio.eio.cors_allowed_origins
 
-    if callable(policy):  # development: the predicate must reject outright
-        assert policy("https://evil.example.com", {}) is False
-    else:  # production: None is same-origin-only; a list or "*" is not
-        assert policy is None
+    assert callable(policy)
+    assert policy("https://evil.example.com", {}) is False
+    assert (
+        policy(
+            "https://evil.example.com",
+            {
+                "wsgi.url_scheme": "https",
+                "HTTP_HOST": "backend",
+                "HTTP_X_FORWARDED_PROTO": PROXY_HEADERS["X-Forwarded-Proto"],
+                "HTTP_X_FORWARDED_HOST": PROXY_HEADERS["X-Forwarded-Host"],
+            },
+        )
+        is False
+    )
 
 
 def test_file_converter_suppresses_its_synthesised_origin():

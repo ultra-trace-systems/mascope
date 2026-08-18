@@ -4,6 +4,178 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
 
 ## [Unreleased]
 
+## [1.7.1] - 2026.08.18
+
+### Changed
+
+- The demo dataset is now bundle **v1.2.1**
+  ([10.5281/zenodo.21994087](https://doi.org/10.5281/zenodo.21994087)),
+  regenerated so its manifest pins the `opentfraw` 1.4.0 raw reader this
+  release moves to. The reproducibility test asserts the running reader matches
+  the version that produced the goldens, so the bundle has to be recut whenever
+  the reader is bumped. Nothing about the measurement changed: the raw files are
+  byte-identical to v1.2.0 and so are the goldens, because 1.4.0's additions
+  (per-scan DIA/wideband flags, `sample_info` headings, an acquisition-end
+  timestamp) touch no decoded spectrum. Verified before the bump: reading all
+  161 raw files under 1.3.7 and 1.4.0 gives identical scans, centroid labels,
+  profiles and trailer parameters, and a full pipeline rebuild reproduces all
+  42,510 golden peaks with zero deviation in m/z, intensity and match score.
+  Pinned runs against older bundles keep working - v1.0.0 through v1.2.0 stay
+  registered.
+
+### Fixed
+
+- Signing in outside the browser (SDK scripts, automation) now issues the
+  file-converter access token exactly like a browser sign-in does. The token
+  is resolved server-side for every upload, but it was only minted when the
+  sign-in carried a web-app socket id - so an editor account provisioned and
+  agent-paired entirely through the API had every File Agent upload refused
+  with a misleading "check your API token" error until its first browser
+  sign-in.
+- `tooling/smoke-test.sh` can now verify a production deployment serving the
+  self-signed `mascope cert gen` certificate: set `SMOKE_INSECURE=1` to skip
+  TLS verification. Its plain curls previously failed on the certificate
+  before reaching any check.
+- A demo bundle can no longer be published with goldens that cover only part of
+  its raw files. `mascope demo --rebuild` could quietly ingest fewer files than
+  the bundle contains and still finish with every sample batch `ready`, and
+  `mascope demo snapshot --update` would then capture goldens from that partial
+  run - which is how bundle v1.0.0 shipped with 152 of its 161 files. The
+  goldens export now compares the demo database against the manifest's raw set
+  and refuses to write `expected/` when they disagree, naming the files that
+  are missing and distinguishing "never ingested" from "ingested but matched
+  nothing". The comparison keys on the compact acquisition stamp, the one
+  component shared by the published filename and the filename the converter
+  reconstructs from the file's own metadata. The ingestion half of the check
+  runs even when a run matched nothing, since the snapshot is captured from
+  that same database either way.
+- The rebuild uploader no longer races the file-converter's startup. Uploads
+  began as soon as the backend answered HTTP, but the upload endpoint hands each
+  file's processing context to the converter over a socket, and a converter that
+  has not connected yet never receives it - so the first files uploaded failed
+  deep in processing with "not registered in file converter service" and were
+  quarantined, with nothing surfacing the shortfall. The uploader now holds the
+  first upload until a converter has connected (distinguishing a fresh connect
+  from a presence record left behind by a killed run or another worktree), and
+  then keeps sweeping the converter's quarantine folder for the rest of the run,
+  re-uploading its own files and reporting by name any that never made it. An
+  upload that fails outright is retried rather than dropped, quarantined copies
+  left by an earlier rebuild are cleared before the run starts instead of being
+  re-fed as duplicates, and the closing report covers every stage a file can
+  fall out at, not just the quarantine folder.
+- The reproducibility test now fails on quarantined files as soon as the
+  pipeline stops moving, naming them and the usual cause, instead of waiting out
+  its stall window to report only that the pipeline stalled.
+
+- The "Learn more" links in help-mode popovers are now reachable. Help cards
+  are matched to the pointer purely by geometry, with nothing accounting for
+  what covers what, so a popover that overhangs a neighbouring panel - the
+  "Raw files" tab card hangs over the sample browser - counted as hovering that
+  panel as well. Reaching for the link swapped the popover for the covered
+  panel's card partway there, and the click landed on the wrong documentation
+  page. A popover now holds its card for as long as the pointer is on it, and
+  extends its hover area across the gap to whatever opened it, so the link
+  stays where it was aimed at.
+
+- The "new version of Mascope is available" banner no longer reappears on
+  every tab refocus after a release. nginx served `index.html` with no cache
+  policy, so browsers applied heuristic caching and kept booting the previous
+  build's page for hours after a deploy - which the update check then
+  (correctly) flagged, over and over. `index.html` is now served with
+  `Cache-Control: no-cache` (revalidated with a cheap 304 while unchanged) and
+  the hashed `/assets/` bundles with a one-year lifetime, and the banner's
+  Reload button now refreshes the browser's cached copy of `index.html` before
+  reloading, so it always lands on the new build.
+- The penetration-test suite no longer reports a baseline entry as stale when its
+  check never ran. An accepted finding that produced no finding was taken to
+  mean the control now passes - true of a full run, but not of a single module
+  or a `-k` filter, where the check is not collected at all. A narrow run therefore
+  advised removing entries that were still doing their job, and removing one
+  leaves nothing to catch that finding's return. Entries whose checks a run did
+  not collect are now reported as unevaluated, distinct from both accepted and
+  stale.
+- A stale baseline entry now fails the run on its own. Previously staleness could
+  only withhold a pass from a run that had already failed, so a run whose controls
+  all passed printed the warning and still exited zero - meaning a scheduled job
+  would never have surfaced the one state in which the baseline silently absorbs a
+  returning finding.
+- Re-running `./tooling/ubuntu.sh install` from a non-login shell (ssh, cron,
+  ansible) no longer exits before writing the systemd units. The PATH export
+  added to fix the first-install failure landed after the `uv tool
+  update-shell` call it was meant to precede, and that call errors when uv's
+  bin directory is absent from PATH while the shell profile already names it
+  - the state of every re-run over ssh - so under errexit the script died
+  with the binaries linked but no boot service or disk-check timer installed.
+  This matters because re-running the installer is the documented way to pick
+  up corrected units, and the v1.7.0 release notes ask every server to do
+  exactly that. The export now comes first, so both the first run and every
+  re-run complete.
+- The docs no longer load the mermaid diagram library from a CDN. The docs are
+  built to be self-contained - fonts self-hosted, KaTeX vendored - but the
+  theme's diagram loader fetched mermaid itself from unpkg.com at view time,
+  leaking visitor addresses and breaking diagrams in air-gapped deployments.
+  mermaid is now vendored into the docs assets like KaTeX.
+- Thirteen display equations in the "How it works" documentation pages now
+  render as display blocks instead of inline math flanked by literal dollar
+  signs; they were indented or glued to the preceding paragraph, which keeps
+  Arithmatex from promoting `$$...$$` to a display block. A bare `%` KaTeX
+  silently dropped as a TeX comment is now escaped.
+- `CITATION.cff` tracks the released version again: it had sat at
+  1.0.0 / 2026-06-29 since the first release, so GitHub's "Cite this
+  repository" widget and the copy shipped in every archive since cited the
+  wrong version. Its `doi` field now carries the concept DOI - always the
+  latest archived release; Zenodo mints per-version DOIs only after
+  publishing - and the version bump is folded into the standard release-prep
+  commit alongside this changelog so it can no longer be skipped.
+
+### Security
+
+- The file-converter's realtime channel no longer hands out user tokens. The
+  `/file-converter` Socket.IO namespace authenticated a connection on the
+  public `x-service-name` header alone, then broadcast every upload and
+  peak-detection payload - each carrying the acting user's access token - to
+  the whole namespace, so any client able to reach the backend could
+  subscribe and harvest live tokens, then replay them against the REST API as
+  those users. Connecting now requires a service token derived per deployment
+  from the JWT secret via the same domain separation as the reset and
+  verification secrets - no new secret file, the backend and the converter
+  already mount the same `jwt_secret_key` - and the token-bearing payloads
+  are delivered only to the authenticated converter's own room, whose
+  membership survives reconnects and multi-worker backends, instead of being
+  broadcast to the namespace. Uploads are refused up front with 503 while no
+  converter is connected, rather than accepted and stranded unprocessed in
+  the filestore. **If your file converter runs on another host**, provision
+  it the same `jwt_secret_key` and rotate the two together - see the hosting
+  guide; a converter presenting a stale secret is rejected, and the log
+  distinguishes it from an arbitrary unauthenticated client.
+- State-changing API requests that declare a foreign origin are now refused
+  (HTTP 403). Cross-site protection for writes previously rested entirely on
+  the auth cookie's `SameSite=lax` attribute - a browser-side control that
+  would vanish silently if the cookie ever needed `SameSite=None`. The backend
+  now validates `Origin` (falling back to `Referer` where absent) on POST /
+  PUT / PATCH / DELETE against the deployment's own origin, reconstructed per
+  request from the proxy headers, so any hostname served through the shipped
+  nginx works with no configuration; the Socket.IO handshake now consumes the
+  same reconstruction from the shared policy module, one implementation for
+  both surfaces. Behind the proxy only the browser-visible origin counts as
+  the deployment's own - the internal upstream name is no longer accepted.
+  Requests that declare no origin at all - the instrument agents'
+  token-authenticated uploads, service calls, `curl` - pass unchanged, and
+  the named dev-server origins stay accepted in development. **If you front
+  Mascope with your own proxy**, it must preserve the browser's `Host` (or
+  send `X-Forwarded-Host`) and, when it terminates TLS, send
+  `X-Forwarded-Proto: https` - see the hosting guide - or every browser
+  write will be refused. Pentest `CSRF-01` verifies the check.
+- The Content-Security-Policy is now **enforced**; it had shipped as
+  Report-Only pending a browser QA pass, which found the app itself clean
+  (login, dashboard, batch overview, sample spectrum with Plotly, chart PNG
+  export, and live Socket.IO produce no violations). The app policy is
+  unchanged from the one previously reported. The bundled docs get their own
+  policy: the Material theme boots through inline scripts, so `/docs/` allows
+  same-origin inline scripts while dropping the app's `unsafe-eval` and blob:
+  worker allowances it never needed. A `Permissions-Policy` header now also
+  denies camera, microphone and geolocation outright.
+
 ## [1.7.0] - 2026.08.17
 
 ### Added

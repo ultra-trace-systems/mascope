@@ -63,6 +63,23 @@ from mascope_file.name import parse_path_from_item_filename
 from mascope_signal.peak import get_peaks
 
 
+async def ensure_converter_available() -> None:
+    """Refuse work with 503 unless the file-converter service is connected.
+
+    The converter learns of an upload or a peak-detection request only through
+    the socket payload emitted when the work is accepted, so admitting it while
+    no converter is connected would strand it (the watcher quarantines files it
+    has no context for). Callers gate on this *before* accepting the work - and,
+    for transfers, before the transfer starts: a refusal only after the bytes
+    have moved cannot un-accept them.
+    """
+    if not await is_service_connected("file-converter"):
+        raise HTTPException(
+            status_code=503,
+            detail="File converter service is not available or not running.",
+        )
+
+
 # TODO_configuration Default sample file upload params
 FILE_UPLOAD_CHUNK_SIZE = 2 * 1024 * 1024  # 2 MB
 
@@ -745,6 +762,10 @@ async def upload_sample_files(
     :return: Dictionary with files upload results.
     :rtype: dict
     """
+    # Fail before writing anything to the filestore. This endpoint receives the
+    # whole request body up front, so this is the earliest point it can refuse.
+    await ensure_converter_available()
+
     successful_uploads: list[dict] = []
     failed_uploads: list[dict] = []
 
@@ -877,6 +898,15 @@ async def upload_sample_file(
     :return: Dictionary with file upload result.
     :rtype: dict
     """
+    # No converter-availability gate here. This is the tus completion handler,
+    # run only after the whole file has transferred; tuspyserver has already
+    # marked the upload complete, so raising now cannot un-accept it - the
+    # client reads the upload as done and the staged bytes are orphaned. The
+    # gate runs up front in the tus pre_create hook instead (see
+    # sample_files_routes). If a converter that was present at creation dropped
+    # mid-transfer, the file still lands in the filestore, where the converter's
+    # watcher recovers it on reconnect, rather than being lost.
+
     # Check if filestreams directory exists
     os.makedirs(runtime.config.filestreams, exist_ok=True)
 
@@ -1112,11 +1142,7 @@ async def compute_sample_file_peaks(
     filename = sample_file_data.get("data").get("filename")
 
     # --- Check if File Converter service is connected ---
-    if not await is_service_connected("file-converter"):
-        raise HTTPException(
-            status_code=503,
-            detail="File converter service is not available or not running.",
-        )
+    await ensure_converter_available()
 
     (
         affected_sample_item_ids,

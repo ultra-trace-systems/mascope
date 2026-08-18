@@ -64,6 +64,135 @@ _DEID_NAME = re.compile(
 # Instrument label aliasing for de-identification. Original -> published alias.
 INSTRUMENT_ALIASES = {"KORBI2": "Orbion"}
 
+# The compact 14-digit acquisition stamp, e.g. `20250811142350`. It is the only
+# component shared by a bundle's published filename and the filename the demo
+# database ends up holding:
+#
+#   bundle:   Orbion_neg_Br_NoRI_20250811142350.raw
+#   database: Orbion_2025.08.11-14h23m50s_neg_Br_NoRI_20250811142350
+#
+# The converter reconstructs its own name from the file's embedded metadata
+# (`mascope_thermo.processor.RawProcessor.filename` re-inserts the acquisition
+# timestamp the de-identification stripped), so coverage can only be compared
+# on the stamp. Bounded on both sides so a longer digit run is not silently
+# truncated into a false match.
+_STAMP = re.compile(r"(?<!\d)(\d{14})(?!\d)")
+
+# The human-readable timestamp `RawProcessor.filename` inserts after the first
+# underscore. Only the fallback below needs it: with no compact stamp to key on,
+# the two sides of the comparison differ by exactly this segment, so it has to
+# come out of the database flavour before the names can be matched at all.
+_READABLE_STAMP = re.compile(r"_?\d{4}\.\d{2}\.\d{2}-\d{2}h\d{2}m\d{2}s")
+
+
+def _acquisition_key(name: str) -> str:
+    """
+    Key a filename by its acquisition, comparably across the rename.
+
+    :param name: Any filename, with or without extension, bundle- or
+                 database-flavoured.
+    :return: The last 14-digit acquisition stamp in the name, or - if the name
+             carries none - the lowercased name with its raw extension and any
+             reconstructed timestamp removed, so a dataset whose published names
+             never matched the de-identification pattern still compares like for
+             like instead of every file looking both missing and foreign.
+    """
+    stamps = _STAMP.findall(name)
+    if stamps:
+        return stamps[-1]
+    # Not Path.stem: these names are full of dots (the reconstructed
+    # `2025.08.11-14h23m50s` segment), and stem would cut at the first of them.
+    stripped = name[:-4] if name.lower().endswith(".raw") else name
+    return _READABLE_STAMP.sub("", stripped, count=1).lower()
+
+
+def _sample(names: list[str], limit: int = 20) -> str:
+    """Render a name list for an error message, truncated to ``limit``."""
+    shown = sorted(names)
+    if len(shown) > limit:
+        return ", ".join(shown[:limit]) + f", ... and {len(shown) - limit} more"
+    return ", ".join(shown)
+
+
+def check_raw_coverage(
+    raw_entries: list[dict],
+    ingested: list[str],
+    golden_filenames: "set[str] | list[str] | None",
+) -> list[str]:
+    """
+    Check that the demo database covers the bundle's whole raw set.
+
+    A rebuild can silently ingest fewer files than the bundle contains (an
+    upload that raced the file-converter's socket auth is quarantined, and both
+    sample batches still finish ``ready``), and the goldens captured from such a
+    run then freeze an incomplete expectation - which is how bundle v1.0.0 was
+    published with 152 of its 161 files. This is the authoring-time check that
+    refuses to write those goldens.
+
+    Comparison is keyed on the acquisition stamp (see :func:`_acquisition_key`),
+    counted rather than set-differenced so a dataset with two files sharing a
+    stamp is still compared by how many of each side has.
+
+    :param raw_entries: The manifest ``raw`` block (``{name, sha256, bytes}``).
+    :param ingested: Filenames of every ingested sample file
+                     (``export_goldens.get_ingested_filenames``).
+    :param golden_filenames: The distinct filenames present in the golden rows,
+                             or ``None`` when this run matched nothing at all -
+                             the ingestion side is still checked, since a
+                             database that does not hold the bundle's files is
+                             not one to capture a snapshot from either.
+    :return: Human-readable problem descriptions; empty means full coverage.
+    """
+    bundle: dict[str, list[str]] = {}
+    for entry in raw_entries:
+        bundle.setdefault(_acquisition_key(entry["name"]), []).append(entry["name"])
+
+    def _counts(names) -> dict[str, int]:
+        counts: dict[str, int] = {}
+        for name in names:
+            counts[_acquisition_key(name)] = counts.get(_acquisition_key(name), 0) + 1
+        return counts
+
+    in_db = _counts(ingested)
+    in_goldens = None if golden_filenames is None else _counts(golden_filenames)
+
+    # Surplus bundle names per key: with the usual one-file-per-stamp dataset
+    # this is simply "the file is missing"; with a shared stamp it names as many
+    # files as the side is short of. The two slices partition the shortfall -
+    # never ingested at all, versus ingested but absent from the goldens - so
+    # one missing file is reported once, under its actual cause.
+    never_ingested = [
+        n for k, names in bundle.items() for n in names[in_db.get(k, 0) :]
+    ]
+    no_goldens = (
+        []
+        if in_goldens is None
+        else [
+            n
+            for k, names in bundle.items()
+            for n in names[in_goldens.get(k, 0) : in_db.get(k, 0)]
+        ]
+    )
+    unexpected = [n for n in ingested if _acquisition_key(n) not in bundle]
+
+    problems = []
+    if never_ingested:
+        problems.append(
+            f"{len(never_ingested)} of {len(raw_entries)} raw file(s) were never "
+            f"ingested (no sample_file row): {_sample(never_ingested)}"
+        )
+    if no_goldens:
+        problems.append(
+            f"{len(no_goldens)} ingested raw file(s) produced no matched peaks, so "
+            f"the goldens would not cover them: {_sample(no_goldens)}"
+        )
+    if unexpected:
+        problems.append(
+            f"{len(unexpected)} ingested file(s) are not in the bundle's raw set - "
+            f"the demo database holds data from another run: {_sample(unexpected)}"
+        )
+    return problems
+
 
 def _deidentify_name(
     name: str, aliases: dict[str, str] | None = None
@@ -356,7 +485,7 @@ def export_snapshot(out_dir: Path) -> dict:
     }
 
 
-def export_goldens(out_dir: Path) -> dict | None:
+def export_goldens(out_dir: Path, raw_entries: list[dict]) -> dict | None:
     """
     Export golden peak outputs for the reproducibility test.
 
@@ -365,14 +494,24 @@ def export_goldens(out_dir: Path) -> dict | None:
     writes them to ``expected/peaks.parquet``. The matching comparison side is
     :func:`verify.compare_peaks`.
 
+    Refuses to write ``expected/`` unless the database covers the bundle's whole
+    raw set (:func:`check_raw_coverage`): a rebuild can quietly ingest fewer
+    files than the bundle contains, and goldens captured from such a run freeze
+    an incomplete expectation that nothing downstream would question. The
+    ingestion side of that check runs even when nothing matched, since the
+    caller goes on to capture the snapshot from the same database.
+
     Requires a populated ``mascope_demo`` database (run ``mascope demo
     --rebuild`` and confirm matching first). The demo callback pins
     ``MASCOPE_ENV=demo``, so the in-process query targets ``mascope_demo``.
 
     :param out_dir: Bundle output directory.
+    :param raw_entries: The manifest ``raw`` block - the set of files the
+                        goldens must cover.
     :return: The manifest ``expected`` block, or ``None`` if no peaks have been
              matched yet (logged as a warning so ``--update`` still records the
              snapshot rather than aborting).
+    :raises RuntimeError: If the demo database does not cover ``raw_entries``.
     """
     import pandas as pd
 
@@ -381,9 +520,33 @@ def export_goldens(out_dir: Path) -> dict | None:
     from mascope_backend.db.scripts.export_goldens import (
         get_golden_ions,
         get_golden_peaks,
+        get_ingested_filenames,
     )
 
     rows = get_golden_peaks()
+
+    # Coverage first, before the no-peaks exit: the caller records the snapshot
+    # either way, so a database that does not hold the bundle's raw set has to
+    # be refused even on the path where matching produced nothing - otherwise
+    # the manifest ends up pairing a fresh snapshot of a partial ingestion with
+    # the previous run's goldens.
+    problems = check_raw_coverage(
+        raw_entries,
+        get_ingested_filenames(),
+        {row["filename"] for row in rows} if rows else None,
+    )
+    if problems:
+        raise RuntimeError(
+            "Refusing to write expected/ goldens: the demo database does not "
+            "cover the bundle's raw set, so the goldens would freeze an "
+            "incomplete expectation.\n"
+            + "\n".join(f"  - {p}" for p in problems)
+            + "\nRe-run 'mascope demo --rebuild' (uploads that raced the "
+            "file-converter's startup are quarantined in "
+            "<env>/filestreams/failed_files and are retried automatically), "
+            "confirm the file count, then re-run --update."
+        )
+
     if not rows:
         runtime.logger.warning(
             "No matched peaks in the demo database - skipping golden export. "
@@ -451,6 +614,9 @@ def build(
     :return: The output bundle directory.
     :raises FileNotFoundError: If ``raw_dir`` is given but missing, or if it is
         omitted and the bundle has no raw set to reuse.
+    :raises RuntimeError: If ``update`` is set and the demo database does not
+        cover the bundle's raw set (see :func:`check_raw_coverage`); neither the
+        goldens nor the snapshot are written in that case.
     """
     out_dir.mkdir(parents=True, exist_ok=True)
 
@@ -512,9 +678,14 @@ def build(
     if seed:
         manifest["seed"] = export_seed(out_dir)
     if update:
-        manifest["snapshot"] = export_snapshot(out_dir)
+        # Goldens first: their coverage guard is what refuses to publish a
+        # partial ingestion, and it raises. Running it before the (much more
+        # expensive) snapshot export means a rejected run leaves the previous
+        # snapshot in place, rather than a fresh one the unwritten manifest
+        # does not point at.
         # Keep any prior goldens (copied above) if this run matched nothing.
-        expected = export_goldens(out_dir)
+        expected = export_goldens(out_dir, raw_entries)
+        manifest["snapshot"] = export_snapshot(out_dir)
         if expected is not None:
             manifest["expected"] = expected
 

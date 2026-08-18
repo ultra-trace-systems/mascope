@@ -30,28 +30,51 @@ const displayed = ref(null)
 const displayedMessage = computed(() => app.ui.help.resolveMessage(displayed.value))
 
 // Keep the popover open while the pointer is over it, so its "Learn more" link
-// stays reachable. `pinned` is driven by the popover's own enter/leave events.
+// stays reachable. `pinned` is driven by the popover's own enter/leave events;
+// the bridge element below extends that region across the gap to the target.
 const pinned = ref(false)
 const onPopoverLeave = () => {
   pinned.value = false
-  if (!(app.ui.help.current && app.ui.help.active)) {
-    visible.value = false
-    displayed.value = null
-  }
+}
+
+const hide = () => {
+  visible.value = false
+  displayed.value = null
+  // The popover is unmounted by v-if, which fires no mouseleave, so clear the
+  // pin here or the next card would be frozen out.
+  pinned.value = false
 }
 
 watchEffect(() => {
   const card = app.ui.help.current
-  if (card && app.ui.help.active) {
+  const helpActive = app.ui.help.active
+  // Pointer on the popover: hold the card it opened with. Hover detection is
+  // geometric, so an element this popover covers still counts as hovered and
+  // would otherwise swap the card away mid-reach for "Learn more".
+  if (helpActive && pinned.value) return
+  if (helpActive && card) {
     placement.value = card?.placement.replace('_', '-') ?? 'bottom'
     displayed.value = card
     targetEl.value = card.element
     visible.value = true
-  } else if (!pinned.value) {
-    visible.value = false
-    displayed.value = null
+  } else {
+    hide()
   }
 })
+
+// Invisible extension of the popover's hover region towards its target,
+// covering the offset gap so the pointer never passes through untracked space
+// on its way in.
+const BRIDGE = '12px'
+const bridgeStyle = computed(
+  () =>
+    ({
+      top: { left: 0, right: 0, bottom: `-${BRIDGE}`, height: BRIDGE },
+      bottom: { left: 0, right: 0, top: `-${BRIDGE}`, height: BRIDGE },
+      left: { top: 0, bottom: 0, right: `-${BRIDGE}`, width: BRIDGE },
+      right: { top: 0, bottom: 0, left: `-${BRIDGE}`, width: BRIDGE }
+    })[(placement.value ?? 'bottom').split('-')[0]]
+)
 
 const border = '1px solid var(--p-panel-border-color)'
 
@@ -145,6 +168,7 @@ watchDebounced(
       Learn more
     </a>
     <div ref="arrowEl" class="help-popover-arrow"></div>
+    <div class="help-popover-bridge" :style="bridgeStyle"></div>
   </div>
 </template>
 
@@ -162,6 +186,10 @@ watchDebounced(
   width: 15px;
   height: 15px;
   transform: rotate(45deg);
+}
+
+.help-popover-bridge {
+  position: absolute;
 }
 </style>
 

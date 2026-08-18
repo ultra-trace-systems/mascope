@@ -18,18 +18,34 @@ scope.
 """
 
 import base64
+from unittest.mock import AsyncMock
 
 import pytest
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy import delete
 
+from mascope_backend.api.controllers.sample.files import sample_files_controller
 from mascope_backend.api.routes.sample.files import sample_files_routes
 from mascope_backend.app.fast import fast
 from mascope_backend.db import AccessToken
 
 
 TUS_URL = "/api/sample/files/upload/tus/"
+
+
+@pytest.fixture(autouse=True)
+def _converter_connected(monkeypatch):
+    """Report a connected converter so the tus pre_create gate lets creation
+    through. These tests pin auth and size limits; without a converter the
+    availability gate (exercised in its own test below) would 503 every
+    creation before it reached the checks under test.
+    """
+    monkeypatch.setattr(
+        sample_files_controller,
+        "is_service_connected",
+        AsyncMock(return_value=True),
+    )
 
 
 def _b64(value: str) -> str:
@@ -168,6 +184,30 @@ async def test_options_advertises_the_configured_max_size(file_agent_token):
     assert resp.headers["tus-max-size"] == str(
         sample_files_routes._tus_max_upload_bytes
     )
+
+
+@pytest.mark.asyncio
+async def test_creation_is_refused_when_no_converter_is_connected(
+    file_agent_token, monkeypatch
+):
+    """No converter connected -> creation is refused up front with 503.
+
+    The refusal must happen here, at creation, before any bytes transfer. A tus
+    upload refused only at completion has already transferred in full and been
+    marked complete, so the client reads success while the file is stranded.
+    """
+    monkeypatch.setattr(
+        sample_files_controller,
+        "is_service_connected",
+        AsyncMock(return_value=False),
+    )
+    headers = {
+        "Authorization": f"Bearer {file_agent_token}",
+        "X-Service-Name": "file-agent",
+    }
+    async with _client(headers) as client:
+        resp = await client.post(TUS_URL, headers=CREATE_HEADERS)
+    assert resp.status_code == 503, resp.text
 
 
 @pytest.mark.asyncio

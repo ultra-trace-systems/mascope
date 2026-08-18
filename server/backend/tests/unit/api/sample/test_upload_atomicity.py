@@ -10,20 +10,38 @@ its remaining bytes are silently lost (the cause of nondeterministic sample
 drops in the reproducibility CI run).
 
 The controller is called directly with a fake ``UploadFile``; the filestore
-path and the file-converter event emission are mocked - no DB, HTTP, or
-Socket.IO required.
+path, the converter-availability gate, and the file-converter event emission
+are mocked - no DB, HTTP, Redis, or Socket.IO required.
+
+The multipart endpoint (``upload_sample_files``) gates on converter availability
+because it can refuse before writing anything. The tus completion handler
+(``upload_sample_file``) does not: by the time it runs the transfer is already
+complete, so it stores the file unconditionally and the gate lives up front in
+the tus pre_create hook instead.
 """
 
 import io
+from contextlib import contextmanager
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 import pytest
 
 from mascope_backend.api.controllers.sample.files import sample_files_controller
+from mascope_backend.api.lib.exceptions.api_exceptions import ApiException
 
 
 _CTRL = "mascope_backend.api.controllers.sample.files.sample_files_controller"
+
+
+@contextmanager
+def _converter_available():
+    """Pass the availability gate and swallow the converter event emission."""
+    with (
+        patch(f"{_CTRL}.is_service_connected", new=AsyncMock(return_value=True)),
+        patch(f"{_CTRL}.event_emitter.emit", new=AsyncMock()),
+    ):
+        yield
 
 
 def _fake_user():
@@ -65,7 +83,7 @@ def filestreams(tmp_path, monkeypatch):
 async def test_successful_upload_lands_only_the_final_file(filestreams):
     upload = _FakeUploadFile("sample.raw", io.BytesIO(b"raw file bytes"))
 
-    with patch(f"{_CTRL}.event_emitter.emit", new=AsyncMock()):
+    with _converter_available():
         result = await sample_files_controller.upload_sample_files(
             files=[upload], user=_fake_user(), access_token="token"
         )
@@ -83,7 +101,7 @@ async def test_failed_upload_leaves_no_file_behind(filestreams):
     """
     upload = _FakeUploadFile("sample.raw", _ExplodingReader())
 
-    with patch(f"{_CTRL}.event_emitter.emit", new=AsyncMock()):
+    with _converter_available():
         result = await sample_files_controller.upload_sample_files(
             files=[upload], user=_fake_user(), access_token="token"
         )
@@ -91,3 +109,60 @@ async def test_failed_upload_leaves_no_file_behind(filestreams):
     assert result["status"] == "error"
     assert result["data"]["failed_uploads"][0]["filename"] == "sample.raw"
     assert list(filestreams.iterdir()) == []
+
+
+@pytest.mark.asyncio
+async def test_upload_is_refused_when_no_converter_is_connected(filestreams):
+    """
+    Uploads 503 before touching the filestore: the converter learns of a file
+    only from the emitted socket payload, so a file accepted with no converter
+    connected would sit unregistered until the watcher quarantines it.
+    """
+    upload = _FakeUploadFile("sample.raw", io.BytesIO(b"raw file bytes"))
+
+    with (
+        patch(f"{_CTRL}.is_service_connected", new=AsyncMock(return_value=False)),
+        patch(f"{_CTRL}.event_emitter.emit", new=AsyncMock()) as emit,
+    ):
+        with pytest.raises(ApiException) as exc_info:
+            await sample_files_controller.upload_sample_files(
+                files=[upload], user=_fake_user(), access_token="token"
+            )
+
+    assert exc_info.value.status_code == 503
+    emit.assert_not_awaited()
+    assert list(filestreams.iterdir()) == []
+
+
+@pytest.mark.asyncio
+async def test_tus_completion_stores_the_file_without_regating_on_converter(
+    filestreams, tmp_path_factory
+):
+    """The tus completion handler stores the transferred file, converter or not.
+
+    The gate is enforced up front in the pre_create hook; re-checking at
+    completion could only refuse a file already transferred in full, which
+    tuspyserver has marked complete - so the client would read success while the
+    bytes were dropped. Even with the converter reported absent (a converter
+    that dropped mid-transfer), the file must land in the filestore, where the
+    watcher recovers it on reconnect, rather than being lost.
+    """
+    staging = tmp_path_factory.mktemp("tus-staging")
+    staged = staging / "sample.raw"
+    staged.write_bytes(b"raw file bytes")
+
+    with (
+        patch(f"{_CTRL}.is_service_connected", new=AsyncMock(return_value=False)),
+        patch(f"{_CTRL}.event_emitter.emit", new=AsyncMock()) as emit,
+    ):
+        result = await sample_files_controller.upload_sample_file(
+            file_path=str(staged), user=_fake_user(), access_token="token"
+        )
+
+    assert result["status"] == "success"
+    # The staged source was moved into the filestore under its final name.
+    assert not staged.exists()
+    assert (filestreams / "sample.raw").read_bytes() == b"raw file bytes"
+    assert [p.name for p in filestreams.iterdir()] == ["sample.raw"]
+    # Context is still emitted so a connected converter processes it at once.
+    emit.assert_awaited_once()

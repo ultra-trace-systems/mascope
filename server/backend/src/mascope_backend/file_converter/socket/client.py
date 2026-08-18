@@ -3,6 +3,7 @@ import socketio
 from mascope_backend.file_converter.socket.events import SocketEventHandler
 from mascope_backend.file_converter.socket.session import FileContextManager
 from mascope_backend.runtime import runtime
+from mascope_backend.service_token import FILE_CONVERTER_SERVICE_TOKEN
 
 
 class FileConverterSocketClient:
@@ -56,6 +57,10 @@ class FileConverterSocketClient:
         self.sio.connect(
             self.url,
             headers={"X-Service-Name": "file-converter"},
+            # Prove this is the genuine converter, not a client that guessed the
+            # public X-Service-Name string; the backend refuses the namespace
+            # connect without it (see the /file-converter connect handler).
+            auth={"service_token": FILE_CONVERTER_SERVICE_TOKEN},
             namespaces=["/file-converter"],
             # Websocket only: a single persistent connection stays pinned to one
             # backend worker. The default polling handshake issues several HTTP

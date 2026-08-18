@@ -152,6 +152,20 @@ identity + token) is registered only by the upload endpoint, so a dropped file
 is "not registered" and fails. This path runs the real pipeline, so it is what
 the reproducibility test drives.
 
+**Uploading is gated on the converter, not just the backend.** The upload
+endpoint emits each file's context over the `/file-converter` socket at upload
+time, so a file uploaded before the converter has connected has its context
+emitted into the void and fails deep in processing with "not registered in file
+converter service" — quarantined into `<env>/filestreams/failed_files/` while
+both sample batches still finish `ready`, which is exactly how a rebuild ends up
+short without saying so. The uploader therefore samples the backend's
+`mascope:service:file-converter` presence key *before* the stack starts and
+holds the first upload until a converter has connected since (waiting for the
+key to merely exist would be satisfied by a stale key from a killed run, or by
+another worktree's converter — the key is not env-scoped). It then keeps
+sweeping `failed_files/` for the rest of the run, re-uploading the bundle's own
+files up to twice each and reporting by name any that still never made it.
+
 ## End-to-end reproducibility test
 
 Location: `server/backend/tests/system/reproducibility/`. It is the asserted
@@ -177,6 +191,12 @@ What it asserts:
    the manifest's tolerances (m/z within `mz_ppm`, intensity within
    `intensity_rel`, no unexpected peaks).
 4. Pin `opentfraw` to `produced_with.opentfraw_version`; a mismatch fails loudly.
+
+Step 2 waits for the pipeline to settle rather than for a fixed time, so a file
+that fell out mid-run would otherwise show up only as a timeout. Once the
+counters stop moving the test looks in `failed_files/` first: a quarantined file
+never produces sample items, so it fails immediately naming them and the usual
+cause, instead of idling out the stall window with a bare "pipeline stalled".
 
 The export seam is
 `mascope_backend.db.scripts.export_goldens.get_golden_peaks` (a plain ORM read);
@@ -276,6 +296,18 @@ repo); `<BUNDLE>` is the working bundle directory the tooling accumulates into.
    `--raw` is omitted (step 2 already copied it). Exports `snapshot/` (pg_dump +
    filestore) and `expected/` goldens, preserving the `seed/` block. `<BUNDLE>`
    now holds `raw/ + seed/ + snapshot/ + expected/ + manifest.json`.
+
+   Before writing `expected/`, this checks that the demo database actually
+   covers the manifest's whole `raw` set and **refuses to write goldens** that
+   would not, naming the files that are missing (`build_bundle.check_raw_coverage`).
+   The database stores the filename the converter reconstructs from the file's
+   own metadata (`Orbion_2025.08.11-14h23m50s_neg_Br_NoRI_20250811142350`), not
+   the bundle's de-identified name, so the comparison keys on the compact
+   14-digit acquisition stamp the two share. If it refuses, go back to A3: a
+   short rebuild is a rebuild that dropped files, and goldens captured from it
+   freeze an incomplete expectation that nothing downstream questions. This is
+   the check that would have caught bundle v1.0.0 shipping with 152 of its 161
+   files.
 
 5. **Publish** to Zenodo and register the bundle — see [D](#d-publish-to-zenodo-versioning).
    Confirm `<BUNDLE>.deid_report.md` before publishing.

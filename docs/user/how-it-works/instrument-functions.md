@@ -6,7 +6,7 @@ The implementation utilizes iterative optimization and statistical weighting to 
 ## Peak Shape Estimation
 
 The peak shape calculation is a unified process that extracts a representative morphology from the raw spectrum.
-The algorithm identifies potential candidates for shape estimation using local maxima detection. Found peaks are filtered based on a distance $\text{dmz}=0.5$ and a quantile-based height threshold of $95%$ to isolate high-quality signals.
+The algorithm identifies potential candidates for shape estimation using local maxima detection. Found peaks are filtered based on a distance $\text{dmz}=0.5$ and a quantile-based height threshold of $95\%$ to isolate high-quality signals.
 Each selected peak is fitted using a skewed Gaussian profile.
 For each modeled peak with R-squared above $95\%$, the algorithm calculates the Center of Mass (COM) and the Full Width at Half Maximum (FWHM).
 The standard deviation of the Gaussian distribution is computed for each peak as $\sigma = \frac{\text{FWHM}}{2 \cdot \sqrt{2 \cdot \log{2}}}$. The final peak shape is computed as the median peak shape from a 2D array of individual peaks, alligned by COM and normalized by $\sigma$.
@@ -48,7 +48,9 @@ $$R(m/z) = \frac{m/z}{a \cdot m/z + b}$$
 To relate $\text{FWHM}$ to $m/z$, the algorithm performs a weighted linear fit using iterative Huber weighting.
 This method minimizes the influence of outliers by adjusting weights $w$ based on residuals.
 Residuals are scaled by a factor derived from the median absolute deviation:
+
 $$s = 1.4826 \cdot \text{median}(|\text{residuals} - \text{median}(\text{residuals})|)$$
+
 Weights are assigned such that $w = 1$ for small residuals and $w = 1/|\text{residuals}|$ for residuals exceeding a defined threshold.
 
 To prevent the model from entering a premature plateau, the dynamic range - calculated as the difference between the maximum and minimum values of the rational polynomial divided by their mean - is checked against a target threshold of $0.05$.

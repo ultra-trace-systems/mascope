@@ -5,7 +5,7 @@ How to run Mascope, from a one-machine trial to a shared production deployment.
 ## Managed hosting by Ultra Trace
 
 The simplest option is to let Ultra Trace host Mascope for you - no servers, updates,
-backups, or TLS to manage. Contact [sales@ultratrace.eu](mailto:sales@ultratrace.eu) for a
+backups, or TLS to manage. Contact [hello@ultratrace.eu](mailto:hello@ultratrace.eu) for a
 quote.
 
 ## Self-hosting
@@ -58,10 +58,20 @@ and the checkout.
    head -c 32 /dev/urandom | xxd -p -c 32 > .runtime/secrets/server_owner_secret_key.txt
    ```
 
+   `jwt_secret_key` is shared by the backend and the file-converter service (the
+   converter derives its service-authentication token from it), so if you ever
+   rotate it, restart both containers - a converter running with the old secret
+   is refused until restarted.
+
 4. **Set up TLS** - pick the option that fits your audience:
    - **Self-signed** (`mascope cert gen` writes `mascope.app.pem`/`.key` into
      `.runtime/secrets/`): works immediately; each user clicks through a one-time
-     browser warning. Make sure the certificate's SAN matches the hostname/IP.
+     browser warning. The generated certificate carries a fixed placeholder
+     name (`mascope.app`), so the warning appears whatever address the server
+     is reached at; the File Agent is unaffected (it does not verify TLS
+     certificates). For a warning-free deployment use one of the options
+     below - whichever certificate you install, its file names in
+     `.runtime/secrets/` stay `mascope.app.pem`/`.key`.
    - **Internal CA** (e.g. [mkcert](https://github.com/FiloSottile/mkcert) or an
      org CA): warning-free on the LAN; install the CA on client machines once,
      then issue a certificate for the server's hostname.
@@ -91,6 +101,17 @@ and the checkout.
 
    This applies to any front proxy, whether Mascope terminates TLS itself or
    runs with `MASCOPE_TLS=off` behind yours.
+
+   A front proxy must also keep the browser-visible origin intact: pass the
+   browser's `Host` header through unchanged (nginx: `proxy_set_header Host
+   $host;`, Apache: `ProxyPreserveHost On`) - or forward it in
+   `X-Forwarded-Host` - and, when it terminates TLS, send
+   `X-Forwarded-Proto: https`. Mascope refuses state-changing browser
+   requests whose `Origin` does not match the origin it reconstructs from
+   these headers (its CSRF defence), and the Socket.IO handshake applies the
+   same check - behind a proxy that rewrites `Host` and forwards neither
+   header, every write and every realtime connection is refused. Caddy and
+   Traefik do both out of the box.
 
 5. **Pull the release images and start:**
 

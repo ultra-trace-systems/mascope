@@ -53,6 +53,10 @@ BACKEND_CONTAINER = os.environ.get(
 POSTGRES_CONTAINER = os.environ.get(
     "MASCOPE_REPRO_POSTGRES_CONTAINER", "mascope_demo_postgres"
 )
+REDIS_CONTAINER = os.environ.get("MASCOPE_REPRO_REDIS_CONTAINER", "mascope_demo_redis")
+CONVERTER_CONTAINER = os.environ.get(
+    "MASCOPE_REPRO_CONVERTER_CONTAINER", "mascope_demo_file_converter"
+)
 DB_NAME = os.environ.get("MASCOPE_DB_NAME", "mascope_demo")
 DB_USER = os.environ.get("MASCOPE_DB_USER", "mascope_user")
 TIMEOUT_S = int(os.environ.get("MASCOPE_REPRO_TIMEOUT", "2700"))
@@ -66,6 +70,20 @@ STABLE_POLLS = 3
 # timeout only delays the diagnosis. Generous (10 min) so a slow but live
 # aggregation is never mistaken for a stall.
 STALL_POLLS = 40
+# A quarantined file never comes back on its own, so once the counters stop
+# moving there is no point waiting out STALL_POLLS to say so: check the
+# converter's failed_files folder after this many frozen polls and fail with the
+# names right away. Counters routinely sit still for a poll or two while a
+# single file converts, so the check only looks at files THIS run uploaded -
+# the folder is not emptied between runs.
+QUARANTINE_CHECK_POLLS = 2
+
+# How long to let the file-converter's socket connect before uploading. The
+# upload endpoint hands each file's context to the converter over that socket,
+# so files uploaded first would otherwise fail with "not registered in file
+# converter service" and be quarantined (see docs/demo_dataset.md).
+CONVERTER_WAIT_S = 300
+CONVERTER_POLL_S = 5
 
 # Python of the in-image mascope uv tool (same path tooling/demo-init.sh uses).
 CONTAINER_PYTHON = "/opt/uv/tools/mascope/bin/python"
@@ -126,10 +144,11 @@ def test_pipeline_reproduces_goldens():
     # --- Upload the raw files through the real upload endpoint --------------
     raws = sorted((bundle_root / "raw").glob("*.raw"))
     assert raws, f"bundle has no raw files at {bundle_root / 'raw'}"
+    _wait_for_converter()
     _upload_raws(raws)
 
     # --- Wait for conversion + peak detection + matching to finish ----------
-    _wait_for_pipeline(n_files=len(raws))
+    _wait_for_pipeline(raw_names=[raw.name for raw in raws])
 
     # --- Export the produced peaks and compare against the goldens ----------
     actual = pd.DataFrame(_export_actual_peaks())
@@ -181,6 +200,65 @@ def _psql(sql: str) -> str:
         f"psql failed in {POSTGRES_CONTAINER} for {sql!r}:\n{res.stderr.strip()}"
     )
     return res.stdout.strip()
+
+
+def _converter_presence() -> str | None:
+    """
+    The file-converter's socket id as the backend recorded it.
+
+    :return: The socket id, ``""`` when no converter is registered, or ``None``
+             when the presence key could not be read at all.
+    """
+    res = _docker(
+        "exec", REDIS_CONTAINER, "redis-cli", "get", "mascope:service:file-converter"
+    )
+    return res.stdout.strip() if res.returncode == 0 else None
+
+
+def _wait_for_converter() -> None:
+    """
+    Hold uploads until the file-converter's socket has freshly connected.
+
+    The upload endpoint emits each file's processing context (uploader identity
+    + access token) over the ``/file-converter`` socket at upload time, so files
+    uploaded before the converter connects fail deep in processing with "not
+    registered in file converter service" and are quarantined - the race
+    `mascope demo --rebuild` guards against in
+    ``mascope_cli.cmd.demo._rebuild.upload_raw``. The stack answering HTTP does
+    not imply the converter has connected: it starts alongside the frontend,
+    gated only on the backend being healthy.
+
+    Waiting for the key to merely hold a value would prove nothing. It records a
+    socket id, not a liveness lease, and a converter killed without its
+    disconnect handler running leaves the id behind - on Redis that survives the
+    stack, since the demo stack's Redis is ``--appendonly`` on a named volume.
+    Restarting the converter is what turns the value already there into a usable
+    baseline: whatever it holds now cannot be the connection that follows.
+
+    Best effort throughout: a stack whose containers do not carry these names
+    warns and proceeds rather than failing a run it cannot diagnose.
+    """
+    baseline = _converter_presence()
+    if baseline is None:
+        print("cannot read the converter's socket presence; uploading without a wait")
+        return
+
+    res = _docker("restart", CONVERTER_CONTAINER)
+    if res.returncode != 0:
+        print(f"cannot restart {CONVERTER_CONTAINER}: {res.stderr.strip()}")
+        return
+
+    deadline = time.monotonic() + CONVERTER_WAIT_S
+    while time.monotonic() < deadline:
+        current = _converter_presence()
+        if current and current != baseline:
+            print("file-converter connected; starting uploads")
+            return
+        time.sleep(CONVERTER_POLL_S)
+
+    print(
+        f"file-converter did not connect within {CONVERTER_WAIT_S}s; uploading anyway"
+    )
 
 
 def _upload_raws(raws: list) -> None:
@@ -236,7 +314,7 @@ def _upload_raws(raws: list) -> None:
     )
 
 
-def _wait_for_pipeline(n_files: int) -> None:
+def _wait_for_pipeline(raw_names: list[str]) -> None:
     """
     Poll the demo database until ingestion + matching settle, or fail.
 
@@ -244,7 +322,12 @@ def _wait_for_pipeline(n_files: int) -> None:
     batch exists, no batch is processing, any batch failure aborts
     immediately, and the matched-peak count has been stable for
     ``STABLE_POLLS`` consecutive polls (matching can trail the batch status).
+
+    :param raw_names: Names of the raw files this run uploaded - the quarantine
+                      check needs them to tell this run's dropped files from
+                      copies an earlier run left in the shared folder.
     """
+    n_files = len(raw_names)
     deadline = time.monotonic() + TIMEOUT_S
     last_matched = -1
     stable = 0
@@ -284,6 +367,13 @@ def _wait_for_pipeline(n_files: int) -> None:
         # the stage breakdown instead of idling to the full timeout.
         state = (files_done, batches, processing, matched)
         stalled = stalled + 1 if state == last_state else 0
+        # Check on every frozen poll past the threshold, not only the poll that
+        # first reaches it: a file can be quarantined several polls into a stall
+        # (its batch fails after the counters already froze), and a one-shot
+        # "== QUARANTINE_CHECK_POLLS" check would miss that and idle out the full
+        # STALL_POLLS window before reporting only a generic stall.
+        if stalled >= QUARANTINE_CHECK_POLLS:
+            _fail_on_quarantined_files(raw_names, files_done, batches, matched)
         if stalled >= STALL_POLLS:
             pytest.fail(
                 f"pipeline stalled with no progress for {STALL_POLLS * POLL_S}s: "
@@ -301,6 +391,92 @@ def _wait_for_pipeline(n_files: int) -> None:
         f"{processing} still processing, {matched} matched peak(s)\n"
         + _diagnose_missing_files()
     )
+
+
+def _sample_names(names: list[str], limit: int = 20) -> str:
+    """Render a name list for a failure message, truncated to ``limit``."""
+    shown = ", ".join(names[:limit])
+    if len(names) > limit:
+        shown += f", ... and {len(names) - limit} more"
+    return shown
+
+
+def _fail_on_quarantined_files(
+    raw_names: list[str], files_done: int, batches: int, matched: int
+) -> None:
+    """
+    Fail the test if the converter quarantined any of the uploaded files.
+
+    Quarantined files produce no sample items, ever, so a pipeline that has
+    stopped moving with files in ``failed_files`` is finished - it just cannot
+    say so. Naming them (and the usual cause) beats the generic stall message
+    ten minutes later.
+
+    Only files this run uploaded count. The filestreams volume outlives the
+    stack (`demo_env` is a named volume) and nothing empties ``failed_files``,
+    so a previous run's casualties are sitting there for this one to find -
+    and the counters standing still for two polls is normal while a single
+    file converts, not evidence of a stall.
+
+    :param raw_names: Names of the raw files this run uploaded.
+    :param files_done: Files that have produced sample items so far.
+    :param batches: Sample batches created so far.
+    :param matched: Matched peaks so far.
+    """
+    n_files = len(raw_names)
+    folders, _ = _stream_folders()
+    quarantined = [name for name in folders.get("failed", []) if name in set(raw_names)]
+    if not quarantined:
+        return
+    shown = _sample_names(quarantined)
+    pytest.fail(
+        f"the file converter quarantined {len(quarantined)} of {n_files} uploaded "
+        f"file(s), which will never produce sample items: {shown}\n"
+        "A file quarantined shortly after the stack came up usually means its "
+        "upload raced the converter's socket connection: the file context the "
+        "upload endpoint emitted reached nobody, and processing failed with "
+        "'not registered in file converter service'. Re-upload those files once "
+        "the stack is idle.\n"
+        f"{files_done}/{n_files} files processed, {batches} batch(es), "
+        f"{matched} matched peak(s)\n" + _diagnose_missing_files()
+    )
+
+
+def _stream_folders() -> tuple[dict[str, list[str]], str]:
+    """
+    List the converter's pending and quarantined stream files.
+
+    The filestreams volume is shared with the backend container, so the listing
+    runs there. Diagnostic only - an unreadable volume yields empty lists rather
+    than an error, so a probe failure never masks the real assertion.
+
+    :return: ``({"pending": [...], "failed": [...]}, error)`` - stream files
+             still waiting in ``filestreams`` and those moved to
+             ``failed_files``, plus why the listing failed (empty on success).
+             An empty dict with an empty reason means the probe ran but printed
+             nothing.
+    """
+    probe = (
+        "import json, os\n"
+        "from mascope_backend.runtime import runtime\n"
+        "d = runtime.config.filestreams\n"
+        "def ls(p):\n"
+        "    if not os.path.isdir(p):\n"
+        "        return []\n"
+        "    # files only - subfolders like failed_files are not streams\n"
+        "    return sorted(\n"
+        "        f for f in os.listdir(p) if os.path.isfile(os.path.join(p, f))\n"
+        "    )\n"
+        "print(json.dumps({'pending': ls(d),"
+        " 'failed': ls(os.path.join(d, 'failed_files'))}))\n"
+    )
+    try:
+        res = _docker("exec", BACKEND_CONTAINER, CONTAINER_PYTHON, "-c", probe)
+        if res.returncode == 0 and res.stdout.strip():
+            return json.loads(res.stdout.strip().splitlines()[-1]), ""
+        return {}, res.stderr.strip()[:200] or f"exit {res.returncode}"
+    except Exception as e:  # noqa: BLE001 - diagnostics must never mask the failure
+        return {}, f"{type(e).__name__}: {e}"
 
 
 def _diagnose_missing_files() -> str:
@@ -323,40 +499,21 @@ def _diagnose_missing_files() -> str:
         )
         if no_items:
             names = no_items.splitlines()
-            shown = ", ".join(names[:20]) + (" ..." if len(names) > 20 else "")
             lines.append(
                 f"{len(names)} file(s) converted but auto-processing produced "
-                f"no sample items: {shown}"
+                f"no sample items: {_sample_names(names)}"
             )
-        # The filestreams volume is shared with the backend container; list
-        # the pending and quarantined stream files from there.
-        probe = (
-            "import json, os\n"
-            "from mascope_backend.runtime import runtime\n"
-            "d = runtime.config.filestreams\n"
-            "def ls(p):\n"
-            "    if not os.path.isdir(p):\n"
-            "        return []\n"
-            "    # files only - subfolders like failed_files are not streams\n"
-            "    return sorted(\n"
-            "        f for f in os.listdir(p) if os.path.isfile(os.path.join(p, f))\n"
-            "    )\n"
-            "print(json.dumps({'pending': ls(d),"
-            " 'failed': ls(os.path.join(d, 'failed_files'))}))\n"
-        )
-        res = _docker("exec", BACKEND_CONTAINER, CONTAINER_PYTHON, "-c", probe)
-        if res.returncode == 0 and res.stdout.strip():
-            folders = json.loads(res.stdout.strip().splitlines()[-1])
-            for key, label in (
-                ("pending", "stream file(s) never picked up by the converter"),
-                ("failed", "stream file(s) quarantined in failed_files"),
-            ):
-                if folders.get(key):
-                    lines.append(
-                        f"{len(folders[key])} {label}: " + ", ".join(folders[key][:20])
-                    )
-        else:
-            lines.append(f"(filestreams listing failed: {res.stderr.strip()[:200]})")
+        folders, error = _stream_folders()
+        if error:
+            lines.append(f"(filestreams listing failed: {error})")
+        for key, label in (
+            ("pending", "stream file(s) never picked up by the converter"),
+            ("failed", "stream file(s) quarantined in failed_files"),
+        ):
+            if folders.get(key):
+                lines.append(
+                    f"{len(folders[key])} {label}: {_sample_names(folders[key])}"
+                )
     except Exception as e:  # noqa: BLE001 - diagnostics must never mask the failure
         lines.append(f"(diagnostics unavailable: {e})")
     return "\n".join(lines)
