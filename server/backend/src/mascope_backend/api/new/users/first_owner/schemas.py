@@ -13,6 +13,12 @@ from mascope_backend.api.new.users.schemas import UserCreate
 class FirstOwnerCreate(UserCreate):
     """Schema for creating the first owner user with server secret validation."""
 
+    # Required again here, against the optional field on UserCreate: nobody is
+    # handing this account over, so there is no temporary password to generate -
+    # the first owner chooses their own and is never asked to replace it.
+    password: str = Field(
+        ..., description="Password the first owner chooses for themselves."
+    )
     server_secret: str = Field(
         ..., description="Server-specific secret required for owner registration"
     )
