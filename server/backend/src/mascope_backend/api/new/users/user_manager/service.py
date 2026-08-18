@@ -360,8 +360,8 @@ class UserManager(IntegerIDMixin, BaseUserManager[User, int]):
     ) -> None:
         """
         After user login:
-        1. Authenticate the socket connection
-        2. Generate file-converter access token for editor+ roles
+        1. Refresh the file-converter access token (editor+ roles)
+        2. Authenticate the socket connection
 
         :param user: The user that is logging in
         :param request: Optional FastAPI request
@@ -384,8 +384,19 @@ class UserManager(IntegerIDMixin, BaseUserManager[User, int]):
                 await clear_login_rate_limit(str(identifier))
 
         worker_pid = os.getpid()
+        # Step 1: the file-converter token. Uploads 401 without it, and it
+        # must exist however the user signs in - kept ahead of the socket
+        # step, whose sid check returns early for API logins (SDK, scripts,
+        # agent pairing).
         try:
-            # Step 1: Socket authentication
+            if user.role_id >= auth_settings.ROLE_ACCESS_LEVELS.get("editor"):
+                await regenerate_access_token(user=user, service_name="file-converter")
+        except Exception:
+            runtime.logger.exception(
+                f"Failed to refresh the file-converter token after login [Worker {worker_pid}]"
+            )
+        try:
+            # Step 2: Socket authentication (web-app logins carry a socket sid)
             if request and response and "set-cookie" in response.headers:
                 sid = request.headers.get("x-sid")
                 if not sid:
@@ -403,9 +414,6 @@ class UserManager(IntegerIDMixin, BaseUserManager[User, int]):
                 await authenticate_socket_connection(
                     sid=sid, token=jwt_token, minimum_role="guest"
                 )
-            # Step 2: Generate file converter access token for editor+ roles
-            if user.role_id >= auth_settings.ROLE_ACCESS_LEVELS.get("editor"):
-                await regenerate_access_token(user=user, service_name="file-converter")
         except SocketUnauthenticatedError as e:
             runtime.logger.warning(
                 f"Socket authentication failed after login: {str(e)} [Worker {worker_pid}]"
