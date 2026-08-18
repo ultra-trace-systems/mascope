@@ -10,7 +10,7 @@ dependencies = [
     "datashader>=0.19.1,<0.20",
     "h5py~=3.11",
     "numpy~=1.26",
-    "pandas~=2.2",
+    "pandas~=3.0",
     "pillow~=12.1",
     "xarray>=2025.06.1",
 ]
