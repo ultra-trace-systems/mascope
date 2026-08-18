@@ -1,9 +1,9 @@
 import socketio
 
-from mascope_backend.api.new.auth.service_token import FILE_CONVERTER_SERVICE_TOKEN
 from mascope_backend.file_converter.socket.events import SocketEventHandler
 from mascope_backend.file_converter.socket.session import FileContextManager
 from mascope_backend.runtime import runtime
+from mascope_backend.service_token import FILE_CONVERTER_SERVICE_TOKEN
 
 
 class FileConverterSocketClient:

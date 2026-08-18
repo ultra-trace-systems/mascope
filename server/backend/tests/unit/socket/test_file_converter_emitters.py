@@ -1,10 +1,13 @@
 """
-Token-bearing file-converter payloads reach the converter's own connection only,
-never a namespace broadcast.
+Token-bearing file-converter payloads go to the converter room, never to the
+namespace at large.
 
-``file_context`` and ``peak_detection_request`` both carry a user's access token.
-These lock in that the emitter targets the registered converter sid (``to=``) and
-drops the payload - rather than broadcasting it - when no converter is connected.
+``file_context`` and ``peak_detection_request`` both carry a user's access
+token. Only authenticated converter connections are members of
+``FILE_CONVERTER_ROOM`` (the connect handler joins them after verifying the
+service secret), so a room-targeted emit can never reach a socket that merely
+connected to the namespace, and it reaches every converter regardless of which
+worker holds its connection.
 """
 
 from unittest.mock import AsyncMock, patch
@@ -37,35 +40,13 @@ _PEAK_REQUEST = {
         ),
     ],
 )
-async def test_payload_is_sent_only_to_the_registered_converter(
-    handler, event, payload
-):
-    with (
-        patch(
-            f"{_MODULE}.get_service_sid", new=AsyncMock(return_value="converter-sid")
-        ),
-        patch(f"{_MODULE}.sio.emit", new_callable=AsyncMock) as emit,
-    ):
+async def test_payload_targets_the_converter_room(handler, event, payload):
+    with patch(f"{_MODULE}.sio.emit", new_callable=AsyncMock) as emit:
         await handler(payload)
 
     emit.assert_awaited_once_with(
-        event, payload, namespace="/file-converter", to="converter-sid"
+        event,
+        payload,
+        namespace="/file-converter",
+        room=emitters.FILE_CONVERTER_ROOM,
     )
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize(
-    "handler, payload",
-    [
-        (emitters.send_file_context_to_converter, _FILE_CONTEXT),
-        (emitters.send_peak_detection_request_to_converter, _PEAK_REQUEST),
-    ],
-)
-async def test_payload_is_dropped_when_no_converter_is_connected(handler, payload):
-    with (
-        patch(f"{_MODULE}.get_service_sid", new=AsyncMock(return_value=None)),
-        patch(f"{_MODULE}.sio.emit", new_callable=AsyncMock) as emit,
-    ):
-        await handler(payload)
-
-    emit.assert_not_awaited()

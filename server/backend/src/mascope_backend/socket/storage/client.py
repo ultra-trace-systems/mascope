@@ -50,7 +50,16 @@ class RedisStorageClient:
         redis_url = runtime.config.redis.get_redis_url()
 
         try:
-            self._client = from_url(redis_url, decode_responses=True)
+            # This client is consulted inline by API requests (e.g. the
+            # converter-availability gate before uploads and peak detection).
+            # No blocking Redis commands are used on it, so the timeouts bound
+            # how long a hung Redis connection can stall a request mid-await.
+            self._client = from_url(
+                redis_url,
+                decode_responses=True,
+                socket_timeout=5,
+                socket_connect_timeout=5,
+            )
             # Test connection
             await self._client.ping()
 

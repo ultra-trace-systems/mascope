@@ -58,6 +58,11 @@ and the checkout.
    head -c 32 /dev/urandom | xxd -p -c 32 > .runtime/secrets/server_owner_secret_key.txt
    ```
 
+   `jwt_secret_key` is shared by the backend and the file-converter service (the
+   converter derives its service-authentication token from it), so if you ever
+   rotate it, restart both containers - a converter running with the old secret
+   is refused until restarted.
+
 4. **Set up TLS** - pick the option that fits your audience:
    - **Self-signed** (`mascope cert gen` writes `mascope.app.pem`/`.key` into
      `.runtime/secrets/`): works immediately; each user clicks through a one-time
