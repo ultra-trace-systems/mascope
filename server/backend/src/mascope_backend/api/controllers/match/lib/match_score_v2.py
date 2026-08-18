@@ -14,11 +14,13 @@ NOTE: this is a pure function (unit-tested via mascope_tools). End-to-end behavi
 in the live match pipeline must be validated with the backend test suite.
 
 SNR: real `signal_to_noise` is carried on the isotope rows of the compute path
-(compute_match_isotopes -> load_peaks coord -> _parse_and_filter_peaks -> _match_assign).
-The DB-read paths have none — `match_isotope` does not persist the column — and rows
-missing it are passed through as NaN, i.e. an honest "no SNR for this row", which
-`score_pattern_v2` scores in its no-SNR mode (fixed instrument mass width, abundance-floor
-intensity tolerance, abundance-based detectability gate). There is deliberately no
+(compute_match_isotopes -> load_peaks coord -> _parse_and_filter_peaks -> _match_assign)
+and persisted on `match_isotope`, so the DB-read paths carry it too. A row without a
+value (files with no noise data, and rows stored before the column existed) is passed
+through as NaN, i.e. an honest "no SNR for this row", which `score_pattern_v2` scores
+in its no-SNR mode PER ROW (fixed instrument mass width, abundance-floor intensity
+tolerance; the detectability gate keys on the BASE row's SNR, falling back to the
+abundance gate only when that is unknown). There is deliberately no
 intensity-derived proxy SNR: intensity over a per-sample intensity percentile measures
 DYNAMIC RANGE, not signal-to-noise, and the ~4 it typically produced for a base peak
 silently disabled the detectability gate and widened every mass tolerance. It also made
@@ -147,8 +149,9 @@ def ion_score_v2(
     if "is_satellite" in g.columns:
         sat = g["is_satellite"].fillna(False).astype(bool).to_numpy()
         oi = np.where(sat, 0.0, oi)
-    # Per-row NaN is a first-class value: "no SNR for this row". None says the same for
-    # the whole ion (the DB-read paths, which carry no signal_to_noise column at all).
+    # Per-row NaN/None is a first-class value: "no SNR for this row" (files without
+    # noise data, and rows stored before match_isotope persisted the column). A frame
+    # with no column at all says the same for the whole ion.
     snr = (
         pd.to_numeric(g["signal_to_noise"], errors="coerce").to_numpy(float)
         if "signal_to_noise" in g
