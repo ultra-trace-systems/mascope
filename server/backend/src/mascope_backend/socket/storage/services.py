@@ -116,6 +116,8 @@ async def stop_presence_renewal(service_name: str, sid: str) -> None:
         try:
             await task
         except asyncio.CancelledError:
+            # Expected: the task was cancelled just above; awaiting it only lets
+            # the cancellation settle before we return.
             pass
 
 
