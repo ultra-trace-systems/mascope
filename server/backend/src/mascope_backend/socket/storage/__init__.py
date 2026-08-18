@@ -17,6 +17,7 @@ from mascope_backend.socket.storage.rooms import (
     room_tracker,
 )
 from mascope_backend.socket.storage.services import (
+    get_service_sid,
     is_service_connected,
     register_service,
     unregister_service,
@@ -38,4 +39,5 @@ __all__ = [
     "register_service",
     "unregister_service",
     "is_service_connected",
+    "get_service_sid",
 ]
