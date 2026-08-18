@@ -1518,6 +1518,7 @@ dependencies = [
     { name = "alembic" },
     { name = "asyncpg" },
     { name = "colorcet" },
+    { name = "cryptography" },
     { name = "fastapi" },
     { name = "fastapi-users", extra = ["oauth", "sqlalchemy"] },
     { name = "httpx" },
@@ -1538,6 +1539,7 @@ dependencies = [
     { name = "pandas" },
     { name = "psycopg2-binary" },
     { name = "pyarrow" },
+    { name = "pyotp" },
     { name = "python-multipart" },
     { name = "python-socketio" },
     { name = "pyyaml" },
@@ -1558,6 +1560,7 @@ requires-dist = [
     { name = "alembic", specifier = ">=1.19.1,<2" },
     { name = "asyncpg", specifier = ">=0.31.0" },
     { name = "colorcet", specifier = "~=3.1" },
+    { name = "cryptography", specifier = ">=43,<51" },
     { name = "fastapi", specifier = ">=0.141.1,<1" },
     { name = "fastapi-users", extras = ["oauth", "sqlalchemy"], specifier = ">=15.0.5,<16" },
     { name = "httpx", specifier = ">=0.28.0,<0.29" },
@@ -1578,6 +1581,7 @@ requires-dist = [
     { name = "pandas", specifier = "~=2.2" },
     { name = "psycopg2-binary", specifier = ">=2.9.12" },
     { name = "pyarrow", specifier = ">=25.0.0" },
+    { name = "pyotp", specifier = ">=2.9,<3" },
     { name = "python-multipart", specifier = ">=0.0.31,<0.0.32" },
     { name = "python-socketio", specifier = ">=5.16.3,<6" },
     { name = "pyyaml", specifier = "~=6.0" },
@@ -2631,6 +2635,15 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/21/a9/5f0c535ba3b08fe09270c16808e053a968868242ecbd5676d4e3a488bf28/pymdown_extensions-11.0.1.tar.gz", hash = "sha256:dd2905ae6fc5b75582fafb139a1266ffc754705efa902aa50067fa7ff4f94ec0", size = 857113, upload-time = "2026-07-02T17:59:22.955Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/d6/54/da572c98c0b77626a91b5d3b89f0231d8bff5125c225420908632f8b342d/pymdown_extensions-11.0.1-py3-none-any.whl", hash = "sha256:db3943a62bab7e03af1364f0c4083e64b91fb097675a4b6cceccfbe9a77e5eb2", size = 269455, upload-time = "2026-07-02T17:59:21.271Z" },
+]
+
+[[package]]
+name = "pyotp"
+version = "2.10.0"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/2d/c6/c5d96a86fd0bf6fa1bbb5c5c341ff3208638b692727a683c8289068d9a11/pyotp-2.10.0.tar.gz", hash = "sha256:d01e9703443616b03c57c700b5cbffd56a1f929c1b0f8f03131bc78c1fca9d3f", size = 18625, upload-time = "2026-06-14T03:48:49.221Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/65/33/7b83bde70eddaaaaef487751a9c3a5cc0c0be54620ded0e120ebdc401ff9/pyotp-2.10.0-py3-none-any.whl", hash = "sha256:1df2f6a1bcc3bb0716172a5215ddc2f8c7c7fd26a13df9927d52e1746934836c", size = 13768, upload-time = "2026-06-14T03:48:47.831Z" },
 ]
 
 [[package]]

@@ -74,6 +74,7 @@ services:
       MASCOPE_DEMO_DB_PASSWORD: ${MASCOPE_DEMO_DB_PASSWORD:-mascope_demo_pw}
       MASCOPE_DEMO_JWT_SECRET: ${MASCOPE_DEMO_JWT_SECRET:-mascope_demo_jwt_secret}
       MASCOPE_DEMO_OWNER_SECRET: ${MASCOPE_DEMO_OWNER_SECRET:-mascope_demo_owner_secret}
+      MASCOPE_DEMO_MFA_KEY: ${MASCOPE_DEMO_MFA_KEY:-mascope_demo_mfa_key}
       # 1 = restore only the reference seed (no samples) so raw files can be
       # ingested through the real pipeline; used by the reproducibility test.
       MASCOPE_DEMO_REBUILD: ${MASCOPE_DEMO_REBUILD:-0}

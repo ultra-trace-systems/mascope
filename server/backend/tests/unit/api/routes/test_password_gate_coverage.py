@@ -79,6 +79,14 @@ EXPECTED_EXEMPT_ROUTES = {
 KNOWN_UNGATED_ROUTES = {
     ("POST", "/login"),
     ("POST", "/logout"),
+    # Second step of signing in. Ungated for the same reason as /login: its
+    # caller holds no session, because none is minted until this route accepts
+    # the code. Its credential is the short-lived pending token from the
+    # password step, which no other route accepts and which the session
+    # strategy cannot read (different secret, different audience). A gated
+    # account reaches it before the password screen exists for them, and the
+    # gate then applies to the session it returns.
+    ("POST", "/mfa/verify"),
     ("POST", "/pairing/start"),
     ("POST", "/pairing/poll"),
     ("GET", "/api/users/first-owner/status"),

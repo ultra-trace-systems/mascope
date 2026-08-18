@@ -115,6 +115,13 @@ export default {
       }
     }
 
+    // Credentials passed but a second factor is still owed. Caught before the
+    // success branch below, which would otherwise announce a sign-in that has
+    // not happened - no session cookie exists until the code is verified.
+    if (data?.mfa_required) {
+      return { mfaRequired: true }
+    }
+
     // Handle unauthorized access for other auth types
     if (status === 401) {
       app.ui.notification.push({

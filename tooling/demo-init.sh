@@ -24,7 +24,7 @@
 #
 # Required environment (set by docker-compose.demo.yaml):
 #   MASCOPE_ENV, MASCOPE_DB_NAME, MASCOPE_DB_USER, MASCOPE_DEMO_DB_PASSWORD,
-#   MASCOPE_DEMO_JWT_SECRET, MASCOPE_DEMO_OWNER_SECRET
+#   MASCOPE_DEMO_JWT_SECRET, MASCOPE_DEMO_OWNER_SECRET, MASCOPE_DEMO_MFA_KEY
 # Optional:
 #   MASCOPE_DEMO_REBUILD (default 0)
 
@@ -56,6 +56,7 @@ mkdir -p "$SECRETS_DIR"
 printf '%s' "${MASCOPE_DEMO_DB_PASSWORD}" > "$SECRETS_DIR/postgres_password.txt"
 printf '%s' "${MASCOPE_DEMO_JWT_SECRET}" > "$SECRETS_DIR/jwt_secret_key.txt"
 printf '%s' "${MASCOPE_DEMO_OWNER_SECRET}" > "$SECRETS_DIR/server_owner_secret_key.txt"
+printf '%s' "${MASCOPE_DEMO_MFA_KEY}" > "$SECRETS_DIR/mfa_encryption_key.txt"
 log_info "Wrote demo secret files to $SECRETS_DIR"
 
 export PGPASSWORD="${MASCOPE_DEMO_DB_PASSWORD}"

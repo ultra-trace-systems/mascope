@@ -38,6 +38,11 @@ GENERATED_SECRETS = (
     "postgres_password.txt",
     "jwt_secret_key.txt",
     "server_owner_secret_key.txt",
+    # Encrypts stored TOTP seeds. Kept separate from the JWT secret rather than
+    # derived from it: seeds outlive many signing-key rotations, and a rotation
+    # that silently made every enrolled seed undecryptable would lock every user
+    # of a deployment out at once.
+    "mfa_encryption_key.txt",
 )
 
 # Directories the containers bind-mount from the home. Docker creates missing

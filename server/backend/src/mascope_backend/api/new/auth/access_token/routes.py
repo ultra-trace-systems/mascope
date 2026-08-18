@@ -9,6 +9,7 @@ from mascope_backend.api.new.auth.dependencies import (
     guest_user,
     role_based_access,
 )
+from mascope_backend.api.new.auth.mfa.reauth import require_recent_mfa
 
 
 # Access token-based routes for Jupyter server or external API access
@@ -30,7 +31,14 @@ async def access_token_regenerate_route(
     - file-agent: editor or higher - for File agent access
     - export-agent: editor or higher - for Export agent access
     - file-converter: internal service, managed automatically
+
+    An account with a second factor must have presented a code recently. The
+    token this returns is valid for a year and is not bound to the session that
+    asked for it, so a session alone must not be enough to obtain one - that
+    would let a single stolen session outlast the factor permanently.
     """
+    await require_recent_mfa(user)
+
     service_name = access_token_request.service_name
 
     match service_name:

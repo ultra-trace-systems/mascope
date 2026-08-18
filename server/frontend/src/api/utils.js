@@ -36,6 +36,20 @@ export function getApiErrorMessage(error, fallback = 'An error occurred') {
   return error?.response?.data?.error || error?.message || fallback
 }
 
+/**
+ * Whether a failed call was refused because it needs a freshly presented
+ * second-factor code.
+ *
+ * Matched on the machine-readable code rather than the status: it is a 403
+ * shared with ordinary permission failures, and prose is not a contract.
+ *
+ * @param {*} error the caught error (usually an axios error)
+ * @returns {boolean} true when the caller should prompt for a code and retry
+ */
+export function needsMfaReauth(error) {
+  return error?.response?.data?.detail?.code === 'mfa_reauth_required'
+}
+
 export function snakeToCamel(snakeCaseStr) {
   return snakeCaseStr.replace(/(_\w)/g, (match) => {
     return match[1].toUpperCase()

@@ -170,8 +170,10 @@ services:
       POSTGRES_PASSWORD_FILE: /run/secrets/postgres_password
       JWT_SECRET_KEY_FILE: /run/secrets/jwt_secret_key
       SERVER_OWNER_SECRET_KEY_FILE: /run/secrets/server_owner_secret_key
+      MFA_ENCRYPTION_KEY_FILE: /run/secrets/mfa_encryption_key
     secrets:
       - jwt_secret_key
+      - mfa_encryption_key
       - postgres_password
       - server_owner_secret_key
   file_converter:
@@ -213,6 +215,8 @@ volumes:
 secrets:
   jwt_secret_key:
     file: .runtime/secrets/jwt_secret_key.txt
+  mfa_encryption_key:
+    file: .runtime/secrets/mfa_encryption_key.txt
   postgres_password:
     file: .runtime/secrets/postgres_password.txt
   server_owner_secret_key:
