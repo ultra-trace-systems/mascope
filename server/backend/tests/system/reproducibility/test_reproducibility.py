@@ -367,7 +367,12 @@ def _wait_for_pipeline(raw_names: list[str]) -> None:
         # the stage breakdown instead of idling to the full timeout.
         state = (files_done, batches, processing, matched)
         stalled = stalled + 1 if state == last_state else 0
-        if stalled == QUARANTINE_CHECK_POLLS:
+        # Check on every frozen poll past the threshold, not only the poll that
+        # first reaches it: a file can be quarantined several polls into a stall
+        # (its batch fails after the counters already froze), and a one-shot
+        # "== QUARANTINE_CHECK_POLLS" check would miss that and idle out the full
+        # STALL_POLLS window before reporting only a generic stall.
+        if stalled >= QUARANTINE_CHECK_POLLS:
             _fail_on_quarantined_files(raw_names, files_done, batches, matched)
         if stalled >= STALL_POLLS:
             pytest.fail(
