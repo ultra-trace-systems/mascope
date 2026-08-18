@@ -4,20 +4,6 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
 
 ## [Unreleased]
 
-### Fixed
-
-- Signing in outside the browser (SDK scripts, automation) now issues the
-  file-converter access token exactly like a browser sign-in does. The token
-  is resolved server-side for every upload, but it was only minted when the
-  sign-in carried a web-app socket id - so an editor account provisioned and
-  agent-paired entirely through the API had every File Agent upload refused
-  with a misleading "check your API token" error until its first browser
-  sign-in.
-- `tooling/smoke-test.sh` can now verify a production deployment serving the
-  self-signed `mascope cert gen` certificate: set `SMOKE_INSECURE=1` to skip
-  TLS verification. Its plain curls previously failed on the certificate
-  before reaching any check.
-
 ## [1.7.1] - 2026.08.18
 
 ### Changed
@@ -39,6 +25,17 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
 
 ### Fixed
 
+- Signing in outside the browser (SDK scripts, automation) now issues the
+  file-converter access token exactly like a browser sign-in does. The token
+  is resolved server-side for every upload, but it was only minted when the
+  sign-in carried a web-app socket id - so an editor account provisioned and
+  agent-paired entirely through the API had every File Agent upload refused
+  with a misleading "check your API token" error until its first browser
+  sign-in.
+- `tooling/smoke-test.sh` can now verify a production deployment serving the
+  self-signed `mascope cert gen` certificate: set `SMOKE_INSECURE=1` to skip
+  TLS verification. Its plain curls previously failed on the certificate
+  before reaching any check.
 - A demo bundle can no longer be published with goldens that cover only part of
   its raw files. `mascope demo --rebuild` could quietly ingest fewer files than
   the bundle contains and still finish with every sample batch `ready`, and
