@@ -39,7 +39,7 @@ dev = [
 ]
 # `mascope demo build-bundle` / `verify` peak comparison (imported lazily).
 demo = [
-    "pandas>=2.0.0",
+    "pandas>=3.0.5",
     "requests>=2.32.0,<3",
 ]
 
