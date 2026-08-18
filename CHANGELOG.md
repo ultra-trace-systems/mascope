@@ -15,6 +15,19 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
   the hashed `/assets/` bundles with a one-year lifetime, and the banner's
   Reload button now refreshes the browser's cached copy of `index.html` before
   reloading, so it always lands on the new build.
+- The penetration-test suite no longer reports a baseline entry as stale when its
+  check never ran. An accepted finding that produced no finding was taken to
+  mean the control now passes - true of a full run, but not of a single module
+  or a `-k` filter, where the check is not collected at all. A narrow run therefore
+  advised removing entries that were still doing their job, and removing one
+  leaves nothing to catch that finding's return. Entries whose checks a run did
+  not collect are now reported as unevaluated, distinct from both accepted and
+  stale.
+- A stale baseline entry now fails the run on its own. Previously staleness could
+  only withhold a pass from a run that had already failed, so a run whose controls
+  all passed printed the warning and still exited zero - meaning a scheduled job
+  would never have surfaced the one state in which the baseline silently absorbs a
+  returning finding.
 
 ## [1.7.0] - 2026.08.17
 
