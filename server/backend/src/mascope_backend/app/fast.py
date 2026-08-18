@@ -21,7 +21,13 @@ from mascope_backend.api.lib.exceptions.api_exceptions import handle_exception
 from mascope_backend.api.lib.rate_limit import client_ip
 from mascope_backend.api.routes import routers
 from mascope_backend.db import init_db
-from mascope_backend.origins import dev_origin_regex, dev_origins
+from mascope_backend.origins import (
+    dev_origin_regex,
+    dev_origins,
+    is_trusted_write_origin,
+    origin_of,
+    own_request_origins,
+)
 from mascope_backend.runtime import runtime
 from mascope_backend.socket.storage import redis_storage_client
 
@@ -103,6 +109,60 @@ def _docs_kwargs(mode: str) -> dict[str, str | None]:
 
 # Initialize FastAPI with the lifespan.
 fast = FastAPI(lifespan=lifespan, **_docs_kwargs(runtime.mode))
+
+
+#: Methods a cross-site page could use to change state with the victim's
+#: ambient cookie. Safe methods stay unchecked, as does OPTIONS: the CORS
+#: preflight must be answerable from anywhere, and neither changes state.
+_STATE_CHANGING_METHODS = frozenset({"POST", "PUT", "PATCH", "DELETE"})
+
+
+# Cross-site write guard. Defined before the logging middleware on purpose:
+# earlier-added middleware sits closer to the app, so refusals travel back out
+# through the logger and appear in the access log.
+@fast.middleware("http")
+async def origin_guard(request: Request, call_next):
+    """
+    Refuse a state-changing request that declares a foreign origin.
+
+    CSRF defence in depth. The auth cookie is ``SameSite=lax``, so browsers
+    already withhold it on cross-site writes - but that is one cookie
+    attribute deep, says nothing about non-browser clients, and vanishes
+    silently the day the cookie needs ``SameSite=None`` (an embedding or a
+    cross-subdomain client). This check does not depend on the visitor's
+    browser: a write whose ``Origin`` (or, when absent, ``Referer``) is not
+    this deployment's own is answered 403 before routing, so every endpoint -
+    current and future - inherits it.
+
+    A request declaring no origin at all passes. The CSRF vector is a browser,
+    and browsers do send ``Origin`` on cross-site state-changing requests;
+    what sends neither header is the non-browser clients - the instrument
+    agents' token-authenticated uploads, the file converter, curl - for which
+    an absent declaration is not a mismatch. Socket.IO traffic never reaches
+    this guard (the ASGI wrapper answers it first); its handshake makes the
+    same check itself, from the same policy module.
+    """
+    if request.method in _STATE_CHANGING_METHODS:
+        claimed = request.headers.get("Origin") or origin_of(
+            request.headers.get("Referer")
+        )
+        if claimed is not None and not is_trusted_write_origin(
+            claimed,
+            own_request_origins(
+                request.url.scheme,
+                request.url.netloc,
+                request.headers.get("X-Forwarded-Proto"),
+                request.headers.get("X-Forwarded-Host"),
+            ),
+            dev=runtime.mode == "dev",
+        ):
+            exc = HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=f"{claimed} is not an accepted origin for "
+                "state-changing requests",
+            )
+            return handle_exception(exc, "Access denied", response_type="http")
+    return await call_next(request)
 
 
 # Logging middleware
