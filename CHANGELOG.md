@@ -6,6 +6,16 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
 
 ### Fixed
 
+- The "Learn more" links in help-mode popovers are now reachable. Help cards
+  are matched to the pointer purely by geometry, with nothing accounting for
+  what covers what, so a popover that overhangs a neighbouring panel - the
+  "Raw files" tab card hangs over the sample browser - counted as hovering that
+  panel as well. Reaching for the link swapped the popover for the covered
+  panel's card partway there, and the click landed on the wrong documentation
+  page. A popover now holds its card for as long as the pointer is on it, and
+  extends its hover area across the gap to whatever opened it, so the link
+  stays where it was aimed at.
+
 - The "new version of Mascope is available" banner no longer reappears on
   every tab refocus after a release. nginx served `index.html` with no cache
   policy, so browsers applied heuristic caching and kept booting the previous
