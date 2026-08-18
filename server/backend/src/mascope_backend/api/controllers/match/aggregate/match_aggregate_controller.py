@@ -324,6 +324,7 @@ async def aggregate_match_isotope_filtered_data(
                 MatchIsotope.sample_peak_mz,
                 MatchIsotope.sample_peak_tof,
                 MatchIsotope.match_score,
+                MatchIsotope.signal_to_noise,
             )
             .select_from(MatchIsotope)
             .where(MatchIsotope.sample_item_id.in_(sample_item_ids))
