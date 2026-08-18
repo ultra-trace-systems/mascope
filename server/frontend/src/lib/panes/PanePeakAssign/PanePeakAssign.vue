@@ -23,6 +23,22 @@ const focusedAssignment = computed(() =>
   app.data.peakAssignment.peak.forPeak(app.data.peak.focused?.peak_id)
 )
 
+// The ledger rows are a slim projection; the full record (alternatives +
+// provenance) is fetched per assignment when its peak is focused. Until it
+// arrives the inspector renders the slim fields and the detail sections fill
+// in, so a slow fetch degrades to less detail rather than an empty inspector.
+const focusedDetail = computed(() =>
+  app.data.peakAssignment.peak.detailOf(focusedAssignment.value?.peak_assignment_id)
+)
+watch(
+  focusedAssignment,
+  (assignment) => {
+    // Failures already toast via the http layer; the inspector just stays slim.
+    if (assignment) app.data.peakAssignment.peak.loadDetail(assignment).catch(() => {})
+  },
+  { immediate: true }
+)
+
 // --- Verification (labelling) capture -------------------------------------
 // The current verdict for the focused assignment (by stable identity), plus a
 // small confirm/reject/unsure form. See docs/dev/verification_capture_frontend.md.
@@ -88,7 +104,15 @@ watch(
 
 // Arbitration / chemistry provenance: chemical plausibility (Seven Golden
 // Rules), arbitration confidence, calibrated P(correct), and a tie flag.
-const provenance = computed(() => focusedAssignment.value?.provenance ?? null)
+// From the detail fetch; the fallback covers pre-slim rows that carry it.
+const provenance = computed(
+  () => focusedDetail.value?.provenance ?? focusedAssignment.value?.provenance ?? null
+)
+
+// Close alternatives (runner-ups), same detail-then-fallback resolution.
+const alternatives = computed(
+  () => focusedDetail.value?.alternatives ?? focusedAssignment.value?.alternatives ?? []
+)
 
 const fitPercent = new Intl.NumberFormat('en-US', {
   style: 'percent',
@@ -332,14 +356,14 @@ const altTooltip = (alt) => {
             </div>
           </div>
         </div>
-        <div v-if="focusedAssignment.alternatives?.length" class="alts">
+        <div v-if="alternatives.length" class="alts">
           <div class="alts-label">
             Close alternatives
-            <span class="alts-count">{{ focusedAssignment.alternatives.length }}</span>
+            <span class="alts-count">{{ alternatives.length }}</span>
           </div>
           <div class="alts-list">
             <div
-              v-for="(alt, i) in focusedAssignment.alternatives"
+              v-for="(alt, i) in alternatives"
               :key="i"
               class="alt"
               v-tooltip.left="altTooltip(alt)"

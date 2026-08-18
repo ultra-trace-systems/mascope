@@ -110,6 +110,74 @@ async def test_get_assignments_unknown_run_id_returns_404(guest_client, pa_test_
 
 
 @pytest.mark.asyncio
+async def test_list_rows_are_slim_with_flattened_confidence_scalars(
+    guest_client, pa_test_data
+):
+    """The ledger list is a slim projection of the run.
+
+    `alternatives`/`provenance` are ~74% of a full row's bytes and only the
+    peak inspector reads them, so the list drops them and instead flattens the
+    few provenance scalars the ledger columns render.
+    """
+    response = await guest_client.get(
+        f"/api/peak-assignments/sample/{pa_test_data['sample_item_id']}"
+    )
+    assert response.status_code == 200
+    body = response.json()
+
+    for row in body["data"]:
+        assert "alternatives" not in row
+        assert "provenance" not in row
+
+    by_peak = {row["sample_peak_id"]: row for row in body["data"]}
+    assigned = by_peak["peak-1"]
+    assert assigned["p_correct"] == pytest.approx(0.93)
+    assert assigned["p_correct_provisional"] is True
+    assert assigned["corroboration_adducts"] == 2
+
+    # A row without provenance reports the scalars as null, not missing.
+    unassigned = by_peak["peak-3"]
+    assert unassigned["p_correct"] is None
+    assert unassigned["p_correct_provisional"] is None
+    assert unassigned["corroboration_adducts"] is None
+
+
+@pytest.mark.asyncio
+async def test_detail_returns_the_full_assignment(guest_client, pa_test_data):
+    """The detail endpoint serves one assignment whole (a list-row superset)."""
+    response = await guest_client.get(
+        f"/api/peak-assignments/sample/{pa_test_data['sample_item_id']}"
+        f"/assignment/{pa_test_data['m0_assignment_id']}"
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["results"] == 1
+    (record,) = body["data"]
+
+    assert record["peak_assignment_id"] == pa_test_data["m0_assignment_id"]
+    assert record["sample_peak_id"] == "peak-1"
+    assert record["assigned_formula"] == "C6H12O6"
+
+    # The inspector detail the list omits...
+    assert record["alternatives"][0]["assigned_formula"] == "C7H16O5"
+    assert record["provenance"]["plausibility"] == pytest.approx(0.9)
+    assert record["provenance"]["corroboration"]["adducts"] == ["+H+", "+Na+"]
+    # ...plus the same flattened scalars the list rows carry.
+    assert record["p_correct"] == pytest.approx(0.93)
+    assert record["p_correct_provisional"] is True
+    assert record["corroboration_adducts"] == 2
+
+
+@pytest.mark.asyncio
+async def test_detail_unknown_assignment_returns_404(guest_client, pa_test_data):
+    response = await guest_client.get(
+        f"/api/peak-assignments/sample/{pa_test_data['sample_item_id']}"
+        "/assignment/does-not-exist-42"
+    )
+    assert response.status_code == 404
+
+
+@pytest.mark.asyncio
 async def test_assign_requires_editor_role(guest_client, pa_test_data):
     response = await guest_client.post(
         f"/api/peak-assignments/sample/{pa_test_data['sample_item_id']}/assign"

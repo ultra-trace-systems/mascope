@@ -124,7 +124,7 @@ applies rather than a null overriding it.
 
 ## 1. The backend contract (what we consume)
 
-Nine endpoints, all under `/api/peak-assignments` (see
+Ten endpoints, all under `/api/peak-assignments` (see
 [`routes.py`](../../server/backend/src/mascope_backend/api/new/peak_assignments/routes.py)). The
 write routes (assign / verify / recalibrate) are additionally gated on the opt-in flag —
 `require_peak_assignment_enabled` returns 403 with the feature off; the reads stay open so ledgers
@@ -132,7 +132,8 @@ from opted-in periods remain inspectable:
 
 | Method | Path | Returns | Notes |
 |---|---|---|---|
-| `GET` | `/sample/{sample_item_id}` | `{ data: PeakAssignment[], total, results }` | Query: `peak_assignment_run_id?`, `tier?`, `role?`, `source?`, `limit?`, `offset?`. No run id ⇒ **latest completed** run. |
+| `GET` | `/sample/{sample_item_id}` | `{ data: PeakAssignment[], total, results }` | Query: `peak_assignment_run_id?`, `tier?`, `role?`, `source?`, `limit?`, `offset?`. No run id ⇒ **latest completed** run. **Slim rows** — no `alternatives` / `provenance`. |
+| `GET` | `/sample/{sample_item_id}/assignment/{peak_assignment_id}` | `{ data: [PeakAssignmentDetail] }` | One assignment in full (`alternatives` + `provenance`); fetched by the inspector on peak selection. |
 | `GET` | `/sample/{sample_item_id}/runs` | `{ data: PeakAssignmentRun[] }` | Newest first. |
 | `GET` | `/sample/{sample_item_id}/verifications` | `{ data: AssignmentVerification[] }` | Append-only verdict history, newest first. |
 | `POST` | `/sample/{sample_item_id}/verify` | `201` | Record confirm / reject / unsure. Requires `editor` + flag. |
@@ -154,7 +155,8 @@ assigned_formula · ion_formula · ionization_mechanism_id · isotope_label
 fit_score · mz_error_ppm · abundance_error
 target_compound_id · target_ion_id        (nullable — set when the winner came from the library)
 owner_peak_assignment_id                   (an iso_child points at its M0)
-alternatives (JSON list) · provenance (JSON)
+p_correct · p_correct_provisional · corroboration_adducts   (flattened for the ledger columns)
+alternatives (JSON list) · provenance (JSON)    — detail endpoint only (~74% of a full row's bytes)
 ```
 
 > **Confidence fields.** `provenance` carries the confidence story — including the calibrated

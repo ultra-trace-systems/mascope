@@ -21,10 +21,9 @@ AssignmentTier = Literal["identified", "candidate", "below_assignability", "unas
 AssignmentRole = Literal["M0", "iso_child", "reagent", "artifact", "unassigned"]
 AssignmentSource = Literal["database", "untargeted"]
 
-# A run holds one row per detected peak, each carrying alternatives and
-# provenance JSON, so an unbounded read serializes tens of megabytes through
-# Pydantic on the event loop. Clients page instead; the response carries `total`
-# so they know when they have the run.
+# A run holds one row per detected peak, so an unbounded read serializes tens
+# of megabytes through Pydantic on the event loop. Clients page instead; the
+# response carries `total` so they know when they have the run.
 DEFAULT_PAGE_LIMIT = 1000
 MAX_PAGE_LIMIT = 5000
 
@@ -43,7 +42,15 @@ class PeakAssignmentRunRecord(BaseModel):
 
 
 class PeakAssignmentRecord(BaseModel):
-    """One observed peak with its committed assignment."""
+    """One observed peak with its committed assignment (slim ledger row).
+
+    The list endpoint serves this slim projection: the `alternatives` and
+    `provenance` JSON blobs are roughly three quarters of a full row's bytes
+    and are read only when a user inspects a single peak, so they live on
+    :class:`PeakAssignmentDetailRecord` (the per-assignment detail endpoint)
+    instead. The few provenance-derived scalars the ledger columns render are
+    flattened onto the row.
+    """
 
     peak_assignment_id: str
     peak_assignment_run_id: str
@@ -66,6 +73,19 @@ class PeakAssignmentRecord(BaseModel):
     target_compound_id: str | None = None
     target_ion_id: str | None = None
     owner_peak_assignment_id: str | None = None
+    #: Calibrated probability the assignment is correct (provenance.p_correct),
+    #: flattened for the ledger's sortable P(correct) column.
+    p_correct: float | None = None
+    #: Whether the calibration curve behind p_correct is provisional.
+    p_correct_provisional: bool | None = None
+    #: Number of adducts corroborating the compound (provenance.corroboration),
+    #: flattened for the ledger's corroboration marker.
+    corroboration_adducts: int | None = None
+
+
+class PeakAssignmentDetailRecord(PeakAssignmentRecord):
+    """A full assignment row: the slim ledger row plus the inspector detail."""
+
     alternatives: list | None = None
     provenance: dict | None = None
 
@@ -86,6 +106,15 @@ class PeakAssignmentsResponse(BaseModel):
     #: is done. ``results`` is the size of this page.
     total: int = 0
     data: list[PeakAssignmentRecord]
+
+
+class PeakAssignmentDetailResponse(BaseModel):
+    """One full assignment record, with the inspector-only JSON detail."""
+
+    status: str = "success"
+    message: str
+    results: int
+    data: list[PeakAssignmentDetailRecord]
 
 
 class PeakAssignmentRunsResponse(BaseModel):

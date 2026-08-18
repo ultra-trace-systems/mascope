@@ -1,4 +1,4 @@
-import { computed } from 'vue'
+import { computed, watch } from 'vue'
 import { defineStore } from 'pinia'
 
 import { api } from '@/api'
@@ -7,6 +7,7 @@ import { peakAssignmentEnabled } from '@/lib/features'
 
 import { useSample } from '../sample'
 import { usePeakAssignmentRun } from './run'
+import { createDetailLoader } from './detail'
 
 // Page size requested per call. A run has one row per detected peak, so a large
 // sample runs to tens of thousands of rows; the endpoint pages them.
@@ -18,6 +19,10 @@ const MAX_PAGES = 200
 
 /**
  * Fetch one page of assignments.
+ *
+ * Pages are slim ledger rows: the endpoint drops the `alternatives` /
+ * `provenance` JSON (inspector-only detail, fetched per assignment on peak
+ * selection via `loadDetail`).
  *
  * Deliberately bypasses the shared `read` handler, which unwraps the envelope
  * to its `data` array and so hides the `total` this loop needs to know when it
@@ -106,6 +111,21 @@ export const usePeakAssignment = defineStore('app.data.peakAssignment', () => {
     }
   )
 
+  // Per-assignment detail (alternatives + provenance), fetched lazily when the
+  // inspector focuses a peak; the ledger rows above are the slim projection.
+  const detail = createDetailLoader(async (assignment) => {
+    const response = await api.http.get(
+      `/peak-assignments/sample/${assignment.sample_item_id}` +
+        `/assignment/${assignment.peak_assignment_id}`,
+      { type: 'load_peak_assignment_detail' }
+    )
+    return response?.data?.data?.[0] ?? null
+  })
+
+  // A reload (sample/run switch, re-run) replaces the rows and their
+  // assignment ids, so any cached detail is stale with them.
+  watch(data.list, () => detail.clear())
+
   // Run metadata for the current view. The shared `read` handler unwraps the
   // response to its `data` field, dropping the {run, data} envelope's `run`, so
   // we take run metadata from the run store instead of the assignments call.
@@ -123,8 +143,7 @@ export const usePeakAssignment = defineStore('app.data.peakAssignment', () => {
   })
 
   // Look up the assignment for a peak by its peak_id.
-  const forPeak = (peakId) =>
-    peakId == null ? null : (byPeakId.value.get(String(peakId)) ?? null)
+  const forPeak = (peakId) => (peakId == null ? null : (byPeakId.value.get(String(peakId)) ?? null))
 
   // Map peak_assignment_id -> record, for owner/child lookups.
   const byId = computed(() => {
@@ -195,6 +214,8 @@ export const usePeakAssignment = defineStore('app.data.peakAssignment', () => {
     byId,
     childrenOf,
     familyOf,
-    tierCounts
+    tierCounts,
+    detailOf: detail.detailOf,
+    loadDetail: detail.loadDetail
   }
 })
