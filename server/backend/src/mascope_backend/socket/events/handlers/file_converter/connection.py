@@ -24,7 +24,12 @@ from mascope_backend.runtime import runtime
 from mascope_backend.service_token import FILE_CONVERTER_SERVICE_TOKEN
 from mascope_backend.socket import sio
 from mascope_backend.socket.events.emitters.file_converter import FILE_CONVERTER_ROOM
-from mascope_backend.socket.storage.services import register_service, unregister_service
+from mascope_backend.socket.storage.services import (
+    register_service,
+    start_presence_renewal,
+    stop_presence_renewal,
+    unregister_service,
+)
 
 
 @sio.event(namespace="/file-converter")
@@ -90,6 +95,11 @@ async def connect(sid: str, environ: dict, auth: dict | None) -> bool:
             return False
 
         await sio.enter_room(sid, FILE_CONVERTER_ROOM, namespace="/file-converter")
+        # Keep the presence key alive for as long as this connection lives. The
+        # key is written with a TTL so it cannot outlive an unclean process
+        # death; this refresh is what stops it lapsing while the converter is
+        # still here.
+        start_presence_renewal("file-converter", sid)
         runtime.logger.debug(
             f"File converter service connected with sid {sid} [Worker {worker_pid}]"
         )
@@ -113,6 +123,9 @@ async def disconnect(sid: str) -> None:
     :type sid: str
     """
     worker_pid = os.getpid()
+    # Stop the renewal before clearing the key, so a refresh in flight cannot
+    # rewrite the presence key this disconnect is about to delete.
+    await stop_presence_renewal("file-converter", sid)
     await unregister_service("file-converter", sid)
     runtime.logger.debug(
         f"File converter service disconnected: {sid} [Worker {worker_pid}]"

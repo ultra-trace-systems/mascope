@@ -5,16 +5,39 @@ Tracks which backend services (e.g., file-converter) are connected via
 Socket.IO. Each service writes a Redis key on connect and deletes it on
 disconnect, allowing any worker to check service availability.
 
-Lifecycle is managed by Socket.IO connect/disconnect handlers.
-Socket.IO ping_timeout guarantees disconnect fires even
-on ungraceful shutdown.
+The presence key carries a TTL and is refreshed by a renewal task that lives
+exactly as long as the connection (started on connect, cancelled on disconnect).
+A graceful disconnect deletes the key immediately; the TTL is the backstop for
+the case a disconnect handler never runs - an unclean backend death (power loss,
+OOM, `docker kill`) - where the renewal task dies with the process and the key
+lapses on its own rather than reporting a service that is no longer there.
 """
 
+import asyncio
 import os
 
 from mascope_backend.runtime import runtime
 from mascope_backend.socket.storage.client import redis_storage_client
 from mascope_backend.socket.storage.config import storage_config
+
+
+async def _write_presence_key(service_name: str, sid: str) -> bool:
+    """Write (or refresh) a service's presence key with its TTL.
+
+    Shared by the initial registration and every renewal. The write is
+    unconditional, so a renewal from any live connection also restores a key
+    that a co-located connection's disconnect deleted, which keeps availability
+    true for as long as some connection of the service is renewing it.
+    """
+    key = storage_config.service_key(service_name)
+    try:
+        await redis_storage_client.client.set(key, sid, ex=storage_config.service_ttl)
+        return True
+    except Exception as e:
+        runtime.logger.exception(
+            f"Failed to write presence for '{service_name}': {e} [Worker {os.getpid()}]"
+        )
+        return False
 
 
 async def register_service(service_name: str, sid: str) -> bool:
@@ -28,6 +51,10 @@ async def register_service(service_name: str, sid: str) -> bool:
     as long as its socket lives, whereas a refused client reconnects and
     registers afresh.
 
+    The key is written with a TTL; call :func:`start_presence_renewal` after a
+    successful registration so it is refreshed for as long as the service stays
+    connected.
+
     :param service_name: Service identifier (e.g., "file-converter")
     :type service_name: str
     :param sid: Socket.IO session ID of the connected service
@@ -36,19 +63,60 @@ async def register_service(service_name: str, sid: str) -> bool:
     :rtype: bool
     """
     worker_pid = os.getpid()
-    key = storage_config.service_key(service_name)
-
-    try:
-        await redis_storage_client.client.set(key, sid)
+    if await _write_presence_key(service_name, sid):
         runtime.logger.debug(
             f"Service '{service_name}' registered (sid={sid}) [Worker {worker_pid}]"
         )
         return True
-    except Exception as e:
-        runtime.logger.exception(
-            f"Failed to register service '{service_name}': {e} [Worker {worker_pid}]"
-        )
-        return False
+    return False
+
+
+# Renewal tasks keyed by (service_name, sid), one per live connection on this
+# worker. Kept only so the disconnect handler can cancel the matching task.
+_renewal_tasks: dict[tuple[str, str], asyncio.Task] = {}
+
+
+async def _renew_presence(service_name: str, sid: str) -> None:
+    """Refresh a service's presence TTL until the task is cancelled."""
+    while True:
+        await asyncio.sleep(storage_config.service_renewal_interval)
+        # A transient Redis failure is logged inside and retried on the next
+        # tick; the key may lapse until then, which reads as a (recoverable)
+        # unavailability, never as a stale positive.
+        await _write_presence_key(service_name, sid)
+
+
+def start_presence_renewal(service_name: str, sid: str) -> None:
+    """Begin refreshing a service's presence TTL for the life of its connection.
+
+    Call once after a successful :func:`register_service`. Idempotent per
+    (service_name, sid): a lingering task for the same key is cancelled first.
+    """
+    _cancel_renewal_task(service_name, sid)
+    _renewal_tasks[(service_name, sid)] = asyncio.create_task(
+        _renew_presence(service_name, sid)
+    )
+
+
+def _cancel_renewal_task(service_name: str, sid: str) -> asyncio.Task | None:
+    task = _renewal_tasks.pop((service_name, sid), None)
+    if task is not None:
+        task.cancel()
+    return task
+
+
+async def stop_presence_renewal(service_name: str, sid: str) -> None:
+    """Stop a service's presence renewal.
+
+    Call from the disconnect handler *before* :func:`unregister_service`, so a
+    renewal in flight cannot rewrite the key the unregister is about to delete.
+    """
+    task = _cancel_renewal_task(service_name, sid)
+    if task is not None:
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
 
 
 # Lua script for check-and-delete operation on disconnect.

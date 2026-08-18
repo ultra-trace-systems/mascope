@@ -18,6 +18,16 @@ class SocketStorageConfig(BaseModel):
     session_ttl: int = 86400  # 24 hours - Socket session lifetime
     room_ttl: int = 86400  # 24 hours - Room membership tracking lifetime
 
+    # Service presence keys are short-lived and refreshed while the service
+    # stays connected, so a key can never outlive the process that wrote it: an
+    # unclean backend death (power loss, OOM, `docker kill`) runs no disconnect
+    # handler, and without expiry the stale key would report a converter
+    # connected until Redis was flushed. The TTL bounds that window; the renewal
+    # interval must stay well under it so an event-loop stall cannot let a live
+    # service's key lapse.
+    service_ttl: int = 30  # Presence key lifetime absent renewal
+    service_renewal_interval: int = 10  # How often a connected service refreshes it
+
     # Redis key prefixes
     session_key_prefix: str = "mascope:session:"  # Session storage keys
     room_members_key_prefix: str = "mascope:rooms:members:"  # Users in room

@@ -19,6 +19,8 @@ from mascope_backend.socket.storage.rooms import (
 from mascope_backend.socket.storage.services import (
     is_service_connected,
     register_service,
+    start_presence_renewal,
+    stop_presence_renewal,
     unregister_service,
 )
 from mascope_backend.socket.storage.sessions import (
@@ -38,4 +40,6 @@ __all__ = [
     "register_service",
     "unregister_service",
     "is_service_connected",
+    "start_presence_renewal",
+    "stop_presence_renewal",
 ]
