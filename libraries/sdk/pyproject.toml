@@ -35,7 +35,7 @@ examples = [
     "matplotlib>=3.8.0",
     "numpy>=1.24.0",
     "scipy>=1.11.0",
-    "ipykernel>=6.29.0",
+    "ipykernel>=7.3.0",
 ]
 
 [project.urls]

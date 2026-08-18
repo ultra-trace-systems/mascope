@@ -31,7 +31,7 @@ mascope = "mascope_cli.main:app"
 # — monorepo
 # development only.
 dev = [
-    "alembic>=1.18.1",
+    "alembic>=1.19.1",
     "sqlalchemy~=2.0",
     "psycopg2-binary>=2.9.12",
     "pyyaml>=6,<7",

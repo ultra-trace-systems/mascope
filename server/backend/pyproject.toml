@@ -49,7 +49,7 @@ dependencies = [
     "tuspyserver==4.2.0",
     "openpyxl>=3.1.5",
     "asyncpg>=0.31.0",
-    "alembic>=1.18.5,<2",
+    "alembic>=1.19.1,<2",
     "psycopg2-binary>=2.9.12",
 ]
 

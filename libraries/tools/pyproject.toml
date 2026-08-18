@@ -19,7 +19,7 @@ license.text = "Apache-2.0"
 requires-python = ">=3.12"
 readme = "README.md"
 dependencies = [
-    "isospecpy>=2.2.3",
+    "isospecpy>=2.4.0",
     "mascope-sdk>=2026.3.18",
     "numpy>=1.26",
     "scipy>=1.16.1",
