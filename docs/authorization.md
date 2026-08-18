@@ -26,6 +26,31 @@ Every user account has a single global role (guest, editor, admin, or owner) set
 
 Global admins and owners also receive automatic membership in all instrument workspaces (see below).
 
+## Two-factor authentication
+
+Any account can turn on two-factor authentication (TOTP) from its settings: scan
+a QR code with an authenticator app, then enter a code to confirm. Ten
+single-use recovery codes are shown once at that point - they are the only way
+back in if the phone is lost, and are not recoverable afterwards.
+
+A deployment can also require it. Setting `mfa_required_min_role` under
+`[backend]` in the config TOML names the lowest role it applies to (`admin`
+covers admins and owners, `guest` covers everyone); unset, the default, requires
+it of nobody. An account covered by the requirement is held at an enrolment
+screen after signing in until it sets a factor up, and cannot turn it off again.
+
+Two actions ask for a current code even in an open session: generating an API
+access token, and approving an agent pairing. Both hand out credentials valid
+for a year that are not tied to the browser session, so a session on its own is
+not enough to obtain one. Signing in or enrolling counts as presenting a code
+for the next five minutes, so this rarely means entering one twice.
+
+**If an authenticator is lost together with its recovery codes**, an
+administrator clears the factor for guests and editors, and an owner for anyone
+but themselves; the account then enrols again. If nobody who could do that can
+sign in, the deployment operator runs `mascope prod mfa reset <email>` on the
+host. Clearing a factor never reveals or changes a password.
+
 ## Workspaces
 
 A workspace is a container that groups related data. All measurement data in Mascope lives inside a workspace:

@@ -37,6 +37,7 @@ from mascope_cli.cmd import lib
 from mascope_cli.cmd.prod import auto_update, cli_drift, preflight, release_manifest
 from mascope_cli.cmd.prod import doctor as prod_doctor
 from mascope_cli.cmd.prod.db import prod_db_app
+from mascope_cli.cmd.prod.mfa import mfa_app
 from mascope_cli.pg.utils import check_data_dirs, is_container_running
 from mascope_cli.runtime import runtime
 from mascope_runtime import Runtime
@@ -56,6 +57,7 @@ _DEFAULT_UPDATE_REPO = "ultra-trace-systems/mascope"
 
 prod_app = typer.Typer()
 prod_app.add_typer(prod_db_app, name="db")
+prod_app.add_typer(mfa_app, name="mfa")
 
 
 #  --- Callback — runs before every prod subcommand ---

@@ -230,6 +230,37 @@ watch(visible, reset)
             <span v-else>{{ data.email }}</span>
           </template>
         </Column>
+        <Column header="Two-factor">
+          <template #body="{ data }">
+            <div class="row" style="gap: 0.35rem; align-items: center">
+              <span
+                :class="data.mfa_enabled ? 'pi pi-shield' : 'pi pi-minus'"
+                :style="{ opacity: data.mfa_enabled ? 1 : 0.35 }"
+                v-tooltip.bottom="
+                  data.mfa_enabled
+                    ? 'Two-factor authentication is on'
+                    : data.mfa_enrollment_required
+                      ? 'Required for this role, not set up yet'
+                      : 'Not set up'
+                "
+              />
+              <span v-if="data.mfa_enrollment_required" style="font-size: smaller; opacity: 0.7"
+                >pending</span
+              >
+              <!-- Hidden rather than disabled when there is nothing to clear,
+                   and on the caller's own row: an owner clearing their own
+                   factor would be a bypass, not a recovery. -->
+              <Button
+                v-if="data.mfa_enabled && data.id != app.auth.user.id"
+                v-tooltip.bottom="'Reset two-factor (they set it up again)'"
+                icon="pi pi-replay"
+                severity="secondary"
+                text
+                @click="() => user.resetMfa(data)"
+              />
+            </div>
+          </template>
+        </Column>
         <Column header="Role" field="role_name">
           <template #body="{ data }">
             <Select

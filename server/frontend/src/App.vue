@@ -16,7 +16,12 @@ import { useApp } from '@/stores'
 import { useLocation } from '@/lib/location'
 import { useUpdate } from '@/lib/update'
 import { createToaster } from '@/lib/toaster'
-import { PaneLogin, PaneOwnerSignup, PanePasswordChangeRequired } from '@/lib/panes'
+import {
+  PaneLogin,
+  PaneOwnerSignup,
+  PanePasswordChangeRequired,
+  PaneMfaEnrollmentRequired
+} from '@/lib/panes'
 
 const { connected } = api
 
@@ -71,6 +76,17 @@ app.ui.notification.on('*', (notification) => {
       <BaseBrandLogo />
       <div style="margin-top: 2rem" />
       <PanePasswordChangeRequired />
+    </Panel>
+  </div>
+  <!-- Mandatory enrolment - authenticated, past the password gate, but the
+       deployment requires a second factor this account does not have yet.
+       Ordered after the password branch, matching the server: an account owing
+       both replaces its password first. -->
+  <div v-else-if="app.auth.mustEnrollMfa" class="center" style="min-height: 80vh">
+    <Panel style="width: 500px">
+      <BaseBrandLogo />
+      <div style="margin-top: 2rem" />
+      <PaneMfaEnrollmentRequired />
     </Panel>
   </div>
   <!-- App Routes - Authenticated user -->

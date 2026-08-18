@@ -14,7 +14,7 @@ import re
 import tomllib
 import typing
 from pathlib import Path
-from typing import Literal
+from typing import Literal, Optional
 
 from pydantic import BaseModel, Field, field_validator
 
@@ -305,6 +305,13 @@ class BackendConfig(ModuleConfig):
     # many files a client may upload, only how large each one may be. Must be
     # at least 1: a zero or negative cap rejects every upload.
     tus_max_upload_gb: int = Field(default=5, ge=1)
+    # Lowest role required to hold a second authentication factor, by name
+    # ("guest" covers everyone, "admin" only admins and owners). Unset means no
+    # account is required to enrol. Validated by the backend at startup, which
+    # refuses to start on a name that is not a role - see
+    # api/new/auth/mfa/policy.py. Typed loosely here because this library must
+    # not depend on the backend's role table.
+    mfa_required_min_role: Optional[str] = None
 
     def get_worker_count(self) -> int:
         """
