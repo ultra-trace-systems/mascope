@@ -103,6 +103,35 @@ def get_golden_peaks() -> list[dict]:
     return asyncio.run(_query_golden_peaks())
 
 
+async def _query_ingested_filenames() -> list[str]:
+    """Read every ingested sample file's filename from the active database."""
+    await configure_database_engine()
+    stmt = select(SampleFile.filename).distinct().order_by(SampleFile.filename)
+    async with async_session() as session:
+        rows = (await session.execute(stmt)).all()
+
+    return [row.filename for row in rows]
+
+
+def get_ingested_filenames() -> list[str]:
+    """
+    Fetch the filenames of every file that has been ingested.
+
+    This is the *conversion* side of the pipeline, one step upstream of the
+    golden peaks: a file that converted but matched nothing has a row here and
+    none in :func:`get_golden_peaks`. The demo bundle's authoring guard needs
+    both to tell "never ingested" apart from "ingested but produced no peaks"
+    (``build_bundle.check_raw_coverage``).
+
+    Note that the stored filename is the one the converter reconstructs from the
+    file's own metadata (it re-inserts the acquisition timestamp), not the
+    uploaded filename - see ``mascope_thermo.processor.RawProcessor.filename``.
+
+    :return: One filename per ingested sample file, ordered.
+    """
+    return asyncio.run(_query_ingested_filenames())
+
+
 async def _query_golden_ions() -> list[dict]:
     """Read the per-ION match scores from the active database, ordered stably.
 
