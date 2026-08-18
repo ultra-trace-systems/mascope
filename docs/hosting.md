@@ -66,7 +66,12 @@ and the checkout.
 4. **Set up TLS** - pick the option that fits your audience:
    - **Self-signed** (`mascope cert gen` writes `mascope.app.pem`/`.key` into
      `.runtime/secrets/`): works immediately; each user clicks through a one-time
-     browser warning. Make sure the certificate's SAN matches the hostname/IP.
+     browser warning. The generated certificate carries a fixed placeholder
+     name (`mascope.app`), so the warning appears whatever address the server
+     is reached at; the File Agent is unaffected (it does not verify TLS
+     certificates). For a warning-free deployment use one of the options
+     below - whichever certificate you install, its file names in
+     `.runtime/secrets/` stay `mascope.app.pem`/`.key`.
    - **Internal CA** (e.g. [mkcert](https://github.com/FiloSottile/mkcert) or an
      org CA): warning-free on the LAN; install the CA on client machines once,
      then issue a certificate for the server's hostname.
