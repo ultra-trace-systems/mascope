@@ -23,6 +23,7 @@ from mascope_backend.api.new.peak_assignments.schemas import (
     AssignSamplePeaksBody,
     CompositionFitBody,
     CompositionVisualizeBody,
+    PeakAssignmentDetailResponse,
     PeakAssignmentQueryParams,
     PeakAssignmentRunsResponse,
     PeakAssignmentsResponse,
@@ -32,6 +33,7 @@ from mascope_backend.api.new.peak_assignments.schemas import (
 from mascope_backend.api.new.peak_assignments.service import (
     assign_sample_peaks,
     create_verification,
+    get_peak_assignment_detail,
     get_peak_assignment_runs,
     get_peak_assignments,
     get_verifications,
@@ -93,6 +95,10 @@ async def get_peak_assignments_route(
     completed run), each carrying the committed formula, adduct, evidence,
     confidence tier, and optional reference to the curated target library.
 
+    Rows are a slim projection: the `alternatives` and `provenance` JSON are
+    inspector detail (~74% of a full row's bytes) and are served per assignment
+    by the sibling detail endpoint instead.
+
     :param sample_item_id: The unique identifier of the sample.
     :param query_params: Optional run id and tier/role/source filters.
     :param user: The current authenticated user. Requires workspace guest role.
@@ -104,6 +110,34 @@ async def get_peak_assignments_route(
         sample_item_id=sample_item_id, **query_params.model_dump()
     )
     return PeakAssignmentsResponse.model_validate(result)
+
+
+@peak_assignments_router.get(
+    "/sample/{sample_item_id}/assignment/{peak_assignment_id}",
+    response_model=PeakAssignmentDetailResponse,
+)
+@api_route(token_access=True)
+async def get_peak_assignment_detail_route(
+    sample_item_id: str,
+    peak_assignment_id: str,
+    user: User = Depends(current_active_user),
+) -> PeakAssignmentDetailResponse:
+    """
+    Retrieve one assignment in full, including `alternatives` and `provenance`.
+
+    The complement of the paged list endpoint, whose rows are a slim
+    projection: the peak inspector fetches this when a peak is selected.
+
+    :param sample_item_id: The unique identifier of the sample.
+    :param peak_assignment_id: The unique identifier of the assignment.
+    :param user: The current authenticated user. Requires workspace guest role.
+    :return: The full assignment record.
+    """
+    await check_sample_access(sample_item_id, user, "guest")
+    result = await get_peak_assignment_detail(
+        sample_item_id=sample_item_id, peak_assignment_id=peak_assignment_id
+    )
+    return PeakAssignmentDetailResponse.model_validate(result)
 
 
 @peak_assignments_router.get(

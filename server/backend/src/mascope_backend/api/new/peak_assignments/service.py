@@ -137,6 +137,35 @@ async def get_peak_assignment_runs(sample_item_id: str) -> dict:
     }
 
 
+# Ledger list projection: every scalar column of a row, but not `alternatives`
+# - inspector-only JSON that never has to leave the database for a list read.
+# `provenance` (also inspector detail) is still selected, only to be collapsed
+# into the few scalars the ledger columns render; see _provenance_scalars.
+_LEDGER_COLUMNS = tuple(
+    column
+    for column in PeakAssignment.__table__.columns
+    if column.key != "alternatives"
+)
+
+
+def _provenance_scalars(provenance: dict | None) -> dict:
+    """Collapse a provenance blob into the scalars the ledger renders.
+
+    The ledger table shows a calibrated P(correct) column (with its provisional
+    marker) and an adduct-corroboration count on every row; everything else in
+    provenance is per-peak inspector detail served by
+    :func:`get_peak_assignment_detail`.
+    """
+    provenance = provenance or {}
+    calibration = provenance.get("calibration") or {}
+    corroboration = provenance.get("corroboration") or {}
+    return {
+        "p_correct": provenance.get("p_correct"),
+        "p_correct_provisional": calibration.get("provisional"),
+        "corroboration_adducts": corroboration.get("n_adducts"),
+    }
+
+
 @api_controller()
 async def get_peak_assignments(
     sample_item_id: str,
@@ -154,11 +183,13 @@ async def get_peak_assignments(
     run when no run id is given. Optional filters narrow by confidence tier,
     peak role, or assignment source.
 
-    Paged. The ledger is deliberately complete - one row per detected peak,
-    each carrying alternatives and provenance JSON - so a dense sample runs to
-    tens of thousands of rows and reading them in one response would serialize
-    tens of megabytes through Pydantic on the event loop. ``total`` reports the
-    match count across all pages so a client knows when it has the whole run.
+    Paged, and slim: the ledger is deliberately complete - one row per detected
+    peak - so a dense sample runs to tens of thousands of rows, and the
+    `alternatives`/`provenance` JSON would be ~74% of the bytes while only the
+    peak inspector reads it. Rows here carry the scalar fields (plus a few
+    provenance-derived scalars); the full JSON detail of one assignment is
+    served by :func:`get_peak_assignment_detail`. ``total`` reports the match
+    count across all pages so a client knows when it has the whole run.
 
     :param sample_item_id: Unique identifier of the sample item
     :param peak_assignment_run_id: Specific run to read; defaults to the
@@ -168,9 +199,9 @@ async def get_peak_assignments(
     :param source: Optional filter by assignment source (database/untargeted)
     :param limit: Maximum rows to return in this page
     :param offset: Rows to skip, for paging
-    :return: Dictionary with status, message, total, and assignment rows. Run
-        identity is on each row (peak_assignment_run_id); run metadata is served
-        by the runs endpoint.
+    :return: Dictionary with status, message, total, and slim assignment rows.
+        Run identity is on each row (peak_assignment_run_id); run metadata is
+        served by the runs endpoint.
     """
     sample = await fetch_sample(sample_item_id)
 
@@ -225,15 +256,19 @@ async def get_peak_assignments(
         # an m/z, and paging over an ordering that does not break such ties can
         # return one of them on both pages and the other on neither.
         query = (
-            select(PeakAssignment)
+            select(*_LEDGER_COLUMNS)
             .where(*filters)
             .order_by(PeakAssignment.sample_peak_mz, PeakAssignment.peak_assignment_id)
             .offset(offset)
             .limit(limit)
         )
-        assignments = (await session.execute(query)).scalars().all()
+        rows = (await session.execute(query)).all()
 
-    data = [assignment.to_dict() for assignment in assignments]
+    data = []
+    for row in rows:
+        record = row._asdict()
+        record.update(_provenance_scalars(record.pop("provenance", None)))
+        data.append(record)
     return {
         "status": "success",
         "message": (
@@ -244,6 +279,47 @@ async def get_peak_assignments(
         "results": len(data),
         "total": total,
         "data": data,
+    }
+
+
+@api_controller()
+async def get_peak_assignment_detail(
+    sample_item_id: str,
+    peak_assignment_id: str,
+) -> dict:
+    """
+    Retrieve one assignment in full, including the inspector-only JSON detail.
+
+    The complement of :func:`get_peak_assignments`: the list serves a slim
+    projection of the whole run, and this serves the `alternatives` and
+    `provenance` of a single assignment when a user selects its peak.
+
+    :param sample_item_id: Unique identifier of the sample item
+    :param peak_assignment_id: Unique identifier of the assignment
+    :return: Dictionary with status, message, and the one full assignment row
+    """
+    sample = await fetch_sample(sample_item_id)
+
+    async with async_session() as session:
+        assignment = await session.get(PeakAssignment, peak_assignment_id)
+        if assignment is None or assignment.sample_item_id != sample_item_id:
+            raise NotFoundException(
+                f"Assignment '{peak_assignment_id}' not found for sample "
+                f"'{sample.sample_item_name}'"
+            )
+        record = assignment.to_dict()
+
+    # The detail row is a superset of the list row, so the flattened scalars
+    # are carried here too and a client can treat it as a drop-in replacement.
+    record.update(_provenance_scalars(record.get("provenance")))
+    return {
+        "status": "success",
+        "message": (
+            f"Retrieved assignment '{peak_assignment_id}' for sample "
+            f"'{sample.sample_item_name}'"
+        ),
+        "results": 1,
+        "data": [record],
     }
 
 

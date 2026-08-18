@@ -160,6 +160,27 @@ async def pa_test_data(async_session_factory, test_users, pa_sample_view):
                 mz_error_ppm=1.2,
                 abundance_error=0.05,
                 tier="identified",
+                # Inspector-only detail: the list endpoint must not serve these
+                # (slim projection), the detail endpoint must serve them whole.
+                alternatives=[
+                    {
+                        "assigned_formula": "C7H16O5",
+                        "fit_score": 0.71,
+                        "mz_error_ppm": 4.2,
+                        "plausibility": 0.5,
+                        "source": "database",
+                    }
+                ],
+                provenance={
+                    "plausibility": 0.9,
+                    "confidence": 0.8,
+                    "is_tie": False,
+                    "evidence": 0.87,
+                    "calibrated": True,
+                    "p_correct": 0.93,
+                    "calibration": {"provisional": True},
+                    "corroboration": {"n_adducts": 2, "adducts": ["+H+", "+Na+"]},
+                },
             )
         )
         session.add(

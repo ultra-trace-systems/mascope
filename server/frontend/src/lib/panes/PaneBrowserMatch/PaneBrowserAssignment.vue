@@ -170,9 +170,13 @@ const rows = computed(() => {
     .map((row) => ({
       ...row,
       tierRank: TIER_RANK[row.tier] ?? 3,
-      // Flatten the calibrated probability for the sortable P(correct) column;
-      // null for untargeted / uncalibrated (rendered as "-", never 0%).
-      pCorrect: row.provenance?.p_correct ?? null,
+      // The calibrated probability for the sortable P(correct) column; null for
+      // untargeted / uncalibrated (rendered as "-", never 0%). The ledger rows
+      // carry it flattened (`p_correct`); the `provenance` fallback covers rows
+      // from a backend that predates the slim ledger projection.
+      pCorrect: row.p_correct ?? row.provenance?.p_correct ?? null,
+      pProvisional: row.p_correct_provisional ?? row.provenance?.calibration?.provisional ?? false,
+      corrobAdducts: row.corroboration_adducts ?? row.provenance?.corroboration?.n_adducts ?? 0,
       mech: mechById.value.get(row.ionization_mechanism_id) ?? null,
       isChild: false
     }))
@@ -189,7 +193,11 @@ const rows = computed(() => {
       .map((child) => ({
         ...child,
         tierRank: parent.tierRank,
-        pCorrect: child.provenance?.p_correct ?? null,
+        pCorrect: child.p_correct ?? child.provenance?.p_correct ?? null,
+        pProvisional:
+          child.p_correct_provisional ?? child.provenance?.calibration?.provisional ?? false,
+        corrobAdducts:
+          child.corroboration_adducts ?? child.provenance?.corroboration?.n_adducts ?? 0,
         mech: mechById.value.get(child.ionization_mechanism_id) ?? null,
         isChild: true
       }))
@@ -258,9 +266,10 @@ const selectedRow = computed({
     if (exact) return exact
     // Folded: a focused isotopologue child maps to its M0 row.
     const assignment = assignments.value.forPeak(focused.peak_id)
-    const ownerId =
-      assignment?.role === 'iso_child' ? assignment.owner_peak_assignment_id : null
-    return ownerId != null ? (rows.value.find((r) => r.peak_assignment_id === ownerId) ?? null) : null
+    const ownerId = assignment?.role === 'iso_child' ? assignment.owner_peak_assignment_id : null
+    return ownerId != null
+      ? (rows.value.find((r) => r.peak_assignment_id === ownerId) ?? null)
+      : null
   },
   set: (row) => {
     if (row) focusPeak(row)
@@ -316,9 +325,7 @@ const isoCount = (row) => assignments.value.childrenOf(row.peak_assignment_id).l
     <div v-if="!app.data.sample.focused" class="center empty">
       <div class="col" style="gap: 0.5rem; text-align: center; max-width: 40ch">
         <strong><span class="pi ph ph-hand-pointing" /> No sample selected</strong>
-        <i style="opacity: 0.6">
-          Select a sample to view or run its peak assignments.
-        </i>
+        <i style="opacity: 0.6"> Select a sample to view or run its peak assignments. </i>
       </div>
     </div>
     <div v-else-if="!runs.list.length" class="center empty">
@@ -357,7 +364,9 @@ const isoCount = (row) => assignments.value.childrenOf(row.peak_assignment_id).l
               dim: activeTiers.size && !activeTiers.has(t.key)
             }
           ]"
-          v-tooltip.top="activeTiers.has(t.key) ? `Showing only ${t.label}` : `Filter to ${t.label}`"
+          v-tooltip.top="
+            activeTiers.has(t.key) ? `Showing only ${t.label}` : `Filter to ${t.label}`
+          "
           @click="toggleTier(t.key)"
         >
           <b>{{ t.count }}</b> {{ t.label }}
@@ -385,12 +394,7 @@ const isoCount = (row) => assignments.value.childrenOf(row.peak_assignment_id).l
         <Column field="sample_peak_mz" header="m/z" sortable style="min-width: 6rem">
           <template #body="{ data }">{{ num.mz.format(data.sample_peak_mz) }}</template>
         </Column>
-        <Column
-          field="sample_peak_intensity"
-          header="intensity"
-          sortable
-          style="min-width: 5rem"
-        >
+        <Column field="sample_peak_intensity" header="intensity" sortable style="min-width: 5rem">
           <template #body="{ data }">
             {{
               data.sample_peak_intensity != null
@@ -403,9 +407,11 @@ const isoCount = (row) => assignments.value.childrenOf(row.peak_assignment_id).l
           <template #body="{ data }">
             <span v-if="data.isChild" class="child-cell">
               <span class="child-caret">&#8627;</span>
-              <span class="child-label" v-tooltip.top="data.isotope_formula || data.isotope_label">{{
-                childLabel(data)
-              }}</span>
+              <span
+                class="child-label"
+                v-tooltip.top="data.isotope_formula || data.isotope_label"
+                >{{ childLabel(data) }}</span
+              >
             </span>
             <span v-else>
               <span class="formula">{{ data.assigned_formula || '—' }}</span>
@@ -448,10 +454,10 @@ const isoCount = (row) => assignments.value.childrenOf(row.peak_assignment_id).l
             >
           </template>
           <template #body="{ data }">
-            <span v-if="data.provenance?.p_correct != null" class="pcorrect">
-              {{ pctFmt.format(data.provenance.p_correct)
+            <span v-if="data.pCorrect != null" class="pcorrect">
+              {{ pctFmt.format(data.pCorrect)
               }}<span
-                v-if="data.provenance.calibration?.provisional"
+                v-if="data.pProvisional"
                 class="prov"
                 v-tooltip.top="'Provisional calibration curve'"
                 >*</span
@@ -468,14 +474,12 @@ const isoCount = (row) => assignments.value.childrenOf(row.peak_assignment_id).l
               >&mdash;</span
             >
             <span
-              v-if="data.provenance?.corroboration?.n_adducts > 1"
+              v-if="data.corrobAdducts > 1"
               class="corrob-mark"
               v-tooltip.top="
-                `Supported by ${data.provenance.corroboration.n_adducts} adducts (already folded into P(correct))`
+                `Supported by ${data.corrobAdducts} adducts (already folded into P(correct))`
               "
-              ><span class="pi ph ph-link-simple" />{{
-                data.provenance.corroboration.n_adducts
-              }}</span
+              ><span class="pi ph ph-link-simple" />{{ data.corrobAdducts }}</span
             >
           </template>
         </Column>
@@ -490,12 +494,7 @@ const isoCount = (row) => assignments.value.childrenOf(row.peak_assignment_id).l
       </DataTable>
     </div>
 
-    <Dialog
-      v-model:visible="configVisible"
-      modal
-      header="Assign peaks"
-      :style="{ width: '26rem' }"
-    >
+    <Dialog v-model:visible="configVisible" modal header="Assign peaks" :style="{ width: '26rem' }">
       <PeakAssignConfigForm :config="config" :pinned="['run_untargeted']" />
       <template #footer>
         <Button label="Cancel" text severity="secondary" @click="configVisible = false" />
@@ -532,7 +531,10 @@ const isoCount = (row) => assignments.value.childrenOf(row.peak_assignment_id).l
   color: inherit;
   font-family: inherit;
   cursor: pointer;
-  transition: opacity 0.12s, border-color 0.12s, background 0.12s;
+  transition:
+    opacity 0.12s,
+    border-color 0.12s,
+    background 0.12s;
 }
 .tier-stat:hover {
   border-color: var(--p-primary-color, #6366f1);
