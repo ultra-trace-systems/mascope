@@ -1897,6 +1897,14 @@ taken). The help popover bodies sourced from `docs/user/_help/` snippets
 (help-content.json) are only rendered in the built image, not by
 `mkdocs serve` — in dev those cards fall back to their title.
 
+Math is written as LaTeX and rendered by KaTeX (`pymdownx.arithmatex` +
+the vendored bundle under `docs/user/assets/katex/`). A display equation must
+start its own block: unindented and separated from the surrounding text by
+blank lines. Indented or paragraph-glued `$$...$$` is parsed as *inline* math
+with one leftover `$` on each side, which then shows up verbatim on the page.
+Escape percent signs inside math (`$95\%$`); a bare `%` starts a TeX comment
+and silently swallows the rest of the expression.
+
 ### Frontend Tech
 
 The Mascope frontend is build with the following technologies:

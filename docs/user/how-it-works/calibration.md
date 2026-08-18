@@ -28,7 +28,7 @@ The observed intensities are normalized against the selected main isotope refere
 Normalized theoretical abundance $A_{\text{norm}}$ is derived by scaling the theoretical isotopic abundance against the theoretical abundance of the main reference isotope.
 Abundance error $E_{\text{abundance}}$ is evaluated as the relative difference between the measured and theoretical normalized distributions:
 
-  $$E_{\text{abundance}} = \frac{I_{\text{rel}}}{A_{\text{norm}}} - 1.0$$
+$$E_{\text{abundance}} = \frac{I_{\text{rel}}}{A_{\text{norm}}} - 1.0$$
 
 The mass accuracy of the observed peak is checked by tracking its displacement from the theoretical position.
 The localized $m/z$ error ($E_{m/z}$) is converted to $\text{ppm}$ units to provide a standardized metric for comparison across the mass range:
@@ -39,11 +39,11 @@ To combine the metrics into a single confidence indicator, the algorithm applies
 Both the abundance and mass components are bounded to protect the system from extreme outliers.
 Penalty scaling is capped so that an abundance error of $1.0$ ($100\%$) or greater drops the abundance component score to zero:
 
-  $$\text{Component}_{\text{abundance}} = 1.0 - \min\left(1.0, |E_{\text{abundance}}|\right)$$
-  
+$$\text{Component}_{\text{abundance}} = 1.0 - \min\left(1.0, |E_{\text{abundance}}|\right)$$
+
 Mass accuracy component is evaluated using a linear penalty coefficient of $10^{-2}$ ($1\%$) per $\text{ppm}$ of deviation, with a floor constraint preventing negative values:
 
-  $$\text{Component}_{m/z} = \max\left(0.0, 1.0 - 10^{-2} \times |E_{m/z}|\right)$$
+$$\text{Component}_{m/z} = \max\left(0.0, 1.0 - 10^{-2} \times |E_{m/z}|\right)$$
 
 The final aggregate match score represents the product of these two components, yielding a value strictly bounded within a $[0.0, 1.0]$ interval where $1.0$ indicates an ideal experimental-to-theoretical alignment:
 
@@ -78,25 +78,25 @@ An initial guess for the relationship is established by computing a linear least
 A non-linear least-squares minimization is executed using the Trust Region Reflective algorithm.
 The optimization minimizes a residual function defined as:
 
-   $$\text{Residual} = p_0 \sqrt{m} + p_1 - \text{TOF}$$
+$$\text{Residual} = p_0 \sqrt{m} + p_1 - \text{TOF}$$
 
 where $m$ is the exact mass, $\text{TOF}$ is the measured time-of-flight, and $p_0, p_1$ are the coefficients being optimized.
 The optimization utilizes a soft $L_1$ loss function to handle minor residual deviations.
 The optimized parameters are used to re-calculate the mass axis according to the following analytical form:
 
-   $$m = \left( \frac{\text{TOF} - p_1}{p_0} \right)^2$$
+$$m = \left( \frac{\text{TOF} - p_1}{p_0} \right)^2$$
 
 ### Orbitrap One-Point Scaling Calibration
 
 The Orbitrap pipeline applies a localized, linear adjustment based on a single-point scaling approach, requiring a minimum of 1 calibration point.
 Rather than adjusting multiple coefficients, the algorithm determines the median ratio between the exact target masses and the observed sample masses across all accepted matches:
 
-   $$\text{Scaling Factor} = \text{median}\left(\frac{m_{\text{target}}}{m_{\text{observed}}}\right)$$
+$$\text{Scaling Factor} = \text{median}\left(\frac{m_{\text{target}}}{m_{\text{observed}}}\right)$$
 
 The instrument's new operational calibration factor is calculated by scaling its pre-existing calibration factor (which defaults to 1.0 if no prior calibration exists):
 
-   $$\text{Calibration Factor}_{\text{new}} = \text{Calibration Factor}_{\text{old}} \times \text{Scaling Factor}$$
+$$\text{Calibration Factor}_{\text{new}} = \text{Calibration Factor}_{\text{old}} \times \text{Scaling Factor}$$
 
 Calibrated mass values are computed by directly multiplying the observed mass values by the scaling factor:
 
-   $$m_{\text{calibrated}} = m_{\text{observed}} \times \text{Scaling Factor}$$
+$$m_{\text{calibrated}} = m_{\text{observed}} \times \text{Scaling Factor}$$
