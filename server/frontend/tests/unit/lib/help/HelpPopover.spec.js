@@ -30,9 +30,9 @@ describe('HelpPopover hover persistence', () => {
     })
   })
 
-  const showCard = async () => {
+  const showCard = async (doc = '/docs/how-it-works/matching/') => {
     mocks.help.active = true
-    mocks.help.current = { placement: 'bottom', doc: '/docs/how-it-works/matching/' }
+    mocks.help.current = { placement: 'bottom', doc }
     await nextTick()
   }
 
@@ -56,12 +56,52 @@ describe('HelpPopover hover persistence', () => {
     await nextTick()
     // ...but the popover stays because the pointer is on it.
     expect(wrapper.find('.help-popover').exists()).toBe(true)
-    expect(wrapper.find('.help-learn-more').attributes('href')).toBe(
-      '/docs/how-it-works/matching/'
-    )
+    expect(wrapper.find('.help-learn-more').attributes('href')).toBe('/docs/how-it-works/matching/')
 
     await wrapper.find('.help-popover').trigger('mouseleave')
     await nextTick()
     expect(wrapper.find('.help-popover').exists()).toBe(false)
+  })
+
+  it('keeps its own card while the pointer is on it, even if another card takes over', async () => {
+    // The popover covers other annotated elements, and hover detection is
+    // geometric, so the covered element becomes the store's current card while
+    // the pointer is still travelling to "Learn more".
+    const wrapper = mount(HelpPopover)
+    await showCard()
+    await wrapper.find('.help-popover').trigger('mouseenter')
+
+    mocks.help.current = { placement: 'right', doc: '/docs/guides/covered-element/' }
+    await nextTick()
+
+    expect(wrapper.find('.help-learn-more').attributes('href')).toBe('/docs/how-it-works/matching/')
+
+    // Once the pointer leaves, the covered element's card takes over as usual.
+    await wrapper.find('.help-popover').trigger('mouseleave')
+    await nextTick()
+    expect(wrapper.find('.help-learn-more').attributes('href')).toBe(
+      '/docs/guides/covered-element/'
+    )
+  })
+
+  it('closes when help mode is switched off while the pointer is on it', async () => {
+    const wrapper = mount(HelpPopover)
+    await showCard()
+    await wrapper.find('.help-popover').trigger('mouseenter')
+
+    mocks.help.active = false
+    await nextTick()
+    expect(wrapper.find('.help-popover').exists()).toBe(false)
+
+    // The pin is cleared on close, so the next card still shows.
+    await showCard('/docs/guides/next-card/')
+    expect(wrapper.find('.help-learn-more').attributes('href')).toBe('/docs/guides/next-card/')
+  })
+
+  it('bridges the offset gap towards the target so the pointer never leaves it', async () => {
+    const wrapper = mount(HelpPopover)
+    await showCard()
+    // Card placed below its target: the bridge reaches back up over the gap.
+    expect(wrapper.find('.help-popover-bridge').attributes('style')).toContain('top: -12px')
   })
 })
