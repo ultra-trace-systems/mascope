@@ -88,6 +88,42 @@ new tooling, or `uninstall` to remove the binary and units.
 > the units and reloads systemd) - a release update alone does not refresh the
 > installed units. `mascope prod doctor` reports the drift while it lasts.
 
+Verify a fresh deployment end to end with `mascope prod doctor` plus the
+release smoke test, then reboot once and check both again - boot-time
+problems (a unit change, a kernel setting that did not persist) only show
+on a reboot. Against a production stack the smoke test needs the origin
+URL, its owner credentials, and - with the self-signed certificate -
+`SMOKE_INSECURE`:
+
+```sh
+SMOKE_BASE_URL=https://localhost SMOKE_INSECURE=1 \
+SMOKE_EMAIL=<owner email> SMOKE_PASSWORD=<owner password> \
+bash tooling/smoke-test.sh
+```
+
+### The filestore on a data volume
+
+Uploaded raw files and their processed arrays land in the filestore at
+`.runtime/env/<env>/filestore` - usually the fastest-growing part of the
+deployment. To keep it on a separate data volume, replace that directory with
+a symlink while the stack is down; the tooling resolves the link when it
+mounts the filestore into the containers:
+
+```sh
+mascope prod down
+sudo mkdir -p /mnt/data/filestore
+sudo chown 1000:1000 /mnt/data/filestore    # the containers run as uid 1000
+rsync -a .runtime/env/default/filestore/ /mnt/data/filestore/
+rm -rf .runtime/env/default/filestore
+ln -s /mnt/data/filestore .runtime/env/default/filestore
+mascope prod up --detach
+```
+
+Do not point `[meta] filestore` in the env config at an absolute path
+instead: that file is read both on the host (where it picks the volume to
+mount) and inside the containers (where the host path does not exist), so
+the stack fails to start.
+
 ## The stack (boot service)
 
 `mascope.service` brings the stack up on boot and down on shutdown:
