@@ -221,6 +221,154 @@ class TestInvertMatches:
         assert json.loads(json.dumps(a["provenance"]))["is_tie"] is False
         assert isinstance(a["provenance"]["is_tie"], bool)
 
+    def test_duplicate_formula_arrivals_do_not_split_confidence(self):
+        """One formula via two adducts is one hypothesis, not two competitors.
+
+        Uncollapsed, the two arrivals split the normalisation between
+        themselves and tie against each other - a peak whose assignment is not
+        in doubt reporting 50% confidence and an unresolved tie with itself.
+        Delegating to arbitrate_candidates collapses them (issue #1731).
+        """
+        match_df = pd.DataFrame(
+            [
+                _isotope_row(
+                    target_isotope_id="iso1",
+                    target_ion_id="ion1",
+                    target_compound_id="cmp1",
+                    compound_formula="C6H12O6",
+                    ion_formula="C6H13O6+",
+                    mz=181.0707,
+                    relative_abundance=1.0,
+                    sample_peak_id="p1",
+                    match_score=0.9,
+                ),
+                _isotope_row(
+                    target_isotope_id="iso2",
+                    target_ion_id="ion2",
+                    target_compound_id="cmp1",
+                    compound_formula="C6H12O6",
+                    ion_formula="C6H16NO6+",
+                    mz=181.0707,
+                    relative_abundance=1.0,
+                    sample_peak_id="p1",
+                    match_score=0.85,
+                ),
+            ]
+        )
+        [a] = invert_matches_to_peak_assignments(
+            match_df, "sample1", "run1", POSSIBLE, PROBABLE
+        )
+        assert a["provenance"]["confidence"] == pytest.approx(1.0)
+        assert a["provenance"]["is_tie"] is False
+        assert a["provenance"]["n_candidates"] == 1
+
+    def test_low_evidence_candidates_resolve_when_clearly_separated(self):
+        """The tie gap is relative to the best evidence, not one absolute width.
+
+        Evidence 0.05 vs 0.02 is one candidate with 2.5x the support of the
+        other - a resolved winner. The old inline copy compared against an
+        absolute 0.1 gap, which called nearly everything at low evidence a tie.
+        """
+        match_df = pd.DataFrame(
+            [
+                _isotope_row(
+                    target_isotope_id="iso1",
+                    target_ion_id="ion1",
+                    target_compound_id="cmp1",
+                    compound_formula="C6H12O6",
+                    ion_formula="C6H13O6+",
+                    mz=181.0707,
+                    relative_abundance=1.0,
+                    sample_peak_id="p1",
+                    match_score=0.05,
+                ),
+                _isotope_row(
+                    target_isotope_id="iso3",
+                    target_ion_id="ion2",
+                    target_compound_id="cmp2",
+                    compound_formula="C7H16O5",
+                    ion_formula="C7H17O5+",
+                    mz=181.0705,
+                    relative_abundance=1.0,
+                    sample_peak_id="p1",
+                    match_score=0.02,
+                ),
+            ]
+        )
+        [a] = invert_matches_to_peak_assignments(
+            match_df, "sample1", "run1", POSSIBLE, PROBABLE
+        )
+        assert a["assigned_formula"] == "C6H12O6"
+        assert a["provenance"]["is_tie"] is False
+        assert a["provenance"]["confidence"] == pytest.approx(0.05 / 0.07, abs=1e-3)
+
+    def test_noise_level_candidates_still_tie_under_the_absolute_floor(self):
+        """A big relative gap between two negligible evidences is still a tie.
+
+        0.004 vs 0.001 is a 4x relative gap between candidates that both have
+        essentially no support; the absolute floor keeps that an honest tie
+        rather than a confidently resolved winner.
+        """
+        match_df = pd.DataFrame(
+            [
+                _isotope_row(
+                    target_isotope_id="iso1",
+                    target_ion_id="ion1",
+                    target_compound_id="cmp1",
+                    compound_formula="C6H12O6",
+                    ion_formula="C6H13O6+",
+                    mz=181.0707,
+                    relative_abundance=1.0,
+                    sample_peak_id="p1",
+                    match_score=0.004,
+                ),
+                _isotope_row(
+                    target_isotope_id="iso3",
+                    target_ion_id="ion2",
+                    target_compound_id="cmp2",
+                    compound_formula="C7H16O5",
+                    ion_formula="C7H17O5+",
+                    mz=181.0705,
+                    relative_abundance=1.0,
+                    sample_peak_id="p1",
+                    match_score=0.001,
+                ),
+            ]
+        )
+        [a] = invert_matches_to_peak_assignments(
+            match_df, "sample1", "run1", POSSIBLE, PROBABLE
+        )
+        assert a["provenance"]["is_tie"] is True
+
+    def test_lone_zero_evidence_candidate_reports_no_confidence(self):
+        """Zero evidence means nothing to distinguish: confidence 0, tie True.
+
+        Pins the library's zero-evidence semantics now that the engine
+        delegates - a lone candidate with no evidence must not read as a
+        confident (1.0) assignment.
+        """
+        match_df = pd.DataFrame(
+            [
+                _isotope_row(
+                    target_isotope_id="iso1",
+                    target_ion_id="ion1",
+                    target_compound_id="cmp1",
+                    compound_formula="C6H12O6",
+                    ion_formula="C6H13O6+",
+                    mz=181.0707,
+                    relative_abundance=1.0,
+                    sample_peak_id="p1",
+                    match_score=0.0,
+                )
+            ]
+        )
+        [a] = invert_matches_to_peak_assignments(
+            match_df, "sample1", "run1", POSSIBLE, PROBABLE
+        )
+        assert a["provenance"]["confidence"] == pytest.approx(0.0)
+        assert a["provenance"]["is_tie"] is True
+        assert isinstance(a["provenance"]["is_tie"], bool)
+
     def test_calibrated_p_correct_for_known_instrument(self):
         match_df = pd.DataFrame(
             [
