@@ -100,14 +100,13 @@ branch's shape, not a commit hash that goes stale within a day.*
 - **Opt-in:** the feature is **off by default** (§3). Work stacks on
   `feat/peak-assignment-opt-in`.
 - **Tests:** the full suite is green — libraries, CLI, backend unit + integration +
-  migrations, frontend unit, lint/format. Two gotchas when running them from a worktree:
-  - the backend suite is gated on Postgres at *import* time
-    (`server/backend/tests/conftest.py`), so even the pure-unit tests need `mascope dev up`;
-  - the **migration** tests resolve Alembic from `$MASCOPE_PATH`, the shared runtime home
-    — from a worktree they silently test the *main* checkout's migrations and can report a
-    bogus model-drift failure. Run them with `MASCOPE_PATH` pointed at the worktree and
-    `POSTGRES_TEST_PASSWORD` set (the password otherwise resolves under `MASCOPE_PATH`
-    too). This is the "worktree/main alembic split" of roadmap item E8.
+  migrations, frontend unit, lint/format. One gotcha when running them from a worktree:
+  the backend suite is gated on Postgres at *import* time
+  (`server/backend/tests/conftest.py`), so even the pure-unit tests need `mascope dev up`.
+  (The migration tests used to resolve Alembic from `$MASCOPE_PATH` and silently test the
+  *main* checkout's migrations against this tree's models — a bogus model-drift failure.
+  Fixed with roadmap item E8; they now resolve from the checkout they live in, so no
+  `MASCOPE_PATH` juggling is needed.)
 - **Code map:**
   - Fit score: `libraries/tools/src/mascope_tools/composition/heuristic_filter.py`
     (`score_pattern_v2`, `calibrate_score`, `rule_senior`).
@@ -233,15 +232,17 @@ branch's shape, not a commit hash that goes stale within a day.*
   open:** active-learning queue, evidence-level weighting in the fit, Schymanski surfacing.
 
 **E — ops**
-- **E8. Resolve the worktree/main alembic split.** The CLI resolves alembic from
-  `$MASCOPE_PATH` — the *main* checkout — so from a worktree it applies **develop's**
-  chain and then reports "Database up to date". Consequences, both observed: the
-  migration tests silently verify the wrong migrations (run them with `MASCOPE_PATH`
-  pointed at the worktree and `POSTGRES_TEST_PASSWORD` set, §5), and **`mascope dev run
-  --instance` cannot create this feature's tables at all**, so a worktree stack comes up
-  without them. This is a developer-experience blocker for anyone trying the feature from
-  a worktree, not just a testing annoyance. (The startup reaper tolerates the resulting
-  missing-table state rather than failing the boot, but that is damage control, not a fix.)
+- **E8. Resolve the worktree/main alembic split. — DONE.** The CLI resolved alembic from
+  `$MASCOPE_PATH` — the *main* checkout — so from a worktree it applied **develop's**
+  chain and then reported "Database up to date". Consequences, both observed: the
+  migration tests silently verified the wrong migrations, and `mascope dev run --instance`
+  could not create this feature's tables at all, so a worktree stack came up without them.
+  Both now resolve from the running source tree instead — `checkout.backend_path()` for
+  the CLI, `Path(__file__)` for the test suite — with `MASCOPE_PATH` left to its documented
+  job (database, secrets, `.runtime`). Regression coverage in
+  `tooling/cli/tests/test_dev_migrate.py`. (The startup reaper still tolerates a
+  missing-table state rather than failing the boot; that remains damage control, and is
+  now a backstop rather than the only line of defence.)
 - **E8b. Schedule the retention prune.** `prune_peak_assignment_runs` exists and is
   documented for operators, but nothing runs it — there is no timer or cron entry, so
   unattended growth is unchanged until one exists.

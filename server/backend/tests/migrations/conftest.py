@@ -17,7 +17,6 @@ NOTE: For adding more pytest-alembic tests later:
     fixture to function scope.
 """
 
-import os
 from pathlib import Path
 from typing import Iterator
 
@@ -36,7 +35,11 @@ from test_utils import (
 
 # --- Constants ---
 
-BACKEND_PATH = Path(os.environ["MASCOPE_PATH"]) / "server" / "backend"
+# Resolved from this file, so the suite always tests the migrations of the
+# checkout it lives in. Deriving it from MASCOPE_PATH (the shared runtime home,
+# normally the main checkout) would test *those* migrations against *this*
+# tree's models - a convincing but bogus drift failure from a worktree.
+BACKEND_PATH = Path(__file__).resolve().parents[2]
 ALEMBIC_INI = BACKEND_PATH / "alembic.ini"
 
 STAIRWAY_DB_NAME = "mascope_test_migrations"

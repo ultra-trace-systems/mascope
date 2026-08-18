@@ -32,6 +32,7 @@ from typing import Annotated, Optional
 
 import typer
 
+from mascope_cli.checkout import backend_path
 from mascope_cli.cmd import lib
 from mascope_cli.cmd.prod import auto_update, cli_drift, preflight, release_manifest
 from mascope_cli.cmd.prod import doctor as prod_doctor
@@ -561,9 +562,12 @@ def manifest(
         mascope prod manifest --version v1.3.0 --output mascope-manifest.json
     """
     app_version = version or _deploy_version()
-    backend_path = Path(os.environ["MASCOPE_PATH"]) / "server" / "backend"
+    # The Alembic head is read from the checkout being released - the same
+    # source-vs-runtime-home distinction `mascope dev migrate` makes. In a
+    # release build and on a deployed server these coincide; from a worktree
+    # they do not, and MASCOPE_PATH would stamp the wrong revision.
     try:
-        data = release_manifest.build_manifest(app_version, backend_path)
+        data = release_manifest.build_manifest(app_version, backend_path())
     except release_manifest.ManifestError as e:
         runtime.logger.error(str(e))
         raise typer.Exit(1)

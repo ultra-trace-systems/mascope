@@ -5,7 +5,6 @@ Provides commands to check, apply, and manage PostgreSQL schema migrations
 using Alembic.
 """
 
-import os
 import subprocess
 from pathlib import Path
 from typing import Annotated
@@ -16,6 +15,7 @@ from alembic.script import ScriptDirectory
 from sqlalchemy import create_engine, text
 from sqlalchemy.pool import NullPool
 
+from mascope_cli.checkout import backend_path
 from mascope_cli.pg import dirs, pg_dump
 from mascope_cli.runtime import runtime
 
@@ -26,8 +26,13 @@ _PATH = "dev"
 
 
 def _backend_path() -> Path:
-    """Alembic working directory (the backend package under MASCOPE_PATH)."""
-    return Path(os.environ["MASCOPE_PATH"]) / "server" / "backend"
+    """Alembic working directory: the backend package of the invoked checkout.
+
+    Resolved from the running CLI source (see ``checkout.backend_path``), not
+    from ``MASCOPE_PATH`` - a worktree must migrate its database to its *own*
+    head, and ``MASCOPE_PATH`` is the shared runtime home, not the source.
+    """
+    return backend_path()
 
 
 def _check_prerequisites() -> bool:

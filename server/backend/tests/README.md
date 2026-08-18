@@ -72,6 +72,8 @@ Tests that verify Alembic migration scripts and their consistency with SQLAlchem
   - Focus: Linear migration graph integrity.
   - Provided by `pytest-alembic` (`test_single_head_revision`).
 
+The Alembic directory is resolved from `conftest.py`'s own location, so the suite always tests the migrations of the checkout it lives in. It must not be derived from `MASCOPE_PATH`: that is the shared runtime home (database volumes, secrets, `.runtime`) and normally points at the main checkout, so from a worktree the drift test would compare *develop's* migrations against *this* tree's models and report a convincing but bogus failure. The same rule applies to `mascope dev migrate` — see `mascope_cli.checkout.backend_path`.
+
 ## Directory Structure Overview 📂
 
 ```

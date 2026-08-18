@@ -580,6 +580,9 @@ Notes:
 - The same ports are exposed manually via `MASCOPE_API_PORT` / `MASCOPE_FRONTEND_PORT` (and the
   env via `MASCOPE_ENV`), so `eval "$(mascope instance show --export)"` in a shell activates an
   instance for tools other than `mascope dev run`.
+- Migrations follow the worktree, not `MASCOPE_PATH`: a branch that adds a revision has it
+  applied to that instance's database on startup. Leave `MASCOPE_PATH` at the shared home -
+  it is deliberately not the source tree (see [Schema migrations](#schema-migrations)).
 
 ### Runtime Config
 
@@ -1421,7 +1424,9 @@ changing a model. Migration files are named by date, short revision hash, and a 
 ```
 
 **Dev** - migrations are applied automatically by `mascope dev run` before the application starts,
-or manually:
+or manually. The migration chain is read from the checkout you invoke `mascope` from, *not* from
+`MASCOPE_PATH`: a worktree adding a revision migrates its instance database to its **own** head,
+while the shared runtime home keeps holding only the database, secrets, and `.runtime`.
 
 ```bash
 mascope dev migrate status            # show current revision and pending migrations
