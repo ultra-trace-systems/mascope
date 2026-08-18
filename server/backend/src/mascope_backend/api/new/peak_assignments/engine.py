@@ -21,7 +21,7 @@ from mascope_backend.api.controllers.match.lib.match_score_v2 import (
 )
 from mascope_backend.db.id import gen_id
 from mascope_backend.runtime import runtime
-from mascope_tools.composition.arbitration import DEFAULT_TIE_TOL
+from mascope_tools.composition.arbitration import arbitrate_candidates
 from mascope_tools.composition.calibration import (
     Calibration,
     apply_calibration,
@@ -338,15 +338,15 @@ def invert_matches_to_peak_assignments(
     matched["_evidence"] = matched["_fit"] * matched["_plaus"]
     matched["_abs_mz_error"] = matched["match_mz_error"].abs()
     matched["_formula_key"] = formulas
-    # The ranking mirrors `arbitration.arbitrate_candidates` (evidence first, formula last
-    # for a stable order) but is not delegated to it: that helper competes bare
-    # (formula, fit) candidates and returns a dataclass, while a peak's winner here has to
-    # keep the whole match row - target FKs, reference identities, isotope role, mass and
-    # abundance errors - which the dataclass cannot carry. Mass error is the extra middle
-    # key, and it is the domain-meaningful one: between two equally plausible formulas that
-    # fit equally well, the closer mass is the better assignment. The formula key is last
-    # so two candidates equal on all three still resolve by the data rather than by whatever
-    # order the matcher happened to emit them in.
+    # This row sort selects the winning ROW only; confidence and ties are delegated
+    # to `arbitration.arbitrate_candidates` per peak below. The selection cannot be
+    # delegated because the winner has to keep the whole match row - target FKs,
+    # reference identities, isotope role, mass and abundance errors - which the
+    # library's (formula, fit) view cannot carry, and because mass error is the
+    # domain-meaningful middle key: between two equally plausible formulas that fit
+    # equally well, the closer mass is the better assignment. The formula key is last
+    # so two candidates equal on all three still resolve by the data rather than by
+    # whatever order the matcher happened to emit them in.
     matched = matched.sort_values(
         ["sample_peak_id", "_evidence", "_abs_mz_error", "_formula_key"],
         ascending=[True, False, True, True],
@@ -367,31 +367,38 @@ def invert_matches_to_peak_assignments(
             else group.iloc[1:1]
         )
 
-        # Arbitration confidence for the chosen winner: its share of the peak's total
-        # evidence, plus an honest tie flag when a runner-up is within tie_tol.
+        # Arbitration confidence and the tie flag come from the shared
+        # `arbitrate_candidates`, not an inline copy - one implementation, so a fix
+        # in the library reaches the engine (issue #1731). Delegating buys the two
+        # behaviours the inline copy had lost: duplicate formulas are COLLAPSED
+        # before normalisation (the same formula arriving via two adducts is one
+        # hypothesis, not two competitors splitting their own confidence into a
+        # self-tie), and the tie gap is RELATIVE to the best evidence with an
+        # absolute floor, instead of one absolute gap that called nearly
+        # everything below 0.1 apart a tie.
         #
-        # Confidence answers "which of this peak's candidates", NOT "how good is this
-        # assignment" - an uncontested peak scores 1.0 however poorly its single candidate
-        # fits, because there was nothing to lose to. That is the same normalisation
-        # `arbitrate_candidates` reports and the UI already reads, so it is kept rather than
-        # redefined; `n_candidates` is recorded alongside it so a 1.0 earned against
-        # competitors is distinguishable from a 1.0 that was uncontested. The question
-        # "how good" is `p_correct` (the calibrated evidence), which does not divide by the
+        # Confidence answers "which of this peak's candidates", NOT "how good is
+        # this assignment" - an uncontested peak scores 1.0 however poorly its
+        # single candidate fits, because there was nothing to lose to.
+        # `n_candidates` is recorded alongside it so a 1.0 earned against
+        # competitors is distinguishable from a 1.0 won by default; "how good" is
+        # `p_correct` (the calibrated evidence), which does not divide by the
         # field and does fall for a poor lone candidate.
-        evid = group["_evidence"].to_numpy(dtype=float)
-        total_evidence = float(evid.sum())
-        confidence = float(evid[0] / total_evidence) if total_evidence > 0 else 0.0
-        if total_evidence <= 0:
-            is_tie = len(group) > 1
-        else:
-            # bool() so provenance stays JSON-serializable (evid is a numpy array,
-            # whose comparisons yield numpy.bool_, which the JSON column rejects).
-            is_tie = bool(len(group) > 1 and (evid[0] - evid[1]) <= DEFAULT_TIE_TOL)
+        arbitrated = arbitrate_candidates(
+            zip(group["_formula_key"], group["_fit"], strict=True)
+        )
+        winner_arbitrated = next(
+            c for c in arbitrated if c.formula == str(winner["_formula_key"])
+        )
+        confidence = winner_arbitrated.confidence
+        is_tie = winner_arbitrated.is_tie
 
         # Calibrated P(correct) for the winner's evidence — only when this instrument
         # has a calibration; otherwise the assignment is honestly left uncalibrated.
         if calibration is not None:
-            p_correct = round(float(apply_calibration(evid[0], calibration)), 4)
+            p_correct = round(
+                float(apply_calibration(float(winner["_evidence"]), calibration)), 4
+            )
             calibration_meta = {
                 "instrument": calibration.instrument,
                 "provisional": calibration.provisional,
@@ -452,9 +459,10 @@ def invert_matches_to_peak_assignments(
             "alternatives": alternatives or None,
             "provenance": {
                 "confidence": round(confidence, 4),
-                # How many candidates the confidence was normalised across; 1 means the
-                # peak was uncontested and the 1.0 above was won by default.
-                "n_candidates": int(len(group)),
+                # How many DISTINCT formulas the confidence was normalised across
+                # (duplicate arrivals of one formula collapse); 1 means the peak
+                # was uncontested and the 1.0 above was won by default.
+                "n_candidates": int(len(arbitrated)),
                 "plausibility": round(float(winner["_plaus"]), 4),
                 "evidence": round(float(winner["_evidence"]), 4),
                 "is_tie": is_tie,

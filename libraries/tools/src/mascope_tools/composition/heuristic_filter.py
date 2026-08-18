@@ -2,6 +2,7 @@
 Based on 7 Golden Rules by https://bmcbioinformatics.biomedcentral.com/articles/10.1186/1471-2105-8-105
 """
 
+from functools import lru_cache
 from typing import Any
 
 import numpy as np
@@ -444,6 +445,9 @@ def senior_plausibility(counts: dict[str, int] | None) -> float:
     return 1.0 if _senior_feasible(counts) else 0.0
 
 
+# Pure function of the formula string; cached because arbitration re-evaluates
+# it per candidate per peak across a whole run's ledger.
+@lru_cache(maxsize=65536)
 def formula_plausibility(formula: str) -> float:
     """Combined graded chemical plausibility in [0, 1] for a single NEUTRAL formula.
 
