@@ -90,6 +90,29 @@ async def unregister_service(service_name: str, sid: str) -> None:
         )
 
 
+async def get_service_sid(service_name: str) -> str | None:
+    """
+    Return the Socket.IO sid of a connected service, or ``None`` if absent.
+
+    Reads the same Redis presence key that :func:`register_service` writes, so
+    an emitter can target the service's own connection with ``to=`` instead of
+    broadcasting a payload to every socket on the namespace. Works from any
+    worker because Redis is shared state.
+
+    :param service_name: Service identifier (e.g., "file-converter")
+    :type service_name: str
+    :return: The registered sid, or ``None`` when the service is not connected
+    :rtype: str | None
+    """
+    key = storage_config.service_key(service_name)
+
+    try:
+        return await redis_storage_client.client.get(key)
+    except Exception as e:
+        runtime.logger.exception(f"Failed to read service '{service_name}' sid: {e}")
+        return None
+
+
 async def is_service_connected(service_name: str) -> bool:
     """
     Check if a service is currently connected (cross-worker).
