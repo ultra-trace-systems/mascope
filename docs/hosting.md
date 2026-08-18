@@ -5,7 +5,7 @@ How to run Mascope, from a one-machine trial to a shared production deployment.
 ## Managed hosting by Ultra Trace
 
 The simplest option is to let Ultra Trace host Mascope for you - no servers, updates,
-backups, or TLS to manage. Contact [sales@ultratrace.eu](mailto:sales@ultratrace.eu) for a
+backups, or TLS to manage. Contact [hello@ultratrace.eu](mailto:hello@ultratrace.eu) for a
 quote.
 
 ## Self-hosting

@@ -39,7 +39,7 @@ also run the demo from source with `mascope demo` (see
 ## Hosting
 
 - **Managed** - let Ultra Trace run Mascope for you, with no infrastructure to manage.
-  Contact [sales@ultratrace.eu](mailto:sales@ultratrace.eu) for a quote.
+  Contact [hello@ultratrace.eu](mailto:hello@ultratrace.eu) for a quote.
 - **Self-host** - Mascope ships as Docker images. Try it locally (above), or see
   [Hosting & deployment](docs/hosting.md) for sharing it on a LAN or in
   production (HTTPS, TLS options, secrets, backups, upgrades).
