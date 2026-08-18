@@ -2767,12 +2767,12 @@ Releases use **SemVer** `vMAJOR.MINOR.PATCH`:
 
 To cut one, from `master` at the commit you want to release:
 
-1. Bump [`CITATION.cff`](../../CITATION.cff): set `version:` to the new `X.Y.Z` and `date-released:` to today, and merge it to `master` so it is part of the released commit.
+1. Land the release-prep commit and merge it to `master` so it is part of the released commit: finalize the `CHANGELOG.md` section for `X.Y.Z`, and in the same commit bump [`CITATION.cff`](../../CITATION.cff) - `version:` to the new `X.Y.Z`, `date-released:` to today. One commit on purpose: as a standalone step the citation bump was skipped by every release after v1.0.0. Nothing else in `CITATION.cff` changes per release - its `doi:` is the concept DOI, since a version DOI only exists once Zenodo has archived the published release.
 2. Tag and push: `git tag vX.Y.Z && git push origin vX.Y.Z`. Tag pushes do **not** trigger the build pipeline, so this won't rebuild images.
 3. On GitHub, **Releases → Draft a new release**, pick the `vX.Y.Z` tag, fill in the title + notes (below), and **Publish**.
 Publishing then triggers two automations:
 
-- **Zenodo** archives the release and mints a new version DOI; the concept DOI (the README badge / `CITATION.cff`) keeps resolving to the latest.
+- **Zenodo** archives the release and mints a new version DOI; the concept DOI (the README badge and the `doi:` in `CITATION.cff`) keeps resolving to the latest. The sync fails silently when it breaks (hook removed, the linked account's GitHub authorization lapsed, a repo rename not re-enabled on zenodo.org), so glance at the [concept DOI](https://doi.org/10.5281/zenodo.21037634) after publishing to confirm the new version appeared.
 - The **`build-release-images`** workflow (`.github/workflows/build-release-images.yaml`) **builds** the images from the tag and pushes `ghcr.io/ultra-trace-systems/mascope/<service>:vX.Y.Z`. It rebuilds (rather than re-tagging) on purpose: on a tag checkout `parse_version()` resolves to the tag, so `vX.Y.Z` both tags the images and **bakes in** as the version the app reports.
 
 So the one version flows everywhere: git tag, GitHub Release, Zenodo DOI, the image tag, and the in-app version. To deploy a release, on the server `git checkout vX.Y.Z` (then `mascope prod docker pull && mascope prod up`) - `parse_version()` resolves the tag, so it pulls the `vX.Y.Z` images and the UI shows `vX.Y.Z`. A regular `master` checkout deploys/shows the build tag `{date}-{hash}` instead; `latest` keeps tracking master for dev/staging and the demo. (You can also pin explicitly with `MASCOPE_VERSION=vX.Y.Z`, which the CLI no longer overrides.)

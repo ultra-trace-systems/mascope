@@ -109,6 +109,13 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
   signs; they were indented or glued to the preceding paragraph, which keeps
   Arithmatex from promoting `$$...$$` to a display block. A bare `%` KaTeX
   silently dropped as a TeX comment is now escaped.
+- `CITATION.cff` tracks the released version again: it had sat at
+  1.0.0 / 2026-06-29 since the first release, so GitHub's "Cite this
+  repository" widget and the copy shipped in every archive since cited the
+  wrong version. Its `doi` field now carries the concept DOI - always the
+  latest archived release; Zenodo mints per-version DOIs only after
+  publishing - and the version bump is folded into the standard release-prep
+  commit alongside this changelog so it can no longer be skipped.
 
 ### Security
 
