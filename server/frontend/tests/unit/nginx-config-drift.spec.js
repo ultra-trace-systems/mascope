@@ -134,6 +134,7 @@ const ONE_SIDED_REGIONS = {
   'nginx.conf': [
     'cloudflare-realip', // Cloudflare restores the client IP; demo has no proxy
     'hsts', // meaningless without TLS
+    'hsts-docs', // ditto (the /docs/ location restates its header set)
     'http-redirect', // the :80 -> :443 vhost
     'socketio-timeout', // covered by the demo's single long timeout
     'tls-cert',

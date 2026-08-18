@@ -55,6 +55,23 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
   all passed printed the warning and still exited zero - meaning a scheduled job
   would never have surfaced the one state in which the baseline silently absorbs a
   returning finding.
+- The docs no longer load the mermaid diagram library from a CDN. The docs are
+  built to be self-contained - fonts self-hosted, KaTeX vendored - but the
+  theme's diagram loader fetched mermaid itself from unpkg.com at view time,
+  leaking visitor addresses and breaking diagrams in air-gapped deployments.
+  mermaid is now vendored into the docs assets like KaTeX.
+
+### Security
+
+- The Content-Security-Policy is now **enforced**; it had shipped as
+  Report-Only pending a browser QA pass, which found the app itself clean
+  (login, dashboard, batch overview, sample spectrum with Plotly, chart PNG
+  export, and live Socket.IO produce no violations). The app policy is
+  unchanged from the one previously reported. The bundled docs get their own
+  policy: the Material theme boots through inline scripts, so `/docs/` allows
+  same-origin inline scripts while dropping the app's `unsafe-eval` and blob:
+  worker allowances it never needed. A `Permissions-Policy` header now also
+  denies camera, microphone and geolocation outright.
 
 ## [1.7.0] - 2026.08.17
 
