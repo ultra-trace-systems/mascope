@@ -67,9 +67,13 @@ extra_css:
   - assets/uts.css
   - assets/katex/katex.min.css
 
-# KaTeX is vendored under assets/katex/ (css + js + woff2 fonts) so math
-# renders without any CDN, keeping the docs self-contained and air-gapped.
+# KaTeX (css + js + woff2 fonts) and mermaid are vendored under assets/ so
+# math and diagrams render without any CDN, keeping the docs self-contained
+# and air-gapped. Loading mermaid here defines `window.mermaid` before the
+# Material theme's diagram loader runs; the loader uses an existing global and
+# only falls back to fetching the library from unpkg when none is defined.
 extra_javascript:
+  - assets/mermaid/mermaid.min.js
   - assets/katex/katex.min.js
   - assets/katex/contrib/auto-render.min.js
   - assets/katex-init.js
@@ -84,7 +88,8 @@ markdown_extensions:
   - toc:
       permalink: true
   - pymdownx.superfences:
-      # Render ```mermaid fences as diagrams (Material ships the mermaid runtime).
+      # Render ```mermaid fences as diagrams. Material ships the loader only;
+      # the mermaid library itself is vendored (see extra_javascript).
       custom_fences:
         - name: mermaid
           class: mermaid
