@@ -86,14 +86,48 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
   all passed printed the warning and still exited zero - meaning a scheduled job
   would never have surfaced the one state in which the baseline silently absorbs a
   returning finding.
+- Re-running `./tooling/ubuntu.sh install` from a non-login shell (ssh, cron,
+  ansible) no longer exits before writing the systemd units. The PATH export
+  added to fix the first-install failure landed after the `uv tool
+  update-shell` call it was meant to precede, and that call errors when uv's
+  bin directory is absent from PATH while the shell profile already names it
+  - the state of every re-run over ssh - so under errexit the script died
+  with the binaries linked but no boot service or disk-check timer installed.
+  This matters because re-running the installer is the documented way to pick
+  up corrected units, and the v1.7.0 release notes ask every server to do
+  exactly that. The export now comes first, so both the first run and every
+  re-run complete.
 - The docs no longer load the mermaid diagram library from a CDN. The docs are
   built to be self-contained - fonts self-hosted, KaTeX vendored - but the
   theme's diagram loader fetched mermaid itself from unpkg.com at view time,
   leaking visitor addresses and breaking diagrams in air-gapped deployments.
   mermaid is now vendored into the docs assets like KaTeX.
+- Thirteen display equations in the "How it works" documentation pages now
+  render as display blocks instead of inline math flanked by literal dollar
+  signs; they were indented or glued to the preceding paragraph, which keeps
+  Arithmatex from promoting `$$...$$` to a display block. A bare `%` KaTeX
+  silently dropped as a TeX comment is now escaped.
 
 ### Security
 
+- The file-converter's realtime channel no longer hands out user tokens. The
+  `/file-converter` Socket.IO namespace authenticated a connection on the
+  public `x-service-name` header alone, then broadcast every upload and
+  peak-detection payload - each carrying the acting user's access token - to
+  the whole namespace, so any client able to reach the backend could
+  subscribe and harvest live tokens, then replay them against the REST API as
+  those users. Connecting now requires a service token derived per deployment
+  from the JWT secret via the same domain separation as the reset and
+  verification secrets - no new secret file, the backend and the converter
+  already mount the same `jwt_secret_key` - and the token-bearing payloads
+  are delivered only to the authenticated converter's own room, whose
+  membership survives reconnects and multi-worker backends, instead of being
+  broadcast to the namespace. Uploads are refused up front with 503 while no
+  converter is connected, rather than accepted and stranded unprocessed in
+  the filestore. **If your file converter runs on another host**, provision
+  it the same `jwt_secret_key` and rotate the two together - see the hosting
+  guide; a converter presenting a stale secret is rejected, and the log
+  distinguishes it from an arbitrary unauthenticated client.
 - State-changing API requests that declare a foreign origin are now refused
   (HTTP 403). Cross-site protection for writes previously rested entirely on
   the auth cookie's `SameSite=lax` attribute - a browser-side control that
