@@ -14,6 +14,27 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
   move never discards local changes: when the checkout cannot be moved, the
   update still succeeds with a warning naming the manual
   `git checkout <tag>` step.
+- `mascope dev run --instance` now applies the migrations of the checkout it
+  runs from. The Alembic directory was derived from `MASCOPE_PATH`, the shared
+  runtime home, which normally points at the main checkout - so an instance
+  launched from a git worktree migrated its database to the main checkout's
+  head, silently skipping the branch's own revisions. Nothing warned: the
+  pending-migration check compared the wrong head, reported "up to date", and
+  the stack started without the new schema, failing later at runtime on the
+  first use of the missing columns. Any branch adding a migration needed a
+  manual `alembic upgrade` plus `--skip-migrations` to be exercised at all,
+  which defeated the purpose of per-worktree instances for exactly the changes
+  most worth testing live.
+- The migration test suite hit the same conflation: it built its Alembic path
+  from `MASCOPE_PATH`, so running a worktree's tests tested the *main*
+  checkout's migrations against the worktree's models and produced a
+  convincing but bogus model-drift failure. It now resolves the path from its
+  own location. `mascope prod manifest`, which records "the Alembic head baked
+  into the current source tree", was reading it from the same wrong place.
+- `MASCOPE_PATH` keeps its documented job throughout - database volumes,
+  secrets, `.runtime` - and is no longer treated as a source location by any
+  of these paths. It is still the fallback for an operator install, where the
+  deploy directory legitimately is both.
 
 ## [1.7.2] - 2026.08.19
 

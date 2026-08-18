@@ -33,7 +33,6 @@ Behavior notes:
 Reference: https://github.com/alvassin/alembic-quickstart
 """
 
-import os
 from pathlib import Path
 
 import pytest
@@ -42,7 +41,8 @@ from alembic.config import Config
 from alembic.script import Script, ScriptDirectory
 
 
-_ALEMBIC_INI = Path(os.environ["MASCOPE_PATH"]) / "server" / "backend" / "alembic.ini"
+# This checkout's migrations, not MASCOPE_PATH's - see conftest.BACKEND_PATH.
+_ALEMBIC_INI = Path(__file__).resolve().parents[2] / "alembic.ini"
 
 
 def _walk_revisions_oldest_first() -> list[Script]:
@@ -50,8 +50,7 @@ def _walk_revisions_oldest_first() -> list[Script]:
 
     Run at module import time (before pytest collection) so that
     `pytest.mark.parametrize` can consume the list. Reads only the script
-    dir — no database connection required, no `MASCOPE_PATH` semantics
-    beyond resolving the ini path.
+    dir — no database connection required.
     """
     cfg = Config(str(_ALEMBIC_INI))
     script = ScriptDirectory.from_config(cfg)
