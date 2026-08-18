@@ -128,9 +128,15 @@ class UserCreate(schemas.BaseUserCreate):
         ...,
         description="User's email address. This will be used as the login credential.",
     )
-    password: str = Field(
-        ...,
-        description="User's password for authentication. Will be hashed upon creation.",
+    password: Optional[str] = Field(
+        None,
+        description=(
+            "Optional. Omit it and the server generates a temporary password and "
+            "returns it once in the response, which is how administrators create "
+            "accounts: the holder must replace it at first sign-in either way, so "
+            "a password chosen here is only ever a hand-over secret. Required "
+            "where the account holder is choosing their own - see FirstOwnerCreate."
+        ),
     )
     is_active: Optional[bool] = Field(
         default=True,

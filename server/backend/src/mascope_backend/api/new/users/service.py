@@ -22,6 +22,9 @@ from mascope_backend.api.new.users.me.schemas import (
     UserUpdateMe,
     UserUpdateMeCredentials,
 )
+from mascope_backend.api.new.users.password.generate import (
+    generate_random_password,
+)
 from mascope_backend.api.new.users.schemas import (
     UserCreate,
     UserPublic,
@@ -195,16 +198,28 @@ async def register_user(
                 will be restricted during creation, defaults to True
     :type safe: bool
     :param require_password_change: Whether the account must replace its password
-                before it can use the application, defaults to True because an
-                administrator chose the password they are handing over.
+                before it can use the application, defaults to True because the
+                password is one someone else knows.
     :type require_password_change: bool
     :raises UsernameAlreadyExistsException: If the username already exists.
     :raises UserAlreadyExists: If a user with the same email already exists.
-    :return: The registered user's details.
+    :return: The registered user's details, and the generated temporary password
+             when the caller supplied none.
     :rtype: dict
     """
     # --- Check if the username already exists ---
     await check_username_exists(user_create.username)
+
+    # --- Generate the hand-over password when the caller supplied none ---
+    # Asking an administrator to invent one buys nothing: the holder must
+    # replace it at first sign-in regardless, so its only job is to survive
+    # being read out once. A generated one does that better than an invented
+    # one, and cannot be a password the administrator uses elsewhere. Returned
+    # exactly once, like a password reset; nothing can recover it afterwards.
+    generated_password = None
+    if not user_create.password:
+        generated_password = generate_random_password()
+        user_create.password = generated_password
 
     # --- Sync is_superuser with role_id (owner role requires superuser) ---
     user_create.is_superuser = (
@@ -244,9 +259,19 @@ async def register_user(
 
     # --- Validate and return the registered user's details ---
     user = (await get_user(user_id=created_user.id))["data"]
+    if generated_password is None:
+        return {
+            "message": f"User '{user.username}' registered successfully.",
+            "data": user,
+        }
     return {
-        "message": f"User '{user.username}' registered successfully.",
+        "message": (
+            f"User '{user.username}' registered. Share the temporary password "
+            "with them - it is shown only once, and they must replace it at "
+            "first sign-in."
+        ),
         "data": user,
+        "temporary_password": generated_password,
     }
 
 

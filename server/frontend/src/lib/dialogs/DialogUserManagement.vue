@@ -7,7 +7,6 @@ import DataTable from 'primevue/datatable'
 import Column from 'primevue/column'
 import Select from 'primevue/select'
 import InputText from 'primevue/inputtext'
-import Password from 'primevue/password'
 import FloatLabel from 'primevue/floatlabel'
 import Message from 'primevue/message'
 import { useConfirm } from 'primevue/useconfirm'
@@ -15,7 +14,6 @@ import { useConfirm } from 'primevue/useconfirm'
 import { useApp } from '@/stores'
 import { BaseCopyableField } from '@/lib/base'
 import { roles, prettyRoleName } from '@/lib/roles'
-import { passwordPolicyError } from '@/lib/password'
 
 const app = useApp()
 const confirm = useConfirm()
@@ -29,11 +27,16 @@ const close = () => {
 const edited = ref(null)
 const created = ref(null)
 const password = ref(null)
+// The temporary password the server generated for a new account, held until
+// the administrator has copied it. Shown once and unrecoverable afterwards -
+// same contract as a password reset.
+const createdPassword = ref(null)
 
 const reset = () => {
   edited.value = null
   created.value = null
   password.value = null
+  createdPassword.value = null
 }
 const editing = ({ id }) => id == edited.value?.id
 
@@ -49,10 +52,10 @@ const user = {
   },
   create: () => {
     edited.value = null
+    createdPassword.value = null
     created.value = {
       username: null,
       email: null,
-      password: null,
       role_id: 100
     }
   },
@@ -60,11 +63,17 @@ const user = {
   save: async () => {
     if (edited.value) {
       await app.data.user.update(edited.value)
+      reset()
+      return
     }
     if (created.value) {
-      await app.data.user.create(created.value)
+      const response = await app.data.user.create(created.value)
+      // Clear the form but hold the view open on the password: resetting here
+      // would discard the one copy of it that exists.
+      created.value = null
+      createdPassword.value = response?.temporary_password ?? null
+      if (!createdPassword.value) reset()
     }
-    reset()
   },
   delete: (data) => {
     confirm.require({
@@ -151,21 +160,10 @@ const invalidCreated = computed(() => {
     created.value?.email?.length < 5 ||
     !created.value?.email?.includes('@')
   const username = !created.value?.username || created.value?.username?.length < 5
-  // Mirror the backend password policy for instant feedback.
-  const passwordError = created.value?.password
-    ? passwordPolicyError(created.value.password, {
-        email: created.value.email,
-        username: created.value.username
-      })
-    : null
-  const password = !created.value?.password || !!passwordError
-  const form = email || username || password
   return {
     email,
     username,
-    password,
-    passwordError,
-    form
+    form: email || username
   }
 })
 
@@ -345,15 +343,6 @@ watch(visible, reset)
             />
             <label for="created-email">Email</label>
           </FloatLabel>
-          <FloatLabel>
-            <Password
-              id="created-password"
-              v-model="created.password"
-              :invalid="created.password && invalidCreated.password"
-              required
-            />
-            <label for="created-password">Password</label>
-          </FloatLabel>
           <Select
             v-model:modelValue="created.role_id"
             :options="selectableRoles"
@@ -379,18 +368,23 @@ watch(visible, reset)
             />
           </menu>
         </menu>
-        <Message
-          v-if="created.password && invalidCreated.passwordError"
-          icon="pi pi-exclamation-triangle"
-          severity="secondary"
-          style="margin-top: 0.5rem"
-        >
-          {{ invalidCreated.passwordError }}
-        </Message>
         <Message icon="pi pi-info-circle" severity="secondary" style="margin-top: 0.5rem">
-          The password you set here is temporary - the new user must choose their own at first sign
-          in.
+          A temporary password is generated when the account is created, and shown once. The new
+          user must choose their own at first sign in.
         </Message>
+      </template>
+
+      <!-- The generated password, shown once. Kept in its own block rather than
+           a toast: it has to stay on screen long enough to be copied. -->
+      <template v-if="createdPassword">
+        <div class="col" style="gap: 0.25rem; align-items: flex-start; margin-top: 2rem">
+          <span style="font-size: smaller; opacity: 0.7">Temporary password:</span>
+          <BaseCopyableField :field="createdPassword" @copy="reset" />
+          <span class="temporary-password-note">
+            Share it with the new user - it is shown only once, and they must set their own password
+            at first sign in.
+          </span>
+        </div>
       </template>
     </section>
     <menu style="justify-content: space-between; margin-top: 3rem">
