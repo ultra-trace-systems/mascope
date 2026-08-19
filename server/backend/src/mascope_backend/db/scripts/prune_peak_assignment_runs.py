@@ -4,14 +4,18 @@ Maintenance script to prune superseded peak assignment runs.
 Peak assignment writes one row per observed peak per run, and runs are never
 superseded automatically, so `peak_assignment` grows without bound wherever
 assignment is re-run. This keeps the newest few completed runs per sample and
-drops the rest, plus non-completed runs past a short grace period. Deleting a
-run cascades to its assignment rows.
+engine and drops the rest, plus non-completed runs past a short grace period.
+Deleting a run cascades to its assignment rows.
 
 Set MASCOPE_PRUNE_DRY_RUN=1 to report what would be deleted without deleting.
 Override the policy with MASCOPE_PRUNE_KEEP_PER_SAMPLE (default 3),
-MASCOPE_PRUNE_KEEP_FAILED_HOURS (default 24) and MASCOPE_PRUNE_KEEP_RUNNING_HOURS
+MASCOPE_PRUNE_KEEP_FAILED_HOURS (default 24), MASCOPE_PRUNE_KEEP_RUNNING_HOURS
 (default 72, floored at MIN_KEEP_RUNNING_HOURS - runs that may still be executing
-are not something an operator should be able to shorten into the danger zone).
+are not something an operator should be able to shorten into the danger zone) and
+MASCOPE_PRUNE_KEEP_IMPORTING_HOURS (default 24, floored at
+MIN_KEEP_IMPORTING_HOURS - an import that never finished holds staged rows and
+blocks new runs on its sample, but a live upload must not be reclaimed
+underneath itself).
 
 Usage:
     mascope dev db script run prune_peak_assignment_runs
@@ -26,8 +30,10 @@ import os
 from mascope_backend.db import configure_database_engine
 from mascope_backend.db.admin.peak_assignments.prune_runs import (
     DEFAULT_KEEP_FAILED_HOURS,
+    DEFAULT_KEEP_IMPORTING_HOURS,
     DEFAULT_KEEP_PER_SAMPLE,
     DEFAULT_KEEP_RUNNING_HOURS,
+    MIN_KEEP_IMPORTING_HOURS,
     MIN_KEEP_RUNNING_HOURS,
     prune_peak_assignment_runs,
 )
@@ -86,6 +92,11 @@ async def run() -> None:
             "MASCOPE_PRUNE_KEEP_RUNNING_HOURS",
             DEFAULT_KEEP_RUNNING_HOURS,
             minimum=MIN_KEEP_RUNNING_HOURS,
+        ),
+        keep_importing_hours=_int_env(
+            "MASCOPE_PRUNE_KEEP_IMPORTING_HOURS",
+            DEFAULT_KEEP_IMPORTING_HOURS,
+            minimum=MIN_KEEP_IMPORTING_HOURS,
         ),
     )
     runtime.logger.info("=" * 80)

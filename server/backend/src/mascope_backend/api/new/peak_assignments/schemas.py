@@ -3,9 +3,12 @@
 from datetime import datetime
 from typing import Literal
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from mascope_backend.api.new.peak_assignments.config import PeakAssignmentConfig
+from mascope_backend.api.new.peak_assignments.config import (
+    MAX_IMPORT_ROWS_PER_REQUEST,
+    PeakAssignmentConfig,
+)
 
 
 # Verification vocabulary (verification-calibration loop V1). Verdict is the label;
@@ -159,6 +162,181 @@ class AssignSamplePeaksBody(BaseModel):
             "Optional run configuration; engine defaults are used when omitted."
         ),
     )
+
+
+class TierBands(BaseModel):
+    """The fit-score thresholds a run tiered its rows with.
+
+    Lifted out of the opaque run `config` into a first-class field because the
+    server validates every imported row's tier against it: the two engines share
+    a fit-score *scale*, but the *bands* are run configuration, so 'identified'
+    means nothing comparable until the bands that produced it are on the record.
+    """
+
+    identified: float = Field(
+        ge=0.0, le=1.0, description="Fit score at or above which a row is 'identified'."
+    )
+    candidate: float = Field(
+        ge=0.0, le=1.0, description="Fit score at or above which a row is 'candidate'."
+    )
+
+    @model_validator(mode="after")
+    def _ordered(self) -> "TierBands":
+        if self.candidate > self.identified:
+            raise ValueError(
+                "tier_bands.candidate must not exceed tier_bands.identified"
+            )
+        return self
+
+
+class ImportChunk(BaseModel):
+    """Assembly control for one request of a multi-request import.
+
+    ``index`` is an offset in rows, not a sequence number - the same shape the
+    resumable file upload uses - so a client that lost a response resynchronises
+    from the row count the server reports rather than guessing.
+    """
+
+    run_id: str | None = Field(
+        None,
+        description=(
+            "The run being appended to. Omitted on the first request, which "
+            "creates the run and returns its id."
+        ),
+    )
+    index: int = Field(
+        0,
+        ge=0,
+        description=(
+            "Row offset this chunk starts at; must equal the rows the run "
+            "already holds. Re-sending the last chunk is an idempotent no-op."
+        ),
+    )
+    complete: bool = Field(
+        False,
+        description=(
+            "Whether this is the final chunk. Finalizes the run: payload-wide "
+            "validation, owner resolution, and the batch fold-in."
+        ),
+    )
+
+
+class ImportAssignmentRow(BaseModel):
+    """One imported per-peak assignment.
+
+    Every column the read model serves, minus the fields the server owns:
+    the ids it mints (``peak_assignment_id``, ``peak_assignment_run_id``,
+    ``sample_item_id``), the owner link (supplied as ``owner_sample_peak_id``
+    and resolved at finalize), and the flattened confidence scalars
+    (``p_correct``, ``p_correct_provisional``, ``corroboration_adducts``), which
+    are this server's calibrated judgement and stay empty on an imported row.
+    Sending those is not an error - unknown fields are ignored - but they are
+    not stored, including via the provenance keys they are read from.
+    """
+
+    model_config = ConfigDict(extra="ignore")
+
+    sample_peak_id: str = Field(
+        description="The observed peak this row assigns; must exist in the sample."
+    )
+    sample_peak_mz: float
+    sample_peak_intensity: float
+    sample_peak_tof: float | None = None
+    role: AssignmentRole
+    assigned_formula: str | None = None
+    ion_formula: str | None = None
+    ionization_mechanism_id: str | None = Field(
+        None,
+        description=(
+            "Optional: an external engine names adducts by notation, not by a "
+            "deployment's mechanism ids. A supplied id must exist and match the "
+            "sample's polarity."
+        ),
+    )
+    isotope_label: str | None = None
+    isotope_formula: str | None = None
+    source: AssignmentSource | None = None
+    fit_score: float | None = Field(None, ge=0.0, le=1.0)
+    mz_error_ppm: float | None = None
+    abundance_error: float | None = None
+    tier: AssignmentTier
+    target_compound_id: str | None = None
+    target_ion_id: str | None = None
+    owner_sample_peak_id: str | None = Field(
+        None,
+        description=(
+            "For an iso_child: the sample_peak_id of its owner row within this "
+            "import. Resolved to the minted owner assignment id at finalize."
+        ),
+    )
+    alternatives: list | None = None
+    provenance: dict | None = None
+
+
+class ImportRunBody(BaseModel):
+    """Request body for importing an externally computed assignment run."""
+
+    engine: str = Field(
+        description=(
+            "The external engine that produced this run, stamped on the run as "
+            "its provenance. The in-app identity is reserved."
+        )
+    )
+    engine_version: str = Field(
+        max_length=64, description="The external engine's version string."
+    )
+    tier_bands: TierBands | None = Field(
+        None,
+        description=(
+            "The thresholds this run tiered with. Required on the request that "
+            "creates the run."
+        ),
+    )
+    calibration: dict | None = Field(
+        None,
+        description=(
+            "The engine's calibration state, plus the sample's server-side "
+            "verification state at import time. Required on the request that "
+            "creates the run: an import bypasses the m/z verification gate, so "
+            "disclosure is what replaces it. An engine that calibrated nothing "
+            "says so here."
+        ),
+    )
+    config: dict | None = Field(
+        None,
+        description=(
+            "The engine's run configuration. Opaque: stored verbatim, never "
+            "read or written into by the server. Size-capped."
+        ),
+    )
+    rows: list[ImportAssignmentRow] = Field(
+        default_factory=list,
+        max_length=MAX_IMPORT_ROWS_PER_REQUEST,
+        description="This chunk's assignment rows.",
+    )
+    chunk: ImportChunk = Field(
+        default_factory=ImportChunk,
+        description="Assembly control. Omit entirely for a single-request import.",
+    )
+
+
+class PeakAssignmentImportRecord(BaseModel):
+    """The state of an import after one request."""
+
+    peak_assignment_run_id: str
+    #: 'importing' while the run is assembling, 'completed' once finalized.
+    run_status: str
+    #: Rows the run holds. The next chunk's ``index`` must equal this.
+    rows: int
+
+
+class PeakAssignmentImportResponse(BaseModel):
+    """Acknowledgement of one import request."""
+
+    status: str = "success"
+    message: str
+    results: int
+    data: list[PeakAssignmentImportRecord]
 
 
 class CompositionFitBody(BaseModel):

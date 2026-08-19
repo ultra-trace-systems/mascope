@@ -21,7 +21,7 @@ from datetime import timezone
 from types import SimpleNamespace
 
 import pandas as pd
-from sqlalchemy import func, insert, select, update
+from sqlalchemy import func, insert, or_, select, update
 
 from mascope_backend.api.controllers.samples.lib.samples_fetch import fetch_sample
 from mascope_backend.api.controllers.samples.lib.samples_peaks import extract_peaks
@@ -47,12 +47,16 @@ from mascope_backend.api.new.match.params.lib import (
     apply_match_params,
     isotope_abundance_threshold_expr,
 )
-from mascope_backend.api.new.peak_assignments.admission import assignment_claim
+from mascope_backend.api.new.peak_assignments.admission import (
+    assignment_claim,
+    in_flight_run_id,
+)
 from mascope_backend.api.new.peak_assignments.calibration_store import (
     load_calibration,
     save_calibration,
 )
 from mascope_backend.api.new.peak_assignments.config import (
+    IN_APP_ENGINE,
     PEAK_ASSIGNMENT_ENGINE_VERSION,
     PeakAssignmentConfig,
     peak_assignment_enabled,
@@ -436,12 +440,19 @@ async def recalibrate_instrument(
 ) -> dict:
     """Refit an instrument's confidence calibration from the verification labels (V2 loop).
 
-    Gathers every ``confirmed`` / ``rejected`` verification for samples on this instrument, uses the
-    arbitration ``evidence`` snapshotted at verification time as the score and the verdict as the
-    label, fits a new Platt curve, and writes it as the new active row in the calibration store
-    (carrying the corroboration weights forward). The curve stays **provisional** unless enough
-    positives carry strong (reference-standard / MS-MS) evidence -- a pile of visual confirmations
-    can't graduate it. Reports before/after held-out ECE so the change is auditable.
+    Gathers every ``confirmed`` / ``rejected`` verification of an **in-app** run for samples on this
+    instrument, uses the arbitration ``evidence`` snapshotted at verification time as the score and
+    the verdict as the label, fits a new Platt curve, and writes it as the new active row in the
+    calibration store (carrying the corroboration weights forward). The curve stays **provisional**
+    unless enough positives carry strong (reference-standard / MS-MS) evidence -- a pile of visual
+    confirmations can't graduate it. Reports before/after held-out ECE so the change is auditable.
+
+    **Imported runs are excluded from the label pool.** Verifying an imported assignment is fine and
+    useful -- the verification endpoints are engine-agnostic and the human verdict is what matters --
+    but the ``evidence`` this fits over is snapshotted from the judged row's provenance, which on an
+    imported run is a value an editor supplied. This curve is what every assignment's P(correct)
+    reads from, which is why the route is superuser-only, so an editor-supplied number must not
+    reach it. Those verifications are still stored, listed and shown; they just do not vote here.
 
     :param instrument: Instrument class to recalibrate (e.g. "orbi").
     :param score_version: Fit-score version the labels were scored under (defaults to current).
@@ -461,9 +472,25 @@ async def recalibrate_instrument(
                     Sample,
                     Sample.sample_item_id == AssignmentVerification.sample_item_id,
                 )
+                # Outer, and NULL passes: peak_assignment_run_id is nullable and
+                # carries no foreign key, so a label whose run has since been
+                # pruned no longer joins. Every run that existed before imports
+                # did is the in-app engine's, so admitting the unjoinable ones
+                # keeps an existing deployment's pool exactly as it was; only a
+                # verification that positively belongs to another engine's run
+                # is dropped.
+                .outerjoin(
+                    PeakAssignmentRun,
+                    PeakAssignmentRun.peak_assignment_run_id
+                    == AssignmentVerification.peak_assignment_run_id,
+                )
                 .where(
                     AssignmentVerification.verdict.in_(["confirmed", "rejected"]),
                     AssignmentVerification.evidence.is_not(None),
+                    or_(
+                        PeakAssignmentRun.engine.is_(None),
+                        PeakAssignmentRun.engine == IN_APP_ENGINE,
+                    ),
                 )
             )
         ).all()
@@ -894,9 +921,19 @@ async def _create_run(
     run = PeakAssignmentRun(
         peak_assignment_run_id=gen_id(16),
         sample_item_id=sample_item_id,
+        # Attribution, so an imported run beside this one is distinguishable and
+        # the retention budget and calibration pool can tell them apart.
+        engine=IN_APP_ENGINE,
         engine_version=PEAK_ASSIGNMENT_ENGINE_VERSION,
         status="running",
         config=config.model_dump(),
+        # The same thresholds an import has to declare, recorded here too so a
+        # tier means the same thing on either engine's run without reading into
+        # the config blob.
+        tier_bands={
+            "identified": config.identified_threshold,
+            "candidate": config.candidate_threshold,
+        },
         peak_assignment_run_utc_created=dt.now(timezone.utc),
     )
     async with async_session() as session:
@@ -950,10 +987,18 @@ async def assign_sample_peaks(
     """
     Run the two-stage peak assignment engine over a sample.
 
-    Refuses immediately when the sample is already being assigned - by this
-    worker (in-flight set, no round trip) or by any other process sharing the
-    database (advisory-lock claim) - rather than queueing a second full run
+    Refuses immediately when the sample already has work in flight - by this
+    worker (in-flight set, no round trip), by any other process sharing the
+    database (advisory-lock claim), or by a run the database still records as
+    non-terminal (durable admission) - rather than queueing a second full run
     behind the first. See :func:`_run_sample_assignment` for the engine.
+
+    The three are complements. The claim is crash-safe but lives and dies with
+    one process, so it cannot see an import assembling across several requests;
+    durable run state can, which is what makes the two paths refuse each other
+    instead of both writing a ledger for the same sample. A run left
+    non-terminal by a process that died is released by the startup reaper, by
+    the import abandon endpoint, or by retention's grace.
 
     :param sample_item_id: ID of the sample item to assign
     :param config: Optional run configuration; defaults are used when omitted
@@ -974,6 +1019,10 @@ async def assign_sample_peaks(
                 # Another worker holds the claim - the same refusal, discovered
                 # one process further out.
                 return await _already_running_result(sample_item_id)
+            # Checked under the claim so the read and the run creation that
+            # follows it cannot interleave with another worker's pair.
+            if await in_flight_run_id(sample_item_id) is not None:
+                return await _already_running_result(sample_item_id)
             return await _run_sample_assignment(
                 sample_item_id=sample_item_id,
                 config=config,
@@ -991,28 +1040,18 @@ async def _already_running_result(sample_item_id: str) -> dict:
     Reports the in-flight run when one is visible, so a client can follow the
     run that is actually producing the ledger instead of just being declined.
     (A cross-worker refusal can race the other worker's run creation, so the
-    id is best-effort.)
+    id is best-effort.) An import assembling for this sample counts as in
+    flight and is named here like any other run.
     """
     sample = await fetch_sample(sample_item_id)
-    async with async_session() as session:
-        in_flight_run_id = await session.scalar(
-            select(PeakAssignmentRun.peak_assignment_run_id)
-            .where(
-                PeakAssignmentRun.sample_item_id == sample_item_id,
-                PeakAssignmentRun.status.in_(("pending", "running")),
-            )
-            .order_by(
-                PeakAssignmentRun.peak_assignment_run_utc_created.desc().nullslast()
-            )
-            .limit(1)
-        )
+    blocking_run_id = await in_flight_run_id(sample_item_id)
     message = (
         f"Peak assignment is already running for sample '{sample.sample_item_name}'."
     )
     runtime.logger.info(message)
     result: dict = {"status": "skipped", "message": message}
-    if in_flight_run_id is not None:
-        result["data"] = {"peak_assignment_run_id": in_flight_run_id}
+    if blocking_run_id is not None:
+        result["data"] = {"peak_assignment_run_id": blocking_run_id}
     return result
 
 

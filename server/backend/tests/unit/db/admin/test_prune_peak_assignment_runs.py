@@ -32,9 +32,13 @@ from mascope_backend.db import PeakAssignmentRun
 from mascope_backend.db.admin.peak_assignments import prune_runs
 from mascope_backend.db.admin.peak_assignments.prune_runs import (
     DEFAULT_KEEP_FAILED_HOURS,
+    DEFAULT_KEEP_IMPORTING_HOURS,
     DEFAULT_KEEP_RUNNING_HOURS,
+    IMPORTING_STATUS,
     IN_FLIGHT_STATUSES,
+    MIN_KEEP_IMPORTING_HOURS,
     MIN_KEEP_RUNNING_HOURS,
+    NON_TERMINAL_STATUSES,
     _chunked,
     _completed_runs_statement,
     _select_prunable_run_ids,
@@ -42,6 +46,11 @@ from mascope_backend.db.admin.peak_assignments.prune_runs import (
     prune_peak_assignment_runs,
 )
 from mascope_backend.db.scripts import prune_peak_assignment_runs as prune_script
+
+
+#: The engine the in-app assignment path stamps on the runs it creates. Runs
+#: are ranked per (sample, engine), so most tests here name it explicitly.
+IN_APP = "mascope"
 
 
 def _session(completed_rows, stale_ids):
@@ -66,12 +75,12 @@ async def test_keeps_the_newest_n_completed_per_sample():
     """Only runs past the keep window are prunable, and per sample."""
     rows = [
         # si1, newest first (as the query orders them)
-        ("s1-new", "si1"),
-        ("s1-mid", "si1"),
-        ("s1-old", "si1"),
-        ("s1-older", "si1"),
+        ("s1-new", "si1", IN_APP),
+        ("s1-mid", "si1", IN_APP),
+        ("s1-old", "si1", IN_APP),
+        ("s1-older", "si1", IN_APP),
         # si2 has fewer than the keep count
-        ("s2-only", "si2"),
+        ("s2-only", "si2", IN_APP),
     ]
     session = _session(rows, [])
 
@@ -85,7 +94,12 @@ async def test_keeps_the_newest_n_completed_per_sample():
 @pytest.mark.asyncio
 async def test_keep_window_is_per_sample_not_global():
     """A sample with few runs is never pruned because another sample has many."""
-    rows = [("a1", "si1"), ("a2", "si1"), ("a3", "si1"), ("b1", "si2")]
+    rows = [
+        ("a1", "si1", IN_APP),
+        ("a2", "si1", IN_APP),
+        ("a3", "si1", IN_APP),
+        ("b1", "si2", IN_APP),
+    ]
     session = _session(rows, [])
 
     prunable = await _select_prunable_run_ids(
@@ -99,7 +113,7 @@ async def test_keep_window_is_per_sample_not_global():
 @pytest.mark.asyncio
 async def test_stale_non_completed_runs_are_added():
     """Failed/interrupted runs past the grace period are prunable too."""
-    session = _session([("keep", "si1")], ["failed-1", "failed-2"])
+    session = _session([("keep", "si1", IN_APP)], ["failed-1", "failed-2"])
 
     prunable = await _select_prunable_run_ids(
         session, keep_per_sample=3, keep_failed_hours=24
@@ -111,7 +125,7 @@ async def test_stale_non_completed_runs_are_added():
 @pytest.mark.asyncio
 async def test_result_is_deduplicated_and_order_stable():
     """The same run never appears twice, and order is preserved for dry runs."""
-    rows = [("r1", "si1"), ("r2", "si1"), ("r3", "si1")]
+    rows = [("r1", "si1", IN_APP), ("r2", "si1", IN_APP), ("r3", "si1", IN_APP)]
     session = _session(rows, ["r3", "r4"])
 
     prunable = await _select_prunable_run_ids(
@@ -124,7 +138,7 @@ async def test_result_is_deduplicated_and_order_stable():
 
 @pytest.mark.asyncio
 async def test_nothing_prunable_returns_empty():
-    session = _session([("only", "si1")], [])
+    session = _session([("only", "si1", IN_APP)], [])
 
     assert (
         await _select_prunable_run_ids(session, keep_per_sample=3, keep_failed_hours=24)
@@ -132,16 +146,96 @@ async def test_nothing_prunable_returns_empty():
     )
 
 
+class TestBudgetIsPerSampleAndEngine:
+    """Imported runs and in-app runs must not compete for one sample's quota.
+
+    A run can be computed here or published from an external engine, and the
+    read model serves whichever completed last. On a shared budget that makes
+    publishing destructive: republishing an import ``keep_per_sample`` times
+    would evict every in-app run for that sample, its whole ledger cascading
+    with it - the exact opposite of what "an import only ever appends" promises
+    a reader. Separate quotas are what make that promise true.
+    """
+
+    @pytest.mark.asyncio
+    async def test_imports_cannot_evict_a_samples_in_app_runs(self):
+        """The case the shared budget got wrong: three imports, one in-app run."""
+        rows = [
+            ("import-3", "si1", "peaky"),
+            ("import-2", "si1", "peaky"),
+            ("import-1", "si1", "peaky"),
+            ("in-app-1", "si1", IN_APP),
+        ]
+        session = _session(rows, [])
+
+        prunable = await _select_prunable_run_ids(
+            session, keep_per_sample=3, keep_failed_hours=24
+        )
+
+        assert prunable == []
+
+    @pytest.mark.asyncio
+    async def test_each_engine_ages_out_of_its_own_quota(self):
+        """Over budget on one engine never reaches the other's runs."""
+        rows = [
+            ("import-new", "si1", "peaky"),
+            ("import-old", "si1", "peaky"),
+            ("in-app-new", "si1", IN_APP),
+            ("in-app-old", "si1", IN_APP),
+        ]
+        session = _session(rows, [])
+
+        prunable = await _select_prunable_run_ids(
+            session, keep_per_sample=1, keep_failed_hours=24
+        )
+
+        assert sorted(prunable) == ["import-old", "in-app-old"]
+
+    @pytest.mark.asyncio
+    async def test_the_same_engine_on_another_sample_is_untouched(self):
+        """Grouping is by the pair, not by engine alone."""
+        rows = [
+            ("a-new", "si1", "peaky"),
+            ("a-old", "si1", "peaky"),
+            ("b-only", "si2", "peaky"),
+        ]
+        session = _session(rows, [])
+
+        prunable = await _select_prunable_run_ids(
+            session, keep_per_sample=1, keep_failed_hours=24
+        )
+
+        assert prunable == ["a-old"]
+
+    def test_the_scan_orders_within_engine_before_recency(self):
+        """Ranking per pair only works if the scan groups by the pair."""
+        sql = str(_completed_runs_statement().compile(dialect=postgresql.dialect()))
+        order_by = sql.split("ORDER BY", 1)[1]
+
+        assert order_by.index("sample_item_id") < order_by.index("engine")
+        assert order_by.index("engine") < order_by.index(
+            "peak_assignment_run_utc_created"
+        )
+
+
 def _hours_ago(hours: float) -> datetime:
     """A UTC timestamp ``hours`` in the past."""
     return datetime.now(timezone.utc) - timedelta(hours=hours)
 
 
-def _run(run_id: str, status: str, sample: str = "si1", created=None, completed=None):
+def _run(
+    run_id: str,
+    status: str,
+    sample: str = "si1",
+    created=None,
+    completed=None,
+    engine: str = IN_APP,
+):
     """One `peak_assignment_run` row, with only the columns these tests read."""
     return {
         "peak_assignment_run_id": run_id,
         "sample_item_id": sample,
+        "engine": engine,
         "engine_version": "test",
         "status": status,
         "peak_assignment_run_utc_created": created,
@@ -171,12 +265,15 @@ def _seed(engine, rows):
         connection.execute(sa.insert(PeakAssignmentRun), rows)
 
 
-def _stale_ids(engine, keep_failed_hours=24, keep_running_hours=72):
+def _stale_ids(
+    engine, keep_failed_hours=24, keep_running_hours=72, keep_importing_hours=24
+):
     """Run the stale-run statement for real and return the ids it selects."""
     now = datetime.now(timezone.utc)
     statement = _stale_runs_statement(
         failed_cutoff=now - timedelta(hours=keep_failed_hours),
         running_cutoff=now - timedelta(hours=keep_running_hours),
+        importing_cutoff=now - timedelta(hours=keep_importing_hours),
     )
     with engine.connect() as connection:
         return list(connection.execute(statement).scalars())
@@ -213,7 +310,7 @@ class TestCompletedScanOrdering:
         with run_table.connect() as connection:
             ordered = list(connection.execute(_completed_runs_statement()))
 
-        assert [run_id for run_id, _ in ordered] == ["newest", "older", "no-timestamp"]
+        assert [row[0] for row in ordered] == ["newest", "older", "no-timestamp"]
 
     @pytest.mark.asyncio
     async def test_the_live_run_survives_a_null_timestamped_sibling(self, run_table):
@@ -297,6 +394,62 @@ class TestInFlightRunsAreProtected:
         _seed(run_table, [_run("just-failed", "failed", completed=_hours_ago(1))])
 
         assert _stale_ids(run_table, keep_failed_hours=24) == []
+
+
+class TestImportsHaveTheirOwnGrace:
+    """An assembling import is non-terminal, but nothing is executing it.
+
+    It must not be swept by the failed grace (it has not failed), nor held by
+    the in-flight grace (no worker is writing into it, and it blocks new work on
+    its sample while it sits there), so it gets a grace of its own.
+    """
+
+    def test_importing_is_not_reclaimed_by_the_failed_grace(self, run_table):
+        """The trap of treating any non-terminal status as terminal."""
+        _seed(run_table, [_run("uploading", IMPORTING_STATUS, created=_hours_ago(48))])
+
+        assert _stale_ids(run_table, keep_failed_hours=1) == []
+
+    def test_a_live_upload_is_not_reclaimed(self, run_table):
+        """A recent import is a client still sending chunks."""
+        _seed(run_table, [_run("uploading", IMPORTING_STATUS, created=_hours_ago(1))])
+
+        assert _stale_ids(run_table, keep_importing_hours=24) == []
+
+    def test_an_abandoned_upload_is_reclaimed_on_its_own_grace(self, run_table):
+        """Otherwise it blocks every later run for its sample indefinitely."""
+        _seed(run_table, [_run("abandoned", IMPORTING_STATUS, created=_hours_ago(48))])
+
+        assert _stale_ids(run_table, keep_importing_hours=24) == ["abandoned"]
+
+    def test_the_import_grace_is_independent_of_the_in_flight_one(self, run_table):
+        """Each non-terminal kind answers only to its own knob."""
+        _seed(
+            run_table,
+            [
+                _run("uploading", IMPORTING_STATUS, created=_hours_ago(48)),
+                _run("computing", "running", created=_hours_ago(48)),
+            ],
+        )
+
+        assert _stale_ids(
+            run_table, keep_running_hours=12, keep_importing_hours=96
+        ) == ["computing"]
+        assert _stale_ids(
+            run_table, keep_running_hours=96, keep_importing_hours=12
+        ) == ["uploading"]
+
+    def test_importing_is_non_terminal_but_not_in_flight(self):
+        """The two sets differ, which is what gives it a separate grace."""
+        assert IMPORTING_STATUS not in IN_FLIGHT_STATUSES
+        assert IMPORTING_STATUS in NON_TERMINAL_STATUSES
+        assert set(IN_FLIGHT_STATUSES) < set(NON_TERMINAL_STATUSES)
+
+    def test_an_importing_run_without_timestamps_is_not_ancient(self, run_table):
+        """Same reasoning as an in-flight run: unknown age reads as 'new'."""
+        _seed(run_table, [_run("uploading", IMPORTING_STATUS)])
+
+        assert _stale_ids(run_table) == []
 
 
 def _in_clause_ids(statement):
@@ -425,6 +578,8 @@ class TestPruneGuards:
             {"keep_failed_hours": -1},
             {"keep_running_hours": 0},
             {"keep_running_hours": MIN_KEEP_RUNNING_HOURS - 1},
+            {"keep_importing_hours": 0},
+            {"keep_importing_hours": MIN_KEEP_IMPORTING_HOURS - 1},
             {"batch_size": 0},
         ],
     )
@@ -432,6 +587,18 @@ class TestPruneGuards:
         """keep_per_sample=0 would delete every run of every sample."""
         with pytest.raises(ValueError):
             await prune_peak_assignment_runs(**kwargs)
+
+    def test_the_import_floor_is_shorter_than_the_in_flight_one(self):
+        """Deliberate: the two protect against different losses.
+
+        Deleting an in-flight run loses a ledger a worker is still computing.
+        Deleting an assembling import loses staged rows the client still holds
+        and can send again - and leaving it there blocks the sample - so the
+        import floor can be much shorter without risking anything comparable.
+        """
+        assert MIN_KEEP_IMPORTING_HOURS < MIN_KEEP_RUNNING_HOURS
+        assert MIN_KEEP_IMPORTING_HOURS >= 1
+        assert DEFAULT_KEEP_IMPORTING_HOURS >= MIN_KEEP_IMPORTING_HOURS
 
 
 class TestEnvOverrides:
@@ -477,6 +644,68 @@ def test_grace_defaults_hold_the_intended_order():
     assert DEFAULT_KEEP_FAILED_HOURS > 0
     assert DEFAULT_KEEP_RUNNING_HOURS >= MIN_KEEP_RUNNING_HOURS
     assert DEFAULT_KEEP_RUNNING_HOURS > DEFAULT_KEEP_FAILED_HOURS
+
+
+class TestReaperLeavesImportsAlone:
+    """The reaper's premise covers 'running' and does not extend to 'importing'.
+
+    It fails every 'running' row at startup, correctly, because startup happens
+    before any worker is spawned so nothing can legitimately be running. An
+    import is not running - it is a client sending chunks at its own pace, with
+    no server task attached - so a routine deploy under the broader reading
+    would fail a live upload, and the client's next chunk would land on a
+    'failed' run. The statement is executed for real here rather than compared
+    as text, so widening the filter later fails this test.
+    """
+
+    @pytest.mark.asyncio
+    async def test_only_running_rows_are_failed(self, run_table, monkeypatch):
+        from mascope_backend.db.admin.peak_assignments import reset_running_runs
+
+        _seed(
+            run_table,
+            [
+                _run("computing", "running", created=_hours_ago(1)),
+                _run("uploading", IMPORTING_STATUS, created=_hours_ago(1)),
+                _run("queued", "pending", created=_hours_ago(1)),
+                _run("done", "completed", created=_hours_ago(1)),
+            ],
+        )
+
+        captured = []
+
+        class _CapturingSession:
+            async def execute(self, statement):
+                captured.append(statement)
+                with run_table.begin() as connection:
+                    return connection.execute(statement)
+
+            async def commit(self):
+                return None
+
+        monkeypatch.setattr(
+            reset_running_runs,
+            "async_session",
+            _session_factory(_CapturingSession()),
+        )
+
+        await reset_running_runs.reset_running_peak_assignment_runs()
+
+        assert len(captured) == 1
+        with run_table.connect() as connection:
+            statuses = dict(
+                connection.execute(
+                    sa.select(
+                        PeakAssignmentRun.peak_assignment_run_id,
+                        PeakAssignmentRun.status,
+                    )
+                ).all()
+            )
+
+        assert statuses["computing"] == "failed"
+        assert statuses["uploading"] == IMPORTING_STATUS
+        assert statuses["queued"] == "pending"
+        assert statuses["done"] == "completed"
 
 
 class TestReaperResilience:
