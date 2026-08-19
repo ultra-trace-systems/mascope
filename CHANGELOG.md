@@ -74,6 +74,13 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
   whose historical DST rules differ; set `timezone` in the agent configuration
   (e.g. `timezone = 'Europe/Helsinki'`) to report it exactly. A machine that
   cannot name its zone simply reports none and the server falls back as before.
+  One case stays inherently uncertain: a file whose acquisition time falls in
+  the hour the clocks repeat names two instants, and one in the hour they skip
+  names none. Vendors like Thermo record a bare wall clock with no offset, so
+  the file cannot say which. The converter resolves those deliberately (as the
+  pre-transition reading) and logs a warning naming the file and both candidate
+  offsets, so an affected timestamp is explainable rather than silently an hour
+  out.
 - The Python SDK can now read persisted peak-assignment results (read-only
   v1). A new `mascope.peak_assignments` resource reads the peak-centric
   assignment runs launched from the app: `list_runs(sample_id)` returns the

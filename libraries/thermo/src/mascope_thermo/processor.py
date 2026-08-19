@@ -203,18 +203,37 @@ class RawProcessor(BaseFileProcessor):
         timestamp ("guess") - the legacy fallback, wrong whenever the
         instrument PC and the converter host disagree on timezone or DST.
 
+        Both readings go through ``_wall_time_offset``, which resolves the
+        daylight-saving hours a bare wall clock cannot name on its own - the
+        repeated one and the skipped one - deliberately, and warns when it
+        had to, so a timestamp on the wrong side of a transition can be
+        explained rather than merely being wrong.
+
+        Cached for the file being processed. ``utc_offset`` and
+        ``utc_offset_source`` are separate schema fields, so the props
+        collector asks for both and would otherwise resolve twice - reopening
+        the raw file through ``self.timestamp`` each time, and reporting any
+        DST anomaly twice for one acquisition. The cache is emptied as each
+        file is picked up, so it cannot outlive the file it describes.
+
         :return: UTC offset [s] and its source ("agent" or "guess")
         :rtype: tuple[int, str]
         """
+        cached = self._per_file_cache.get("utc_offset")
+        if cached is not None:
+            return cached
+
         local_dt = datetime.fromisoformat(self.timestamp)
         zone = self._context_timezone()
-        if zone is not None:
-            offset = local_dt.replace(tzinfo=zone).utcoffset()
-            return int(offset.total_seconds()), "agent"
-        # A naive datetime's astimezone() attaches the host's zone at that
-        # wall time; total_seconds() keeps west-of-UTC offsets negative.
-        offset = local_dt.astimezone().utcoffset()
-        return int(offset.total_seconds()), "guess"
+        # zone=None reads it in the converter host's own zone, which is what
+        # the "guess" fallback means; total_seconds() keeps west-of-UTC
+        # offsets negative.
+        resolved = (
+            self._wall_time_offset(local_dt, zone),
+            "agent" if zone is not None else "guess",
+        )
+        self._per_file_cache["utc_offset"] = resolved
+        return resolved
 
     @property
     def utc_offset(self) -> int:

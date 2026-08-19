@@ -4,9 +4,12 @@
 import os
 import shutil
 from abc import ABC, ABCMeta, abstractmethod
+from datetime import datetime as dt
+from datetime import timedelta, timezone
 from pathlib import Path
 from queue import Empty, Queue
 from threading import Event, Thread
+from typing import NamedTuple
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import mascope_sdk
@@ -52,6 +55,88 @@ def with_file_context(prop_getter) -> callable:
         return prop
 
     return wrapper
+
+
+#: A wall clock that occurs twice: the clocks went back over it, so the same
+#: reading names two instants an offset-change apart.
+WALL_TIME_AMBIGUOUS = "ambiguous"
+#: A wall clock that never occurred: the clocks jumped forward over it, so the
+#: reading names no instant at all.
+WALL_TIME_NONEXISTENT = "nonexistent"
+
+
+class WallTimeOffset(NamedTuple):
+    """The offset chosen for a wall clock, and what was uncertain about it."""
+
+    #: UTC offset in seconds, negative west of UTC.
+    seconds: int
+    #: ``WALL_TIME_AMBIGUOUS``, ``WALL_TIME_NONEXISTENT``, or None when the
+    #: wall clock names exactly one instant.
+    anomaly: str | None
+    #: The offset the other reading would have given, None when unambiguous.
+    #: The stored UTC time is wrong by this difference if the choice was wrong.
+    alternative_seconds: int | None
+
+
+def resolve_wall_time_offset(
+    local_dt: dt, zone: ZoneInfo | None = None
+) -> WallTimeOffset:
+    """
+    Resolve an instrument-local wall clock to a UTC offset.
+
+    Vendors like Thermo record the acquisition time as the instrument PC's wall
+    clock with no offset in the file, and a wall clock is not a point in time:
+    around a daylight-saving transition it either names two instants (the hour
+    the clocks repeat) or none (the hour they skip). No amount of care recovers
+    the missing information from the file, so this resolves it deliberately and
+    says when it had to.
+
+    The choice is ``fold=0`` in both cases - the reading as the pre-transition
+    rule would have produced it. For the repeated hour that is the first of the
+    two passes; for the skipped hour it maps the reading through the offset the
+    instrument's clock still had, which is what a machine that has not yet
+    applied the jump would have written. This matches Python's default and the
+    common convention, and being deterministic matters more than the coin-flip
+    it stands in for: the alternative is reported so the error is bounded and
+    explainable rather than invisible.
+
+    :param local_dt: Naive wall clock as the instrument recorded it.
+    :type local_dt: datetime
+    :param zone: Zone to read it in; None uses the converter host's own, the
+        last-resort fallback for uploads that carry no zone.
+    :type zone: ZoneInfo | None
+    :return: The chosen offset and any anomaly.
+    :rtype: WallTimeOffset
+    """
+
+    def _at(fold: int) -> timedelta:
+        """The offset that maps this wall clock to UTC under ``fold``.
+
+        Derived from the resolved instant rather than read off the aware
+        datetime, because the two are not the same quantity inside a skipped
+        hour: ``utcoffset()`` on a naive ``astimezone()`` reports the offset of
+        the instant the reading landed on, which is on the far side of the
+        transition, while ``replace(tzinfo=...)`` reports the offset used to
+        get there. Reading them off directly makes the host branch classify
+        gaps backwards; subtracting the UTC instant asks both branches the same
+        question.
+        """
+        moment = local_dt.replace(fold=fold)
+        aware = moment.replace(tzinfo=zone) if zone is not None else moment.astimezone()
+        as_utc = aware.astimezone(timezone.utc).replace(tzinfo=None)
+        return moment - as_utc
+
+    first, second = _at(0), _at(1)
+    if first == second:
+        return WallTimeOffset(int(first.total_seconds()), None, None)
+
+    # The offsets differ, so a transition sits on this wall clock. Which kind
+    # follows from the direction: clocks going back (the offset shrinks)
+    # repeat an hour, clocks going forward (it grows) skip one.
+    anomaly = WALL_TIME_AMBIGUOUS if first > second else WALL_TIME_NONEXISTENT
+    return WallTimeOffset(
+        int(first.total_seconds()), anomaly, int(second.total_seconds())
+    )
 
 
 class FileProcessorMeta(ABCMeta):
@@ -122,6 +207,12 @@ class BaseFileProcessor(Thread, ABC, metaclass=FileProcessorMeta):
         self.peak_guard = peak_guard
 
         self.file_to_process = None  # Path to the file to process
+        # Values derived from the file currently being processed, cached so a
+        # property read twice (utc_offset and utc_offset_source are separate
+        # schema fields) costs one resolution. Cleared as each file is picked
+        # up: the filestreams path repeats across acquisitions, so keying on it
+        # would let one file's answer carry into the next.
+        self._per_file_cache: dict = {}
         self.file_handle = None  # Abstract file reference, managed by context manager
 
     # Additional abstract properties not in SampleFileProps
@@ -350,6 +441,35 @@ class BaseFileProcessor(Thread, ABC, metaclass=FileProcessorMeta):
             )
         return file_context
 
+    def _wall_time_offset(self, local_dt: dt, zone: ZoneInfo | None) -> int:
+        """The UTC offset for this file's wall-clock acquisition time.
+
+        Resolves through :func:`resolve_wall_time_offset` and reports a DST
+        anomaly against the file being processed, so a timestamp that lands on
+        the wrong side of a transition is explainable afterwards instead of
+        merely wrong.
+
+        :param local_dt: The instrument-local acquisition time, naive.
+        :type local_dt: datetime
+        :param zone: The zone to read it in, or None for the converter host's.
+        :type zone: ZoneInfo | None
+        :return: UTC offset in seconds.
+        :rtype: int
+        """
+        resolved = resolve_wall_time_offset(local_dt, zone)
+        if resolved.anomaly is not None:
+            zone_name = zone.key if zone is not None else "the converter host's zone"
+            runtime.logger.warning(
+                f"Acquisition time {local_dt.isoformat()} is {resolved.anomaly} "
+                f"in {zone_name} for "
+                f"{os.path.basename(self.file_to_process)}: the file records a "
+                "wall clock and carries no offset, so the instant cannot be "
+                f"recovered exactly. Using {resolved.seconds} s "
+                f"(the alternative is {resolved.alternative_seconds} s); the "
+                "stored UTC time may be off by the difference."
+            )
+        return resolved.seconds
+
     def _context_timezone(self) -> ZoneInfo | None:
         """The uploading machine's timezone, resolved from the file context.
 
@@ -533,6 +653,7 @@ class BaseFileProcessor(Thread, ABC, metaclass=FileProcessorMeta):
                 file_basename = None
                 instrument = None
                 self.file_to_process = self.file_queue.get(timeout=0.1)
+                self._per_file_cache = {}
                 file_basename = os.path.basename(self.file_to_process)
                 instrument = get_instrument_name(file_basename)
 
