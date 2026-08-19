@@ -45,6 +45,10 @@ RENEW_MIN_INTERVAL = 60 * 60  # never renew more often than hourly
 _token_lock = Lock()
 _access_token = None
 
+# IANA timezone reported with each upload, resolved once at start (see
+# resolve_timezone). None when this machine could not name its zone.
+_timezone = None
+
 # Set in prod mode so the renewal loop can persist a rotated token to the
 # user-facing config.toml (None in dev, where the CLI owns the config).
 _config_path = None
@@ -55,6 +59,77 @@ def current_access_token() -> str | None:
     """The access token uploads should use right now (renewal may rotate it)."""
     with _token_lock:
         return _access_token
+
+
+def resolve_timezone(configured: str | None) -> str | None:
+    """The IANA timezone to report with uploads, or None if it is unknown.
+
+    A raw file records the acquisition time in the instrument PC's local time
+    and (for most vendors) no offset, so the converter can only turn it into
+    UTC if it knows which zone that was. Reporting it here is what makes the
+    stored timestamp right for an instrument in a different zone from the
+    server, and right across a DST boundary for a backlogged file.
+
+    An explicitly configured zone wins over detection. Detection is a
+    best-effort read of the operating system's setting: on Windows that names
+    a *group* of zones rather than a city, so a machine can resolve to a
+    neighbouring city whose historical DST rules differ - hence the override.
+    Returning None is fine and simply leaves the server on its own zone, the
+    behaviour from before any zone was reported.
+
+    :param configured: The ``timezone`` setting, empty when unset.
+    :type configured: str | None
+    :return: An IANA zone name, or None when it could not be determined.
+    :rtype: str | None
+    """
+    if configured and configured.strip():
+        name = configured.strip()
+        # Checked here rather than left for the converter: a typo would
+        # otherwise be accepted in silence, reported on every upload, and
+        # rejected only in the server's log, where the operator who set it
+        # never looks. Falling through to detection beats reporting a name
+        # nothing can load.
+        if _is_known_timezone(name):
+            return name
+        return _detected_timezone()
+    return _detected_timezone()
+
+
+def _detected_timezone() -> str | None:
+    """This machine's IANA zone as the operating system reports it, or None."""
+    try:
+        import tzlocal
+
+        return tzlocal.get_localzone_name()
+    except Exception:
+        # Never fatal - the upload matters more than its provenance - and kept
+        # free of the logger so this stays a pure function; the caller reports
+        # the outcome either way.
+        return None
+
+
+def _is_known_timezone(name: str) -> bool:
+    """Whether ``name`` is a zone this machine can resolve.
+
+    A machine without the zone database cannot tell, and says yes: the
+    converter validates again, so a false yes costs a log line, while a false
+    no would discard a setting that is very likely correct.
+
+    :param name: The candidate IANA zone name.
+    :type name: str
+    :return: True when the name loads, or when it cannot be checked here.
+    :rtype: bool
+    """
+    try:
+        from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+
+        try:
+            ZoneInfo(name)
+            return True
+        except (ZoneInfoNotFoundError, ValueError, KeyError):
+            return False
+    except Exception:
+        return True
 
 
 def _set_access_token(token: str) -> None:
@@ -84,33 +159,54 @@ def _renewal_loop(stop_event) -> None:
     """Rotate the agent's device token before it expires, until shutdown.
 
     Renews shortly after start (to establish a known expiry) and then at about
-    half the server-reported lifetime. Stops quietly when the server has no
-    renewal endpoint (older release) or the token is not renewable (a manual
-    or expired token): uploads then continue on the current token and surface
-    their own actionable error if it has lapsed.
+    half the server-reported lifetime. A server with no renewal endpoint (older
+    release), or a credential that is not renewable, backs the loop off to the
+    long interval rather than ending it - the condition is often temporary, and
+    a loop that stops never renews again for the life of the process. Uploads
+    meanwhile continue on the current token and surface their own actionable
+    error if it has lapsed.
 
     :param stop_event: Set on agent shutdown to end the loop.
     """
     delay = RENEW_INITIAL_DELAY
     while not stop_event.wait(delay):
         try:
-            new_token, expires_in = api_renew_agent_token(URL, current_access_token())
-        except (TusNotSupportedError, AuthenticationError) as e:
-            # 404: server has no renewal endpoint. 401: the token is not a
-            # live device token (manual, expired or revoked). Either way there
-            # is nothing to rotate - keep the current token and stop.
-            runtime.logger.info(f"Token renewal not available; keeping the token: {e}")
-            return
-        except Exception as e:
-            runtime.logger.info(f"Token renewal failed, will retry: {e}")
+            try:
+                new_token, expires_in = api_renew_agent_token(
+                    URL, current_access_token()
+                )
+            except (TusNotSupportedError, AuthenticationError) as e:
+                # 404: this server has no renewal endpoint (older release).
+                # 401: the credential is not a renewable device token. Neither
+                # is worth a tight retry, but neither proves the condition is
+                # permanent - a rolling restart or a proxy blip answers both
+                # the same way - so back off instead of ending the loop. A
+                # thread that returns here never renews again, and the token
+                # then lapses silently 30 days later.
+                runtime.logger.info(f"Token renewal unavailable, backing off: {e}")
+                delay = RENEW_FALLBACK_INTERVAL
+                continue
+            except Exception as e:
+                runtime.logger.info(f"Token renewal failed, will retry: {e}")
+                delay = RENEW_RETRY_DELAY
+                continue
+
+            _set_access_token(new_token)
+            _persist_token(new_token)
+            runtime.logger.info("Renewed the agent access token.")
+            delay = (
+                max(RENEW_MIN_INTERVAL, expires_in // 2)
+                if expires_in
+                else RENEW_FALLBACK_INTERVAL
+            )
+        except Exception:
+            # Nothing may kill this thread: it is the only thing keeping the
+            # credential alive, and a daemon thread's traceback goes to an
+            # excepthook nobody reads. Persisting or rescheduling can still
+            # raise (a config dict missing a key, a full disk), so the loop
+            # absorbs it and tries again rather than going quietly dead.
+            runtime.logger.exception("Token renewal loop error; continuing")
             delay = RENEW_RETRY_DELAY
-            continue
-        _set_access_token(new_token)
-        _persist_token(new_token)
-        runtime.logger.info("Renewed the agent access token.")
-        delay = max(RENEW_MIN_INTERVAL, expires_in // 2) if expires_in else (
-            RENEW_FALLBACK_INTERVAL
-        )
 
 
 def _start_token_renewal(stop_event) -> None:
@@ -251,6 +347,7 @@ def upload_sample_file(filepath: str) -> None:
                 access_token=current_access_token(),
                 filepath=filepath,
                 upload_filename=upload_filename,
+                timezone=_timezone,
             )
             runtime.logger.info(
                 f"File upload of file {os.path.basename(filepath)} succeeded!"
@@ -282,9 +379,13 @@ def upload_sample_file(filepath: str) -> None:
     api_post_file(
         url=URL,
         path="sample/files/upload",
-        access_token=runtime.config.access_token,
+        # The live token, not runtime.config's boot-time snapshot: renewal
+        # rotates it and the server reaps the superseded ones, so a stale copy
+        # here would 401 non-retryably while the agent holds a valid credential.
+        access_token=current_access_token(),
         filepath=filepath,
         upload_filename=upload_filename,
+        timezone=_timezone,
     )
 
     runtime.logger.info(f"File upload of file {os.path.basename(filepath)} succeeded!")
@@ -630,6 +731,24 @@ def run() -> None:
     # renewal loop rotates the token under the uploader as it runs.
     mascope_sdk.VERIFY_TLS = getattr(runtime.config, "verify_tls", True)
     _set_access_token(runtime.config.access_token)
+
+    global _timezone
+    _timezone = resolve_timezone(getattr(runtime.config, "timezone", ""))
+    configured_tz = (getattr(runtime.config, "timezone", "") or "").strip()
+    if configured_tz and configured_tz != _timezone:
+        runtime.logger.warning(
+            f"Configured timezone '{configured_tz}' is not a zone this machine "
+            "can resolve, so it was ignored. Use an IANA name such as "
+            "'Europe/Helsinki'."
+        )
+    if _timezone:
+        runtime.logger.info(f"Reporting acquisition timezone: {_timezone}")
+    else:
+        runtime.logger.warning(
+            "Could not determine this machine's timezone; acquisition times "
+            "will be resolved with the server's timezone instead. Set "
+            "'timezone' in the agent configuration to report it explicitly."
+        )
 
     uploader = FileUploader(
         runtime.config.source, runtime.config.mask, recursive=runtime.config.recursive

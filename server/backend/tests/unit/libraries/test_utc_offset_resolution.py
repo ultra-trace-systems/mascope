@@ -94,3 +94,69 @@ def test_unknown_agent_zone_is_ignored_and_falls_through(caplog):
     # An unresolvable zone must not error; it degrades to the host guess.
     assert source == "guess"
     assert offset % 60 == 0
+
+
+def test_agent_reported_zone_reaches_the_processor():
+    """The last hop: socket payload -> FileContext -> processor lookup.
+
+    The other tests stub the context object directly, which would keep passing
+    if the socket payload stopped carrying the zone. This one walks the real
+    path the converter uses, so the wiring itself is covered.
+    """
+    from mascope_backend.file_converter.socket.events import _build_file_context
+    from mascope_backend.file_converter.socket.session import FileContextManager
+
+    manager = FileContextManager()
+    manager.register_file(
+        _build_file_context(
+            {
+                "filename": "ACQUISITION.h5",
+                "user_id": 1,
+                "username": "agent",
+                "role_id": 200,
+                "access_token": "t",
+                "device_id": 7,
+                "instrument_timezone": "America/Denver",
+            }
+        )
+    )
+
+    processor = H5Processor(
+        socket_client=SimpleNamespace(context_manager=manager),
+        file_queue=Queue(),
+        shutdown_event=Event(),
+    )
+    processor.file_to_process = "ACQUISITION.h5"
+
+    zone = processor._context_timezone()
+    assert zone is not None and zone.key == "America/Denver"
+    assert processor.acquisition_timezone == "America/Denver"
+
+
+def test_missing_agent_zone_leaves_the_processor_without_one():
+    """A web upload carries no zone; the processor must not invent one."""
+    from mascope_backend.file_converter.socket.events import _build_file_context
+    from mascope_backend.file_converter.socket.session import FileContextManager
+
+    manager = FileContextManager()
+    manager.register_file(
+        _build_file_context(
+            {
+                "filename": "ACQUISITION.h5",
+                "user_id": 1,
+                "username": "person",
+                "role_id": 200,
+                "access_token": "t",
+            }
+        )
+    )
+
+    processor = H5Processor(
+        socket_client=SimpleNamespace(context_manager=manager),
+        file_queue=Queue(),
+        shutdown_event=Event(),
+    )
+    processor.file_to_process = "ACQUISITION.h5"
+
+    assert processor._context_timezone() is None
+    assert processor.acquisition_timezone is None

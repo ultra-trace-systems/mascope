@@ -76,6 +76,7 @@ All settings live in one file on the instrument PC:
 | `source`          | Full path of the folder watched for new data files                 |
 | `recursive`       | `true` to also watch subfolders of `source` (default `false`)      |
 | `verify_tls`      | `true` to verify the server's TLS certificate (default `true`)     |
+| `timezone`        | IANA timezone of this machine, e.g. `Europe/Helsinki` (auto-detected when empty) |
 | `mask`            | Pattern of the files to upload, e.g. `*.raw`                       |
 | `timeout`         | Seconds a file must be idle before it is uploaded                  |
 | `filename_prefix` | Optional prefix added to the filename on upload                    |
@@ -90,6 +91,23 @@ terminal:
 ```
 %LocalAppData%\Programs\Mascope File Agent\Mascope-File-Agent.exe --setup
 ```
+
+!!! tip "When acquisition times look shifted by an hour"
+
+    Raw files record the acquisition time in this machine's local time, so the
+    agent reports its timezone with every upload and the server converts from
+    it. Detection reads the Windows setting, which names a *group* of zones
+    rather than a city — a machine in Helsinki can resolve to another city in
+    the same group, and the two can disagree about historical daylight-saving
+    changes. If timestamps look wrong, set the zone exactly:
+
+    ```toml
+    [file-agent]
+    timezone = 'Europe/Helsinki'
+    ```
+
+    The agent logs the zone it reports at startup, so the console shows which
+    one is in use.
 
 ### Stopping or disabling the agent
 

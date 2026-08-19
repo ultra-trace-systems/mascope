@@ -5,6 +5,7 @@ failure cause (rejected token, connection error, server message) but returned
 ``None``, leaving callers with nothing better than a generic "upload failed".
 """
 
+import base64
 import json
 
 import pytest
@@ -397,3 +398,87 @@ def test_tus_upload_rejects_filename_with_path(monkeypatch, upload_file):
         _agents.api_post_file_tus(
             "http://testserver", "tok", upload_file, upload_filename="a/b.raw"
         )
+
+
+def test_post_file_sends_the_timezone_as_a_form_field(monkeypatch, upload_file):
+    """The converter reads it as the ``timezone`` form field on the legacy path."""
+    captured = {}
+
+    def capture(*args, **kwargs):
+        captured.update(kwargs)
+        return _fake_response(201, {"message": "ok"})
+
+    monkeypatch.setattr(_agents.requests, "post", capture)
+
+    _agents.api_post_file(
+        url="http://server",
+        path="sample/files/upload",
+        access_token="t",
+        filepath=upload_file,
+        timezone="Europe/Helsinki",
+    )
+
+    assert captured["data"] == {"timezone": "Europe/Helsinki"}
+
+
+def test_post_file_omits_the_timezone_when_unknown(monkeypatch, upload_file):
+    """A machine that cannot name its zone sends no field at all."""
+    captured = {}
+
+    def capture(*args, **kwargs):
+        captured.update(kwargs)
+        return _fake_response(201, {"message": "ok"})
+
+    monkeypatch.setattr(_agents.requests, "post", capture)
+
+    _agents.api_post_file(
+        url="http://server",
+        path="sample/files/upload",
+        access_token="t",
+        filepath=upload_file,
+    )
+
+    assert captured["data"] is None
+
+
+def test_tus_create_carries_the_timezone_in_upload_metadata(monkeypatch, upload_file):
+    """The resumable path carries it as a base64 Upload-Metadata pair."""
+    captured = {}
+
+    def capture(*args, **kwargs):
+        captured.update(kwargs)
+        # Fail the creation immediately; the metadata header is the assertion.
+        return _fake_response(404)
+
+    monkeypatch.setattr(_agents.requests, "post", capture)
+
+    with pytest.raises(TusNotSupportedError):
+        _agents.api_post_file_tus(
+            url="http://server",
+            access_token="t",
+            filepath=upload_file,
+            timezone="Europe/Helsinki",
+        )
+
+    metadata = captured["headers"]["Upload-Metadata"]
+    pairs = dict(part.split(" ", 1) for part in metadata.split(","))
+    assert set(pairs) == {"filename", "filetype", "timezone"}
+    assert base64.b64decode(pairs["timezone"]).decode() == "Europe/Helsinki"
+
+
+def test_tus_create_omits_the_timezone_when_unknown(monkeypatch, upload_file):
+    captured = {}
+
+    def capture(*args, **kwargs):
+        captured.update(kwargs)
+        return _fake_response(404)
+
+    monkeypatch.setattr(_agents.requests, "post", capture)
+
+    with pytest.raises(TusNotSupportedError):
+        _agents.api_post_file_tus(
+            url="http://server", access_token="t", filepath=upload_file
+        )
+
+    metadata = captured["headers"]["Upload-Metadata"]
+    assert "timezone" not in metadata

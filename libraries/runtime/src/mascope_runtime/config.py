@@ -392,6 +392,13 @@ class FileAgentConfig(ModuleConfig):
     # Verify the server's TLS certificate. On by default; a self-signed or
     # plain-HTTP dev deployment turns it off.
     verify_tls: bool = True
+    # IANA timezone of this instrument PC, reported with each upload so the
+    # converter can turn the instrument-local acquisition time into UTC.
+    # Empty means auto-detect from the operating system. Set it explicitly when
+    # detection picks the wrong zone: Windows names a group of zones rather
+    # than a city, so a machine can resolve to a neighbouring city whose
+    # historical DST rules differ.
+    timezone: str = ""
     host: str  # URL of the backend
     access_token: str  # API access token
     filename_prefix: str | None = (

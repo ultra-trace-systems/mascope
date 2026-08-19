@@ -21,6 +21,11 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
   `verify_tls` in the agent config), and the manual token-paste path is gone -
   pairing is the single way in, which is also what keeps the credential a
   revocable, self-renewing per-machine device token.
+  **Upgrading an existing agent:** verification was previously always off, and
+  a `config.toml` written before this release names no `verify_tls`, so it
+  takes the new default and an agent pointed at a self-signed or internal-CA
+  server will stop uploading with a TLS error. Add `verify_tls = false` to
+  `[file-agent]` before upgrading those machines, or re-run setup and answer No.
 - Instrument agents now authenticate as their own **machine accounts**, not as
   the person who paired them. Approving a pairing provisions a dedicated
   account the device authenticates as - capped at the editor role, with no
@@ -28,7 +33,10 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
   and a person leaving never revokes an agent. The person who approved the
   pairing is recorded as the device's sponsor, and is added as owner of the
   acquisition workspaces their agent's uploads create, so they keep seeing the
-  data. Machine accounts never sign in interactively, are excluded from the
+  data. The machine account itself joins the acquisition workspaces as an
+  editor when it is provisioned - the same reach the approver's token had
+  before - so a re-paired agent keeps uploading to instruments that were
+  already in use. Machine accounts never sign in interactively, are excluded from the
   deployment-wide forced-password-change sweep and the two-factor requirement
   (both meaningless without a browser), do not appear in the user list, and
   cannot be renamed, re-roled or deleted through user management - they are
@@ -40,8 +48,10 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
   finally answer "which machine holds this credential, and who vouched for it".
   A new **Paired machines** list under Settings shows each device with its
   service and when it was last seen, and lets you rename or **revoke one
-  machine on its own** - unlike Regenerate, which still replaces every token of
-  a service at once. Admins and owners can review and revoke any deployment's
+  machine on its own**. Revoking a machine is now the only thing that stops
+  that machine: its credential belongs to its own machine account, so
+  Regenerate - which replaces the tokens issued to *you* - no longer affects a
+  paired agent. Admins and owners can review and revoke any deployment's
   devices within the usual user-management role ceiling. Uploaded files now
   record who sent them (the device for agent uploads, the user for interactive
   ones); rows created before this land as unattributed rather than guessed.
@@ -52,12 +62,18 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
   per-device revocation isolation and the strict-mode gate.
 - Acquisition timestamps now use the instrument PC's timezone. The File Agent
   reports its IANA zone with each upload, and the converter resolves the UTC
-  offset from it at the file's own acquisition time - correct across DST and
-  for backlogged uploads. An offset embedded in the raw file still wins where
-  present (TOF); the old "assume the converter host's timezone" behaviour
-  remains only as a last resort for uploads that carry no zone, and no longer
-  mis-signs a west-of-UTC offset. Each sample file records the zone applied and
-  whether it came from the file, the agent, or the fallback.
+  offset from it at the file's own acquisition time - correct for an instrument
+  in a different zone from the server, across DST, and for backlogged uploads.
+  An offset embedded in the raw file still wins where present (TOF); the old
+  "assume the converter host's timezone" behaviour remains only as a last resort
+  for uploads that carry no zone, and no longer mis-signs a west-of-UTC offset.
+  Each sample file records the zone applied and whether it came from the file,
+  the agent, or the fallback.
+  The agent detects its zone from the operating system. Windows names a *group*
+  of zones rather than a city, so a machine can resolve to a neighbouring city
+  whose historical DST rules differ; set `timezone` in the agent configuration
+  (e.g. `timezone = 'Europe/Helsinki'`) to report it exactly. A machine that
+  cannot name its zone simply reports none and the server falls back as before.
 - The Python SDK can now read persisted peak-assignment results (read-only
   v1). A new `mascope.peak_assignments` resource reads the peak-centric
   assignment runs launched from the app: `list_runs(sample_id)` returns the

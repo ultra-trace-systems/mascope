@@ -289,7 +289,9 @@ def run_setup_wizard(settings: dict) -> dict:
             break
         print(f"\n{message}\n")
         choice = (
-            input("Pair [a]gain, re-enter [s]erver address, or [c]ontinue anyway? [a/s/c]: ")
+            input(
+                "Pair [a]gain, re-enter [s]erver address, or [c]ontinue anyway? [a/s/c]: "
+            )
             .strip()
             .lower()
         )

@@ -34,6 +34,7 @@ uv run pyinstaller @(
     '--icon=assets/icon.ico'                      # use the Mascope icon
     '--collect-all', 'mascope_runtime'            # bundle runtime lib
     '--collect-all', 'mascope_sdk'                # bundle mascope api wrapper
+    '--collect-all', 'tzlocal'                    # name this machine's IANA zone
 )
 if ($LASTEXITCODE -ne 0) { throw 'PyInstaller build failed' }
 
