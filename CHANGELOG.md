@@ -102,12 +102,18 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
   ledger carries. A dense sample's ledger is too large for one request, so an
   import assembles across several: the first creates the run and returns its id,
   follow-ups carry the next row offset, and the last one finalizes. Offsets are
-  server-checked and the client names the import with an id of its own, so a
-  request retried after a timeout is an idempotent no-op rather than duplicated
-  rows, a second run, or a second batch fold-in. `DELETE
+  server-checked and the client names the import with an id of its own -
+  required, since a row offset cannot make the request that *creates* a run
+  idempotent - so a request retried after a timeout is an idempotent no-op
+  rather than duplicated rows, a second run, or a second batch fold-in. `DELETE
   /api/peak-assignments/sample/{id}/runs/{run_id}` releases an upload that will
   never finish, which would otherwise block new assignment work on that sample
   until the nightly retention pass.
+  Every id a row carries into a reference column - ionization mechanism, target
+  compound, target ion - is checked before anything is stored, so a stale
+  reference is a 422 that names it rather than a constraint violation reported
+  as something else entirely, and a refused import never leaves a half-open run
+  holding the sample.
   What an import may assert stops short of what the server presents as its own:
   it declares the fit-score bands it tiered with and every row's tier is checked
   against them, it discloses what it calibrated against (an import bypasses the

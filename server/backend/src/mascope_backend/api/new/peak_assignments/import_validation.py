@@ -20,6 +20,7 @@ from mascope_backend.api.new.peak_assignments.config import (
     MAX_IMPORT_JSON_BYTES,
     RESERVED_ENGINE_NAMES,
 )
+from mascope_backend.api.new.peak_assignments.engine import tier_for_score
 
 
 # Provenance keys the server derives its own judgement from, stripped out of an
@@ -70,26 +71,36 @@ def json_size_error(field: str, value: Any) -> str | None:
     return None
 
 
-def tier_for_fit_score(
+def coherent_tiers(
     fit_score: float | None, identified: float, candidate: float
-) -> str:
-    """The tier a fit score earns under the declared bands.
+) -> set[str]:
+    """The tiers a fit score may carry under the declared bands.
 
-    The same thresholding the in-app engine applies, expressed once so an
-    imported row can be checked against the bands its own engine declared.
+    Delegates to :func:`engine.tier_for_score`, the in-app engine's own
+    thresholding, rather than restating it: an import that reproduces Mascope's
+    tiering must not be refused for doing so. Restating it is what made an
+    earlier version reject two shapes the in-app engine itself writes - a
+    ``None`` fit score (``tier_for_score`` maps that to 'below_assignability',
+    not 'unassigned') and a zero score under a zero ``candidate`` band (it is
+    'below_assignability' there too, on the ``score <= 0`` guard).
+
+    A missing fit score admits two tiers, because the in-app ledger uses both:
+    a peak nothing was assigned to is written 'unassigned', while an assigned
+    row whose score came back non-finite is written 'below_assignability'.
+    Neither is a claim about confidence, so neither is worth refusing.
 
     :param fit_score: The row's fit score, or None when nothing was assigned.
     :param identified: Fit score at or above which a row is 'identified'.
     :param candidate: Fit score at or above which a row is 'candidate'.
-    :return: The coherent tier name.
+    :return: The tier names coherent with this score.
     """
     if fit_score is None:
-        return "unassigned"
-    if fit_score >= identified:
-        return "identified"
-    if fit_score >= candidate:
-        return "candidate"
-    return "below_assignability"
+        return {"unassigned", "below_assignability"}
+    return {
+        tier_for_score(
+            fit_score, possible_threshold=candidate, probable_threshold=identified
+        )
+    }
 
 
 def tier_coherence_error(
@@ -110,18 +121,16 @@ def tier_coherence_error(
     :param candidate: The run's candidate threshold.
     :return: An error message, or None when coherent.
     """
-    expected = tier_for_fit_score(fit_score, identified, candidate)
-    if tier == expected:
+    expected = coherent_tiers(fit_score, identified, candidate)
+    if tier in expected:
         return None
+    named = " or ".join(f"'{name}'" for name in sorted(expected))
     if fit_score is None:
-        return (
-            f"tier '{tier}' with no fit_score: a row that scored nothing is "
-            "'unassigned'"
-        )
+        return f"tier '{tier}' with no fit_score: such a row is {named}"
     return (
         f"tier '{tier}' is incoherent with fit_score {fit_score} under the "
         f"declared tier_bands (identified >= {identified}, candidate >= "
-        f"{candidate}), which put it at '{expected}'"
+        f"{candidate}), which put it at {named}"
     )
 
 

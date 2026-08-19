@@ -11,14 +11,16 @@ either live in the integration suite.
 from types import SimpleNamespace
 
 import pytest
+from pydantic import ValidationError
 
 from mascope_backend.api.new.peak_assignments.config import (
     IN_APP_ENGINE,
     MAX_IMPORT_JSON_BYTES,
 )
+from mascope_backend.api.new.peak_assignments.engine import tier_for_score
 from mascope_backend.api.new.peak_assignments.import_validation import (
-    SERVER_OWNED_PROVENANCE_KEYS,
     chunk_offset_error,
+    coherent_tiers,
     duplicate_peak_ids,
     is_chunk_replay,
     json_size_error,
@@ -26,10 +28,12 @@ from mascope_backend.api.new.peak_assignments.import_validation import (
     self_owner_errors,
     strip_server_owned_provenance,
     tier_coherence_error,
-    tier_for_fit_score,
     unknown_peak_ids,
     unresolved_owner_error,
 )
+from mascope_backend.api.new.peak_assignments.schemas import ImportAssignmentRow
+from mascope_backend.api.new.peak_assignments.service import _provenance_scalars
+from mascope_backend.db import PeakAssignment
 
 
 def _row(sample_peak_id: str, owner: str | None = None):
@@ -84,17 +88,39 @@ class TestTierCoherence:
     @pytest.mark.parametrize(
         "fit_score,expected",
         [
-            (1.0, "identified"),
-            (0.8, "identified"),
-            (0.79, "candidate"),
-            (0.5, "candidate"),
-            (0.49, "below_assignability"),
-            (0.0, "below_assignability"),
-            (None, "unassigned"),
+            (1.0, {"identified"}),
+            (0.8, {"identified"}),
+            (0.79, {"candidate"}),
+            (0.5, {"candidate"}),
+            (0.49, {"below_assignability"}),
+            (0.0, {"below_assignability"}),
+            (None, {"unassigned", "below_assignability"}),
         ],
     )
     def test_thresholds_are_inclusive_at_the_band_edge(self, fit_score, expected):
-        assert tier_for_fit_score(fit_score, 0.8, 0.5) == expected
+        assert coherent_tiers(fit_score, 0.8, 0.5) == expected
+
+    @pytest.mark.parametrize("fit_score", [1.0, 0.8, 0.79, 0.5, 0.49, 0.01, 0.0])
+    def test_a_scored_row_is_tiered_by_the_in_app_engine(self, fit_score):
+        """The check delegates rather than restating, so it cannot drift.
+
+        Restating it is what made an earlier version refuse rows the in-app
+        engine itself writes. This pins the delegation, not a second copy of
+        the thresholds.
+        """
+        assert coherent_tiers(fit_score, 0.8, 0.5) == {
+            tier_for_score(fit_score, possible_threshold=0.5, probable_threshold=0.8)
+        }
+
+    def test_a_zero_score_is_below_assignability_even_at_a_zero_band(self):
+        """`tier_for_score` guards on `score <= 0` before the bands apply.
+
+        An engine may legitimately declare `candidate: 0.0`; a 0.0 score is
+        still not a candidate, and that is what the in-app engine records.
+        """
+        assert coherent_tiers(0.0, 0.8, 0.0) == {"below_assignability"}
+        assert tier_coherence_error("below_assignability", 0.0, 0.8, 0.0) is None
+        assert tier_coherence_error("candidate", 0.0, 0.8, 0.0) is not None
 
     def test_a_coherent_row_passes(self):
         assert tier_coherence_error("identified", 0.91, 0.8, 0.5) is None
@@ -118,11 +144,79 @@ class TestTierCoherence:
     def test_a_scored_row_cannot_claim_unassigned(self):
         assert tier_coherence_error("unassigned", 0.9, 0.8, 0.5) is not None
 
-    def test_an_unscored_row_must_be_unassigned(self):
+    def test_an_unscored_row_is_unassigned_or_below_assignability(self):
+        """Both are shapes the in-app ledger writes, so both are accepted.
+
+        A peak nothing was assigned to is 'unassigned'; an assigned row whose
+        score came back non-finite is 'below_assignability' (`tier_for_score`
+        maps a None score to exactly that). Refusing the second - as an earlier
+        version did - refused an engine for reproducing Mascope's own output.
+        """
         assert tier_coherence_error("unassigned", None, 0.8, 0.5) is None
+        assert tier_coherence_error("below_assignability", None, 0.8, 0.5) is None
         error = tier_coherence_error("identified", None, 0.8, 0.5)
         assert error is not None
         assert "no fit_score" in error
+
+
+class TestRowFieldBoundsMatchTheColumns:
+    """A payload bound per string column that the ledger table actually has.
+
+    Without one, an over-long value passes every payload rule and fails in the
+    insert, where Postgres raises a class-22 data exception that reaches the
+    client as a 500 where every other payload rule gives a 422.
+    """
+
+    #: Fields a closed vocabulary bounds instead of a length: the Literal is
+    #: already narrower than the column, so a max_length would add nothing.
+    VOCABULARY_BOUNDED = {"role", "source", "tier"}
+
+    @pytest.mark.parametrize("poison", [float("inf"), float("-inf"), float("nan")])
+    def test_no_float_field_accepts_a_non_finite_value(self, poison):
+        """The same hole from the numeric side, and it detonates on the *read*.
+
+        `json.loads` accepts the `NaN`/`Infinity` literals and turns the
+        RFC-valid `1e999` into `inf`, and a double precision column stores
+        both - so the import succeeds and `GET /sample/{id}` then fails to
+        render for the whole run, which is 'completed' and so beyond the
+        abandon endpoint's reach.
+        """
+        floats = [
+            name
+            for name, field in ImportAssignmentRow.model_fields.items()
+            if float in (field.annotation, *getattr(field.annotation, "__args__", ()))
+        ]
+        assert floats, "no float fields found; this test is vacuous"
+
+        base = {
+            "sample_peak_id": "peak-0",
+            "sample_peak_mz": 181.0707,
+            "sample_peak_intensity": 5000.0,
+            "role": "M0",
+            "tier": "identified",
+        }
+        for name in floats:
+            with pytest.raises(ValidationError):
+                ImportAssignmentRow.model_validate({**base, name: poison})
+
+    def test_row_field_bounds_match_the_columns(self):
+        """Fails if a column narrows, widens, or a new string field is added."""
+        columns = PeakAssignment.__table__.columns
+        for name, field in ImportAssignmentRow.model_fields.items():
+            if name in self.VOCABULARY_BOUNDED:
+                continue
+            width = getattr(getattr(columns.get(name), "type", None), "length", None)
+            if width is None:
+                continue
+            declared = [
+                getattr(meta, "max_length", None)
+                for meta in field.metadata
+                if getattr(meta, "max_length", None) is not None
+            ]
+            assert declared == [width], (
+                f"ImportAssignmentRow.{name} declares max_length {declared}, "
+                f"but peak_assignment.{name} is {width} characters wide"
+            )
 
 
 class TestServerOwnedProvenanceIsDropped:
@@ -149,12 +243,27 @@ class TestServerOwnedProvenanceIsDropped:
         assert cleaned == {"note": "kept"}
 
     def test_every_key_the_ledger_flattens_is_covered(self):
-        """Pins the list against the scalars the read model derives."""
-        assert set(SERVER_OWNED_PROVENANCE_KEYS) == {
-            "p_correct",
-            "calibration",
-            "corroboration",
+        """Runs the read model's own collapse over a blob that forges all of it.
+
+        The pin has to be against `_provenance_scalars`, not against a second
+        hand-written copy of the same three names - that restates the constant
+        rather than checking it, and would still pass if the ledger learned a
+        fourth scalar that the strip list then silently let an importer supply.
+        """
+        forged = {
+            "p_correct": 0.99,
+            "calibration": {"provisional": False},
+            "corroboration": {"n_adducts": 7},
+            # Sent under the names the ledger *renders*, too, in case a future
+            # read reaches for them directly rather than through the nests.
+            "p_correct_provisional": False,
+            "corroboration_adducts": 7,
         }
+
+        rendered = _provenance_scalars(strip_server_owned_provenance(forged))
+
+        assert rendered, "the ledger derives no scalars; this test is vacuous"
+        assert all(value is None for value in rendered.values()), rendered
 
     def test_the_importers_own_detail_survives(self):
         """Provenance is inspector detail, and stays - only the verdicts go."""

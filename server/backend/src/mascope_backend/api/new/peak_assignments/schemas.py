@@ -198,7 +198,8 @@ class ImportChunk(BaseModel):
 
     ``index`` cannot make the *first* request idempotent, though: a create has
     no run id to be idempotent about, so a retry of it is a second run rather
-    than a repeat of the first. ``import_id`` closes that gap.
+    than a repeat of the first. ``import_id`` closes that gap, and is required
+    for exactly that reason - see its description.
     """
 
     run_id: str | None = Field(
@@ -208,17 +209,17 @@ class ImportChunk(BaseModel):
             "creates the run and returns its id."
         ),
     )
-    import_id: str | None = Field(
-        None,
+    import_id: str = Field(
+        min_length=1,
         max_length=64,
         description=(
             "Client-chosen id for this logical import, unique per sample. "
-            "Strongly recommended: it is what makes the request that creates "
-            "the run idempotent, since an HTTP retry of it is otherwise "
-            "indistinguishable from a second import. Re-sending it returns the "
-            "run already created for it instead of creating another. Without "
-            "one, a retried create mints a second run that admission then "
-            "refuses, leaving the client unable to continue."
+            "**Required**: it is the only thing that can make the request that "
+            "creates the run idempotent, since an HTTP retry of it is otherwise "
+            "indistinguishable from a second import - and the SDK retries POSTs "
+            "on timeouts with no way to opt out. Re-sending it returns the run "
+            "already created for it instead of creating another. Any id unique "
+            "to this import will do (a UUID is the obvious choice)."
         ),
     )
     index: int = Field(
@@ -253,34 +254,70 @@ class ImportAssignmentRow(BaseModel):
 
     model_config = ConfigDict(extra="ignore")
 
+    # Every `max_length` below mirrors the width of the `peak_assignment`
+    # column the value lands in. Not decoration: without them an over-long
+    # string passes every payload rule and reaches the insert, where Postgres
+    # raises a class-22 data exception that surfaces to the client as a 500
+    # rather than the 422 every other payload rule produces.
+    # `test_row_field_bounds_match_the_columns` fails if the two drift.
+    #
+    # `allow_inf_nan=False` on the floats closes the same class of hole from
+    # the other side, and it has to be stated: `json.loads` accepts the `NaN`
+    # and `Infinity` literals, and turns the RFC-valid `1e999` into `inf`, so
+    # a non-finite value arrives through an ordinary request body. Postgres
+    # stores both in a double precision column quite happily, and the damage
+    # lands on the *read*: the ledger response renders with `allow_nan=False`,
+    # so one such row makes `GET /sample/{id}` fail for the whole run - which,
+    # being 'completed', the abandon endpoint will not release. The in-app
+    # engine has the same rule as `_float_or_none` in engine.py; an import
+    # states it here instead of silently nulling, because a client that sent a
+    # number should be told it was rejected. `fit_score` needs no flag: its
+    # `ge`/`le` already exclude both.
     sample_peak_id: str = Field(
-        description="The observed peak this row assigns; must exist in the sample."
+        max_length=20,
+        description="The observed peak this row assigns; must exist in the sample.",
     )
-    sample_peak_mz: float
-    sample_peak_intensity: float
-    sample_peak_tof: float | None = None
+    sample_peak_mz: float = Field(allow_inf_nan=False)
+    sample_peak_intensity: float = Field(allow_inf_nan=False)
+    sample_peak_tof: float | None = Field(None, allow_inf_nan=False)
     role: AssignmentRole
-    assigned_formula: str | None = None
-    ion_formula: str | None = None
+    assigned_formula: str | None = Field(None, max_length=256)
+    ion_formula: str | None = Field(None, max_length=4096)
     ionization_mechanism_id: str | None = Field(
         None,
+        max_length=16,
         description=(
             "Optional: an external engine names adducts by notation, not by a "
             "deployment's mechanism ids. A supplied id must exist and match the "
             "sample's polarity."
         ),
     )
-    isotope_label: str | None = None
-    isotope_formula: str | None = None
+    isotope_label: str | None = Field(None, max_length=64)
+    isotope_formula: str | None = Field(None, max_length=256)
     source: AssignmentSource | None = None
     fit_score: float | None = Field(None, ge=0.0, le=1.0)
-    mz_error_ppm: float | None = None
-    abundance_error: float | None = None
+    mz_error_ppm: float | None = Field(None, allow_inf_nan=False)
+    abundance_error: float | None = Field(None, allow_inf_nan=False)
     tier: AssignmentTier
-    target_compound_id: str | None = None
-    target_ion_id: str | None = None
+    target_compound_id: str | None = Field(
+        None,
+        max_length=16,
+        description=(
+            "Optional reference to the curated target library. A supplied id "
+            "must exist on this deployment."
+        ),
+    )
+    target_ion_id: str | None = Field(
+        None,
+        max_length=16,
+        description=(
+            "Optional reference to the curated target library. A supplied id "
+            "must exist on this deployment."
+        ),
+    )
     owner_sample_peak_id: str | None = Field(
         None,
+        max_length=20,
         description=(
             "For an iso_child: the sample_peak_id of its owner row within this "
             "import. Resolved to the minted owner assignment id at finalize."
@@ -294,10 +331,13 @@ class ImportRunBody(BaseModel):
     """Request body for importing an externally computed assignment run."""
 
     engine: str = Field(
+        max_length=64,
         description=(
             "The external engine that produced this run, stamped on the run as "
-            "its provenance. The in-app identity is reserved."
-        )
+            "its provenance. The in-app identity is reserved. Name the engine, "
+            "not the build - this is the key retention budgets each engine's "
+            "runs under, so a value that varies per run fragments that budget."
+        ),
     )
     engine_version: str = Field(
         max_length=64, description="The external engine's version string."
@@ -332,8 +372,11 @@ class ImportRunBody(BaseModel):
         description="This chunk's assignment rows.",
     )
     chunk: ImportChunk = Field(
-        default_factory=ImportChunk,
-        description="Assembly control. Omit entirely for a single-request import.",
+        description=(
+            "Assembly control. Required even for a single-request import: its "
+            "`import_id` is what makes that one request safe to retry, which is "
+            "the case a row offset cannot cover."
+        ),
     )
 
 
