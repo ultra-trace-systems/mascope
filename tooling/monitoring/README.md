@@ -264,6 +264,63 @@ the disk-full scenario that wedges everything else. Keep both, and stagger the
 thresholds so the simple tier warns early and a doctor "down" means it is
 serious.
 
+## 10. Scheduled security assessment (`run-assessment.sh`)
+
+[`run-assessment.sh`](run-assessment.sh) runs the pen-test suite
+(`security/pentest/`) against a deployment on a schedule and keeps the reports
+here. Uptime Kuma tells you the site answers; nothing else tells you TLS is
+still enforced, the security headers are still set, or tenant isolation still
+holds. Because deployed images are pinned, what a periodic run actually detects
+between releases is **environment drift** — an edge rule, a firewall change, a
+certificate approaching expiry.
+
+**It runs from the monitoring box, driving the suite over SSH on the target.**
+Two reasons, and neither is convenience: a report stored on the system under
+test is a report a successful attacker can edit, and the target is rebuilt from
+scratch as a matter of routine. The suite still has to *execute* on the target
+when the origin is firewalled to the CDN's ranges — so execute there, keep the
+record here.
+
+Setup:
+
+1. On the target, create an unprivileged account (`pentest` by default) that is
+   **not** in `sudo`, and deploy `security/pentest/` plus its venv into
+   `SUITE_DIR`. A release does not update this copy — it is a copy, not a
+   checkout, so sync it and verify by hashing against the tag.
+2. Give the monitoring box a dedicated key for that account. Use `restrict` in
+   the target's `authorized_keys`, server-side, rather than relying on the
+   client's `ForwardAgent no`.
+3. Write the config file (`/opt/pentest-runner/config.env`, `chmod 600`) with
+   `TARGET_HOST`, the `MASCOPE_PENTEST_*` credentials and an optional `HC_URL`.
+   The script header lists every variable.
+4. Cron it clear of the backup windows, e.g. `30 5 * * 0`.
+
+**Exit codes.** Normally the suite's, so the heartbeat reflects the assessment
+rather than the plumbing — with two overrides for cases where pytest succeeded
+and the run still is not evidence:
+
+| Exit | Meaning |
+| --- | --- |
+| `1` | the report was unusable (empty archive, unreadable JSON) |
+| `90` | the target is **behind the current release** — honest, but about an artifact deployed nowhere |
+
+The lag comparison happens **here, never on the target**: the suite executes on
+the box under test, so a release lookup performed there would be the deployment
+whose currency is in question answering the question about itself. A lookup that
+cannot resolve the current release records `lag=unknown` and changes nothing —
+an unreachable third party must never be able to redden an assessment.
+
+Each run leaves three files in `RECORDS`: `<ts>-origin.log`, `<ts>-origin.tar.gz`
+and `<ts>-origin.summary`, pruned at 400 days.
+
+**Do not "simplify" the report retrieval.** It is written defensively against
+the box it talks to: the report is pulled as one stream rather than a remote
+glob (a hostile server chooses the filenames it sends, which would be a
+file-write primitive on the host holding your backups), the stream is
+size-bounded before it lands, the archive is never extracted, and only counts
+are sent to the heartbeat service — finding detail describes weaknesses in your
+own deployment and the heartbeat is a third party.
+
 ## Notes & caveats
 
 - **GlitchTip 6** runs one all-in-one `web` container (no separate worker/beat).
