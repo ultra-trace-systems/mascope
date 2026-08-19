@@ -1,27 +1,36 @@
 """
-Database operation for reconciling peak assignment runs stuck in 'running'.
+Database operation for reconciling peak assignment runs stuck under a task.
 
-A ``PeakAssignmentRun`` is created in ``running`` and moved to ``completed`` or
-``failed`` by the engine's own success/failure paths. Neither path survives the
-process dying underneath it - a worker restart, an OOM kill, or a cancelled
-background task (``CancelledError`` is a ``BaseException``, so the engine's
-``except Exception`` finalizer does not run). Such a run stays ``running``
-forever: invisible to the read model (which only serves the latest *completed*
-run) but never cleaned up either.
+A ``PeakAssignmentRun`` an engine owns is created ``pending`` or ``running`` and
+moved to ``completed`` or ``failed`` by the engine's own success/failure paths.
+Neither path survives the process dying underneath it - a worker restart, an OOM
+kill, or a cancelled background task (``CancelledError`` is a ``BaseException``,
+so the engine's ``except Exception`` finalizer does not run). Such a run stays
+non-terminal forever: invisible to the read model (which only serves the latest
+*completed* run) but never cleaned up either, while durable admission keeps
+refusing new work on its sample.
+
+Both in-flight states need this. The assign endpoints answer synchronously, so
+the run row is created ``pending`` in the request that asked for it and only
+becomes ``running`` when the background task adopts it; a process that dies in
+between strands a ``pending`` row exactly as a mid-run death strands a
+``running`` one.
 
 This resets them at startup, mirroring
 :func:`~mascope_backend.db.admin.batch.reset_processing_status.reset_stuck_processing_batches`.
 Startup runs in the main process before any worker is spawned, so nothing can
-legitimately be ``running`` at that moment - every such row is a leftover.
+legitimately be held by a server task at that moment - every such row is a
+leftover.
 
-**That argument covers ``running`` and nothing else.** An imported run assembles
-under ``importing``, at a remote client's pace and with no server task attached,
-so it is *not* a leftover just because no worker owns it - and a routine deploy
-that failed it would kill a live upload and leave the client appending to a
-``failed`` run. The status is deliberately outside this reset, which is why the
-filter below names ``running`` exactly rather than "not terminal". Abandoned
-imports are released by the import abandon endpoint, or reclaimed by
-``prune_peak_assignment_runs`` under its own ``keep_importing_hours`` grace.
+**That argument covers the engine-owned states and nothing else.** An imported
+run assembles under ``importing``, at a remote client's pace and with no server
+task attached, so it is *not* a leftover just because no worker owns it - and a
+routine deploy that failed it would kill a live upload and leave the client
+appending to a ``failed`` run. The status is deliberately outside this reset,
+which is why the filter below names the in-flight states exactly rather than
+"not terminal". Abandoned imports are released by the import abandon endpoint,
+or reclaimed by ``prune_peak_assignment_runs`` under its own
+``keep_importing_hours`` grace.
 
 They are marked ``failed`` rather than adopted as ``completed``. The engine
 writes its whole ledger in a single insert, so "this run has rows" does imply
@@ -51,6 +60,7 @@ from datetime import datetime, timezone
 from sqlalchemy import update
 
 from mascope_backend.db import PeakAssignmentRun, async_session
+from mascope_backend.db.admin.peak_assignments.prune_runs import IN_FLIGHT_STATUSES
 from mascope_backend.runtime import runtime
 
 
@@ -59,7 +69,7 @@ STUCK_RUN_ERROR = "Interrupted: the server restarted while this run was in progr
 
 async def reset_running_peak_assignment_runs() -> dict:
     """
-    Mark peak assignment runs left in 'running' as failed.
+    Mark peak assignment runs left under a server task as failed.
 
     Called at application startup to recover from abnormal termination during a
     run. Safe to call when there is nothing to reset.
@@ -77,9 +87,12 @@ async def reset_running_peak_assignment_runs() -> dict:
         async with async_session() as session:
             update_result = await session.execute(
                 update(PeakAssignmentRun)
-                # Exactly 'running': an 'importing' run belongs to a client, not
-                # to a worker this startup replaced. See the module docstring.
-                .where(PeakAssignmentRun.status == "running")
+                # Exactly the states a server task owns. Shared with the
+                # retention prune, which holds the same rows under its long
+                # in-flight grace, so the two cannot drift apart. An 'importing'
+                # run belongs to a client, not to a worker this startup
+                # replaced, and is deliberately absent from both.
+                .where(PeakAssignmentRun.status.in_(IN_FLIGHT_STATUSES))
                 .values(
                     status="failed",
                     error=STUCK_RUN_ERROR,

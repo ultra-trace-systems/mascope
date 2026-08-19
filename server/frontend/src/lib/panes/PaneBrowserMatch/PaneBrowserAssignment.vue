@@ -6,9 +6,11 @@ import Select from 'primevue/select'
 import Dialog from 'primevue/dialog'
 import DataTable from 'primevue/datatable'
 import Column from 'primevue/column'
+import Message from 'primevue/message'
 import ProgressSpinner from 'primevue/progressspinner'
 import ToggleSwitch from 'primevue/toggleswitch'
 
+import { getApiErrorMessage, isRefusedRequest } from '@/api/utils'
 import { BaseTabbedPanel, BaseTierTag, BaseVerdictBadge } from '@/lib/base'
 import { PeakAssignConfigForm } from '@/lib/dialogs'
 import { num } from '@/lib/formatters'
@@ -83,11 +85,28 @@ function initialConfig() {
 
 const config = reactive(initialConfig())
 
+// Why the last launch produced no run. The endpoint decides synchronously, so a
+// sample already being assigned or one that cannot usefully be assigned comes
+// back as a refusal with a reason - and a reason belongs next to the button that
+// earned it, not in a toast that has scrolled away by the time the user reads
+// the empty run list.
+const launchError = ref(null)
+const launchRefused = ref(false)
+
+// Whatever the previous sample was refused for says nothing about this one.
+watch(
+  () => app.data.sample.focusedId,
+  () => (launchError.value = null)
+)
+
 // Reset each time the dialog opens, the same way the batch launcher does: the
 // form only fills fields that are still unset, so without this a value typed
 // for one sample would silently carry into the next run.
 watch(configVisible, (open) => {
-  if (open) Object.assign(config, initialConfig())
+  if (open) {
+    Object.assign(config, initialConfig())
+    launchError.value = null
+  }
 })
 
 async function launch() {
@@ -101,9 +120,17 @@ async function launch() {
       Object.entries(config).filter(([, value]) => value !== null && value !== '')
     )
     await runs.value.assign(sampleItemId, payload)
-    configVisible.value = false
+    launchError.value = null
+  } catch (error) {
+    // A refusal is an answer, not a crash: the request was understood and
+    // declined. Either way the dialog has nothing left to do - closing it puts
+    // the reason in view rather than behind a modal the user has to dismiss to
+    // read it.
+    launchRefused.value = isRefusedRequest(error)
+    launchError.value = getApiErrorMessage(error, 'Could not start the assignment run.')
   } finally {
     submitting.value = false
+    configVisible.value = false
   }
 }
 
@@ -321,6 +348,15 @@ const isoCount = (row) => assignments.value.childrenOf(row.peak_assignment_id).l
         />
       </div>
     </template>
+
+    <Message
+      v-if="launchError"
+      :severity="launchRefused ? 'warn' : 'error'"
+      closable
+      @close="launchError = null"
+    >
+      {{ launchError }}
+    </Message>
 
     <div v-if="!app.data.sample.focused" class="center empty">
       <div class="col" style="gap: 0.5rem; text-align: center; max-width: 40ch">

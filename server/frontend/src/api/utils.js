@@ -37,6 +37,24 @@ export function getApiErrorMessage(error, fallback = 'An error occurred') {
 }
 
 /**
+ * Whether a failed call was refused rather than broken.
+ *
+ * A refusal is a decision the server reached on purpose and explained in the
+ * response: 409 when the resource is already busy, 422 when the request is
+ * understood but the target cannot serve it. Its `error` message is written for
+ * the person who asked, so a caller shows it as the answer instead of falling
+ * back on a generic failure notice; anything else is a fault, whose message is
+ * deliberately generic.
+ *
+ * @param {*} error the caught error (usually an axios error)
+ * @returns {boolean} true when the server declined, rather than failed
+ */
+export function isRefusedRequest(error) {
+  const status = error?.response?.status
+  return status === 409 || status === 422
+}
+
+/**
  * Whether a failed call was refused because it needs a freshly presented
  * second-factor code.
  *

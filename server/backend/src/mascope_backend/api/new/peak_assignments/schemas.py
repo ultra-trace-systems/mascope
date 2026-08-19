@@ -181,6 +181,59 @@ class AssignSamplePeaksBody(BaseModel):
     )
 
 
+class AssignSampleRecord(BaseModel):
+    """The run a sample assign request created."""
+
+    sample_item_id: str
+    #: The run this request created and handed to the engine. It exists, in a
+    #: non-terminal state, before the response is sent - so a client polls one
+    #: known run instead of diffing run sets to guess which one is its own.
+    peak_assignment_run_id: str
+    #: 'pending' until the background task adopts the run, then 'running'.
+    run_status: str
+
+
+class AssignSampleResponse(BaseModel):
+    """Acknowledgement of a launched per-sample assignment run."""
+
+    status: str = "success"
+    message: str
+    results: int
+    data: list[AssignSampleRecord]
+
+
+class SkippedSampleRecord(BaseModel):
+    """A batch sample the engine cannot usefully assign, and why."""
+
+    sample_item_id: str
+    #: Short prose from the shared eligibility rule, e.g. "blank sample (no
+    #: peaks)" or "m/z calibration not verified".
+    reason: str
+
+
+class AssignBatchRecord(BaseModel):
+    """The eligibility partition a batch assign request will execute."""
+
+    sample_batch_id: str
+    #: Samples that will be assigned, in the order the batch visits them. No run
+    #: ids: a batch creates each run only as it reaches that sample, so any id
+    #: here would either be a run nothing is executing yet - which durable
+    #: admission would then refuse - or one stranded by a batch that stopped
+    #: early. Poll the admitted samples' runs instead.
+    admitted: list[str]
+    #: Samples that will not be assigned, each with its reason.
+    skipped: list[SkippedSampleRecord]
+
+
+class AssignBatchResponse(BaseModel):
+    """Acknowledgement of a launched batch assignment."""
+
+    status: str = "success"
+    message: str
+    results: int
+    data: list[AssignBatchRecord]
+
+
 class TierBands(BaseModel):
     """The fit-score thresholds a run tiered its rows with.
 

@@ -2,14 +2,27 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { mount } from '@vue/test-utils'
 
 // The batch launcher's job is to send a config the API will accept, starting
-// from the backend's batch default rather than the per-sample one. These mount
-// the real component and assert the payload it posts.
+// from the backend's batch default rather than the per-sample one, and to say
+// what happened when the endpoint declines. These mount the real component and
+// assert the payload it posts and how it reports a refusal.
 
 const assign = vi.fn()
+const push = vi.fn()
 
 vi.mock('@/stores', () => ({
-  useApp: () => ({ data: { batch: { assign } } })
+  useApp: () => ({ data: { batch: { assign } }, ui: { notification: { push } } })
 }))
+
+/** Whether the launcher asked its parent to close the dialog. */
+function closedBy(wrapper) {
+  const events = wrapper.emitted('update:visible') ?? []
+  return events.length > 0 && events[events.length - 1][0] === false
+}
+
+/** An axios-shaped rejection carrying a server message. */
+function apiError(status, message) {
+  return { response: { status, data: { error: message } } }
+}
 
 vi.mock('@/api', () => ({
   api: {
@@ -40,6 +53,13 @@ vi.mock('@/api', () => ({
   }
 }))
 
+// Imported statically (vi.mock is hoisted above it, so the stubs still apply):
+// compiling the dialog and its config form is the expensive part, and as a
+// dynamic import inside the first test it lands on that one test's clock.
+const { default: DialogPeakAssignBatch } = await import(
+  '@/lib/dialogs/DialogPeakAssignBatch.vue'
+)
+
 const BATCH = { sample_batch_id: 'sb-1', sample_batch_name: 'My Batch' }
 
 // PrimeVue components render fine unregistered as long as we stub them; we care
@@ -55,9 +75,6 @@ const GLOBAL_STUBS = {
 }
 
 async function mountDialog() {
-  const { default: DialogPeakAssignBatch } = await import(
-    '@/lib/dialogs/DialogPeakAssignBatch.vue'
-  )
   return mount(DialogPeakAssignBatch, {
     props: { visible: true, batch: BATCH },
     global: { stubs: GLOBAL_STUBS }
@@ -68,6 +85,7 @@ describe('DialogPeakAssignBatch', () => {
   beforeEach(() => {
     assign.mockReset()
     assign.mockResolvedValue(undefined)
+    push.mockReset()
   })
   afterEach(() => vi.clearAllMocks())
 
@@ -109,10 +127,56 @@ describe('DialogPeakAssignBatch', () => {
     expect(config.max_untargeted_peaks).toBe(42)
   })
 
-  it('does nothing without a batch', async () => {
-    const { default: DialogPeakAssignBatch } = await import(
-      '@/lib/dialogs/DialogPeakAssignBatch.vue'
+  it('closes and reports nothing extra when the launch is accepted', async () => {
+    const wrapper = await mountDialog()
+    await wrapper.vm.$nextTick()
+
+    await wrapper.vm.launch()
+
+    expect(closedBy(wrapper)).toBe(true)
+    expect(push).not.toHaveBeenCalled()
+  })
+
+  it('closes and reports the reason when the batch is refused', async () => {
+    // A run already in flight for one of the batch's samples: the endpoint
+    // declines with 409 and says which sample holds it up.
+    assign.mockRejectedValue(
+      apiError(409, "Peak assignment is already running for 1 sample of sample batch 'My Batch'.")
     )
+    const wrapper = await mountDialog()
+    await wrapper.vm.$nextTick()
+
+    await wrapper.vm.launch()
+
+    expect(closedBy(wrapper)).toBe(true)
+    expect(push).toHaveBeenCalledTimes(1)
+    const notification = push.mock.calls[0][0]
+    expect(notification.status).toBe('warning')
+    expect(notification.message).toContain('already running')
+  })
+
+  it('reports a genuine failure as an error, not a refusal', async () => {
+    assign.mockRejectedValue(apiError(500, 'Unexpected error (ref: abc12345).'))
+    const wrapper = await mountDialog()
+    await wrapper.vm.$nextTick()
+
+    await wrapper.vm.launch()
+
+    expect(push.mock.calls[0][0].status).toBe('error')
+  })
+
+  it('leaves the launch button usable after a refusal', async () => {
+    assign.mockRejectedValue(apiError(409, 'busy'))
+    const wrapper = await mountDialog()
+    await wrapper.vm.$nextTick()
+
+    await wrapper.vm.launch()
+
+    // The rejection must not be left uncaught, and must not strand the spinner.
+    expect(wrapper.vm.submitting).toBe(false)
+  })
+
+  it('does nothing without a batch', async () => {
     const wrapper = mount(DialogPeakAssignBatch, {
       props: { visible: true, batch: null },
       global: { stubs: GLOBAL_STUBS }

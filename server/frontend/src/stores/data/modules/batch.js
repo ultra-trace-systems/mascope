@@ -100,16 +100,22 @@ export const useBatch = defineStore('app.data.batch', () => {
       ),
     // Launch a peak assignment run for every eligible sample in the batch.
     // Batch runs default to Stage A only, since cost scales with the number of
-    // samples; pass a config with run_untargeted to widen it. Blank and
-    // uncalibrated samples are skipped. Completion arrives via
-    // peak_assignment_reload.
+    // samples; pass a config with run_untargeted to widen it. Completion arrives
+    // via peak_assignment_reload.
+    //
+    // Resolves with the eligibility partition the batch will execute: the
+    // samples it will assign, and the blank or uncalibrated ones it will skip
+    // with their reasons. It rejects with the server's reason when a run is
+    // already in flight for one of those samples (409); `errors: 'inline'` keeps
+    // the generic failure toast off it so the launcher reports that reason.
     assign: async ({ sample_batch_id, config = null }) =>
       api.http.post(
         `/peak-assignments/batch/${sample_batch_id}/assign`,
         { config },
         {
           use: 'process',
-          type: 'assign_batch_peaks'
+          type: 'assign_batch_peaks',
+          errors: 'inline'
         }
       ),
     exportPeaks: async ({ sample_batch_id }) =>

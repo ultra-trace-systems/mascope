@@ -80,11 +80,13 @@ DEFAULT_KEEP_PER_SAMPLE_TOTAL = 12
 # Grace on terminal non-completed runs, so a failure stays inspectable for a day.
 DEFAULT_KEEP_FAILED_HOURS = 24
 
-# Statuses a run holds while it may still be executing under a server task. The
-# engine creates a run as 'running' and only ever leaves that state through its
-# own success/failure path; 'pending' is the column default a row can be created
-# with. 'importing' is non-terminal too but has no task behind it, so it is
-# reclaimed under its own grace and is deliberately not in this tuple.
+# Statuses a run holds while it may still be executing under a server task: the
+# assign request creates the run 'pending' and hands it to a background task,
+# which adopts it as 'running' and only ever leaves that state through its own
+# success/failure path. Also what the startup reaper reclaims, which imports the
+# tuple from here so the two cannot disagree about which rows a task owns.
+# 'importing' is non-terminal too but has no task behind it, so it is reclaimed
+# under its own grace and is deliberately not in this tuple.
 IN_FLIGHT_STATUSES = ("pending", "running")
 
 # The status an imported run assembles under, between the request that creates

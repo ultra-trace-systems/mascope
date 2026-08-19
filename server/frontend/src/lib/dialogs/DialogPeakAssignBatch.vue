@@ -5,6 +5,7 @@ import Button from 'primevue/button'
 import Dialog from 'primevue/dialog'
 import Message from 'primevue/message'
 
+import { getApiErrorMessage, isRefusedRequest } from '@/api/utils'
 import { useApp } from '@/stores'
 
 import PeakAssignConfigForm from './PeakAssignConfigForm.vue'
@@ -66,9 +67,21 @@ async function launch() {
       sample_batch_id: props.batch.sample_batch_id,
       config: payload
     })
-    visible.value = false
+  } catch (error) {
+    // The endpoint decides before it answers, so a batch whose samples are
+    // already being assigned comes back refused - an answer, not a crash. The
+    // launcher is done either way; report the server's own reason rather than
+    // the generic failure notice the interceptor is holding back (see
+    // `errors: 'inline'` on the request), since "one sample is already running"
+    // is something the user can act on and "an error occurred" is not.
+    app.ui.notification.push({
+      type: 'assign_batch_peaks',
+      status: isRefusedRequest(error) ? 'warning' : 'error',
+      message: getApiErrorMessage(error, 'Could not start the batch assignment.')
+    })
   } finally {
     submitting.value = false
+    visible.value = false
   }
 }
 </script>
