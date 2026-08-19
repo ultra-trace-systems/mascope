@@ -160,6 +160,9 @@ jobs:
     # release".
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    permissions:
+      # checkout only; the Zenodo records API is public and needs no token
+      contents: read
     steps:
       - name: Check out the release tag
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
