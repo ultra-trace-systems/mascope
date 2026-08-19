@@ -195,6 +195,10 @@ class ImportChunk(BaseModel):
     ``index`` is an offset in rows, not a sequence number - the same shape the
     resumable file upload uses - so a client that lost a response resynchronises
     from the row count the server reports rather than guessing.
+
+    ``index`` cannot make the *first* request idempotent, though: a create has
+    no run id to be idempotent about, so a retry of it is a second run rather
+    than a repeat of the first. ``import_id`` closes that gap.
     """
 
     run_id: str | None = Field(
@@ -202,6 +206,19 @@ class ImportChunk(BaseModel):
         description=(
             "The run being appended to. Omitted on the first request, which "
             "creates the run and returns its id."
+        ),
+    )
+    import_id: str | None = Field(
+        None,
+        max_length=64,
+        description=(
+            "Client-chosen id for this logical import, unique per sample. "
+            "Strongly recommended: it is what makes the request that creates "
+            "the run idempotent, since an HTTP retry of it is otherwise "
+            "indistinguishable from a second import. Re-sending it returns the "
+            "run already created for it instead of creating another. Without "
+            "one, a retried create mints a second run that admission then "
+            "refuses, leaving the client unable to continue."
         ),
     )
     index: int = Field(
@@ -328,6 +345,9 @@ class PeakAssignmentImportRecord(BaseModel):
     run_status: str
     #: Rows the run holds. The next chunk's ``index`` must equal this.
     rows: int
+    #: Rows one request may carry, so a client sizes its chunks from the server
+    #: instead of hardcoding a guess that a later release could invalidate.
+    max_rows_per_request: int = MAX_IMPORT_ROWS_PER_REQUEST
 
 
 class PeakAssignmentImportResponse(BaseModel):

@@ -15,12 +15,25 @@ through Pydantic in one go, so the endpoint caps rows per request and assembles:
 - the request marked ``chunk.complete`` finalizes - payload-wide validation,
   owner resolution, ``completed``, batch fold-in.
 
-``chunk.index`` is an offset in rows, and the server checks it, because the SDK
-retries POSTs on timeouts with no way to opt out: a chunk the server already
-applied will arrive twice, and without the check the retry either duplicates
-rows onto the unique constraint or mints a second run. Re-sending the last chunk
-is therefore an idempotent no-op that reports the current row count, and any
-other mismatch is refused so the client resynchronises from that count.
+Every request has to survive being sent twice, because the SDK retries POSTs on
+timeouts and exposes no way to opt out - and a read timeout is exactly the case
+where the body *was* delivered and the server may already have applied it. Three
+mechanisms cover the three kinds of request:
+
+- an **append** is addressed by ``chunk.index``, an offset in rows: re-sending
+  the chunk that produced the current row count is an idempotent no-op that
+  reports that count, and any other mismatch is refused so the client
+  resynchronises. Without it a retry duplicates rows onto the unique constraint
+  and fails a healthy import.
+- a **create** has no run id yet to be addressed by, so an offset cannot help:
+  a retried create is byte-identical to the original and would mint a second
+  run, which admission then refuses - wedging the client, which never learned
+  the first run's id. It is keyed instead by the client's own ``import_id``,
+  which resolves to the run already created for it.
+- a **finalize** can be slow (payload-wide validation, owner resolution and the
+  fold-in), which is what makes it a likely read-timeout victim, so re-sending
+  it returns the original success rather than erroring - and does not run the
+  fold-in a second time.
 
 Assembly needs its own status. ``running`` would not do: the startup reaper
 fails every ``running`` row on the correct assumption that nothing can
@@ -325,6 +338,28 @@ async def _resolve_owners(session, run_id: str) -> None:
         raise UnprocessableImportException(unresolved_owner_error(unresolved))
 
 
+async def _run_for_import_key(session, sample_item_id: str, import_key: str):
+    """The run already created for this client's import id, if any.
+
+    What makes the create idempotent: a retried create carries the same key, so
+    it resolves here instead of minting a second run. Persisted on the run
+    rather than held in memory, so the dedupe survives a worker restart.
+
+    :param session: Open session.
+    :param sample_item_id: The sample being imported into.
+    :param import_key: The client's id for this logical import.
+    :return: The run, or None when this key is new.
+    """
+    return (
+        await session.execute(
+            select(PeakAssignmentRun).where(
+                PeakAssignmentRun.sample_item_id == sample_item_id,
+                PeakAssignmentRun.import_key == import_key,
+            )
+        )
+    ).scalar_one_or_none()
+
+
 def _import_result(run_id: str, run_status: str, rows: int, message: str) -> dict:
     """Standard envelope for one import request.
 
@@ -403,10 +438,13 @@ async def _open_run(sample, body, engine: str) -> PeakAssignmentRun:
         engine_version=body.engine_version,
         status="importing",
         # Stored verbatim: the server never reads this and never writes into it,
-        # so what is on the record is what the engine ran with.
+        # so what is on the record is what the engine ran with. The client's
+        # import id is therefore kept in its own column rather than folded in
+        # here, for the same reason the calibration disclosure is.
         config=body.config,
         tier_bands=body.tier_bands.model_dump(),
         calibration=body.calibration,
+        import_key=body.chunk.import_id or None,
         peak_assignment_run_utc_created=dt.now(timezone.utc),
     )
     async with async_session() as session:
@@ -495,11 +533,23 @@ async def _import_chunk(sample, body, user_id: int | None) -> dict:
     :param user_id: The importing user, for the log line.
     :return: Status envelope for this request.
     """
-    creating = body.chunk.run_id is None
     run: PeakAssignmentRun | None = None
     staged = 0
     engine = ""
 
+    if body.chunk.run_id is not None:
+        async with async_session() as session:
+            run = await _load_import_run(session, body.chunk.run_id, sample)
+    elif body.chunk.import_id:
+        # A create the client may have sent before. Resolving it here turns the
+        # retry into a replay of that run's first chunk, which the offset rules
+        # below already answer correctly.
+        async with async_session() as session:
+            run = await _run_for_import_key(
+                session, sample.sample_item_id, body.chunk.import_id
+            )
+
+    creating = run is None
     if creating:
         engine = _validate_new_run(sample, body)
         if (blocking_run := await in_flight_run_id(sample.sample_item_id)) is not None:
@@ -510,7 +560,6 @@ async def _import_chunk(sample, body, user_id: int | None) -> dict:
             )
     else:
         async with async_session() as session:
-            run = await _load_import_run(session, body.chunk.run_id, sample)
             staged = await _staged_row_count(session, run.peak_assignment_run_id)
         if (replay := _completed_replay(run, body, staged)) is not None:
             return replay
@@ -584,6 +633,16 @@ async def _import_chunk(sample, body, user_id: int | None) -> dict:
 def _completed_replay(run: PeakAssignmentRun, body, staged: int) -> dict | None:
     """Answer a finalize whose response the client lost, if that is what this is.
 
+    Finalizing is the slowest request of an import - payload-wide validation,
+    owner resolution and the batch fold-in - which makes it the one most likely
+    to outlive a client's read timeout and be retried underneath the server. So
+    a repeat of it returns the original success instead of erroring, and returns
+    before the fold-in, which must not run twice.
+
+    A repeat is recognised by the offset it claims spanning exactly the rows the
+    run holds. That covers both shapes a finalize takes: one carrying the last
+    chunk of rows, and an empty one sent after the rows were all appended.
+
     :param run: The addressed run.
     :param body: The request body.
     :param staged: Rows the run holds.
@@ -592,9 +651,7 @@ def _completed_replay(run: PeakAssignmentRun, body, staged: int) -> dict | None:
     """
     if run.status != "completed":
         return None
-    if body.chunk.complete and is_chunk_replay(
-        body.chunk.index, staged, len(body.rows)
-    ):
+    if body.chunk.complete and body.chunk.index + len(body.rows) == staged:
         return _import_result(
             run.peak_assignment_run_id,
             run.status,

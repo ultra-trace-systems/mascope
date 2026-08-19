@@ -1349,6 +1349,12 @@ class PeakAssignmentRun(Base):
     # calibrates client-side, so this is what a reader judges its mass accuracy
     # by. NULL for in-app runs, whose calibration state is the sample's own.
     calibration: Mapped[Optional[dict]] = mapped_column(JSON)
+    # The importing client's own id for the logical import. What makes the
+    # request that *creates* a run idempotent: the row-offset check covers every
+    # later chunk, but the first one has no run id yet to be idempotent about,
+    # so a retried create would otherwise mint a second run. NULL for in-app
+    # runs and for imports that supplied none.
+    import_key: Mapped[Optional[str]] = mapped_column(String(64))
     error: Mapped[Optional[str]] = mapped_column(Text)
     peak_assignment_run_utc_created: Mapped[Optional[dt]] = mapped_column(
         TIMESTAMP(timezone=True)
@@ -1373,6 +1379,14 @@ class PeakAssignmentRun(Base):
             "ix_peak_assignment_run_sample_item_id_status",
             "sample_item_id",
             "status",
+        ),
+        # One run per client-supplied import id, so a retried create resolves to
+        # the run it already made instead of a second one. Postgres treats NULLs
+        # here as distinct, so the runs that carry no key are unconstrained.
+        UniqueConstraint(
+            "sample_item_id",
+            "import_key",
+            name="uq_peak_assignment_run_sample_item_id_import_key",
         ),
     )
 

@@ -23,12 +23,24 @@ IN_APP_ENGINE = "mascope"
 # with different capitalization.
 RESERVED_ENGINE_NAMES = frozenset({IN_APP_ENGINE})
 
-# Rows one import request may carry. An import assembles across requests instead
-# of sending one huge body: a dense sample's full ledger with alternatives and
-# provenance is tens of thousands of rows at a few KB each, and an unbounded
-# list serializes unbounded work through Pydantic on the event loop - the same
-# reason the ledger read is paged.
-MAX_IMPORT_ROWS_PER_REQUEST = 5000
+# Rows one import request may carry, mirroring the ledger read's page size for
+# the same reason: a dense sample's full ledger with alternatives and provenance
+# is tens of thousands of rows at a few KB each, and an unbounded list
+# serializes unbounded work through Pydantic on the event loop. An import
+# assembles across requests instead. Served to clients on the create response so
+# a chunker sizes itself from the server rather than guessing.
+MAX_IMPORT_ROWS_PER_REQUEST = 1000
+
+# Byte ceiling on one import request body, ~5 KB per row at the row cap above.
+# Rows alone do not bound a body - a row's `alternatives` and `provenance` are
+# client JSON of no fixed size - so the two caps are enforced together.
+#
+# This must stay at or below the `client_max_body_size` that
+# server/frontend/nginx.conf sets on the peak-assignment location: nginx rejects
+# a larger body itself, before the request reaches this process, and its default
+# is 1 MB. Raising one without the other either makes this check unreachable or
+# turns a documented 413 into an nginx error page.
+MAX_IMPORT_BODY_BYTES = 5 * 1024 * 1024
 
 # Byte ceiling on a run's `config` and `calibration` blobs. Both are opaque
 # client JSON, so nothing bounds them the way the closed PeakAssignmentConfig
