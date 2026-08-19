@@ -90,9 +90,16 @@ def verify_code_at_timestep(
 
     totp = _totp(secret)
     now = current_timestep()
+    # Compare as bytes: hmac.compare_digest raises TypeError on a str carrying
+    # any non-ASCII character (a pasted typographic dash, full-width digits),
+    # and the submitted code is arbitrary user input. Encoding both sides turns
+    # a non-matching code into a plain miss instead of an unhandled 500.
+    submitted_bytes = submitted.encode("utf-8")
     for offset in range(-mfa_settings.VALID_WINDOW, mfa_settings.VALID_WINDOW + 1):
         candidate = now + offset
-        if hmac.compare_digest(totp.generate_otp(candidate), submitted):
+        if hmac.compare_digest(
+            totp.generate_otp(candidate).encode("utf-8"), submitted_bytes
+        ):
             if last_timestep is not None and candidate <= last_timestep:
                 # Correct code, but already spent. Accepting it would reopen the
                 # window that the drift tolerance creates.
@@ -103,7 +110,12 @@ def verify_code_at_timestep(
 
 def generate_recovery_codes() -> list[str]:
     """
-    Fresh recovery codes in the form ``XXXXX-XXXXX``.
+    Fresh recovery codes in the form ``XXXX-XXXX-XXXX-XXXX``.
+
+    Each code is ``RECOVERY_CODE_LENGTH`` characters from the 31-symbol alphabet
+    - about 79 bits - so the SHA-256 digests they are stored as resist the same
+    offline search of a leaked database dump that the seed encryption defends
+    against.
 
     :return: Plaintext codes, which the caller must show exactly once.
     """
@@ -111,9 +123,12 @@ def generate_recovery_codes() -> list[str]:
     for _ in range(mfa_settings.RECOVERY_CODE_COUNT):
         body = "".join(
             _secrets.choice(_RECOVERY_ALPHABET)
-            for _ in range(mfa_settings.RECOVERY_CODE_BYTES)
+            for _ in range(mfa_settings.RECOVERY_CODE_LENGTH)
         )
-        codes.append(f"{body[:5]}-{body[5:]}")
+        # Grouped for legibility only; the dashes are not significant (see
+        # normalize_recovery_code, which strips them).
+        groups = [body[i : i + 4] for i in range(0, len(body), 4)]
+        codes.append("-".join(groups))
     return codes
 
 
@@ -265,10 +280,12 @@ async def verify_totp_for_user(user: User, code: str) -> bool:
         return False
 
     async with async_session() as session:
-        # Guarded on the counter still being behind: two codes racing in from
-        # different tabs must not let the lower one roll the marker back and
-        # reopen the replay window.
-        await session.execute(
+        # The UPDATE is the claim, as in redeem_recovery_code below: guarding on
+        # the counter still being behind means two requests racing in with the
+        # same code cannot both consume it. Only the one whose UPDATE actually
+        # advanced the marker has spent the code; the loser matches zero rows and
+        # must be refused, or one observed code would mint two sessions.
+        result = await session.execute(
             update(User)
             .where(User.id == user.id)
             .where(
@@ -277,7 +294,7 @@ async def verify_totp_for_user(user: User, code: str) -> bool:
             .values(mfa_last_timestep=timestep)
         )
         await session.commit()
-    return True
+    return result.rowcount > 0
 
 
 async def redeem_recovery_code(user: User, code: str) -> bool:

@@ -53,15 +53,20 @@ def decrypt_secret(ciphertext: str) -> str | None:
     Recover a stored TOTP seed.
 
     Returns ``None`` rather than raising when the stored value cannot be
-    decrypted, which is what a key that was replaced or lost looks like. The
-    caller turns that into "this account cannot complete MFA" and points the
-    user at recovery, instead of a 500 on every login attempt.
+    decrypted - a replaced key (wrong key), a key lost entirely (no key file),
+    and a corrupted ciphertext all look the same to the caller, which turns any
+    of them into "this account cannot complete TOTP" and falls back to a
+    recovery code, instead of a 5xx on every sign-in.
 
     :param ciphertext: The stored value from ``user.mfa_secret``.
-    :raises MfaNotConfiguredException: When the deployment has no MFA key.
     :return: The base32 seed, or ``None`` if it cannot be decrypted.
     """
     try:
         return _fernet().decrypt(ciphertext.encode("utf-8")).decode("utf-8")
     except (InvalidToken, ValueError):
+        return None
+    except MfaNotConfiguredException:
+        # Key gone entirely (lost, or a restore without the secrets dir). Fail
+        # the TOTP check softly so the recovery-code path stays reachable;
+        # enrolment still raises, through encrypt_secret.
         return None

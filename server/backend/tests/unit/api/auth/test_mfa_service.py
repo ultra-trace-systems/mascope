@@ -98,6 +98,21 @@ def test_blank_code_is_refused(secret):
     assert service.verify_code_at_timestep(secret, "   ", None) is None
 
 
+@pytest.mark.parametrize(
+    "code",
+    [
+        "12345–67",  # an en-dash, as a mail client or PDF renders a hyphen
+        "１２３４５６",  # full-width digits from a mobile IME
+        "123 456",  # a non-breaking space, left in by replace(" ", "")
+    ],
+)
+def test_non_ascii_code_is_a_miss_not_an_error(secret, code):
+    # hmac.compare_digest raises TypeError on a non-ASCII str, and the code is
+    # arbitrary user input; a non-matching one must be refused, not turned into
+    # an unhandled 500 that also skips the failed-attempt counter.
+    assert service.verify_code_at_timestep(secret, code, None) is None
+
+
 def test_code_is_refused_once_its_timestep_was_spent(secret):
     # The drift window keeps a code usable for longer than its own 30 seconds,
     # so an observed code could otherwise be replayed inside that span.
@@ -128,6 +143,17 @@ def test_recovery_codes_are_distinct_and_the_configured_count():
     codes = service.generate_recovery_codes()
     assert len(codes) == auth_settings.mfa.RECOVERY_CODE_COUNT
     assert len(set(codes)) == len(codes)
+
+
+def test_recovery_codes_carry_the_configured_entropy():
+    # 16 characters over the 31-symbol alphabet is about 79 bits, so the SHA-256
+    # digests they are stored as resist the same offline search of a leaked
+    # database dump that the seed encryption addresses.
+    for code in service.generate_recovery_codes():
+        assert (
+            len(service.normalize_recovery_code(code))
+            == auth_settings.mfa.RECOVERY_CODE_LENGTH
+        )
 
 
 def test_recovery_codes_avoid_ambiguous_characters():
@@ -183,6 +209,15 @@ def test_encrypt_refuses_when_the_deployment_has_no_key(monkeypatch, secret):
     monkeypatch.setattr(crypto, "mfa_encryption_key", lambda: None)
     with pytest.raises(MfaNotConfiguredException):
         crypto.encrypt_secret(secret)
+
+
+def test_decrypt_returns_none_when_the_key_is_gone(mfa_key, secret, monkeypatch):
+    # A key lost entirely (no file) must fail the TOTP check softly so the verify
+    # route falls through to the recovery-code path, not 5xx every enrolled
+    # account out. Enrolment still refuses, through encrypt_secret.
+    stored = crypto.encrypt_secret(secret)
+    monkeypatch.setattr(crypto, "mfa_encryption_key", lambda: None)
+    assert crypto.decrypt_secret(stored) is None
 
 
 # --- Pending token separation ---
