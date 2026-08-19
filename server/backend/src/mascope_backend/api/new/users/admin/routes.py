@@ -4,6 +4,7 @@ from mascope_backend.api.lib.api_features import api_route
 from mascope_backend.api.new.auth.config import auth_settings
 from mascope_backend.api.new.auth.dependencies import admin_user
 from mascope_backend.api.new.auth.exceptions import ForbiddenAccessException
+from mascope_backend.api.new.auth.mfa.reauth import require_recent_mfa
 from mascope_backend.api.new.users.access_token.service import delete_user_access_tokens
 from mascope_backend.api.new.users.exceptions import InvalidUsernameException
 from mascope_backend.api.new.users.mfa.service import reset_user_mfa
@@ -164,8 +165,17 @@ async def admin_reset_user_mfa(
 
     :param user_id: The account to clear.
     :param user: The currently authenticated admin user.
+    :raises MfaReauthRequiredException: If the admin holds a factor but has not
+        presented a code recently.
     :return: A success message and the updated user.
     """
+    # Clearing another account's factor is a security downgrade, so an admin who
+    # holds a factor of their own must have presented a code recently - a stolen
+    # session alone must not be able to strip a covered account's second factor,
+    # the same reason the token and pairing routes ask for one. No-op for an
+    # admin without a factor, so a deployment that does not use MFA is unchanged.
+    await require_recent_mfa(user)
+
     # Step 1: Ensure target user role is within allowed limits
     target_user_role_id = (await get_user(user_id=user_id)).get("data").role_id
     if target_user_role_id >= auth_settings.ROLE_ACCESS_LEVELS["admin"]:

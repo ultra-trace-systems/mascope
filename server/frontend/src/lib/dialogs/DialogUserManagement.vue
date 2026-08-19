@@ -16,8 +16,17 @@ import { useApp } from '@/stores'
 import { BaseCopyableField } from '@/lib/base'
 import { roles, prettyRoleName, roleLevel, ROLES } from '@/lib/roles'
 
+import DialogMfaReauth from './DialogMfaReauth.vue'
+import { useMfaReauth } from './useMfaReauth'
+
 const app = useApp()
 const confirm = useConfirm()
+
+// Resetting another account's second factor is a step-up action: the server may
+// ask the admin/owner for a current code first. runWithReauth opens the prompt
+// and replays the reset once a code is accepted.
+const { reauthVisible, runWithReauth, onVerified } = useMfaReauth()
+const onReauthVerified = onVerified()
 
 const visible = defineModel('visible')
 
@@ -137,9 +146,10 @@ const user = {
         'screen until they do.',
       accept: async () => {
         // PrimeVue does not await this callback; a rejection would otherwise be
-        // unhandled. The http layer already raised the error notification.
+        // unhandled. A reauth refusal opens the code prompt; any other error was
+        // already surfaced by the http layer.
         try {
-          await app.data.user.resetMfa(data)
+          await runWithReauth(() => app.data.user.resetMfa(data))
         } catch {
           return
         }
@@ -483,6 +493,7 @@ watch(visible, (open) => {
       <Button icon="pi pi-times" label="Close" @click="close" severity="secondary" />
     </menu>
   </Dialog>
+  <DialogMfaReauth v-model:visible="reauthVisible" @verified="onReauthVerified" />
 </template>
 
 <style scoped>
