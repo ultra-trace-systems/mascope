@@ -153,7 +153,10 @@ Per server it skips anything without `/var/run/reboot-required`, refuses to
 proceed while a backup is in flight, reboots, then gates on four checks: the
 backend container reports healthy, the running release is the same one the
 server went down with, the origin API answers `422`, and `mascope prod doctor`
-passes. Any failure stops the batch before the next server is touched.
+passes. Any failure stops the batch before the next server is touched. The
+transcript states a one-line verdict per server - naming the packages that
+requested the reboot - and, after the reboot, the kernel change it activated,
+so a justified reboot is distinguishable from a skip at a glance.
 
 Two things worth knowing before scheduling a window:
 

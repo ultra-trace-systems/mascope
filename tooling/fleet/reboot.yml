@@ -36,12 +36,28 @@
         path: /var/run/reboot-required
       register: reboot_required
 
-    - name: Report servers with nothing pending
-      ansible.builtin.debug:
-        msg: "No reboot pending - skipping {{ inventory_hostname }}."
-      when: not reboot_required.stat.exists
+    - name: Read which packages requested the reboot
+      ansible.builtin.slurp:
+        src: /var/run/reboot-required.pkgs
+      register: reboot_pkgs
+      failed_when: false
 
-    - name: Skip servers with nothing pending
+    # One unconditional verdict per server. With a conditional report task,
+    # ansible prints "skipping:" on exactly the servers that are about to be
+    # rebooted (the report is what gets skipped), which reads inverted in the
+    # transcript. Naming the packages answers "why is this one rebooting?".
+    - name: State the verdict for this server
+      ansible.builtin.debug:
+        msg: >-
+          {{ 'Reboot pending on ' ~ inventory_hostname ~ ' (requested by: '
+             ~ (pending_pkgs | join(', ') | default('not recorded', true))
+             ~ ') - proceeding.'
+             if reboot_required.stat.exists
+             else 'No reboot pending - skipping ' ~ inventory_hostname ~ '.' }}
+      vars:
+        pending_pkgs: "{{ (reboot_pkgs.content | default('') | b64decode).split() | unique | sort }}"
+
+    - name: Take skipped servers out of the run
       ansible.builtin.meta: end_host
       when: not reboot_required.stat.exists
 
@@ -78,6 +94,24 @@
         post_reboot_delay: 20
         msg: Mascope fleet maintenance reboot
       become: true
+
+    - name: Read the kernel the server came back on
+      ansible.builtin.command:
+        cmd: uname -r
+      register: kernel_after
+      changed_when: false
+
+    # ansible_kernel still holds the pre-reboot value (facts were gathered at
+    # play start), so this states what the reboot actually activated.
+    - name: Report the kernel change across the reboot
+      ansible.builtin.debug:
+        msg: >-
+          {{ 'Kernel activated: ' ~ ansible_kernel ~ ' -> ' ~ kernel_now
+             if kernel_now != ansible_kernel
+             else 'Kernel unchanged (' ~ kernel_now
+                  ~ ') - the pending updates were libraries only.' }}
+      vars:
+        kernel_now: "{{ kernel_after.stdout | trim }}"
 
     - name: Wait for the backend container to report healthy
       ansible.builtin.shell:
