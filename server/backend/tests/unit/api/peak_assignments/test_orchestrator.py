@@ -627,7 +627,9 @@ class TestSampleAdmissionControl:
             patch(f"{_MOD}.fetch_sample", AsyncMock(return_value=self._sample())),
             patch(f"{_MOD}._run_sample_assignment", side_effect=_slow_run),
             patch(f"{_MOD}.assignment_claim", _claim_stub()),
-            patch(f"{_MOD}.async_session", side_effect=lambda: _scalar_session(None)),
+            # No durable run in the way: the refusal under test is the
+            # in-flight set, one worker deep.
+            patch(f"{_MOD}.in_flight_run_id", AsyncMock(return_value=None)),
         ):
             first = asyncio.create_task(
                 assign_sample_peaks(
@@ -649,6 +651,41 @@ class TestSampleAdmissionControl:
 
         assert second["status"] == "skipped"
         assert "already running" in second["message"]
+
+    @pytest.mark.asyncio
+    async def test_a_durable_non_terminal_run_is_refused_before_the_engine_starts(self):
+        """The check that lets an import and an in-app assign refuse each other.
+
+        The advisory claim cannot see an import: it belongs to one process, and
+        an import assembles across several requests at a remote client's pace.
+        So admission also asks the database whether this sample already has a
+        run that has not reached an outcome - and here it does, even though the
+        claim was free.
+        """
+        from mascope_backend.api.new.peak_assignments.service import (
+            assign_sample_peaks,
+        )
+
+        engine = AsyncMock()
+        with (
+            patch(f"{_MOD}.fetch_sample", AsyncMock(return_value=self._sample())),
+            patch(f"{_MOD}._run_sample_assignment", engine),
+            patch(f"{_MOD}.assignment_claim", _claim_stub(acquired=True)),
+            patch(
+                f"{_MOD}.in_flight_run_id",
+                AsyncMock(return_value="import-in-progress"),
+            ),
+        ):
+            result = await assign_sample_peaks(
+                sample_item_id="si-1",
+                independent_transaction=True,
+                user_id=None,
+                process_id="proc-1",
+            )
+
+        engine.assert_not_called()
+        assert result["status"] == "skipped"
+        assert result["data"]["peak_assignment_run_id"] == "import-in-progress"
 
     @pytest.mark.asyncio
     async def test_the_claim_is_released_when_a_run_fails(self):
@@ -725,7 +762,8 @@ class TestSampleAdmissionControl:
         The in-flight set only sees this worker; the cross-process claim
         extends the refusal across workers, and the refusal reports the
         in-flight run it can see so the client can follow the run actually
-        producing the ledger.
+        producing the ledger. Which run that is comes from durable run state,
+        so that is the seam this stubs.
         """
         from mascope_backend.api.new.peak_assignments.service import (
             assign_sample_peaks,
@@ -737,8 +775,8 @@ class TestSampleAdmissionControl:
             patch(f"{_MOD}._run_sample_assignment", engine),
             patch(f"{_MOD}.assignment_claim", _claim_stub(acquired=False)),
             patch(
-                f"{_MOD}.async_session",
-                side_effect=lambda: _scalar_session("run-elsewhere"),
+                f"{_MOD}.in_flight_run_id",
+                AsyncMock(return_value="run-elsewhere"),
             ),
         ):
             result = await assign_sample_peaks(
