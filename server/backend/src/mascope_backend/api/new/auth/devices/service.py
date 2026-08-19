@@ -12,7 +12,7 @@ explainable.
 from datetime import datetime as dt
 from datetime import timezone
 
-from sqlalchemy import delete, func, select
+from sqlalchemy import delete, func, select, update
 
 from mascope_backend.api.lib.api_features import api_controller
 from mascope_backend.api.lib.exceptions.api_exceptions import NotFoundException
@@ -186,9 +186,24 @@ async def revoke_device(actor: User, device_id: int) -> dict:
             ):
                 raise ForbiddenAccessException()
 
-        deleted = await session.execute(
-            delete(AccessToken).where(AccessToken.device_id == device_id)
-        )
+        # Delete every token the machine account holds, not only the
+        # device-bound one: the file-converter token it uploads with is not
+        # bound to the device, and must stop working too.
+        if device.machine_user_id is not None:
+            deleted = await session.execute(
+                delete(AccessToken).where(AccessToken.user_id == device.machine_user_id)
+            )
+            # Deactivate the machine account so any credential is refused at the
+            # active-user gate, and so it cannot be mistaken for a live account.
+            await session.execute(
+                update(User)
+                .where(User.id == device.machine_user_id)
+                .values(is_active=False)
+            )
+        else:
+            deleted = await session.execute(
+                delete(AccessToken).where(AccessToken.device_id == device_id)
+            )
         if device.revoked_at is None:
             device.revoked_at = dt.now(timezone.utc)
         await session.commit()

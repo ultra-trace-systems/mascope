@@ -22,6 +22,7 @@ from fastapi.security import OAuth2PasswordRequestForm
 from fastapi_users.authentication import Strategy
 from fastapi_users.router.common import ErrorCode
 
+from mascope_backend.accounts import ACCOUNT_TYPE_MACHINE
 from mascope_backend.api.new.auth import auth_backend_jwt, fastapi_users
 from mascope_backend.api.new.auth.mfa.cookie import set_pending_cookie
 from mascope_backend.api.new.auth.mfa.pending import create_pending_token
@@ -60,7 +61,12 @@ async def login_route(
     """
     user = await user_manager.authenticate(credentials)
 
-    if user is None or not user.is_active:
+    # A machine account is refused with the same response as bad credentials: it
+    # holds no password anyone knows, so authenticate() already fails, but the
+    # explicit check states the rule and keeps it true if that ever changes. A
+    # machine account authenticates only through its service bearer token, never
+    # an interactive session.
+    if user is None or not user.is_active or user.account_type == ACCOUNT_TYPE_MACHINE:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=ErrorCode.LOGIN_BAD_CREDENTIALS,

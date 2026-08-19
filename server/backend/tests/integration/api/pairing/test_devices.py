@@ -13,9 +13,10 @@ import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy import delete, select
 
+from mascope_backend.accounts import ACCOUNT_TYPE_MACHINE
 from mascope_backend.api.new.auth.pairing import service as pairing_service
 from mascope_backend.app.fast import fast
-from mascope_backend.db import AccessToken, AgentDevice
+from mascope_backend.db import AccessToken, AgentDevice, User
 
 
 class FakeRedis:
@@ -54,11 +55,14 @@ async def public_client():
 
 @pytest_asyncio.fixture(autouse=True)
 async def clean_devices(async_session_factory):
-    """Remove file-agent tokens and devices between tests."""
+    """Remove file-agent tokens, machine accounts and devices between tests."""
     yield
     async with async_session_factory() as session:
         await session.execute(
             delete(AccessToken).where(AccessToken.service_name == "file-agent")
+        )
+        await session.execute(
+            delete(User).where(User.account_type == ACCOUNT_TYPE_MACHINE)
         )
         await session.execute(
             delete(AgentDevice).where(AgentDevice.service_name == "file-agent")

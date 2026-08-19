@@ -204,6 +204,14 @@ class User(SQLAlchemyBaseUserTable[int], Base):
     username: Mapped[str] = mapped_column(
         String(length=100), unique=True, nullable=False
     )
+    # Whether this account is a person or an instrument agent's machine identity
+    # ("person" | "machine", see mascope_backend.accounts). A machine account
+    # never signs in interactively, has no usable password, and is exempt from
+    # the human-only password-change and MFA requirements; it is created by
+    # pairing approval and vouched for by a sponsor recorded on its device.
+    account_type: Mapped[str] = mapped_column(
+        String(16), default="person", server_default=text("'person'"), nullable=False
+    )
     role_id: Mapped[Optional[int]] = mapped_column(
         Integer, ForeignKey("role.role_id", ondelete="SET NULL"), nullable=True
     )
@@ -428,7 +436,14 @@ class AgentDevice(Base):
     device_id: Mapped[int] = mapped_column(Integer, primary_key=True)
     name: Mapped[str] = mapped_column(String(100), nullable=False)
     service_name: Mapped[str] = mapped_column(String(50), nullable=False)
+    # The person who approved the pairing and vouches for this machine.
     sponsor_user_id: Mapped[Optional[int]] = mapped_column(
+        ForeignKey("user.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    # The machine account this device authenticates as (the subject of its
+    # tokens). SET NULL rather than CASCADE: deleting the account must not
+    # erase the device row, which is attribution history.
+    machine_user_id: Mapped[Optional[int]] = mapped_column(
         ForeignKey("user.id", ondelete="SET NULL"), nullable=True, index=True
     )
     created_at: Mapped[dt] = mapped_column(
@@ -445,8 +460,10 @@ class AgentDevice(Base):
         TIMESTAMP(timezone=True), nullable=True
     )
 
-    # Relationships
-    sponsor = relationship("User")
+    # Relationships. Two FKs point at user (sponsor, machine account), so each
+    # names its own column.
+    sponsor = relationship("User", foreign_keys=[sponsor_user_id])
+    machine_user = relationship("User", foreign_keys=[machine_user_id])
     # passive_deletes=True: the DB's ON DELETE CASCADE removes the tokens.
     access_tokens = relationship(
         "AccessToken",
