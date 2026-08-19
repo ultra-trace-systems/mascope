@@ -5,12 +5,14 @@ One setting, ``backend.mfa_required_min_role`` in the config TOML, naming the
 lowest role the requirement applies to. Unset means nobody is required to
 enroll, which is the default and what every existing deployment gets.
 
-Imports only the role table and the runtime, so it stays usable from the user
-schemas without pulling the auth package in behind it.
+Imports the role table, the runtime, and ``mfa.secrets`` (which itself imports
+only the runtime), so it stays usable from the user schemas without pulling the
+rest of the auth package in behind it.
 """
 
 from typing import Optional, cast
 
+from mascope_backend.api.new.auth.mfa.secrets import mfa_configured
 from mascope_backend.roles import ROLE_ACCESS_LEVELS
 from mascope_backend.runtime import runtime
 from mascope_runtime.config import BackendConfig
@@ -63,9 +65,41 @@ def _configured_value() -> Optional[str]:
     return getattr(cast(BackendConfig, runtime.config), "mfa_required_min_role", None)
 
 
+def require_key_when_active(required_level: Optional[int], key_present: bool) -> None:
+    """
+    Refuse a policy that requires a factor nobody can enrol.
+
+    A deployment that requires a second factor but has no MFA encryption key
+    would hold every covered account - including every administrator, the only
+    accounts that could reset the others - at an enrolment screen whose "Set up"
+    button can only fail. That is a lockout with no way back inside the
+    application, so it is refused at startup for the same reason a bad role name
+    is: loud and immediate beats a control that looks configured and traps
+    everyone it covers.
+
+    Separate from ``resolve_required_level`` and pure, so the two startup
+    failures can be exercised independently.
+
+    :param required_level: The resolved threshold, or ``None`` when off.
+    :param key_present: Whether the deployment can store seeds.
+    :raises InvalidMfaPolicyError: If the policy is active but no key exists.
+    """
+    if required_level is not None and not key_present:
+        raise InvalidMfaPolicyError(
+            "mfa_required_min_role is set, but this deployment has no MFA "
+            "encryption key, so no account can enrol - every covered account "
+            "would be locked out. Create .runtime/secrets/mfa_encryption_key.txt "
+            "(see docs/hosting.md), or remove the setting."
+        )
+
+
 #: Resolved once at import, so a bad value stops the process at startup rather
 #: than on whichever request first happens to consult it.
 REQUIRED_LEVEL: Optional[int] = resolve_required_level(_configured_value())
+
+#: Checked at import for the same reason: an active policy with no key is a
+#: startup-time misconfiguration, not something to discover at the first enrol.
+require_key_when_active(REQUIRED_LEVEL, mfa_configured())
 
 
 def policy_active() -> bool:

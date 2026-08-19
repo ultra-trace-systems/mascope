@@ -179,3 +179,25 @@ def test_an_unmappable_level_names_nothing_rather_than_guessing(with_policy):
     # confident but wrong role name.
     with_policy(999)
     assert policy.required_min_role_name() is None
+
+
+# --- The key must exist when the policy is active ---
+
+
+def test_an_active_policy_without_a_key_is_refused():
+    # A requirement nobody can satisfy - every covered account, administrators
+    # included, held at an enrolment screen whose "Set up" can only fail - is a
+    # lockout with no way back inside the app, so it is refused at startup rather
+    # than discovered at the first enrol, like a bad role name.
+    with pytest.raises(policy.InvalidMfaPolicyError):
+        policy.require_key_when_active(ADMIN, key_present=False)
+
+
+def test_an_active_policy_with_a_key_is_accepted():
+    policy.require_key_when_active(ADMIN, key_present=True)  # no raise
+
+
+def test_no_key_is_required_while_the_policy_is_off():
+    # The default: a deployment that requires nobody needs no key, and enrolment
+    # is simply refused until an operator adds one.
+    policy.require_key_when_active(None, key_present=False)  # no raise
