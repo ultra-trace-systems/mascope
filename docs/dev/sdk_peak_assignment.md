@@ -1003,14 +1003,32 @@ about at request time.
   `sample_item_id`), no batch status endpoint, samples are assigned sequentially
   behind a concurrency-1 gate, ineligible samples produce no run at all, and
   completion is reported only in the socket notification of the aggregate
-  result. Polling per-sample `list_runs` cannot fix that: the wrapper would have
-  to reproduce the server's eligibility partition to know how many runs to
-  expect, and an all-skipped batch produces zero runs - which is
-  indistinguishable from a refusal. So the batch endpoint's 202 body returns the
-  **admitted per-sample run ids plus the skipped samples and their reasons**,
-  computed by the same partition the task then executes. `wait=True` polls that
-  known id set and returns a per-sample result mapping; skips are reported data,
-  not errors. (Stage-A-only remains the batch default, `run_untargeted=False`.)
+  result. Polling per-sample `list_runs` cannot fix that on its own: the wrapper
+  would have to reproduce the server's eligibility partition to know how many
+  runs to expect, and an all-skipped batch produces zero runs - which is
+  indistinguishable from a refusal.
+
+  So the batch endpoint's 202 body returns **the eligibility partition** - the
+  admitted `sample_item_id`s, and the skipped ones with their reasons - and
+  **not** per-sample run ids. The partition is computable in the request (the
+  batch's samples plus `ineligible_reason` per row, no engine work), which the
+  run ids are not: `_create_run` mints each id inside the engine as that
+  sample's turn arrives, behind a concurrency-1 gate, minutes after the
+  response. Returning ids would mean pre-creating runs in the request, and a
+  pre-created run is a non-terminal run for its sample - so it is refused by
+  §8.2's own admission rule, or duplicated by the engine, and a batch that stops
+  early (`_assign_eligible_samples` deliberately lets `CancelledError`
+  propagate) strands one blocking row per sample it never reached. The
+  partition removes that whole class: nothing is pre-created, so nothing
+  orphans, strands, or forces the admission rule to be widened.
+
+  `wait=True` therefore polls **by sample**, over the admitted set the body
+  named, for a completed run created after the request. The wrapper captures the
+  request time and requires a newer run, so a sample's *previous* run is never
+  mistaken for this batch's; skips are reported data, not errors. The ambiguity
+  this replaces is gone either way, because the body lists the skipped samples
+  explicitly rather than leaving zero runs to be interpreted.
+  (Stage-A-only remains the batch default, `run_untargeted=False`.)
 - **`verify(sample_id, peak_assignment_id, verdict, *, evidence_level=None, note=None)`**
   and **`list_verifications(sample_id)`** - thin wrappers over the shipped
   verification endpoints (§3): append-only verdicts, `evidence_level` required
@@ -1153,13 +1171,18 @@ Each step is its own PR, and each leaves the system shippable:
    the other write tests, and must cover the retention and recalibration
    changes, which are the two places an import could otherwise damage in-app
    data.
-3. **Synchronous assign outcomes** - the 202 body carrying the new run id, 409
-   on admission refusal, 422 on ineligibility, for both the sample and batch
-   endpoints (the batch body also returning the per-sample partition). It also
-   carries the reclamation path for whichever non-terminal status the request
-   creates, and pins the machine-readable shape of all three bodies (§8.3);
-   both are cheap here and expensive once the endpoints exist. Backend only;
-   the app keeps using the socket path it already has.
+3. **Synchronous assign outcomes** - for the per-sample endpoint, the 202 body
+   carrying the new run id, 409 on admission refusal, 422 on ineligibility; for
+   the batch endpoint, the 202 body carrying the **eligibility partition** and a
+   409 derived from the admitted samples' run state, with no run pre-created
+   (§8.3, §8.5.4). It also carries the reclamation path for whichever
+   non-terminal status the request creates, and pins the machine-readable shape
+   of all three bodies (§8.3); both are cheap here and expensive once the
+   endpoints exist. The app's two launchers currently `await` these calls inside
+   a `try/finally` with no `catch`, so a refusal that used to arrive as a
+   success notification becomes a rejected promise: step 3 therefore includes
+   catching 409/422 at those two call sites and reporting the reason inline,
+   rather than being backend-only.
 4. **Run provenance in the API and the app** - `engine` **and `calibration`** on
    `PeakAssignmentRunRecord` and in the SDK's `list_runs` frame; the run
    selector showing engine, version and the calibration badge. Nothing in the
@@ -1177,25 +1200,27 @@ Each step is its own PR, and each leaves the system shippable:
    an import contract test diffs against.
 
 **Start/hold status.** The list above is the order; this is what is safe to pick
-up today. Three of §8.5's entries are decisions pending rather than research
+up today. Two of §8.5's entries are decisions pending rather than research
 questions, and they hold steps.
 
 - **Steps 1-2 proceed.** Step 2 now also carries the import route's body
   allowance. The imported-`provenance` key policy (§8.5.5) is one of its
   validation rules, so that decision has to be made before step 2's validation
   is final - not before step 2 starts.
-- **Step 3 is held** on §8.5.4, the batch write contract: its 202 promises
-  per-sample run ids and its 409 promises a batch-level refusal, and neither has
-  a mechanism until that is settled. The sample half of the step is unaffected.
+- **Step 3 proceeds.** §8.5.4 is settled: the batch endpoint answers with the
+  eligibility partition and derives its 409 from the admitted samples' run
+  state, so both halves of its 202 now have machinery. The step includes the two
+  frontend call sites, which stop treating a refusal as a success.
 - **Step 4 is safe to start** once two amendments land: `calibration` on
   `PeakAssignmentRunRecord` alongside `engine` (without it the calibration badge
   has no data), and the §8.5.5 decision, whose answer determines whether the
   peak inspector needs work in this step or the blob is cleaned at import.
   Nothing else in step 4 blocks.
-- **Step 5 is held**, downstream of step 3 - §8.5.4 is the same knot seen from
-  the SDK side. The retry-safety and error-body plumbing (§8.3) is independent
-  of it and can be built first; the verify half of it is the only item in this
-  revision that silently corrupts stored data, so it should not wait.
+- **Step 5 proceeds** once step 3 lands, since `assign_batch` wraps its
+  partition body and polls by sample against the request timestamp. The
+  retry-safety and error-body plumbing (§8.3) is independent of both and can be
+  built first; the verify half of it is the only item in this revision that
+  silently corrupts stored data, so it should not wait.
 - **Step 6 is held** on §8.5.2 (how far client-side mechanism resolution goes).
   Its other prerequisites are now stated rather than open: the numeric chunk cap
   and the body allowance, the per-column null policy, and the null-`fit_score`
@@ -1269,44 +1294,34 @@ document cites it.
    server recompute `evidence` from `fit_score` rather than trusting the
    payload? Worth revisiting once real imported ledgers exist; not needed for
    the loop.
-4. **The batch write contract.** *(Decision pending - holds steps 3 and 5.)*
-   §8.3 has the batch endpoint answer synchronously with the admitted per-sample
-   run ids plus the skipped samples, and §8.4 step 3 has it 409 on admission
-   refusal. Neither has machinery behind it, and the three sub-questions have to
-   be answered together because each one's answer constrains the next.
+4. **The batch write contract.** *Resolved: the batch answers with the
+   eligibility partition, and derives its refusal from per-sample run state.*
+   The batch endpoint returns no run ids, and creates no runs in the request
+   (§8.3). Both halves follow from one property: the partition is computable in
+   the request, and run ids are not.
 
-   **(a) What supplies the batch-level 409.** There is no batch-level durable
-   state to query: `PeakAssignmentRun`'s only foreign key is `sample_item_id`,
-   and today's batch guard - an in-process in-flight set plus the
-   `assignment_claim` advisory lock - is acquired *inside* the background task,
-   minutes after the 202, so it cannot answer a request. The options: a durable
-   batch claim row, which is schema work and therefore grows step 2 and needs
-   its own reaper and grace; or derive the refusal from the batch's per-sample
-   runs, which has to state what happens when one sample of fifty is in flight
-   individually; or drop the batch 409 and leave batch refusal where it is
-   today, in the socket path, which costs the batch wrapper the honest answer
-   §8.3 was written to give it.
+   **The refusal** is one indexed query over the admitted samples - the same
+   non-terminal-run check §8.2 introduces per sample, as a single `IN` clause -
+   answered before the 202 and naming the samples that hold it up. It needs no
+   batch-level durable state, which is what makes it possible at all:
+   `PeakAssignmentRun`'s only foreign key is `sample_item_id`, and today's batch
+   guard (an in-process in-flight set plus the `assignment_claim` advisory lock)
+   is acquired *inside* the background task, so it cannot answer a request. That
+   guard stays where it is, covering the window between the response and the
+   first run's creation.
 
-   **(b) How a pre-allocated run id reaches the engine.** Run ids are minted one
-   at a time inside the engine as the sequential loop reaches each sample, so
-   returning them in the 202 means creating the rows in the request - and each
-   such row is a non-terminal run for its own sample, which the admission rule
-   then refuses, or, if admission is lifted, the engine mints a second run and
-   orphans the first. The options: give the per-sample entry point an
-   adopt-or-create run id and scope admission to "*another* run for this
-   sample", which touches the same code step 3 is already editing but widens the
-   admission rule everything else depends on; or drop the per-sample-id promise
-   and have `assign_batch` poll the sample set instead, accepting the ambiguity
-   §8.3 rejects (an all-skipped batch produces no runs, which is
-   indistinguishable from a refusal).
+   **No run is pre-created**, which is what dissolves the rest. A pre-created
+   run is a non-terminal run for its own sample, so the admission rule refuses
+   the batch's own samples, or the engine mints a second run and orphans the
+   first; and because the batch loop deliberately lets `CancelledError`
+   propagate, a batch that stops early would strand one blocking row per sample
+   it never reached. Returning the partition instead leaves nothing to orphan,
+   nothing to strand, and no reason to widen the admission rule everything else
+   depends on.
 
-   **(c) Who finalizes pre-created rows when the batch stops early.** The batch
-   loop deliberately lets `CancelledError` propagate so a cancelled batch stops
-   rather than logging N failures - which leaves every unvisited sample's
-   pre-created row non-terminal, blocking that sample for the prune's in-flight
-   grace. Any answer to (b) that pre-creates rows owes a finalizer here; the
-   reclamation choice §8.3 makes for the single-sample path is the natural place
-   to put it, but it has to be stated rather than inherited.
+   The cost is that `wait=True` polls by sample rather than by run id, which
+   §8.3 pins with a request timestamp so a sample's earlier run cannot be
+   mistaken for this batch's.
 5. **Reserved keys in an imported `provenance` blob.** *(Decision pending -
    holds step 2's validation; step 4's scope depends on the answer.)* §8.2 nulls
    the flattened P(correct) scalars for imported runs so the ledger does not
