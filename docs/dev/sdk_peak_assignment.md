@@ -34,9 +34,10 @@ It is an engineering design + phased plan, not a user guide.
 > `peak_assignments` resource (`get` + `list_runs` + `detail`), the
 > `load_assignments` loader, hermetic unit tests plus contract tests (which
 > **skip** until the demo bundle carries a completed run - §7's demo-dataset
-> task is still open, now sequenced as §8.4 step 6), and a tutorial notebook -
-> numbered `11_peak_assignment.ipynb`, not `10`, because `10_batch_stages.ipynb`
-> took that slot after this doc was written. [#1725](https://github.com/ultra-trace-systems/mascope/issues/1725)
+> task is still open, now sequenced as §8.4 step 6), and a tutorial notebook,
+> `10_peak_assignment.ipynb` (shipped briefly as `11`; the retirement of the
+> client-side composition notebook, below, restored the planned slot).
+> [#1725](https://github.com/ultra-trace-systems/mascope/issues/1725)
 > landed first, so `get()` reads the slim ledger rows (with the flattened
 > `p_correct` / `p_correct_provisional` / `corroboration_adducts` scalars) and
 > the open decision in §9.5 resolved to a separate `detail(sample_id,
@@ -83,14 +84,15 @@ Everything the SDK offers today is anchored on the **target list**:
 - `mascope.load_peaks` / `load_peak_timeseries` / `load_peaks_by_stage` - high-level
   loaders over the same targeted peak data.
 
-And the tell-tale one:
-
-- **[`09_composition_assignment.ipynb`](../../libraries/sdk/src/mascope_sdk/examples/09_composition_assignment.ipynb)**
-  hand-rolls untargeted assignment **client-side**: for each unmatched peak it calls
-  `cheminfo.query_by_mz` -> scores each candidate with `matching.match_compounds` ->
-  picks the best -> marks isotope siblings. This is *exactly* Stage B, but with **no
-  arbitration, no plausibility, no tiers, no calibration, and no persistence** - a
-  per-notebook reimplementation of what the engine now does properly server-side.
+And the tell-tale one, the since-retired `09_composition_assignment.ipynb`:
+it hand-rolled untargeted assignment **client-side** - for each unmatched peak
+it called `cheminfo.query_by_mz` -> scored each candidate with
+`matching.match_compounds` -> picked the best -> marked isotope siblings. This
+was *exactly* Stage B, but with **no arbitration, no plausibility, no tiers,
+no calibration, and no persistence** - a per-notebook reimplementation of what
+the engine now does properly server-side. With the read surface shipped, the
+notebook was removed rather than kept as a fallback: two paths to the same
+goal with different scores confuse more than they help.
 
 **Nothing in the SDK references `/api/peak-assignments/*`.**
 
@@ -101,7 +103,7 @@ And the tell-tale one:
 | Capability | Path | Status |
 | --- | --- | --- |
 | Targeted matching against a list | `matching.*`, `get_peaks` target cols | **keep unchanged** |
-| Manual client-side untargeted loop | notebook `09` | **keep** as a self-contained fallback (needs no server run) |
+| Manual client-side untargeted loop | (retired notebook) | **removed** - superseded by the read surface (§6) |
 | Read server-side peak assignments | *new* `peak_assignments.*` | **shipped (v1**, PR [#1865](https://github.com/ultra-trace-systems/mascope/pull/1865)**)** |
 | Trigger assignment runs / verify / fit | *new* write wrappers | **v2** (§8.3) |
 | Publish an externally computed run | *new* `runs/import` + `import_run` | **v2** (§8.2) |
@@ -337,18 +339,16 @@ through the existing `_get`, so the new resource needs **no change to `_base.py`
 
 ## 6. Notebooks (the user-facing parallel story)
 
-- **New `11_peak_assignment.ipynb`** (shipped as `11`, not the `10` first planned -
-  `10_batch_stages.ipynb` took that slot) - read + analyze a persisted run: pick a
+- **`10_peak_assignment.ipynb`** (shipped) - read + analyze a persisted run: pick a
   sample, `peak_assignments.list_runs` -> `peak_assignments.get`, inspect the `run`
   config on `.attrs`, filter by `tier` / `source`, plot a **tier-colored mass-defect**
   map and a **Van Krevelen**, break peaks down by `source` (database vs untargeted),
   and drill into `alternatives` for contested peaks. Assumes a run already exists
   (created in the app) - explicitly noted, since v1 doesn't trigger runs.
-- **Keep `09_composition_assignment.ipynb`** as the **client-side untargeted fallback** -
-  the roll-your-own path that needs no server run. Add a header note pointing to `11`
-  as the persisted, arbitrated, tiered alternative, and framing `09` as "under the hood
-  / offline" so users understand the difference. (No rewrite required, since the SDK
-  doesn't trigger the server engine in v1.)
+- **`09_composition_assignment.ipynb` retired** (reversing this doc's earlier
+  "keep as client-side fallback" call): with the read surface shipped, a second
+  hand-rolled path to the same goal - different scores, no ledger, no tiers -
+  confuses more than it helps. `10_batch_stages.ipynb` moved into the `09` slot.
 - **`01`-`08` unchanged** - they are the targeted workflow that coexists.
 - Update the README notebook table + [`docs/user/sdk/index.md`](../user/sdk/index.md).
 
@@ -725,9 +725,10 @@ v1 - deliberately **read-only and additive** - has shipped (PR
 [#1865](https://github.com/ultra-trace-systems/mascope/pull/1865)): the `peak_assignments`
 resource (`get` + `list_runs` + `detail`, DataFrame with run on `.attrs`, paging
 hidden inside `get()`), the high-level `load_assignments` loader, and the
-read/analyze notebook `11_peak_assignment.ipynb` - with no shared SDK plumbing
-change. Targeted matching and the client-side untargeted notebook stay exactly
-as they are, so the two paradigms run in parallel with no adaptation friction.
+read/analyze notebook `10_peak_assignment.ipynb` - with no shared SDK plumbing
+change. Targeted matching stays exactly as it is, so the two paradigms run in
+parallel with no adaptation friction; the old client-side untargeted notebook
+is retired in favour of the read surface (§6).
 
 v2 (§8) makes the ledger **writable from outside**. Its core is run import:
 `POST .../runs/import` accepts a complete externally computed run - engine name
