@@ -181,6 +181,48 @@ instead of today's unconditional `verify=False`. It also becomes the
 migration target for TOF-agent sites: file-drop ingestion replaces the
 deprecated agent, and no compatibility shim is carried.
 
+### 4.8 Acquisition timestamps: the instrument PC's timezone
+
+A correctness fix riding the same vehicle, because it needs exactly the
+piece this plan adds — an agent that can state facts about the machine it
+runs on.
+
+`sample_file.datetime_utc` is derived from a local timestamp plus a
+guessed UTC offset: `mascope_thermo`'s `RawProcessor` always computes the
+offset from the *converter host's* current clock
+(`libraries/thermo/src/mascope_thermo/processor.py`), and
+`mascope_tofwerk`'s processor does the same whenever the HDF5 file lacks
+its own offset attribute. The guess is wrong whenever the instrument PC's
+timezone differs from the converter host's, or when DST shifted between
+acquisition and conversion — and the current arithmetic cannot even
+represent a west-of-UTC offset correctly (`timedelta.seconds` on a
+negative interval). The `fix_helsinki_datetime_utc` admin scripts exist
+because one variant of this has already bitten. Everything downstream of
+the guess is sound: processors emit `utc_offset`
+(`file_converter/schema.py`), and the backend applies it to produce
+`datetime_utc`.
+
+The fix replaces the guess with a fact:
+
+- The agent sends the instrument PC's IANA timezone (e.g.
+  `Europe/Helsinki`) in the tus creation metadata, next to the filename —
+  a zone identifier rather than a numeric offset, so the server can
+  resolve the offset *at the file's own acquisition timestamp* and stay
+  correct across DST for backlogged or re-uploaded files.
+- The backend carries the zone into the converter's file context, and the
+  processors resolve `utc_offset` from it. Precedence: an offset the file
+  itself carries (the TOF HDF5 attribute, written by the acquisition
+  software) wins; the agent-supplied zone is next; the host-clock guess
+  remains only as the last resort for old agents and manual uploads.
+- `sample_file` records the zone applied and its source (file, agent, or
+  guess), so every timestamp is auditable and recomputable later. The
+  existing fix scripts are the argument for never applying an offset
+  without recording where it came from.
+
+Old agents send nothing and get today's behavior; nothing breaks in the
+transition, and the campaign (section 6) is what retires the guess in
+practice.
+
 ## 5. Build phases
 
 - **A — prerequisite:** land PR #1851 (TOTP). It already places pairing
@@ -188,12 +230,14 @@ deprecated agent, and no compatibility shim is carried.
   pairing routes and dialog this plan extends, so it goes first and this
   work rebases on top.
 - **B — registry and attribution (server only):** 4.1, 4.2, 4.3, the 4.6
-  flag (default off), and the assessment checks from section 9. Safe to
-  release at any time: existing agents are unaffected while the flag is
-  off.
+  flag (default off), the server and converter half of 4.8 (zone accepted,
+  applied, and recorded when present), and the assessment checks from
+  section 9. Safe to release at any time: existing agents are unaffected
+  while the flag is off and send no zone.
 - **C — machine accounts:** 4.4, including converting the token subject for
   device-bound tokens and the workspace-membership addition.
-- **D — new agent:** 4.5 and 4.7, plus the installer and
+- **D — new agent:** 4.5, 4.7, and the agent half of 4.8 (the machine's
+  IANA timezone sent with every upload), plus the installer and
   [docs/user/instruments/index.md](../user/instruments/index.md) rewrite.
 - **E — rollout campaign:** section 6, per deployment.
 - **F — cleanup release:** remove the legacy multipart upload fallback
@@ -272,3 +316,9 @@ upload checks to assert the legacy path is gone.
 - Whether `export-agent` pairing is in use anywhere; its phase-F fate
   follows from that.
 - Whether the token-digest migration lands with phase B or C.
+- Whether the web upload path should pass the browser's timezone as a
+  weaker hint for 4.8, and how its provenance is labeled if so.
+- Whether to ship a zone-aware backfill tool for historical
+  `datetime_utc` rows (the existing fixed-offset admin script, upgraded
+  to resolve a zone per timestamp), applied per deployment where the
+  instrument PC's zone is known.
