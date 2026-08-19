@@ -4,6 +4,25 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
 
 ## [Unreleased]
 
+### Fixed
+
+- Acquisition-drift warnings no longer flood error monitoring with an issue
+  per ppm value. The warning message embedded the observed drift rounded to
+  whole ppm, and monitoring groups events by message - so ongoing drift,
+  whose magnitude wanders file-to-file, split one episode into dozens of
+  single-event issues that buried real errors (a production deployment's
+  TOF instruments minted over fifty issues within a day of updating to
+  1.7.0). The message now names the instrument and the threshold but not
+  the magnitude, grouping an episode into one issue per instrument; the
+  exact per-file magnitude still follows in an INFO log line, in the
+  persisted calibration record, and in the sample browser's badge tooltip.
+- TOF instruments get their own acquisition-drift threshold, 50 ppm, in
+  place of the global 10 ppm. A TOF mass axis legitimately wanders tens of
+  ppm between retunings, so the Orbitrap-grade threshold kept every file of
+  a normally-behaving TOF warning permanently. A sample flagged under the
+  old threshold sheds its drift badge on its next recalibration when its
+  recorded magnitude is within its class threshold.
+
 ## [1.7.1] - 2026.08.18
 
 ### Changed
