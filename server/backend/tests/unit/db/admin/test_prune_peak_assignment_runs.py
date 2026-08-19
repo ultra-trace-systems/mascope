@@ -405,10 +405,14 @@ class TestImportsHaveTheirOwnGrace:
     """
 
     def test_importing_is_not_reclaimed_by_the_failed_grace(self, run_table):
-        """The trap of treating any non-terminal status as terminal."""
+        """The trap of treating any non-terminal status as terminal.
+
+        The import grace is held wide open so the only rule that could select
+        this row is the terminal one - which is exactly what must not reach it.
+        """
         _seed(run_table, [_run("uploading", IMPORTING_STATUS, created=_hours_ago(48))])
 
-        assert _stale_ids(run_table, keep_failed_hours=1) == []
+        assert _stale_ids(run_table, keep_failed_hours=1, keep_importing_hours=96) == []
 
     def test_a_live_upload_is_not_reclaimed(self, run_table):
         """A recent import is a client still sending chunks."""
