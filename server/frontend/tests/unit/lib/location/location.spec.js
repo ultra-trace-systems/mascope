@@ -2,11 +2,21 @@ import { describe, it, expect, beforeEach, vi } from 'vitest'
 import { createPinia, setActivePinia } from 'pinia'
 
 // A mutable holder so the mocked useApp() returns whatever the test sets up.
-const { app } = vi.hoisted(() => ({ app: { current: null } }))
+const { app, flags } = vi.hoisted(() => ({
+  app: { current: null },
+  flags: { peakAssignment: false }
+}))
 vi.mock('@/stores', () => ({ useApp: () => app.current }))
 // The store registers a shared-link import hook on login; stub auth so the
 // real auth store (and its api/runtime imports) stay out of this unit test.
 vi.mock('@/stores/auth', () => ({ useAuth: () => ({ onLogin: vi.fn() }) }))
+// The feature flag gates the visualization restore (the Match tab is retired
+// with peak-centric assignment on); a getter keeps it settable per test.
+vi.mock('@/lib/features', () => ({
+  get peakAssignmentEnabled() {
+    return flags.peakAssignment
+  }
+}))
 
 import { useLocation } from '@/lib/location'
 
@@ -146,6 +156,31 @@ describe('useLocation.apply', () => {
       ionId: 'i2',
       isotopeId: 'iso1'
     })
+  })
+
+  it('skips the visualization restore when peak-centric assignment is on', () => {
+    // The Match tab is retired with the flag on (#1736): a shared link minted
+    // on a flag-off deployment degrades gracefully to the chain focus.
+    flags.peakAssignment = true
+    try {
+      app.current = makeApp()
+      const { data } = app.current
+      data.sample.focusedId = 's1'
+      data.match.collection.focusedId = 'c1'
+      data.match.ion.list = [{ target_ion_id: 'i2' }]
+
+      useLocation().apply({
+        samples: ['s1'],
+        collection: 'c1',
+        ions: ['i1', 'i2'],
+        visualizedIon: 'i2',
+        isotope: 'iso1'
+      })
+
+      expect(data.match.visualized.set).not.toHaveBeenCalled()
+    } finally {
+      flags.peakAssignment = false
+    }
   })
 
   it('does not open a visualization when ions are only selected, not visualized', () => {

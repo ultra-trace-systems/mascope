@@ -358,8 +358,9 @@ Left out of v1 pending the "should the SDK trigger runs?" decision. If taken up:
   composition; the untargeted analogue of `matching.match_compound`, for verifying a
   Stage-B winner. POST but non-mutating, so it could even ship in a read-plus release.
   Relates to [#1004](https://github.com/ultra-trace-systems/mascope/issues/1004) (score an arbitrary
-  peak+composition) and [#1736](https://github.com/ultra-trace-systems/mascope/issues/1736) (Fit
-  view / composition-verify path).
+  peak+composition) and [#1736](https://github.com/ultra-trace-systems/mascope/issues/1736)
+  (retired the Fit view; kept the `fit/aggregate` + `fit/visualize` endpoints as the
+  composition-verify API/SDK surface).
 - **`verify(...)` / `list_verifications(...)`** - the verification-calibration capture
   loop (append-only labels). `list_verifications` is a pure read and can come first.
 - **`recalibrate`** - superuser admin op; out of scope for the SDK.
@@ -395,8 +396,8 @@ collection name),
 assignment, notebook),
 [#1004](https://github.com/ultra-trace-systems/mascope/issues/1004) (score an arbitrary
 peak+composition - the deferred `fit_aggregate`),
-[#1736](https://github.com/ultra-trace-systems/mascope/issues/1736) (Fit view / composition-verify
-path).
+[#1736](https://github.com/ultra-trace-systems/mascope/issues/1736) (retired the Fit view; the
+composition-verify endpoints stay as API/SDK surface).
 
 ---
 

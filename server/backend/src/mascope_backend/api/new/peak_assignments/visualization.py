@@ -1,10 +1,16 @@
-"""Composition-driven Fit visualization (B2).
+"""Composition-driven fit scoring and visualization (B2).
 
-Lets the Fit view verify ANY peak assignment - including untargeted winners
-that carry no ``target_ion_id`` - by scoring an assigned composition's isotope
-envelope against the sample on the fly, instead of reading a persisted target
-ion. The isotope-visualization core is shared with the targeted path via
+Verifies ANY peak assignment - including untargeted winners that carry no
+``target_ion_id`` - by scoring an assigned composition's isotope envelope
+against the sample on the fly, instead of reading a persisted target ion. The
+isotope-visualization core is shared with the targeted path via
 ``emit_isotope_visualization``; only the isotope source differs.
+
+These endpoints (``POST .../fit/aggregate`` and ``.../fit/visualize``) are
+API/SDK surface without an in-app UI: no frontend view calls them. They serve
+HTTP API clients directly and are the designed entry point for SDK-side
+assignment verification (docs/dev/sdk_peak_assignment.md, deferred
+``fit_aggregate``).
 """
 
 from types import SimpleNamespace
@@ -105,10 +111,10 @@ async def aggregate_composition_fit(
     ionization_mechanism_id: str,
     match_params: BaseMatchParams | None = None,
 ) -> dict:
-    """Isotope-table data for an assigned composition (Fit view, untargeted).
+    """Isotope-table data for an assigned composition.
 
-    Mirrors the nested ``{match_ions, match_isotopes}`` shape the Fit view's
-    isotope table consumes, but scores an on-the-fly composition rather than a
+    Mirrors the nested ``{match_ions, match_isotopes}`` shape the targeted
+    ion aggregate returns, but scores an on-the-fly composition rather than a
     persisted target ion.
     """
     sample = await fetch_sample(sample_item_id)
@@ -202,8 +208,8 @@ async def visualize_composition_focus(
 
     The composition equivalent of ``visualize_ion_focus``: builds the matched
     isotope set from the formula + mechanism and hands it to the shared
-    ``emit_isotope_visualization`` core, so untargeted assignments render in the
-    Fit view exactly like targeted ones.
+    ``emit_isotope_visualization`` core, so a composition's spectra and time
+    series arrive over the socket exactly like a targeted ion's.
     """
     sample = await fetch_sample(sample_item_id)
     if match_params is None:

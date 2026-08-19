@@ -19,7 +19,8 @@ socket/notification, join keys — and keeps net-new UI deliberately small.*
 > ([paradigm doc §5.1](peak_assignment_paradigm.md)). **With the flag off the UI is the
 > pre-feature app:** the Sample tab is spectrum-over-(peak ledger | composition search),
 > `PaneBrowserPeak` is mounted again, the spectrum keeps its single grey peak trace, the
-> Targets/Assignments toggle is hidden, the Match tab keeps its name, and the search reports
+> Targets/Assignments toggle is hidden, the Match tab is rendered with its targeted
+> visualization (with the flag on it is retired — see below), and the search reports
 > the legacy match score (the backend omits fit/tier/plausibility when the feature is off).
 > The two layouts keep **separate saved splitter positions** — the legacy layout stays on the
 > original `sample-tab-split` key so an existing user's stored layout survives; the assignment
@@ -88,13 +89,21 @@ carry `plausibility` too; alternatives carry `plausibility` (database ones also 
 inspector (adduct list on hover) and a compact link-icon + count beside `P(correct)` in the ledger, shown
 only when `n_adducts > 1`. (The demo dataset has no multi-adduct co-occurrence, so it stays hidden there.)
 
-**Open threads.** (1) **Tier is fit-based** (`tier_for_score(fit_score, …)`); moving it onto
+**The Fit view is retired with the flag on (settled, #1736).** The legacy Match tab (briefly
+renamed "Fit" under the flag) is not rendered at all when peak-centric assignment is on — its
+spectrum-envelope and time-series duties live in the Sample view — and every navigation into it
+is gated on the same flag: the ion table's "visualize ion match" expander, the batch-overview
+click-through, the shared-link visualization restore, and the tab store's auto-switch. The
+never-wired composition-fit UI entry point (`useMatchVisualized.verifyAssignment`) is removed.
+The B2 endpoints (`POST …/fit/aggregate`, `…/fit/visualize`) are **kept**: they work, and they
+are API/SDK surface without in-app UI — the designed entry point for SDK-side assignment
+verification (see [`sdk_peak_assignment.md`](sdk_peak_assignment.md), deferred `fit_aggregate`).
+With the flag off the Match tab and its targeted visualization behave exactly as before the
+feature landed.
+
+**Open threads.** **Tier is fit-based** (`tier_for_score(fit_score, …)`); moving it onto
 `p_correct` needs universal calibration coverage (untargeted + all instruments) — backend/science, still
 deferred. Both `tier` and `P(correct)` are now shown side-by-side so the discrepancy is inspectable.
-(2) **Retire the Fit view / "Fit" tab** — redundant now that the spectrum envelope + time series live in
-the Sample view; its composition-fit entry point (`useMatchVisualized.verifyAssignment` + the B2
-`/fit/aggregate` and `/fit/visualize` endpoints) is **dead code** on the UI side. The B2 endpoints still
-work and could power an inline verify later.
 
 **Launching a run.** Two launchers share one form
 ([`PeakAssignConfigForm.vue`](../../server/frontend/src/lib/dialogs/PeakAssignConfigForm.vue)):
@@ -415,15 +424,14 @@ Add a **"Verify fit"** action (assignments browser row / inspector) that calls
 `app.data.match.visualized.set({ assignment })` and switches to the Fit tab. The chart components need
 no change — B2 returns the same shapes.
 
-**Status: backend implemented, UI wiring not built.** `api/new/peak_assignments/visualization.py`
-holds the non-persisting `aggregate_composition_fit` (B2a) and `visualize_composition_focus` (B2b);
-the visualization core was extracted from `visualize_ion_focus` into the shared
-`emit_isotope_visualization`. Routes: `POST /api/peak-assignments/sample/{id}/fit/aggregate` and
-`.../fit/visualize`. On the frontend, `useMatchVisualized.verifyAssignment(assignment)` calls both
-(aggregate → isotope table, visualize → socket spectra/timeseries) using the composition path for
-*every* assignment (database and untargeted alike) — but **no UI control invokes it yet**: there is
-no "Verify fit" button (see the Current state section and Open threads — the Fit view is slated for
-retirement, so the wiring stopped at the store function). Verified live at the API level: aggregate
+**Status: backend implemented; the UI wiring is settled as retired (#1736).**
+`api/new/peak_assignments/visualization.py` holds the non-persisting `aggregate_composition_fit`
+(B2a) and `visualize_composition_focus` (B2b); the visualization core was extracted from
+`visualize_ion_focus` into the shared `emit_isotope_visualization`. Routes:
+`POST /api/peak-assignments/sample/{id}/fit/aggregate` and `.../fit/visualize`. The frontend
+wiring stopped at a store function (`useMatchVisualized.verifyAssignment`) that no UI control
+ever invoked; it was removed when the Fit view's retirement was settled (see Current state).
+The endpoints remain API/SDK surface without in-app UI. Verified live at the API level: aggregate
 returns the nested match_ions/match_isotopes for an untargeted formula; visualize emits both socket
 events without error.
 
@@ -477,9 +485,9 @@ below records the original plan items plus the consolidation that followed.
 | **F3** peak inspector | ✅ done, since trimmed | `PanePeakAssign` is a compact card (no header, no Verify-fit); Re-search is a bottom-pane takeover. |
 | **F4** annotated spectrum | ✅ done | Per-tier traces + theoretical envelope; instrument-aware focus zoom. |
 | **F5** assignments browser + config dialog | ✅ done | + auto-select latest run, P(correct) column, unfold-isotopologues toggle. The config form was later extracted to `dialogs/PeakAssignConfigForm.vue` and shared with the batch launcher (below). |
-| **F6** Fit-view rename + composition wiring | ✅ done, now **superseded** | Renamed + wired to B2, but the Fit view is redundant post-consolidation and slated for removal. |
+| **F6** Fit-view rename + composition wiring | ✅ done, then **retired** (#1736) | Renamed + wired to B2, but the Fit view was redundant post-consolidation: with the flag on the tab is no longer rendered and `verifyAssignment` is removed; with the flag off the legacy Match tab is untouched. |
 | **B1** `peak_assignment_reload` event | ✅ done | `success_reload=[("peak_assignment","sample_batch_id")]`. |
-| **B2** composition Fit visualization | ✅ done | `visualization.py`: `aggregate_composition_fit` + `visualize_composition_focus`; currently unused by the UI. |
+| **B2** composition Fit visualization | ✅ done | `visualization.py`: `aggregate_composition_fit` + `visualize_composition_focus`; kept as API/SDK surface without in-app UI (#1736). |
 | **Consolidation** onto the Sample view | ✅ done | Time series via REST, 3-pane layout, Re-search takeover, inspector trim, ledger unfold, sample-switch race fix. |
 
 **Verified live** against the isolated instance stack (`mascope dev run backend frontend --instance
