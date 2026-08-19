@@ -852,19 +852,21 @@ def test_grace_defaults_hold_the_intended_order():
 
 
 class TestReaperLeavesImportsAlone:
-    """The reaper's premise covers 'running' and does not extend to 'importing'.
+    """The reaper's premise covers the states a server task owns, and no others.
 
-    It fails every 'running' row at startup, correctly, because startup happens
-    before any worker is spawned so nothing can legitimately be running. An
-    import is not running - it is a client sending chunks at its own pace, with
-    no server task attached - so a routine deploy under the broader reading
-    would fail a live upload, and the client's next chunk would land on a
-    'failed' run. The statement is executed for real here rather than compared
-    as text, so widening the filter later fails this test.
+    It fails every 'pending' and 'running' row at startup, correctly, because
+    startup happens before any worker is spawned: a run waiting for a background
+    task that will never come is as stranded as one whose engine died mid-way,
+    and both block their sample against new work until reclaimed. An import is
+    neither - it is a client sending chunks at its own pace, with no server task
+    attached - so a routine deploy under a "not terminal" reading would fail a
+    live upload, and the client's next chunk would land on a 'failed' run. The
+    statement is executed for real here rather than compared as text, so widening
+    the filter to 'importing' fails this test.
     """
 
     @pytest.mark.asyncio
-    async def test_only_running_rows_are_failed(self, run_table, monkeypatch):
+    async def test_only_task_owned_rows_are_failed(self, run_table, monkeypatch):
         from mascope_backend.db.admin.peak_assignments import reset_running_runs
 
         _seed(
@@ -908,8 +910,9 @@ class TestReaperLeavesImportsAlone:
             )
 
         assert statuses["computing"] == "failed"
+        # A run the assign request created but no task ever adopted.
+        assert statuses["queued"] == "failed"
         assert statuses["uploading"] == IMPORTING_STATUS
-        assert statuses["queued"] == "pending"
         assert statuses["done"] == "completed"
 
 

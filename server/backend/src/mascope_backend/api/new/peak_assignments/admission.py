@@ -35,6 +35,7 @@ crash-safe within a request, and only run state survives one ending.
 """
 
 import asyncio
+from collections.abc import Sequence
 from contextlib import asynccontextmanager
 from typing import AsyncIterator
 
@@ -55,9 +56,11 @@ _ASSIGNMENT_CLAIM_NAMESPACE = "mascope_peak_assignment"
 # Refusing on a status is only safe while that status has a way back out, or a
 # row stranded by a crash would block its sample forever. Each has two:
 #
-# - 'pending' / 'running' belong to a server task. The startup reaper fails
-#   every 'running' row (nothing can legitimately be running before workers
-#   spawn), and retention sweeps both after `keep_running_hours`.
+# - 'pending' / 'running' belong to a server task: 'pending' from the request
+#   that created the run until the task adopts it, 'running' for as long as the
+#   engine works. The startup reaper fails both (nothing can legitimately be
+#   held by a task before workers spawn), and retention sweeps them after
+#   `keep_running_hours`.
 # - 'importing' belongs to a client assembling a ledger across requests, so the
 #   reaper deliberately cannot touch it - a deploy would kill a live upload.
 #   Its releases are the abandon endpoint, for a client that knows the run id or
@@ -68,7 +71,11 @@ _ASSIGNMENT_CLAIM_NAMESPACE = "mascope_peak_assignment"
 NON_TERMINAL_RUN_STATUSES = ("pending", "running", "importing")
 
 
-async def in_flight_run_id(sample_item_id: str, session=None) -> str | None:
+async def in_flight_run_id(
+    sample_item_id: str,
+    session=None,
+    exclude_run_id: str | None = None,
+) -> str | None:
     """The id of a non-terminal run for this sample, if one exists.
 
     Durable admission: unlike the advisory claim, this outlives the request that
@@ -81,14 +88,21 @@ async def in_flight_run_id(sample_item_id: str, session=None) -> str | None:
 
     :param sample_item_id: The sample to test.
     :param session: An open session to reuse; one is opened when omitted.
+    :param exclude_run_id: A run to ignore, for a caller that already owns one.
+        The assign endpoint creates its run in the request and hands it to the
+        background task, so without this the task would refuse itself: the
+        question it has to ask is whether *another* run holds the sample.
     :return: The newest non-terminal run's id, or None when the sample is free.
     """
+    filters = [
+        PeakAssignmentRun.sample_item_id == sample_item_id,
+        PeakAssignmentRun.status.in_(NON_TERMINAL_RUN_STATUSES),
+    ]
+    if exclude_run_id is not None:
+        filters.append(PeakAssignmentRun.peak_assignment_run_id != exclude_run_id)
     query = (
         select(PeakAssignmentRun.peak_assignment_run_id)
-        .where(
-            PeakAssignmentRun.sample_item_id == sample_item_id,
-            PeakAssignmentRun.status.in_(NON_TERMINAL_RUN_STATUSES),
-        )
+        .where(*filters)
         .order_by(PeakAssignmentRun.peak_assignment_run_utc_created.desc().nullslast())
         .limit(1)
     )
@@ -96,6 +110,45 @@ async def in_flight_run_id(sample_item_id: str, session=None) -> str | None:
         return await session.scalar(query)
     async with async_session() as own_session:
         return await own_session.scalar(query)
+
+
+async def in_flight_run_ids(
+    sample_item_ids: Sequence[str],
+    session=None,
+) -> dict[str, str]:
+    """The same durable admission question, asked about many samples at once.
+
+    A batch has to answer it for every sample it is about to assign, and doing
+    that one query per sample would put an unbounded serial round trip in front
+    of the response. One ``IN`` clause over the indexed ``sample_item_id`` column
+    answers the whole set instead.
+
+    :param sample_item_ids: The samples to test.
+    :param session: An open session to reuse; one is opened when omitted.
+    :return: Blocked samples mapped to the run that holds them; samples that are
+        free are absent from the mapping, so an empty result means "all clear".
+    """
+    if not sample_item_ids:
+        return {}
+    query = (
+        select(
+            PeakAssignmentRun.sample_item_id,
+            PeakAssignmentRun.peak_assignment_run_id,
+        )
+        .where(
+            PeakAssignmentRun.sample_item_id.in_(tuple(sample_item_ids)),
+            PeakAssignmentRun.status.in_(NON_TERMINAL_RUN_STATUSES),
+        )
+        # Oldest first, so the newest run wins the per-sample slot on insert and
+        # the reported id matches what the single-sample query would name.
+        .order_by(PeakAssignmentRun.peak_assignment_run_utc_created.asc().nullsfirst())
+    )
+    if session is not None:
+        rows = (await session.execute(query)).all()
+    else:
+        async with async_session() as own_session:
+            rows = (await own_session.execute(query)).all()
+    return {sample_item_id: run_id for sample_item_id, run_id in rows}
 
 
 @asynccontextmanager

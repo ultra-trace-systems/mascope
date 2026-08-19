@@ -79,16 +79,23 @@ export const usePeakAssignmentRun = defineStore('app.data.peakAssignment.run', (
     { immediate: true }
   )
 
-  // Launch a new assignment run. Completion arrives via the
-  // peak_assignment_reload event (see events above); the progress bar is driven
-  // by the assign_sample_peaks user notification (PaneProgress) meanwhile.
+  // Launch a new assignment run. Resolves with the created run's id; completion
+  // arrives via the peak_assignment_reload event (see events above), and the
+  // progress bar is driven by the assign_sample_peaks user notification
+  // (PaneProgress) meanwhile.
+  //
+  // The endpoint decides the outcome before it answers, so a sample that is
+  // already being assigned (409) or cannot usefully be assigned (422) rejects
+  // with the server's reason. `errors: 'inline'` keeps the generic failure toast
+  // off it - the launcher shows that reason where the user asked for the run.
   const assign = (sampleItemId, config = null) =>
     api.http.post(
       `/peak-assignments/sample/${sampleItemId}/assign`,
       { config },
       {
         use: 'process',
-        type: 'assign_sample_peaks'
+        type: 'assign_sample_peaks',
+        errors: 'inline'
       }
     )
 

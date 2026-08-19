@@ -12,11 +12,20 @@ from mascope_backend.api.controllers.sample.lib.sample_batches_fetch import (
 )
 from mascope_backend.api.controllers.samples.lib.samples_fetch import fetch_sample
 from mascope_backend.api.lib.api_features import api_route
+from mascope_backend.api.lib.exceptions.api_exceptions import ApiException
 from mascope_backend.api.new.auth.dependencies import (
     current_active_user,
     current_superuser,
 )
-from mascope_backend.api.new.peak_assignments.batch import assign_sample_batch_peaks
+from mascope_backend.api.new.peak_assignments.admission import (
+    assignment_claim,
+    in_flight_run_id,
+    in_flight_run_ids,
+)
+from mascope_backend.api.new.peak_assignments.batch import (
+    assign_sample_batch_peaks,
+    partition_batch_samples,
+)
 from mascope_backend.api.new.peak_assignments.config import (
     MAX_IMPORT_BODY_BYTES,
     MAX_IMPORT_ROWS_PER_REQUEST,
@@ -27,8 +36,10 @@ from mascope_backend.api.new.peak_assignments.import_service import (
     import_assignment_run,
 )
 from mascope_backend.api.new.peak_assignments.schemas import (
+    AssignBatchResponse,
     AssignmentVerificationsResponse,
     AssignSamplePeaksBody,
+    AssignSampleResponse,
     CompositionFitBody,
     CompositionVisualizeBody,
     ImportRunBody,
@@ -42,11 +53,13 @@ from mascope_backend.api.new.peak_assignments.schemas import (
 )
 from mascope_backend.api.new.peak_assignments.service import (
     assign_sample_peaks,
+    create_pending_run,
     create_verification,
     get_peak_assignment_detail,
     get_peak_assignment_runs,
     get_peak_assignments,
     get_verifications,
+    ineligible_reason,
     recalibrate_instrument,
 )
 from mascope_backend.api.new.peak_assignments.visualization import (
@@ -293,6 +306,7 @@ async def recalibrate_instrument_route(
 
 @peak_assignments_router.post(
     "/sample/{sample_item_id}/assign",
+    response_model=AssignSampleResponse,
     dependencies=[Depends(require_peak_assignment_enabled)],
 )
 @api_route(status_code=202, token_access=True)
@@ -302,7 +316,7 @@ async def assign_sample_peaks_route(
     body: AssignSamplePeaksBody | None = None,
     user: User = Depends(current_active_user),
     membership=Depends(require_sample_role("editor")),
-) -> dict:
+) -> AssignSampleResponse:
     """
     Launch a peak assignment run for a sample.
 
@@ -311,36 +325,88 @@ async def assign_sample_peaks_route(
     remainder (Stage B, configurable). Results are persisted as a new
     PeakAssignmentRun and readable via the sibling GET endpoints.
 
-    Returns 403 when peak assignment is not enabled for this environment.
+    **The outcome is decided here, not behind the response.** Eligibility and
+    admission are both synchronous questions - a pure function of the sample row
+    and one indexed query - so answering 202 unconditionally and settling them
+    inside the background task would leave a headless client with nothing to read
+    but a socket notification it cannot receive. Instead:
+
+    - **202** carries the id of the run this request created. The run exists
+      before the response does, so a client polls one known run rather than
+      diffing run sets to guess which of them is its own - and the engine adopts
+      that run instead of minting a second one.
+    - **409** when another run for this sample is still in flight, naming it, so
+      a client can follow the run that is actually producing the ledger. (A race
+      with another worker's creation can leave the id absent.)
+    - **422** when the sample cannot usefully be assigned, carrying the reason.
+    - **403** when peak assignment is not enabled for this environment.
 
     :param sample_item_id: The unique identifier of the sample.
     :param body: Optional run configuration overrides.
     :param user: The current authenticated user. Requires workspace editor role.
     :param membership: Workspace membership with editor role on the sample.
-    :return: Acknowledgement message with the background process id.
+    :return: The created run's id and status.
     """
     # Verify the existence of the sample item before queueing the task
     sample = await fetch_sample(sample_item_id)
+
+    if (reason := ineligible_reason(sample)) is not None:
+        raise ApiException(
+            f"Peak assignment is not possible for sample "
+            f"'{sample.sample_item_name}': {reason}.",
+            {"sample_item_id": sample_item_id, "reason": reason},
+            422,
+        )
+
+    config = body.config if body else None
+    # Under the claim, so the admission read and the run creation that follows it
+    # cannot interleave with another worker's pair. The run then holds the sample
+    # durably from this commit onwards, which is what covers the window between
+    # the response and the background task starting.
+    async with assignment_claim("sample", sample_item_id) as acquired:
+        blocking_run_id = await in_flight_run_id(sample_item_id)
+        if not acquired or blocking_run_id is not None:
+            raise ApiException(
+                f"Peak assignment is already running for sample "
+                f"'{sample.sample_item_name}'.",
+                {
+                    "sample_item_id": sample_item_id,
+                    "peak_assignment_run_id": blocking_run_id,
+                },
+                409,
+            )
+        run = await create_pending_run(sample_item_id, config)
 
     process_id = gen_id(8)
     background_tasks.add_task(
         assign_sample_peaks,
         sample_item_id=sample_item_id,
-        config=body.config if body else None,
+        config=config,
         independent_transaction=True,
         user_id=user.id,
         process_id=process_id,
+        run_id=run.peak_assignment_run_id,
     )
     return {
+        "status": "success",
         "message": (
             f"Assigning peaks for sample '{sample.sample_item_name}', please wait."
         ),
+        "results": 1,
+        "data": [
+            {
+                "sample_item_id": sample_item_id,
+                "peak_assignment_run_id": run.peak_assignment_run_id,
+                "run_status": run.status,
+            }
+        ],
         "process_id": process_id,
     }
 
 
 @peak_assignments_router.post(
     "/batch/{sample_batch_id}/assign",
+    response_model=AssignBatchResponse,
     dependencies=[Depends(require_peak_assignment_enabled)],
 )
 @api_route(status_code=202, token_access=True)
@@ -350,7 +416,7 @@ async def assign_sample_batch_peaks_route(
     body: AssignSamplePeaksBody | None = None,
     user: User = Depends(current_active_user),
     membership=Depends(require_batch_role("editor")),
-) -> dict:
+) -> AssignBatchResponse:
     """
     Launch a peak assignment run for every sample in a sample batch.
 
@@ -361,20 +427,58 @@ async def assign_sample_batch_peaks_route(
 
     Because a batch multiplies per-sample cost by the number of samples, it
     defaults to **Stage A only**; pass a config with ``run_untargeted: true`` to
-    include the untargeted stage. Blank samples and samples whose m/z
-    calibration is unverified are skipped. A batch already being assigned by
-    this worker is refused rather than queued.
+    include the untargeted stage.
 
-    Returns 403 when peak assignment is not enabled for this environment.
+    **What the 202 carries is the eligibility partition, not run ids.** A batch
+    has no run row of its own, and an all-skipped batch produces none at all - so
+    without the partition a client cannot tell "nothing to do" from "refused",
+    and cannot know how many runs to wait for. The partition is cheap here (the
+    batch's samples plus a pure function of each row) and is handed to the
+    background task, so what is reported is what executes.
+
+    Runs are deliberately *not* pre-created. A run exists only from the moment
+    the batch reaches its sample: created up front it would be a non-terminal run
+    for a sample nothing is working on, which durable admission would then refuse
+    - and a batch that stops early (cancellation propagates out of the loop)
+    would strand one blocking row per sample it never reached.
+
+    - **202** with the admitted sample ids and the skipped ones with reasons.
+    - **409** when a run is already in flight for any admitted sample, naming
+      those samples and the runs holding them.
+    - **403** when peak assignment is not enabled for this environment.
+
+    A batch already being assigned by this worker is refused by the task's own
+    in-flight set and advisory claim, which guard the window between this
+    response and the first run's creation.
 
     :param sample_batch_id: The unique identifier of the sample batch.
     :param body: Optional run configuration overrides applied to every sample.
     :param user: The current authenticated user. Requires workspace editor role.
     :param membership: Workspace membership with editor role on the batch.
-    :return: Acknowledgement message with the background process id.
+    :return: The samples that will be assigned, and the ones that will be skipped.
     """
     # Verify the existence of the sample batch before queueing the task
     sample_batch = await fetch_sample_batch(sample_batch_id)
+
+    partition = await partition_batch_samples(sample_batch_id)
+
+    if blocked := await in_flight_run_ids(partition.admitted):
+        raise ApiException(
+            f"Peak assignment is already running for "
+            f"{len(blocked)} sample{'s' if len(blocked) != 1 else ''} of sample "
+            f"batch '{sample_batch.sample_batch_name}'.",
+            {
+                "sample_batch_id": sample_batch_id,
+                "blocked": [
+                    {
+                        "sample_item_id": sample_item_id,
+                        "peak_assignment_run_id": run_id,
+                    }
+                    for sample_item_id, run_id in blocked.items()
+                ],
+            },
+            409,
+        )
 
     process_id = gen_id(8)
     background_tasks.add_task(
@@ -384,12 +488,24 @@ async def assign_sample_batch_peaks_route(
         independent_transaction=True,
         user_id=user.id,
         process_id=process_id,
+        partition=partition,
     )
     return {
+        "status": "success",
         "message": (
-            f"Assigning peaks for sample batch '{sample_batch.sample_batch_name}', "
-            "please wait."
+            f"Assigning peaks for {len(partition.admitted)} sample"
+            f"{'s' if len(partition.admitted) != 1 else ''} of sample batch "
+            f"'{sample_batch.sample_batch_name}' "
+            f"({len(partition.skipped)} skipped), please wait."
         ),
+        "results": 1,
+        "data": [
+            {
+                "sample_batch_id": sample_batch_id,
+                "admitted": list(partition.admitted),
+                "skipped": partition.skipped_payload(),
+            }
+        ],
         "process_id": process_id,
     }
 

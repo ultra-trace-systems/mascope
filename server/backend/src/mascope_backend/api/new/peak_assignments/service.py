@@ -970,10 +970,26 @@ def _load_sample_peaks(sample: Sample) -> pd.DataFrame:
     return peaks_df
 
 
+#: The state a run is created in when the request that asked for it answers
+#: before the engine starts. It is a durable "this sample is taken" marker from
+#: the moment the caller learns the run id, which is what lets the 202 name a run
+#: a client can poll and what stops a second request slipping in behind it.
+#:
+#: In flight but not yet executing, so it is reclaimed exactly like 'running':
+#: the startup reaper fails both (nothing can legitimately be held by a task
+#: before workers spawn) and retention sweeps both under `keep_running_hours`.
+PENDING_RUN_STATUS = "pending"
+
+#: The state the engine holds a run in while it works.
+RUNNING_RUN_STATUS = "running"
+
+
 async def _create_run(
-    sample_item_id: str, config: PeakAssignmentConfig
+    sample_item_id: str,
+    config: PeakAssignmentConfig,
+    status: str = RUNNING_RUN_STATUS,
 ) -> PeakAssignmentRun:
-    """Create and commit a PeakAssignmentRun row in 'running' state."""
+    """Create and commit a PeakAssignmentRun row in a non-terminal state."""
     run = PeakAssignmentRun(
         peak_assignment_run_id=gen_id(16),
         sample_item_id=sample_item_id,
@@ -981,7 +997,7 @@ async def _create_run(
         # the retention budget and calibration pool can tell them apart.
         engine=IN_APP_ENGINE,
         engine_version=PEAK_ASSIGNMENT_ENGINE_VERSION,
-        status="running",
+        status=status,
         config=config.model_dump(),
         # The same thresholds an import has to declare, recorded here too so a
         # tier means the same thing on either engine's run without reading into
@@ -995,6 +1011,53 @@ async def _create_run(
     async with async_session() as session:
         session.add(run)
         await session.commit()
+    return run
+
+
+async def create_pending_run(
+    sample_item_id: str, config: PeakAssignmentConfig | None = None
+) -> PeakAssignmentRun:
+    """Create the run a request is about to hand to the assignment engine.
+
+    The assign endpoint answers with the run id, so the row has to exist before
+    the response does. Creating it here also closes the window the response would
+    otherwise open: from this commit on, durable admission sees the sample as
+    taken, so a second request is refused rather than racing the background task
+    that has not started yet.
+
+    :param sample_item_id: The sample the run will assign.
+    :param config: The run configuration; engine defaults when omitted.
+    :return: The created run, in :data:`PENDING_RUN_STATUS`.
+    """
+    return await _create_run(
+        sample_item_id,
+        config or PeakAssignmentConfig(),
+        status=PENDING_RUN_STATUS,
+    )
+
+
+async def _adopt_run(peak_assignment_run_id: str) -> PeakAssignmentRun:
+    """Take over a run created by the request, and mark it running.
+
+    The status is what a user reads in the run selector, so it has to say which
+    of the two things is true: waiting for a worker, or being computed. The
+    reclamation path is the same either way.
+
+    :param peak_assignment_run_id: The run the caller created and handed over.
+    :return: The adopted run.
+    :raises NotFoundException: When the run is gone - reclaimed by retention, or
+        deleted with its sample - which must not be answered by silently minting
+        a replacement the caller could never have learned the id of.
+    """
+    async with async_session() as session:
+        run = await session.get(PeakAssignmentRun, peak_assignment_run_id)
+        if run is None:
+            raise NotFoundException(
+                f"Peak assignment run '{peak_assignment_run_id}' no longer exists"
+            )
+        run.status = RUNNING_RUN_STATUS
+        await session.commit()
+        session.expunge(run)
     return run
 
 
@@ -1039,6 +1102,7 @@ async def assign_sample_peaks(
     user_id: int | None = None,
     process_id: str | None = None,
     parent_id: str | None = None,
+    run_id: str | None = None,
 ) -> dict:
     """
     Run the two-stage peak assignment engine over a sample.
@@ -1062,35 +1126,49 @@ async def assign_sample_peaks(
     :param user_id: Current user triggered operation (for user notifications)
     :param process_id: Process identifier for progress tracking
     :param parent_id: Parent process identifier
+    :param run_id: A run the caller already created and is handing over, so the
+        response it has already sent names the run this executes. Admission then
+        asks whether *another* run holds the sample - the handed-over one is
+        itself non-terminal, and would otherwise refuse its own engine.
     :return: A dictionary with run summary and status message
     """
     # Claimed before the first await: checking and adding either side of one would
     # let two concurrent requests both pass the check.
     if sample_item_id in _sample_assignments_in_flight:
-        return await _already_running_result(sample_item_id)
+        return await _already_running_result(sample_item_id, exclude_run_id=run_id)
     _sample_assignments_in_flight.add(sample_item_id)
     try:
         async with assignment_claim("sample", sample_item_id) as acquired:
             if not acquired:
                 # Another worker holds the claim - the same refusal, discovered
                 # one process further out.
-                return await _already_running_result(sample_item_id)
+                return await _already_running_result(
+                    sample_item_id, exclude_run_id=run_id
+                )
             # Checked under the claim so the read and the run creation that
             # follows it cannot interleave with another worker's pair.
-            if await in_flight_run_id(sample_item_id) is not None:
-                return await _already_running_result(sample_item_id)
+            if (
+                await in_flight_run_id(sample_item_id, exclude_run_id=run_id)
+                is not None
+            ):
+                return await _already_running_result(
+                    sample_item_id, exclude_run_id=run_id
+                )
             return await _run_sample_assignment(
                 sample_item_id=sample_item_id,
                 config=config,
                 user_id=user_id,
                 process_id=process_id,
                 parent_id=parent_id,
+                run_id=run_id,
             )
     finally:
         _sample_assignments_in_flight.discard(sample_item_id)
 
 
-async def _already_running_result(sample_item_id: str) -> dict:
+async def _already_running_result(
+    sample_item_id: str, exclude_run_id: str | None = None
+) -> dict:
     """Refusal payload for a sample whose assignment is already in flight.
 
     Reports the in-flight run when one is visible, so a client can follow the
@@ -1098,9 +1176,14 @@ async def _already_running_result(sample_item_id: str) -> dict:
     (A cross-worker refusal can race the other worker's run creation, so the
     id is best-effort.) An import assembling for this sample counts as in
     flight and is named here like any other run.
+
+    :param sample_item_id: The sample that was refused.
+    :param exclude_run_id: A run the caller owns, which is never what blocks it.
     """
     sample = await fetch_sample(sample_item_id)
-    blocking_run_id = await in_flight_run_id(sample_item_id)
+    blocking_run_id = await in_flight_run_id(
+        sample_item_id, exclude_run_id=exclude_run_id
+    )
     message = (
         f"Peak assignment is already running for sample '{sample.sample_item_name}'."
     )
@@ -1118,12 +1201,13 @@ async def _run_sample_assignment(
     user_id: int | None = None,
     process_id: str | None = None,
     parent_id: str | None = None,
+    run_id: str | None = None,
 ) -> dict:
     """
     Run the two-stage peak assignment engine over a sample.
 
     Every observed peak of the sample gets exactly one PeakAssignment row in
-    a new PeakAssignmentRun: Stage A assigns from the known target library,
+    a PeakAssignmentRun: Stage A assigns from the known target library,
     Stage B (optional) assigns the remainder via untargeted composition
     search, and leftover peaks are persisted as unassigned.
 
@@ -1133,6 +1217,10 @@ async def _run_sample_assignment(
     :param user_id: Current user triggered operation (for user notifications)
     :param process_id: Process identifier for progress tracking
     :param parent_id: Parent process identifier
+    :param run_id: A run created by the caller to adopt instead of minting one,
+        so a caller that already answered with a run id executes *that* run. The
+        callers with nobody to answer (auto-processing on sample arrival, the
+        batch loop) leave it unset and get a run of their own.
     :return: A dictionary with run summary and status message
     """
     sample = await fetch_sample(sample_item_id)
@@ -1143,6 +1231,13 @@ async def _run_sample_assignment(
         # made the skip payload unreachable and its _notification_data - the
         # reload the decorator's success path delivers - silently lost. The
         # batch path reports its skips through returns for the same reason.
+        #
+        # The per-sample endpoint answers 422 on this before creating a run, so
+        # an adopted run reaching here means the sample stopped being eligible in
+        # between. Finalize it: leaving an adopted run non-terminal would block
+        # its sample against every later run until the next startup.
+        if run_id is not None:
+            await _finalize_run(run_id, "failed", error=reason)
         message = (
             f"Peak assignment skipped for sample '{sample.sample_item_name}': {reason}."
         )
@@ -1156,17 +1251,23 @@ async def _run_sample_assignment(
             },
         }
 
-    match_params = await default_match_params(sample_item_id)
-    run = await _create_run(sample_item_id, config)
+    run = (
+        await _adopt_run(run_id)
+        if run_id is not None
+        else await _create_run(sample_item_id, config)
+    )
 
-    # Everything after run creation runs under the failure finalizer: an
-    # exception anywhere past this point must mark the run 'failed', or it
-    # stays 'running' until the startup reaper.
+    # Everything from here runs under the failure finalizer: an exception past
+    # this point must mark the run 'failed', or it stays non-terminal - and
+    # therefore blocks its sample - until the startup reaper. An adopted run
+    # exists before this function is even called, so every fallible step it needs
+    # belongs inside, not in front of, the try.
     try:
         runtime.logger.info(
             f"Starting peak assignment run '{run.peak_assignment_run_id}' "
             f"for sample '{sample.sample_item_name}'"
         )
+        match_params = await default_match_params(sample_item_id)
 
         notification = UserNotification(
             process_id=process_id,

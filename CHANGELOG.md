@@ -238,6 +238,22 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
   into a single workspace afterwards - either way round, one workspace's
   private collection would otherwise govern how every other workspace's
   samples are matched.
+- Launching a peak assignment now answers with the outcome instead of an
+  unconditional acknowledgement. `POST /api/peak-assignments/sample/{id}/assign`
+  returns 202 carrying the id of the run it just created - so a caller can follow
+  that one run instead of diffing run lists to guess which is its own - 409 with
+  the id of the run already in flight for that sample, or 422 naming why the
+  sample cannot usefully be assigned (a blank, or an unverified m/z
+  calibration). Previously both refusals were decided *after* the response had
+  been sent and reached only a socket notification, which reported them as a
+  success. `POST /api/peak-assignments/batch/{id}/assign` answers with the
+  eligibility partition it will execute: the samples it will assign and the ones
+  it will skip with their reasons, so an all-skipped batch is distinguishable
+  from a refusal. It deliberately reports no per-sample run ids, because a batch
+  creates each run only as it reaches that sample. The app's launchers now report
+  a refusal where it was asked for - the sample pane shows the reason inline, the
+  batch launcher as a notification carrying the server's own wording - instead of
+  a generic error toast over a dialog that would not close.
 - With the opt-in peak-centric assignment feature enabled, the legacy Match
   tab (briefly renamed "Fit" under the flag) is retired: the Sample view
   already carries the spectrum-envelope and time-series duties it duplicated,
