@@ -158,7 +158,8 @@ async def test_renewal_refused_for_a_non_device_token(editor_client, test_users)
         "/api/auth/access_token/regenerate", json={"service_name": "mascope_sdk"}
     )
     assert regen.status_code == 200, regen.text
-    personal = regen.json()["data"]["access_token"]
+    # The regenerate route returns the token transport body directly.
+    personal = regen.json()["access_token"]
 
     async with _bearer_client(personal, service="mascope_sdk") as client:
         resp = await client.post("/api/auth/devices/token")
