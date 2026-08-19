@@ -4,6 +4,8 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
 
 ## [Unreleased]
 
+## [1.7.2] - 2026.08.19
+
 ### Added
 
 - Publishing a GitHub Release now verifies the Zenodo archive: a
