@@ -11,7 +11,7 @@ does not yield working seeds; the key lives outside the database, in the
 deployment's secrets directory.
 
 Revision ID: c3a9e6f2b8d1
-Revises: b7e4c9a2f1d3
+Revises: f3b9c7a1e2d4
 Create Date: 2026-08-18 10:00:00.000000
 
 """
@@ -24,7 +24,7 @@ from alembic import op
 
 # revision identifiers, used by Alembic.
 revision: str = "c3a9e6f2b8d1"
-down_revision: Union[str, Sequence[str], None] = "b7e4c9a2f1d3"
+down_revision: Union[str, Sequence[str], None] = "f3b9c7a1e2d4"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
