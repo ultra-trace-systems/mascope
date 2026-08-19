@@ -99,10 +99,10 @@ async def emit_isotope_visualization(
     isotopes against a sample.
 
     The isotope source is deliberately abstracted: `visualize_ion_focus` passes
-    the persisted target ion's matched isotopes, while the peak-centric engine
-    passes isotopes computed on the fly from an assigned composition (so an
-    untargeted assignment - which has no target_ion_id - can still be verified in
-    the Fit view). Each isotope must carry the attributes `_process_isotope`
+    the persisted target ion's matched isotopes, while the composition fit
+    endpoints pass isotopes computed on the fly from an assigned composition
+    (so an untargeted assignment - which has no target_ion_id - can still be
+    verified). Each isotope must carry the attributes `_process_isotope`
     reads: mz, relative_abundance, target_isotope_id, sample_peak_mz,
     sample_peak_intensity, match_score, match_mz_error, match_abundance_error.
     """

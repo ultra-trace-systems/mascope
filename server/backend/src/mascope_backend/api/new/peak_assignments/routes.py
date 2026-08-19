@@ -360,12 +360,13 @@ async def composition_fit_aggregate_route(
     user: User = Depends(current_active_user),
 ) -> dict:
     """
-    Fit-view isotope table for an assigned composition.
+    Isotope-table data for an assigned composition.
 
     Scores an assigned neutral formula + ionization mechanism against the
     sample on the fly (no persisted target ion), returning the same nested
-    match_ions / match_isotopes shape the Fit view consumes - so an untargeted
-    assignment (which has no target_ion_id) can be verified.
+    match_ions / match_isotopes shape the targeted ion aggregate returns - so
+    an untargeted assignment (which has no target_ion_id) can be verified.
+    API/SDK surface: no in-app view calls this endpoint.
 
     :param sample_item_id: The unique identifier of the sample.
     :param body: Composition (assigned formula + ionization mechanism).
@@ -390,11 +391,12 @@ async def composition_fit_visualize_route(
     user: User = Depends(current_active_user),
 ) -> dict:
     """
-    Launch the Fit-view visualization for an assigned composition.
+    Launch the fit visualization for an assigned composition.
 
     Emits the sum-spectrum and time-series traces (same socket events the
     targeted ion_focus visualization uses) for an on-the-fly composition,
-    so untargeted assignments render in the Fit view like targeted ones.
+    so an untargeted assignment visualizes like a targeted ion.
+    API/SDK surface: no in-app view calls this endpoint.
 
     :param sample_item_id: The unique identifier of the sample.
     :param body: Composition + visualization tolerances.

@@ -4,6 +4,18 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
 
 ## [Unreleased]
 
+### Changed
+
+- With the opt-in peak-centric assignment feature enabled, the legacy Match
+  tab (briefly renamed "Fit" under the flag) is retired: the Sample view
+  already carries the spectrum-envelope and time-series duties it duplicated,
+  so the tab and every navigation into it (ion-table visualize, batch-chart
+  click-through, shared links) are hidden behind the flag. Deployments that
+  have not opted in see no change - the Match tab and its targeted
+  visualization work exactly as before. The composition-fit endpoints
+  (`POST /api/peak-assignments/sample/{id}/fit/aggregate` and
+  `.../fit/visualize`) remain available as API/SDK surface.
+
 ### Fixed
 
 - A successful `mascope prod update` - unattended or `--version` - now also
