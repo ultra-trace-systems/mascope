@@ -4,6 +4,16 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
 
 ## [Unreleased]
 
+### Added
+
+- Publishing a GitHub Release now verifies the Zenodo archive: a
+  `verify-zenodo` job in the release workflow polls the Zenodo API and fails
+  the run if the new version has not appeared under the concept record within
+  20 minutes. The GitHub-Zenodo sync fails silently when its credentials
+  lapse - v1.6.2 through v1.7.1 went unarchived for up to a week before
+  anyone noticed - so a broken sync now turns the release run red, with
+  recovery steps documented in the developer guide's release section.
+
 ### Fixed
 
 - Acquisition-drift warnings no longer flood error monitoring with an issue
