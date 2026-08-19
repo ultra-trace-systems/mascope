@@ -190,9 +190,9 @@ control, not a one-run-per-sample model).
 
 3. **Async is why v1 is read-only.** `POST .../assign` returns **202** + a `Process-ID`
    header and finishes in the background (the app learns completion via a socket reload
-   event). The SDK has no polling/wait/header plumbing today. Reading avoids all of it;
-   triggering (§8.3) takes on a poll-`GET /runs`-until-terminal loop plus `Process-ID`
-   header exposure in `_http`.
+   event). The SDK has no polling/wait plumbing today. Reading avoids all of
+   it; triggering (§8.3) takes on a poll-to-terminal loop over the run id the 202
+   returns - which is why §8.3 has the assign endpoints answer synchronously first.
 
 ### 4.1 Landed: dropped the `run` field from `GET /sample/{id}`
 
@@ -413,6 +413,15 @@ peaky the research surface (the "harvest, don't depend" stance of the paradigm
 doc §5.2 is unchanged). What changes is that their *results* share one store,
 one read API, one UI, and one retention policy.
 
+**What an import is trusted with, and what it is not.** An imported ledger is
+data a workspace editor asserts, not a computation the server performed. The
+line this section draws: an import may say what it *found* - formulas, roles,
+fit scores, tiers under declared bands - but it may not write the values the
+server presents as *its own* calibrated judgement (the ledger's P(correct)
+scalars, "Validation" below), and it may not silently feed the instrument-wide
+confidence calibration ("Trust model" below). Most of the rules that follow are
+consequences of that line.
+
 ### 8.2 Part A - run import (the core)
 
 #### Endpoint
@@ -420,38 +429,82 @@ one read API, one UI, and one retention policy.
 **`POST /api/peak-assignments/sample/{sample_item_id}/runs/import`** accepts a
 complete, externally computed assignment run for one sample.
 
-Gating and admission are **identical to the other writes** (decided):
+Gating is the same as the other writes; **admission cannot be**:
 
 - `require_peak_assignment_enabled` - 403 while the `peak_assignment` flag is
   off, exactly like assign/verify/recalibrate. An opted-out deployment cannot
   accumulate imported ledgers any more than in-app ones.
 - **Editor role** on the workspace (`require_sample_role("editor")`), the same
-  role that launches an in-app run.
-- The **advisory-lock admission claim** (`assignment_claim("sample", id)`,
-  [admission.py](../../server/backend/src/mascope_backend/api/new/peak_assignments/admission.py)):
-  one assignment *or import* per sample at a time, refused - not queued -
-  across every worker sharing the database.
+  role that launches an in-app run. It resolves sample -> batch -> dataset ->
+  workspace, so an import cannot reach a sample the caller could not already
+  edit.
+- **Sample eligibility, stated rather than inherited by accident.** An import is
+  refused for a **blank sample** on the rule the in-app path uses -
+  `sample.instrument_function_id is None` (`ineligible_reason` in
+  [service.py](../../server/backend/src/mascope_backend/api/new/peak_assignments/service.py)) -
+  and for the same reason: a blank carries no measured peaks to assign. Do
+  **not** let peak-existence validation produce this refusal indirectly; that
+  argument fails for a zero-row payload, and "a blank has no peaks" is an
+  ingestion consequence (`_process_as_blank` writes an empty peak timeseries),
+  not an invariant anything enforces. The **calibration** clause of
+  `ineligible_reason` is the one an import deliberately bypasses - see the trust
+  model.
+- **At least one row** across the whole import. A run with no rows is a 422, not
+  a completed empty run. Completeness is not required (below), but emptiness is
+  not a ledger.
+- **Admission is derived from durable run state, not the advisory claim.**
+  `assignment_claim("sample", id)`
+  ([admission.py](../../server/backend/src/mascope_backend/api/new/peak_assignments/admission.py))
+  is a *session-level* Postgres advisory lock pinned to one connection for the
+  lifetime of one in-process task. An import spans several HTTP requests at the
+  client's pace, possibly on different workers, so that claim **cannot** span
+  one: held across requests it would pin a pooled connection to a remote
+  client's think-time; taken per request it leaves the sample unclaimed between
+  chunks. Import admission is therefore a query on run state - a non-terminal
+  (`pending`/`running`) run for the sample refuses a new import or in-app assign
+  with **409** naming the in-flight run id - with the advisory claim kept only
+  as the cross-worker guard *within* a single request. This is genuinely new
+  machinery (an indexed status query, plus the in-app assign path adopting the
+  same check so the two paths refuse each other); §8.4 step 2 carries it.
 
 Request, top level:
 
 | field | meaning |
 | --- | --- |
-| `engine` | external engine name (e.g. `"peaky"`), stamped on the run - see the `engine` column below |
-| `engine_version` | the external engine's version string (the existing `engine_version` column) |
-| `config` | the engine's full run configuration, **opaque JSON**, stored verbatim on the run - an imported run is as reproducible as an in-app one, on the engine's own terms |
-| `calibration` | the client's calibration state, **required** - see the trust model below |
+| `engine` | external engine name (e.g. `"peaky"`), stamped on the run - see the `engine` column below. Reserved values are rejected (422) |
+| `engine_version` | the external engine's version string (the existing `engine_version` column, `String(64)`) |
+| `config` | the engine's full run configuration, **opaque JSON**, stored **verbatim** - the server never reads it and never writes into it. Size-capped (below) |
+| `tier_bands` | the `identified` / `candidate` fit-score thresholds the engine tiered with, **required** - a first-class run field, *not* buried in opaque `config`, because the server validates rows against it |
+| `calibration` | the client's calibration state, **required** - its own nullable JSON column on the run, *not* a reserved key inside `config` |
 | `rows` | assignment rows (below) |
-| `complete` | finalize marker for chunked imports (below) |
+| `chunk` | assembly control: `{run_id, index, complete}` - see "One logical import" |
 
-Each row is the `PeakAssignment` shape the read side already serves:
-`sample_peak_id`, denormalized `sample_peak_mz` / `_intensity` / `_tof`,
-`role`, `assigned_formula`, `ion_formula`, `ionization_mechanism_id`
-(**nullable** - an external engine names adducts by notation, not by a
-deployment's mechanism ids; see §8.5.2), `isotope_label`, `source`,
-`fit_score`, `mz_error_ppm`, `abundance_error`, `tier`, an owner reference
-(below), `alternatives` (JSON), `provenance` (JSON). `sample_item_id`,
-`peak_assignment_id`, and `peak_assignment_run_id` are server-minted, never
-client-supplied.
+Each row is **`PeakAssignmentRecord` (§3) minus the server-owned fields**. That
+is the whole definition: do not re-enumerate the columns here, because a second
+list drifts from the first (an earlier draft of this section did exactly that,
+silently dropping `isotope_formula` and the target ids). Concretely, every
+read-side column - including `isotope_formula`, `target_compound_id` and
+`target_ion_id`, so an imported `source='database'` row can satisfy §2's
+targeted/untargeted equivalence - **except**:
+
+- **server-minted, never client-supplied**: `sample_item_id`,
+  `peak_assignment_id`, `peak_assignment_run_id`;
+- **replaced by a row reference**: `owner_peak_assignment_id` becomes
+  `owner_sample_peak_id` (below);
+- **server-owned, ignored if sent**: the flattened provenance scalars
+  `p_correct` / `p_correct_provisional` / `corroboration_adducts` (see
+  "Validation").
+
+`ionization_mechanism_id` is **nullable** - an external engine names adducts by
+notation, not by a deployment's mechanism ids (§8.5.2) - but a *supplied* id
+must exist and must match the sample's ionization mode and polarity, which is
+the constraint the in-app engine satisfies structurally (it can only emit
+mechanisms drawn from the sample's own mode, and filters them on
+`sample.polarity`). A nonexistent or mode-mismatched id is a **422 at
+validation time**, not an `IntegrityError` surfacing as a 500 out of the bulk
+insert after the whole payload has been uploaded. `alternatives` and
+`provenance` (JSON) are accepted as inspector detail, subject to the provenance
+rule below.
 
 **Owner linkage is a client-side row reference resolved server-side.** The
 client cannot supply `owner_peak_assignment_id` - those ids do not exist until
@@ -469,99 +522,217 @@ large for one request body, and an unbounded row list would serialize unbounded
 work through Pydantic on the event loop (the same reasoning that paginated the
 ledger *read*). So the endpoint caps `rows` per request and supports assembly:
 
-- the first request creates the run (`status='running'`, engine + config +
-  calibration stamped) and returns its `peak_assignment_run_id`;
-- follow-up requests reference that run id and append rows;
-- the request with `complete: true` - which may be the first and only one, the
-  common case for slim ledgers - finalizes: payload-wide validation, owner
+- the first request (`chunk.index == 0`, no `run_id`) creates the run
+  (`status='importing'`, engine + config + tier bands + calibration stamped) and
+  returns its `peak_assignment_run_id`;
+- follow-up requests carry that `run_id` and the next `chunk.index`;
+- the request with `chunk.complete: true` - which may be the first and only one,
+  the common case for slim ledgers - finalizes: payload-wide validation, owner
   resolution, `status='completed'`, batch fold-in.
 
-The lifecycle needs no new machinery: the read model serves only `completed`
-runs, so a half-imported run is invisible; an abandoned import is a stale
-`running` run, exactly what the startup reaper
-(`reset_running_peak_assignment_runs`) and the retention prune's
-`keep_running_hours` grace already reclaim.
+**Chunks must be idempotent, because the SDK retries POSTs.** `_http.http_post`
+wraps `requests.post` in its own retry loop (4 attempts, on `Timeout`,
+`ConnectionError` and 502/503/504) and exposes no way to disable it, so a read
+timeout after the server has applied a chunk *will* re-send it. The protocol
+therefore makes `chunk.index` monotonic and server-checked: re-sending the
+index the server last accepted is an **idempotent no-op returning the current
+row count**, a gap or a rewind is a 409, and the client resynchronises by
+reading that count. Without this, a retried append duplicates rows straight onto
+`uq_peak_assignment_run_id_sample_peak_id` and fails an otherwise healthy
+import, and a retried create mints a second run. This is the same problem the
+repo already solved for file upload: the tus path is offset-addressed and
+re-syncs from the server-confirmed offset (`api_post_file_tus`), whose own
+comment warns that otherwise "the caller's outer retry creates a fresh resource
+per attempt, multiplying them". `chunk.index` is that offset, in rows.
+
+**Assembly needs a state of its own; the existing lifecycle does not cover it.**
+An earlier draft claimed the import needed no new machinery, reusing `running`
+plus the startup reaper. That is wrong in both directions:
+
+- `reset_running_peak_assignment_runs` marks **every** `running` run `failed` at
+  **every** startup, with no age or engine filter, and it is correct to do so
+  only because "startup runs in the main process before any worker is spawned,
+  so nothing can legitimately be `running` at that moment". A chunked import is
+  legitimately in flight with no server task attached, so a routine deploy would
+  fail a live upload and the client's next chunk would target a `failed` run.
+- A run mid-assembly is **not invisible** either. Only the *default* ledger read
+  resolves to the latest `completed` run; `GET /sample/{id}/runs` lists runs of
+  every status (that is what the run selector reads), and a read with an
+  explicit `peak_assignment_run_id` serves that run's rows whatever its status -
+  and §8.2's own flow hands the client that id on the first request.
+
+So imports assemble under a distinct non-terminal status, **`importing`**, which
+the startup reaper skips and which the read paths treat as non-servable (the
+explicit-run-id read returns 409 for an `importing` run rather than a partial
+ledger). Staleness is the prune's job, under its own grace: an `importing` run
+older than `keep_importing_hours` is deleted with its rows, the same shape as
+today's `keep_running_hours` sweep. Note the consequence for the run selector:
+an import in progress is *visible* as an in-flight run, which is the honest
+display and is what makes the 409 admission refusal legible to a user.
+
+**Row-count bounds.** The per-request cap bounds one request. The *total* is
+**not** bounded by construction until finalize, because peak-existence and
+duplicate checks are payload-wide: until then a client could append chunks of
+nonexistent `sample_peak_id`s indefinitely. So the run also carries a **total
+row cap** (`<= the sample's peak count`, checked as each chunk lands) and the
+staged rows are reclaimed by the `importing` grace above. After finalize the
+by-construction bound does hold: at most one row per peak the sample has.
 
 #### Attribution: the `engine` run column
 
-One **additive** schema change: a nullable `engine` column on
-`peak_assignment_run`. NULL reads as the in-app engine, so existing rows need
-no backfill and the in-app write path does not change. Imports must stamp it.
+One **additive** schema change: an `engine` column on `peak_assignment_run`,
+backfilled to `'mascope'` for existing rows in the same migration and stamped by
+the in-app write path from then on. The earlier NULL-means-in-app sentinel is
+dropped: it pushed a tri-state onto every consumer (the run selector, the SDK
+frame, every SQL predicate, where `engine <> 'peaky'` silently drops NULLs), and
+it left the in-app identity unreserved. The table is prune-bounded to a handful
+of runs per sample, so the backfill is trivial.
+
+The value space is **constrained, not free text**: `String(64)`, matching
+`engine_version`, and the reserved in-app identity (`mascope`) is rejected from
+client payloads with a 422. Without that, an importer could stamp `engine:
+"mascope"` and defeat the one mechanism the rest of this section leans on -
+"first-class but always attributable" and "the engine badge is what keeps it
+honest" are only true if the badge cannot be forged.
+
 The migration parents on the **current Alembic head, `c3a9e6f2b8d1`**
 (`20260818_c3a9e6f2b8d1_add_mfa_columns.py` - the MFA migration, itself chained
-onto the batch-peak head `f3b9c7a1e2d4`).
+onto the batch-peak head `f3b9c7a1e2d4`), and carries `calibration`,
+`tier_bands` and the `importing` status alongside `engine`.
 
 Imported runs are **first-class but always attributable**: same tables, same
-read model, same retention, same fold-in - and the app's run selector shows
-engine provenance (`engine` + `engine_version`, plus the calibration badge
-below), so a user reading a ledger knows which engine produced it before
-trusting a tier. `PeakAssignmentRunRecord` gains the `engine` field and the
-SDK's `list_runs` frame carries it; rows read identically regardless of engine.
+read model, same fold-in - and the app's run selector shows engine provenance
+(`engine` + `engine_version`, plus a calibration badge), so a user reading a
+ledger knows which engine produced it before trusting a tier. None of that
+surface exists today: `engine` must be added to `PeakAssignmentRunRecord` and to
+the SDK's `list_runs` frame, and the badge must be built in the run selector.
+§8.4 sequences all three - the trust model below is only as good as the badge
+that carries it, so it is not optional dressing.
 
 #### Validation (strict-lite)
 
-The bar: reject what would corrupt the read model; accept what is merely the
-importer's judgement.
+The bar: reject what would corrupt the read model or forge a server judgement;
+accept what is merely the importer's judgement.
 
 - **Single owner per peak** - enforced server-side. At most one row per
   `sample_peak_id`: a duplicate within the payload is a 422, and the existing
   unique constraint `(peak_assignment_run_id, sample_peak_id)` backstops it at
-  insert. This is the ledger invariant every consumer assumes.
+  insert. A duplicate arriving *across* chunks is caught by the same constraint
+  and reported as the same 422 (which is why chunk idempotency, above, must
+  prevent a retry from manufacturing one). This is the ledger invariant every
+  consumer assumes.
 - **Enum validity.** `role` / `tier` / `source` are validated against the same
   typed vocabularies the read filters use (§3); a bad value is a 422 naming
-  the accepted set. **Tiers need no mapping**: the app's tier vocabulary
+  the accepted set. The *vocabulary* needs no mapping: the app's tier names
   (`identified` / `candidate` / `below_assignability` / `unassigned`) and its
-  fit-score scale came *from* peaky, and both engines score with
-  `mascope_tools` `score_pattern` - compatibility is by construction, not by
-  translation ([peak_assignment_paradigm.md](peak_assignment_paradigm.md) §2,
+  fit-score scale came *from* peaky, and both engines score with `mascope_tools`
+  `score_pattern` - compatibility is by construction, not by translation
+  ([peak_assignment_paradigm.md](peak_assignment_paradigm.md) §2,
   [fit_score.md](../../libraries/tools/docs/fit_score.md)).
+- **Tier coherence against declared bands.** The shared *scale* does not make
+  the shared *bands* automatic: in-app tiers are derived by thresholding
+  `fit_score` against `identified_threshold` (0.8) and `candidate_threshold`
+  (0.5), which are **run config**, not engine constants. Since an import's
+  `config` is opaque, the bands are lifted out as the required `tier_bands`
+  field and each row's `tier` is checked against its `fit_score` under them; an
+  incoherent row is a 422. Otherwise an engine tiering at 0.6/0.3 publishes
+  `identified` rows at `fit_score` 0.62 that sort and filter beside in-app
+  `identified` rows meaning something stricter - and outrank them in the
+  cross-sample `TIER_RANK` roll-up in `compute_consensus`.
+- **Provenance is inspector detail, never a server judgement.** The ledger
+  renders a calibrated `p_correct` (with its provisional marker) and an adduct
+  corroboration count on every row; `_provenance_scalars` flattens those out of
+  `provenance` today. For imported runs the server **does not** read them from
+  the payload - they are stored as NULL and the ledger shows them empty. An
+  importer's own confidence belongs in `fit_score` and in the `provenance` blob
+  the inspector shows; it does not get to populate a column the UI presents as
+  Mascope's calibrated probability, on a run that may have disclosed no
+  calibration at all. (This is also what keeps the batch consensus honest -
+  `_recompute_consensus` reads `provenance["p_correct"]`.)
 - **Peak existence.** Every `sample_peak_id` must exist in the sample's peak
-  file (one `extract_peaks` load per import - the same read the in-app engine
-  does); a row for a peak the sample does not have is a 422. The denormalized
-  mz/intensity/tof are stored as supplied: they are the importer's observed
-  values, display-denormalized exactly as on `MatchIsotope`.
-- **Row-count cap** per request (above). The total is bounded by construction:
-  at most one row per peak the sample actually has.
-- **Completeness NOT required.** An imported run may cover a subset of the
-  sample's peaks. The in-app engine persists a complete ledger (unassigned
-  rows included) because completeness is *its* contract; for an import,
-  whether to fill unexplained peaks with `unassigned` rows is **the importer's
-  choice**. Consumers already tolerate this: the read model serves whatever
-  rows exist, and the batch fold-in folds whatever rows exist.
+  file; a row for a peak the sample does not have is a 422. Use the **id-only**
+  read - `extract_peaks(..., areas=False, heights=False, average=False)` - not
+  the in-app engine's full load: validation needs the id set, while `average=True`
+  additionally opens the *raw* data source per import (and again on every retry)
+  just to compute an averaging divisor. The denormalized mz/intensity/tof are
+  stored as supplied: they are the importer's observed values,
+  display-denormalized exactly as on `MatchIsotope`.
+- **`config` size cap.** `config` is opaque, so nothing bounds it the way the
+  closed `PeakAssignmentConfig` model bounds an in-app run's. It needs an
+  explicit byte cap (422 above it), because `GET /sample/{id}/runs` re-serves
+  every run's full config on a hot path - the SDK's `get()` calls `list_runs` on
+  every ledger read, §8.3's wait loop polls it, and the run selector reads it.
+  That is the blob-on-the-list-read shape #1725 just removed from ledger rows;
+  do not reintroduce it on the run record.
+- **Completeness NOT required - but understand what a partial import replaces.**
+  An imported run may cover a subset of the sample's peaks; whether to fill
+  unexplained peaks with `unassigned` rows is the importer's choice, and the
+  *ledger* read serves whatever rows exist. The **batch view does not merely
+  tolerate** a subset, though: `fold_sample_into_batch_peaks` deletes all of the
+  sample's prior `BatchPeakOccurrence` rows before re-inserting from the new
+  latest-completed run, and `_recompute_consensus` then deletes any `BatchPeak`
+  left with no members. So publishing 20 rows of interest on a 30,000-peak
+  sample silently withdraws that sample's other 29,980 peaks from the batch
+  overview and can delete anchors it alone supported. Decided: partial imports
+  are allowed, the API documents this replacement explicitly, and `import_run`
+  warns when a frame covers materially fewer peaks than the sample's current
+  latest-completed run. (Requiring completeness for batch members was
+  considered and rejected: it would make the common single-sample research loop
+  pay for a batch-level concern.)
 
 #### Trust model
 
-- **Append-only.** An import always creates a *new* run; it never touches an
-  app-computed run (or an earlier import). This is the property the in-app
-  engine already has - runs are never superseded in place - so nothing an
-  import does can destroy in-app results.
-- **Retention applies identically.** The nightly prune's
-  keep-newest-per-sample policy makes no engine distinction: imported and
-  app-computed runs share the per-sample budget (newest completed runs kept,
-  `prune_peak_assignment_runs`). The ledger is a store of runs, not an archive
-  of every run ever; a published run that must stay current is republished.
+- **Append-only per write.** An import always creates a *new* run; it never
+  touches an app-computed run (or an earlier import), matching the in-app
+  engine: runs are never superseded in place.
+- **Retention is where "append-only" stops protecting in-app runs.** The nightly
+  prune keeps the newest `keep_per_sample` completed runs per sample -
+  **3 by default** - and makes no engine distinction today, so three republished
+  imports would evict every in-app run for that sample, ledger rows cascading
+  with them. That directly contradicts what a reader takes from "append-only",
+  and the fix is small: the prune's keep-newest budget becomes **per (sample,
+  engine)**, so imports and in-app runs age out of their own quotas and neither
+  can starve the other. §8.4 step 2 carries the prune change with the endpoint;
+  the doc's earlier "imported and app-computed runs share the per-sample budget"
+  is retracted, because sharing it is what made publishing destructive. The
+  ledger is still a store of runs rather than an archive of every run ever: a
+  published run that must stay current is republished, and now that costs only
+  the importer's own quota.
 - **Default-read consequence.** `get()` and the app's ledger read default to
   the *latest completed* run, whatever its engine, so a fresh import is what a
   reader sees by default. That is the point - published runs are first-class -
   and the engine badge is what keeps it honest.
 - **Calibration: bypass, but record** (decided). In-app assignment refuses a
-  sample whose m/z calibration is unverified (`ineligible_reason` in
-  [service.py](../../server/backend/src/mascope_backend/api/new/peak_assignments/service.py)),
-  because the in-app engine's mass errors - and therefore its fit scores and
-  tiers - would mean nothing. An import **bypasses that refusal**: peaky does
-  its own offset-aware calibration client-side, so the server-side
-  verification state does not describe an imported ledger's mass accuracy. The
-  flip side is mandatory disclosure: the required `calibration` object (the
-  client's calibration method/state, plus the sample's Mascope-side
-  verification state at import time) is persisted on the run - under a
-  reserved key in the run's `config` JSON, which is already the run's
-  reproducibility record, so no second column is needed - and the UI badges
-  the run from it. An importer that did no calibration says so on the record.
-  (The blank-sample refusal needs no bypass: a blank sample has no peaks, so
-  peak-existence validation rejects such an import anyway.)
-- **Verifiable like any other.** The verification endpoints do not care which
-  engine produced an assignment, so the verification-calibration loop closes
-  over published runs too.
+  sample whose m/z calibration **exists but is unverified** (`ineligible_reason`
+  checks `sample.mz_calibration and not ...get("verified")`; a sample with no
+  calibration at all is *not* refused), because the in-app engine's mass errors -
+  and therefore its fit scores and tiers - would mean nothing. An import
+  **bypasses that refusal**: peaky does its own offset-aware calibration
+  client-side, so the server-side verification state does not describe an
+  imported ledger's mass accuracy. The flip side is mandatory disclosure: the
+  required `calibration` object (the client's calibration method/state, plus the
+  sample's Mascope-side verification state at import time) is persisted in **its
+  own column** on the run, and the UI badges the run from it. It is deliberately
+  *not* a reserved key inside `config`: `config` is specified as stored
+  verbatim, injecting a server key would break that and make the stored config
+  no longer what the engine ran with, and `calibration` is a plausible key in a
+  client-side-calibrating engine's own config - a silent collision on exactly
+  the field the badge depends on. The migration is being written anyway; a
+  column is cheaper than the ambiguity. An importer that did no calibration says
+  so on the record.
+- **Verifications on imported rows do not feed instrument recalibration.**
+  Verifying an imported assignment is fine and useful - the verification
+  endpoints are engine-agnostic and the human verdict is what matters. But
+  `create_verification` snapshots `provenance["evidence"]` from the judged row
+  into `AssignmentVerification.evidence`, and `recalibrate_instrument` fits the
+  instrument-wide Platt curve over **every** confirmed/rejected verification for
+  that instrument type, filtered by nothing else. That curve is what every
+  assignment's P(correct) reads from, which is why the route is superuser-only -
+  so an editor-supplied `evidence` value must not reach it. Decided: the
+  recalibration query joins through the run's `engine` and uses **in-app runs
+  only**; imported-run verifications are retained, listed, and shown, but
+  excluded from the label pool. (§8.5.3 asks whether they can be admitted later
+  under a declared-scale rule.)
 
 #### After import: batch fold-in
 
@@ -571,50 +742,111 @@ exactly as an in-app run's completion does, so imported runs feed the batch
 **Assignments** overview the moment they land. Failure isolation mirrors the
 in-app path: the fold-in is **best-effort** - a fold-in failure is logged and
 never fails (or un-completes) the import itself. The fold-in reads the sample's
-latest completed run, which by then is the import.
+latest completed run, which by then is the import, and *replaces* that sample's
+contribution (see "Completeness" above).
+
+Two consequences worth stating, because the import path reaches them in ways the
+in-app path does not:
+
+- The per-sample offset `mu_ppm` is the median `mz_error_ppm` of the run's
+  assigned rows, and it shifts that sample's peaks onto the shared batch axis.
+  For an import those residuals are relative to the *client's* calibration -
+  another reason the calibration disclosure is mandatory.
+- Publishing a whole batch sample-by-sample is superlinear: `_recompute_consensus`
+  re-reads every occurrence of every touched anchor across all samples folded so
+  far, so N similar samples cost roughly N times what one deferred pass would.
+  The in-app sequential batch pays this too, but there each fold feeds a live
+  UI. A `fold_in: false` import option plus one deferred consensus pass is the
+  cheap fix if publishing whole batches becomes routine; it is not required for
+  the loop to work, and is not the same question as §8.5.1.
 
 ### 8.3 Part B - triggering, verification, fit (the v1 deferrals, decided yes)
 
 v1 deferred these behind one question - "should the SDK trigger heavy async
 runs?" (§9.1). **Decided: yes.** The ground shifted after the question was
 raised: the write routes are now gated on the `peak_assignment` flag (403 when
-the deployment has not opted in), and admission control - the in-process
-in-flight guards plus the cross-process advisory-lock claim - **refuses** a
-duplicate run server-side rather than queueing it. The hazard behind the
-question was an SDK loop cheaply scheduling unbounded heavy compute; that is
-now bounded where it must be, on the server, so client discipline is no longer
-the safety mechanism. (The config ceilings - `max_untargeted_peaks`, the
-`formula_ranges` species cap, `max_alternatives` - bound each run's cost
-independently.)
+the deployment has not opted in), and admission control refuses a duplicate run
+server-side rather than queueing it. The hazard behind the question was an SDK
+loop cheaply scheduling unbounded heavy compute; that is now bounded where it
+must be, on the server, so client discipline is no longer the safety mechanism.
+(The config ceilings - `max_untargeted_peaks`, the `formula_ranges` species cap,
+`max_alternatives` - bound each run's cost independently.)
+
+**One server-side change comes first, because the wrappers are unimplementable
+without it.** Today `POST .../assign` returns 202 unconditionally and decides
+everything afterwards, inside the background task: the admission refusal, and
+the eligibility skip for blank or unverified-calibration samples, are both
+reached *after* the response is sent. Neither reaches a headless client. The
+refusal is not merely socket-only, as an earlier draft of this section claimed -
+it is not machine-readable **anywhere**: `api_controller_background_task` stamps
+`notification.status = "success"` on any non-exception return and reads
+`notification.data` from a `_notification_data` key the refusal never sets, and
+`skipped` is not even a legal notification status. What actually reaches the
+socket is a success-status toast string.
+
+So v2 moves both decisions in front of the response, which is cheap because both
+are already synchronous computations: the route fetches the sample anyway,
+`ineligible_reason(sample)` is a pure function of that row, and the in-flight
+check is the indexed run-state query §8.2 introduces. The assign endpoints then
+answer honestly:
+
+- **202** with the newly created run row's `peak_assignment_run_id` in the body
+  (created `pending` in the request, as the import path already does), so a
+  client polls *one known run* instead of diffing run sets and guessing which
+  new run is its own;
+- **409** with the in-flight run id when admission refuses;
+- **422** naming the reason when the sample is ineligible.
+
+That is the whole basis for the wrappers below. Without it, `assign()` would
+have to infer refusal from the *absence* of a new run, which is racy (the
+in-flight run can terminate before the first poll) and simply blind to the
+ineligible case (no run is ever created, so there is nothing to observe) - the
+wrapper would spin to a timeout in exactly the cases the server already knew
+about at request time.
 
 - **`assign(sample_id, *, config=None, wait=True, poll_interval=..., timeout=...)`**
-  and **`assign_batch(batch_id, ...)`** - wrap the 202 endpoints. `config`
-  mirrors `PeakAssignmentConfig` (`run_untargeted`, `mz_precision_ppm`,
-  `formula_ranges`, `max_untargeted_peaks`, `peak_intensity_threshold`,
-  `max_alternatives`, `identified_threshold`, `candidate_threshold`). The POST
-  returns immediately (202; the process id is in the `Process-ID` response
-  header - the one `_http` change this needs, since the shared helpers expose
-  only bodies). Completion is observed by **polling `list_runs`** until the
-  run created after the call reaches a terminal state - and every terminal
-  state exists now: `completed` | `failed` | `cancelled`. `wait=True` blocks
-  and returns `get(...)` of the finished run (raising on `failed`, carrying
-  the run's `error`); `wait=False` returns a handle (process id, plus the run
-  id once visible) for the caller to poll.
+  - wraps `POST .../assign`. `config` mirrors `PeakAssignmentConfig`
+  (`run_untargeted`, `mz_precision_ppm`, `formula_ranges`, `max_untargeted_peaks`,
+  `peak_intensity_threshold`, `max_alternatives`, `identified_threshold`,
+  `candidate_threshold`). The 202 body carries the run id, so completion is
+  observed by polling **that run** to a terminal state - all three of which
+  exist: `completed` | `failed` | `cancelled`. `wait=True` blocks and returns
+  `get(...)` of the finished run; it raises on `failed` (carrying the run's
+  `error`) and on `cancelled` (which yields no rows at all, since the engine
+  writes its ledger in one insert immediately before finalizing - so returning
+  an empty frame would be indistinguishable from a real empty result).
+  `wait=False` returns the run id. A 409 raises an explicit already-in-flight
+  error carrying the in-flight run id; a 422 raises the ineligibility reason.
+  Neither is ever reported as a timeout.
 
-  **Refusal surfaces; it never spins.** A sample (or batch) with an assignment
-  already in flight is **refused** by admission control server-side. The
-  refusal payload (status `skipped` + the in-flight run id) travels over the
-  socket notification channel, which a headless client does not have, so
-  `assign()` detects it the observable way - no new run appears while a
-  pre-existing run sits `pending`/`running` - and surfaces it as an explicit
-  already-in-flight outcome carrying the in-flight run id, never as a timeout.
-  A batch's server-side skips (blank samples, unverified calibration,
-  Stage-A-only default) are documented behavior the wrapper inherits, not
-  errors.
+  The `Process-ID` response header is **not** part of this contract. No endpoint
+  accepts a process id, nothing persists it, and its only consumer is the socket
+  notification grouping a headless client cannot receive - so exposing it would
+  hand callers an identity they can do nothing with. (For the record, reading it
+  would need no `_http` change either: `http_get`/`http_post` already return the
+  full `requests.Response`; it is `_base.py` that unwraps to `.json()["data"]`,
+  and v1 already shipped the bypass for exactly this reason -
+  `PeakAssignmentsResource._get_envelope` calls `http_get` directly.)
+- **`assign_batch(batch_id, *, config=None, wait=True, ...)`** - wraps
+  `POST /batch/{id}/assign`. A batch needs its **own** observable, and today has
+  none: there is no batch-level run row (`PeakAssignmentRun`'s only FK is
+  `sample_item_id`), no batch status endpoint, samples are assigned sequentially
+  behind a concurrency-1 gate, ineligible samples produce no run at all, and
+  completion is reported only in the socket notification of the aggregate
+  result. Polling per-sample `list_runs` cannot fix that: the wrapper would have
+  to reproduce the server's eligibility partition to know how many runs to
+  expect, and an all-skipped batch produces zero runs - which is
+  indistinguishable from a refusal. So the batch endpoint's 202 body returns the
+  **admitted per-sample run ids plus the skipped samples and their reasons**,
+  computed by the same partition the task then executes. `wait=True` polls that
+  known id set and returns a per-sample result mapping; skips are reported data,
+  not errors. (Stage-A-only remains the batch default, `run_untargeted=False`.)
 - **`verify(sample_id, peak_assignment_id, verdict, *, evidence_level=None, note=None)`**
   and **`list_verifications(sample_id)`** - thin wrappers over the shipped
   verification endpoints (§3): append-only verdicts, `evidence_level` required
-  for `confirmed` (server-enforced).
+  for `confirmed` (server-enforced). Verifying an imported assignment is
+  supported; see the trust model for why those verdicts stay out of the
+  recalibration label pool.
 - **`fit_aggregate(sample_id, formula, ionization_mechanism_id)`** - wraps
   `POST .../fit/aggregate`: the isotope table for an arbitrary composition,
   the untargeted analogue of `matching.match_compound`, for verifying a
@@ -628,36 +860,58 @@ independently.)
   peak+composition). `fit/visualize` stays optional: its output is socket
   events, which a headless client cannot receive - it earns a wrapper only if
   a concrete use appears.
-- **`import_run(sample_id, df, *, engine, engine_version, config, calibration)`**
+- **`import_run(sample_id, df, *, engine, engine_version, config, tier_bands, calibration)`**
   - the SDK face of §8.2. Validates the DataFrame client-side (required
-  columns, enum values, owner references - fail fast before any bytes move),
-  converts NaN to nulls, **chunks** the rows under the endpoint's per-request
-  cap (create -> append -> `complete: true`), and returns the new run id.
-  The round trip is: `get_peaks` out, compute externally, `import_run` back,
-  `get` to confirm.
+  columns, enum values, tier/fit_score coherence against `tier_bands`, owner
+  references - fail fast before any bytes move), converts NaN to nulls,
+  resolves adduct notations to the deployment's mechanism ids where they are
+  known (leaving the rest null, §8.5.2), **chunks** the rows under the
+  endpoint's per-request cap with a monotonic `chunk.index` it can resynchronise
+  after a retry, and returns the new run id. It warns when the frame covers
+  materially fewer peaks than the sample's current latest-completed run, since
+  the fold-in replaces rather than merges. The round trip is: `get_peaks` out,
+  compute externally, `import_run` back, `get` to confirm.
 - **`recalibrate`** - still out of scope for the SDK (superuser admin op).
 
-Corresponding notebook follow-up: rewrite `09` to *drive* the server engine
-(`assign` -> `get`) now that triggering exists, demoting the client-side loop
-to an appendix.
+Corresponding notebook follow-up: the round-trip notebook of §8.4 step 4 is
+where triggering gets its worked example (`assign` -> `get`, then
+`import_run` -> `get`). No existing notebook is rewritten for this - the
+client-side composition loop that used to live in the `09` slot is retired
+(§6), so there is nothing left to demote to an appendix.
 
 ### 8.4 Sequencing
 
 Each step is its own PR, and each leaves the system shippable:
 
 1. **This document** - the contract.
-2. **Backend import** - the `runs/import` endpoint, the `engine` column +
-   migration (parented on `c3a9e6f2b8d1`), strict-lite validation, fold-in on
-   completion, integration tests (exercising the write via the
-   `MASCOPE_PEAK_ASSIGNMENT` env override, like the other write tests).
-3. **SDK triggering + verification + fit** - `assign` / `assign_batch` /
-   `verify` / `list_verifications` / `fit_aggregate`, the `Process-ID` header
-   exposure in `_http`, the polling helper, hermetic unit tests.
-4. **SDK `import_run`** + a round-trip tutorial notebook: read peaks, compute
+2. **Backend import** - the `runs/import` endpoint; the migration (parented on
+   `c3a9e6f2b8d1`) adding `engine` (backfilled `'mascope'`, reserved from client
+   payloads), `calibration`, `tier_bands` and the `importing` status; durable
+   run-state admission (409) adopted by the import *and* in-app assign paths;
+   the reaper skipping `importing` and the prune gaining its grace; the prune's
+   keep-newest budget becoming per (sample, engine); strict-lite validation;
+   fold-in on completion; recalibration restricted to in-app runs. Integration
+   tests exercise the write via the `MASCOPE_PEAK_ASSIGNMENT` env override, like
+   the other write tests, and must cover the retention and recalibration
+   changes, which are the two places an import could otherwise damage in-app
+   data.
+3. **Synchronous assign outcomes** - the 202 body carrying the new run id, 409
+   on admission refusal, 422 on ineligibility, for both the sample and batch
+   endpoints (the batch body also returning the per-sample partition). Backend
+   only; the app keeps using the socket path it already has.
+4. **Run provenance in the API and the app** - `engine` on
+   `PeakAssignmentRunRecord` and in the SDK's `list_runs` frame; the run
+   selector showing engine, version and the calibration badge. Nothing in the
+   trust model is observable to a user until this lands, so it precedes the
+   first import reaching a real deployment.
+5. **SDK triggering + verification + fit** - `assign` / `assign_batch` /
+   `verify` / `list_verifications` / `fit_aggregate`, the polling helper,
+   hermetic unit tests.
+6. **SDK `import_run`** + a round-trip tutorial notebook: read peaks, compute
    externally, publish, see the run in the app.
-5. **`peaky publish`** - the consumer, in the peaky repository (out of this
+7. **`peaky publish`** - the consumer, in the peaky repository (out of this
    repo's scope; listed so the sequence has its end state).
-6. **Demo bundle seeds a completed assignment run** - unblocks the v1
+8. **Demo bundle seeds a completed assignment run** - unblocks the v1
    contract tests that today **skip** in CI (§7), and doubles as the fixture
    an import contract test diffs against.
 
@@ -670,13 +924,24 @@ Genuinely open - everything else in §8 is decided:
    N samples' runs), or stay per-sample in v2? Per-sample is sufficient for
    the loop - the batch fold-in derives the batch view server-side from
    per-sample runs - so a manifest is a convenience with real transactional
-   surface.
-2. **Unknown ionization mechanisms.** An external engine may assign an adduct
-   the deployment has no `IonizationMechanism` row for. Auto-register it on
-   import, or leave `ionization_mechanism_id` null (the notation still lives
-   in `ion_formula` and provenance)? Null is safe and loses no substance;
+   surface. (It is not the answer to the fold-in cost noted in §8.2; a manifest
+   that loops the same fold gains nothing there.)
+2. **Unknown ionization mechanisms.** Decided in part: `import_run` resolves
+   adduct notations against the deployment's `IonizationMechanism` table
+   client-side, so ids that *are* known arrive populated and joinable. What
+   stays open is the genuinely unknown remainder - auto-register it on import,
+   or leave `ionization_mechanism_id` null (the notation still lives in
+   `ion_formula` and provenance)? Null is safe and loses no substance;
    auto-registration keeps the ledger joinable but lets imports grow a shared
    vocabulary table.
+3. **Admitting imported verifications to calibration.** §8.2 excludes
+   imported-run verifications from the instrument recalibration pool because
+   `evidence` would then be an editor-supplied number on a superuser-gated
+   curve. Could they be admitted later under a declared-scale rule - the run's
+   `calibration` disclosure plus a stated evidence scale, or by having the
+   server recompute `evidence` from `fit_score` rather than trusting the
+   payload? Worth revisiting once real imported ledgers exist; not needed for
+   the loop.
 
 ---
 
@@ -732,18 +997,28 @@ is retired in favour of the read surface (§6).
 
 v2 (§8) makes the ledger **writable from outside**. Its core is run import:
 `POST .../runs/import` accepts a complete externally computed run - engine name
-and version, opaque config, one `PeakAssignment`-shaped row per covered peak -
-gated exactly like every other write (feature flag, editor role, advisory-lock
-admission), validated strict-lite (single owner per peak, typed enums, peak
-existence, row cap; completeness deliberately not required), append-only under
-the same retention as in-app runs, calibration-refusal-exempt but
-calibration-disclosing, and folded into the batch peaks on completion. One
-additive `engine` column on `PeakAssignmentRun` (migration parented on the
-current head `c3a9e6f2b8d1`) keeps imported runs first-class yet always
-attributable. Around it, the v1-deferred wrappers are now decided in:
-`assign`/`assign_batch` (202 + poll-to-terminal, server-side refusal surfaced),
-`verify`/`list_verifications`, `fit_aggregate` (#1736's deliberately kept
-surface), and `import_run` (DataFrame -> chunked publish -> run id). The
-sequence (§8.4) lands each piece as its own PR and ends with `peaky publish`
-consuming the whole loop and the demo bundle carrying a completed run - which
-also un-skips the v1 contract tests.
+and version, verbatim opaque config, declared tier bands, a required calibration
+disclosure, and one `PeakAssignment`-shaped row per covered peak (the read
+record minus the server-owned fields, so the two lists cannot drift). It is
+gated like every other write on the feature flag and the editor role, but
+admission is a query on durable run state rather than the advisory claim, which
+cannot span a chunked upload; assembly runs under its own `importing` status
+with idempotent, index-checked chunks, because the SDK retries POSTs. Validation
+is strict-lite (single owner per peak, typed enums, tier/fit_score coherence,
+peak existence via the id-only read, blank-sample and at-least-one-row rules,
+per-request and total row caps; completeness deliberately not required) with one
+firm line: an import may not write the ledger's calibrated P(correct) scalars,
+and verifications on imported runs stay out of the instrument recalibration
+pool. Retention keeps its newest-per-sample budget **per engine**, so publishing
+can no longer evict a sample's in-app history. One migration adds `engine`
+(backfilled `mascope` and reserved from client payloads, so the badge cannot be
+forged), `calibration`, `tier_bands` and the new status, parented on the current
+head `c3a9e6f2b8d1`. Around it the v1-deferred wrappers are decided in:
+`assign`/`assign_batch` (202 carrying the run id, 409 on refusal, 422 on
+ineligibility, then poll-to-terminal), `verify`/`list_verifications`,
+`fit_aggregate` (#1736's deliberately kept surface), and `import_run`
+(DataFrame -> chunked publish -> run id). The sequence (§8.4) lands each piece
+as its own PR - provenance in the app before the first real import, since the
+trust model is only as good as the badge that shows it - and ends with `peaky
+publish` consuming the whole loop and the demo bundle carrying a completed run,
+which also un-skips the v1 contract tests.
