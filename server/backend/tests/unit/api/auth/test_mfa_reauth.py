@@ -8,8 +8,14 @@ is unreachable.
 
 import pytest
 
+from mascope_backend.api.new.auth.access_token.routes import (
+    access_token_regenerate_route,
+)
+from mascope_backend.api.new.auth.access_token.schemas import AccessTokenRequest
 from mascope_backend.api.new.auth.mfa import reauth
 from mascope_backend.api.new.auth.mfa.exceptions import MfaReauthRequiredException
+from mascope_backend.api.new.auth.pairing.routes import pairing_approve_route
+from mascope_backend.api.new.auth.pairing.schemas import PairingApproveRequest
 
 
 class _FakeRedis:
@@ -137,4 +143,33 @@ async def test_markers_do_not_leak_between_accounts(fake_redis):
     client = fake_redis(present=False)
     await reauth.mark_recently_verified(7)
     assert reauth._key(7) == client.set_calls[0][0]
+
+
+# --- The routes actually wire the gate in ---
+#
+# The checks above prove require_recent_mfa refuses correctly; these prove the
+# two credential-minting routes call it, and call it first - before any DB work
+# - so an enrolled account with no recent code is turned away. Pinning the
+# routes' behaviour is what would catch a future route (or a refactor) that
+# drops the step-up, which the module-level tests alone cannot see.
+
+
+@pytest.mark.asyncio
+async def test_access_token_regenerate_refuses_without_a_recent_code(fake_redis):
+    fake_redis(present=False)
+    with pytest.raises(MfaReauthRequiredException):
+        await access_token_regenerate_route(
+            AccessTokenRequest(service_name="mascope_sdk"),
+            user=_User(mfa_enabled=True),
+        )
+
+
+@pytest.mark.asyncio
+async def test_pairing_approve_refuses_without_a_recent_code(fake_redis):
+    fake_redis(present=False)
+    with pytest.raises(MfaReauthRequiredException):
+        await pairing_approve_route(
+            PairingApproveRequest(user_code="ABC-123"),
+            user=_User(mfa_enabled=True),
+        )
     assert reauth._key(8) != reauth._key(7)
