@@ -11,6 +11,7 @@ import { api } from '@/api'
 import { needsMfaReauth } from '@/api/utils'
 
 import DialogMfaReauth from './DialogMfaReauth.vue'
+import { useMfaReauth } from './useMfaReauth'
 
 const SERVICE_LABELS = {
   'tof-agent': 'TOF Agent',
@@ -25,9 +26,10 @@ const busy = ref(false)
 const error = ref(null)
 const approved = ref(null)
 // Approving mints a year-long agent credential, so the server may ask for a
-// current code first. The prompt sits inside this dialog rather than around
-// it: approving is the only call here that can be refused that way.
-const reauthVisible = ref(false)
+// current code first. runWithReauth opens the prompt (inside this dialog, since
+// approving is the only call here that can be refused that way) and replays the
+// approval once a code is accepted.
+const { reauthVisible, runWithReauth, onVerified } = useMfaReauth()
 
 watch(visible, () => {
   code.value = null
@@ -42,7 +44,12 @@ const invalidCode = computed(
   () => !code.value || code.value.replace(/[^a-zA-Z0-9]/g, '').length < 6
 )
 
-const approve = async (mayPrompt = true) => {
+const showApprovalError = (e) => {
+  error.value =
+    e?.response?.data?.detail || e?.response?.data?.error || e?.message || 'Approval failed.'
+}
+
+const doApprove = async () => {
   busy.value = true
   error.value = null
   try {
@@ -51,23 +58,17 @@ const approve = async (mayPrompt = true) => {
     })
     approved.value = response?.data
   } catch (e) {
-    if (needsMfaReauth(e) && mayPrompt) {
-      // Not a failure: the pairing code is still good, the user just has to
-      // confirm they hold the factor. Approval retries once they have.
-      reauthVisible.value = true
-      busy.value = false
-      return
-    }
-    error.value =
-      e?.response?.data?.detail || e?.response?.data?.error || e?.message || 'Approval failed.'
+    if (needsMfaReauth(e)) throw e
+    showApprovalError(e)
   } finally {
     busy.value = false
   }
 }
 
-// The retry may not prompt again: the code was just accepted, so a refusal
-// here is a real failure and belongs in `error` rather than in another prompt.
-const onReauthVerified = () => approve(false)
+const approve = () => runWithReauth(doApprove)
+// The retry surfaces a refusal as an error rather than another prompt: the code
+// was just accepted, so a second refusal is a real failure.
+const onReauthVerified = onVerified(showApprovalError)
 </script>
 
 <template>
@@ -101,9 +102,7 @@ const onReauthVerified = () => approve(false)
       </Message>
       <template v-if="!approved">
         <Button label="Cancel" @click="visible = false" severity="secondary" />
-        <!-- Called through a wrapper so the click event is not passed as the
-             may-prompt argument. -->
-        <Button label="Approve" @click="() => approve()" :disabled="invalidCode" :loading="busy" />
+        <Button label="Approve" @click="approve" :disabled="invalidCode" :loading="busy" />
       </template>
       <Button v-else label="Done" @click="visible = false" />
     </menu>

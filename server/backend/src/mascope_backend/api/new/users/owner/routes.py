@@ -4,6 +4,7 @@ from mascope_backend.api.lib.api_features import api_route
 from mascope_backend.api.lib.rate_limit import rate_limit
 from mascope_backend.api.new.auth.dependencies import owner_user
 from mascope_backend.api.new.auth.exceptions import ForbiddenAccessException
+from mascope_backend.api.new.auth.mfa.reauth import require_recent_mfa
 from mascope_backend.api.new.users.access_token.service import delete_user_access_tokens
 from mascope_backend.api.new.users.exceptions import InvalidUsernameException
 from mascope_backend.api.new.users.mfa.service import reset_user_mfa
@@ -227,8 +228,17 @@ async def owner_reset_user_mfa(
 
     :param user_id: The account to clear.
     :param user: The currently authenticated owner user.
+    :raises MfaReauthRequiredException: If the owner holds a factor but has not
+        presented a code recently.
     :return: A success message and the updated user.
     """
+    # Clearing another account's factor is a security downgrade, so an owner who
+    # holds a factor of their own must have presented a code recently - a stolen
+    # session alone must not be able to strip a covered account's second factor,
+    # the same reason the token and pairing routes ask for one. No-op for an
+    # owner without a factor, so a deployment that does not use MFA is unchanged.
+    await require_recent_mfa(user)
+
     # Step 1: Prevent owners from clearing their own factor
     if user_id == user.id:
         raise ForbiddenAccessException(

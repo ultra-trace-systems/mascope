@@ -16,6 +16,8 @@ from mascope_backend.api.new.auth.mfa import reauth
 from mascope_backend.api.new.auth.mfa.exceptions import MfaReauthRequiredException
 from mascope_backend.api.new.auth.pairing.routes import pairing_approve_route
 from mascope_backend.api.new.auth.pairing.schemas import PairingApproveRequest
+from mascope_backend.api.new.users.admin.routes import admin_reset_user_mfa
+from mascope_backend.api.new.users.owner.routes import owner_reset_user_mfa
 
 
 class _FakeRedis:
@@ -172,4 +174,24 @@ async def test_pairing_approve_refuses_without_a_recent_code(fake_redis):
             PairingApproveRequest(user_code="ABC-123"),
             user=_User(mfa_enabled=True),
         )
+
+
+# The administrative reset clears another account's factor, a downgrade a stolen
+# session must not be able to make; the raw handlers (bypassing api_route's error
+# wrapping via __wrapped__) must refuse an enrolled admin/owner with no recent
+# code before they touch the target.
+
+
+@pytest.mark.asyncio
+async def test_admin_mfa_reset_refuses_without_a_recent_code(fake_redis):
+    fake_redis(present=False)
+    with pytest.raises(MfaReauthRequiredException):
+        await admin_reset_user_mfa.__wrapped__(user_id=5, user=_User(mfa_enabled=True))
+
+
+@pytest.mark.asyncio
+async def test_owner_mfa_reset_refuses_without_a_recent_code(fake_redis):
+    fake_redis(present=False)
+    with pytest.raises(MfaReauthRequiredException):
+        await owner_reset_user_mfa.__wrapped__(user_id=5, user=_User(mfa_enabled=True))
     assert reauth._key(8) != reauth._key(7)
