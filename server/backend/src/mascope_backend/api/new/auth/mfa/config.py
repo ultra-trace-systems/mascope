@@ -41,10 +41,12 @@ class MfaConfig(BaseModel):
     REAUTH_WINDOW_SECONDS: int = 5 * 60
 
     RECOVERY_CODE_COUNT: int = 10
-    # Bytes of entropy per recovery code before encoding. Ten of these are the
-    # whole fallback if the authenticator is lost, so they are sized to be
-    # unguessable rather than convenient to type.
-    RECOVERY_CODE_BYTES: int = 10
+    # Characters per recovery code, drawn from the 31-symbol alphabet in
+    # service.py: 16 gives about 79 bits. These are the whole fallback if the
+    # authenticator is lost and are stored only as a SHA-256 digest, so they are
+    # sized to resist an offline search of a leaked database dump rather than to
+    # be convenient to type.
+    RECOVERY_CODE_LENGTH: int = 16
 
 
 mfa_settings = MfaConfig()

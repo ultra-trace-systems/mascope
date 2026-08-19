@@ -25,18 +25,29 @@ def mfa_encryption_key() -> str | None:
     """
     The raw MFA key material for this deployment.
 
-    :return: The secret's contents, or ``None`` when the deployment has no MFA
-        key file.
+    A missing file, or one that is present but blank (an operator who ran
+    ``touch`` on it), both read as "no key": the deployment cannot store seeds
+    yet, which the enrolment routes report cleanly. Only a non-empty read is
+    cached, so creating the file on a running deployment still takes effect
+    without a restart.
+
+    :return: The secret's contents, or ``None`` when the deployment has no
+        usable MFA key file.
     """
     global _cached_key
     if _cached_key is not None:
         return _cached_key
     try:
-        _cached_key = runtime.secret(
-            "MFA_ENCRYPTION_KEY_FILE", "mfa_encryption_key.txt"
-        )
-    except FileNotFoundError:
+        key = runtime.secret("MFA_ENCRYPTION_KEY_FILE", "mfa_encryption_key.txt")
+    except (FileNotFoundError, IndexError):
+        # FileNotFoundError: no file at all. IndexError: runtime.secret returns
+        # the first line, which an empty file does not have.
         return None
+    if not key.strip():
+        # Present but blank/whitespace: treat as absent rather than deriving a
+        # cipher from empty key material.
+        return None
+    _cached_key = key
     return _cached_key
 
 
