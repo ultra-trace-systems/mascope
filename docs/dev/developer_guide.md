@@ -350,6 +350,10 @@ Running Mascope in `prod` mode requires the following "secrets" to be present in
 - `mascope.app.key`: SSL certificate private key
 - `mascope.app.pem`: SSL certificate
 - `server_owner_secret_key.txt`: First owner registration private key (arbitrary string)
+- `mfa_encryption_key.txt`: Encryption key for stored two-factor (TOTP) seeds
+  (arbitrary string; `mascope prod up` generates it when missing — see
+  [maintaining.md](../maintaining.md#two-factor-authentication) before ever
+  replacing it, as a changed key voids every enrolled second factor)
 
 > [!NOTE]
 > `postgres_password.txt` is also required for dev mode. See [Secrets](#secrets-1) under Database for setup instructions.

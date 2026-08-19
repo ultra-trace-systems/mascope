@@ -50,8 +50,8 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
   `mascope prod mfa reset <email>` on the host for when nobody who could do that
   can sign in either. None of them reveals or changes a password.
   **New secret**: `.runtime/secrets/mfa_encryption_key.txt` encrypts the stored
-  TOTP seeds. `mascope prod up` generates it (and any other missing secret)
-  before starting, so an existing deployment picks it up on its next start.
+  TOTP seeds. `mascope prod up` generates it when missing before starting, so
+  an existing deployment picks it up on its next start.
   Back it up with the others and do not rotate it casually: replacing it makes
   every enrolled seed undecryptable, and each of those users has to sign in with
   a recovery code and enrol again. It is deliberately separate from

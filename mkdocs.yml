@@ -119,6 +119,7 @@ nav:
       - Overview: guides/index.md
       - Import data files: guides/import-files.md
       - Target collections & matching: guides/target-collections.md
+      - Two-factor authentication: guides/two-factor.md
   - Instruments & acquisition: instruments/index.md
   - SDK & API:
       - Overview: sdk/index.md

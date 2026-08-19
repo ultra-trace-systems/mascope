@@ -24,6 +24,7 @@ Everything below assumes an Ubuntu host provisioned with
 | Update history | `cat "$(mascope path)/.runtime/update/status.log"` |
 | Back up now | `mascope prod db backup create` |
 | **Require a new password from every user** | Manage users in the app, or `mascope prod db script run require_password_change` |
+| **Clear a lost second factor (2FA)** | Manage users in the app, or `mascope prod mfa reset <email>` |
 | **Disk monitor status / run now** | `systemctl list-timers mascope-disk-check.timer` / `sudo systemctl start mascope-disk-check.service` |
 | Disk monitor history | `journalctl -u mascope-disk-check.service` |
 | Assignment-run retention status / run now | `systemctl list-timers mascope-assignment-prune.timer` / `sudo systemctl start mascope-assignment-prune.service` |
@@ -322,6 +323,13 @@ backup: a local database dump (`mascope prod db backup create`, pruned by
 `LOCAL_RETENTION_DAYS`) plus an encrypted off-site copy of the dumps and
 filestore via [restic](https://restic.net/).
 
+Neither layer includes `.runtime/secrets/` - deliberately, so no backup medium
+holds both the database and the keys that make its secrets usable. The flip
+side: restoring onto a fresh host needs the secrets restored separately. Keep
+a copy of the secrets files wherever the deployment's other credentials live -
+the [two-factor encryption key](#two-factor-authentication) in particular
+cannot be regenerated, only lost.
+
 Set it up:
 
 1. Copy the template and fill it in (restic repo + password, retention):
@@ -464,6 +472,55 @@ requirement outside acquisition hours.
 
 Requiring the change does not revoke anything by itself; tokens are revoked per
 user, as each one complies.
+
+### Two-factor authentication
+
+Accounts can protect sign-in with a second factor (TOTP), and a deployment can
+require one by role - [authorization.md](authorization.md#two-factor-authentication)
+describes the feature as users and admins see it, and the
+[user guide](user/guides/two-factor.md) walks through enrolment. Three things
+concern the operator: one secret, one policy setting, and the last-resort
+reset.
+
+**The encryption key.** `.runtime/secrets/mfa_encryption_key.txt` encrypts the
+stored TOTP seeds. `mascope prod up` generates it when missing, so it appears
+on a deployment's first start under a release that knows it. Two properties
+matter:
+
+- **It is not in the nightly backups** - deliberately, so a database dump (or
+  a stolen off-site copy) cannot be used to mint codes. That makes the file on
+  the host the only copy: keep one off the server, wherever the deployment's
+  other credentials live. On a server rebuilt from backups without it, every
+  enrolled account's TOTP stops verifying; recovery codes still work (their
+  hashes live in the database), so each user can sign in and enrol again - but
+  every one of them has to.
+- **Never rotate it casually.** Replacing it has exactly the same effect as
+  losing it. Unlike `jwt_secret_key.txt`, there is no routine reason to change
+  it.
+
+**Requiring it.** Set `mfa_required_min_role` under `[backend]` in the env's
+config toml (`admin` covers admins and owners, `guest` covers everyone), then
+`mascope prod up` to recreate the backend. No image rebuild is needed - the
+frontend reads the policy from the API. Two guards catch misconfiguration at
+startup rather than at someone's expense: a value that is not a role name
+stops the backend, and so does an active policy with no usable encryption key
+(which would otherwise hold every covered account at an enrolment screen that
+cannot complete).
+
+**When someone is locked out.** Recovery codes and in-app resets (Manage
+users) cover most cases. The host-level escape hatch exists for the case
+nothing in the app can reach - the only account that could reset the factor
+has lost its own authenticator and its codes:
+
+```sh
+mascope prod mfa status          # who holds a second factor + unused code counts
+mascope prod mfa reset <email>   # clear it so its holder can enrol afresh
+```
+
+The reset changes no password and reveals nothing; it only stops the second
+step being demanded, so the account's holder can sign in and set up a new
+authenticator. Open sessions are not ended - restart the backend if you need
+them closed.
 
 ## Monitoring
 
@@ -634,7 +691,7 @@ larger than the cap is refused up front with HTTP 413.
 | `/etc/environment` | `MASCOPE_PATH`, `LD_PRELOAD` (read by the systemd units) |
 | `/etc/mascope/update.env` | update window / grace / repo, update disk floor (chmod 600) |
 | `/etc/mascope/disk-check.env` | disk-monitor thresholds + alert URL (chmod 600) |
-| `$MASCOPE_PATH/.runtime/secrets/` | `postgres_password.txt`, `jwt_secret_key.txt`, `server_owner_secret_key.txt`, TLS cert/key, `backup.env` |
+| `$MASCOPE_PATH/.runtime/secrets/` | `postgres_password.txt`, `jwt_secret_key.txt`, `server_owner_secret_key.txt`, `mfa_encryption_key.txt`, TLS cert/key, `backup.env` |
 | `$MASCOPE_PATH/.runtime/database/backups/prod/` | database dumps (incl. pre-migration) |
 | `$MASCOPE_PATH/.runtime/update/` | `state.json` (pending update), `status.log` |
 
@@ -672,3 +729,11 @@ roll back manually: if a migration ran, first restore the pre-migration dump
 (`mascope prod db backup list`, then `mascope prod db restore <dump> --yes`),
 then redeploy the previous release with
 `mascope prod update --version v<previous>`.
+
+**Two-factor codes stopped working for everyone** (typically after a rebuild or
+a restore onto a fresh host). The seeds in the database no longer decrypt:
+`mfa_encryption_key.txt` is missing, or is not the file the seeds were
+encrypted under. Recovery codes still work. Put the original key file back and
+restart the backend; if it is gone for good, each enrolled account signs in
+with a recovery code (or is reset - see
+[Two-factor authentication](#two-factor-authentication)) and enrols again.

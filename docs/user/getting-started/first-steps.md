@@ -15,6 +15,12 @@ Open your Mascope address and enter your **Email** and **Password**, then click
 created by an administrator, so if you are missing yours (or a password reset),
 ask them.
 
+If your account has [two-factor authentication](../guides/two-factor.md)
+turned on, signing in has a second step: enter the six-digit code from your
+authenticator app (or one of your saved recovery codes). On a server that
+*requires* two-factor authentication for your role, Mascope instead walks you
+through setting it up right after your first sign-in.
+
 ### If Mascope asks you to set a new password
 
 Right after signing in you may land on **Set a new password** instead of the
@@ -70,8 +76,9 @@ and description, and click **Create**. You become its owner and can invite
 members later (right-click the workspace → **Manage members**).
 
 The Home menu is also where **Notifications** (a log of past toasts) and
-**Settings** live — the Settings tab has your account details, the light/dark
-**Theme** toggle, **Change password**, and **API Access Tokens** for the
+**Settings** live — the Settings tab has your account details, **Change
+password**, **[Two-factor authentication](../guides/two-factor.md)**, the
+light/dark **Theme** toggle, and **API Access Tokens** for the
 [SDK](../sdk/index.md) and the [File Agent](../instruments/index.md#the-file-agent).
 
 ## Create a dataset and a batch

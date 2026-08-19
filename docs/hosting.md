@@ -59,8 +59,12 @@ and the checkout.
    head -c 32 /dev/urandom | xxd -p -c 32 > .runtime/secrets/mfa_encryption_key.txt
    ```
 
-   `mascope prod up` generates any of these that are missing, so an existing
-   deployment picks up a newly added one on its next start.
+   `mascope prod up` generates a missing *newly introduced* secret on its own
+   (today that is `mfa_encryption_key.txt`), so an existing deployment picks it
+   up on its next start. The three long-standing secrets are never generated
+   automatically: on an existing deployment a missing one is a problem to
+   investigate, and a fresh random value would break against the existing
+   database or end every session.
 
    `jwt_secret_key` is shared by the backend and the file-converter service (the
    converter derives its service-authentication token from it), so if you ever
