@@ -158,6 +158,40 @@ for SUB in filestore filestreams temp logs agents; do
     mkdir -p "/app/.runtime/env/${MASCOPE_ENV}/$SUB"
 done
 
+# --- Worker and pool sizing for this stack (config layer 3) ------------------
+# The demo stack runs in prod mode, so it inherits prod.mascope.toml's pool -
+# 3 + 7 connections per worker, sized in that file for "auto workers (12
+# usually): 12 x (3 + 7) = 120 peak connections". Worker count is half the
+# CPUs, so a small host runs 1-2 workers and the whole ingest has to squeeze
+# through 10-20 connections while this stack's stock postgres offers 100. The
+# burst does not fit: the pool blocks for pool_timeout, the file-converter's
+# POST /api/instrument_configs exceeds its read timeout, and its single
+# processing thread wedges in the retry loop with files still in filestreams.
+#
+# Per-worker sizing that assumes many workers is wrong here, so size this
+# stack against its own postgres instead. Pinning the worker count is what
+# makes that arithmetic hold: left on "auto" the ceiling would scale with the
+# host's CPUs (4 workers x 30 = 120) and overrun a stock max_connections = 100
+# on a larger runner - trading a pool timeout for a refused connection.
+#
+#   2 workers x (3 + 27) = 60 of 100, leaving headroom for db_init, backups,
+#   psql and the superuser reservation.
+#
+# Two workers is ample here: one file-converter feeds this stack, and its
+# processing loop is single-threaded. Overflow connections are opened only
+# under load and closed after, so the wider ceiling costs nothing at idle.
+# prod.mascope.toml is deliberately not touched - its numbers are tuned for a
+# 12-worker production deployment against a 200-connection postgres.
+cat > "/app/.runtime/env/${MASCOPE_ENV}/prod.mascope.toml" <<'POOL_TOML'
+# Written by tooling/demo-init.sh - see the rationale there before editing.
+[backend]
+workers = 2
+
+[backend.database]
+max_overflow = 27
+POOL_TOML
+log_info "Pinned demo stack to 2 workers x (3 + 27) connections"
+
 # --- Upgrade the schema to head (image may be newer than the snapshot) -------
 cd /app/server/backend
 log_info "Applying any pending migrations..."
