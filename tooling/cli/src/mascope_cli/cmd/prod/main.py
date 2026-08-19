@@ -325,6 +325,13 @@ def _run_compose(args: list[str], building: bool = False) -> None:
                         callers (CI in particular) can rely on the CLI's exit
                         status instead of scraping logs.
     """
+    # Any compose "up" needs its declared secret files present first, or compose
+    # refuses to start on a declared-but-absent secret. Centralised here so the
+    # unattended update path - which calls compose directly rather than through
+    # the `up` command - cannot skip it.
+    if args and args[0] == "up":
+        _ensure_secrets()
+
     env_vars = _compose_env(building)
     command = f"docker compose --file '{_compose_path()}' {' '.join(args)}"
 
@@ -450,21 +457,26 @@ def _warn_if_cli_stale(*, auto: bool) -> None:
 
 def _ensure_secrets() -> None:
     """
-    Create any secret files the compose file expects but the home does not have.
+    Create the auto-provisionable secret files the compose file expects but the
+    home does not have, before compose is asked to start.
 
     Compose refuses to start when a declared secret's source file is missing, so
     a deployment that predates a newly added secret would fail on an ordinary
-    update. Generating the missing ones here keeps `mascope prod up` working
-    across such an update; existing files are never touched, so this can never
-    rotate a key out from under a running deployment.
+    update. Only ``AUTO_PROVISIONED_SECRETS`` are created - those introduced
+    after a deployment's initial setup, whose absence means "this release added
+    a secret". The critical long-standing secrets are left alone: a missing
+    postgres_password or jwt_secret_key is an error to surface, not to replace
+    with a fresh value that would break against the existing database or end
+    every session. Existing files are never touched, so this can never rotate a
+    key out from under a running deployment.
     """
     import secrets as _secrets
 
-    from mascope_cli.cmd.init import GENERATED_SECRETS
+    from mascope_cli.cmd.init import AUTO_PROVISIONED_SECRETS
 
     secrets_dir = Path(runtime.path(".runtime", "secrets"))
     secrets_dir.mkdir(parents=True, exist_ok=True)
-    for name in GENERATED_SECRETS:
+    for name in AUTO_PROVISIONED_SECRETS:
         target = secrets_dir / name
         if target.exists():
             continue
@@ -499,9 +511,10 @@ def up(
         mascope prod up --detach
         mascope prod up --build --detach
     """
-    # Check database bind-mount dirs before starting containers
+    # Check database bind-mount dirs before starting containers. Missing secret
+    # files are provisioned by _run_compose on any "up" (including the unattended
+    # update path), so no explicit call is needed here.
     check_data_dirs(_MODE)
-    _ensure_secrets()
     args = ["up"]
     if rebuild:
         args.append("--build")
