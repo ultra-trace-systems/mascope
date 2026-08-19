@@ -580,7 +580,6 @@ async def _import_chunk(sample, body, user_id: int | None) -> dict:
             )
 
     bands = _resolved_bands(body, run)
-    values: list[dict] = []
     if body.rows:
         known_peak_ids = await _load_peak_ids(sample)
         total = staged + len(body.rows)
