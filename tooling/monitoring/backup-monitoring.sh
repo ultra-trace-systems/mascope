@@ -18,6 +18,9 @@
 #   UPTIME_KUMA_COMPOSE     default /opt/uptime-kuma/compose.yaml
 #   UPTIME_KUMA_DATA        default /opt/uptime-kuma/data
 #   GLITCHTIP_UPLOADS_VOL   default glitchtip_uploads (docker volume name)
+#   MONITORING_DIR          default /opt/monitoring (these scripts + their env)
+#   EXTRA_CONFIG_PATHS      optional, space-separated: anything else on this
+#                           host worth restoring alongside the stacks
 #   KEEP_DAILY/WEEKLY/MONTHLY  restic retention (default 7/4/6)
 #   HEALTHCHECK_URL         optional healthchecks.io-style ping URL
 
@@ -39,6 +42,11 @@ GLITCHTIP_COMPOSE="${GLITCHTIP_COMPOSE:-/opt/glitchtip/compose.yaml}"
 UPTIME_KUMA_COMPOSE="${UPTIME_KUMA_COMPOSE:-/opt/uptime-kuma/compose.yaml}"
 UPTIME_KUMA_DATA="${UPTIME_KUMA_DATA:-/opt/uptime-kuma/data}"
 GLITCHTIP_UPLOADS_VOL="${GLITCHTIP_UPLOADS_VOL:-glitchtip_uploads}"
+MONITORING_DIR="${MONITORING_DIR:-/opt/monitoring}"
+# Space-separated; word splitting is deliberate, so paths must not contain
+# spaces. Anything else on this host worth restoring - other runners' configs,
+# small state directories - without this script needing to know what they are.
+EXTRA_CONFIG_PATHS="${EXTRA_CONFIG_PATHS:-}"
 KEEP_DAILY="${KEEP_DAILY:-7}"
 KEEP_WEEKLY="${KEEP_WEEKLY:-4}"
 KEEP_MONTHLY="${KEEP_MONTHLY:-6}"
@@ -95,6 +103,34 @@ log "backing up Uptime Kuma (quiesced)..."
 docker compose -f "$UPTIME_KUMA_COMPOSE" stop uptime-kuma
 restic backup --tag monitoring --tag uptime-kuma "$UPTIME_KUMA_DATA"
 docker compose -f "$UPTIME_KUMA_COMPOSE" start uptime-kuma
+
+# 4) Host configuration and the small state that would otherwise have to be
+#    rebuilt from memory: these scripts and their env, the stacks' compose
+#    files, and whatever EXTRA_CONFIG_PATHS names. A restored data volume with
+#    no stack definition beside it is not a restored service, which is why the
+#    compose files are in here rather than assumed.
+#    Kuma's data directory is excluded: it is captured above with the service
+#    stopped, and a second, live copy would look equally valid on restore while
+#    being the inconsistent one.
+#    Missing paths are skipped rather than fatal - this is a template, and the
+#    optional pieces are not present on every host.
+CONFIG_PATHS=()
+for p in "$MONITORING_DIR" "$(dirname "$GLITCHTIP_COMPOSE")" \
+         "$(dirname "$UPTIME_KUMA_COMPOSE")" $EXTRA_CONFIG_PATHS; do
+    if [[ -e "$p" ]]; then
+        CONFIG_PATHS+=("$p")
+    else
+        log "note: $p does not exist - not backing it up"
+    fi
+done
+if [[ ${#CONFIG_PATHS[@]} -gt 0 ]]; then
+    log "backing up host configuration and records..."
+    restic backup --tag monitoring --tag ops-config \
+        "${CONFIG_PATHS[@]}" \
+        --exclude "$UPTIME_KUMA_DATA" \
+        --exclude "*.bak" \
+        --exclude-caches
+fi
 
 # Retention.
 log "applying retention (daily=${KEEP_DAILY} weekly=${KEEP_WEEKLY} monthly=${KEEP_MONTHLY})..."
