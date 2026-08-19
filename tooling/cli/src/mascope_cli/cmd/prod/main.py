@@ -151,6 +151,67 @@ def _deploy_version() -> str:
     return "latest"
 
 
+def _align_checkout(target: str, mascope_path: Optional[str]) -> None:
+    """
+    Move the deployment checkout to the release tag that is now running.
+
+    A boot redeploys whatever the checkout selects (the systemd unit runs
+    from it), so after an update the checkout must name the running release -
+    left behind, a reboot before the next update quietly redeploys the
+    previous one, and `mascope prod doctor` reports the gap as DRIFT the
+    whole time.
+
+    Best-effort by design: only a clean checkout is moved (`git checkout`
+    without force, so local modifications are never discarded), a tag the
+    checkout has not fetched yet is fetched from `origin` first, and any
+    failure downgrades to a warning naming the manual step - the stack is
+    already healthy on the new release, and alignment must not turn that
+    success into an error.
+
+    :param target: The image tag just deployed. Only a release tag
+        (``vX.Y.Z``) aligns; ``latest`` tracks master and has no tag.
+    :param mascope_path: The deployment checkout, or None when unset.
+    """
+    if not mascope_path or not re.fullmatch(r"v\d+\.\d+\.\d+", target):
+        return
+
+    def git(*args: str) -> subprocess.CompletedProcess:
+        return subprocess.run(
+            ["git", "-C", mascope_path, *args],
+            capture_output=True,
+            text=True,
+            timeout=120,
+        )
+
+    try:
+        head = git("rev-parse", "HEAD")
+        if head.returncode != 0:
+            return  # not a git checkout - nothing to align
+        tag = git("rev-parse", "--verify", f"refs/tags/{target}^{{commit}}")
+        if tag.returncode != 0:
+            # Routine under --auto: it learns of new releases from the GitHub
+            # releases API, so the tag is often newer than the last fetch.
+            fetch = git("fetch", "--quiet", "--no-tags", "origin", "tag", target)
+            if fetch.returncode != 0:
+                raise RuntimeError(fetch.stderr.strip() or "git fetch failed")
+            tag = git("rev-parse", "--verify", f"refs/tags/{target}^{{commit}}")
+            if tag.returncode != 0:
+                raise RuntimeError(f"tag '{target}' not found after fetching")
+        if head.stdout.strip() == tag.stdout.strip():
+            return  # the checkout already names the running release
+        checkout = git("checkout", "--quiet", target)
+        if checkout.returncode != 0:
+            raise RuntimeError(checkout.stderr.strip() or "git checkout failed")
+        runtime.logger.info(f"Moved the deployment checkout to {target}.")
+    except Exception as e:
+        runtime.logger.warning(
+            f"The stack runs {target} but the deployment checkout could not "
+            f"be moved to it ({e}). Until it is, a reboot redeploys the "
+            f"previous release and doctor reports DRIFT - run "
+            f"'git checkout {target}' in {mascope_path} to align."
+        )
+
+
 def _compose_env(building: bool = False) -> dict[str, str]:
     """
     Build the environment variable dict injected into every docker compose call.
@@ -622,6 +683,9 @@ def _apply_update(
         message = f"{kind.capitalize()} update to {target} applied; backend healthy."
         runtime.logger.success(message)
         auto_update.record_status(mascope_path, message)
+        # Keep the checkout naming the release that runs, so a reboot
+        # between timer windows redeploys this release, not the previous one.
+        _align_checkout(target, mascope_path)
         _run_compose(["ps"])
         # Images moved; the unattended tool cannot safely reinstall itself, so
         # record + log if the CLI now trails the checkout for the operator.
@@ -924,6 +988,9 @@ def update(
     _prune_images()  # reclaim the superseded release's images
     _run_compose(["ps"])
     runtime.logger.success(f"Production stack updated to '{target}'")
+    # Keep the checkout naming the release that runs, so a reboot redeploys
+    # this release and doctor stays clean (no-op when already checked out).
+    _align_checkout(target, os.environ.get("MASCOPE_PATH"))
     # Last, so it is the final thing the operator sees: the images moved but the
     # CLI tool did not - warn if it now trails the checkout.
     _warn_if_cli_stale(auto=False)
