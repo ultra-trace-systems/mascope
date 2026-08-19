@@ -315,6 +315,157 @@ def load_peaks(
     return result
 
 
+def load_assignments(
+    client: MascopeClient,
+    dataset: "str | re.Pattern",
+    batches: "str | re.Pattern | None" = None,
+    *,
+    samples: "str | re.Pattern | None" = None,
+    exact: bool = False,
+    run: str = "latest",
+    tier: str | None = None,
+    source: str | None = None,
+    confirm_above: int | None = 100,
+    max_workers: int = 8,
+) -> pd.DataFrame | None:
+    """Load peak assignments for all samples across one or more batches.
+
+    The peak-assignment counterpart of :func:`load_peaks`: resolves the
+    dataset/batch/sample selection, reads each sample's latest completed peak
+    assignment run, and concatenates everything into a single DataFrame
+    enriched with batch and sample metadata.
+
+    Read-only: samples without a completed assignment run contribute nothing
+    (and are logged) rather than being assigned on the fly. Each per-sample
+    fetch pages the run internally and pulls core rows only - the per-peak
+    ``alternatives``/``provenance`` JSON stays behind
+    :meth:`~mascope_sdk.resources.peak_assignments.PeakAssignmentsResource.detail`.
+
+    :param client: The MascopeClient instance.
+    :type client: MascopeClient
+    :param dataset: Dataset name or literal substring (or dataset ID); pass a
+                    compiled ``re.Pattern`` to match by regex.
+    :type dataset: str | re.Pattern
+    :param batches: Optional case-insensitive filter on batch names. A string
+                    is a literal substring; pass a compiled ``re.Pattern`` to
+                    match by regex. If not provided, all batches in the
+                    dataset are loaded.
+    :type batches: str | re.Pattern, optional
+    :param samples: Optional case-insensitive filter on sample names, same
+                    semantics as ``batches``.
+    :type samples: str | re.Pattern, optional
+    :param exact: Match a string ``batches`` / ``samples`` against the whole
+                  name instead of as a substring. Not valid with a compiled
+                  pattern. Defaults to False.
+    :type exact: bool
+    :param run: Which run to read per sample. Only ``"latest"`` (the latest
+                completed run of each sample) is supported; run IDs are
+                per-sample and cannot be given across samples.
+    :type run: str
+    :param tier: Filter by confidence tier.
+    :type tier: str, optional
+    :param source: Filter by assignment source (``database``/``untargeted``).
+    :type source: str, optional
+    :param confirm_above: If the number of samples exceeds this threshold,
+                          an interactive confirmation prompt is shown before
+                          loading starts. Set to ``None`` to disable.
+                          Defaults to 100.
+    :type confirm_above: int | None
+    :param max_workers: Maximum number of concurrent requests. Defaults to 8.
+    :type max_workers: int
+    :return: A DataFrame containing all assignments enriched with columns:
+
+             - ``sample_batch_name``: Name of the batch the sample belongs to
+             - ``sample_item_name``: Name of the sample
+             - ``datetime_utc``: Measurement start timestamp (UTC)
+
+             Plus all columns from
+             :meth:`~mascope_sdk.resources.peak_assignments.PeakAssignmentsResource.get`
+             (one row per observed peak).
+
+             Returns None if no assignments are found.
+    :rtype: pd.DataFrame | None
+    :raises ValueError: If the dataset or batches cannot be resolved, or
+                        ``run`` is not ``"latest"``.
+    :raises KeyboardInterrupt: If the user declines the confirmation prompt.
+
+    Example::
+
+        assignments = load_assignments(
+            mascope, dataset="My Dataset", batches="Uronium"
+        )
+        assignments.groupby("sample_item_name")["tier"].value_counts()
+    """
+    if run != "latest":
+        raise ValueError(
+            "Only run='latest' is supported: assignment run IDs are "
+            "per-sample, so a single run ID cannot select runs across "
+            "samples. Use peak_assignments.get(sample_id, run_id=...) to "
+            "read a specific run of one sample."
+        )
+
+    sample_tasks, _ = _collect_sample_tasks(
+        client, dataset, batches, samples=samples, exact=exact
+    )
+    if not sample_tasks:
+        logger.info("No samples found")
+        return None
+
+    if confirm_above is not None and len(sample_tasks) > confirm_above:
+        _confirm_sample_count(len(sample_tasks), confirm_above)
+
+    # Load assignments concurrently with progress bar
+    def _fetch_assignments(sample_row: Any, batch_name: str) -> pd.DataFrame | None:
+        sample_id = sample_row["sample_item_id"]
+        assignments = client.peak_assignments.get(sample_id, tier=tier, source=source)
+        if assignments is None or assignments.empty:
+            logger.info(
+                "Sample '{}': no assignments (no completed run, or filters "
+                "matched nothing), skipping",
+                sample_row["sample_item_name"],
+            )
+            return None
+
+        # Enrich with batch and sample context (rows already carry
+        # sample_item_id from the API)
+        assignments.insert(0, "sample_batch_name", batch_name)
+        assignments.insert(
+            assignments.columns.get_loc("sample_item_id") + 1,
+            "sample_item_name",
+            sample_row["sample_item_name"],
+        )
+        if "datetime_utc" in sample_row.index:
+            assignments.insert(
+                assignments.columns.get_loc("sample_item_name") + 1,
+                "datetime_utc",
+                sample_row["datetime_utc"],
+            )
+        return assignments
+
+    frames: list[pd.DataFrame] = run_concurrent(
+        _fetch_assignments,
+        sample_tasks,
+        max_workers=max_workers,
+        desc="Loading assignments",
+        unit="sample",
+    )
+
+    if not frames:
+        logger.info("No assignments found")
+        return None
+
+    skipped = len(sample_tasks) - len(frames)
+    if skipped:
+        logger.info("{} sample(s) contributed no assignments", skipped)
+
+    # Drop all-NA columns per frame to avoid FutureWarning on concat
+    # with mixed empty/populated columns.
+    frames = [f.dropna(axis=1, how="all") for f in frames]
+    result = pd.concat(frames, ignore_index=True)
+    logger.info("Loaded {} assignments total", len(result))
+    return result
+
+
 def load_peaks_by_stage(
     client: MascopeClient,
     sample: str,

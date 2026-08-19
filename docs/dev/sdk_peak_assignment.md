@@ -27,6 +27,21 @@ It is an engineering design + phased plan, not a user guide.
 > will move `alternatives`/`provenance` out of the list rows into a per-peak detail
 > fetch. This revision folds those in.
 
+> **Status (2026-08-19). v1 has shipped** (issue
+> [#1737](https://github.com/ultra-trace-systems/mascope/issues/1737)): the SDK gained the
+> `peak_assignments` resource (`get` + `list_runs` + `detail`), the
+> `load_assignments` loader, hermetic unit tests plus contract tests (which
+> **skip** until the demo bundle carries a completed run - §7's demo-dataset
+> task is still open), and a tutorial notebook - numbered
+> `11_peak_assignment.ipynb`, not `10`, because `10_batch_stages.ipynb` took
+> that slot after this doc was written. [#1725](https://github.com/ultra-trace-systems/mascope/issues/1725)
+> landed first, so `get()` reads the slim ledger rows (with the flattened
+> `p_correct` / `p_correct_provisional` / `corroboration_adducts` scalars) and
+> the open decision in §9.5 resolved to a separate `detail(sample_id,
+> peak_assignment_id)` accessor over the per-assignment detail route (it takes
+> the sample id too, matching the route shape). §8 (write surface) remains
+> deferred.
+
 > **Scope decision (v1): read-only.** v1 exposes only *reading* persisted assignment
 > results. It does **not** trigger assignment runs or write verifications from the
 > SDK; whether the SDK should launch runs at all is an open question (runs are heavy,
