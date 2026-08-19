@@ -1773,7 +1773,7 @@ provides-extras = ["logs", "sentry"]
 
 [[package]]
 name = "mascope-sdk"
-version = "2026.8.12"
+version = "2026.8.19"
 source = { editable = "libraries/sdk" }
 dependencies = [
     { name = "loguru" },
