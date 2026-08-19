@@ -129,6 +129,7 @@ All under prefix `/api/peak-assignments`, token-accessible (SDK-reachable):
 | `POST /sample/{id}/assign` | **v2** (§8.3) | 202 launch run (async) |
 | `POST /batch/{id}/assign` | **v2** (§8.3) | 202 launch run for a whole batch |
 | `POST /sample/{id}/runs/import` | **v2** (§8.2) | **new endpoint**: publish an externally computed run |
+| `DELETE /sample/{id}/runs/{run_id}` | **v2** (§8.2) | **new endpoint**: abandon an `importing` run, releasing the sample before the prune's grace |
 | `POST /sample/{id}/fit/aggregate` | **v2** (§8.3) | isotope table for an arbitrary formula+adduct (POST, but non-mutating - verify an untargeted winner) |
 | `POST /sample/{id}/fit/visualize` | optional | emits socket events, which a headless client cannot receive; wrapped only if a use appears (§8.3) |
 | `POST /sample/{id}/verify` | **v2** (§8.3) | record a verdict (write) |
@@ -570,6 +571,19 @@ today's `keep_running_hours` sweep. Note the consequence for the run selector:
 an import in progress is *visible* as an in-flight run, which is the honest
 display and is what makes the 409 admission refusal legible to a user.
 
+**An abandoned assembly can be cleared without waiting for that grace.**
+`DELETE /sample/{sample_item_id}/runs/{run_id}` deletes an `importing` run
+with its staged rows, for an editor of the sample's workspace. The grace alone
+is not enough of an answer: admission refuses on any non-terminal run and the
+reaper deliberately skips `importing`, so a client that dies mid-upload - or
+that simply loses the run id it was handed - blocks every later import *and*
+in-app assign for that sample until the next nightly prune, up to about a day
+for an upload abandoned just after one runs. The client that still holds the
+run id has always been able to carry on appending to it; this is the way out
+for the one that cannot. Deliberately restricted to `importing`: a
+`completed` run is ledger data, and removing that is retention's business
+(§8.2's per-(sample, engine) budget), not a client's.
+
 **Row-count bounds.** The per-request cap bounds one request. The *total* is
 **not** bounded by construction until finalize, because peak-existence and
 duplicate checks are payload-wide: until then a client could append chunks of
@@ -888,7 +902,8 @@ Each step is its own PR, and each leaves the system shippable:
    `c3a9e6f2b8d1`) adding `engine` (backfilled `'mascope'`, reserved from client
    payloads), `calibration`, `tier_bands` and the `importing` status; durable
    run-state admission (409) adopted by the import *and* in-app assign paths;
-   the reaper skipping `importing` and the prune gaining its grace; the prune's
+   the reaper skipping `importing` and the prune gaining its grace; the abandon
+   endpoint that releases a stuck assembly before that grace; the prune's
    keep-newest budget becoming per (sample, engine); strict-lite validation;
    fold-in on completion; recalibration restricted to in-app runs. Integration
    tests exercise the write via the `MASCOPE_PEAK_ASSIGNMENT` env override, like
