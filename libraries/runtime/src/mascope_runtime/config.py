@@ -312,6 +312,12 @@ class BackendConfig(ModuleConfig):
     # api/new/auth/mfa/policy.py. Typed loosely here because this library must
     # not depend on the backend's role table.
     mfa_required_min_role: Optional[str] = None
+    # Refuse bearer tokens for the pairable agent services (file-agent,
+    # tof-agent, export-agent) unless the token is bound to a registered
+    # device. Off by default: tokens issued before the device registry keep
+    # working until the deployment has (re-)paired every agent machine and
+    # turns this on. Pairing binds new tokens to a device automatically.
+    require_device_tokens: bool = False
 
     def get_worker_count(self) -> int:
         """

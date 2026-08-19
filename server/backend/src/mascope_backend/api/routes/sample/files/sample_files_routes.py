@@ -7,7 +7,9 @@ from fastapi import (
     BackgroundTasks,
     Depends,
     File,
+    Form,
     HTTPException,
+    Request,
     UploadFile,
 )
 from tuspyserver import create_tus_router
@@ -46,6 +48,7 @@ from mascope_backend.api.models.sample.files.sample_file_pydantic_model import (
     SampleFileUpdate,
 )
 from mascope_backend.api.new.auth.access_token.service import get_access_token
+from mascope_backend.api.new.auth.access_token.util import get_token_device_id
 from mascope_backend.api.new.auth.dependencies import current_active_user
 from mascope_backend.api.new.workspaces.dependencies import (
     accessible_acquisition_instruments,
@@ -403,10 +406,28 @@ async def reprocess_sample_files_route(
     }
 
 
+async def _request_device_id(request: Request) -> int | None:
+    """The paired device behind the request's bearer token, if any.
+
+    Cookie-authenticated (web) requests and unbound tokens yield None; the
+    upload is then attributed to the user alone.
+    """
+    auth_header = request.headers.get("authorization")
+    if not auth_header or " " not in auth_header:
+        return None
+    return await get_token_device_id(auth_header.split(" ")[1])
+
+
 @sample_files_router.post("/upload")
 @api_route(status_code=201, token_access=True)
 async def upload_sample_files_route(
+    request: Request,
     files: list[UploadFile] = File(..., description="Multiple files to upload"),
+    instrument_timezone: str | None = Form(
+        None,
+        alias="timezone",
+        description="IANA timezone of the uploading machine (agents send this)",
+    ),
     user=Depends(current_active_user),
 ) -> dict:
     """
@@ -415,7 +436,9 @@ async def upload_sample_files_route(
     Checks that the user has editor access to each file's instrument workspace
     before uploading.  The instrument is derived from the filename prefix.
 
+    :param request: The incoming request (for upload attribution).
     :param files: List of files to be uploaded via multipart form data
+    :param instrument_timezone: IANA timezone reported by the uploading machine
     :param user: The authenticated user
     :return: A dict response with sample files upload results
     """
@@ -441,10 +464,13 @@ async def upload_sample_files_route(
         files=validated_files.files,
         user=user,
         access_token=access_token,
+        device_id=await _request_device_id(request),
+        instrument_timezone=instrument_timezone,
     )
 
 
 def get_upload_handler(
+    request: Request,
     user=Depends(current_active_user),
 ):
     """Get the upload handler for TUS file uploads.
@@ -452,6 +478,7 @@ def get_upload_handler(
     Checks that the user has editor access to the instrument workspace
     derived from the uploaded filename before processing.
 
+    :param request: The incoming request (for upload attribution).
     :param user: The current authenticated user.
     :return: A callable that handles the file upload.
     """
@@ -478,6 +505,8 @@ def get_upload_handler(
             dest_path,
             user=user,
             access_token=access_token,
+            device_id=await _request_device_id(request),
+            instrument_timezone=metadata.get("timezone"),
         )
 
     return handler

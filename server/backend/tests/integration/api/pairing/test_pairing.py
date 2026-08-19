@@ -16,7 +16,7 @@ from sqlalchemy import delete, select
 
 from mascope_backend.api.new.auth.pairing import service as pairing_service
 from mascope_backend.app.fast import fast
-from mascope_backend.db import AccessToken
+from mascope_backend.db import AccessToken, AgentDevice
 
 
 class FakeRedis:
@@ -56,11 +56,16 @@ async def public_client():
 
 @pytest_asyncio.fixture(autouse=True)
 async def clean_file_agent_tokens(async_session_factory):
-    """Remove file-agent tokens between tests so row-count asserts are stable."""
+    """Remove file-agent tokens and devices between tests so asserts are stable."""
     yield
     async with async_session_factory() as session:
         await session.execute(
             delete(AccessToken).where(AccessToken.service_name == "file-agent")
+        )
+        # Tokens cascade from a device delete, but a pairing that added a token
+        # to a pre-existing device leaves the device behind; clear both.
+        await session.execute(
+            delete(AgentDevice).where(AgentDevice.service_name == "file-agent")
         )
         await session.commit()
 
@@ -108,13 +113,20 @@ async def test_full_pairing_flow(
     token = body["access_token"]
     assert token
 
-    # The token is a real DB row, stamped with service and machine
+    # The token is a real DB row, stamped with service and machine, and bound
+    # to a device the pairing created.
     async with async_session_factory() as session:
         row = (
             await session.execute(select(AccessToken).where(AccessToken.token == token))
         ).scalar_one()
-    assert row.service_name == "file-agent"
-    assert row.description == "Paired: ORBI-PC"
+        assert row.service_name == "file-agent"
+        assert row.description == "Paired: ORBI-PC"
+        assert row.device_id is not None
+        device = await session.get(AgentDevice, row.device_id)
+    assert device.name == "ORBI-PC"
+    assert device.service_name == "file-agent"
+    assert device.sponsor_user_id is not None  # the approving editor
+    assert device.revoked_at is None
 
     # Second poll: the pairing is gone
     resp = await public_client.post(

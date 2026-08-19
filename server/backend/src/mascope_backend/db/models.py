@@ -315,6 +315,14 @@ class AccessToken(SQLAlchemyBaseAccessTokenTable[int], Base):
     service_name: Mapped[Optional[str]] = mapped_column(String(50), nullable=True)
     # Optional label, e.g. the paired machine's hostname (set by device pairing)
     description: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
+    # The paired machine holding this token. NULL for personal tokens
+    # (mascope_sdk) and for agent tokens issued before the device registry;
+    # the require_device_tokens deployment flag refuses the latter.
+    device_id: Mapped[Optional[int]] = mapped_column(
+        ForeignKey("agent_device.device_id", ondelete="CASCADE"),
+        nullable=True,
+        index=True,
+    )
     created_at: Mapped[dt] = mapped_column(
         TIMESTAMP(timezone=True),
         index=True,
@@ -324,6 +332,7 @@ class AccessToken(SQLAlchemyBaseAccessTokenTable[int], Base):
 
     # Relationships
     user = relationship("User", back_populates="access_token")
+    device = relationship("AgentDevice", back_populates="access_tokens")
 
     @classmethod
     async def clean_invalid_tokens(cls, session) -> int:
@@ -394,6 +403,57 @@ class UserRecoveryCode(Base):
 
     # Relationships
     user = relationship("User", back_populates="recovery_code")
+
+
+class AgentDevice(Base):
+    """
+    A machine paired to hold an agent credential (e.g. the File Agent on an
+    instrument PC).
+
+    Each row is one paired machine: created when a pairing is approved, named
+    after the hostname the agent reported (renameable), and sponsored by the
+    approving user. The sponsor vouches for the machine; ``ON DELETE SET
+    NULL`` keeps the device (and the attribution of everything it uploaded)
+    when the sponsor's account is removed, mirroring
+    ``workspace_member.granted_by``.
+
+    Revocation deletes the device's access tokens and sets ``revoked_at``;
+    the row itself is kept so uploads attributed to the device stay
+    explainable. Deleting a device row cascades to its tokens (fail closed:
+    a credential must never outlive its device record).
+    """
+
+    __tablename__ = "agent_device"
+
+    device_id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    name: Mapped[str] = mapped_column(String(100), nullable=False)
+    service_name: Mapped[str] = mapped_column(String(50), nullable=False)
+    sponsor_user_id: Mapped[Optional[int]] = mapped_column(
+        ForeignKey("user.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    created_at: Mapped[dt] = mapped_column(
+        TIMESTAMP(timezone=True),
+        nullable=False,
+        default=lambda: dt.now(timezone.utc),
+    )
+    # Updated on authenticated use, throttled in SQL so a busy agent costs one
+    # write per throttle window, not one per request.
+    last_seen_at: Mapped[Optional[dt]] = mapped_column(
+        TIMESTAMP(timezone=True), nullable=True
+    )
+    revoked_at: Mapped[Optional[dt]] = mapped_column(
+        TIMESTAMP(timezone=True), nullable=True
+    )
+
+    # Relationships
+    sponsor = relationship("User")
+    # passive_deletes=True: the DB's ON DELETE CASCADE removes the tokens.
+    access_tokens = relationship(
+        "AccessToken",
+        back_populates="device",
+        cascade="all, delete, delete-orphan",
+        passive_deletes=True,
+    )
 
 
 class Dataset(Base):
@@ -563,10 +623,33 @@ class SampleFile(Base):
     range: Mapped[list] = mapped_column(JSON)
     mz_calibration: Mapped[Optional[dict]] = mapped_column(JSON)
     polarity: Mapped[str] = mapped_column(String(4))
+    # Attribution, recorded at creation. NULL on rows that predate these
+    # columns; SET NULL keeps the file when the account or device goes away.
+    uploaded_by_user_id: Mapped[Optional[int]] = mapped_column(
+        ForeignKey("user.id", ondelete="SET NULL"), nullable=True
+    )
+    uploaded_by_device_id: Mapped[Optional[int]] = mapped_column(
+        ForeignKey("agent_device.device_id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+    # How datetime_utc was derived from the instrument-local datetime:
+    # the IANA zone the uploading agent reported (NULL when none was sent),
+    # and which source determined the applied offset - "file" (an offset
+    # embedded in the raw file), "agent" (the reported zone), or "guess"
+    # (the converter host's own clock, the legacy fallback).
+    acquisition_timezone: Mapped[Optional[str]] = mapped_column(
+        String(64), nullable=True
+    )
+    utc_offset_source: Mapped[Optional[str]] = mapped_column(String(8), nullable=True)
 
     # Relationships
     instrument_function = relationship(
         "InstrumentFunction", back_populates="sample_file"
+    )
+    uploaded_by_user = relationship("User", foreign_keys=[uploaded_by_user_id])
+    uploaded_by_device = relationship(
+        "AgentDevice", foreign_keys=[uploaded_by_device_id]
     )
     sample_items = relationship(
         "SampleItem", back_populates="sample_file", cascade="all, delete, delete-orphan"
@@ -1732,6 +1815,7 @@ __all__ = [
     "Role",
     "AccessToken",
     "UserRecoveryCode",
+    "AgentDevice",
     "Dataset",
     "SampleBatch",
     "SampleFile",

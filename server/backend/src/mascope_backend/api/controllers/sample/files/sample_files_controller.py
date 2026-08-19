@@ -37,6 +37,7 @@ from mascope_backend.api.models.sample.files.sample_file_pydantic_model import (
 )
 from mascope_backend.api.new.instruments import get_instruments
 from mascope_backend.db import (
+    AgentDevice,
     Dataset,
     SampleBatch,
     SampleFile,
@@ -265,9 +266,24 @@ async def create_sample_file(
         instruments = instruments_response["data"]
         initial_instruments = [i["instrument"] for i in instruments]
 
-        # Step 2: Construct new sample file
+        # Attribution must never fail an ingest: a device id whose row is
+        # gone (revoked-then-deleted, or a stale converter) degrades to an
+        # unattributed device, not an error.
+        device_id = sample_file_create.uploaded_by_device_id
+        if device_id is not None and await session.get(AgentDevice, device_id) is None:
+            runtime.logger.warning(
+                f"Upload of '{sample_file_create.filename}' referenced unknown "
+                f"device {device_id}; storing without device attribution"
+            )
+            device_id = None
+
+        # Step 2: Construct new sample file. The uploading user comes from
+        # the authenticated request (user_id), not from the request body.
         new_sample_file = SampleFile(
-            sample_file_id=gen_id(16), **sample_file_create.model_dump()
+            sample_file_id=gen_id(16),
+            **sample_file_create.model_dump(exclude={"uploaded_by_device_id"}),
+            uploaded_by_device_id=device_id,
+            uploaded_by_user_id=user_id,
         )
         session.add(new_sample_file)
 
@@ -745,6 +761,8 @@ async def upload_sample_files(
     files: list[UploadFile],
     user: User,
     access_token: str,
+    device_id: int | None = None,
+    instrument_timezone: str | None = None,
 ) -> dict:
     """
     Handles upload of multiple sample files to the `filestreams` directory.
@@ -757,8 +775,10 @@ async def upload_sample_files(
     :type user: User
     :param access_token: Pre-validated user's access token for file converter service.
     :type access_token: str
-    :param user_id: Current user triggered operation (for user notifications)
-    :type user_id: int | None, optional
+    :param device_id: The paired device behind the upload, for attribution.
+    :type device_id: int | None, optional
+    :param instrument_timezone: IANA timezone the uploading machine reported.
+    :type instrument_timezone: str | None, optional
     :return: Dictionary with files upload results.
     :rtype: dict
     """
@@ -805,6 +825,8 @@ async def upload_sample_files(
                     "username": user.username,
                     "role_id": user.role_id,
                     "access_token": access_token,
+                    "device_id": device_id,
+                    "instrument_timezone": instrument_timezone,
                 },
             )
 
@@ -882,6 +904,8 @@ async def upload_sample_file(
     file_path: str,
     user: User,
     access_token: str,
+    device_id: int | None = None,
+    instrument_timezone: str | None = None,
 ) -> dict:
     """
     Handles upload of a single sample file from a given file path to the `filestreams` directory.
@@ -895,6 +919,10 @@ async def upload_sample_file(
     :type user: User
     :param access_token: Pre-validated user's access token for file converter service.
     :type access_token: str
+    :param device_id: The paired device behind the upload, for attribution.
+    :type device_id: int | None, optional
+    :param instrument_timezone: IANA timezone the uploading machine reported.
+    :type instrument_timezone: str | None, optional
     :return: Dictionary with file upload result.
     :rtype: dict
     """
@@ -935,6 +963,8 @@ async def upload_sample_file(
                 "username": user.username,
                 "role_id": user.role_id,
                 "access_token": access_token,
+                "device_id": device_id,
+                "instrument_timezone": instrument_timezone,
             },
         )
 

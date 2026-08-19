@@ -147,7 +147,10 @@ def fetch_instrument_functions(
 
 
 def create_sample_file_db_record(
-    data: SampleFileProps, instrument_function_id: str, access_token: str
+    data: SampleFileProps,
+    instrument_function_id: str,
+    access_token: str,
+    device_id: int | None = None,
 ) -> None:
     """Create a sample file database record via HTTP request.
 
@@ -157,6 +160,8 @@ def create_sample_file_db_record(
     :type instrument_function_id: str
     :param access_token: Access token required for request authentication
     :type access_token: str
+    :param device_id: The paired device the upload came from, for attribution
+    :type device_id: int | None, optional
     :raises Exception: HTTP request failed
     """
     runtime.logger.info(
@@ -182,6 +187,9 @@ def create_sample_file_db_record(
         "method_file": data.method_file,
         "mz_calibration": data.mz_calibration,
         "polarity": data.polarity,
+        "uploaded_by_device_id": device_id,
+        "acquisition_timezone": data.acquisition_timezone,
+        "utc_offset_source": data.utc_offset_source,
     }
 
     headers = {

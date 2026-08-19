@@ -5,6 +5,7 @@ from mascope_backend.api.lib.rate_limit import (
     rate_limit_login_by_account,
 )
 from mascope_backend.api.new.auth.access_token.routes import access_token_router
+from mascope_backend.api.new.auth.devices.routes import devices_router
 from mascope_backend.api.new.auth.login import login_router
 from mascope_backend.api.new.auth.mfa.routes import mfa_router
 from mascope_backend.api.new.auth.pairing.routes import pairing_router
@@ -39,6 +40,9 @@ auth_router.include_router(mfa_router)
 
 # Agent device-pairing routes (rate limits declared per route)
 auth_router.include_router(pairing_router)
+
+# Paired-device management (list, rename, revoke one machine)
+auth_router.include_router(devices_router)
 
 
 # add more routes such as password reset and email verification etc, check library code

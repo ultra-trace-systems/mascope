@@ -39,6 +39,9 @@ dependencies = [
     "rich>=15.0.0,<16",
     "scipy~=1.13",
     "sqlalchemy~=2.0",
+    # IANA zone database for zoneinfo on platforms without a system copy
+    # (Windows dev runs); Linux containers use the system tzdata either way.
+    "tzdata>=2025.1",
     "typer>=0.27.1,<0.28",
     "uvicorn>=0.34,<0.35",
     "websocket-client~=1.8",

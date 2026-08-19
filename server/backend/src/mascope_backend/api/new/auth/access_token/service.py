@@ -86,7 +86,10 @@ async def generate_access_token(user, service_name: str):
 
 @api_controller()
 async def create_access_token(
-    user, service_name: str, description: str | None = None
+    user,
+    service_name: str,
+    description: str | None = None,
+    device_id: int | None = None,
 ) -> str:
     """
     Creates a new access token WITHOUT removing the user's existing tokens
@@ -100,6 +103,9 @@ async def create_access_token(
     :param description: Optional label stamped on the token (e.g. the
         paired machine's hostname)
     :type description: str, optional
+    :param device_id: The paired machine holding this token, when the token
+        is bound to a registered device
+    :type device_id: int, optional
     :return: The raw token string
     :rtype: str
     """
@@ -109,7 +115,11 @@ async def create_access_token(
         await session.execute(
             update(AccessToken)
             .where(AccessToken.token == token)
-            .values(service_name=service_name, description=description)
+            .values(
+                service_name=service_name,
+                description=description,
+                device_id=device_id,
+            )
         )
         await session.commit()
     runtime.logger.debug(

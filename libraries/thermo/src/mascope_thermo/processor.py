@@ -1,6 +1,6 @@
 import logging
 import os
-from datetime import datetime, timezone
+from datetime import datetime
 
 from mascope_backend.api.new.instrument_configs.schemas import (
     InstrumentConfigFitParams,
@@ -194,19 +194,45 @@ class RawProcessor(BaseFileProcessor):
             )
         return created.isoformat()
 
+    def _resolve_utc_offset(self) -> tuple[int, str]:
+        """Resolve the UTC offset for this file's local timestamp.
+
+        Raw files embed no offset of their own, so the order is: the zone
+        the uploading machine reported, evaluated at the file's own
+        timestamp ("agent"); else the converter host's zone at that
+        timestamp ("guess") - the legacy fallback, wrong whenever the
+        instrument PC and the converter host disagree on timezone or DST.
+
+        :return: UTC offset [s] and its source ("agent" or "guess")
+        :rtype: tuple[int, str]
+        """
+        local_dt = datetime.fromisoformat(self.timestamp)
+        zone = self._context_timezone()
+        if zone is not None:
+            offset = local_dt.replace(tzinfo=zone).utcoffset()
+            return int(offset.total_seconds()), "agent"
+        # A naive datetime's astimezone() attaches the host's zone at that
+        # wall time; total_seconds() keeps west-of-UTC offsets negative.
+        offset = local_dt.astimezone().utcoffset()
+        return int(offset.total_seconds()), "guess"
+
     @property
     def utc_offset(self) -> int:
-        """UTC offset in seconds
-
-        # TODO: Currently there is no way to get the UTC offset from the raw file.
-        # This implementation assumes local timezone.
+        """UTC offset in seconds applied to the local timestamp
 
         :return: UTC offset [s]
         :rtype: int
         """
-        now = datetime.now()
-        utc_offset = (now - now.astimezone(timezone.utc).replace(tzinfo=None)).seconds
-        return utc_offset
+        return self._resolve_utc_offset()[0]
+
+    @property
+    def utc_offset_source(self) -> str:
+        """What determined utc_offset: "agent" or "guess"
+
+        :return: Offset source
+        :rtype: str
+        """
+        return self._resolve_utc_offset()[1]
 
     @staticmethod
     def _file_context_manager(file_path: str):

@@ -6,6 +6,30 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
 
 ### Added
 
+- Paired instrument agents are now first-class devices. Approving a pairing
+  creates a registered device - named after the machine's hostname, sponsored
+  by the approving user - and binds the issued token to it, so a deployment can
+  finally answer "which machine holds this credential, and who vouched for it".
+  A new **Paired machines** list under Settings shows each device with its
+  service and when it was last seen, and lets you rename or **revoke one
+  machine on its own** - unlike Regenerate, which still replaces every token of
+  a service at once. Admins and owners can review and revoke any deployment's
+  devices within the usual user-management role ceiling. Uploaded files now
+  record who sent them (the device for agent uploads, the user for interactive
+  ones); rows created before this land as unattributed rather than guessed.
+  A deployment flag `require_device_tokens` under `[backend]` (default off)
+  refuses agent tokens that are not bound to a paired device - left off during
+  the transition so agents paired before this keep working, and turned on once
+  every agent machine has been re-paired. The pen-test suite gained checks for
+  per-device revocation isolation and the strict-mode gate.
+- Acquisition timestamps now use the instrument PC's timezone. The File Agent
+  reports its IANA zone with each upload, and the converter resolves the UTC
+  offset from it at the file's own acquisition time - correct across DST and
+  for backlogged uploads. An offset embedded in the raw file still wins where
+  present (TOF); the old "assume the converter host's timezone" behaviour
+  remains only as a last resort for uploads that carry no zone, and no longer
+  mis-signs a west-of-UTC offset. Each sample file records the zone applied and
+  whether it came from the file, the agent, or the fallback.
 - The Python SDK can now read persisted peak-assignment results (read-only
   v1). A new `mascope.peak_assignments` resource reads the peak-centric
   assignment runs launched from the app: `list_runs(sample_id)` returns the
