@@ -353,12 +353,16 @@ class BaseFileProcessor(Thread, ABC, metaclass=FileProcessorMeta):
     def _context_timezone(self) -> ZoneInfo | None:
         """The uploading machine's timezone, resolved from the file context.
 
-        None when no context is registered, the agent reported no zone, or
-        the reported name is not a known IANA zone (logged; the offset then
-        falls back to the processor's own resolution order).
+        None when no socket client or context is registered, the agent
+        reported no zone, or the reported name is not a known IANA zone
+        (logged; the offset then falls back to the processor's own
+        resolution order).
         """
+        context_manager = getattr(self.socket_client, "context_manager", None)
+        if context_manager is None:
+            return None
         base_filename = os.path.basename(self.file_to_process)
-        context = self.socket_client.context_manager.get_context(base_filename)
+        context = context_manager.get_context(base_filename)
         zone_name = getattr(context, "instrument_timezone", None) if context else None
         if not zone_name:
             return None
