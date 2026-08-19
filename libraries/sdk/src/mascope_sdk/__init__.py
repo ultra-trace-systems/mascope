@@ -14,7 +14,13 @@ from importlib.metadata import version
 __version__ = version("mascope_sdk")
 
 # Agent-internal helpers (used by file-agent)
-from ._agents import SERVICE_NAME, api_post_file, api_post_file_tus  # noqa: F401
+from ._agents import (  # noqa: F401
+    SERVICE_NAME,
+    VERIFY_TLS,
+    api_post_file,
+    api_post_file_tus,
+    api_renew_agent_token,
+)
 
 # Public API
 from .client import MascopeClient
@@ -74,6 +80,8 @@ __all__ = [
     "MascopeTimeoutError",
     # Agent helpers
     "SERVICE_NAME",
+    "VERIFY_TLS",
     "api_post_file",
     "api_post_file_tus",
+    "api_renew_agent_token",
 ]

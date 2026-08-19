@@ -48,7 +48,15 @@ is caught before any data acquisition depends on it. After setup completes,
 the agent starts watching the folder right away.
 
 Each paired machine gets its own token, so pairing a new instrument PC
-never disconnects an existing one.
+never disconnects an existing one. The token is **short-lived and the agent
+renews it automatically** in the background — you never copy or paste one,
+and there is nothing to rotate by hand. If an instrument PC is left off for
+long enough that its token lapses, just pair it again (start the agent with
+`--setup`).
+
+Setup also asks whether to **verify the server's TLS certificate**. Leave
+this on for a normal Mascope server; answer No only for a self-signed or
+development server (recorded as `verify_tls` in the configuration).
 
 Leave the console window open while acquiring — closing it stops the agent
 until the next sign-in (or until you start it again from the Start Menu).
@@ -64,9 +72,10 @@ All settings live in one file on the instrument PC:
 | Setting           | Meaning                                                            |
 | ----------------- | ------------------------------------------------------------------ |
 | `host`            | Mascope server address, e.g. `mascope.example.com`                 |
-| `access_token`    | API access token (filled automatically when pairing)               |
+| `access_token`    | Device token (filled by pairing, renewed automatically)            |
 | `source`          | Full path of the folder watched for new data files                 |
 | `recursive`       | `true` to also watch subfolders of `source` (default `false`)      |
+| `verify_tls`      | `true` to verify the server's TLS certificate (default `true`)     |
 | `mask`            | Pattern of the files to upload, e.g. `*.raw`                       |
 | `timeout`         | Seconds a file must be idle before it is uploaded                  |
 | `filename_prefix` | Optional prefix added to the filename on upload                    |
@@ -109,12 +118,12 @@ The agent prints its version when it starts, and uninstalling (Windows
   token), copy the file back into the watched folder to retry. The
   `failed_uploads` folder itself is never watched, even with `recursive`
   enabled.
-- *"The server rejected the access token"*: re-run the agent with
-  `--setup` and pair it again (or generate a new **File Agent** token in
-  the web app and update `access_token` in the configuration). Note that
-  the **Regenerate** button removes all of your existing File Agent
-  tokens — including those of machines you paired earlier, which then
-  need re-pairing; pairing itself never affects other machines.
+- *"The server rejected the access token"* or *"This agent credential has
+  expired"*: the machine's token has lapsed or its device was revoked.
+  Re-run the agent with `--setup` and pair it again — pairing a machine
+  never affects the others. (The agent renews its token on its own while it
+  is running, so this only happens after a long offline period or a
+  deliberate revocation.)
 - *Uploads fail with HTTP 404*: the configured `host` is answering but is
   not the Mascope API. In a production deployment, use the normal Mascope
   web app address. In a development setup, use the backend address (e.g.

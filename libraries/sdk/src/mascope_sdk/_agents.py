@@ -29,12 +29,22 @@ from .exceptions import (
 )
 
 
-# Suppress InsecureRequestWarning from urllib3 (agents use verify=False)
+# Suppress InsecureRequestWarning from urllib3, which fires only when an agent
+# has been configured with TLS verification off (VERIFY_TLS = False).
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 # Default service name sent in request headers.
 # Agents override this at the package level: mascope_sdk.SERVICE_NAME = "file-agent"
 SERVICE_NAME = "mascope_sdk"
+
+# Whether agent requests verify the server's TLS certificate. On by default;
+# an agent overrides it at the package level for a self-signed deployment:
+# ``mascope_sdk.VERIFY_TLS = False``. Read per request via _get_verify() so the
+# agent can set it after import, exactly like SERVICE_NAME.
+VERIFY_TLS = True
+
+#: Path of the device-token renewal endpoint, relative to /api/.
+RENEW_TOKEN_PATH = "auth/devices/token"
 
 #: Path of the backend's TUS upload endpoint, relative to /api/.
 TUS_UPLOAD_PATH = "sample/files/upload/tus"
@@ -67,6 +77,14 @@ def _get_service_name() -> str:
     if pkg is not None:
         return getattr(pkg, "SERVICE_NAME", SERVICE_NAME)
     return SERVICE_NAME
+
+
+def _get_verify():
+    """Return the current VERIFY_TLS from the package namespace."""
+    pkg = sys.modules.get("mascope_sdk")
+    if pkg is not None:
+        return getattr(pkg, "VERIFY_TLS", VERIFY_TLS)
+    return VERIFY_TLS
 
 
 def _sanitize_upload_filename(upload_filename: str) -> str:
@@ -129,7 +147,7 @@ def api_post_file(
                 full_url,
                 files=files,
                 headers=headers,
-                verify=False,
+                verify=_get_verify(),
                 timeout=60,
             )
         except Timeout as e:
@@ -178,7 +196,7 @@ def _tus_offset(upload_url: str, access_token: str) -> int | None:
         resp = requests.head(
             upload_url,
             headers=_tus_headers(access_token),
-            verify=False,
+            verify=_get_verify(),
             timeout=30,
         )
     except RequestException:
@@ -201,9 +219,72 @@ def _tus_delete(upload_url: str, access_token: str) -> None:
         requests.delete(
             upload_url,
             headers=_tus_headers(access_token),
-            verify=False,
+            verify=_get_verify(),
             timeout=30,
         )
+
+
+def api_renew_agent_token(url: str, access_token: str) -> tuple[str, int]:
+    """Rotate a paired agent's device token before it expires.
+
+    Calls the backend's device-token renewal endpoint with the current token
+    and returns a fresh one. The agent persists the new token and schedules the
+    next renewal from the returned lifetime. A server that has no renewal
+    endpoint (older release) raises :class:`TusNotSupportedError` so the caller
+    can keep its existing token; an expired or revoked token raises
+    :class:`AuthenticationError` (the machine must re-pair).
+
+    :param url: The base URL of the server.
+    :param access_token: The agent's current device token.
+    :return: ``(new_token, expires_in_seconds)``.
+    :rtype: tuple[str, int]
+    :raises TusNotSupportedError: the server has no renewal endpoint (404/401
+        with no token acceptance) - keep the current token.
+    :raises AuthenticationError: the current token is expired or revoked.
+    :raises MascopeTimeoutError: if the request times out.
+    :raises MascopeConnectionError: if the server cannot be reached.
+    :raises MascopeAPIError: on any other error response.
+    """
+    full_url = f"{url}/api/{RENEW_TOKEN_PATH}"
+    headers = {
+        "Authorization": f"Bearer {access_token}",
+        "X-Service-Name": _get_service_name(),
+    }
+    try:
+        resp = requests.post(
+            full_url, headers=headers, verify=_get_verify(), timeout=30
+        )
+    except Timeout as e:
+        raise MascopeTimeoutError("The renewal request timed out.", url=full_url) from e
+    except RequestException as e:
+        raise MascopeConnectionError(
+            "Could not connect to the server for token renewal "
+            f"({e.__class__.__name__}).",
+            url=full_url,
+        ) from e
+
+    if resp.status_code == 404:
+        # No renewal endpoint on this server (older release): the caller keeps
+        # its current long-lived token, exactly as the tus fallback does.
+        raise TusNotSupportedError(
+            "The server does not support device-token renewal.",
+            status_code=404,
+            url=full_url,
+        )
+
+    # Raises the typed subclass (AuthenticationError on 401 for an expired or
+    # revoked token) carrying the server's message.
+    _raise_for_status(resp, full_url)
+
+    data = (resp.json() or {}).get("data") or {}
+    new_token = data.get("access_token")
+    if not new_token:
+        raise MascopeAPIError(
+            "The renewal response contained no token.",
+            status_code=resp.status_code,
+            url=full_url,
+        )
+    return new_token, int(data.get("expires_in", 0))
 
 
 def api_post_file_tus(
@@ -267,7 +348,7 @@ def api_post_file_tus(
     }
     try:
         resp = requests.post(
-            create_url, headers=create_headers, verify=False, timeout=60
+            create_url, headers=create_headers, verify=_get_verify(), timeout=60
         )
     except Timeout as e:
         raise MascopeTimeoutError(
@@ -361,7 +442,7 @@ def _transfer_chunks(
                         "Upload-Offset": str(offset),
                         "Content-Type": "application/offset+octet-stream",
                     },
-                    verify=False,
+                    verify=_get_verify(),
                     timeout=(10, 600),
                 )
                 _raise_for_status(resp, upload_url)

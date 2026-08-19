@@ -6,9 +6,10 @@ from datetime import timedelta, timezone
 from sqlalchemy import or_, update
 
 from mascope_backend.api.new.auth.access_token.util import (
-    get_token_device_id,
+    get_token_auth_context,
     get_token_service,
 )
+from mascope_backend.api.new.auth.config import auth_settings
 from mascope_backend.api.new.auth.exceptions import InvalidTokenException
 from mascope_backend.api.new.auth.pairing.config import pairing_settings
 from mascope_backend.api.new.auth.strategies.database import (
@@ -45,6 +46,37 @@ def ensure_device_bound(service_name: str, device_id: int | None) -> None:
         raise InvalidTokenException(
             "This deployment accepts only paired agent credentials. "
             "Re-pair this machine from the agent's setup wizard to get a new token."
+        )
+
+
+def ensure_device_token_fresh(
+    service_name: str, device_id: int | None, created_at: dt | None
+) -> None:
+    """
+    Refuse a device-bound agent token that is older than its short lifetime.
+
+    Device tokens live in plaintext on shared instrument PCs, so they expire
+    far sooner than the 360-day database-strategy cap and the agent renews them
+    automatically. Enforced only for device-bound tokens; unbound personal or
+    internal tokens keep the default lifetime. A token past the limit is
+    refused, not deleted - renewal (a fresh token) or re-pairing is the way
+    back.
+
+    :param service_name: The token's service scope.
+    :param device_id: The token's device binding; None means not a device token.
+    :param created_at: When the token was issued.
+    :raises InvalidTokenException: The device token has outlived its lifetime.
+    """
+    if device_id is None or created_at is None:
+        return
+    lifetime = timedelta(
+        seconds=auth_settings.access_token.DEVICE_TOKEN_LIFETIME_SECONDS
+    )
+    if dt.now(timezone.utc) - created_at > lifetime:
+        raise InvalidTokenException(
+            "This agent credential has expired. The agent renews its token "
+            "automatically; if it has been offline past the token's lifetime, "
+            "re-pair the machine from the agent's setup wizard."
         )
 
 
@@ -111,10 +143,12 @@ async def validate_service_access_token(access_token: str, service_name: str):
                         f"The provided token is not authorized for {service_name}. Please try to refresh the token."
                     )
 
-                # Device policy for agent tokens (no-op for other services)
-                ensure_device_bound(
-                    service_name, await get_token_device_id(access_token)
-                )
+                # Device policy for agent tokens (no-op for other services):
+                # the deployment's paired-device requirement and the short
+                # device-token lifetime.
+                _svc, device_id, created_at = await get_token_auth_context(access_token)
+                ensure_device_bound(service_name, device_id)
+                ensure_device_token_fresh(service_name, device_id, created_at)
 
                 return user
 

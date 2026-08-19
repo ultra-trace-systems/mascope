@@ -7,6 +7,7 @@ from mascope_backend.api.new.auth.devices.service import (
     list_all_devices,
     list_devices,
     rename_device,
+    renew_device_token,
     revoke_device,
 )
 
@@ -30,6 +31,17 @@ async def list_devices_route(user=Depends(current_active_user)):
 async def list_all_devices_route(user=Depends(admin_user)):
     """List every paired device on the deployment. Requires admin or owner."""
     return await list_all_devices()
+
+
+# token_access: the agent calls this with its current device bearer token, not
+# a browser cookie. The token must still be within its lifetime (the freshness
+# gate runs first), so an agent renews before expiry; one that has lapsed
+# re-pairs instead.
+@devices_router.post("/token")
+@api_route(token_access=True)
+async def renew_device_token_route(user=Depends(current_active_user)):
+    """Issue a fresh token for the calling agent's device (rotates the token)."""
+    return await renew_device_token(machine_user=user)
 
 
 @devices_router.patch("/{device_id}")

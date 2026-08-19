@@ -58,35 +58,38 @@ async def get_token_service(token: str) -> str:
     return await get_service_name_for_token(token)
 
 
-async def get_token_service_and_device(token: str) -> tuple[str, int | None]:
+async def get_token_auth_context(token: str):
     """
-    Retrieve a token's service name and device binding in one lookup.
+    Retrieve a token's service name, device binding, and age in one lookup.
 
-    Used on the per-request bearer path, where the device binding is needed
-    right next to the service name and a second query per request would be
-    waste.
+    Used on the per-request bearer path, where the service name, the device
+    binding (strict-mode gate) and the creation time (device-token freshness)
+    are all needed together and a query per property would be waste.
 
     :param token: The access token string.
     :type token: str
-    :return: The service name and the bound device id (None when unbound).
-    :rtype: tuple[str, int | None]
+    :return: ``(service_name, device_id, created_at)``; device_id is None when
+        the token is unbound.
+    :rtype: tuple[str, int | None, datetime]
     :raises InvalidTokenException: If the token is invalid or has no service name.
     """
     async with async_session() as session:
         result = await session.execute(
-            select(AccessToken.service_name, AccessToken.device_id).where(
-                AccessToken.token == token
-            )
+            select(
+                AccessToken.service_name,
+                AccessToken.device_id,
+                AccessToken.created_at,
+            ).where(AccessToken.token == token)
         )
         row = result.one_or_none()
 
     if row is None:
         raise InvalidTokenException("Invalid access token.")
-    service_name, device_id = row
+    service_name, device_id, created_at = row
     if not service_name:
         raise InvalidTokenException("No service name for the token.")
 
-    return service_name, device_id
+    return service_name, device_id, created_at
 
 
 async def get_token_device_id(token: str) -> int | None:

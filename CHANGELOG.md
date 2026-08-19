@@ -6,6 +6,21 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
 
 ### Added
 
+- Instrument-agent credentials are now short-lived and renew themselves. A
+  paired device's token expires in 30 days instead of 360, and the File Agent
+  rotates it in the background well before then, so a token copied off an
+  instrument PC is useful for far less time. Renewal issues a fresh token and
+  reaps the superseded one once its own lifetime lapses; a token that has
+  outlived its lifetime is refused with a message to re-pair. A new endpoint,
+  `POST /api/auth/devices/token`, performs the rotation for the agent. The
+  machine account's own converter token is issued on demand, so a short device
+  lifetime never strands an upload.
+- The File Agent now **verifies the server's TLS certificate by default** and
+  obtains its credential **only by pairing**. Setup asks whether to verify TLS
+  (answer No only for a self-signed or development server, recorded as
+  `verify_tls` in the agent config), and the manual token-paste path is gone -
+  pairing is the single way in, which is also what keeps the credential a
+  revocable, self-renewing per-machine device token.
 - Instrument agents now authenticate as their own **machine accounts**, not as
   the person who paired them. Approving a pairing provisions a dedicated
   account the device authenticates as - capped at the editor role, with no
