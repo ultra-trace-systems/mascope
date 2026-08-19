@@ -617,17 +617,29 @@ without bound.
 A deployment provisioned by `tooling/ubuntu.sh` handles this automatically:
 `mascope-assignment-prune.timer` runs a retention pass nightly at 03:30 and is
 **enabled by default**. Each pass keeps the newest few completed runs per
-sample (so a result can still be compared against the one it replaced) and
-drops the rest, plus failed runs past a short grace period; deleting a run
-cascades to its rows. It deletes only superseded derived data - assignments
-are recomputable by re-running assignment - and it runs whether or not the
-`peak_assignment` flag is enabled, since ledgers written before opting out
-still age out and an empty table costs one cheap query. Tune the policy in
+sample *and engine* (so a result can still be compared against the one it
+replaced) and drops the rest, plus failed runs past a short grace period;
+deleting a run cascades to its rows. It deletes only superseded derived data -
+assignments are recomputable by re-running assignment - and it runs whether or
+not the `peak_assignment` flag is enabled, since ledgers written before opting
+out still age out and an empty table costs one cheap query. Tune the policy in
 `/etc/mascope/prune.env` with `MASCOPE_PRUNE_KEEP_PER_SAMPLE` (default 3),
-`MASCOPE_PRUNE_KEEP_FAILED_HOURS` (default 24) and
+`MASCOPE_PRUNE_KEEP_FAILED_HOURS` (default 24),
 `MASCOPE_PRUNE_KEEP_RUNNING_HOURS` (default 72, floored at 12 so runs that may
-still be executing cannot be pruned out from under a worker); disable it
+still be executing cannot be pruned out from under a worker) and
+`MASCOPE_PRUNE_KEEP_IMPORTING_HOURS` (default 24, floored at 1); disable it
 entirely with `sudo systemctl disable --now mascope-assignment-prune.timer`.
+
+The keep-newest budget counts **per sample and engine**, which matters on a
+server where assignment runs are also published from an external engine rather
+than only computed in the app: on a shared budget a few republished imports
+would evict every in-app run for that sample, ledger rows cascading with them.
+Each engine ages out of its own quota instead.
+`MASCOPE_PRUNE_KEEP_IMPORTING_HOURS` covers a different case - an import that
+was started and never finished. Such a run holds staged rows *and* blocks new
+assignment work on its sample, so it is reclaimed on its own, shorter grace; a
+client that still knows the run id can also delete it outright instead of
+waiting for the nightly pass.
 
 The same pass can always be run by hand, e.g. ahead of schedule when the disk
 monitor flags growth:

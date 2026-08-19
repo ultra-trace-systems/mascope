@@ -14,6 +14,15 @@ This resets them at startup, mirroring
 Startup runs in the main process before any worker is spawned, so nothing can
 legitimately be ``running`` at that moment - every such row is a leftover.
 
+**That argument covers ``running`` and nothing else.** An imported run assembles
+under ``importing``, at a remote client's pace and with no server task attached,
+so it is *not* a leftover just because no worker owns it - and a routine deploy
+that failed it would kill a live upload and leave the client appending to a
+``failed`` run. The status is deliberately outside this reset, which is why the
+filter below names ``running`` exactly rather than "not terminal". Abandoned
+imports are released by the import abandon endpoint, or reclaimed by
+``prune_peak_assignment_runs`` under its own ``keep_importing_hours`` grace.
+
 They are marked ``failed`` rather than adopted as ``completed``. The engine
 writes its whole ledger in a single insert, so "this run has rows" does imply
 "its ledger committed in full" - but not the converse: a run whose sample
@@ -68,6 +77,8 @@ async def reset_running_peak_assignment_runs() -> dict:
         async with async_session() as session:
             update_result = await session.execute(
                 update(PeakAssignmentRun)
+                # Exactly 'running': an 'importing' run belongs to a client, not
+                # to a worker this startup replaced. See the module docstring.
                 .where(PeakAssignmentRun.status == "running")
                 .values(
                     status="failed",

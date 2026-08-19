@@ -12,6 +12,32 @@ from mascope_backend.runtime import runtime
 # Stored on every PeakAssignmentRun so runs stay reproducible and comparable.
 PEAK_ASSIGNMENT_ENGINE_VERSION = "0.2.0"
 
+# The in-app engine's identity, stamped on every run this server computes. It is
+# reserved: an import that could stamp it would defeat the provenance badge that
+# the whole import trust model leans on, and it is the value the instrument
+# recalibration pool filters on.
+IN_APP_ENGINE = "mascope"
+
+# Engine names a client may not claim. Matched case-insensitively on the
+# stripped value: 'Mascope' is not a different engine, it is the same forgery
+# with different capitalization.
+RESERVED_ENGINE_NAMES = frozenset({IN_APP_ENGINE})
+
+# Rows one import request may carry. An import assembles across requests instead
+# of sending one huge body: a dense sample's full ledger with alternatives and
+# provenance is tens of thousands of rows at a few KB each, and an unbounded
+# list serializes unbounded work through Pydantic on the event loop - the same
+# reason the ledger read is paged.
+MAX_IMPORT_ROWS_PER_REQUEST = 5000
+
+# Byte ceiling on a run's `config` and `calibration` blobs. Both are opaque
+# client JSON, so nothing bounds them the way the closed PeakAssignmentConfig
+# model bounds an in-app run's, and both are re-served in full by
+# `GET /sample/{id}/runs` - a hot path the SDK calls on every ledger read and
+# the run selector polls. Generous next to any real engine config; the point is
+# that a bound exists.
+MAX_IMPORT_JSON_BYTES = 64 * 1024
+
 # Ceilings on the user-supplied run config. The untargeted stage is the
 # documented scaling risk: cost grows with the number of peaks fed to it, with
 # the mass window (more candidates per peak), and exponentially with the number

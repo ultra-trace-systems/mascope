@@ -23,6 +23,15 @@ needed - which is what makes this preferable to a claims table.
 The cost is one pooled connection held per in-flight assignment. That is
 bounded by the same admission control this module implements: one batch and
 a handful of samples per worker.
+
+The claim bounds one *request*. Whether a sample may start new work at all is a
+separate question, answered from durable run state by :func:`in_flight_run_id`,
+because an import spans several requests at a remote client's pace: a claim held
+across them would pin a pooled connection to that client's think-time, and a
+claim taken per request would leave the sample unclaimed between chunks. Run
+state has neither problem, and it is what lets the import and in-app paths refuse
+each other. The two are complements, not alternatives - only the claim is
+crash-safe within a request, and only run state survives one ending.
 """
 
 import asyncio
@@ -31,13 +40,50 @@ from typing import AsyncIterator
 
 from sqlalchemy import func, select
 
-from mascope_backend.db import async_session
+from mascope_backend.db import PeakAssignmentRun, async_session
 
 
 # Namespace discriminator hashed into the first int of the two-int advisory
 # lock key space, so these claims cannot collide with other advisory lock
 # users (e.g. the match-write locks).
 _ASSIGNMENT_CLAIM_NAMESPACE = "mascope_peak_assignment"
+
+# Run states that mean "this sample already has work in progress". 'pending' and
+# 'running' belong to a server task; 'importing' belongs to a client assembling
+# a ledger over several requests. A run in any of them is a reason to refuse a
+# new one, so neither engine can start a second ledger for the same sample
+# behind the first.
+NON_TERMINAL_RUN_STATUSES = ("pending", "running", "importing")
+
+
+async def in_flight_run_id(sample_item_id: str, session=None) -> str | None:
+    """The id of a non-terminal run for this sample, if one exists.
+
+    Durable admission: unlike the advisory claim, this outlives the request that
+    created the run, which is what an import needs and what makes an in-app
+    assign and an import refuse each other rather than both proceeding.
+
+    A run left non-terminal by a process that died is released by the startup
+    reaper (for engine-owned states), by the import abandon endpoint, or by
+    retention's grace - the same paths that already governed those rows.
+
+    :param sample_item_id: The sample to test.
+    :param session: An open session to reuse; one is opened when omitted.
+    :return: The newest non-terminal run's id, or None when the sample is free.
+    """
+    query = (
+        select(PeakAssignmentRun.peak_assignment_run_id)
+        .where(
+            PeakAssignmentRun.sample_item_id == sample_item_id,
+            PeakAssignmentRun.status.in_(NON_TERMINAL_RUN_STATUSES),
+        )
+        .order_by(PeakAssignmentRun.peak_assignment_run_utc_created.desc().nullslast())
+        .limit(1)
+    )
+    if session is not None:
+        return await session.scalar(query)
+    async with async_session() as own_session:
+        return await own_session.scalar(query)
 
 
 @asynccontextmanager

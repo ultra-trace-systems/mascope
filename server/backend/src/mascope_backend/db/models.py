@@ -1307,14 +1307,22 @@ class MatchIsotope(Base):
 class PeakAssignmentRun(Base):
     """One peak-centric assignment run over a sample.
 
-    Stores the engine version and the full configuration (search ranges,
+    Stores the producing engine and the full configuration (search ranges,
     heuristics, ppm tolerances, stage toggles) so runs are reproducible and
     comparable. PeakAssignment rows belong to exactly one run.
 
-    status values: 'pending', 'running', 'completed', 'failed', 'cancelled'.
-    'cancelled' is terminal like 'failed' - the read model serves only
-    'completed' runs, and retention reclaims both after the failed grace - but
-    kept distinct so an interrupted run is not reported as an engine error.
+    status values: 'pending', 'running', 'importing', 'completed', 'failed',
+    'cancelled'. 'cancelled' is terminal like 'failed' - the read model serves
+    only 'completed' runs, and retention reclaims both after the failed grace -
+    but kept distinct so an interrupted run is not reported as an engine error.
+    'importing' is the non-terminal state an externally computed run assembles
+    under while its rows arrive over several requests: unlike 'running' no
+    server task owns it, which is why the startup reaper leaves it alone and
+    retention holds it under its own grace instead.
+
+    A run is either computed in-app or imported, and ``engine`` is what says
+    which. It is never NULL - existing rows were backfilled to the in-app
+    identity - so every consumer can compare it without handling a sentinel.
     """
 
     __tablename__ = "peak_assignment_run"
@@ -1325,9 +1333,22 @@ class PeakAssignmentRun(Base):
         ForeignKey("sample_item.sample_item_id", ondelete="CASCADE"),
         index=True,
     )
+    # Which engine produced this run: the in-app engine ('mascope', reserved
+    # from client payloads) or an external one that imported its ledger.
+    engine: Mapped[str] = mapped_column(String(64), server_default=text("'mascope'"))
     engine_version: Mapped[str] = mapped_column(String(64))
     status: Mapped[str] = mapped_column(String(20), server_default=text("'pending'"))
     config: Mapped[Optional[dict]] = mapped_column(JSON)
+    # The identified/candidate fit-score thresholds this run tiered with. Its
+    # own column, not a key in the opaque config, because every row's tier is
+    # validated against it. NULL for runs predating the column; an in-app run
+    # stamps the thresholds from its config.
+    tier_bands: Mapped[Optional[dict]] = mapped_column(JSON)
+    # The producing engine's calibration state, disclosed at import time. An
+    # import bypasses the server-side m/z verification gate because it
+    # calibrates client-side, so this is what a reader judges its mass accuracy
+    # by. NULL for in-app runs, whose calibration state is the sample's own.
+    calibration: Mapped[Optional[dict]] = mapped_column(JSON)
     error: Mapped[Optional[str]] = mapped_column(Text)
     peak_assignment_run_utc_created: Mapped[Optional[dt]] = mapped_column(
         TIMESTAMP(timezone=True)
@@ -1343,6 +1364,16 @@ class PeakAssignmentRun(Base):
         back_populates="peak_assignment_run",
         cascade="all, delete, delete-orphan",
         passive_deletes=True,
+    )
+
+    __table_args__ = (
+        # Admission asks "does this sample have a non-terminal run" before every
+        # import and every in-app assign, which is exactly this lookup.
+        Index(
+            "ix_peak_assignment_run_sample_item_id_status",
+            "sample_item_id",
+            "status",
+        ),
     )
 
 
@@ -1423,6 +1454,13 @@ class PeakAssignment(Base):
         ForeignKey("peak_assignment.peak_assignment_id", ondelete="SET NULL"),
         index=True,
     )
+    # The owner reference as an imported row expressed it: the owning row's
+    # sample_peak_id, which identifies it uniquely within a run. A client cannot
+    # supply owner_peak_assignment_id - the server mints those - and an import
+    # arrives over several requests, so the reference is staged here and
+    # resolved into owner_peak_assignment_id when the import finalizes. NULL for
+    # in-app runs, which build the owner link directly.
+    owner_sample_peak_id: Mapped[Optional[str]] = mapped_column(String(20))
     alternatives: Mapped[Optional[list]] = mapped_column(JSON)
     provenance: Mapped[Optional[dict]] = mapped_column(JSON)
 

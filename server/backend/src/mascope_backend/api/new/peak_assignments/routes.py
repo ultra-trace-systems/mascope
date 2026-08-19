@@ -18,12 +18,18 @@ from mascope_backend.api.new.auth.dependencies import (
 )
 from mascope_backend.api.new.peak_assignments.batch import assign_sample_batch_peaks
 from mascope_backend.api.new.peak_assignments.config import peak_assignment_enabled
+from mascope_backend.api.new.peak_assignments.import_service import (
+    abandon_import_run,
+    import_assignment_run,
+)
 from mascope_backend.api.new.peak_assignments.schemas import (
     AssignmentVerificationsResponse,
     AssignSamplePeaksBody,
     CompositionFitBody,
     CompositionVisualizeBody,
+    ImportRunBody,
     PeakAssignmentDetailResponse,
+    PeakAssignmentImportResponse,
     PeakAssignmentQueryParams,
     PeakAssignmentRunsResponse,
     PeakAssignmentsResponse,
@@ -350,6 +356,106 @@ async def assign_sample_batch_peaks_route(
         ),
         "process_id": process_id,
     }
+
+
+@peak_assignments_router.post(
+    "/sample/{sample_item_id}/runs/import",
+    response_model=PeakAssignmentImportResponse,
+    dependencies=[Depends(require_peak_assignment_enabled)],
+)
+@api_route(token_access=True)
+async def import_assignment_run_route(
+    sample_item_id: str,
+    body: ImportRunBody,
+    user: User = Depends(current_active_user),
+    membership=Depends(require_sample_role("editor")),
+) -> PeakAssignmentImportResponse:
+    """
+    Import an assignment run computed by an external engine.
+
+    Publishes a finished ledger into this sample's run history as a first-class
+    run - same tables, same read model, same batch fold-in as a run this server
+    computed - stamped with the producing `engine` so a reader always knows
+    which engine's judgement they are looking at.
+
+    **One import, one or more requests.** A dense sample's ledger is too large
+    for one body, so `rows` is capped per request and the run assembles: send
+    the first request with no `chunk.run_id` to create the run and receive its
+    id, follow up with that id and the next `chunk.index`, and set
+    `chunk.complete` on the last one (which may be the first, for a slim
+    ledger). `chunk.index` is an offset in **rows**: it must equal the `rows`
+    count the previous response reported, and re-sending the last chunk is an
+    idempotent no-op that reports that count again - so a retried request cannot
+    duplicate rows or mint a second run.
+
+    **What is accepted.** Each row is a ledger record minus the fields this
+    server owns: it mints the ids, resolves `owner_sample_peak_id` into the
+    owner's assignment id when the import finalizes, and leaves the calibrated
+    P(correct) columns empty because those are its own judgement, not the
+    importer's. `tier_bands` and `calibration` are required: tiers are validated
+    against the bands the engine actually tiered with, and an import bypasses
+    the m/z verification gate, so what it calibrated against goes on the record.
+    `config` is opaque and stored verbatim.
+
+    **Partial imports are allowed, and they replace.** A run may cover a subset
+    of the sample's peaks, but the batch overview takes the sample's whole
+    contribution from the latest completed run - so publishing a handful of rows
+    of interest withdraws that sample's other peaks from the batch view.
+
+    Returns 403 when peak assignment is not enabled for this environment, 409
+    when another run for this sample is still in flight (naming it) or a chunk
+    arrives out of order, and 422 when the payload is well-formed but refused.
+
+    :param sample_item_id: The unique identifier of the sample.
+    :param body: The run metadata and this chunk's assignment rows.
+    :param user: The current authenticated user. Requires workspace editor role.
+    :param membership: Workspace membership with editor role on the sample.
+    :return: The run id, its status, and the rows it now holds.
+    """
+    result = await import_assignment_run(
+        sample_item_id=sample_item_id, body=body, user_id=user.id
+    )
+    return PeakAssignmentImportResponse.model_validate(result)
+
+
+@peak_assignments_router.delete(
+    "/sample/{sample_item_id}/runs/{peak_assignment_run_id}",
+    response_model=PeakAssignmentImportResponse,
+    dependencies=[Depends(require_peak_assignment_enabled)],
+)
+@api_route(token_access=True)
+async def abandon_import_run_route(
+    sample_item_id: str,
+    peak_assignment_run_id: str,
+    user: User = Depends(current_active_user),
+    membership=Depends(require_sample_role("editor")),
+) -> PeakAssignmentImportResponse:
+    """
+    Abandon an unfinished import, deleting it with its staged rows.
+
+    A client that dies mid-upload - or that simply loses the run id it was
+    handed - leaves an `importing` run that blocks every later import *and*
+    in-app assignment for the sample, because admission refuses on any run still
+    in flight and the startup reaper deliberately leaves imports alone. Retention
+    reclaims it eventually; this releases it now.
+
+    Deliberately restricted to runs in `importing`: a completed run is ledger
+    data, and removing that is retention's business rather than a client's.
+    Anything else is refused with 409.
+
+    Returns 403 when peak assignment is not enabled for this environment.
+
+    :param sample_item_id: The unique identifier of the sample.
+    :param peak_assignment_run_id: The unfinished import to delete.
+    :param user: The current authenticated user. Requires workspace editor role.
+    :param membership: Workspace membership with editor role on the sample.
+    :return: The abandoned run id and the number of staged rows reclaimed.
+    """
+    result = await abandon_import_run(
+        sample_item_id=sample_item_id,
+        peak_assignment_run_id=peak_assignment_run_id,
+    )
+    return PeakAssignmentImportResponse.model_validate(result)
 
 
 @peak_assignments_router.post("/sample/{sample_item_id}/fit/aggregate")

@@ -94,6 +94,33 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
   pre-transition reading) and logs a warning naming the file and both candidate
   offsets, so an affected timestamp is explainable rather than silently an hour
   out.
+- Assignment runs computed outside Mascope can now be published into a sample's
+  run history. `POST /api/peak-assignments/sample/{id}/runs/import` accepts a
+  finished ledger from an external engine and stores it as a first-class run -
+  same tables, same read model, same batch fold-in as a run the app computed -
+  stamped with the producing engine, so a reader always knows whose judgement a
+  ledger carries. A dense sample's ledger is too large for one request, so an
+  import assembles across several: the first creates the run and returns its id,
+  follow-ups carry the next row offset, and the last one finalizes. Offsets are
+  server-checked, which makes a retried request an idempotent no-op instead of
+  duplicated rows or a second run. `DELETE
+  /api/peak-assignments/sample/{id}/runs/{run_id}` releases an upload that will
+  never finish, which would otherwise block new assignment work on that sample
+  until the nightly retention pass.
+  What an import may assert stops short of what the server presents as its own:
+  it declares the fit-score bands it tiered with and every row's tier is checked
+  against them, it discloses what it calibrated against (an import bypasses the
+  m/z verification gate because it calibrates client-side), and the calibrated
+  P(correct) columns stay empty on imported rows. The in-app engine name is
+  reserved, so the provenance badge cannot be forged. Only one run - imported or
+  in-app - can be in flight for a sample at a time; a second is refused with 409
+  naming the one already running. Retention now budgets kept runs per sample
+  *and* engine, so publishing can never evict a sample's in-app history, and
+  imported verdicts are excluded from the instrument-wide confidence
+  calibration, whose labels stay to runs this server computed. Tune the new
+  grace on unfinished uploads with `MASCOPE_PRUNE_KEEP_IMPORTING_HOURS`
+  (default 24). Launching runs from the SDK and the run selector's engine badge
+  come next.
 - The Python SDK can now read persisted peak-assignment results (read-only
   v1). A new `mascope.peak_assignments` resource reads the peak-centric
   assignment runs launched from the app: `list_runs(sample_id)` returns the
