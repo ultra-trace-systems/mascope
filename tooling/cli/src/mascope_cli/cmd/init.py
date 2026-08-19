@@ -45,6 +45,17 @@ GENERATED_SECRETS = (
     "mfa_encryption_key.txt",
 )
 
+# Secrets safe to auto-provision on an ALREADY-RUNNING deployment (`mascope prod
+# up` / update), as opposed to a fresh `mascope init` which generates all of
+# GENERATED_SECRETS. Only secrets introduced after a deployment's initial setup
+# belong here: their absence means "this release added a secret", not "an
+# existing secret was lost". The critical long-standing secrets are deliberately
+# excluded - a missing postgres_password, jwt_secret_key, or
+# server_owner_secret_key is an error to surface loudly, not to paper over with
+# a fresh random value that would break against the existing database or end
+# every session.
+AUTO_PROVISIONED_SECRETS = ("mfa_encryption_key.txt",)
+
 # Directories the containers bind-mount from the home. Docker creates missing
 # mount sources as root, so pre-create them owned by the invoking user.
 RUNTIME_DIRS = (
