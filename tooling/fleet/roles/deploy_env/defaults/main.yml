@@ -1,0 +1,8 @@
+---
+# The deployment checkout, as recorded in /etc/environment.
+#
+# Every fleet server currently uses the same layout - the deploy user's home -
+# so this default covers all of them. Override per host in the inventory if one
+# ever differs; the role refuses to write a path that is not a checkout, so a
+# wrong value here fails loudly instead of repointing a server.
+mascope_path: "/home/{{ ansible_user }}/mascope"

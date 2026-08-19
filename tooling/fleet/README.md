@@ -9,6 +9,7 @@ so drift becomes a weekly diff instead of a months-later incident:
 | `firewall` | ufw policies, tailnet SSH rule, Cloudflare-only 443, the canonical `MASCOPE NAT` masquerade block |
 | `docker_daemon` | `/etc/docker/daemon.json` with `iptables: false` (load-bearing: with stock Docker, published ports bypass ufw) |
 | `unattended_upgrades` | unattended security updates enabled |
+| `deploy_env` | `MASCOPE_PATH` in `/etc/environment` (load-bearing: it is how the CLI finds the checkout, and so which release a unit starts) |
 
 The monitoring box is deliberately **not** in the fleet group — it
 runs a different network model (stock Docker + `DOCKER-USER` rules).
