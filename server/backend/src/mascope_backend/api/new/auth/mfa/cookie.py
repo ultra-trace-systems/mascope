@@ -12,6 +12,24 @@ from fastapi import Request, Response
 from mascope_backend.api.new.auth.config import auth_settings
 
 
+def _security_attributes() -> dict:
+    """
+    The cookie security attributes, taken from the session cookie's settings so
+    the two cannot drift apart - only the name and the lifetime differ. Shared
+    by set and clear so a delete always names the same attributes as the cookie
+    it removes. ``samesite`` is "lax" by default, which keeps the cookie off
+    cross-site POSTs so a third-party page cannot drive the verify route with a
+    victim's half-finished sign-in; an operator who tightens it to "strict"
+    tightens this cookie with the session's.
+    """
+    return {
+        "path": "/",
+        "secure": auth_settings.COOKIE_SECURE,
+        "httponly": auth_settings.COOKIE_HTTP_ONLY,
+        "samesite": auth_settings.COOKIE_SAMESITE,
+    }
+
+
 def set_pending_cookie(response: Response, token: str) -> None:
     """
     Attach a pending token to a response.
@@ -23,12 +41,7 @@ def set_pending_cookie(response: Response, token: str) -> None:
         auth_settings.MFA_PENDING_COOKIE_NAME,
         token,
         max_age=auth_settings.mfa.PENDING_TOKEN_LIFETIME_SECONDS,
-        path="/",
-        secure=auth_settings.COOKIE_SECURE,
-        httponly=True,
-        # "lax" keeps the cookie off cross-site POSTs, so a third-party page
-        # cannot drive the verify route with a victim's half-finished sign-in.
-        samesite="lax",
+        **_security_attributes(),
     )
 
 
@@ -40,10 +53,7 @@ def clear_pending_cookie(response: Response) -> None:
     """
     response.delete_cookie(
         auth_settings.MFA_PENDING_COOKIE_NAME,
-        path="/",
-        secure=auth_settings.COOKIE_SECURE,
-        httponly=True,
-        samesite="lax",
+        **_security_attributes(),
     )
 
 

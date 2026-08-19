@@ -2,7 +2,11 @@ from fastapi import APIRouter, Body, Depends, Request
 from fastapi_users.authentication import Strategy
 
 from mascope_backend.api.lib.api_features import api_route
-from mascope_backend.api.lib.rate_limit import enforce_user_rate_limit, rate_limit
+from mascope_backend.api.lib.rate_limit import (
+    clear_login_rate_limit,
+    enforce_user_rate_limit,
+    rate_limit,
+)
 from mascope_backend.api.new.auth import auth_backend_jwt
 from mascope_backend.api.new.auth.dependencies import (
     guest_user,
@@ -107,10 +111,17 @@ async def verify_route(
     # code seconds after the first.
     await mark_recently_verified(user.id)
 
+    # The sign-in is complete, so reset the per-account login limiter as a
+    # form-based login does. on_after_login below cannot: it reads the
+    # identifier from request.form() and this request is JSON. Clear it
+    # explicitly, keyed on the account's email - what the password step
+    # submitted as the username, and the limiter hashes it case-folded anyway.
+    await clear_login_rate_limit(user.email)
+
     response = await auth_backend_jwt.login(strategy, user)
     clear_pending_cookie(response)
     # Only now is the login complete, so this is where the hook belongs: it
-    # authenticates the socket and clears the login rate limit.
+    # authenticates the socket and refreshes service tokens.
     await user_manager.on_after_login(user, request, response)
     return response
 
