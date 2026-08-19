@@ -1238,8 +1238,8 @@ Each step is its own PR, and each leaves the system shippable:
    an import contract test diffs against.
 
 **Start/hold status.** The list above is the order; this is what is safe to pick
-up today. Two of §8.5's entries are decisions pending rather than research
-questions, and they hold steps.
+up today. No step is held: §8.5's remaining entries are research questions that
+can be answered once real imported ledgers exist, not prerequisites.
 
 - **Steps 1-2 proceed.** Step 2 now also carries the import route's body
   allowance, and the reserved-provenance-key rule (§8.5.5) that its validation
@@ -1257,10 +1257,10 @@ questions, and they hold steps.
   retry-safety and error-body plumbing (§8.3) is independent of both and can be
   built first; the verify half of it is the only item in this revision that
   silently corrupts stored data, so it should not wait.
-- **Step 6 is held** on §8.5.2 (how far client-side mechanism resolution goes).
-  Its other prerequisites are now stated rather than open: the numeric chunk cap
-  and the body allowance, the per-column null policy, and the null-`fit_score`
-  exemption.
+- **Step 6 proceeds.** §8.5.2 is settled at the floor, so `import_run` resolves
+  mechanisms by exact-string match and sends null otherwise. Its other
+  prerequisites are stated rather than open: the numeric chunk cap and the body
+  allowance, the per-column null policy, and the null-`fit_score` exemption.
 - **Step 8 is implementable, but it is not a code PR.** The demo stack fetches
   bundle content from a published Zenodo version - the init container refuses a
   registry entry with no download URL, and CI boots that same stack before
@@ -1288,36 +1288,34 @@ document cites it.
    per-sample runs - so a manifest is a convenience with real transactional
    surface. (It is not the answer to the fold-in cost noted in §8.2; a manifest
    that loops the same fold gains nothing there.)
-2. **Ionization mechanisms: how far client-side resolution goes.** *(Decision
-   pending - holds step 6.)* §8.3 currently specifies the floor: exact-string
-   matching against `mascope.ionization.list()`, null on any mismatch, the
-   server's 422 as the authority. An earlier draft promised more - that known
-   ids "arrive populated and joinable" - and that is not reachable from the SDK
-   as it stands, for two independent reasons: the deployment's notation
-   normalizers are backend-only code, and mechanism validity is scoped to the
-   *sample*, while the SDK's only handle is a deployment-global list. What must
-   be chosen is whether to close that gap or to live with the floor.
+2. **Ionization mechanisms: how far client-side resolution goes.** *Resolved:
+   keep the floor.* `import_run` resolves an adduct by exact-string match
+   against `mascope.ionization.list()` and sends `ionization_mechanism_id` null
+   on any mismatch; the server resolves and validates authoritatively, and its
+   422 is the only fail-fast worth the name.
 
-   **Port it.** Bring `to_mascope_ion_mech`, `to_custom_element_format`,
-   `to_explicit_isotope_format` and the `CUSTOM_ELEMENTS` table into the SDK,
-   and add an accessor for the sample-scoped mechanism list. Cost: chemistry
-   logic duplicated into a package that today depends on nothing but requests,
-   loguru, pandas, tqdm and python-dotenv, plus a second copy of the notation
-   rules to keep in step with the server's, plus one new SDK accessor over an
-   endpoint the SDK does not currently reach. Buys: mechanisms stored in
-   custom-element notation resolve instead of silently nulling, and a
-   client-resolved id is valid for the *sample* rather than merely for the
-   deployment - so the fail-fast validation actually pre-empts the 422 it is
-   named for.
+   The alternative was to port the deployment's notation normalizers
+   (`to_mascope_ion_mech`, `to_custom_element_format`,
+   `to_explicit_isotope_format`, the `CUSTOM_ELEMENTS` table) into the SDK and
+   add a sample-scoped mechanism accessor. It is not worth it: it would
+   duplicate chemistry into a package that depends on nothing but requests,
+   loguru, pandas, tqdm and python-dotenv, and leave a second copy of the
+   notation rules to keep in step with the server's - and even then a
+   client-resolved id could be invalid for the *sample*, because mechanism
+   validity is sample-scoped while the SDK's only handle is a deployment-global
+   list. Paying that to gain a pre-check that still cannot be trusted is the
+   wrong trade.
 
-   **Keep the floor.** Exact-string matching only. Cost: mechanisms written in
-   custom-element notation resolve to null even though the deployment knows
-   them, and a resolved id can still be sample-invalid, so client-side
-   validation cannot promise fail-fast here and the round trip pays a server
-   round trip to find out. Buys: no chemistry in the SDK and nothing to keep in
-   sync.
+   A null costs nothing substantive: the adduct still travels in `ion_formula`
+   and in provenance, so the assignment is complete and only the join is
+   deferred to the server. The decision is also additive to reverse - if real
+   imported ledgers arrive with mostly-null mechanism ids and that proves to
+   hurt, porting the normalizers later changes no stored data.
 
-   Downstream of either answer, and genuinely open: the mechanism the deployment
+   Consequently, **client-side validation in §8.3 does not claim to pre-empt the
+   mechanism 422** - it catches shape errors, not chemistry.
+
+   Downstream of this answer, and genuinely open: the mechanism the deployment
    does *not* know at all - auto-register it on import, or leave
    `ionization_mechanism_id` null (the notation still lives in `ion_formula` and
    provenance)? Null is safe and loses no substance; auto-registration keeps the
