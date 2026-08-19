@@ -220,6 +220,18 @@ Each run:
   next window once its grace period elapses (`MASCOPE_UPDATE_GRACE_DAYS`,
   default 7 days) **or** you confirm it - unless it has been snoozed.
 
+An applied unattended update moves the **stack**, not the deployment
+checkout: the containers run the new release while the checkout still
+selects the old one, which `mascope prod doctor` reports as DRIFT. Nothing
+is broken - the timer re-applies the newest release in its next window -
+but an intervening reboot redeploys the checked-out (older) release until
+that window comes around. Align the checkout when convenient:
+
+```sh
+cd "$(mascope path)"
+git fetch --tags && git checkout vX.Y.Z   # the release the timer applied
+```
+
 Steer a pending migration update:
 
 ```sh
