@@ -34,6 +34,16 @@ sudo usermod -aG docker "$USER"      # log out/in for the group to take effect
 docker --version && docker compose version
 ```
 
+**Storage, if this box also receives the fleet's backups (§11).** Everything
+below assumes a redundant data volume mounted before any service starts —
+GlitchTip's Postgres, Kuma's SQLite, the restic repos and the assessment
+records all live on it. Use RAID or ZFS: a backup host whose own disk has no
+redundancy fails at exactly the moment it is needed, and the failure is
+discovered during a restore. Mount it via `/etc/fstab` (or a mount unit) so it
+is present at boot, and confirm before continuing — a Docker volume created
+while the mount is missing lands silently on the root disk and looks fine until
+the disk fills.
+
 ## 2. Firewall (LAN + tailnet only)
 
 `ufw` alone does **not** filter Docker-published ports (Docker's DNAT runs before
@@ -320,6 +330,68 @@ file-write primitive on the host holding your backups), the stream is
 size-bounded before it lands, the archive is never extracted, and only counts
 are sent to the heartbeat service — finding detail describes weaknesses in your
 own deployment and the heartbeat is a third party.
+
+## 11. Receiving the fleet's backups
+
+If this box is also the off-site restic target for your Mascope servers (the
+arrangement `tooling/backup-cron.sh` on each server expects), that side needs
+setting up **here** — the server-side docs only describe what gets pushed.
+
+```sh
+sudo adduser --disabled-password --gecos "" mascope-backup
+sudo -u mascope-backup mkdir -p ~mascope-backup/.ssh
+# one line per server: the public half of the key its backup cron uses
+sudo -u mascope-backup tee -a ~mascope-backup/.ssh/authorized_keys < server-keys.pub
+sudo install -d -o mascope-backup -g mascope-backup /mnt/<data-volume>/mascope-backups/<server>
+```
+
+Points that are easy to get wrong, each of which has bitten someone:
+
+- **restic over `sftp:` is SSH**, so any network policy between the servers and
+  this host must keep **port 22** open. A tailnet ACL draft that allowed only
+  the monitoring ports would have silently stopped every off-site backup — the
+  backups would have failed nightly and the failure is only visible if the
+  dead-man's-switch pings (below) are actually wired up.
+- **One repo per server, each with its own password.** A shared repo means one
+  compromised server can read — or delete — every other customer's backups.
+- **The repo password is the whole restore.** Repo plus password is sufficient;
+  neither alone is worth anything. Keep the passwords in the password manager,
+  never on this box.
+- These repos are **not** included in this host's own backup (§5). They are
+  large, and they are themselves backups — but it does mean they exist in
+  exactly one place, so decide deliberately whether that is acceptable.
+
+## 12. Restoring this host
+
+Worth reading before you need it, and worth drilling once. The backup from §5
+contains the monitoring data *and* the configuration that makes it meaningful —
+the scripts and their env, both stacks' compose files, and any extra paths
+named in `EXTRA_CONFIG_PATHS`.
+
+1. Install the OS, Docker (§1) and restic; restore the firewall rules (§2).
+2. **Mount the data volume first**, at the same path as before.
+3. Restore from the repo — you need the repo and its password, nothing else:
+   ```sh
+   export RESTIC_REPOSITORY=... RESTIC_PASSWORD_FILE=...
+   restic snapshots                       # pick the target snapshot
+   sudo restic restore <id> --target /
+   ```
+4. Bring up the stacks with the restored compose files (§3, §4).
+5. Restore GlitchTip's database from the `glitchtip-db.sql` snapshot:
+   ```sh
+   restic dump <id> glitchtip-db.sql \
+     | docker compose -f /opt/glitchtip/compose.yaml exec -T postgres psql -U postgres
+   ```
+6. Re-add the scheduled jobs (§5, §9, §10) — cron entries are not part of the
+   backup unless you put `/var/spool/cron` in `EXTRA_CONFIG_PATHS`.
+7. Verify rather than assume: monitors listed and green, a test event reaching
+   GlitchTip, and a `restic check` on the restored repo.
+
+**The gap to be honest about:** if this host's own repo lives on the same
+machine — even on a redundant volume — it survives a disk failure but not loss
+of the machine. An off-site copy of at least this repo is cheap (it is small,
+unlike the fleet repos) and is what makes this section usable in the scenario
+that actually destroys a box.
 
 ## Notes & caveats
 
