@@ -519,6 +519,35 @@ insert after the whole payload has been uploaded. `alternatives` and
 `provenance` (JSON) are accepted as inspector detail, subject to the provenance
 rule below.
 
+**Reserved provenance keys, and where an engine's own numbers go.** The app
+reads a handful of keys out of the `provenance` blob and presents them as its
+own judgement: the peak inspector renders `provenance.p_correct` under
+"Calibrated probability the assignment is correct" with a provisional flag off
+`provenance.calibration.provisional`, and the batch fold-in reads
+`provenance["p_correct"]` when it rolls a batch peak's consensus. Nulling the
+flattened columns therefore does not achieve what it is for - nothing reads
+those columns - so the keys the server presents as its own (`p_correct`,
+`p_correct_provisional`, `corroboration_adducts`, `calibration`) are **reserved
+at the top level of an imported blob** and rejected there with a 422 naming
+them.
+
+They are rejected rather than silently dropped because an external engine that
+shares this one's scoring lineage will use those names for its *own* numbers,
+and a quiet strip would look like data loss. Those numbers are wanted, so the
+import gives them a home instead: an `engine_provenance` object inside
+`provenance`, which the server stores verbatim and never interprets. The
+distinction the contract needs is not "foreign numbers are unwelcome" but
+"whose number is this" - keeping both, under names that say which engine
+produced them, is what makes an in-app run and an imported run comparable at
+all (§8.3).
+
+The consequence at batch level follows and is deliberate: consensus weight is
+`fit_score` scaled by log intensity and never `p_correct`, so an imported
+member carries its evidence normally, while the batch peak's own `p_correct` -
+the maximum across members that have one - reflects only Mascope-calibrated
+members, and is absent when a batch peak is supported by imported members
+alone.
+
 **Owner linkage is a client-side row reference resolved server-side.** The
 client cannot supply `owner_peak_assignment_id` - those ids do not exist until
 the server mints them - so an `iso_child` row references its owner as
@@ -1192,7 +1221,16 @@ Each step is its own PR, and each leaves the system shippable:
    `verify` / `list_verifications` / `fit_aggregate`, the polling helper,
    hermetic unit tests.
 6. **SDK `import_run`** + a round-trip tutorial notebook: read peaks, compute
-   externally, publish, see the run in the app.
+   externally, publish, see the run in the app - and then **compare the two
+   engines on the same sample**, which needs no further backend work: both runs
+   live in the same table, so `get(sample_id, run_id=...)` twice and a join on
+   `sample_peak_id` puts them side by side. Per peak that yields where the
+   engines agree on a formula and where they do not, their `fit_score`s, their
+   tiers (interpretable against each run's declared `tier_bands` rather than
+   assumed to share thresholds), and this engine's `p_correct` beside the
+   external one's under `provenance.engine_provenance`. This is the comparison
+   the reserved-key rule exists to keep honest, and the notebook is where it is
+   demonstrated.
 7. **`peaky publish`** - the consumer, in the peaky repository (out of this
    repo's scope; listed so the sequence has its end state).
 8. **Demo bundle seeds a completed assignment run** - unblocks the v1
@@ -1204,18 +1242,16 @@ up today. Two of §8.5's entries are decisions pending rather than research
 questions, and they hold steps.
 
 - **Steps 1-2 proceed.** Step 2 now also carries the import route's body
-  allowance. The imported-`provenance` key policy (§8.5.5) is one of its
-  validation rules, so that decision has to be made before step 2's validation
-  is final - not before step 2 starts.
+  allowance, and the reserved-provenance-key rule (§8.5.5) that its validation
+  enforces.
 - **Step 3 proceeds.** §8.5.4 is settled: the batch endpoint answers with the
   eligibility partition and derives its 409 from the admitted samples' run
   state, so both halves of its 202 now have machinery. The step includes the two
   frontend call sites, which stop treating a refusal as a success.
-- **Step 4 is safe to start** once two amendments land: `calibration` on
-  `PeakAssignmentRunRecord` alongside `engine` (without it the calibration badge
-  has no data), and the §8.5.5 decision, whose answer determines whether the
-  peak inspector needs work in this step or the blob is cleaned at import.
-  Nothing else in step 4 blocks.
+- **Step 4 is safe to start** once `calibration` joins `engine` on
+  `PeakAssignmentRunRecord` - without it the calibration badge has no data. It
+  needs no peak-inspector work: §8.5.5 cleans the blob at import instead, so
+  what the inspector renders is Mascope's own or nothing.
 - **Step 5 proceeds** once step 3 lands, since `assign_batch` wraps its
   partition body and polls by sample against the request timestamp. The
   retry-safety and error-body plumbing (§8.3) is independent of both and can be
@@ -1322,34 +1358,26 @@ document cites it.
    The cost is that `wait=True` polls by sample rather than by run id, which
    §8.3 pins with a request timestamp so a sample's earlier run cannot be
    mistaken for this batch's.
-5. **Reserved keys in an imported `provenance` blob.** *(Decision pending -
-   holds step 2's validation; step 4's scope depends on the answer.)* §8.2 nulls
-   the flattened P(correct) scalars for imported runs so the ledger does not
-   present an importer's confidence as Mascope's calibrated judgement. That is
-   necessary and not sufficient: the peak inspector renders `provenance.p_correct`
-   from the stored blob under "Calibrated probability the assignment is correct"
-   with a provisional flag off `provenance.calibration.provisional`, and the
-   batch consensus reads `provenance["p_correct"]` from the blob too - neither
-   reads the column. Since §8.2 directs an importer's own confidence *into* the
-   blob and peaky shares the scoring lineage that produced those key names, the
-   collision is a likely accident rather than an attack.
+5. **Reserved keys in an imported `provenance` blob.** *Resolved: the keys the
+   server presents as its own are reserved at import, and an engine's own
+   numbers get a sanctioned home beside them* (§8.2, "Reserved provenance
+   keys").
 
-   **Reserve the keys at import.** Strip or namespace `p_correct` and
-   `calibration` (and anything else the flattening reads) out of an imported
-   `provenance` before it is stored, or 422 a payload carrying them. Cost: a
-   reserved-key list that has to be kept in step with `_provenance_scalars` and
-   with whatever the inspector renders next, and an importer loses the obvious
-   place to put its own numbers, so the contract owes it a sanctioned one.
-   Buys: "the ledger shows them empty" becomes true everywhere the blob is read,
-   including the consensus roll-up, with no UI work.
+   Nulling the flattened P(correct) columns is necessary and not sufficient,
+   because nothing reads those columns: the peak inspector renders
+   `provenance.p_correct` from the stored blob under "Calibrated probability the
+   assignment is correct", and the batch fold-in reads `provenance["p_correct"]`
+   when rolling up consensus. Reserving is enforced once, at the write boundary,
+   where it cannot be forgotten; making each reading surface engine-aware would
+   have to be re-implemented correctly at every present and future read site,
+   and the site that matters most is not a display but the consensus roll-up.
 
-   **Make the reading surfaces engine-aware.** Leave the blob verbatim and have
-   the inspector - and anything else that reads those keys - label them as the
-   importing engine's numbers rather than Mascope's. Cost: unbudgeted app work
-   inside step 4, repeated for every future surface that learns to read
-   provenance, and the consensus pass still has to decide whether to weigh a
-   foreign `p_correct`. Buys: the importer's blob stays exactly what its engine
-   wrote, which is the same argument that keeps `config` verbatim.
+   The importer's numbers are kept, not discarded - they move to
+   `provenance.engine_provenance`, stored verbatim. Comparing this engine's
+   calibrated probability against an external one's is a first-class use of the
+   import path, so both have to survive under names that say which engine
+   produced them; a blob where the two are indistinguishable would defeat the
+   comparison as surely as dropping one of them.
 
 ---
 
