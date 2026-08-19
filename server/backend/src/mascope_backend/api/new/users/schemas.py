@@ -11,6 +11,7 @@ from pydantic import (
     model_validator,
 )
 
+from mascope_backend.accounts import ACCOUNT_TYPE_MACHINE, ACCOUNT_TYPE_PERSON
 from mascope_backend.api.models.base_pydantic_model import QueryParamsModel
 from mascope_backend.api.new.auth.config import auth_settings
 from mascope_backend.api.new.auth.mfa import policy
@@ -77,6 +78,15 @@ class UserRead(schemas.BaseUser[int]):
         ),
     )
 
+    account_type: str = Field(
+        ACCOUNT_TYPE_PERSON,
+        description=(
+            "Whether this is a person or a machine (instrument agent) account. "
+            "Machine accounts never sign in interactively and are managed "
+            "through Paired machines, not user management."
+        ),
+    )
+
     model_config = {
         "from_attributes": True  # Allows Pydantic to work with SQLAlchemy models
     }
@@ -92,7 +102,12 @@ class UserRead(schemas.BaseUser[int]):
         Computed here so every response carrying a user gets it, instead of at
         each of the three places that build this schema - one of which would
         eventually be missed, and the miss would read as "no enrolment owed".
+
+        Always false for a machine account: it never renders an enrolment
+        screen and its credential does not depend on a second factor.
         """
+        if self.account_type == ACCOUNT_TYPE_MACHINE:
+            return False
         return policy.enrollment_required(self.role_id, self.mfa_enabled)
 
     @field_validator("role_name")

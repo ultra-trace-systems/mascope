@@ -10,9 +10,11 @@ from typing import Optional, Union
 
 from sqlalchemy import asc, desc, func, select
 
+from mascope_backend.accounts import ACCOUNT_TYPE_MACHINE
 from mascope_backend.api.lib.api_features import api_controller
 from mascope_backend.api.lib.exceptions.api_exceptions import NotFoundException
 from mascope_backend.api.new.auth.config import auth_settings
+from mascope_backend.api.new.auth.exceptions import ForbiddenAccessException
 from mascope_backend.api.new.roles.exceptions import InvalidRoleException
 from mascope_backend.api.new.users.first_owner.util import (
     check_last_owner_deletion,
@@ -35,6 +37,24 @@ from mascope_backend.api.new.users.user_manager.service import UserManager
 from mascope_backend.api.new.users.util import check_username_exists
 from mascope_backend.db import Role, User, Workspace, WorkspaceMember, async_session
 from mascope_backend.db.id import gen_id
+
+
+def _refuse_machine_account(user: User) -> None:
+    """Reject an attempt to manage a machine account as a human user.
+
+    Machine accounts are created, and only ever removed, through the pairing
+    and device flows; letting the human user routes rename, re-role, deactivate
+    or delete one would break the agent behind it or dislodge the attribution
+    other records point at.
+
+    :param user: The target account.
+    :raises ForbiddenAccessException: When the account is a machine account.
+    """
+    if user.account_type == ACCOUNT_TYPE_MACHINE:
+        raise ForbiddenAccessException(
+            "This is a machine (instrument agent) account. Manage it through "
+            "Paired machines, not user management."
+        )
 
 
 @api_controller()
@@ -75,8 +95,14 @@ async def get_users(
             "Both 'page' and 'limit' must be provided together or both omitted."
         )
     async with async_session() as session:
-        # Step 1: Construct the base query with join to Role
-        query = select(User, Role.role_name).join(Role, Role.role_id == User.role_id)
+        # Step 1: Construct the base query with join to Role. Machine accounts
+        # are excluded: this list is the human user-management view, and a
+        # machine account is administered through Paired machines instead.
+        query = (
+            select(User, Role.role_name)
+            .join(Role, Role.role_id == User.role_id)
+            .where(User.account_type != ACCOUNT_TYPE_MACHINE)
+        )
 
         # Step 2: Apply filtering if specified
         if role_name_min or role_name_max:
@@ -297,6 +323,9 @@ async def update_user(
     # --- Retrieve the user ---
     user = await user_manager.get(user_id)
 
+    # --- Machine accounts are not managed here ---
+    _refuse_machine_account(user)
+
     # --- Check owner role downgrade only for full UserUpdate schema ---
     if (
         isinstance(user_update, UserUpdate)
@@ -348,6 +377,10 @@ async def delete_user(user_id: int, user_manager: UserManager) -> dict:
     """
     # Step 1: Fetch the user
     user = await user_manager.get(user_id)
+
+    # A machine account is removed by revoking its device, not deleted here -
+    # deleting it would orphan the device and silently break the agent.
+    _refuse_machine_account(user)
 
     # Step 2: Check if this would remove last owner
     await check_last_owner_deletion(user_id)

@@ -17,7 +17,13 @@ which replaces all tokens for the service).
 import json
 import secrets
 
-from mascope_backend.api.new.auth.access_token.service import create_access_token
+from sqlalchemy import update
+
+from mascope_backend.api.new.auth.access_token.service import (
+    create_access_token,
+    regenerate_access_token,
+)
+from mascope_backend.api.new.auth.devices.machine_account import create_machine_account
 from mascope_backend.api.new.auth.pairing.config import pairing_settings
 from mascope_backend.api.new.auth.pairing.exceptions import (
     PairingCodeAlreadyApprovedException,
@@ -96,10 +102,13 @@ async def start_pairing(service_name: str, machine_name: str | None) -> dict:
 
 
 async def approve_pairing(user: User, user_code: str) -> dict:
-    """Approve a pending pairing: create a token for the approving user.
+    """Approve a pending pairing: provision the machine account and its token.
 
-    The token is created in addition to any existing tokens for the
-    service, and stamped with the paired machine's name.
+    Creates the device, a dedicated machine account it authenticates as
+    (sponsored by, but not owned by, the approver), and the service token bound
+    to the device. The machine account also gets a file-converter token up
+    front, so its first upload is not refused for the want of one - only a login
+    would otherwise mint it, and a machine account never logs in.
 
     :param user: The approving user (editor role enforced at the route).
     :type user: User
@@ -118,8 +127,7 @@ async def approve_pairing(user: User, user_code: str) -> dict:
     if record["status"] != "pending":
         raise PairingCodeAlreadyApprovedException()
 
-    # The machine becomes a registered device, sponsored by the approver; the
-    # token is bound to it so it can be listed and revoked per machine.
+    # The machine becomes a registered device, sponsored by the approver.
     async with async_session() as session:
         device = AgentDevice(
             name=record["machine_name"] or "Unnamed agent",
@@ -130,8 +138,25 @@ async def approve_pairing(user: User, user_code: str) -> dict:
         await session.commit()
         await session.refresh(device)
 
+    # The device authenticates as its own machine account, not as the approver.
+    machine_user = await create_machine_account(
+        machine_name=record["machine_name"] or "Unnamed agent",
+        device_id=device.device_id,
+    )
+    async with async_session() as session:
+        await session.execute(
+            update(AgentDevice)
+            .where(AgentDevice.device_id == device.device_id)
+            .values(machine_user_id=machine_user.id)
+        )
+        await session.commit()
+
+    # Uploads resolve the machine account's file-converter token server-side;
+    # mint it now (regenerate is create-if-absent here) so the first upload works.
+    await regenerate_access_token(user=machine_user, service_name="file-converter")
+
     token = await create_access_token(
-        user=user,
+        user=machine_user,
         service_name=record["service_name"],
         description=(
             f"Paired: {record['machine_name']}" if record["machine_name"] else "Paired"

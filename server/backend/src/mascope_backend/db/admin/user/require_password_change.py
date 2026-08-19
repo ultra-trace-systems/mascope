@@ -17,6 +17,7 @@ from typing import Optional, Sequence
 
 from sqlalchemy import func, select, update
 
+from mascope_backend.accounts import ACCOUNT_TYPE_MACHINE
 from mascope_backend.db import User, async_session
 from mascope_backend.runtime import runtime
 
@@ -31,10 +32,14 @@ async def require_password_change_for_all_users() -> dict:
     """
     Require every account to replace its password before using the application.
 
-    Nobody is excluded, including the owner who triggered it and accounts that
-    are currently deactivated: exempting the highest-privilege account would
-    defeat the point, and a deactivated account that is later reactivated must
-    not walk back in on a password the policy no longer accepts.
+    No *person* account is excluded, including the owner who triggered it and
+    accounts that are currently deactivated: exempting the highest-privilege
+    account would defeat the point, and a deactivated account that is later
+    reactivated must not walk back in on a password the policy no longer
+    accepts. Machine accounts are excluded - they have no password to change and
+    never sign in, so flagging them would only leave a permanent, meaningless
+    "must change password" on a row nobody can act on. The reported totals count
+    person accounts only, for the same reason.
 
     Only accounts that do not already owe a change are touched, which makes the
     operation idempotent and the reported count honest. ``password_changed_at``
@@ -45,12 +50,17 @@ async def require_password_change_for_all_users() -> dict:
     """
     async with async_session() as session:
         total_users = (
-            await session.execute(select(func.count()).select_from(User))
+            await session.execute(
+                select(func.count())
+                .select_from(User)
+                .where(User.account_type != ACCOUNT_TYPE_MACHINE)
+            )
         ).scalar_one()
 
         update_result = await session.execute(
             update(User)
             .where(User.must_change_password.is_(False))
+            .where(User.account_type != ACCOUNT_TYPE_MACHINE)
             .values(
                 must_change_password=True,
                 password_change_reason=POLICY_REASON,

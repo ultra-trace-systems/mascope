@@ -14,9 +14,11 @@ import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy import delete, select
 
+from mascope_backend.accounts import ACCOUNT_TYPE_MACHINE
 from mascope_backend.api.new.auth.pairing import service as pairing_service
 from mascope_backend.app.fast import fast
-from mascope_backend.db import AccessToken, AgentDevice
+from mascope_backend.db import AccessToken, AgentDevice, User
+from mascope_backend.roles import ROLE_ACCESS_LEVELS
 
 
 class FakeRedis:
@@ -56,14 +58,17 @@ async def public_client():
 
 @pytest_asyncio.fixture(autouse=True)
 async def clean_file_agent_tokens(async_session_factory):
-    """Remove file-agent tokens and devices between tests so asserts are stable."""
+    """Remove file-agent tokens, machine accounts and devices between tests."""
     yield
     async with async_session_factory() as session:
         await session.execute(
             delete(AccessToken).where(AccessToken.service_name == "file-agent")
         )
-        # Tokens cascade from a device delete, but a pairing that added a token
-        # to a pre-existing device leaves the device behind; clear both.
+        # Deleting a machine account cascades its tokens (the file-converter
+        # token pairing mints) and NULLs the device's machine_user_id.
+        await session.execute(
+            delete(User).where(User.account_type == ACCOUNT_TYPE_MACHINE)
+        )
         await session.execute(
             delete(AgentDevice).where(AgentDevice.service_name == "file-agent")
         )
@@ -113,8 +118,9 @@ async def test_full_pairing_flow(
     token = body["access_token"]
     assert token
 
-    # The token is a real DB row, stamped with service and machine, and bound
-    # to a device the pairing created.
+    # The token is a real DB row, stamped with service and machine, bound to a
+    # device the pairing created, and owned by a machine account - not the
+    # approver.
     async with async_session_factory() as session:
         row = (
             await session.execute(select(AccessToken).where(AccessToken.token == token))
@@ -123,10 +129,17 @@ async def test_full_pairing_flow(
         assert row.description == "Paired: ORBI-PC"
         assert row.device_id is not None
         device = await session.get(AgentDevice, row.device_id)
+        token_user = await session.get(User, row.user_id)
     assert device.name == "ORBI-PC"
     assert device.service_name == "file-agent"
     assert device.sponsor_user_id is not None  # the approving editor
     assert device.revoked_at is None
+    # The device authenticates as its own machine account, sponsored by the
+    # approver but not owned by them.
+    assert device.machine_user_id == token_user.id
+    assert token_user.account_type == ACCOUNT_TYPE_MACHINE
+    assert token_user.id != device.sponsor_user_id
+    assert token_user.role_id == ROLE_ACCESS_LEVELS["editor"]
 
     # Second poll: the pairing is gone
     resp = await public_client.post(
@@ -136,10 +149,10 @@ async def test_full_pairing_flow(
 
 
 @pytest.mark.asyncio
-async def test_pairing_does_not_revoke_existing_tokens(
+async def test_pairing_token_belongs_to_a_machine_account_not_the_approver(
     fake_redis, public_client, editor_client, async_session_factory, test_users
 ):
-    # An existing token for the same user+service (e.g. another machine)
+    # The approver holds a file-agent token of their own (e.g. a manual one).
     resp = await editor_client.post(
         "/api/auth/access_token/regenerate", json={"service_name": "file-agent"}
     )
@@ -152,7 +165,9 @@ async def test_pairing_does_not_revoke_existing_tokens(
     assert resp.status_code == 200, resp.text
 
     async with async_session_factory() as session:
-        rows = (
+        # The approver's own file-agent tokens are untouched: pairing no longer
+        # mints against the approver at all.
+        approver_rows = (
             (
                 await session.execute(
                     select(AccessToken)
@@ -163,7 +178,23 @@ async def test_pairing_does_not_revoke_existing_tokens(
             .scalars()
             .all()
         )
-    assert len(rows) == 2  # pairing added a token, did not replace
+        assert len(approver_rows) == 1
+
+        # The pairing's token belongs to a machine account, device-bound.
+        machine_rows = (
+            (
+                await session.execute(
+                    select(AccessToken)
+                    .join(User, User.id == AccessToken.user_id)
+                    .where(User.account_type == ACCOUNT_TYPE_MACHINE)
+                    .where(AccessToken.service_name == "file-agent")
+                )
+            )
+            .scalars()
+            .all()
+        )
+    assert len(machine_rows) == 1
+    assert machine_rows[0].device_id is not None
 
 
 @pytest.mark.asyncio

@@ -6,6 +6,19 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
 
 ### Added
 
+- Instrument agents now authenticate as their own **machine accounts**, not as
+  the person who paired them. Approving a pairing provisions a dedicated
+  account the device authenticates as - capped at the editor role, with no
+  usable password - so acquisition no longer depends on a human's credential
+  and a person leaving never revokes an agent. The person who approved the
+  pairing is recorded as the device's sponsor, and is added as owner of the
+  acquisition workspaces their agent's uploads create, so they keep seeing the
+  data. Machine accounts never sign in interactively, are excluded from the
+  deployment-wide forced-password-change sweep and the two-factor requirement
+  (both meaningless without a browser), do not appear in the user list, and
+  cannot be renamed, re-roled or deleted through user management - they are
+  managed entirely through Paired machines. Revoking a device now also
+  deactivates its machine account and clears all its tokens.
 - Paired instrument agents are now first-class devices. Approving a pairing
   creates a registered device - named after the machine's hostname, sponsored
   by the approving user - and binds the issued token to it, so a deployment can
