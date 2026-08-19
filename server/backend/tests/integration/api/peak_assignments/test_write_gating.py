@@ -141,26 +141,21 @@ async def test_reads_stay_open_when_feature_disabled(
 
 
 @pytest.mark.asyncio
-async def test_assign_accepted_when_feature_enabled(
-    editor_client, pa_test_data, feature_enabled, monkeypatch
+async def test_assign_passes_the_gate_when_feature_enabled(
+    editor_client, pa_test_data, feature_enabled
 ):
-    """Opting in opens the gate: the run is queued and acknowledged."""
+    """Opting in opens the gate: the request is then answered on its own merits.
 
-    async def _noop_assign(**kwargs):
-        return None
-
-    # Stub the engine entry point: the gate under test sits in the route, and
-    # the fixture's zarr filename points at no real file.
-    monkeypatch.setattr(
-        "mascope_backend.api.new.peak_assignments.routes.assign_sample_peaks",
-        _noop_assign,
-    )
+    Those merits are a refusal here - the fixture sample is a blank, which the
+    endpoint now decides synchronously - and that is the distinction under test:
+    a 422 is a verdict on the request, a 403 is a verdict on the deployment. The
+    outcomes themselves are covered in test_assign_outcomes.py.
+    """
     response = await editor_client.post(
         f"/api/peak-assignments/sample/{pa_test_data['sample_item_id']}/assign"
     )
-    assert response.status_code == 202
-    # api_route moves process_id from the body into the Process-ID header.
-    assert response.headers["Process-ID"]
+    assert response.status_code == 422
+    assert response.json()["detail"]["reason"] == "blank sample (no peaks)"
 
 
 @pytest.mark.asyncio
