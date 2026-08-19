@@ -6,6 +6,7 @@ It allows admins or owners to delete access tokens for other users.
 
 from sqlalchemy import delete
 
+from mascope_backend.accounts import refuse_machine_account
 from mascope_backend.api.lib.api_features import api_controller
 from mascope_backend.api.lib.exceptions.api_exceptions import NotFoundException
 from mascope_backend.db import AccessToken, User, async_session
@@ -28,6 +29,12 @@ async def delete_user_access_tokens(
         user = await session.get(User, user_id)
         if not user:
             raise NotFoundException(f"User with ID '{user_id}' not found")
+
+        # A machine account's credentials are revoked with its device, which
+        # applies the sponsor ceiling. Reached from here they would not: every
+        # machine account sits at editor, so the admin routes' "not an admin or
+        # above" check would let an admin silently kill an owner's agent.
+        refuse_machine_account(user)
 
         delete_query = delete(AccessToken).where(AccessToken.user_id == user_id)
 

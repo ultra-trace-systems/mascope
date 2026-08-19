@@ -57,15 +57,16 @@ async def _provision_device(async_session_factory, sponsor_id: int):
             name="ORBI-PC", service_name="file-agent", sponsor_user_id=sponsor_id
         )
         session.add(device)
+        await session.flush()
+        machine = await create_machine_account(
+            session,
+            machine_name="ORBI-PC",
+            device_id=device.device_id,
+            sponsor_user_id=sponsor_id,
+        )
+        device.machine_user_id = machine.id
         await session.commit()
-        await session.refresh(device)
         device_id = device.device_id
-
-    machine = await create_machine_account("ORBI-PC", device_id)
-    async with async_session_factory() as session:
-        d = await session.get(AgentDevice, device_id)
-        d.machine_user_id = machine.id
-        await session.commit()
 
     token = await create_access_token(
         user=machine,
@@ -96,6 +97,42 @@ async def test_renewal_issues_a_fresh_token(async_session_factory, test_users):
     async with _bearer_client(new_token) as client:
         check = await client.get("/api/sample/files", params={"page": 0, "limit": 1})
     assert check.status_code != 401
+
+
+@pytest.mark.asyncio
+async def test_unbound_machine_token_cannot_renew(async_session_factory, test_users):
+    """Renewal follows the presented token's device binding, not its subject.
+
+    A machine account also holds a file-converter token, which is unbound and
+    therefore exempt from both the strict-mode gate and the 30-day device
+    lifetime. Were the subject enough, that long-lived credential could mint
+    device tokens forever and the short lifetime would bound nothing.
+    """
+    device_id, machine, _token = await _provision_device(
+        async_session_factory, test_users["editor"].id
+    )
+
+    converter_token = await create_access_token(
+        user=machine, service_name="file-converter"
+    )
+
+    async with _bearer_client(converter_token, service="file-converter") as client:
+        resp = await client.post("/api/auth/devices/token")
+
+    assert resp.status_code == 401, resp.text
+
+    # Refused, and nothing was minted: the device still holds only the token
+    # pairing gave it. (The route wrapper replaces the detail with a generic
+    # message, so the count is what pins the behaviour, not the text.)
+    async with async_session_factory() as session:
+        count = (
+            await session.execute(
+                select(func.count(AccessToken.token)).where(
+                    AccessToken.device_id == device_id
+                )
+            )
+        ).scalar_one()
+    assert count == 1
 
 
 @pytest.mark.asyncio

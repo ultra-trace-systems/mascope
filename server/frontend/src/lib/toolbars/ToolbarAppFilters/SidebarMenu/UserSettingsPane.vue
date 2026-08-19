@@ -286,8 +286,9 @@ const vHelpLayer = app.ui.help.directive(layer)
       </p>
       <p>
         Machines you have paired appear under 'Paired machines', where each can be
-        renamed or revoked on its own. Regenerate still replaces every token of the
-        selected service at once — paired machines included.
+        renamed or revoked on its own. A paired machine holds its own credential,
+        so Regenerate does not affect it: Regenerate replaces the tokens issued to
+        you, and revoking a machine is what stops that machine.
       </p>
     `,
       doc: app.ui.help.docUrl('instruments/#the-file-agent')

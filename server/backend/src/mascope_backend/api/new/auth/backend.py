@@ -119,6 +119,13 @@ async def get_enabled_backends(request: Request) -> list[AuthenticationBackend]:
         if token_device_id is not None:
             await touch_device_last_seen(token_device_id)
 
+        # The authenticated device binding, for routes that attribute an action
+        # to the machine behind it. Recorded here so they read the value this
+        # layer already validated rather than re-parsing the header: only the
+        # bearer path sets it, so a cookie-authenticated request carrying a
+        # stray Authorization header stays unattributed.
+        request.state.token_device_id = token_device_id
+
         # Check if the endpoint allows for token access
         if hasattr(route_func, "token_access") and route_func.token_access:
             runtime.logger.debug(f"Using {token_service_name} authentication protocol.")

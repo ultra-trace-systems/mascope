@@ -8,6 +8,7 @@ CLI escape hatch on the host, for when nobody who could perform this reset can
 sign in either.
 """
 
+from mascope_backend.accounts import refuse_machine_account
 from mascope_backend.api.lib.api_features import api_controller
 from mascope_backend.api.new.auth.mfa.reauth import clear_recent_verification
 from mascope_backend.api.new.auth.mfa.service import disable_mfa
@@ -31,7 +32,10 @@ async def reset_user_mfa(user_id: int) -> dict:
     :return: A message and the updated user.
     """
     # Resolved before the write so a bad id fails without side effects.
-    await get_user(user_id=user_id)
+    target = (await get_user(user_id=user_id))["data"]
+    # A machine account holds no second factor and is managed through Paired
+    # machines, so there is nothing here to reset.
+    refuse_machine_account(target)
 
     await disable_mfa(user_id)
     # Any step-up window this account had open was opened by the factor just

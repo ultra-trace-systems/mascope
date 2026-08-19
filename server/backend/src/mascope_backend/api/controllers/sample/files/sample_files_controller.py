@@ -266,16 +266,31 @@ async def create_sample_file(
         instruments = instruments_response["data"]
         initial_instruments = [i["instrument"] for i in instruments]
 
-        # Attribution must never fail an ingest: a device id whose row is
-        # gone (revoked-then-deleted, or a stale converter) degrades to an
-        # unattributed device, not an error.
+        # The device travels in the body because the converter writes this
+        # record back on its own (unbound) token, long after the agent's
+        # request ended - so it cannot be derived from the caller's binding.
+        # It is therefore only honoured when the caller IS the machine account
+        # that device authenticates as; anything else would let any editor
+        # stamp a file with another site's instrument. Attribution must never
+        # fail an ingest, so a rejected or vanished id degrades to
+        # unattributed rather than raising.
         device_id = sample_file_create.uploaded_by_device_id
-        if device_id is not None and await session.get(AgentDevice, device_id) is None:
-            runtime.logger.warning(
-                f"Upload of '{sample_file_create.filename}' referenced unknown "
-                f"device {device_id}; storing without device attribution"
-            )
-            device_id = None
+        if device_id is not None:
+            device = await session.get(AgentDevice, device_id)
+            if device is None:
+                runtime.logger.warning(
+                    f"Upload of '{sample_file_create.filename}' referenced "
+                    f"unknown device {device_id}; storing without device "
+                    "attribution"
+                )
+                device_id = None
+            elif device.machine_user_id != user_id:
+                runtime.logger.warning(
+                    f"Upload of '{sample_file_create.filename}' claimed device "
+                    f"{device_id}, which user {user_id} does not authenticate "
+                    "as; storing without device attribution"
+                )
+                device_id = None
 
         # Step 2: Construct new sample file. The uploading user comes from
         # the authenticated request (user_id), not from the request body.

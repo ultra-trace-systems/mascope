@@ -10,11 +10,10 @@ from typing import Optional, Union
 
 from sqlalchemy import asc, desc, func, select
 
-from mascope_backend.accounts import ACCOUNT_TYPE_MACHINE
+from mascope_backend.accounts import ACCOUNT_TYPE_MACHINE, refuse_machine_account
 from mascope_backend.api.lib.api_features import api_controller
 from mascope_backend.api.lib.exceptions.api_exceptions import NotFoundException
 from mascope_backend.api.new.auth.config import auth_settings
-from mascope_backend.api.new.auth.exceptions import ForbiddenAccessException
 from mascope_backend.api.new.roles.exceptions import InvalidRoleException
 from mascope_backend.api.new.users.first_owner.util import (
     check_last_owner_deletion,
@@ -35,26 +34,8 @@ from mascope_backend.api.new.users.schemas import (
 )
 from mascope_backend.api.new.users.user_manager.service import UserManager
 from mascope_backend.api.new.users.util import check_username_exists
-from mascope_backend.db import Role, User, Workspace, WorkspaceMember, async_session
-from mascope_backend.db.id import gen_id
-
-
-def _refuse_machine_account(user: User) -> None:
-    """Reject an attempt to manage a machine account as a human user.
-
-    Machine accounts are created, and only ever removed, through the pairing
-    and device flows; letting the human user routes rename, re-role, deactivate
-    or delete one would break the agent behind it or dislodge the attribution
-    other records point at.
-
-    :param user: The target account.
-    :raises ForbiddenAccessException: When the account is a machine account.
-    """
-    if user.account_type == ACCOUNT_TYPE_MACHINE:
-        raise ForbiddenAccessException(
-            "This is a machine (instrument agent) account. Manage it through "
-            "Paired machines, not user management."
-        )
+from mascope_backend.api.new.workspaces.system import add_to_system_workspaces
+from mascope_backend.db import Role, User, async_session
 
 
 @api_controller()
@@ -269,18 +250,7 @@ async def register_user(
         "guest",
     )
     async with async_session() as session:
-        result = await session.execute(
-            select(Workspace).where(Workspace.is_system.is_(True))
-        )
-        for ws in result.scalars().all():
-            member = WorkspaceMember(
-                workspace_member_id=gen_id(),
-                workspace_id=ws.workspace_id,
-                user_id=created_user.id,
-                workspace_role=role_name,
-                granted_by=None,
-            )
-            session.add(member)
+        await add_to_system_workspaces(session, created_user.id, role_name)
         await session.commit()
 
     # --- Validate and return the registered user's details ---
@@ -324,7 +294,7 @@ async def update_user(
     user = await user_manager.get(user_id)
 
     # --- Machine accounts are not managed here ---
-    _refuse_machine_account(user)
+    refuse_machine_account(user)
 
     # --- Check owner role downgrade only for full UserUpdate schema ---
     if (
@@ -380,7 +350,7 @@ async def delete_user(user_id: int, user_manager: UserManager) -> dict:
 
     # A machine account is removed by revoking its device, not deleted here -
     # deleting it would orphan the device and silently break the agent.
-    _refuse_machine_account(user)
+    refuse_machine_account(user)
 
     # Step 2: Check if this would remove last owner
     await check_last_owner_deletion(user_id)
