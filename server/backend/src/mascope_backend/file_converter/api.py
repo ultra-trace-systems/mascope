@@ -25,11 +25,38 @@ URL = f"http://{HOST}:{runtime.meta.api_port}"
 # The backend can be saturated during an ingest burst (connection-pool
 # congestion answers 503 once its pool_timeout expires). The converter is a
 # batch worker: transient server trouble should be waited out - quarantining
-# a raw file is only right when processing that file itself fails. The client
-# timeout must exceed the server's pool_timeout (120s) so a slow-but-
-# successful request is not killed from this side first.
-_REQUEST_TIMEOUT_S = 180
+# a raw file is only right when processing that file itself fails.
+#
+# The client timeout must exceed the server's pool_timeout, or a request the
+# server would still have answered gets killed from this side first and
+# retried into a pool that is no less busy. pool_timeout is configurable while
+# this timeout used to be a constant, so the invariant held only by the two
+# staying in step by hand; derive the floor from the setting instead.
+_POOL_TIMEOUT_S = runtime.full_config.backend.database.pool_timeout
+_REQUEST_TIMEOUT_FLOOR_S = 180
+_REQUEST_TIMEOUT_MARGIN_S = 60
+
+
+def _client_timeout(pool_timeout: int) -> int:
+    """
+    Request timeout that stays above the server's wait for a pooled connection.
+
+    :param pool_timeout: The backend's configured ``pool_timeout``, in seconds.
+    :return: Seconds to allow a request, never below the floor.
+    """
+    return max(_REQUEST_TIMEOUT_FLOOR_S, pool_timeout + _REQUEST_TIMEOUT_MARGIN_S)
+
+
+_REQUEST_TIMEOUT_S = _client_timeout(_POOL_TIMEOUT_S)
 _RETRY_BACKOFF_S = (15, 30, 60)
+
+if _REQUEST_TIMEOUT_S > _REQUEST_TIMEOUT_FLOOR_S:
+    # Only when pool_timeout is raised past what the floor already covers, so
+    # a stock deployment stays quiet.
+    runtime.logger.warning(
+        f"Backend pool_timeout is {_POOL_TIMEOUT_S}s, so the converter's "
+        f"request timeout is raised to {_REQUEST_TIMEOUT_S}s to stay above it"
+    )
 
 
 def _request_with_retry(method: str, url: str, **kwargs) -> requests.Response:
