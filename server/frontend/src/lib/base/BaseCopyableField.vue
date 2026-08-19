@@ -16,8 +16,10 @@ const emit = defineEmits(['copy'])
 async function copyField(text) {
   try {
     await navigator.clipboard.writeText(text)
+    return true
   } catch (err) {
     console.warn(err)
+    return false
   }
 }
 </script>
@@ -33,10 +35,12 @@ async function copyField(text) {
       text
       size="small"
       @click="
-        (event) => {
+        async (event) => {
           event.stopPropagation()
-          copyField(field)
-          emit('copy')
+          // Only signal 'copy' once the clipboard write actually succeeded: a
+          // listener may discard the value on copy (a one-time password), and a
+          // failed write in a non-secure context must not throw it away unread.
+          if (await copyField(field)) emit('copy')
         }
       "
     />
