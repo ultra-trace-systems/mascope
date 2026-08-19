@@ -13,7 +13,7 @@ Introduces the batch-level layer of the peak-centric paradigm
   (batch_peak_id, sample_item_id): one member (one y-value) per sample per peak.
 
 Revision ID: f3b9c7a1e2d4
-Revises: b7e4c9a2f1d3
+Revises: 355643cd265e
 Create Date: 2026-07-12 12:00:00.000000
 
 """
@@ -26,7 +26,7 @@ from alembic import op
 
 # revision identifiers, used by Alembic.
 revision: str = "f3b9c7a1e2d4"
-down_revision: Union[str, Sequence[str], None] = "b7e4c9a2f1d3"
+down_revision: Union[str, Sequence[str], None] = "355643cd265e"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
