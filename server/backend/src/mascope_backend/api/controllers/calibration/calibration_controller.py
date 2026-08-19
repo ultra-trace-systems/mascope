@@ -65,19 +65,35 @@ from mascope_backend.socket.notifications import (
 from mascope_signal.compute import get_sum_signal
 
 
-def acquisition_drift_ppm(fit: dict | None) -> float | None:
+def acquisition_drift_limit_ppm(filename: str) -> float:
+    """
+    Drift-warning threshold for the file's instrument class.
+
+    :param filename: Sample filename the fit belongs to.
+    :return: Threshold in ppm: ``TOF_ACQUISITION_DRIFT_WARNING_PPM`` for TOF
+        files (a TOF mass axis wanders tens of ppm in normal operation), the
+        tighter ``ACQUISITION_DRIFT_WARNING_PPM`` otherwise.
+    """
+    instrument_name = m_name.get_instrument_name(filename)
+    if m_name.resolve_instrument_type(instrument_name, throw=False) == "tof":
+        return calibration_config.TOF_ACQUISITION_DRIFT_WARNING_PPM
+    return calibration_config.ACQUISITION_DRIFT_WARNING_PPM
+
+
+def acquisition_drift_ppm(fit: dict | None, limit_ppm: float) -> float | None:
     """
     The fit's pre-calibration m/z error when it exceeds the drift threshold.
 
     :param fit: Fit dict (with the ``quality`` block when available).
-    :return: Signed pre-calibration error in ppm, or None when within
-        ``ACQUISITION_DRIFT_WARNING_PPM`` or unknown.
+    :param limit_ppm: Class threshold from :func:`acquisition_drift_limit_ppm`.
+    :return: Signed pre-calibration error in ppm, or None when within the
+        limit or unknown.
     """
     quality = (fit or {}).get("quality") or {}
     pre_fit = quality.get("pre_fit_mz_error_ppm")
     if pre_fit is None:
         return None
-    if abs(pre_fit) <= calibration_config.ACQUISITION_DRIFT_WARNING_PPM:
+    if abs(pre_fit) <= limit_ppm:
         return None
     return pre_fit
 
@@ -91,28 +107,30 @@ def warn_on_acquisition_drift(
     The one-point fit silently corrects however far off the instrument writes
     its m/z axis, so a drifting instrument keeps producing green results while
     its internal calibration degrades. When the fit's pre-calibration error
-    exceeds ``ACQUISITION_DRIFT_WARNING_PPM``, log at WARNING - exported to
-    error monitoring as operator signal that the instrument needs retuning.
+    exceeds the instrument class's drift threshold, log at WARNING - exported
+    to error monitoring as operator signal that the instrument needs retuning.
     (The persisted record carries the ``acquisition_drift`` flag for the
     sample browser's badge - see ``calibration_mz_apply``.)
 
-    The warning message carries only the instrument and the drift rounded to
-    whole ppm, so monitoring groups a drift episode into one issue per
-    magnitude instead of one per sample; the per-file detail follows at INFO.
+    The warning text names the instrument but not the observed magnitude:
+    monitoring groups events by message, and the magnitude of ongoing drift
+    wanders file-to-file, so embedding it would split one drift episode into
+    an issue per ppm value. Grouping is per instrument; the exact per-file
+    magnitude follows at INFO.
 
     :param fit: Applied fit dict (with the ``quality`` block when available).
     :param instrument: Instrument name for the warning message.
-    :param filename: Sample filename, logged at INFO for drill-down.
+    :param filename: Sample filename: selects the class threshold, and is
+        logged at INFO for drill-down.
     """
-    pre_fit = acquisition_drift_ppm(fit)
-    limit = calibration_config.ACQUISITION_DRIFT_WARNING_PPM
+    limit = acquisition_drift_limit_ppm(filename)
+    pre_fit = acquisition_drift_ppm(fit, limit)
     if pre_fit is None:
         return
     runtime.logger.warning(
         f"Acquisition m/z drift beyond {limit:g} ppm on instrument "
-        f"'{instrument or 'unknown'}': pre-calibration error {round(pre_fit):+d} "
-        "ppm. The applied calibration corrects it, but the instrument's "
-        "internal m/z calibration likely needs retuning."
+        f"'{instrument or 'unknown'}'. The applied calibration corrects it, "
+        "but the instrument's internal m/z calibration likely needs retuning."
     )
     runtime.logger.info(
         f"Acquisition drift detail: file '{filename}' was {pre_fit:+.2f} ppm "
@@ -120,7 +138,7 @@ def warn_on_acquisition_drift(
     )
 
 
-def carry_acquisition_drift(fit: dict, previous: dict | None) -> None:
+def carry_acquisition_drift(fit: dict, previous: dict | None, filename: str) -> None:
     """
     Stamp the acquisition-drift marker on a fit about to be persisted.
 
@@ -128,22 +146,31 @@ def carry_acquisition_drift(fit: dict, previous: dict | None) -> None:
     re-calibration runs on the already-corrected axis and sees a near-zero
     pre-fit error, which must not clear the marker. A fresh drift observation
     sets the flag with its magnitude; otherwise the previous record's marker
-    is carried forward. Only :func:`reset_mz_calibration` (which restores the
-    acquisition axis) clears it, by clearing the whole record.
+    is carried forward. The marker clears when :func:`reset_mz_calibration`
+    (which restores the acquisition axis) clears the whole record, or when
+    the carried magnitude no longer exceeds the class threshold - so records
+    flagged under a since-loosened threshold shed the marker on their next
+    recalibration.
 
     :param fit: Fit dict about to be persisted (mutated in place).
     :param previous: The record being replaced, if any.
+    :param filename: Sample filename, selects the class drift threshold.
     """
-    drift = acquisition_drift_ppm(fit)
+    limit = acquisition_drift_limit_ppm(filename)
+    drift = acquisition_drift_ppm(fit, limit)
     if drift is not None:
         fit.update({"acquisition_drift": True, "acquisition_drift_ppm": drift})
-    elif (previous or {}).get("acquisition_drift"):
-        carried = (previous or {}).get("acquisition_drift_ppm")
-        if carried is None:
-            # Records written before the magnitude field: the previous fit's
-            # own pre-fit error is the observation that raised the flag.
-            carried = acquisition_drift_ppm(previous)
-        fit.update({"acquisition_drift": True, "acquisition_drift_ppm": carried})
+        return
+    if not (previous or {}).get("acquisition_drift"):
+        return
+    carried = (previous or {}).get("acquisition_drift_ppm")
+    if carried is None:
+        # Records written before the magnitude field: the previous fit's
+        # own pre-fit error is the observation that raised the flag.
+        carried = ((previous or {}).get("quality") or {}).get("pre_fit_mz_error_ppm")
+    if carried is not None and abs(carried) <= limit:
+        return
+    fit.update({"acquisition_drift": True, "acquisition_drift_ppm": carried})
 
 
 async def reset_mz_calibration(sample_file) -> bool:
@@ -498,7 +525,7 @@ async def calibration_mz_apply(
     new_mz_range = [updated_mz_axis[0], updated_mz_axis[-1]]
 
     fit.update({"status": "ok", "verified": True})
-    carry_acquisition_drift(fit, sample_file.mz_calibration)
+    carry_acquisition_drift(fit, sample_file.mz_calibration, filename)
 
     await send_progress_user_notification(notification, 0.3)
 
