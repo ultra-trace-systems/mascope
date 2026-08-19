@@ -243,6 +243,17 @@ async def auto_process_sample_file(
                 )
         except Exception as e:
             if attempt >= _AUTO_PROCESS_RETRIES or not _is_recoverable_error(e):
+                # Terminal. Nothing downstream says which file this was: the
+                # sample_file row stays, its batch still settles `ready`, and
+                # the only trace is an absence - no matched peaks, and no
+                # sample items either when a retry had already cleared the
+                # partial ones. Name the file here or the shortfall is only
+                # discoverable by counting rows afterwards.
+                runtime.logger.error(
+                    f"Auto-processing gave up on sample file {sample_file_id} "
+                    f"after {attempt + 1} attempt(s); it will have no matched "
+                    f"peaks: {e}"
+                )
                 raise
             delay = _AUTO_PROCESS_RETRY_DELAYS_S[attempt]
             runtime.logger.warning(
