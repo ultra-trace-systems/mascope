@@ -701,3 +701,62 @@ async def test_concurrent_pipelines_are_bounded():
         )
 
     assert peak == service._AUTO_PROCESS_CONCURRENCY
+
+
+@pytest.mark.asyncio
+async def test_names_the_file_when_it_gives_up():
+    """
+    Exhausting the retries must name the file, not just the attempts.
+
+    A file whose pipeline never completes keeps its sample_file row and its
+    batch still settles `ready`, so without this the shortfall is only
+    visible by counting rows afterwards - the demo bundle shipped incomplete
+    goldens exactly that way (see the demo coverage guard).
+    """
+    from mascope_backend.api.controllers.sample.files.process import service
+    from mascope_backend.api.lib.exceptions.api_exceptions import ApiException
+
+    body = AsyncMock(side_effect=ApiException("busy", {}, 503))
+    logged: list[str] = []
+
+    with (
+        patch(f"{_SVC}._auto_process_sample_file", new=body),
+        patch(f"{_SVC}._delete_partial_acquisition_items", new=AsyncMock()),
+        patch.object(service, "_AUTO_PROCESS_RETRY_DELAYS_S", (0, 0, 0)),
+        patch.object(service.runtime.logger, "error", side_effect=logged.append),
+        patch(f"{_NOTIF}.handle_notifications", new_callable=AsyncMock),
+        patch(f"{_UTILS}.handle_reloads", new_callable=AsyncMock),
+    ):
+        with pytest.raises(ApiException):
+            await service.auto_process_sample_file(
+                sample_file_id="sf-gaveup", independent_transaction=False
+            )
+
+    assert any("sf-gaveup" in line for line in logged), logged
+    assert any("gave up" in line for line in logged), logged
+
+
+@pytest.mark.asyncio
+async def test_names_the_file_on_a_non_recoverable_error():
+    """The give-up log covers the no-retry path too, not just exhaustion."""
+    from mascope_backend.api.controllers.sample.files.process import service
+    from mascope_backend.api.lib.exceptions.api_exceptions import ApiException
+
+    body = AsyncMock(side_effect=ApiException("corrupt", {}, 400))
+    logged: list[str] = []
+
+    with (
+        patch(f"{_SVC}._auto_process_sample_file", new=body),
+        patch(f"{_SVC}._delete_partial_acquisition_items", new=AsyncMock()),
+        patch.object(service, "_AUTO_PROCESS_RETRY_DELAYS_S", (0, 0, 0)),
+        patch.object(service.runtime.logger, "error", side_effect=logged.append),
+        patch(f"{_NOTIF}.handle_notifications", new_callable=AsyncMock),
+        patch(f"{_UTILS}.handle_reloads", new_callable=AsyncMock),
+    ):
+        with pytest.raises(ApiException):
+            await service.auto_process_sample_file(
+                sample_file_id="sf-corrupt", independent_transaction=False
+            )
+
+    assert any("sf-corrupt" in line for line in logged), logged
+    assert body.call_count == 1  # not retried
