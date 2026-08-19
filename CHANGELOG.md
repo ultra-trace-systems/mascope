@@ -18,7 +18,7 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
   high-level `mascope.load_assignments(dataset, batches=...)` loader
   concatenates assignments across batches with batch/sample metadata, in
   parity with `load_peaks`; samples without a completed run are skipped and
-  logged. Ships with a new tutorial notebook, `11_peak_assignment.ipynb`
+  logged. Ships with a new tutorial notebook, `10_peak_assignment.ipynb`
   (tier distribution, database-vs-untargeted source split, tier-colored
   mass-defect map, Van Krevelen, drilling into alternatives). Launching runs
   and verifying assignments stay app-side. (#1737)
@@ -58,6 +58,16 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
   `jwt_secret_key.txt`, which can be rotated freely. A deployment without the
   key starts normally and refuses only enrolment. See
   [Authorization](docs/authorization.md) and `docs/dev/mfa_totp_plan.md`.
+
+### Removed
+
+- SDK: the `09_composition_assignment.ipynb` tutorial is retired. It rolled
+  its own untargeted composition assignment client-side, predating the
+  server-side assignment engine; next to the engine's persisted, arbitrated,
+  calibrated runs it taught a workflow that produces different scores and no
+  ledger. The remaining notebooks close the gap: `10_batch_stages.ipynb` is
+  now `09_batch_stages.ipynb` and `11_peak_assignment.ipynb` - the supported
+  path - is now `10_peak_assignment.ipynb`.
 
 ### Changed
 

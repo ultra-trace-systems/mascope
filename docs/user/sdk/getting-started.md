@@ -253,8 +253,8 @@ Now that you're set up, work through the tutorial notebooks in order:
 | 6   | `06_normalization.ipynb`           | Normalize intensities by TIC or reagent-ion signal        |
 | 7   | `07_background_subtraction.ipynb`  | Subtract a background sample (matched ions or m/z bins)   |
 | 8   | `08_correlation_analysis.ipynb`    | Find co-varying peaks via correlation and clustering      |
-| 9   | `09_composition_assignment.ipynb`  | Assign elemental compositions to unmatched peaks          |
-| 10  | `10_batch_stages.ipynb`            | Split a batch into stages and compare per-stage averages  |
+| 9   | `09_batch_stages.ipynb`            | Split a batch into stages and compare per-stage averages  |
+| 10  | `10_peak_assignment.ipynb`         | Read a peak-assignment run: tiers, sources, Van Krevelen  |
 
 For full API documentation and advanced usage, see the
 [SDK overview](index.md).
