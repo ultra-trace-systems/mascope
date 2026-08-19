@@ -131,6 +131,11 @@ ansible-playbook update.yml -e mascope_version=vX.Y.Z --limit <canary-host>
 ansible-playbook update.yml -e mascope_version=vX.Y.Z    # rest of the fleet
 ```
 
+Servers already on the release — checkout *and* running stack — are skipped
+with a one-line verdict, so a rollout that failed partway through the fleet
+can simply be re-run without restarting the servers that finished. Pass
+`-e force=true` to redeploy such a server anyway.
+
 The manual per-server equivalent (and its verification checklist) is in
 `docs/maintaining.md` → "Rolling out a release across several servers".
 
