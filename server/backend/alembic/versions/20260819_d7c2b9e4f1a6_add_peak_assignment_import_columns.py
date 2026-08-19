@@ -19,6 +19,13 @@ Makes the run ledger able to hold assignment runs computed outside Mascope
   verbatim, and `calibration` is a plausible key in a client-side-calibrating
   engine's own config, so nesting it would risk a silent collision on exactly
   the field the run's calibration badge depends on.
+- peak_assignment_run.import_key: the importing client's own id for the logical
+  import, which makes the request that creates a run idempotent. The row-offset
+  check that makes the later chunks idempotent cannot help the first one -
+  there is no run id yet to be idempotent about - so without this an HTTP retry
+  of the create mints a second run for the sample. Unique per sample; NULL for
+  in-app runs and for imports that supplied none, and Postgres treats NULLs in a
+  unique constraint as distinct, so many such rows coexist.
 - peak_assignment.owner_sample_peak_id: the client-side owner reference an
   imported iso_child row carries. Client payloads cannot supply
   owner_peak_assignment_id (those ids do not exist until the server mints
@@ -67,6 +74,15 @@ def upgrade() -> None:
     op.add_column(
         "peak_assignment_run", sa.Column("calibration", sa.JSON(), nullable=True)
     )
+    op.add_column(
+        "peak_assignment_run",
+        sa.Column("import_key", sa.String(length=64), nullable=True),
+    )
+    op.create_unique_constraint(
+        "uq_peak_assignment_run_sample_item_id_import_key",
+        "peak_assignment_run",
+        ["sample_item_id", "import_key"],
+    )
     op.create_index(
         op.f("ix_peak_assignment_run_sample_item_id_status"),
         "peak_assignment_run",
@@ -85,6 +101,12 @@ def downgrade() -> None:
         op.f("ix_peak_assignment_run_sample_item_id_status"),
         table_name="peak_assignment_run",
     )
+    op.drop_constraint(
+        "uq_peak_assignment_run_sample_item_id_import_key",
+        "peak_assignment_run",
+        type_="unique",
+    )
+    op.drop_column("peak_assignment_run", "import_key")
     op.drop_column("peak_assignment_run", "calibration")
     op.drop_column("peak_assignment_run", "tier_bands")
     op.drop_column("peak_assignment_run", "engine")

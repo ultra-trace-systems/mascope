@@ -48,11 +48,23 @@ from mascope_backend.db import PeakAssignmentRun, async_session
 # users (e.g. the match-write locks).
 _ASSIGNMENT_CLAIM_NAMESPACE = "mascope_peak_assignment"
 
-# Run states that mean "this sample already has work in progress". 'pending' and
-# 'running' belong to a server task; 'importing' belongs to a client assembling
-# a ledger over several requests. A run in any of them is a reason to refuse a
-# new one, so neither engine can start a second ledger for the same sample
-# behind the first.
+# Run states that mean "this sample already has work in progress". A run in any
+# of them refuses a new one, so neither engine can start a second ledger for the
+# same sample behind the first.
+#
+# Refusing on a status is only safe while that status has a way back out, or a
+# row stranded by a crash would block its sample forever. Each has two:
+#
+# - 'pending' / 'running' belong to a server task. The startup reaper fails
+#   every 'running' row (nothing can legitimately be running before workers
+#   spawn), and retention sweeps both after `keep_running_hours`.
+# - 'importing' belongs to a client assembling a ledger across requests, so the
+#   reaper deliberately cannot touch it - a deploy would kill a live upload.
+#   Its releases are the abandon endpoint, for a client that knows the run id or
+#   learns it from the refusal below, and retention's `keep_importing_hours`.
+#
+# Adding a status here means giving it both a reclamation path and a documented
+# grace first.
 NON_TERMINAL_RUN_STATUSES = ("pending", "running", "importing")
 
 

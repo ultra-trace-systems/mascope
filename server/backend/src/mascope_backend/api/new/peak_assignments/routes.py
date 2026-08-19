@@ -17,7 +17,11 @@ from mascope_backend.api.new.auth.dependencies import (
     current_superuser,
 )
 from mascope_backend.api.new.peak_assignments.batch import assign_sample_batch_peaks
-from mascope_backend.api.new.peak_assignments.config import peak_assignment_enabled
+from mascope_backend.api.new.peak_assignments.config import (
+    MAX_IMPORT_BODY_BYTES,
+    MAX_IMPORT_ROWS_PER_REQUEST,
+    peak_assignment_enabled,
+)
 from mascope_backend.api.new.peak_assignments.import_service import (
     abandon_import_run,
     import_assignment_run,
@@ -61,6 +65,34 @@ from mascope_backend.db.id import gen_id
 peak_assignments_router = APIRouter(
     prefix="/api/peak-assignments", tags=["Peak Assignments"]
 )
+
+
+async def reject_oversized_import(request: Request) -> None:
+    """Refuse an import body above the byte cap, naming the limit.
+
+    The row cap bounds how many rows a request carries but not how many bytes:
+    a row's `alternatives` and `provenance` are client JSON of no fixed size.
+
+    On a deployed stack nginx is what actually stops an oversized body, before
+    it reaches this process (`client_max_body_size` on the peak-assignment
+    location). This is the same limit stated where a client can act on it: a
+    caller talking to the backend directly - the SDK against a dev server, a
+    test - gets a 413 that names the cap and the row limit instead of a slow
+    parse of a body the deployed path would have rejected outright.
+    """
+    declared = request.headers.get("content-length")
+    if declared is None or not declared.isdigit():
+        return
+    if int(declared) > MAX_IMPORT_BODY_BYTES:
+        raise HTTPException(
+            status_code=413,
+            detail=(
+                f"Import body is {int(declared)} bytes, above the "
+                f"{MAX_IMPORT_BODY_BYTES}-byte limit. Send fewer rows per "
+                f"request (at most {MAX_IMPORT_ROWS_PER_REQUEST}); an import is "
+                "assembled from several requests."
+            ),
+        )
 
 
 async def require_peak_assignment_enabled() -> None:
@@ -361,7 +393,10 @@ async def assign_sample_batch_peaks_route(
 @peak_assignments_router.post(
     "/sample/{sample_item_id}/runs/import",
     response_model=PeakAssignmentImportResponse,
-    dependencies=[Depends(require_peak_assignment_enabled)],
+    dependencies=[
+        Depends(require_peak_assignment_enabled),
+        Depends(reject_oversized_import),
+    ],
 )
 @api_route(token_access=True)
 async def import_assignment_run_route(
@@ -383,10 +418,16 @@ async def import_assignment_run_route(
     the first request with no `chunk.run_id` to create the run and receive its
     id, follow up with that id and the next `chunk.index`, and set
     `chunk.complete` on the last one (which may be the first, for a slim
-    ledger). `chunk.index` is an offset in **rows**: it must equal the `rows`
-    count the previous response reported, and re-sending the last chunk is an
-    idempotent no-op that reports that count again - so a retried request cannot
-    duplicate rows or mint a second run.
+    ledger). Every response reports `max_rows_per_request`, so size chunks from
+    that rather than from a hardcoded guess.
+
+    **Retries are safe, if the client sends `chunk.import_id`.** `chunk.index`
+    is an offset in **rows**: it must equal the `rows` count the previous
+    response reported, and re-sending the last chunk is an idempotent no-op that
+    reports that count again. That covers appends and the finalize, but not the
+    request that *creates* the run, which has no id yet to be idempotent about -
+    supply `chunk.import_id` (any id unique to this import) and a retried create
+    returns the run it already made instead of a second one.
 
     **What is accepted.** Each row is a ledger record minus the fields this
     server owns: it mints the ids, resolves `owner_sample_peak_id` into the
@@ -404,7 +445,8 @@ async def import_assignment_run_route(
 
     Returns 403 when peak assignment is not enabled for this environment, 409
     when another run for this sample is still in flight (naming it) or a chunk
-    arrives out of order, and 422 when the payload is well-formed but refused.
+    arrives out of order, 413 when one request's body exceeds the byte cap, and
+    422 when the payload is well-formed but refused.
 
     :param sample_item_id: The unique identifier of the sample.
     :param body: The run metadata and this chunk's assignment rows.

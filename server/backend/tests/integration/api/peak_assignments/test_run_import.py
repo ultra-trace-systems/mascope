@@ -173,7 +173,16 @@ def _row(peak_id: str, *, tier="identified", fit_score=0.92, **overrides) -> dic
     return row
 
 
-def _body(rows, *, engine="peaky", complete=True, run_id=None, index=0, **overrides):
+def _body(
+    rows,
+    *,
+    engine="peaky",
+    complete=True,
+    run_id=None,
+    index=0,
+    import_id=None,
+    **overrides,
+):
     """An import request body with the required run fields filled in."""
     body = {
         "engine": engine,
@@ -182,7 +191,12 @@ def _body(rows, *, engine="peaky", complete=True, run_id=None, index=0, **overri
         "calibration": CALIBRATION,
         "config": {"passes": 3},
         "rows": rows,
-        "chunk": {"run_id": run_id, "index": index, "complete": complete},
+        "chunk": {
+            "run_id": run_id,
+            "index": index,
+            "complete": complete,
+            "import_id": import_id,
+        },
     }
     body.update(overrides)
     return body
@@ -425,6 +439,69 @@ class TestChunkedAssembly:
         assert replay.json()["data"][0]["rows"] == 2
 
     @pytest.mark.asyncio
+    async def test_a_replayed_empty_finalize_returns_the_completed_run(
+        self, editor_client, import_sample, feature_enabled, stub_fold_in
+    ):
+        """Finalizing is the slowest request, so it is the likeliest retried.
+
+        The shape here is the one a client that appended every row separately
+        sends: a final request carrying no rows at all.
+        """
+        first = await _post(
+            editor_client, import_sample, _body([_row("peak-0")], complete=False)
+        )
+        run_id = first.json()["data"][0]["peak_assignment_run_id"]
+
+        final = _body([], run_id=run_id, index=1, complete=True)
+        assert (await _post(editor_client, import_sample, final)).status_code == 200
+        assert stub_fold_in == [import_sample]
+
+        replay = await _post(editor_client, import_sample, final)
+
+        assert replay.status_code == 200
+        assert replay.json()["data"][0]["run_status"] == "completed"
+        assert replay.json()["data"][0]["rows"] == 1
+        # The fold-in must not run a second time.
+        assert stub_fold_in == [import_sample]
+
+    @pytest.mark.asyncio
+    async def test_the_response_reports_the_per_request_row_cap(
+        self, editor_client, import_sample, feature_enabled
+    ):
+        """So a chunker sizes itself from the server instead of guessing."""
+        from mascope_backend.api.new.peak_assignments.config import (
+            MAX_IMPORT_ROWS_PER_REQUEST,
+        )
+
+        response = await _post(
+            editor_client, import_sample, _body([_row("peak-0")], complete=False)
+        )
+
+        assert (
+            response.json()["data"][0]["max_rows_per_request"]
+            == MAX_IMPORT_ROWS_PER_REQUEST
+        )
+
+    @pytest.mark.asyncio
+    async def test_an_oversized_body_is_refused_with_413(
+        self, editor_client, import_sample, feature_enabled
+    ):
+        """Rows bound the count, not the bytes: provenance is unbounded JSON.
+
+        A deployed stack stops this at the proxy; this is the same limit stated
+        where a client talking to the backend directly can act on it.
+        """
+        from mascope_backend.api.new.peak_assignments.config import (
+            MAX_IMPORT_BODY_BYTES,
+        )
+
+        bloated = _row("peak-0", provenance={"junk": "x" * MAX_IMPORT_BODY_BYTES})
+
+        response = await _post(editor_client, import_sample, _body([bloated]))
+
+        assert response.status_code == 413
+
+    @pytest.mark.asyncio
     async def test_a_gap_is_refused_and_reports_the_row_count(
         self, editor_client, import_sample, feature_enabled
     ):
@@ -468,6 +545,103 @@ class TestChunkedAssembly:
         )
 
         assert response.status_code == 404
+
+
+class TestCreateIdempotency:
+    """The one request an offset cannot make idempotent.
+
+    A create carries no run id, so a retry of it is indistinguishable from a
+    second import: it would mint a second run, which durable admission then
+    refuses - leaving the client wedged, since it never learned the first run's
+    id. The client's own import id is what closes that.
+    """
+
+    @pytest.mark.asyncio
+    async def test_a_retried_create_returns_the_same_run(
+        self, editor_client, import_sample, feature_enabled, async_session_factory
+    ):
+        """Byte-identical retry, as the SDK's own retry loop would send it."""
+        body = _body(
+            [_row("peak-0"), _row("peak-1")],
+            complete=False,
+            import_id="import-abc",
+        )
+
+        first = await _post(editor_client, import_sample, body)
+        replay = await _post(editor_client, import_sample, body)
+
+        assert first.status_code == 200
+        assert replay.status_code == 200
+        run_id = first.json()["data"][0]["peak_assignment_run_id"]
+        assert replay.json()["data"][0]["peak_assignment_run_id"] == run_id
+        assert replay.json()["data"][0]["rows"] == 2
+
+        async with async_session_factory() as session:
+            runs = (
+                (
+                    await session.execute(
+                        select(PeakAssignmentRun).where(
+                            PeakAssignmentRun.sample_item_id == import_sample
+                        )
+                    )
+                )
+                .scalars()
+                .all()
+            )
+        assert len(runs) == 1
+        assert runs[0].import_key == "import-abc"
+
+    @pytest.mark.asyncio
+    async def test_a_retried_single_request_import_does_not_import_twice(
+        self, editor_client, import_sample, feature_enabled, stub_fold_in
+    ):
+        """The slim-ledger case: create, rows and finalize in one request."""
+        body = _body([_row("peak-0")], import_id="import-xyz")
+
+        first = await _post(editor_client, import_sample, body)
+        replay = await _post(editor_client, import_sample, body)
+
+        assert first.status_code == 200
+        assert replay.status_code == 200
+        assert (
+            replay.json()["data"][0]["peak_assignment_run_id"]
+            == first.json()["data"][0]["peak_assignment_run_id"]
+        )
+        assert replay.json()["data"][0]["run_status"] == "completed"
+        assert replay.json()["data"][0]["rows"] == 1
+        assert stub_fold_in == [import_sample]
+
+    @pytest.mark.asyncio
+    async def test_without_a_key_a_retried_create_is_refused_naming_the_first_run(
+        self, editor_client, import_sample, feature_enabled
+    ):
+        """The hazard the key exists to remove, pinned as the documented cost."""
+        body = _body([_row("peak-0")], complete=False)
+
+        first = await _post(editor_client, import_sample, body)
+        replay = await _post(editor_client, import_sample, body)
+
+        assert first.status_code == 200
+        assert replay.status_code == 409
+
+    @pytest.mark.asyncio
+    async def test_a_different_key_on_a_busy_sample_is_still_refused(
+        self, editor_client, import_sample, feature_enabled
+    ):
+        """The key deduplicates a retry; it does not bypass admission."""
+        await _post(
+            editor_client,
+            import_sample,
+            _body([_row("peak-0")], complete=False, import_id="import-1"),
+        )
+
+        response = await _post(
+            editor_client,
+            import_sample,
+            _body([_row("peak-1")], complete=False, import_id="import-2"),
+        )
+
+        assert response.status_code == 409
 
 
 class TestOwnerResolution:

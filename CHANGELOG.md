@@ -102,8 +102,9 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
   ledger carries. A dense sample's ledger is too large for one request, so an
   import assembles across several: the first creates the run and returns its id,
   follow-ups carry the next row offset, and the last one finalizes. Offsets are
-  server-checked, which makes a retried request an idempotent no-op instead of
-  duplicated rows or a second run. `DELETE
+  server-checked and the client names the import with an id of its own, so a
+  request retried after a timeout is an idempotent no-op rather than duplicated
+  rows, a second run, or a second batch fold-in. `DELETE
   /api/peak-assignments/sample/{id}/runs/{run_id}` releases an upload that will
   never finish, which would otherwise block new assignment work on that sample
   until the nightly retention pass.
