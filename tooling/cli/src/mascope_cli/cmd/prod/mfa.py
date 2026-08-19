@@ -16,11 +16,15 @@ production database command here: the container publishes no host port.
 """
 
 import subprocess
-from typing import Annotated
+from typing import Annotated, Optional
 
 import typer
 
-from mascope_cli.pg.utils import is_container_running, is_database_ready
+from mascope_cli.pg.utils import (
+    is_container_running,
+    is_database_ready,
+    validate_env,
+)
 from mascope_cli.runtime import runtime
 
 
@@ -67,6 +71,28 @@ def _psql(sql: str, env: str) -> str:
     return result.stdout.strip()
 
 
+def _resolve_env(env: Optional[str]) -> str:
+    """
+    Default to the active environment and refuse an unknown one.
+
+    The ``prod db`` commands resolve ``--env`` this way; the recovery commands
+    here must too, or on a deployment running a non-default environment the
+    escape hatch would silently target ``mascope_default`` - the wrong database.
+
+    :param env: The value passed on the command line, or ``None``.
+    :raises typer.Exit: With code 1 when the environment is not known.
+    :return: The resolved environment name.
+    """
+    resolved = env or runtime.env.name
+    if not validate_env(resolved):
+        runtime.logger.error(
+            f"Environment '{resolved}' not found. "
+            f"Available: {', '.join(e['name'] for e in runtime.env.list)}"
+        )
+        raise typer.Exit(code=1)
+    return resolved
+
+
 def _require_running(env: str) -> None:
     """
     Refuse before touching anything if the database is not reachable.
@@ -105,8 +131,11 @@ def _quote(value: str) -> str:
 @mfa_app.command("status")
 def mfa_status(
     env: Annotated[
-        str, typer.Option("--env", help="Runtime environment to inspect.")
-    ] = "default",
+        Optional[str],
+        typer.Option(
+            "--env", help="Runtime environment to inspect. Defaults to active."
+        ),
+    ] = None,
 ) -> None:
     """
     List which accounts hold a second factor.
@@ -115,6 +144,7 @@ def mfa_status(
     Example:
         mascope prod mfa status
     """
+    env = _resolve_env(env)
     _require_running(env)
     rows = _psql(
         "SELECT email, mfa_enabled, "
@@ -137,8 +167,11 @@ def mfa_status(
 def mfa_reset(
     email: Annotated[str, typer.Argument(help="Email address of the account.")],
     env: Annotated[
-        str, typer.Option("--env", help="Runtime environment to act on.")
-    ] = "default",
+        Optional[str],
+        typer.Option(
+            "--env", help="Runtime environment to act on. Defaults to active."
+        ),
+    ] = None,
     yes: Annotated[
         bool, typer.Option("--yes", help="Skip the confirmation prompt.")
     ] = False,
@@ -154,10 +187,17 @@ def mfa_reset(
     Example:
         mascope prod mfa reset someone@example.org
     """
+    env = _resolve_env(env)
     _require_running(env)
 
     literal = _quote(email)
-    found = _psql(f'SELECT id, mfa_enabled FROM "user" WHERE email = {literal};', env)
+    # Case-insensitive, matching how the app authenticates emails (fastapi-users
+    # compares LOWER(email)): the escape hatch must find the same account the
+    # login form does, whatever the capitalization.
+    found = _psql(
+        f'SELECT id, mfa_enabled FROM "user" WHERE LOWER(email) = LOWER({literal});',
+        env,
+    )
     if not found:
         runtime.logger.error(f"No account with email '{email}' in environment '{env}'.")
         raise typer.Exit(code=1)

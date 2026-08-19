@@ -106,3 +106,22 @@ def test_status_reports_each_account(running):
     with patch.object(mfa, "_psql", return_value=rows):
         result = runner.invoke(mfa.mfa_app, ["status"])
     assert result.exit_code == 0
+
+
+def test_reset_looks_up_the_email_case_insensitively(running):
+    # The app authenticates emails case-insensitively (fastapi-users compares
+    # LOWER(email)); the escape hatch must find the same account the login form
+    # does, whatever the capitalization.
+    with patch.object(mfa, "_psql", side_effect=["7|t", ""]) as psql:
+        runner.invoke(mfa.mfa_app, ["reset", "Someone@Example.org", "--yes"])
+    lookup = psql.call_args_list[0].args[0]
+    assert "LOWER(email) = LOWER(" in lookup
+
+
+def test_reset_refuses_an_unknown_environment():
+    # Resolved and validated like the prod db commands, so a typo cannot send
+    # the last-resort tool at the wrong database.
+    result = runner.invoke(
+        mfa.mfa_app, ["reset", "someone@example.org", "--env", "nope", "--yes"]
+    )
+    assert result.exit_code == 1
