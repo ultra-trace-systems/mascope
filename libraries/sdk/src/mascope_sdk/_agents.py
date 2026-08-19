@@ -112,6 +112,7 @@ def api_post_file(
     access_token: str,
     filepath: str,
     upload_filename: str | None = None,
+    timezone: str | None = None,
 ) -> requests.Response:
     """Send a POST request with a file upload.
 
@@ -122,6 +123,10 @@ def api_post_file(
     :param upload_filename: Optional filename override for the uploaded file.
         If provided, the server will see this filename instead of the one on disk.
     :type upload_filename: str, optional
+    :param timezone: Optional IANA timezone of the uploading machine, used by
+        the converter to resolve the acquisition time to UTC. Omitted when the
+        machine could not name its zone; the server then falls back to its own.
+    :type timezone: str, optional
     :return: The response object on success.
     :rtype: requests.Response
     :raises ValueError: if ``upload_filename`` contains path components.
@@ -146,6 +151,7 @@ def api_post_file(
             resp = requests.post(
                 full_url,
                 files=files,
+                data={"timezone": timezone} if timezone else None,
                 headers=headers,
                 verify=_get_verify(),
                 timeout=60,
@@ -293,6 +299,7 @@ def api_post_file_tus(
     filepath: str,
     upload_filename: str | None = None,
     chunk_size: int = TUS_CHUNK_SIZE,
+    timezone: str | None = None,
 ) -> None:
     """Upload a file with the resumable TUS protocol.
 
@@ -314,6 +321,10 @@ def api_post_file_tus(
     :type upload_filename: str, optional
     :param chunk_size: Bytes per PATCH request.
     :type chunk_size: int, optional
+    :param timezone: Optional IANA timezone of the uploading machine, used by
+        the converter to resolve the acquisition time to UTC. Omitted when the
+        machine could not name its zone; the server then falls back to its own.
+    :type timezone: str, optional
     :raises ValueError: if ``upload_filename`` contains path components.
     :raises TusNotSupportedError: if the creation request is rejected with
         404/401, meaning the server has no token-accessible TUS endpoint
@@ -337,14 +348,20 @@ def api_post_file_tus(
         return base64.b64encode(value.encode("utf-8")).decode("ascii")
 
     # Create the upload resource. The server requires both filename and
-    # filetype in the metadata; the type is not used for processing.
+    # filetype in the metadata; the type is not used for processing. The
+    # timezone rides along when the machine could name it - an older server
+    # ignores metadata keys it does not read, so sending it is safe.
+    metadata = [
+        f"filename {b64(filename)}",
+        f"filetype {b64('application/octet-stream')}",
+    ]
+    if timezone:
+        metadata.append(f"timezone {b64(timezone)}")
     create_url = f"{url}/api/{TUS_UPLOAD_PATH}/"
     create_headers = {
         **_tus_headers(access_token),
         "Upload-Length": str(size),
-        "Upload-Metadata": (
-            f"filename {b64(filename)},filetype {b64('application/octet-stream')}"
-        ),
+        "Upload-Metadata": ",".join(metadata),
     }
     try:
         resp = requests.post(

@@ -4,7 +4,9 @@ Hermetic: the renewal HTTP call and the shutdown wait are stubbed, so the loop
 runs synchronously and deterministically with no network or threads.
 """
 
+import builtins
 from types import SimpleNamespace
+from zoneinfo import ZoneInfo
 
 import pytest
 
@@ -13,7 +15,11 @@ from mascope_sdk.exceptions import AuthenticationError, TusNotSupportedError
 
 
 def _silent_logger():
-    return SimpleNamespace(info=lambda *a, **k: None, warning=lambda *a, **k: None)
+    return SimpleNamespace(
+        info=lambda *a, **k: None,
+        warning=lambda *a, **k: None,
+        exception=lambda *a, **k: None,
+    )
 
 
 class FakeStop:
@@ -58,35 +64,64 @@ def test_renewal_loop_rotates_token_and_reschedules(monkeypatch):
     assert stop.delays == [main.RENEW_INITIAL_DELAY, 2592000 // 2]
 
 
-def test_renewal_loop_stops_quietly_when_endpoint_absent(monkeypatch):
+def test_renewal_loop_backs_off_when_endpoint_absent(monkeypatch):
     main._set_access_token("t1")
 
     def fake_renew(url, token):
         raise TusNotSupportedError("no endpoint", status_code=404, url="x")
 
     monkeypatch.setattr(main, "api_renew_agent_token", fake_renew)
-    stop = FakeStop(false_count=5)
+    stop = FakeStop(false_count=2)
 
     main._renewal_loop(stop)
 
-    # Token unchanged, and the loop returned after a single attempt.
+    # Token unchanged, and the loop keeps waiting on the long interval rather
+    # than ending: a 404 from a proxy mid-restart must not retire renewal for
+    # the life of the process, which would let the token lapse silently.
     assert main.current_access_token() == "t1"
-    assert stop.delays == [main.RENEW_INITIAL_DELAY]
+    assert stop.delays == [
+        main.RENEW_INITIAL_DELAY,
+        main.RENEW_FALLBACK_INTERVAL,
+        main.RENEW_FALLBACK_INTERVAL,
+    ]
 
 
-def test_renewal_loop_stops_when_token_not_renewable(monkeypatch):
+def test_renewal_loop_backs_off_when_token_not_renewable(monkeypatch):
     main._set_access_token("t1")
 
     def fake_renew(url, token):
         raise AuthenticationError("expired", status_code=401, url="x")
 
     monkeypatch.setattr(main, "api_renew_agent_token", fake_renew)
-    stop = FakeStop(false_count=5)
+    stop = FakeStop(false_count=2)
 
     main._renewal_loop(stop)
 
     assert main.current_access_token() == "t1"
-    assert stop.delays == [main.RENEW_INITIAL_DELAY]
+    assert stop.delays == [
+        main.RENEW_INITIAL_DELAY,
+        main.RENEW_FALLBACK_INTERVAL,
+        main.RENEW_FALLBACK_INTERVAL,
+    ]
+
+
+def test_renewal_loop_survives_a_persist_failure(monkeypatch):
+    """A failure after the rotation must not kill the daemon thread."""
+    main._set_access_token("t1")
+    monkeypatch.setattr(main, "api_renew_agent_token", lambda url, token: ("t2", 100))
+
+    def boom(token):
+        raise KeyError("source")
+
+    monkeypatch.setattr(main, "_persist_token", boom)
+    stop = FakeStop(false_count=1)
+
+    main._renewal_loop(stop)
+
+    # The rotation still took effect in memory, and the loop kept running
+    # instead of dying with an unread traceback.
+    assert main.current_access_token() == "t2"
+    assert stop.delays == [main.RENEW_INITIAL_DELAY, main.RENEW_RETRY_DELAY]
 
 
 def test_renewal_loop_retries_after_a_transient_failure(monkeypatch):
@@ -131,3 +166,45 @@ def test_persist_token_writes_it_back_to_config(tmp_path, monkeypatch):
     assert reloaded["access_token"] == "renewed-token"
     # verify_tls survives the rewrite untouched.
     assert reloaded["verify_tls"] is True
+
+
+def test_resolve_timezone_prefers_the_configured_zone():
+    """An explicit setting wins: OS detection names a zone group on Windows."""
+    assert main.resolve_timezone("Europe/Helsinki") == "Europe/Helsinki"
+    assert main.resolve_timezone("  Europe/Helsinki  ") == "Europe/Helsinki"
+
+
+def test_resolve_timezone_detects_the_local_zone():
+    """With nothing configured, the machine's own zone is reported."""
+    detected = main.resolve_timezone("")
+
+    # Whatever this machine reports must be a real IANA zone the server can
+    # load - sending a name the converter cannot resolve is worse than silence.
+    assert detected
+    assert ZoneInfo(detected).key == detected
+
+
+def test_resolve_timezone_degrades_to_none_when_undetectable(monkeypatch):
+    """Detection failure must not stop uploads; the server falls back."""
+
+    def no_tzlocal(name, *args, **kwargs):
+        if name == "tzlocal":
+            raise ImportError("no tzlocal in this build")
+        return _real_import(name, *args, **kwargs)
+
+    _real_import = builtins.__import__
+    monkeypatch.setattr(builtins, "__import__", no_tzlocal)
+
+    assert main.resolve_timezone("") is None
+
+
+def test_resolve_timezone_ignores_an_unloadable_configured_zone():
+    """A typo must not be reported as authoritative.
+
+    The converter would reject it and silently fall back, leaving the operator
+    looking at a setting the agent claimed to accept.
+    """
+    detected = main.resolve_timezone("")
+
+    assert main.resolve_timezone("Europe/Helsinky") == detected
+    assert main.resolve_timezone("UTC+2") == detected
