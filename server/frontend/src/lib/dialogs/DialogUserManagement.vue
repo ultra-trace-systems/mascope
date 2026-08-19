@@ -14,7 +14,7 @@ import { useConfirm } from 'primevue/useconfirm'
 import { api } from '@/api'
 import { useApp } from '@/stores'
 import { BaseCopyableField } from '@/lib/base'
-import { roles, prettyRoleName } from '@/lib/roles'
+import { roles, prettyRoleName, roleLevel, ROLES } from '@/lib/roles'
 
 const app = useApp()
 const confirm = useConfirm()
@@ -58,6 +58,15 @@ const reset = () => {
   createdPassword.value = null
 }
 const editing = ({ id }) => id == edited.value?.id
+
+// Whether the signed-in user may clear this account's second factor - the same
+// rule the server enforces, so the button is offered only where a click can
+// succeed: owners for anyone but themselves, admins for guests and editors.
+const canResetMfa = (target) =>
+  !!target.mfa_enabled &&
+  target.id != app.auth.user.id &&
+  (app.auth.user.role_name == 'owner' ||
+    (app.auth.user.role_name == 'admin' && roleLevel(target.role_name) < ROLES.admin))
 
 const user = {
   edit: ({ id, username, email, role_id }) => {
@@ -116,6 +125,36 @@ const user = {
   },
   resetPassword: async (data) => {
     password.value = (await app.data.user.resetPassword(data)).new_password
+  },
+  resetMfa: (data) => {
+    confirm.require({
+      icon: 'pi pi-shield',
+      header: 'Reset two-factor authentication',
+      message:
+        `Clear two-factor authentication for ${data.username} (${data.email})? ` +
+        'They keep their password and set up a new authenticator themselves. If this ' +
+        'deployment requires a second factor for their role, they are held at the setup ' +
+        'screen until they do.',
+      accept: async () => {
+        // PrimeVue does not await this callback; a rejection would otherwise be
+        // unhandled. The http layer already raised the error notification.
+        try {
+          await app.data.user.resetMfa(data)
+        } catch {
+          return
+        }
+      },
+      acceptProps: {
+        icon: 'pi pi-replay',
+        label: 'Reset two-factor',
+        severity: 'danger'
+      },
+      rejectProps: {
+        icon: 'pi pi-times',
+        label: 'Cancel',
+        severity: 'secondary'
+      }
+    })
   },
   requirePasswordChange: () => {
     confirm.require({
@@ -268,10 +307,11 @@ watch(visible, (open) => {
                 >pending</span
               >
               <!-- Hidden rather than disabled when there is nothing to clear,
-                   and on the caller's own row: an owner clearing their own
-                   factor would be a bypass, not a recovery. -->
+                   on the caller's own row (clearing your own factor would be a
+                   bypass, not a recovery), and on rows the caller's role cannot
+                   act on - so the button never offers a click the server 403s. -->
               <Button
-                v-if="data.mfa_enabled && data.id != app.auth.user.id"
+                v-if="canResetMfa(data)"
                 v-tooltip.bottom="'Reset two-factor (they set it up again)'"
                 icon="pi pi-replay"
                 severity="secondary"
