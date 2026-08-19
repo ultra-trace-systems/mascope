@@ -4,6 +4,25 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
 
 ## [Unreleased]
 
+### Added
+
+- The Python SDK can now read persisted peak-assignment results (read-only
+  v1). A new `mascope.peak_assignments` resource reads the peak-centric
+  assignment runs launched from the app: `list_runs(sample_id)` returns the
+  run history, `get(sample_id)` returns the whole ledger of the latest
+  completed run (or a given `run_id`) as one DataFrame - one row per observed
+  peak, paged through the API internally, with the run metadata attached on
+  `df.attrs["run"]` and server-side `tier`/`role`/`source` filters - and
+  `detail(sample_id, peak_assignment_id)` fetches a single assignment in full
+  (the `alternatives`/`provenance` inspector JSON the slim list rows omit). A
+  high-level `mascope.load_assignments(dataset, batches=...)` loader
+  concatenates assignments across batches with batch/sample metadata, in
+  parity with `load_peaks`; samples without a completed run are skipped and
+  logged. Ships with a new tutorial notebook, `11_peak_assignment.ipynb`
+  (tier distribution, database-vs-untargeted source split, tier-colored
+  mass-defect map, Van Krevelen, drilling into alternatives). Launching runs
+  and verifying assignments stay app-side. (#1737)
+
 ### Changed
 
 - With the opt-in peak-centric assignment feature enabled, the legacy Match

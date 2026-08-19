@@ -134,6 +134,87 @@ class TestClientContract:
         assert sample.get("sample_item_id") == sample_id
 
 
+@requires_stack
+class TestPeakAssignmentContract:
+    """Shape of the peak-assignment read surface (`/api/peak-assignments/*`).
+
+    These need a sample with a **completed** assignment run. Runs are not part
+    of the demo bundle yet (see docs/dev/sdk_peak_assignment.md section 7), so
+    the tests skip when the stack carries none rather than fail.
+    """
+
+    def test_list_runs_shape(self, mascope):
+        sample_id = _sample_with_completed_run(mascope)
+
+        runs = mascope.peak_assignments.list_runs(sample_id)
+
+        assert runs is not None and not runs.empty
+        assert {
+            "peak_assignment_run_id",
+            "engine_version",
+            "status",
+            "config",
+            "peak_assignment_run_utc_created",
+        } <= set(runs.columns)
+        completed = runs[runs["status"] == "completed"]
+        assert not completed.empty
+        assert completed.iloc[0]["engine_version"]
+
+    def test_get_returns_one_row_per_peak_with_run_attrs(self, mascope):
+        sample_id = _sample_with_completed_run(mascope)
+
+        df = mascope.peak_assignments.get(sample_id)
+
+        assert df is not None and not df.empty
+        assert {
+            "peak_assignment_id",
+            "sample_peak_id",
+            "sample_peak_mz",
+            "tier",
+            "role",
+            "source",
+            "fit_score",
+            "p_correct",
+        } <= set(df.columns)
+        # One row per observed peak: no peak repeats.
+        assert df["sample_peak_id"].is_unique
+        run = df.attrs["run"]
+        assert run["status"] == "completed"
+        assert run["peak_assignment_run_id"] in set(df["peak_assignment_run_id"])
+
+    def test_detail_serves_the_inspector_json(self, mascope):
+        sample_id = _sample_with_completed_run(mascope)
+        df = mascope.peak_assignments.get(sample_id)
+
+        record = mascope.peak_assignments.detail(
+            sample_id, df.iloc[0]["peak_assignment_id"]
+        )
+
+        assert record is not None
+        assert record["peak_assignment_id"] == df.iloc[0]["peak_assignment_id"]
+        # The detail row is a superset of the list row: the inspector-only
+        # JSON keys exist (values may be None for unassigned peaks).
+        assert "alternatives" in record
+        assert "provenance" in record
+
+
+def _sample_with_completed_run(mascope) -> str:
+    """A sample carrying a completed peak assignment run, else skip.
+
+    Scans the samples of the first data-bearing batch; the demo bundle does
+    not seed assignment runs yet, so absence is an environment gap rather
+    than a contract violation.
+    """
+    batch = _first_batches(mascope).iloc[0]
+    samples = mascope.samples.list(batch["sample_batch_id"])
+    assert samples is not None and not samples.empty, "demo batch should have samples"
+    for _, row in samples.iterrows():
+        runs = mascope.peak_assignments.list_runs(row["sample_item_id"])
+        if runs is not None and (runs["status"] == "completed").any():
+            return row["sample_item_id"]
+    pytest.skip("demo stack carries no completed peak assignment run")
+
+
 def _first_batches(mascope):
     """
     Batches of the first demo dataset that has any.
