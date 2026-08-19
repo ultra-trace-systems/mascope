@@ -34,7 +34,7 @@ It is an engineering design + phased plan, not a user guide.
 > `peak_assignments` resource (`get` + `list_runs` + `detail`), the
 > `load_assignments` loader, hermetic unit tests plus contract tests (which
 > **skip** until the demo bundle carries a completed run - §7's demo-dataset
-> task is still open, now sequenced as §8.4 step 6), and a tutorial notebook,
+> task is still open, now sequenced as §8.4 step 8), and a tutorial notebook,
 > `10_peak_assignment.ipynb` (shipped briefly as `11`; the retirement of the
 > client-side composition notebook, below, restored the planned slot).
 > [#1725](https://github.com/ultra-trace-systems/mascope/issues/1725)
@@ -49,8 +49,9 @@ It is an engineering design + phased plan, not a user guide.
 > ledger (§8.2, a new backend endpoint), plus the v1-deferred SDK triggering,
 > verification, and fit wrappers (§8.3). The old open question "should the SDK
 > trigger runs?" (§9.1) is resolved **yes** - §8.3 records why the ground
-> shifted. Decisions in §8 are settled unless marked otherwise; the genuinely
-> open points are collected in §8.5.
+> shifted. Decisions in §8 are settled unless marked otherwise; the open points
+> are collected in §8.5, three of them as **decisions pending** that hold
+> sequenced steps - §8.4's start/hold status says which.
 
 > **Scope decision (v1): read-only.** v1 exposes only *reading* persisted assignment
 > results. It does **not** trigger assignment runs or write verifications from the
@@ -168,7 +169,9 @@ engine error), `config`, `error`,
 `peak_assignment_run_utc_created/_completed`. Reads default to the **latest completed**
 run when no run id is given (multiple completed runs can exist per sample; a run is
 refused only while another for the same sample is *in flight* - concurrency admission
-control, not a one-run-per-sample model).
+control, not a one-run-per-sample model). v2 adds `engine` and `calibration` to
+this list - to the table *and* to the record, which is a typed projection that
+silently drops any column it does not name (§8.2, §8.4 step 4).
 
 ---
 
@@ -351,7 +354,12 @@ through the existing `_get`, so the new resource needs **no change to `_base.py`
   hand-rolled path to the same goal - different scores, no ledger, no tiers -
   confuses more than it helps. `10_batch_stages.ipynb` moved into the `09` slot.
 - **`01`-`08` unchanged** - they are the targeted workflow that coexists.
-- Update the README notebook table + [`docs/user/sdk/index.md`](../user/sdk/index.md).
+- Update **both** notebook tables, which have to move together:
+  [`libraries/sdk/README.md`](../../libraries/sdk/README.md) and
+  [`docs/user/sdk/getting-started.md`](../user/sdk/getting-started.md).
+  [`docs/user/sdk/index.md`](../user/sdk/index.md) carries no table - it
+  deep-links to the README - so it is not the file to edit, and step 6 adds a
+  notebook, which is when a stale second table starts costing something.
 
 ---
 
@@ -364,14 +372,17 @@ through the existing `_get`, so the new resource needs **no change to `_base.py`
   a completed run** (analogous to how it already stamps `match_score_version`), or the
   test provisions one out of band. Flag this as a demo-dataset task - it is the main new
   test-infra dependency, and it gates the epic's own e2e demo stack too. (Sequenced as
-  §8.4 step 6: the shipped contract tests skip in CI until it lands.)
+  §8.4 step 8: the shipped contract tests skip in CI until it lands.)
 - **Unit tests**: the **paging loop** (accumulate pages to `total`, stable order),
   latest-completed run resolution + `.attrs` attachment, enum-filter 422 ->
   `ValidationError`, empty-run -> `None`. Hermetic (mock `http_get`), like
   `test_loaders.py`.
 - **Docs**: README - new `#### mascope.peak_assignments` reference table, a
-  "Peak assignments" section, project-structure entry, notebook table row; the SDK
-  section of `developer_guide.md`; CHANGELOG + SDK version bump.
+  "Peak assignments" section, project-structure entry, notebook table row; the
+  duplicate notebook table in `docs/user/sdk/getting-started.md`; CHANGELOG +
+  SDK version bump. Not `developer_guide.md` - its SDK section is PyPI publish
+  mechanics and enumerates no notebooks or resources, so there is nothing there
+  to keep in step.
 
 ---
 
@@ -381,8 +392,9 @@ v1 shipped read-only (PR [#1865](https://github.com/ultra-trace-systems/mascope/
 v2 adds the writes - and its centre of gravity is not "the SDK can press the
 assign button". It is **run import**: making Mascope's run ledger the canonical
 store for assignment runs computed *outside* Mascope. Everything in this
-section is decided unless the text says otherwise; the genuinely open points
-are collected in §8.5.
+section is decided unless the text says otherwise; the open points are collected
+in §8.5, and the three that a sequenced step cannot be built around are marked
+there as decisions pending. §8.4 closes with what that leaves safe to start.
 
 ### 8.1 Purpose: closing the peaky loop
 
@@ -526,25 +538,86 @@ ledger *read*). So the endpoint caps `rows` per request and supports assembly:
 - the first request (`chunk.index == 0`, no `run_id`) creates the run
   (`status='importing'`, engine + config + tier bands + calibration stamped) and
   returns its `peak_assignment_run_id`;
-- follow-up requests carry that `run_id` and the next `chunk.index`;
+- follow-up requests carry that `run_id` and set `chunk.index` to the number of
+  rows the server has already accepted. The index is a row **offset**, not a
+  sequence counter: the second request's index is the first chunk's row count,
+  not `1`;
 - the request with `chunk.complete: true` - which may be the first and only one,
   the common case for slim ledgers - finalizes: payload-wide validation, owner
   resolution, `status='completed'`, batch fold-in.
+
+Every accepted chunk answers with the same four fields, which is the whole state
+a client needs to continue or resume:
+
+| field | meaning |
+| --- | --- |
+| `peak_assignment_run_id` | the run, minted on the create and repeated on every chunk |
+| `rows_accepted` | rows staged so far - and therefore the next `chunk.index`, since the index is an offset |
+| `max_rows_per_request` | the deployment's effective per-request row cap |
+| `status` | `importing` while assembling, `completed` after the finalizing chunk |
+
+**The per-request cap is a number, and it has a byte consequence the client
+cannot see.** The cap is **1000 rows** - the ledger read's `DEFAULT_PAGE_LIMIT`,
+for the same reason it was chosen there. At the measured ~2.8 KB for a row
+carrying `alternatives` + `provenance` that is a request body of roughly 2.8 MB
+(a slim row is ~0.74 KB, so ~0.75 MB), which is well over nginx's compiled-in
+1 MB default for `client_max_body_size` - a default that currently governs
+`location /api/`, because the deployed config sets a limit only on the two
+upload locations. So the import route needs its own allowance, **8 MB**, and
+step 2 carries that config change alongside the endpoint. It is not optional
+polish: a dev stack talks to the backend port directly and never sees the proxy,
+so a chunk sized from the row cap alone works everywhere except production,
+where it returns a 413 that `_raise_for_status` treats as terminal, with nginx's
+HTML error page as the message, mid-assembly, leaving an `importing` run holding
+the sample.
+
+The cap is the deployment's to lower, so the client is told rather than left
+guessing: `max_rows_per_request` comes back on the create and on every chunk,
+and a chunk over it is a 422 naming the cap rather than a silent truncation.
+Only the first request has to size itself blind - it uses the documented 1000
+and adjusts from the response. Rows differ in size by an order of magnitude
+depending on whether they carry `alternatives`/`provenance`, so `import_run`
+sizes chunks by **serialized bytes as well as row count**: the row cap is the
+ceiling, not the target.
 
 **Chunks must be idempotent, because the SDK retries POSTs.** `_http.http_post`
 wraps `requests.post` in its own retry loop (4 attempts, on `Timeout`,
 `ConnectionError` and 502/503/504) and exposes no way to disable it, so a read
 timeout after the server has applied a chunk *will* re-send it. The protocol
-therefore makes `chunk.index` monotonic and server-checked: re-sending the
-index the server last accepted is an **idempotent no-op returning the current
-row count**, a gap or a rewind is a 409, and the client resynchronises by
-reading that count. Without this, a retried append duplicates rows straight onto
-`uq_peak_assignment_run_id_sample_peak_id` and fails an otherwise healthy
-import, and a retried create mints a second run. This is the same problem the
-repo already solved for file upload: the tus path is offset-addressed and
-re-syncs from the server-confirmed offset (`api_post_file_tus`), whose own
-comment warns that otherwise "the caller's outer retry creates a fresh resource
-per attempt, multiplying them". `chunk.index` is that offset, in rows.
+therefore makes `chunk.index` a monotonic, server-checked row offset: a chunk
+whose index equals `rows_accepted` is applied; a chunk that repeats an offset
+already applied - the retry case, where the server committed and the client
+never saw the response - is an **idempotent no-op returning the current row
+count**; an index ahead of `rows_accepted` (a gap) or one that lands inside an
+applied chunk rather than on its boundary (a rewind) is a 409. The client
+resynchronises from `rows_accepted`. Without this, a retried append duplicates
+rows straight onto `uq_peak_assignment_run_id_sample_peak_id` and fails an
+otherwise healthy import. This is the same problem the repo already solved for
+file upload: the tus path is offset-addressed and re-syncs from the
+server-confirmed offset (`api_post_file_tus`), whose own comment warns that
+otherwise "the caller's outer retry creates a fresh resource per attempt,
+multiplying them". `chunk.index` is that offset, in rows.
+
+The offset covers the **appends**, and only those. It cannot make the create
+idempotent, because a retried create is byte-identical to a fresh one - offset
+0, no run id - so there is no key for the server to dedupe on; and it says
+nothing about re-entering finalize, which is a different kind of request. Those
+two are taken off the blind retry loop entirely rather than made to dedupe on
+nothing, and finalize is additionally specified idempotent on run id plus
+terminal state. §8.3 carries both, since the retry loop is SDK plumbing shared
+with `verify` and `assign`.
+
+**A 409's body is advisory, not machine-readable - recover state, do not parse
+prose.** `_raise_for_status` maps 409 to the generic `MascopeAPIError` and keeps
+only `_extract_error_message`'s flattened string, so neither the in-flight run
+id in an admission refusal nor the accepted-row count in a resync 409 can be
+read off the exception. Recovery is therefore by state, not by message: the run
+id comes from `list_runs`, which applies no status filter and so already
+surfaces an `importing` run and its id - which is also how a client that lost
+its run id reaches the abandon endpoint - and the accepted-row count comes from
+the last chunk response the client did see. §8.3 makes retaining the parsed
+error body part of step 5, which demotes this from the only route to the
+fallback.
 
 **Assembly needs a state of its own; the existing lifecycle does not cover it.**
 An earlier draft claimed the import needed no new machinery, reusing `running`
@@ -618,10 +691,20 @@ Imported runs are **first-class but always attributable**: same tables, same
 read model, same fold-in - and the app's run selector shows engine provenance
 (`engine` + `engine_version`, plus a calibration badge), so a user reading a
 ledger knows which engine produced it before trusting a tier. None of that
-surface exists today: `engine` must be added to `PeakAssignmentRunRecord` and to
-the SDK's `list_runs` frame, and the badge must be built in the run selector.
-§8.4 sequences all three - the trust model below is only as good as the badge
-that carries it, so it is not optional dressing.
+surface exists today: **`engine` and `calibration`** must be added to
+`PeakAssignmentRunRecord` and to the SDK's `list_runs` frame, and the badge must
+be built in the run selector. §8.4 sequences all three - the trust model below
+is only as good as the badge that carries it, so it is not optional dressing.
+
+Both fields, not just `engine`: the runs read is a typed projection, not a
+passthrough. The service hands the route every column of the run row, but the
+route validates through `PeakAssignmentRunsResponse`, and `PeakAssignmentRunRecord`
+is a plain pydantic model under the default `extra='ignore'` - so a column the
+record does not name is dropped before the response leaves the API, and both
+consumers take exactly its field set (the app stores whatever the endpoint
+returns, and the SDK builds its frame with `pd.DataFrame(data)`). Adding
+`engine` alone makes the engine name observable and leaves the calibration badge
+with nothing behind it.
 
 #### Validation (strict-lite)
 
@@ -653,6 +736,17 @@ accept what is merely the importer's judgement.
   `identified` rows at `fit_score` 0.62 that sort and filter beside in-app
   `identified` rows meaning something stricter - and outrank them in the
   cross-sample `TIER_RANK` roll-up in `compute_consensus`.
+
+  The rule has **one stated exemption, and it covers most of a complete
+  ledger**: a null `fit_score` is not banded. `fit_score` is legitimately NULL
+  for a peak no stage explained - `build_unassigned_assignments` writes
+  `tier='unassigned'` with a null score - and the only in-repo band function,
+  `tier_for_score(None, ...)`, answers `below_assignability`, which is the wrong
+  tier for such a row. Banded literally, both client- and server-side, the check
+  would reject exactly the rows the completeness rule below invites. So a null
+  `fit_score` is checked against `tier` instead of against the bands: a null
+  score requires `tier='unassigned'`, and `tier='unassigned'` requires a null
+  score. Every other row is banded.
 - **Provenance is inspector detail, never a server judgement.** The ledger
   renders a calibrated `p_correct` (with its provisional marker) and an adduct
   corroboration count on every row; `_provenance_scalars` flattens those out of
@@ -661,8 +755,24 @@ accept what is merely the importer's judgement.
   importer's own confidence belongs in `fit_score` and in the `provenance` blob
   the inspector shows; it does not get to populate a column the UI presents as
   Mascope's calibrated probability, on a run that may have disclosed no
-  calibration at all. (This is also what keeps the batch consensus honest -
-  `_recompute_consensus` reads `provenance["p_correct"]`.)
+  calibration at all.
+
+  **What nulling the columns does not reach.** The flattened scalars are a
+  convenience projection, not the only path to those numbers, so the rule is
+  narrower than it first reads. The peak inspector resolves the stored
+  `provenance` blob verbatim off the detail record and renders
+  `provenance.p_correct` under "Calibrated probability the assignment is
+  correct", with a provisional flag taken from `provenance.calibration.provisional`;
+  and `_recompute_consensus` selects `PeakAssignment.provenance` and feeds
+  `prov.get("p_correct")` into `compute_consensus` - it never reads the
+  flattened column at all. (An earlier draft asserted the opposite here, citing
+  the consensus pass as evidence *for* the column rule; that parenthetical is
+  retracted.) Since this section positively directs an importer's own confidence
+  *into* the blob, and peaky shares the scoring lineage that builds those key
+  names, a collision is likely by accident rather than by malice. Closing it
+  needs a key policy on the blob - reserve and strip, or make the reading
+  surfaces engine-aware - which is a **decision pending** (§8.5.5), and one
+  step 2's validation has to carry once made.
 - **Peak existence.** Every `sample_peak_id` must exist in the sample's peak
   file; a row for a peak the sample does not have is a 422. Use the **id-only**
   read - `extract_peaks(..., areas=False, heights=False, average=False)` - not
@@ -671,6 +781,17 @@ accept what is merely the importer's judgement.
   just to compute an averaging divisor. The denormalized mz/intensity/tof are
   stored as supplied: they are the importer's observed values,
   display-denormalized exactly as on `MatchIsotope`.
+
+  **Which intensity, though, is not the importer's choice.** An import must
+  supply the quantity the in-app engine supplies for that instrument type -
+  **peak heights for Orbitrap files, peak areas for TOF files**
+  (`_load_sample_peaks`). The value is not display-only: it lands on
+  `BatchPeakOccurrence.intensity` and scales that member's consensus vote
+  (`_vote_weight` weights fit by `1 + log1p(intensity)`), while the batch peak's
+  *declared* unit is derived independently from the file's instrument type
+  (`_intensity_variable`). Supply the other quantity and the stored number
+  disagrees with the label above it and shifts the sample's weight against its
+  batch peers - silently, since nothing on either side can detect the swap.
 - **`config` size cap.** `config` is opaque, so nothing bounds it the way the
   closed `PeakAssignmentConfig` model bounds an in-app run's. It needs an
   explicit byte cap (422 above it), because `GET /sample/{id}/runs` re-serves
@@ -811,6 +932,39 @@ answer honestly:
 - **409** with the in-flight run id when admission refuses;
 - **422** naming the reason when the sample is ineligible.
 
+**Any non-terminal status the admission check refuses on must have something
+that reclaims it.** Today nothing writes `pending` at all - `_create_run`
+hardcodes `running`, and `pending` is only the column's server default - and the
+startup reaper resets exactly `running`. That is not an accident of scope: the
+prune's `_stale_runs_statement` deliberately denies in-flight rows the
+null-timestamp fallback *because* "the startup reaper moves it to 'failed'". A
+run created `pending` in the request breaks that invariant. FastAPI background
+tasks run in-process after the response is sent, so a deploy, a worker restart
+or an OOM kill between the 202 and the task's first line leaves a row nothing
+touches, while the prune classes `pending` as in-flight and holds it for
+`keep_running_hours` (72h by default, floored at 12) and §8.2's abandon endpoint
+is deliberately restricted to `importing`. Under step 2's durable admission that
+row 409s every later assign *and* import for the sample for the whole grace.
+
+So step 3 ships the reclamation together with the status. Which of the two ways
+it does that is a **step-3 implementation choice**, not an open product
+question - both are correct, and they trade the same small cost differently:
+
+- **create the run `running` in the request.** The reaper's coverage and the
+  prune's stated invariant are untouched, and nothing else has to learn a new
+  state. The cost is a row that is `running` with no task attached for the width
+  of the response-to-task gap, and a `running` status that no longer implies
+  "engine is executing".
+- **create it `pending` and widen the reaper** to `status.in_(("pending",
+  "running"))`, leaving `importing` alone. `pending` keeps its honest meaning -
+  admitted, not yet started - at the cost of a second status in every place that
+  reasons about the reaper's invariant, including that prune docstring.
+
+Whichever is picked, `assign(wait=True)` must state what it hands back when the
+poll times out: the run id, so the caller can resume or abandon rather than lose
+the run it just launched. A timeout is now a reachable outcome that is not the
+caller's fault.
+
 That is the whole basis for the wrappers below. Without it, `assign()` would
 have to infer refusal from the *absence* of a new run, which is racy (the
 in-flight run can terminate before the first poll) and simply blind to the
@@ -840,7 +994,9 @@ about at request time.
   would need no `_http` change either: `http_get`/`http_post` already return the
   full `requests.Response`; it is `_base.py` that unwraps to `.json()["data"]`,
   and v1 already shipped the bypass for exactly this reason -
-  `PeakAssignmentsResource._get_envelope` calls `http_get` directly.)
+  `PeakAssignmentsResource._get_envelope` calls `http_get` directly. That holds
+  for a **success** response only; on a non-2xx nothing returns a `Response` at
+  all, which is the subject of the plumbing note after this list.)
 - **`assign_batch(batch_id, *, config=None, wait=True, ...)`** - wraps
   `POST /batch/{id}/assign`. A batch needs its **own** observable, and today has
   none: there is no batch-level run row (`PeakAssignmentRun`'s only FK is
@@ -876,18 +1032,103 @@ about at request time.
   a concrete use appears.
 - **`import_run(sample_id, df, *, engine, engine_version, config, tier_bands, calibration)`**
   - the SDK face of §8.2. Validates the DataFrame client-side (required
-  columns, enum values, tier/fit_score coherence against `tier_bands`, owner
-  references - fail fast before any bytes move), converts NaN to nulls,
-  resolves adduct notations to the deployment's mechanism ids where they are
-  known (leaving the rest null, §8.5.2), **chunks** the rows under the
-  endpoint's per-request cap with a monotonic `chunk.index` it can resynchronise
-  after a retry, and returns the new run id. It warns when the frame covers
+  columns, enum values, tier/fit_score coherence against `tier_bands` including
+  the null-score exemption, owner references - fail fast before any bytes move),
+  **chunks** the rows under the endpoint's per-request cap - by serialized bytes
+  as well as row count, tracking the row offset `chunk.index` it resynchronises
+  from - and returns the new run id. It warns when the frame covers
   materially fewer peaks than the sample's current latest-completed run, since
   the fold-in replaces rather than merges. The round trip is: `get_peaks` out,
   compute externally, `import_run` back, `get` to confirm.
+
+  **Missing values are handled per column, not by a blanket NaN sweep.** A NaN
+  cannot simply be shipped and nulled server-side: `requests` serializes the
+  body with `allow_nan=False`, and the resulting `InvalidJSONError` is a
+  `RequestException`, so `http_post` reports a data bug as a
+  `MascopeConnectionError` - a network failure for a bad cell. But nulling is
+  equally wrong for two columns: `sample_peak_mz` and `sample_peak_intensity`
+  are non-nullable on both the record and the table, and the in-app path fills
+  0.0 rather than nulling. So the policy is per column. NaN in a nullable column
+  - `fit_score`, `mz_error_ppm`, `abundance_error`, the formula, isotope and
+  target-id columns - becomes null. NaN in `sample_peak_mz` or
+  `sample_peak_intensity` is the caller's call to make, not the SDK's:
+  `import_run` raises a typed validation error naming the column and the row,
+  and never lets one reach the serializer.
+
+  **Adduct resolution is best-effort, and the wording above is the whole
+  promise.** `import_run` matches adduct notations against
+  `mascope.ionization.list()` by exact string and leaves every non-match null;
+  it does not guarantee that a supplied id is joinable, because it cannot
+  determine that. Two reasons. The normalization the server applies -
+  `to_mascope_ion_mech`, `to_custom_element_format`, `to_explicit_isotope_format`
+  and the `CUSTOM_ELEMENTS` table - is backend-only code, and the SDK depends on
+  nothing beyond requests, loguru, pandas, tqdm and python-dotenv, so a
+  mechanism the deployment stores in custom-element notation resolves to null
+  under plain string matching. And validity is per *sample*, not per deployment:
+  the server intersects the sample's ionization mode's mechanisms with the
+  sample's polarity, whereas `IonizationResource.list()` is a deployment-global
+  cached read and the SDK has no accessor for the sample-scoped list. A
+  client-resolved id can therefore be deployment-valid and sample-invalid -
+  which is precisely the 422 the resolution was meant to pre-empt. The server's
+  check stays the authority; how much further the client should go is a decision
+  pending (§8.5.2).
 - **`recalibrate`** - still out of scope for the SDK (superuser admin op).
 
-Corresponding notebook follow-up: the round-trip notebook of §8.4 step 4 is
+**Step 5 is not purely additive: two pieces of shared SDK plumbing come with
+it.** v1 was able to ship with no change to `_base.py` or `_http.py` (§5.3)
+because reads are safe to retry and read errors only ever need a message. The
+write wrappers are neither.
+
+- **The mutating wrappers do not go through the blind POST retry.** `http_post`
+  re-sends the same POST up to `RETRY_MAX_ATTEMPTS` (4) on `Timeout`,
+  `ConnectionError` and 502/503/504, with no per-call opt-out, and
+  `_base._post` routes every resource POST through it. For reads and for the
+  idempotent import chunks that is exactly right; for anything not idempotent it
+  is a data hazard, and one that only fires when a response is *lost* - so it
+  will not show up in testing. `create_verification` is a bare insert with a
+  server-minted id, and `AssignmentVerification` carries no unique constraint
+  (it is deliberately append-only), so a single lost response after commit
+  writes two to four identical verdicts, each of which then counts as its own
+  label in `recalibrate_instrument`'s Platt fit and its `n_strong_positives`
+  gate - the one failure here that silently corrupts stored data rather than
+  misreporting. `assign` misreports: attempt 1 commits the run, its response is
+  lost, attempt 2 is refused by the admission rule, and the wrapper raises
+  "already in flight" for its own successful launch. The import's create has the
+  same shape - a retried create is byte-identical to a fresh one (offset 0, no
+  run id), so there is nothing to dedupe on - and its finalize is the request
+  most exposed, since it runs payload-wide validation, owner resolution and the
+  fold-in synchronously while both the SDK's 300 s read timeout and a reverse
+  proxy's own timeout map to a retry. So `verify`, `assign`, and the import's
+  create and finalize take a controlled path: no blind retry, and a lost
+  response fails loudly instead of duplicating. The pattern already exists in
+  the repo - `_agents.py`'s tus helper issues its mutating requests directly
+  with `_raise_for_status` and its own policy - so what step 5 adds is an
+  attempts/no-retry knob on `http_post` rather than four private copies.
+  Finalize is additionally specified idempotent on run id plus terminal state:
+  re-finalizing a `completed` run returns that run's success body rather than
+  re-running the fold-in.
+- **The parsed error body survives onto the exception.** A 409 "carrying the
+  in-flight run id" and a 422 "naming the ineligibility reason" are not
+  buildable against today's plumbing, whichever body step 3 sends.
+  `_raise_for_status` fires before `http_post` can return the response and
+  constructs exceptions from `(message, status_code, url)` alone;
+  `_extract_error_message` short-circuits on the body's `error` string and never
+  reads `detail`, which is exactly where the backend puts machine-readable data
+  - `CodedHTTPException`'s own docstring says a client reacting to a specific
+  condition must branch on the code, not on the user-facing prose. And 409 maps
+  to no dedicated class at all, falling through to the generic
+  `MascopeAPIError`, while an ineligibility 422 is indistinguishable from
+  FastAPI's own body-validation 422. Step 5 therefore retains the parsed error
+  body and its code on `MascopeAPIError` and adds a conflict type for 409. Step
+  3 pins the other half of the handshake: the 202 nests the run id under `data`
+  (the envelope's top level is not a safe place for it - `api_route` pops a
+  top-level `process_id` into a response header, and `_base._post` returns
+  `.json()["data"]`), and the 409/422 carry a stable code plus the in-flight run
+  id in `detail`. Both halves are far cheaper to settle before the endpoints
+  exist than after: ship step 3 prose-only and step 5 either parses English or
+  sends step 3 back.
+
+Corresponding notebook follow-up: the round-trip notebook of §8.4 step 6 is
 where triggering gets its worked example (`assign` -> `get`, then
 `import_run` -> `get`). No existing notebook is rewritten for this - the
 client-side composition loop that used to live in the `09` slot is retired
@@ -905,16 +1146,21 @@ Each step is its own PR, and each leaves the system shippable:
    the reaper skipping `importing` and the prune gaining its grace; the abandon
    endpoint that releases a stuck assembly before that grace; the prune's
    keep-newest budget becoming per (sample, engine); strict-lite validation;
-   fold-in on completion; recalibration restricted to in-app runs. Integration
+   fold-in on completion; recalibration restricted to in-app runs; and the
+   import route's own `client_max_body_size` in the frontend nginx config, since
+   the compiled-in 1 MB default sits below one capped chunk (§8.2). Integration
    tests exercise the write via the `MASCOPE_PEAK_ASSIGNMENT` env override, like
    the other write tests, and must cover the retention and recalibration
    changes, which are the two places an import could otherwise damage in-app
    data.
 3. **Synchronous assign outcomes** - the 202 body carrying the new run id, 409
    on admission refusal, 422 on ineligibility, for both the sample and batch
-   endpoints (the batch body also returning the per-sample partition). Backend
-   only; the app keeps using the socket path it already has.
-4. **Run provenance in the API and the app** - `engine` on
+   endpoints (the batch body also returning the per-sample partition). It also
+   carries the reclamation path for whichever non-terminal status the request
+   creates, and pins the machine-readable shape of all three bodies (§8.3);
+   both are cheap here and expensive once the endpoints exist. Backend only;
+   the app keeps using the socket path it already has.
+4. **Run provenance in the API and the app** - `engine` **and `calibration`** on
    `PeakAssignmentRunRecord` and in the SDK's `list_runs` frame; the run
    selector showing engine, version and the calibration badge. Nothing in the
    trust model is observable to a user until this lands, so it precedes the
@@ -930,26 +1176,92 @@ Each step is its own PR, and each leaves the system shippable:
    contract tests that today **skip** in CI (§7), and doubles as the fixture
    an import contract test diffs against.
 
-### 8.5 Open questions (v2)
+**Start/hold status.** The list above is the order; this is what is safe to pick
+up today. Three of §8.5's entries are decisions pending rather than research
+questions, and they hold steps.
 
-Genuinely open - everything else in §8 is decided:
+- **Steps 1-2 proceed.** Step 2 now also carries the import route's body
+  allowance. The imported-`provenance` key policy (§8.5.5) is one of its
+  validation rules, so that decision has to be made before step 2's validation
+  is final - not before step 2 starts.
+- **Step 3 is held** on §8.5.4, the batch write contract: its 202 promises
+  per-sample run ids and its 409 promises a batch-level refusal, and neither has
+  a mechanism until that is settled. The sample half of the step is unaffected.
+- **Step 4 is safe to start** once two amendments land: `calibration` on
+  `PeakAssignmentRunRecord` alongside `engine` (without it the calibration badge
+  has no data), and the §8.5.5 decision, whose answer determines whether the
+  peak inspector needs work in this step or the blob is cleaned at import.
+  Nothing else in step 4 blocks.
+- **Step 5 is held**, downstream of step 3 - §8.5.4 is the same knot seen from
+  the SDK side. The retry-safety and error-body plumbing (§8.3) is independent
+  of it and can be built first; the verify half of it is the only item in this
+  revision that silently corrupts stored data, so it should not wait.
+- **Step 6 is held** on §8.5.2 (how far client-side mechanism resolution goes).
+  Its other prerequisites are now stated rather than open: the numeric chunk cap
+  and the body allowance, the per-column null policy, and the null-`fit_score`
+  exemption.
+- **Step 8 is implementable, but it is not a code PR.** The demo stack fetches
+  bundle content from a published Zenodo version - the init container refuses a
+  registry entry with no download URL, and CI boots that same stack before
+  running the SDK contract tests - so the PR cannot go green from repo content
+  alone. It is publish-then-register: cut the bundle, sign off the
+  de-identification, publish a new Zenodo version, then land one PR bumping
+  `DEFAULT_BUNDLE_VERSION` and un-skipping the tests. That makes it maintainer
+  work rather than something to hand a contributor, and the version bump forces
+  a fresh full-bundle download for every demo user and every demo-stack CI job.
+  Safe to schedule at any point; it does not gate the others.
 
-1. **Batch-level import.** peaky's batch pipeline merges per-sample ledgers
-   into a batch-level result. Should import accept a batch manifest (one call,
+### 8.5 Open questions and pending decisions (v2)
+
+Everything in §8 that is not listed here is decided. Two kinds of thing live in
+this list, and they are not interchangeable. A **decision pending** is a choice
+a sequenced step cannot be implemented around: it has options, each with a
+stated cost, and §8.4 says which steps it holds. An **open question** can be
+answered after the loop works. Numbering is stable because the rest of the
+document cites it.
+
+1. **Batch-level import.** *(Open.)* peaky's batch pipeline merges per-sample
+   ledgers into a batch-level result. Should import accept a batch manifest (one call,
    N samples' runs), or stay per-sample in v2? Per-sample is sufficient for
    the loop - the batch fold-in derives the batch view server-side from
    per-sample runs - so a manifest is a convenience with real transactional
    surface. (It is not the answer to the fold-in cost noted in §8.2; a manifest
    that loops the same fold gains nothing there.)
-2. **Unknown ionization mechanisms.** Decided in part: `import_run` resolves
-   adduct notations against the deployment's `IonizationMechanism` table
-   client-side, so ids that *are* known arrive populated and joinable. What
-   stays open is the genuinely unknown remainder - auto-register it on import,
-   or leave `ionization_mechanism_id` null (the notation still lives in
-   `ion_formula` and provenance)? Null is safe and loses no substance;
-   auto-registration keeps the ledger joinable but lets imports grow a shared
-   vocabulary table.
-3. **Admitting imported verifications to calibration.** §8.2 excludes
+2. **Ionization mechanisms: how far client-side resolution goes.** *(Decision
+   pending - holds step 6.)* §8.3 currently specifies the floor: exact-string
+   matching against `mascope.ionization.list()`, null on any mismatch, the
+   server's 422 as the authority. An earlier draft promised more - that known
+   ids "arrive populated and joinable" - and that is not reachable from the SDK
+   as it stands, for two independent reasons: the deployment's notation
+   normalizers are backend-only code, and mechanism validity is scoped to the
+   *sample*, while the SDK's only handle is a deployment-global list. What must
+   be chosen is whether to close that gap or to live with the floor.
+
+   **Port it.** Bring `to_mascope_ion_mech`, `to_custom_element_format`,
+   `to_explicit_isotope_format` and the `CUSTOM_ELEMENTS` table into the SDK,
+   and add an accessor for the sample-scoped mechanism list. Cost: chemistry
+   logic duplicated into a package that today depends on nothing but requests,
+   loguru, pandas, tqdm and python-dotenv, plus a second copy of the notation
+   rules to keep in step with the server's, plus one new SDK accessor over an
+   endpoint the SDK does not currently reach. Buys: mechanisms stored in
+   custom-element notation resolve instead of silently nulling, and a
+   client-resolved id is valid for the *sample* rather than merely for the
+   deployment - so the fail-fast validation actually pre-empts the 422 it is
+   named for.
+
+   **Keep the floor.** Exact-string matching only. Cost: mechanisms written in
+   custom-element notation resolve to null even though the deployment knows
+   them, and a resolved id can still be sample-invalid, so client-side
+   validation cannot promise fail-fast here and the round trip pays a server
+   round trip to find out. Buys: no chemistry in the SDK and nothing to keep in
+   sync.
+
+   Downstream of either answer, and genuinely open: the mechanism the deployment
+   does *not* know at all - auto-register it on import, or leave
+   `ionization_mechanism_id` null (the notation still lives in `ion_formula` and
+   provenance)? Null is safe and loses no substance; auto-registration keeps the
+   ledger joinable but lets imports grow a shared vocabulary table.
+3. **Admitting imported verifications to calibration.** *(Open.)* §8.2 excludes
    imported-run verifications from the instrument recalibration pool because
    `evidence` would then be an editor-supplied number on a superuser-gated
    curve. Could they be admitted later under a declared-scale rule - the run's
@@ -957,6 +1269,72 @@ Genuinely open - everything else in §8 is decided:
    server recompute `evidence` from `fit_score` rather than trusting the
    payload? Worth revisiting once real imported ledgers exist; not needed for
    the loop.
+4. **The batch write contract.** *(Decision pending - holds steps 3 and 5.)*
+   §8.3 has the batch endpoint answer synchronously with the admitted per-sample
+   run ids plus the skipped samples, and §8.4 step 3 has it 409 on admission
+   refusal. Neither has machinery behind it, and the three sub-questions have to
+   be answered together because each one's answer constrains the next.
+
+   **(a) What supplies the batch-level 409.** There is no batch-level durable
+   state to query: `PeakAssignmentRun`'s only foreign key is `sample_item_id`,
+   and today's batch guard - an in-process in-flight set plus the
+   `assignment_claim` advisory lock - is acquired *inside* the background task,
+   minutes after the 202, so it cannot answer a request. The options: a durable
+   batch claim row, which is schema work and therefore grows step 2 and needs
+   its own reaper and grace; or derive the refusal from the batch's per-sample
+   runs, which has to state what happens when one sample of fifty is in flight
+   individually; or drop the batch 409 and leave batch refusal where it is
+   today, in the socket path, which costs the batch wrapper the honest answer
+   §8.3 was written to give it.
+
+   **(b) How a pre-allocated run id reaches the engine.** Run ids are minted one
+   at a time inside the engine as the sequential loop reaches each sample, so
+   returning them in the 202 means creating the rows in the request - and each
+   such row is a non-terminal run for its own sample, which the admission rule
+   then refuses, or, if admission is lifted, the engine mints a second run and
+   orphans the first. The options: give the per-sample entry point an
+   adopt-or-create run id and scope admission to "*another* run for this
+   sample", which touches the same code step 3 is already editing but widens the
+   admission rule everything else depends on; or drop the per-sample-id promise
+   and have `assign_batch` poll the sample set instead, accepting the ambiguity
+   §8.3 rejects (an all-skipped batch produces no runs, which is
+   indistinguishable from a refusal).
+
+   **(c) Who finalizes pre-created rows when the batch stops early.** The batch
+   loop deliberately lets `CancelledError` propagate so a cancelled batch stops
+   rather than logging N failures - which leaves every unvisited sample's
+   pre-created row non-terminal, blocking that sample for the prune's in-flight
+   grace. Any answer to (b) that pre-creates rows owes a finalizer here; the
+   reclamation choice §8.3 makes for the single-sample path is the natural place
+   to put it, but it has to be stated rather than inherited.
+5. **Reserved keys in an imported `provenance` blob.** *(Decision pending -
+   holds step 2's validation; step 4's scope depends on the answer.)* §8.2 nulls
+   the flattened P(correct) scalars for imported runs so the ledger does not
+   present an importer's confidence as Mascope's calibrated judgement. That is
+   necessary and not sufficient: the peak inspector renders `provenance.p_correct`
+   from the stored blob under "Calibrated probability the assignment is correct"
+   with a provisional flag off `provenance.calibration.provisional`, and the
+   batch consensus reads `provenance["p_correct"]` from the blob too - neither
+   reads the column. Since §8.2 directs an importer's own confidence *into* the
+   blob and peaky shares the scoring lineage that produced those key names, the
+   collision is a likely accident rather than an attack.
+
+   **Reserve the keys at import.** Strip or namespace `p_correct` and
+   `calibration` (and anything else the flattening reads) out of an imported
+   `provenance` before it is stored, or 422 a payload carrying them. Cost: a
+   reserved-key list that has to be kept in step with `_provenance_scalars` and
+   with whatever the inspector renders next, and an importer loses the obvious
+   place to put its own numbers, so the contract owes it a sanctioned one.
+   Buys: "the ledger shows them empty" becomes true everywhere the blob is read,
+   including the consensus roll-up, with no UI work.
+
+   **Make the reading surfaces engine-aware.** Leave the blob verbatim and have
+   the inspector - and anything else that reads those keys - label them as the
+   importing engine's numbers rather than Mascope's. Cost: unbudgeted app work
+   inside step 4, repeated for every future surface that learns to read
+   provenance, and the consensus pass still has to decide whether to weigh a
+   foreign `p_correct`. Buys: the importer's blob stays exactly what its engine
+   wrote, which is the same argument that keeps `config` verbatim.
 
 ---
 
@@ -975,14 +1353,15 @@ Genuinely open - everything else in §8 is decided:
    ([reference_peak_assignment_convergence.md](reference_peak_assignment_convergence.md))
    attaches reference identities to `source=database` assignments, decide how the SDK
    exposes them (a `provenance`/`identity` column vs. flattened name columns).
-4. **Contract-test data.** *Resolved: seed the demo bundle* (§8.4 step 6); the
+4. **Contract-test data.** *Resolved: seed the demo bundle* (§8.4 step 8); the
    shipped contract tests skip until it lands.
 5. **`alternatives` / `provenance` after #1725.** *Resolved: a separate
    `detail(sample_id, peak_assignment_id)` accessor (shipped in v1)* - it takes
    the sample id too, matching the route shape; no `get(..., detail=True)`
    opt-in.
 
-The genuinely open v2 questions live in §8.5.
+The open v2 questions - and the three decisions still pending, which §8.4 maps
+onto the steps they hold - live in §8.5.
 
 **Related tracker issues:**
 [#1725](https://github.com/ultra-trace-systems/mascope/issues/1725) (ledger response slimming -
@@ -1036,4 +1415,8 @@ ineligibility, then poll-to-terminal), `verify`/`list_verifications`,
 as its own PR - provenance in the app before the first real import, since the
 trust model is only as good as the badge that shows it - and ends with `peaky
 publish` consuming the whole loop and the demo bundle carrying a completed run,
-which also un-skips the v1 contract tests.
+which also un-skips the v1 contract tests. Three decisions are still pending and
+hold parts of that sequence - the batch write contract, how far client-side
+ionization-mechanism resolution goes, and the reserved-key policy for an
+imported `provenance` blob; §8.5 states the options and their costs, and §8.4's
+start/hold status maps them onto the steps they block.

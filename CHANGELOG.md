@@ -66,8 +66,12 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
   server-side assignment engine; next to the engine's persisted, arbitrated,
   calibrated runs it taught a workflow that produces different scores and no
   ledger. The remaining notebooks close the gap: `10_batch_stages.ipynb` is
-  now `09_batch_stages.ipynb` and `11_peak_assignment.ipynb` - the supported
-  path - is now `10_peak_assignment.ipynb`.
+  now `09_batch_stages.ipynb`, and the supported path is
+  `10_peak_assignment.ipynb`. **Upgrading:** `copy_examples` never overwrites or
+  removes anything, so an existing `mascope_examples/` folder keeps the old
+  files. Delete `09_composition_assignment.ipynb` and `10_batch_stages.ipynb`
+  from it before re-running `copy_examples`, or you keep the retired notebook
+  and end up with batch-stages twice under two numbers.
 
 ### Changed
 
