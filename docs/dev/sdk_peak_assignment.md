@@ -474,9 +474,10 @@ Gating is the same as the other writes; **admission cannot be**:
   one: held across requests it would pin a pooled connection to a remote
   client's think-time; taken per request it leaves the sample unclaimed between
   chunks. Import admission is therefore a query on run state - a non-terminal
-  (`pending`/`running`) run for the sample refuses a new import or in-app assign
-  with **409** naming the in-flight run id - with the advisory claim kept only
-  as the cross-worker guard *within* a single request. This is genuinely new
+  (`pending`/`running`/`importing`) run for the sample refuses a new import or
+  in-app assign with **409** naming the in-flight run id - with the advisory
+  claim kept only as the cross-worker guard *within* a single request. This is
+  genuinely new
   machinery (an indexed status query, plus the in-app assign path adopting the
   same check so the two paths refuse each other); §8.4 step 2 carries it.
 
@@ -490,7 +491,7 @@ Request, top level:
 | `tier_bands` | the `identified` / `candidate` fit-score thresholds the engine tiered with, **required** - a first-class run field, *not* buried in opaque `config`, because the server validates rows against it |
 | `calibration` | the client's calibration state, **required** - its own nullable JSON column on the run, *not* a reserved key inside `config` |
 | `rows` | assignment rows (below) |
-| `chunk` | assembly control: `{run_id, index, complete}` - see "One logical import" |
+| `chunk` | assembly control: `{run_id, import_id, index, complete}`, **required** (`import_id` with it) - see "One logical import" |
 
 Each row is **`PeakAssignmentRecord` (§3) minus the server-owned fields**. That
 is the whole definition: do not re-enumerate the columns here, because a second
@@ -629,12 +630,28 @@ multiplying them". `chunk.index` is that offset, in rows.
 
 The offset covers the **appends**, and only those. It cannot make the create
 idempotent, because a retried create is byte-identical to a fresh one - offset
-0, no run id - so there is no key for the server to dedupe on; and it says
-nothing about re-entering finalize, which is a different kind of request. Those
-two are taken off the blind retry loop entirely rather than made to dedupe on
-nothing, and finalize is additionally specified idempotent on run id plus
-terminal state. §8.3 carries both, since the retry loop is SDK plumbing shared
-with `verify` and `assign`.
+0, no run id - so there is nothing in the request itself for the server to
+dedupe on; and it says nothing about re-entering finalize, which is a different
+kind of request.
+
+Both are answered **server-side, and required rather than advisory**, because
+this is an HTTP endpoint and the SDK is not its only caller: a third-party
+engine, a retrying proxy, or a load balancer can replay a create that no
+client-side policy of ours governs. So the create carries `chunk.import_id` - a
+client-chosen key, persisted as `import_key`, unique per sample - and a repeat
+resolves to the run already made for it; finalize is idempotent on run id plus
+terminal state. `import_id` is **required**, not recommended, because the
+consequence of omitting it is shape-dependent and the worse case is silent: a
+chunked create leaves the second run non-terminal, so admission refuses it
+loudly, but a single-request create finishes as `completed` - which admission
+does not refuse - so the retry lands a duplicate ledger and a second batch
+fold-in with nothing raised anywhere.
+
+Taking create and finalize off the SDK's blind retry loop is still worth doing
+and remains §8.3's business - it saves the wasted round trip and the duplicate
+work even when the server would dedupe - but it is now a courtesy on top of a
+guarantee rather than the guarantee itself. §8.3 carries it, since the retry
+loop is SDK plumbing shared with `verify` and `assign`.
 
 **A 409's body is advisory, not machine-readable - recover state, do not parse
 prose.** `_raise_for_status` maps 409 to the generic `MascopeAPIError` and keeps

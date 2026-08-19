@@ -36,7 +36,10 @@ MAX_IMPORT_ROWS_PER_REQUEST = 1000
 # client JSON of no fixed size - so the two caps are enforced together.
 #
 # This must stay at or below the `client_max_body_size` that
-# server/frontend/nginx.conf sets on the peak-assignment location: nginx rejects
+# both server/frontend/nginx.conf and nginx.http.conf set on the peak-assignment
+# location (they are baked into one image and selected at container start, so a
+# location in only one silently does not apply to the other deployment mode -
+# tooling/validate-nginx-config.sh guards the drift): nginx rejects
 # a larger body itself, before the request reaches this process, and its default
 # is 1 MB. Raising one without the other either makes this check unreachable or
 # turns a documented 413 into an nginx error page.

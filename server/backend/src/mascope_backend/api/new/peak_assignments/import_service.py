@@ -27,9 +27,14 @@ mechanisms cover the three kinds of request:
   and fails a healthy import.
 - a **create** has no run id yet to be addressed by, so an offset cannot help:
   a retried create is byte-identical to the original and would mint a second
-  run, which admission then refuses - wedging the client, which never learned
-  the first run's id. It is keyed instead by the client's own ``import_id``,
-  which resolves to the run already created for it.
+  run. It is keyed instead by the client's own ``import_id``, which resolves to
+  the run already created for it. That key is **required**, because the damage
+  without one depends on the shape of the import and the worse case is silent:
+  a chunked create leaves the second run non-terminal, so admission refuses it
+  and the client is merely wedged, but a single-request create (rows and
+  ``complete`` together, the slim-ledger shape) finishes as ``completed`` -
+  which admission does not refuse - so the retry lands a duplicate ledger and a
+  second batch fold-in with no error anywhere.
 - a **finalize** can be slow (payload-wide validation, owner resolution and the
   fold-in), which is what makes it a likely read-timeout victim, so re-sending
   it returns the original success rather than erroring - and does not run the
@@ -55,7 +60,7 @@ from datetime import timezone
 
 from fastapi import HTTPException
 from sqlalchemy import delete, func, insert, select, update
-from sqlalchemy.exc import IntegrityError
+from sqlalchemy.exc import DBAPIError
 
 from mascope_backend.api.controllers.samples.lib.samples_fetch import fetch_sample
 from mascope_backend.api.controllers.samples.lib.samples_peaks import extract_peaks
@@ -84,6 +89,8 @@ from mascope_backend.db import (
     IonizationMechanism,
     PeakAssignment,
     PeakAssignmentRun,
+    TargetCompound,
+    TargetIon,
     async_session,
 )
 from mascope_backend.db.id import gen_id
@@ -126,56 +133,86 @@ async def _load_peak_ids(sample) -> set[str]:
     return {str(peak_id) for peak_id in peak_data.peak_ids}
 
 
-async def _validate_mechanisms(rows, sample) -> None:
-    """Reject supplied ionization mechanism ids that cannot apply to this sample.
+#: Every foreign-key column an imported row can populate, as
+#: ``(payload field, model column)``. The insert is the only other thing that
+#: would catch a bad id, and it catches all of them as one indistinguishable
+#: IntegrityError - see :func:`_insert_refusal` for why that is not a usable
+#: error to report. Adding a reference column to ``ImportAssignmentRow`` means
+#: adding it here.
+_REFERENCE_COLUMNS = (
+    ("ionization_mechanism_id", IonizationMechanism.ionization_mechanism_id),
+    ("target_compound_id", TargetCompound.target_compound_id),
+    ("target_ion_id", TargetIon.target_ion_id),
+)
 
-    ``ionization_mechanism_id`` is nullable - an external engine names adducts by
-    notation, not by a deployment's mechanism ids - but a *supplied* id must
-    exist and must carry the sample's polarity, which is what the in-app engine
-    satisfies structurally. Checked here so a bad id is a 422 naming it, rather
-    than an IntegrityError surfacing as a 500 out of the bulk insert once the
-    whole payload has been uploaded.
 
-    Membership of the sample's configured ionization *mode* is deliberately not
-    required on top of polarity: a mode's mechanism list is a deployment's
-    narrowing of what to search for rather than a property of the measurement,
-    and a sample may carry no mode at all - so enforcing it would refuse a
-    correct adduct for a reason that says nothing about the ledger.
+async def _validate_references(rows, sample) -> None:
+    """Reject supplied foreign keys this deployment cannot honour.
+
+    Each of these ids is nullable - an external engine names adducts by
+    notation rather than by a deployment's mechanism ids, and it may know
+    nothing of the curated target library - but a *supplied* id must exist.
+    Checked here so a bad id is a 422 naming the field and the value, rather
+    than an IntegrityError out of the bulk insert once the whole payload has
+    been uploaded, which arrives with no reliable way to say which of the three
+    columns was at fault.
+
+    ``ionization_mechanism_id`` carries one rule beyond existence: it must match
+    the sample's polarity, which is what the in-app engine satisfies
+    structurally. Membership of the sample's configured ionization *mode* is
+    deliberately not required on top of that: a mode's mechanism list is a
+    deployment's narrowing of what to search for rather than a property of the
+    measurement, and a sample may carry no mode at all - so enforcing it would
+    refuse a correct adduct for a reason that says nothing about the ledger.
 
     :param rows: The chunk's rows.
     :param sample: The sample being imported into.
     :raises UnprocessableImportException: On an unknown or mismatched id.
     """
     supplied = {
-        row.ionization_mechanism_id
-        for row in rows
-        if row.ionization_mechanism_id is not None
+        field: {value for row in rows if (value := getattr(row, field)) is not None}
+        for field, _ in _REFERENCE_COLUMNS
     }
-    if not supplied:
+    if not any(supplied.values()):
         return
 
     async with async_session() as session:
-        found = (
-            await session.execute(
-                select(
-                    IonizationMechanism.ionization_mechanism_id,
-                    IonizationMechanism.ionization_mechanism_polarity,
-                ).where(IonizationMechanism.ionization_mechanism_id.in_(supplied))
+        for field, column in _REFERENCE_COLUMNS:
+            if not supplied[field]:
+                continue
+            found = set(
+                (
+                    await session.execute(
+                        select(column).where(column.in_(supplied[field]))
+                    )
+                )
+                .scalars()
+                .all()
             )
-        ).all()
+            if unknown := sorted(supplied[field] - found):
+                raise UnprocessableImportException(
+                    f"{field} {_names(unknown)} does not exist on this "
+                    "deployment; leave it null when the reference cannot be "
+                    "resolved (an adduct's notation still travels in ion_formula)"
+                )
 
-    polarity_by_id = {mech_id: polarity for mech_id, polarity in found}
-    if unknown := sorted(supplied - set(polarity_by_id)):
-        raise UnprocessableImportException(
-            f"ionization_mechanism_id {_names(unknown)} is not a known mechanism "
-            "on this deployment; leave it null when the adduct cannot be "
-            "resolved (the notation still travels in ion_formula)"
+        if not supplied["ionization_mechanism_id"]:
+            return
+        mismatched = sorted(
+            (
+                await session.execute(
+                    select(IonizationMechanism.ionization_mechanism_id).where(
+                        IonizationMechanism.ionization_mechanism_id.in_(
+                            supplied["ionization_mechanism_id"]
+                        ),
+                        IonizationMechanism.ionization_mechanism_polarity
+                        != sample.polarity,
+                    )
+                )
+            )
+            .scalars()
+            .all()
         )
-    mismatched = sorted(
-        mech_id
-        for mech_id, polarity in polarity_by_id.items()
-        if polarity != sample.polarity
-    )
     if mismatched:
         raise UnprocessableImportException(
             f"ionization_mechanism_id {_names(mismatched)} does not match the "
@@ -418,20 +455,27 @@ async def _staged_row_count(session, run_id: str) -> int:
     )
 
 
-async def _open_run(sample, body, engine: str) -> PeakAssignmentRun:
-    """Create the run the first request of an import assembles into.
+def _new_run(sample, body, engine: str) -> PeakAssignmentRun:
+    """Build - but do not persist - the run an import's first request opens.
 
-    Called only once this request's rows have already passed validation, so a
-    payload the server was going to refuse does not leave an ``importing`` run
-    behind - which would block every later import and in-app assign for the
-    sample until someone abandoned it.
+    Deliberately not committed here. The run and the first chunk's rows go into
+    one transaction in :func:`_import_chunk`, so a refusal the *database* raises
+    rolls the run back with them. Committing the run first (as this did) meant
+    any insert-time refusal - a reference id that resolves to nothing, a value
+    too long for its column - left an ``importing`` run behind holding no rows,
+    which blocks every later import *and* in-app assign for the sample until
+    someone abandons it or retention's grace expires. Validation refusals were
+    already ordered ahead of run creation; this closes the rest.
+
+    The id is minted here rather than by the database because the rows in the
+    same transaction reference it.
 
     :param sample: The sample being imported into.
     :param body: The request body.
     :param engine: The validated engine name.
-    :return: The created run.
+    :return: The unpersisted run.
     """
-    run = PeakAssignmentRun(
+    return PeakAssignmentRun(
         peak_assignment_run_id=gen_id(16),
         sample_item_id=sample.sample_item_id,
         engine=engine,
@@ -444,13 +488,67 @@ async def _open_run(sample, body, engine: str) -> PeakAssignmentRun:
         config=body.config,
         tier_bands=body.tier_bands.model_dump(),
         calibration=body.calibration,
-        import_key=body.chunk.import_id or None,
+        import_key=body.chunk.import_id,
         peak_assignment_run_utc_created=dt.now(timezone.utc),
     )
-    async with async_session() as session:
-        session.add(run)
-        await session.commit()
-    return run
+
+
+#: The constraint that backstops single-owner-per-peak across chunks, which an
+#: in-memory pass cannot see. Matched by name so it can be told apart from the
+#: other ways the insert can be refused.
+_DUPLICATE_PEAK_CONSTRAINT = "uq_peak_assignment_run_id_sample_peak_id"
+
+#: SQLSTATE classes the *payload* can be responsible for: 23 is an integrity
+#: constraint violation, 22 a data exception. Discriminated by class rather
+#: than by exception type because this runs on asyncpg, whose SQLAlchemy
+#: dialect maps only class 23 to a named error: its translation table sends
+#: every other Postgres error to the unnamed ``dbapi.Error``, which
+#: ``DBAPIError.instance`` cannot resolve to a subclass and so surfaces as a
+#: bare ``DBAPIError``. Catching ``DataError`` here would therefore never fire,
+#: and catching ``DBAPIError`` alone would answer a dropped connection as
+#: though the client could fix it by sending different rows.
+_PAYLOAD_SQLSTATE_CLASSES = ("22", "23")
+
+
+def _insert_refusal(error: DBAPIError) -> UnprocessableImportException | None:
+    """Turn a database refusal of the chunk insert into a 422 that fits it.
+
+    Only one constraint violation here has a specific, useful explanation: the
+    unique index on (run, peak), which is how a duplicate that spans two chunks
+    is caught. Reporting *every* refusal as that one - as this did - tells a
+    client to hunt for a duplicate peak when what it actually sent was, say, a
+    ``target_ion_id`` no longer in the library, or when its run was abandoned
+    underneath it. :func:`_validate_references` now catches the reference cases
+    up front, so reaching this branch means either a genuine race or a
+    constraint no payload rule models yet; either way the honest answer names
+    what a client can check and the detail goes to the log.
+
+    :param error: The refusal raised by the insert.
+    :return: The exception to raise, or None when the error is not the
+        payload's doing and should propagate untouched.
+    """
+    orig = getattr(error, "orig", None)
+    detail = str(orig or error)
+    sqlstate = getattr(orig, "sqlstate", None) or ""
+    if sqlstate[:2] not in _PAYLOAD_SQLSTATE_CLASSES:
+        # A pool timeout, a dropped connection, a serialization failure: not
+        # something a different payload would fix, so it must not be dressed up
+        # as a 422. Let it surface as the 500 it is.
+        return None
+    if _DUPLICATE_PEAK_CONSTRAINT in detail:
+        return UnprocessableImportException(
+            "a peak in this chunk is already assigned by an earlier chunk of "
+            "this import; a run holds at most one row per peak"
+        )
+    runtime.logger.warning(
+        f"Import chunk refused by the database (SQLSTATE {sqlstate}): {detail}"
+    )
+    return UnprocessableImportException(
+        "this chunk was refused by the database and nothing was stored. A run "
+        "holds at most one row per peak, every id a row carries into a "
+        "reference column must still exist on this deployment, and the run "
+        "must not have been abandoned while the chunk was in flight."
+    )
 
 
 def _validate_new_run(sample, body) -> str:
@@ -540,10 +638,23 @@ async def _import_chunk(sample, body, user_id: int | None) -> dict:
     if body.chunk.run_id is not None:
         async with async_session() as session:
             run = await _load_import_run(session, body.chunk.run_id, sample)
-    elif body.chunk.import_id:
+        # An import addresses one run, so the two ids a follow-up carries have
+        # to agree. Only checked when the run has a key at all: addressing an
+        # in-app run by id is a different mistake, answered by the status
+        # refusal below with the status it is actually in.
+        if run.import_key is not None and run.import_key != body.chunk.import_id:
+            raise UnprocessableImportException(
+                f"chunk.import_id '{body.chunk.import_id}' is not the import "
+                f"that created run '{run.peak_assignment_run_id}'; every chunk "
+                "of one import carries the id its create did"
+            )
+    else:
         # A create the client may have sent before. Resolving it here turns the
         # retry into a replay of that run's first chunk, which the offset rules
-        # below already answer correctly.
+        # below already answer correctly. This is the whole reason import_id is
+        # required: a create carries no run id, so nothing else can tell a retry
+        # of it from a second import - and the SDK retries POSTs on timeouts
+        # with no way to opt out.
         async with async_session() as session:
             run = await _run_for_import_key(
                 session, sample.sample_item_id, body.chunk.import_id
@@ -590,7 +701,7 @@ async def _import_chunk(sample, body, user_id: int | None) -> dict:
                 "per peak"
             )
         _validate_rows(body.rows, bands, known_peak_ids)
-        await _validate_mechanisms(body.rows, sample)
+        await _validate_references(body.rows, sample)
     elif body.chunk.complete and staged == 0:
         # Caught before a run is opened: an import that carries nothing is a
         # 422, not a completed empty run.
@@ -598,25 +709,28 @@ async def _import_chunk(sample, body, user_id: int | None) -> dict:
             "an import must carry at least one row; an empty run is not a ledger"
         )
 
-    if creating:
-        run = await _open_run(sample, body, engine)
-    run_id = run.peak_assignment_run_id
+    new_run = _new_run(sample, body, engine) if creating else None
+    run_id = (new_run or run).peak_assignment_run_id
 
-    if body.rows:
-        values = [_row_values(row, run_id, sample.sample_item_id) for row in body.rows]
+    # One transaction for the run and this chunk's rows. On a create that is
+    # what keeps a refusal the database raises from stranding an 'importing'
+    # run with no rows in it, blocking the sample; on a follow-up it is just
+    # the insert.
+    values = [_row_values(row, run_id, sample.sample_item_id) for row in body.rows]
+    if new_run is not None or values:
         try:
             async with async_session() as session:
-                await session.execute(insert(PeakAssignment), values)
+                if new_run is not None:
+                    session.add(new_run)
+                    await session.flush()
+                if values:
+                    await session.execute(insert(PeakAssignment), values)
                 await session.commit()
-        except IntegrityError as error:
-            # The unique constraint on (run, peak) backstops the duplicate check
-            # across chunks, where an in-memory pass cannot see the earlier
-            # ones. Reported as the same 422 an in-chunk duplicate gets.
-            raise UnprocessableImportException(
-                "a peak in this chunk is already assigned by an earlier chunk of "
-                "this import; a run holds at most one row per peak"
-            ) from error
-        staged += len(body.rows)
+        except DBAPIError as error:
+            if (refusal := _insert_refusal(error)) is None:
+                raise
+            raise refusal from error
+        staged += len(values)
 
     if not body.chunk.complete:
         return _import_result(

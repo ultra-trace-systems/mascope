@@ -421,13 +421,13 @@ async def import_assignment_run_route(
     ledger). Every response reports `max_rows_per_request`, so size chunks from
     that rather than from a hardcoded guess.
 
-    **Retries are safe, if the client sends `chunk.import_id`.** `chunk.index`
-    is an offset in **rows**: it must equal the `rows` count the previous
-    response reported, and re-sending the last chunk is an idempotent no-op that
-    reports that count again. That covers appends and the finalize, but not the
-    request that *creates* the run, which has no id yet to be idempotent about -
-    supply `chunk.import_id` (any id unique to this import) and a retried create
-    returns the run it already made instead of a second one.
+    **Retries are safe.** `chunk.index` is an offset in **rows**: it must equal
+    the `rows` count the previous response reported, and re-sending the last
+    chunk is an idempotent no-op that reports that count again. That covers
+    appends and the finalize, but not the request that *creates* the run, which
+    has no id yet to be idempotent about - which is why `chunk.import_id` (any
+    id unique to this import) is required, and why a retried create returns the
+    run it already made instead of a second one.
 
     **What is accepted.** Each row is a ledger record minus the fields this
     server owns: it mints the ids, resolves `owner_sample_peak_id` into the

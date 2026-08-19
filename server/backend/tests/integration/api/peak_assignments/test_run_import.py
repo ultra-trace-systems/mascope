@@ -11,12 +11,15 @@ like the other write tests, so these do not depend on the test environment's
 ``[meta]`` config.
 """
 
+import json
 from datetime import datetime, timedelta, timezone
+from types import SimpleNamespace
 
 import pytest
 import pytest_asyncio
 from sqlalchemy import delete, select
 
+from mascope_backend.api.controllers.samples.lib.samples_fetch import fetch_sample
 from mascope_backend.api.new.peak_assignments import import_service
 from mascope_backend.db import (
     AssignmentVerification,
@@ -180,10 +183,15 @@ def _body(
     complete=True,
     run_id=None,
     index=0,
-    import_id=None,
+    import_id="import-default",
     **overrides,
 ):
-    """An import request body with the required run fields filled in."""
+    """An import request body with the required run fields filled in.
+
+    ``import_id`` defaults to a fixed value rather than None: it is required,
+    and the per-test ``import_sample`` fixture means one sample never sees two
+    logical imports unless a test sets up that case itself.
+    """
     body = {
         "engine": engine,
         "engine_version": "1.4.0",
@@ -593,9 +601,20 @@ class TestCreateIdempotency:
 
     @pytest.mark.asyncio
     async def test_a_retried_single_request_import_does_not_import_twice(
-        self, editor_client, import_sample, feature_enabled, stub_fold_in
+        self,
+        editor_client,
+        import_sample,
+        feature_enabled,
+        stub_fold_in,
+        async_session_factory,
     ):
-        """The slim-ledger case: create, rows and finalize in one request."""
+        """The slim-ledger case: create, rows and finalize in one request.
+
+        The one shape admission cannot backstop. Both requests finish as
+        'completed', so `in_flight_run_id` has nothing to refuse the retry on -
+        only the key stops a second run and a second fold-in, and neither would
+        have raised anything for a client to notice.
+        """
         body = _body([_row("peak-0")], import_id="import-xyz")
 
         first = await _post(editor_client, import_sample, body)
@@ -610,19 +629,78 @@ class TestCreateIdempotency:
         assert replay.json()["data"][0]["run_status"] == "completed"
         assert replay.json()["data"][0]["rows"] == 1
         assert stub_fold_in == [import_sample]
+        async with async_session_factory() as session:
+            runs = (
+                (
+                    await session.execute(
+                        select(PeakAssignmentRun).where(
+                            PeakAssignmentRun.sample_item_id == import_sample
+                        )
+                    )
+                )
+                .scalars()
+                .all()
+            )
+        assert len(runs) == 1
 
     @pytest.mark.asyncio
-    async def test_without_a_key_a_retried_create_is_refused_naming_the_first_run(
+    async def test_an_import_without_a_key_is_refused_by_the_schema(
+        self, editor_client, import_sample, feature_enabled, async_session_factory
+    ):
+        """The key is required, because the damage without one can be silent.
+
+        A chunked create that retried without one left a second *non-terminal*
+        run, which admission refused - bad, but loud. A single-request create
+        finishes as 'completed', which admission does not refuse, so the retry
+        landed a duplicate ledger and a second fold-in with no error anywhere.
+        Rather than fix the loud half and leave the quiet one, the schema
+        requires the key.
+        """
+        body = _body([_row("peak-0")])
+        body["chunk"].pop("import_id")
+
+        response = await _post(editor_client, import_sample, body)
+
+        assert response.status_code == 422
+        async with async_session_factory() as session:
+            runs = (
+                (
+                    await session.execute(
+                        select(PeakAssignmentRun).where(
+                            PeakAssignmentRun.sample_item_id == import_sample
+                        )
+                    )
+                )
+                .scalars()
+                .all()
+            )
+        assert runs == []
+
+    @pytest.mark.asyncio
+    async def test_a_follow_up_chunk_naming_another_import_is_refused(
         self, editor_client, import_sample, feature_enabled
     ):
-        """The hazard the key exists to remove, pinned as the documented cost."""
-        body = _body([_row("peak-0")], complete=False)
+        """The two ids a follow-up carries address one run; they must agree."""
+        first = await _post(
+            editor_client,
+            import_sample,
+            _body([_row("peak-0")], complete=False, import_id="import-1"),
+        )
+        run_id = first.json()["data"][0]["peak_assignment_run_id"]
 
-        first = await _post(editor_client, import_sample, body)
-        replay = await _post(editor_client, import_sample, body)
+        response = await _post(
+            editor_client,
+            import_sample,
+            _body(
+                [_row("peak-1")],
+                run_id=run_id,
+                index=1,
+                complete=False,
+                import_id="import-2",
+            ),
+        )
 
-        assert first.status_code == 200
-        assert replay.status_code == 409
+        assert response.status_code == 422
 
     @pytest.mark.asyncio
     async def test_a_different_key_on_a_busy_sample_is_still_refused(
@@ -922,6 +1000,168 @@ class TestValidation:
                 )
                 await session.commit()
 
+    @pytest.mark.parametrize(
+        "field", ["target_compound_id", "target_ion_id", "ionization_mechanism_id"]
+    )
+    @pytest.mark.asyncio
+    async def test_an_unknown_reference_id_is_refused_by_name(
+        self, editor_client, import_sample, feature_enabled, field
+    ):
+        """Every id a row carries into a foreign key, not just the mechanism.
+
+        The insert catches all three as one indistinguishable IntegrityError,
+        which used to be reported as a duplicate-peak error - sending a client
+        hunting for a duplicate that was never there. Checked up front, each is
+        a 422 naming the field and the value.
+        """
+        response = await _post(
+            editor_client,
+            import_sample,
+            _body([_row("peak-0", **{field: "no-such-id"})]),
+        )
+
+        assert response.status_code == 422
+
+        # The endpoint genericizes a 422 body to an error id, so the status
+        # code alone cannot tell this apart from the bug it closes - which also
+        # returned 422, just describing a duplicate peak that was never there.
+        # The message is pinned against the validator directly instead.
+        sample = await fetch_sample(import_sample)
+        attributes = dict.fromkeys(
+            ("ionization_mechanism_id", "target_compound_id", "target_ion_id")
+        )
+        attributes[field] = "no-such-id"
+        with pytest.raises(import_service.UnprocessableImportException) as raised:
+            await import_service._validate_references(
+                [SimpleNamespace(**attributes)], sample
+            )
+        assert field in raised.value.detail
+        assert "no-such-id" in raised.value.detail
+
+    @pytest.mark.asyncio
+    async def test_a_refused_create_leaves_no_run_holding_the_sample(
+        self, editor_client, import_sample, feature_enabled, async_session_factory
+    ):
+        """A refusal on the create request must not strand an 'importing' run.
+
+        The run and the first chunk's rows share one transaction precisely so
+        this holds for refusals the *database* raises too, not only the ones
+        the payload rules catch before the run is built.
+        """
+        refused = await _post(
+            editor_client,
+            import_sample,
+            _body([_row("peak-0", target_ion_id="no-such-ion")]),
+        )
+        assert refused.status_code == 422
+
+        async with async_session_factory() as session:
+            runs = (
+                (
+                    await session.execute(
+                        select(PeakAssignmentRun).where(
+                            PeakAssignmentRun.sample_item_id == import_sample
+                        )
+                    )
+                )
+                .scalars()
+                .all()
+            )
+        assert runs == []
+
+        # And the sample is still free, which is what a stranded run would cost.
+        accepted = await _post(
+            editor_client,
+            import_sample,
+            _body([_row("peak-0")], import_id="import-after-refusal"),
+        )
+        assert accepted.status_code == 200
+
+    @pytest.mark.parametrize(
+        "field,width", [("assigned_formula", 256), ("isotope_label", 64)]
+    )
+    @pytest.mark.asyncio
+    async def test_a_value_too_long_for_its_column_is_a_422_not_a_500(
+        self, editor_client, import_sample, feature_enabled, field, width
+    ):
+        """Bounded in the schema, so it never reaches the column as a DataError.
+
+        A DataError is not an IntegrityError, so nothing in the insert path
+        caught it and the client saw a 500 where every other payload rule gives
+        a 422.
+        """
+        response = await _post(
+            editor_client,
+            import_sample,
+            _body([_row("peak-0", **{field: "C" * (width + 1)})]),
+        )
+
+        assert response.status_code == 422
+
+    @pytest.mark.asyncio
+    async def test_a_non_finite_number_is_refused_before_it_poisons_the_read(
+        self, editor_client, import_sample, feature_enabled
+    ):
+        """`1e999` is RFC-valid JSON and `json.loads` turns it into `inf`.
+
+        A double precision column takes it, so the import used to succeed - and
+        the damage landed on the ledger *read*, which renders with
+        `allow_nan=False` and so failed for the whole run. That run is
+        'completed', which puts it beyond the abandon endpoint, so the sample's
+        ledger stayed broken until retention. Sent as raw content rather than
+        through the json= encoder, since this is the shape that survives a
+        strict client-side encoder.
+        """
+        body = _body([_row("peak-0")])
+        raw = json.dumps(body).replace(
+            str(body["rows"][0]["sample_peak_mz"]), "1e999", 1
+        )
+        assert "1e999" in raw
+
+        response = await editor_client.post(
+            _import_url(import_sample),
+            content=raw,
+            headers={"content-type": "application/json"},
+        )
+
+        assert response.status_code == 422
+
+    @pytest.mark.asyncio
+    async def test_an_engine_name_too_long_for_its_column_is_refused(
+        self, editor_client, import_sample, feature_enabled
+    ):
+        """`engine` is String(64) on the run, and was the one unbounded field."""
+        response = await _post(
+            editor_client, import_sample, _body([_row("peak-0")], engine="e" * 65)
+        )
+
+        assert response.status_code == 422
+
+    @pytest.mark.asyncio
+    async def test_the_in_app_engines_own_tiering_is_accepted(
+        self, editor_client, import_sample, feature_enabled
+    ):
+        """An engine reproducing Mascope's tiering must not be refused for it.
+
+        `tier_for_score` maps a None score to 'below_assignability', and the
+        in-app ledger writes exactly that pair. Restating the thresholds here
+        instead of delegating to it made that shape a 422.
+        """
+        response = await _post(
+            editor_client,
+            import_sample,
+            _body(
+                [
+                    _row("peak-0", tier="below_assignability", fit_score=None),
+                    _row(
+                        "peak-1", tier="unassigned", fit_score=None, role="unassigned"
+                    ),
+                ]
+            ),
+        )
+
+        assert response.status_code == 200
+
     @pytest.mark.asyncio
     async def test_an_oversized_config_is_refused(
         self, editor_client, import_sample, feature_enabled
@@ -1092,11 +1332,17 @@ class TestDurableAdmission:
         self, editor_client, import_sample, feature_enabled
     ):
         await _post(
-            editor_client, import_sample, _body([_row("peak-0")], complete=False)
+            editor_client,
+            import_sample,
+            _body([_row("peak-0")], complete=False, import_id="import-1"),
         )
 
+        # A different key, so this is a second import rather than a retry of
+        # the first - which is what admission has to refuse.
         response = await _post(
-            editor_client, import_sample, _body([_row("peak-1")], complete=False)
+            editor_client,
+            import_sample,
+            _body([_row("peak-1")], complete=False, import_id="import-2"),
         )
 
         assert response.status_code == 409
@@ -1137,11 +1383,18 @@ class TestDurableAdmission:
         self, editor_client, import_sample, feature_enabled
     ):
         """Only non-terminal runs hold the sample."""
-        await _post(editor_client, import_sample, _body([_row("peak-0")]))
+        await _post(
+            editor_client, import_sample, _body([_row("peak-0")], import_id="import-1")
+        )
 
-        response = await _post(editor_client, import_sample, _body([_row("peak-1")]))
+        # A distinct key, or this would resolve to the first run and be
+        # answered as a replay rather than admitted as a new import.
+        response = await _post(
+            editor_client, import_sample, _body([_row("peak-1")], import_id="import-2")
+        )
 
         assert response.status_code == 200
+        assert response.json()["data"][0]["run_status"] == "completed"
 
 
 class TestAbandon:
@@ -1174,14 +1427,20 @@ class TestAbandon:
     ):
         """Which is the whole reason it exists: the run was blocking the sample."""
         first = await _post(
-            editor_client, import_sample, _body([_row("peak-0")], complete=False)
+            editor_client,
+            import_sample,
+            _body([_row("peak-0")], complete=False, import_id="import-abandoned"),
         )
         run_id = first.json()["data"][0]["peak_assignment_run_id"]
         await editor_client.delete(
             f"/api/peak-assignments/sample/{import_sample}/runs/{run_id}"
         )
 
-        response = await _post(editor_client, import_sample, _body([_row("peak-0")]))
+        response = await _post(
+            editor_client,
+            import_sample,
+            _body([_row("peak-0")], import_id="import-retry"),
+        )
 
         assert response.status_code == 200
 
