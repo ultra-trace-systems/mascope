@@ -18,8 +18,11 @@ class CalibrationConfig(BaseModel):
 
     # Pre-calibration m/z error above which the applied fit is reported as
     # acquisition-side drift: the software corrects it, but the instrument's
-    # internal calibration is off and an operator should retune it.
+    # internal calibration is off and an operator should retune it. TOF mass
+    # axes legitimately wander tens of ppm between retunings, so TOF files
+    # get a far looser threshold than the Orbitrap-grade default.
     ACQUISITION_DRIFT_WARNING_PPM: float = 10.0
+    TOF_ACQUISITION_DRIFT_WARNING_PPM: float = 50.0
 
     # TOF calibration parameters
     TOF_MZ_ERROR_TOLERANCE: int = 15  # in ppm

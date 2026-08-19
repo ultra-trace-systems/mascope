@@ -4,6 +4,37 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
 
 ## [Unreleased]
 
+## [1.7.2] - 2026.08.19
+
+### Added
+
+- Publishing a GitHub Release now verifies the Zenodo archive: a
+  `verify-zenodo` job in the release workflow polls the Zenodo API and fails
+  the run if the new version has not appeared under the concept record within
+  20 minutes. The GitHub-Zenodo sync fails silently when its credentials
+  lapse - v1.6.2 through v1.7.1 went unarchived for up to a week before
+  anyone noticed - so a broken sync now turns the release run red, with
+  recovery steps documented in the developer guide's release section.
+
+### Fixed
+
+- Acquisition-drift warnings no longer flood error monitoring with an issue
+  per ppm value. The warning message embedded the observed drift rounded to
+  whole ppm, and monitoring groups events by message - so ongoing drift,
+  whose magnitude wanders file-to-file, split one episode into dozens of
+  single-event issues that buried real errors (a production deployment's
+  TOF instruments minted over fifty issues within a day of updating to
+  1.7.0). The message now names the instrument and the threshold but not
+  the magnitude, grouping an episode into one issue per instrument; the
+  exact per-file magnitude still follows in an INFO log line, in the
+  persisted calibration record, and in the sample browser's badge tooltip.
+- TOF instruments get their own acquisition-drift threshold, 50 ppm, in
+  place of the global 10 ppm. A TOF mass axis legitimately wanders tens of
+  ppm between retunings, so the Orbitrap-grade threshold kept every file of
+  a normally-behaving TOF warning permanently. A sample flagged under the
+  old threshold sheds its drift badge on its next recalibration when its
+  recorded magnitude is within its class threshold.
+
 ## [1.7.1] - 2026.08.18
 
 ### Changed

@@ -149,3 +149,50 @@ jobs:
           gh release upload "$env:TAG" "agents/file/dist/Mascope-File-Agent-Setup.exe" --clobber
           Copy-Item "agents/file/dist/Mascope-File-Agent-Setup.exe" "agents/file/dist/Mascope-File-Agent-Setup-$env:TAG.exe"
           gh release upload "$env:TAG" "agents/file/dist/Mascope-File-Agent-Setup-$env:TAG.exe" --clobber
+
+  verify-zenodo:
+    # Zenodo's GitHub bridge fails silently when its credentials rot (lapsed
+    # OAuth link, revoked webhook token, a repo rename not re-enabled on
+    # zenodo.org) - releases simply stop being archived, as happened for
+    # v1.6.2 through v1.7.1. Poll the public API until the new version shows
+    # up under the concept record so a broken sync turns this run red instead
+    # of going unnoticed. Recovery: developer guide, "Cutting a citable
+    # release".
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      # checkout only; the Zenodo records API is public and needs no token
+      contents: read
+    steps:
+      - name: Check out the release tag
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.release.tag_name }}
+
+      - name: Wait for the version to appear on Zenodo
+        env:
+          TAG: ${{ github.event.release.tag_name }}
+        run: |
+          # CITATION.cff's doi: is the concept DOI - the single source of
+          # truth for which record to watch; its numeric recid keys the query.
+          RECID=$(sed -n 's/^doi: "10\.5281\/zenodo\.\([0-9][0-9]*\)"$/\1/p' CITATION.cff)
+          if [ -z "$RECID" ]; then
+            echo "::error::could not read the concept DOI from CITATION.cff"
+            exit 1
+          fi
+          echo "Waiting for $TAG to appear under concept record $RECID ..."
+          # Zenodo normally archives within seconds; 20 minutes of grace
+          # covers a processing backlog before declaring the sync broken.
+          for _ in $(seq 1 40); do
+            DOI=$(curl -sfG "https://zenodo.org/api/records" \
+              --data-urlencode "q=conceptrecid:$RECID AND metadata.version:\"$TAG\"" \
+              --data-urlencode "all_versions=true" \
+              | jq -r '.hits.hits[0].doi // empty' || true)
+            if [ -n "$DOI" ]; then
+              echo "Archived: https://doi.org/$DOI"
+              exit 0
+            fi
+            sleep 30
+          done
+          echo "::error::$TAG has not appeared on Zenodo after 20 minutes - the GitHub-Zenodo sync is likely broken. Re-sync and re-enable the repository at https://zenodo.org/account/settings/github/, then re-archive per the developer guide ('Cutting a citable release')."
+          exit 1
