@@ -3,6 +3,11 @@
 #
 #   ansible-playbook update.yml -e mascope_version=vX.Y.Z --limit <canary>
 #   ansible-playbook update.yml -e mascope_version=vX.Y.Z
+#   ansible-playbook update.yml -e mascope_version=vX.Y.Z -e force=true --limit <host>
+#
+# Servers already on the release (checkout AND running stack) are skipped, so
+# a rollout that failed mid-fleet can simply be re-run - the servers that
+# finished are not restarted again. -e force=true redeploys them anyway.
 #
 # No sudo is needed (the deploy user drives docker and the checkout), so no
 # vault password is required either. serial + any_errors_fatal mean a failing
@@ -18,6 +23,7 @@
   any_errors_fatal: true
   vars:
     mascope_checkout: "{{ ansible_env.HOME }}/mascope"
+    force: false
   tasks:
     - name: Require an explicit release tag
       ansible.builtin.assert:
@@ -31,6 +37,67 @@
         cmd: git fetch --tags origin
         chdir: "{{ mascope_checkout }}"
       changed_when: false
+
+    - name: Read the release the checkout is on
+      ansible.builtin.command:
+        cmd: git describe --tags --exact-match
+        chdir: "{{ mascope_checkout }}"
+      register: checkout_release
+      changed_when: false
+      failed_when: false
+
+    - name: Read the running container images
+      ansible.builtin.shell:
+        cmd: >-
+          {% raw %}docker inspect --format '{{.Config.Image}}'
+          mascope_prod_backend mascope_prod_frontend{% endraw %}
+      register: running_images
+      changed_when: false
+      failed_when: false
+
+    # Current means the checkout sits exactly on the tag AND both containers
+    # run images with that tag. Checking the checkout alone would wrongly skip
+    # a server where a previous run died between checkout and stack update;
+    # .env's MASCOPE_VERSION is not consulted because it is not kept current.
+    # A skipped server also skips the CLI reinstall: with checkout and stack
+    # both already on the release, a stale CLI could only come from an earlier
+    # run that failed at the reinstall step - which any_errors_fatal made loud
+    # - and -e force=true redoes it.
+    - name: Work out whether this server is already on the release
+      ansible.builtin.set_fact:
+        already_current: >-
+          {{ checkout_release.rc == 0
+             and checkout_release.stdout | trim == mascope_version
+             and running_images.stdout_lines | map('trim')
+                 | map('regex_replace', '^.*:', '') | list
+                 == [mascope_version, mascope_version] }}
+
+    # Stated unconditionally: a conditional report prints "skipping:" on
+    # exactly the servers that are about to be deployed, which reads inverted
+    # in the transcript (same rationale as reboot.yml).
+    - name: State the verdict for this server
+      ansible.builtin.debug:
+        msg: >-
+          {% if already_current | bool and force | bool -%}
+          Already on {{ mascope_version }} but force=true - redeploying to
+          {{ inventory_hostname }}.
+          {%- elif already_current | bool -%}
+          Already on {{ mascope_version }} (checkout and running stack) -
+          skipping {{ inventory_hostname }}.
+          {%- else -%}
+          Deploying {{ mascope_version }} to {{ inventory_hostname }}
+          (checkout: {{ checkout_tag }}, stack: {{ stack_tags }}).
+          {%- endif %}
+      vars:
+        checkout_tag: "{{ checkout_release.stdout | trim | default('no exact tag', true) }}"
+        stack_tags: >-
+          {{ running_images.stdout_lines | map('trim')
+             | map('regex_replace', '^.*:', '') | unique | join(', ')
+             | default('not running', true) }}
+
+    - name: Take already-current servers out of the run
+      ansible.builtin.meta: end_host
+      when: already_current | bool and not (force | bool)
 
     - name: Check out the release tag
       ansible.builtin.command:
