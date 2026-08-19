@@ -92,6 +92,14 @@ It comes preloaded with the published demo dataset and login `demo@mascope.app` 
 
 - Conventional Commits (`type(scope): description`); ASCII-only commit messages,
   no Co-Authored-By trailers.
+- **Rebase PR branches, never merge into them** - a PR should stay a linear
+  series of commits on top of `develop`. When a branch conflicts or falls
+  behind, `git fetch origin develop && git rebase origin/develop`, resolve the
+  conflicts, and force-push with `--force-with-lease`. Do not merge `develop`
+  into a PR branch - no "Merge branch 'develop' into ..." commits. If one was
+  already made, `git reset --hard <pre-merge-commit>` and rebase instead;
+  comparing `git rev-parse HEAD^{tree}` against the merge's tree confirms the
+  conflict resolution survived unchanged.
 - **Anonymize commit messages and PR descriptions** - this repository is public,
   so text pushed to GitHub must never contain real instrument names or IDs,
   customer names, internal or customer server hostnames, tailnet/LAN addresses,
