@@ -178,9 +178,10 @@ mascope prod update --version v1.3.0 # deploy a specific pinned release
 `mascope prod update` on its own follows the rolling **`latest`** master build,
 whose version shows in the UI as a date+hash build id (e.g.
 `2026.07.08-ab12cd34`) - *not* the newest `vX.Y.Z` release. To run a pinned
-release, pass `--version vX.Y.Z`. To make a server track that release across
-future updates, check the tag out in the deployment (a pinned checkout reports
-its tag as the version):
+release, pass `--version vX.Y.Z` - a successful update then also moves the
+deployment checkout to that tag, so the server keeps tracking (and
+reporting) that release across restarts and future updates. Checking the
+tag out first is equivalent:
 
 ```sh
 git fetch --tags && git checkout v1.3.0
@@ -220,16 +221,16 @@ Each run:
   next window once its grace period elapses (`MASCOPE_UPDATE_GRACE_DAYS`,
   default 7 days) **or** you confirm it - unless it has been snoozed.
 
-An applied unattended update moves the **stack**, not the deployment
-checkout: the containers run the new release while the checkout still
-selects the old one, which `mascope prod doctor` reports as DRIFT. Nothing
-is broken - the timer re-applies the newest release in its next window -
-but an intervening reboot redeploys the checked-out (older) release until
-that window comes around. Align the checkout when convenient:
+An applied update also moves the deployment checkout to the release it
+deployed, so a reboot redeploys that same release and `mascope prod doctor`
+stays clean. The move is deliberately cautious - it never discards local
+changes - so on a checkout with modifications (or one whose `origin` cannot
+be reached to fetch the tag) the update still succeeds with a warning, and
+doctor reports the gap as DRIFT until the checkout is aligned by hand:
 
 ```sh
 cd "$(mascope path)"
-git fetch --tags && git checkout vX.Y.Z   # the release the timer applied
+git fetch --tags && git checkout vX.Y.Z   # the release the update applied
 ```
 
 Steer a pending migration update:

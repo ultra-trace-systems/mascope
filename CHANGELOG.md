@@ -4,6 +4,17 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
 
 ## [Unreleased]
 
+### Fixed
+
+- A successful `mascope prod update` - unattended or `--version` - now also
+  moves the deployment checkout to the release it deployed. The checkout is
+  what a boot redeploys, so an unattended update used to leave the server one
+  reboot away from silently downgrading to the previous release (and
+  `mascope prod doctor` reporting DRIFT) until the next timer window. The
+  move never discards local changes: when the checkout cannot be moved, the
+  update still succeeds with a warning naming the manual
+  `git checkout <tag>` step.
+
 ## [1.7.2] - 2026.08.19
 
 ### Added
