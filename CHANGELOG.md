@@ -22,6 +22,42 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
   (tier distribution, database-vs-untargeted source split, tier-colored
   mass-defect map, Van Krevelen, drilling into alternatives). Launching runs
   and verifying assignments stay app-side. (#1737)
+- Two-factor authentication (TOTP). Any account can turn it on from its
+  settings: scan a QR code with an authenticator app, confirm one code, and
+  save the ten single-use recovery codes shown once at that point. A deployment
+  can also require it - `mfa_required_min_role` under `[backend]` names the
+  lowest role covered (`admin` for admins and owners, `guest` for everyone);
+  unset, the default, requires it of nobody and leaves existing deployments
+  exactly as they were. A covered account is held at a setup screen after
+  signing in until it enrols, and cannot turn the factor off again. A name that
+  is not a role stops the backend at startup rather than resolving to "nobody",
+  so a typo cannot leave a requirement that looks configured and asks nobody
+  for anything.
+  The session cookie is minted only after both steps pass: credentials for an
+  enrolled account return a short-lived, single-use pending token instead of a
+  session, and a second request exchanges it plus a code for the session. Every
+  surface that trusts the session - the role checks, the realtime channel - is
+  therefore unchanged, because none of them ever sees a half-finished sign-in.
+  Generating an API access token and approving an agent pairing now ask for a
+  current code as well as a session. Both hand out credentials valid for a year
+  that are not tied to the browser they were requested from, so a stolen session
+  alone must not be able to obtain one; signing in or enrolling counts as
+  presenting a code for the next five minutes, so this rarely means entering one
+  twice. Changing a password is deliberately not affected - it already requires
+  the current password.
+  **Recovery, in escalating order**: a recovery code; an administrator clearing
+  the factor for a guest or editor, or an owner for anyone but themselves; and
+  `mascope prod mfa reset <email>` on the host for when nobody who could do that
+  can sign in either. None of them reveals or changes a password.
+  **New secret**: `.runtime/secrets/mfa_encryption_key.txt` encrypts the stored
+  TOTP seeds. `mascope prod up` generates it (and any other missing secret)
+  before starting, so an existing deployment picks it up on its next start.
+  Back it up with the others and do not rotate it casually: replacing it makes
+  every enrolled seed undecryptable, and each of those users has to sign in with
+  a recovery code and enrol again. It is deliberately separate from
+  `jwt_secret_key.txt`, which can be rotated freely. A deployment without the
+  key starts normally and refuses only enrolment. See
+  [Authorization](docs/authorization.md) and `docs/dev/mfa_totp_plan.md`.
 
 ### Changed
 
@@ -34,6 +70,14 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
   visualization work exactly as before. The composition-fit endpoints
   (`POST /api/peak-assignments/sample/{id}/fit/aggregate` and
   `.../fit/visualize`) remain available as API/SDK surface.
+- Creating an account no longer asks the administrator to invent a temporary
+  password. The server generates one and shows it once, the same way a password
+  reset already worked. The new user had to replace it at first sign-in either
+  way, so the password's only job was to survive being handed over once - and a
+  generated one cannot be weak, nor a password the administrator uses somewhere
+  else. The first owner still chooses their own, since nobody is handing that
+  account over. Callers of the registration API that supply a password keep
+  working unchanged.
 
 ### Fixed
 
