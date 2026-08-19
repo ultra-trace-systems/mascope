@@ -18,6 +18,9 @@ from mascope_backend.api.controllers.dataset.acquisition.service import (
     _ensure_instrument_workspace,
 )
 from mascope_backend.api.new.auth.devices.machine_account import create_machine_account
+from mascope_backend.api.new.workspaces.dependencies import (
+    check_instrument_workspace_access,
+)
 from mascope_backend.app.fast import fast
 from mascope_backend.db import (
     AgentDevice,
@@ -32,6 +35,7 @@ from mascope_backend.db.admin.user.require_password_change import (
 
 
 _TEST_INSTRUMENT = "PentestOrbion"
+_OTHER_INSTRUMENT = "PentestOrbionTwo"
 
 
 @pytest_asyncio.fixture
@@ -57,7 +61,7 @@ async def clean_machine_state(async_session_factory):
         # instrument substring rather than the exact name.
         test_ws = select(Workspace.workspace_id).where(
             Workspace.workspace_name.contains(_TEST_INSTRUMENT)
-        )
+        )  # _OTHER_INSTRUMENT shares the prefix, so this matches both
         await session.execute(
             delete(WorkspaceMember).where(WorkspaceMember.workspace_id.in_(test_ws))
         )
@@ -84,17 +88,16 @@ async def _provision_machine(
             name=name, service_name="file-agent", sponsor_user_id=sponsor_id
         )
         session.add(device)
-        await session.commit()
-        await session.refresh(device)
-        device_id = device.device_id
-
-    machine = await create_machine_account(name, device_id)
-
-    async with async_session() as session:
-        device = await session.get(AgentDevice, device_id)
+        await session.flush()
+        machine = await create_machine_account(
+            session,
+            machine_name=name,
+            device_id=device.device_id,
+            sponsor_user_id=sponsor_id,
+        )
         device.machine_user_id = machine.id
         await session.commit()
-    return device_id, machine.id
+        return device.device_id, machine.id
 
 
 @pytest.mark.asyncio
@@ -148,6 +151,101 @@ async def test_machine_account_cannot_be_updated_or_deleted(admin_client, test_u
 
     deleted = await admin_client.delete(f"/api/users/admin/{machine_id}")
     assert deleted.status_code == 403
+
+    # Credentials too: a machine account sits at editor regardless of who
+    # sponsors its device, so the "not an admin or above" ceiling on these
+    # routes would otherwise let an admin strip an owner's agent - the very
+    # thing revoke_device refuses. Revocation is the only way to stop a device.
+    tokens_deleted = await admin_client.delete(
+        f"/api/users/admin/{machine_id}/access-tokens"
+    )
+    assert tokens_deleted.status_code == 403
+
+    mfa_reset = await admin_client.post(f"/api/users/admin/{machine_id}/mfa/reset")
+    assert mfa_reset.status_code == 403
+
+
+@pytest.mark.asyncio
+async def test_machine_account_joins_a_pre_existing_acquisition_workspace(test_users):
+    """The migration case: an agent paired for an instrument already in use.
+
+    The workspace-creation path never runs for such an agent, so without an
+    enrolment at provisioning time every one of its uploads is refused by the
+    workspace ACL - which is what re-pairing an existing deployment does.
+    """
+    sponsor_id = test_users["editor"].id
+
+    # The instrument has been acquiring for a while: its workspace exists.
+    ws_id = await _ensure_instrument_workspace(
+        _TEST_INSTRUMENT, owner_user_id=sponsor_id
+    )
+
+    # Only now is the machine paired.
+    _, machine_id = await _provision_machine(sponsor_id)
+
+    async with async_session() as session:
+        machine = await session.get(User, machine_id)
+        member = (
+            await session.execute(
+                select(WorkspaceMember).where(
+                    WorkspaceMember.workspace_id == ws_id,
+                    WorkspaceMember.user_id == machine_id,
+                )
+            )
+        ).scalar_one_or_none()
+
+    assert member is not None, "machine account was not enrolled in the workspace"
+    assert member.workspace_role == "editor"
+
+    # And the check the upload routes actually apply agrees.
+    await check_instrument_workspace_access(
+        _TEST_INSTRUMENT, machine, "editor", allow_new=True
+    )
+
+
+@pytest.mark.asyncio
+async def test_machine_account_reaches_no_further_than_its_sponsor(test_users):
+    """The device's token must not open instruments its sponsor cannot.
+
+    It lives in plaintext on a shared instrument PC, so enrolling it in every
+    acquisition workspace would hand whoever reads it more than the person who
+    vouched for it ever had.
+    """
+    sponsor_id = test_users["editor"].id
+
+    # One workspace the sponsor works in, one they have no membership of.
+    sponsored_ws = await _ensure_instrument_workspace(
+        _TEST_INSTRUMENT, owner_user_id=sponsor_id
+    )
+    other_ws = await _ensure_instrument_workspace(
+        _OTHER_INSTRUMENT, owner_user_id=test_users["owner"].id
+    )
+    async with async_session() as session:
+        await session.execute(
+            delete(WorkspaceMember).where(
+                WorkspaceMember.workspace_id == other_ws,
+                WorkspaceMember.user_id == sponsor_id,
+            )
+        )
+        await session.commit()
+
+    _, machine_id = await _provision_machine(sponsor_id)
+
+    async with async_session() as session:
+        joined = set(
+            (
+                await session.execute(
+                    select(WorkspaceMember.workspace_id).where(
+                        WorkspaceMember.user_id == machine_id
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+
+    assert sponsored_ws in joined
+    assert other_ws not in joined, "machine reached a workspace its sponsor cannot"
 
 
 @pytest.mark.asyncio

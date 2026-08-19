@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Body, Depends, Path
+from fastapi import APIRouter, Body, Depends, Path, Request
 
 from mascope_backend.api.lib.api_features import api_route
 from mascope_backend.api.new.auth.dependencies import admin_user, current_active_user
@@ -39,9 +39,12 @@ async def list_all_devices_route(user=Depends(admin_user)):
 # re-pairs instead.
 @devices_router.post("/token")
 @api_route(token_access=True)
-async def renew_device_token_route(user=Depends(current_active_user)):
+async def renew_device_token_route(request: Request, user=Depends(current_active_user)):
     """Issue a fresh token for the calling agent's device (rotates the token)."""
-    return await renew_device_token(machine_user=user)
+    return await renew_device_token(
+        machine_user=user,
+        device_id=getattr(request.state, "token_device_id", None),
+    )
 
 
 @devices_router.patch("/{device_id}")

@@ -49,6 +49,7 @@ async def get_access_token(user: User, service_name: str) -> str:
         )
         token = token_query.scalars().first()
 
+    had_token = token is not None
     if token is not None:
         try:
             await validate_service_access_token(token.token, service_name)
@@ -66,12 +67,16 @@ async def get_access_token(user: User, service_name: str) -> str:
     ):
         return await create_access_token(user=user, service_name=service_name)
 
-    if token is None:
+    # Which of the two is decided by whether a token was found at all, not by
+    # `token`, which the except branch above has already cleared - reading it
+    # here would report every expired token as "no access" and leave the
+    # expiry message unreachable.
+    if had_token:
         raise InvalidTokenException(
-            "You don't have access to this service. Please log in to Mascope again to refresh your access."
+            "Your access to this service has expired. Please log in to Mascope again to refresh your access."
         )
     raise InvalidTokenException(
-        "Your access to this service has expired. Please log in to Mascope again to refresh your access."
+        "You don't have access to this service. Please log in to Mascope again to refresh your access."
     )
 
 

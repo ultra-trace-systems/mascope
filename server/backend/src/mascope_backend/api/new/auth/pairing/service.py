@@ -17,7 +17,7 @@ which replaces all tokens for the service).
 import json
 import secrets
 
-from sqlalchemy import update
+from sqlalchemy import delete
 
 from mascope_backend.api.new.auth.access_token.service import (
     create_access_token,
@@ -101,6 +101,35 @@ async def start_pairing(service_name: str, machine_name: str | None) -> dict:
     }
 
 
+async def _discard_failed_pairing(device_id: int, machine_user_id: int) -> None:
+    """Remove a device and machine account whose credential could not be minted.
+
+    Deleting the device cascades to any token already written for it, and the
+    machine account carries its workspace memberships out with it, so
+    re-approving the still-pending code starts clean instead of adding a second
+    dead device. Cleanup failure is logged, not raised: the caller is already
+    unwinding a more informative error.
+
+    :param device_id: The device to remove.
+    :type device_id: int
+    :param machine_user_id: The machine account to remove.
+    :type machine_user_id: int
+    """
+    try:
+        async with async_session() as session:
+            await session.execute(
+                delete(AgentDevice).where(AgentDevice.device_id == device_id)
+            )
+            await session.execute(delete(User).where(User.id == machine_user_id))
+            await session.commit()
+    except Exception:
+        runtime.logger.exception(
+            f"Could not clean up the failed pairing (device {device_id}, "
+            f"machine account {machine_user_id}). Revoke the device from "
+            "Paired machines if it is still listed."
+        )
+
+
 async def approve_pairing(user: User, user_code: str) -> dict:
     """Approve a pending pairing: provision the machine account and its token.
 
@@ -127,42 +156,56 @@ async def approve_pairing(user: User, user_code: str) -> dict:
     if record["status"] != "pending":
         raise PairingCodeAlreadyApprovedException()
 
-    # The machine becomes a registered device, sponsored by the approver.
+    # The device and the machine account it authenticates as are created in one
+    # transaction. Committing them separately could leave a device whose
+    # machine_user_id is NULL - one that can never renew its token, that
+    # revocation only half-cleans, and that the operator cannot tell from a
+    # healthy one.
+    machine_name = record["machine_name"] or "Unnamed agent"
     async with async_session() as session:
         device = AgentDevice(
-            name=record["machine_name"] or "Unnamed agent",
+            name=machine_name,
             service_name=record["service_name"],
             sponsor_user_id=user.id,
         )
         session.add(device)
-        await session.commit()
-        await session.refresh(device)
+        # Assigns device_id, which keys the account's username and e-mail.
+        await session.flush()
 
-    # The device authenticates as its own machine account, not as the approver.
-    machine_user = await create_machine_account(
-        machine_name=record["machine_name"] or "Unnamed agent",
-        device_id=device.device_id,
-    )
-    async with async_session() as session:
-        await session.execute(
-            update(AgentDevice)
-            .where(AgentDevice.device_id == device.device_id)
-            .values(machine_user_id=machine_user.id)
+        machine_user = await create_machine_account(
+            session,
+            machine_name=machine_name,
+            device_id=device.device_id,
+            sponsor_user_id=user.id,
         )
+        device.machine_user_id = machine_user.id
         await session.commit()
+        device_id = device.device_id
+        machine_user_id = machine_user.id
 
-    # Uploads resolve the machine account's file-converter token server-side;
-    # mint it now (regenerate is create-if-absent here) so the first upload works.
-    await regenerate_access_token(user=machine_user, service_name="file-converter")
+    # Token minting runs outside that transaction because the token strategy
+    # owns its own session. If it fails, discard the pair rather than leave a
+    # device holding no credential: the code is still pending, so approving
+    # again yields a clean device instead of a second dead one.
+    try:
+        # Uploads resolve the machine account's file-converter token
+        # server-side; mint it now (regenerate is create-if-absent here) so the
+        # first upload works.
+        await regenerate_access_token(user=machine_user, service_name="file-converter")
 
-    token = await create_access_token(
-        user=machine_user,
-        service_name=record["service_name"],
-        description=(
-            f"Paired: {record['machine_name']}" if record["machine_name"] else "Paired"
-        ),
-        device_id=device.device_id,
-    )
+        token = await create_access_token(
+            user=machine_user,
+            service_name=record["service_name"],
+            description=(
+                f"Paired: {record['machine_name']}"
+                if record["machine_name"]
+                else "Paired"
+            ),
+            device_id=device_id,
+        )
+    except Exception:
+        await _discard_failed_pairing(device_id, machine_user_id)
+        raise
 
     record["status"] = "approved"
     record["access_token"] = token

@@ -12,7 +12,7 @@ explainable.
 from datetime import datetime as dt
 from datetime import timezone
 
-from sqlalchemy import delete, func, select, update
+from sqlalchemy import delete, func, or_, select, update
 
 from mascope_backend.api.lib.api_features import api_controller
 from mascope_backend.api.lib.exceptions.api_exceptions import NotFoundException
@@ -169,7 +169,12 @@ async def revoke_device(actor: User, device_id: int) -> dict:
             raise NotFoundException(f"Device {device_id} not found")
 
         if device.sponsor_user_id != actor.id:
-            if actor.role_id < role_levels["admin"]:
+            # role_id is nullable (the role FK is ON DELETE SET NULL), so it is
+            # compared only once known - an account without a role holds no
+            # privilege, and comparing None to an int would 500 where this
+            # should 403.
+            actor_role_id = actor.role_id
+            if actor_role_id is None or actor_role_id < role_levels["admin"]:
                 raise ForbiddenAccessException(
                     "You can only revoke devices you paired."
                 )
@@ -186,27 +191,30 @@ async def revoke_device(actor: User, device_id: int) -> dict:
             if (
                 sponsor_role_id is not None
                 and sponsor_role_id >= role_levels["admin"]
-                and actor.role_id < role_levels["owner"]
+                and actor_role_id < role_levels["owner"]
             ):
                 raise ForbiddenAccessException()
 
-        # Delete every token the machine account holds, not only the
-        # device-bound one: the file-converter token it uploads with is not
-        # bound to the device, and must stop working too.
+        # Everything this machine can authenticate with: the tokens bound to
+        # the device, plus every token its machine account holds - the
+        # file-converter token it uploads with is not device-bound and must
+        # stop working too. Taken as a union rather than one or the other, so
+        # a device-bound token whose subject is not the machine account cannot
+        # outlive the device it belongs to.
+        credentials = AccessToken.device_id == device_id
         if device.machine_user_id is not None:
-            deleted = await session.execute(
-                delete(AccessToken).where(AccessToken.user_id == device.machine_user_id)
+            credentials = or_(
+                credentials, AccessToken.user_id == device.machine_user_id
             )
+        deleted = await session.execute(delete(AccessToken).where(credentials))
+
+        if device.machine_user_id is not None:
             # Deactivate the machine account so any credential is refused at the
             # active-user gate, and so it cannot be mistaken for a live account.
             await session.execute(
                 update(User)
                 .where(User.id == device.machine_user_id)
                 .values(is_active=False)
-            )
-        else:
-            deleted = await session.execute(
-                delete(AccessToken).where(AccessToken.device_id == device_id)
             )
         if device.revoked_at is None:
             device.revoked_at = dt.now(timezone.utc)
@@ -224,37 +232,51 @@ async def revoke_device(actor: User, device_id: int) -> dict:
 
 
 @api_controller()
-async def renew_device_token(machine_user: User) -> dict:
+async def renew_device_token(machine_user: User, device_id: int | None) -> dict:
     """
     Issue a fresh token for the calling agent's device and reap old ones.
 
-    Called by the agent with its current (still-valid) device token; the token
-    it presents identifies its machine account, which maps one-to-one to a
-    device. A new device-bound token is created and all but the newest two
-    tokens for the device are removed - the just-superseded one is kept so an
-    upload in flight during the switch finishes on it, and it lapses on its own
-    lifetime rather than being extended.
+    Called by the agent with its current (still-valid) device token. Renewal is
+    driven by the binding on the presented credential, not by its subject: a
+    machine account also holds an unbound file-converter token, which is exempt
+    from the strict-mode gate and the short device lifetime, so accepting the
+    subject alone would let that long-lived credential mint device tokens
+    indefinitely and the 30-day bound would hold nothing.
+
+    A new device-bound token is created and all but the newest two tokens for
+    the device are removed - the just-superseded one is kept so an upload in
+    flight during the switch finishes on it, and it lapses on its own lifetime
+    rather than being extended.
 
     :param machine_user: The authenticated machine account (the token's subject).
     :type machine_user: User
+    :param device_id: The device the presented token is bound to, None when it
+        is unbound.
+    :type device_id: int | None
     :return: The new token and its lifetime in seconds.
     :rtype: dict
-    :raises InvalidTokenException: The caller is not an agent machine account
-        with a device (e.g. a personal token, or a revoked device).
+    :raises InvalidTokenException: The credential is not a live device token
+        (unbound, another account's, or a revoked device).
     """
+    if device_id is None:
+        raise InvalidTokenException(
+            "Only a paired machine's own device token can be renewed, and this "
+            "credential is not bound to a device. Re-pair the machine from the "
+            "agent's setup wizard."
+        )
+
     async with async_session() as session:
-        device = (
-            await session.execute(
-                select(AgentDevice).where(
-                    AgentDevice.machine_user_id == machine_user.id,
-                    AgentDevice.revoked_at.is_(None),
-                )
-            )
-        ).scalar_one_or_none()
+        # By primary key AND owner: the token's binding must name a live device
+        # that this machine account is the subject of.
+        device = await session.get(AgentDevice, device_id)
+        if device is not None and (
+            device.machine_user_id != machine_user.id or device.revoked_at is not None
+        ):
+            device = None
 
     if device is None:
-        # Only a live paired device renews; a personal token or a revoked
-        # device has nothing to rotate.
+        # Only a live paired device renews; a revoked or mismatched one has
+        # nothing to rotate.
         raise InvalidTokenException(
             "This credential is not a live paired-device token, so it cannot "
             "be renewed. Re-pair the machine from the agent's setup wizard."

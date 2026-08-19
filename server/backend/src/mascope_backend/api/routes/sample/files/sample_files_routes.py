@@ -48,7 +48,6 @@ from mascope_backend.api.models.sample.files.sample_file_pydantic_model import (
     SampleFileUpdate,
 )
 from mascope_backend.api.new.auth.access_token.service import get_access_token
-from mascope_backend.api.new.auth.access_token.util import get_token_device_id
 from mascope_backend.api.new.auth.dependencies import current_active_user
 from mascope_backend.api.new.workspaces.dependencies import (
     accessible_acquisition_instruments,
@@ -406,16 +405,20 @@ async def reprocess_sample_files_route(
     }
 
 
-async def _request_device_id(request: Request) -> int | None:
+def _request_device_id(request: Request) -> int | None:
     """The paired device behind the request's bearer token, if any.
 
-    Cookie-authenticated (web) requests and unbound tokens yield None; the
-    upload is then attributed to the user alone.
+    Read from the value the auth layer resolved and validated for this request
+    (see auth/backend.py), not from the raw header: one derivation, one
+    lookup, and the same answer authentication acted on. Cookie-authenticated
+    (web) requests and unbound tokens yield None; the upload is then
+    attributed to the user alone.
+
+    :param request: The incoming request.
+    :return: The bound device id, or None when the request has none.
+    :rtype: int | None
     """
-    auth_header = request.headers.get("authorization")
-    if not auth_header or " " not in auth_header:
-        return None
-    return await get_token_device_id(auth_header.split(" ")[1])
+    return getattr(request.state, "token_device_id", None)
 
 
 @sample_files_router.post("/upload")
@@ -464,7 +467,7 @@ async def upload_sample_files_route(
         files=validated_files.files,
         user=user,
         access_token=access_token,
-        device_id=await _request_device_id(request),
+        device_id=_request_device_id(request),
         instrument_timezone=instrument_timezone,
     )
 
@@ -505,7 +508,7 @@ def get_upload_handler(
             dest_path,
             user=user,
             access_token=access_token,
-            device_id=await _request_device_id(request),
+            device_id=_request_device_id(request),
             instrument_timezone=metadata.get("timezone"),
         )
 
