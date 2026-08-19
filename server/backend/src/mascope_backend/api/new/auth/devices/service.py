@@ -16,9 +16,13 @@ from sqlalchemy import delete, func, select, update
 
 from mascope_backend.api.lib.api_features import api_controller
 from mascope_backend.api.lib.exceptions.api_exceptions import NotFoundException
+from mascope_backend.api.new.auth.access_token.service import create_access_token
 from mascope_backend.api.new.auth.config import auth_settings
 from mascope_backend.api.new.auth.devices.schemas import DeviceRead
-from mascope_backend.api.new.auth.exceptions import ForbiddenAccessException
+from mascope_backend.api.new.auth.exceptions import (
+    ForbiddenAccessException,
+    InvalidTokenException,
+)
 from mascope_backend.db import AccessToken, AgentDevice, User, async_session
 from mascope_backend.runtime import runtime
 
@@ -216,4 +220,84 @@ async def revoke_device(actor: User, device_id: int) -> dict:
     return {
         "message": f"Device '{device.name}' revoked; its tokens no longer authenticate.",
         "data": _to_device_read(device, None, 0),
+    }
+
+
+@api_controller()
+async def renew_device_token(machine_user: User) -> dict:
+    """
+    Issue a fresh token for the calling agent's device and reap old ones.
+
+    Called by the agent with its current (still-valid) device token; the token
+    it presents identifies its machine account, which maps one-to-one to a
+    device. A new device-bound token is created and all but the newest two
+    tokens for the device are removed - the just-superseded one is kept so an
+    upload in flight during the switch finishes on it, and it lapses on its own
+    lifetime rather than being extended.
+
+    :param machine_user: The authenticated machine account (the token's subject).
+    :type machine_user: User
+    :return: The new token and its lifetime in seconds.
+    :rtype: dict
+    :raises InvalidTokenException: The caller is not an agent machine account
+        with a device (e.g. a personal token, or a revoked device).
+    """
+    async with async_session() as session:
+        device = (
+            await session.execute(
+                select(AgentDevice).where(
+                    AgentDevice.machine_user_id == machine_user.id,
+                    AgentDevice.revoked_at.is_(None),
+                )
+            )
+        ).scalar_one_or_none()
+
+    if device is None:
+        # Only a live paired device renews; a personal token or a revoked
+        # device has nothing to rotate.
+        raise InvalidTokenException(
+            "This credential is not a live paired-device token, so it cannot "
+            "be renewed. Re-pair the machine from the agent's setup wizard."
+        )
+
+    new_token = await create_access_token(
+        user=machine_user,
+        service_name=device.service_name,
+        description=f"Paired: {device.name}",
+        device_id=device.device_id,
+    )
+
+    # Keep the newest N tokens for the device (the fresh one and the token it
+    # supersedes); remove the rest.
+    keep = auth_settings.access_token.DEVICE_TOKENS_KEPT_PER_DEVICE
+    async with async_session() as session:
+        keep_tokens = (
+            (
+                await session.execute(
+                    select(AccessToken.token)
+                    .where(AccessToken.device_id == device.device_id)
+                    .order_by(AccessToken.created_at.desc())
+                    .limit(keep)
+                )
+            )
+            .scalars()
+            .all()
+        )
+        reaped = await session.execute(
+            delete(AccessToken)
+            .where(AccessToken.device_id == device.device_id)
+            .where(AccessToken.token.notin_(keep_tokens))
+        )
+        await session.commit()
+
+    runtime.logger.info(
+        f"Renewed token for device '{device.name}' (id {device.device_id}); "
+        f"reaped {reaped.rowcount} superseded token(s)"
+    )
+    return {
+        "message": "Access token renewed.",
+        "data": {
+            "access_token": new_token,
+            "expires_in": auth_settings.access_token.DEVICE_TOKEN_LIFETIME_SECONDS,
+        },
     }

@@ -24,6 +24,10 @@ DEFAULT_SETTINGS = {
     "mask": "*.raw",
     "timeout": 3,
     "recursive": False,
+    # TLS verification is on by default; a self-signed or plain-HTTP dev
+    # deployment turns it off. Kept as a real boolean so False survives the
+    # merge (an empty string would fall back to the default).
+    "verify_tls": True,
     "filename_prefix": "",
     "filename_suffix": "",
 }
@@ -40,6 +44,8 @@ USER_CONFIG_HEADER = """\
 #   mask         - pattern of the files to upload, e.g. "*.raw"
 #   recursive    - true to also watch subfolders of source (the agent's own
 #                  failed_uploads folder is always excluded)
+#   verify_tls   - true to verify the server's TLS certificate (the default);
+#                  set false only for a self-signed or plain-HTTP dev server
 #
 # Restart the agent after changing this file. To re-run the guided setup,
 # start the agent with the --setup flag.
@@ -204,6 +210,7 @@ def write_user_config(config_path: str, settings: dict) -> None:
         f"source = {toml_str(settings['source'])}",
         f"mask = {toml_str(settings['mask'])}",
         f"recursive = {'true' if settings['recursive'] else 'false'}",
+        f"verify_tls = {'true' if settings.get('verify_tls', True) else 'false'}",
         f"timeout = {settings['timeout']}",
     ]
     for key in ("filename_prefix", "filename_suffix"):
@@ -248,6 +255,7 @@ def write_runtime_config(env_path: str, settings: dict, mascope_path: str) -> No
         f"timeout = {settings['timeout']}",
         f"source = {toml_str(settings['source'])}",
         f"recursive = {'true' if settings['recursive'] else 'false'}",
+        f"verify_tls = {'true' if settings.get('verify_tls', True) else 'false'}",
         f"host = {toml_str(settings['host'])}",
         f"access_token = {toml_str(settings['access_token'])}",
     ]

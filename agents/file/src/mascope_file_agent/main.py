@@ -5,7 +5,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from multiprocessing import Event, Queue
 from queue import Empty
-from threading import Thread
+from threading import Lock, Thread
 
 import watchdog
 from watchdog.events import PatternMatchingEventHandler
@@ -23,6 +23,7 @@ mascope_sdk.SERVICE_NAME = "file-agent"
 from mascope_sdk import (  # noqa: E402  (needs SERVICE_NAME set first)
     api_post_file,
     api_post_file_tus,
+    api_renew_agent_token,
 )
 from mascope_sdk.exceptions import (  # noqa: E402
     AuthenticationError,
@@ -30,6 +31,92 @@ from mascope_sdk.exceptions import (  # noqa: E402
     TusNotSupportedError,
     ValidationError,
 )
+
+
+# Seconds after startup before the first token renewal, then between renewals
+# when the server reports no lifetime, and after a transient renewal failure.
+RENEW_INITIAL_DELAY = 60
+RENEW_FALLBACK_INTERVAL = 7 * 24 * 60 * 60  # 7 days
+RENEW_RETRY_DELAY = 5 * 60  # 5 minutes
+RENEW_MIN_INTERVAL = 60 * 60  # never renew more often than hourly
+
+# The live access token. Held apart from runtime.config so the renewal loop can
+# rotate it under the uploader without a restart; both are guarded by the lock.
+_token_lock = Lock()
+_access_token = None
+
+# Set in prod mode so the renewal loop can persist a rotated token to the
+# user-facing config.toml (None in dev, where the CLI owns the config).
+_config_path = None
+_settings = None
+
+
+def current_access_token() -> str | None:
+    """The access token uploads should use right now (renewal may rotate it)."""
+    with _token_lock:
+        return _access_token
+
+
+def _set_access_token(token: str) -> None:
+    """Update the live access token used by subsequent uploads."""
+    global _access_token
+    with _token_lock:
+        _access_token = token
+
+
+def _persist_token(token: str) -> None:
+    """Write a rotated token back to config.toml so a restart keeps using it.
+
+    A no-op in dev mode, where there is no user config file to own.
+    """
+    if not _config_path or _settings is None:
+        return
+    _settings["access_token"] = token
+    try:
+        agent_config.write_user_config(_config_path, _settings)
+    except OSError as e:
+        # The in-memory token still works this session; only restart continuity
+        # is at risk, so warn rather than fail.
+        runtime.logger.warning(f"Could not persist the renewed token: {e}")
+
+
+def _renewal_loop(stop_event) -> None:
+    """Rotate the agent's device token before it expires, until shutdown.
+
+    Renews shortly after start (to establish a known expiry) and then at about
+    half the server-reported lifetime. Stops quietly when the server has no
+    renewal endpoint (older release) or the token is not renewable (a manual
+    or expired token): uploads then continue on the current token and surface
+    their own actionable error if it has lapsed.
+
+    :param stop_event: Set on agent shutdown to end the loop.
+    """
+    delay = RENEW_INITIAL_DELAY
+    while not stop_event.wait(delay):
+        try:
+            new_token, expires_in = api_renew_agent_token(URL, current_access_token())
+        except (TusNotSupportedError, AuthenticationError) as e:
+            # 404: server has no renewal endpoint. 401: the token is not a
+            # live device token (manual, expired or revoked). Either way there
+            # is nothing to rotate - keep the current token and stop.
+            runtime.logger.info(f"Token renewal not available; keeping the token: {e}")
+            return
+        except Exception as e:
+            runtime.logger.info(f"Token renewal failed, will retry: {e}")
+            delay = RENEW_RETRY_DELAY
+            continue
+        _set_access_token(new_token)
+        _persist_token(new_token)
+        runtime.logger.info("Renewed the agent access token.")
+        delay = max(RENEW_MIN_INTERVAL, expires_in // 2) if expires_in else (
+            RENEW_FALLBACK_INTERVAL
+        )
+
+
+def _start_token_renewal(stop_event) -> None:
+    """Start the background token-renewal thread (daemon)."""
+    thread = Thread(target=_renewal_loop, args=(stop_event,), daemon=True)
+    thread.start()
 
 
 # Size cap for the legacy single-request upload endpoint only; resumable
@@ -161,7 +248,7 @@ def upload_sample_file(filepath: str) -> None:
         try:
             api_post_file_tus(
                 url=URL,
-                access_token=runtime.config.access_token,
+                access_token=current_access_token(),
                 filepath=filepath,
                 upload_filename=upload_filename,
             )
@@ -290,6 +377,11 @@ def initialize() -> None:
         # the runtime-format config the mascope_runtime loader reads
         settings = resolve_settings(mascope_path, env_path)
         agent_config.write_runtime_config(env_path, settings, mascope_path)
+        # Remember where the config lives so the renewal loop can persist a
+        # rotated token back to it.
+        global _config_path, _settings
+        _config_path = os.path.join(mascope_path, agent_config.CONFIG_FILENAME)
+        _settings = settings
         # initialize the runtime in production mode
         runtime = Runtime("file-agent", env="prod", mode="prod", path=mascope_path)
     else:
@@ -533,10 +625,17 @@ def run() -> None:
 
     if not os.path.isdir(runtime.config.source):
         raise RuntimeError(f"Invalid source directory {runtime.config.source}")
+
+    # TLS verification and the live token are read from config here; the
+    # renewal loop rotates the token under the uploader as it runs.
+    mascope_sdk.VERIFY_TLS = getattr(runtime.config, "verify_tls", True)
+    _set_access_token(runtime.config.access_token)
+
     uploader = FileUploader(
         runtime.config.source, runtime.config.mask, recursive=runtime.config.recursive
     )
     uploader.watcher.run_as_daemon()
+    _start_token_renewal(uploader.shutdown_event)
     uploader.run_until_complete()
     executor.shutdown(wait=True)
 

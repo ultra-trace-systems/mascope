@@ -389,6 +389,9 @@ class FileAgentConfig(ModuleConfig):
     timeout: int = 10  # timeout (s) for a file transfer operation
     source: str  # folder to monitor in the instrument machine
     recursive: bool = False  # also watch subfolders of source
+    # Verify the server's TLS certificate. On by default; a self-signed or
+    # plain-HTTP dev deployment turns it off.
+    verify_tls: bool = True
     host: str  # URL of the backend
     access_token: str  # API access token
     filename_prefix: str | None = (

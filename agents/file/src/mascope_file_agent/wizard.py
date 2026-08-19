@@ -17,13 +17,16 @@ from mascope_file_agent import __version__
 from mascope_file_agent.config import base_url, normalize_host
 
 
-# Agents talk to servers with self-signed certificates (verify=False).
+# Suppress the warning urllib3 emits when a user has turned TLS verification
+# off for a self-signed server; it does not fire when verification is on.
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 VERIFY_TIMEOUT = 15  # seconds
 
 
-def verify_connection(host: str, access_token: str) -> tuple[bool, str]:
+def verify_connection(
+    host: str, access_token: str, verify: bool = True
+) -> tuple[bool, str]:
     """Check that the server is reachable and accepts the access token.
 
     Calls a cheap authenticated endpoint with the file-agent service
@@ -33,6 +36,8 @@ def verify_connection(host: str, access_token: str) -> tuple[bool, str]:
     :type host: str
     :param access_token: The access token to verify
     :type access_token: str
+    :param verify: Whether to verify the server's TLS certificate
+    :type verify: bool
     :return: (ok, user-facing error message when not ok)
     :rtype: tuple[bool, str]
     """
@@ -45,7 +50,7 @@ def verify_connection(host: str, access_token: str) -> tuple[bool, str]:
                 "Authorization": f"Bearer {access_token}",
                 "X-Service-Name": "file-agent",
             },
-            verify=False,
+            verify=verify,
             timeout=VERIFY_TIMEOUT,
         )
     except requests.exceptions.Timeout:
@@ -73,8 +78,8 @@ def verify_connection(host: str, access_token: str) -> tuple[bool, str]:
         return True, ""
     if resp.status_code in (401, 403):
         return False, (
-            "The server rejected the access token. Generate a new 'File Agent' "
-            "token in the Mascope web app and try again."
+            "The server rejected the access token. Pair the agent again to "
+            "get a fresh one."
         )
     return False, f"Unexpected response from the server (HTTP {resp.status_code})."
 
@@ -141,11 +146,13 @@ def _prompt_source(default: str) -> str:
                 print(f"  Could not create the folder: {e}")
 
 
-def start_pairing(host: str) -> dict | None:
+def start_pairing(host: str, verify: bool = True) -> dict | None:
     """Request a pairing code from the server.
 
     :param host: Normalized server host
     :type host: str
+    :param verify: Whether to verify the server's TLS certificate
+    :type verify: bool
     :return: The pairing response (user_code, device_code, expires_in,
         interval), or None with an explanation printed when pairing is
         unavailable
@@ -156,7 +163,7 @@ def start_pairing(host: str) -> dict | None:
         resp = requests.post(
             f"{base_url(host)}/api/auth/pairing/start",
             json={"service_name": "file-agent", "machine_name": machine_name},
-            verify=False,
+            verify=verify,
             timeout=VERIFY_TIMEOUT,
         )
     except requests.exceptions.RequestException as e:
@@ -171,15 +178,17 @@ def start_pairing(host: str) -> dict | None:
     return resp.json()
 
 
-def run_pairing(host: str) -> str | None:
+def run_pairing(host: str, verify: bool = True) -> str | None:
     """Interactive pairing: display the code and poll until approved.
 
     :param host: Normalized server host
     :type host: str
-    :return: The access token, or None to fall back to manual entry
+    :param verify: Whether to verify the server's TLS certificate
+    :type verify: bool
+    :return: The access token, or None when pairing did not complete
     :rtype: str | None
     """
-    started = start_pairing(host)
+    started = start_pairing(host, verify=verify)
     if not started:
         return None
     minutes = max(1, round(started["expires_in"] / 60))
@@ -204,7 +213,7 @@ def run_pairing(host: str) -> str | None:
                 resp = requests.post(
                     f"{base_url(host)}/api/auth/pairing/poll",
                     json={"device_code": started["device_code"]},
-                    verify=False,
+                    verify=verify,
                     timeout=VERIFY_TIMEOUT,
                 )
             except requests.exceptions.RequestException:
@@ -226,43 +235,26 @@ def run_pairing(host: str) -> str | None:
         return None
 
 
-def _obtain_token(host: str, existing: str) -> str:
-    """Get the access token, via pairing (default) or manual entry.
+def _obtain_token(host: str, verify: bool) -> str | None:
+    """Get the access token by pairing with the web app.
+
+    Pairing is the only way an agent obtains a credential: the token stays a
+    revocable, short-lived, per-machine device token that the agent renews
+    itself. The user can retry if a code expires before it is approved.
 
     :param host: Normalized server host
     :type host: str
-    :param existing: Previously configured token, offered as the manual
-        default
-    :type existing: str
-    :return: The access token
-    :rtype: str
+    :param verify: Whether to verify the server's TLS certificate
+    :type verify: bool
+    :return: The access token, or None if the user gave up
+    :rtype: str | None
     """
-    default = "m" if existing else "p"
     while True:
-        choice = (
-            input(
-                "Get the access token by [p]airing with the web app, "
-                f"or enter it [m]anually? [{default}]: "
-            )
-            .strip()
-            .lower()
-            or default
-        )
-        if choice in ("p", "m"):
-            break
-    if choice == "p":
-        token = run_pairing(host)
+        token = run_pairing(host, verify=verify)
         if token:
             return token
-        print("Falling back to manual token entry.\n")
-    print(
-        "To create a token manually:\n"
-        "  1. Log in to Mascope in your browser (editor role or higher)\n"
-        "  2. Click your profile icon to open the sidebar\n"
-        "  3. Under 'API Access Tokens', select 'File Agent' and generate\n"
-        "     a token, then copy it (it is shown only once)\n"
-    )
-    return _prompt("Access token", existing)
+        if not _prompt_yes_no("Pairing did not complete. Try again?", default=True):
+            return None
 
 
 def run_setup_wizard(settings: dict) -> dict:
@@ -282,27 +274,36 @@ def run_setup_wizard(settings: dict) -> dict:
     )
 
     host = normalize_host(_prompt("Mascope server address", settings.get("host", "")))
-    access_token = _obtain_token(host, settings.get("access_token", ""))
+    verify_tls = _prompt_yes_no(
+        "Verify the server's TLS certificate? (answer No only for a "
+        "self-signed or development server)",
+        bool(settings.get("verify_tls", True)),
+    )
+    access_token = _obtain_token(host, verify_tls)
 
-    while True:
+    while access_token is not None:
         print("Checking the connection...")
-        ok, message = verify_connection(host, access_token)
+        ok, message = verify_connection(host, access_token, verify=verify_tls)
         if ok:
             print("Connected - the server accepted the access token.\n")
             break
         print(f"\n{message}\n")
         choice = (
-            input("Re-enter [t]oken, [s]erver address, or [c]ontinue anyway? [t/s/c]: ")
+            input("Pair [a]gain, re-enter [s]erver address, or [c]ontinue anyway? [a/s/c]: ")
             .strip()
             .lower()
         )
         if choice == "s":
             host = normalize_host(_prompt("Mascope server address", host))
+            access_token = _obtain_token(host, verify_tls)
         elif choice == "c":
             print("Continuing without verification.\n")
             break
         else:
-            access_token = _prompt("Access token", access_token)
+            access_token = _obtain_token(host, verify_tls)
+
+    if access_token is None:
+        raise KeyboardInterrupt("Setup cancelled: the agent was not paired.")
 
     source = _prompt_source(settings.get("source", ""))
     recursive = _prompt_yes_no(
@@ -318,4 +319,5 @@ def run_setup_wizard(settings: dict) -> dict:
         "source": source,
         "recursive": recursive,
         "mask": mask,
+        "verify_tls": verify_tls,
     }

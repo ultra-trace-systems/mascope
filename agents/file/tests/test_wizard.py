@@ -67,22 +67,25 @@ def test_run_setup_wizard_happy_path(monkeypatch, tmp_path, capsys):
     answers = iter(
         [
             "https://mascope.example.com/",  # server address (normalized)
-            "m",  # auth method: manual token entry
-            "my-token",  # access token
+            "",  # verify TLS: accept default (yes)
             str(source),  # watched folder
             "",  # subfolders: accept default (no)
             "",  # mask: accept default
         ]
     )
     monkeypatch.setattr("builtins.input", lambda prompt: next(answers))
-    monkeypatch.setattr(wizard, "verify_connection", lambda host, token: (True, ""))
+    monkeypatch.setattr(wizard, "run_pairing", lambda host, verify=True: "paired-token")
+    monkeypatch.setattr(
+        wizard, "verify_connection", lambda host, token, verify=True: (True, "")
+    )
 
     settings = wizard.run_setup_wizard({"mask": "*.raw", "timeout": 3})
 
     assert settings["host"] == "mascope.example.com"
-    assert settings["access_token"] == "my-token"
+    assert settings["access_token"] == "paired-token"
     assert settings["source"] == str(source)
     assert settings["recursive"] is False
+    assert settings["verify_tls"] is True
     assert settings["mask"] == "*.raw"
     assert settings["timeout"] == 3
     assert "accepted the access token" in capsys.readouterr().out
@@ -94,85 +97,97 @@ def test_run_setup_wizard_enables_subfolder_watching(monkeypatch, tmp_path):
     answers = iter(
         [
             "mascope.example.com",  # server address
-            "m",  # auth method: manual token entry
-            "my-token",  # access token
+            "",  # verify TLS: default (yes)
             str(source),  # watched folder
             "y",  # subfolders: yes
             "",  # mask default
         ]
     )
     monkeypatch.setattr("builtins.input", lambda prompt: next(answers))
-    monkeypatch.setattr(wizard, "verify_connection", lambda host, token: (True, ""))
+    monkeypatch.setattr(wizard, "run_pairing", lambda host, verify=True: "paired-token")
+    monkeypatch.setattr(
+        wizard, "verify_connection", lambda host, token, verify=True: (True, "")
+    )
 
     settings = wizard.run_setup_wizard({"mask": "*.raw", "timeout": 3})
     assert settings["recursive"] is True
 
 
-def test_run_setup_wizard_retries_bad_token(monkeypatch, tmp_path):
+def test_run_setup_wizard_tls_verification_can_be_disabled(monkeypatch, tmp_path):
     source = tmp_path / "watched"
     source.mkdir()
+    captured = {}
+
+    def fake_pairing(host, verify=True):
+        captured["verify"] = verify
+        return "paired-token"
+
+    answers = iter(
+        [
+            "https://self-signed.example.com",  # server address
+            "n",  # verify TLS: no (self-signed server)
+            str(source),  # watched folder
+            "",  # subfolders default
+            "",  # mask default
+        ]
+    )
+    monkeypatch.setattr("builtins.input", lambda prompt: next(answers))
+    monkeypatch.setattr(wizard, "run_pairing", fake_pairing)
+    monkeypatch.setattr(
+        wizard, "verify_connection", lambda host, token, verify=True: (True, "")
+    )
+
+    settings = wizard.run_setup_wizard({"mask": "*.raw", "timeout": 3})
+    assert settings["verify_tls"] is False
+    # The choice is threaded into pairing (and into verification).
+    assert captured["verify"] is False
+
+
+def test_run_setup_wizard_re_pairs_on_bad_token(monkeypatch, tmp_path):
+    source = tmp_path / "watched"
+    source.mkdir()
+    tokens = iter(["stale-token", "fresh-token"])
     answers = iter(
         [
             "mascope.example.com",  # server address
-            "m",  # auth method: manual token entry
-            "bad-token",  # first token attempt
-            "t",  # choose: re-enter token
-            "good-token",  # second token attempt
+            "",  # verify TLS default (yes)
+            "a",  # verification failed: pair again
             str(source),  # watched folder
             "",  # subfolders default (no)
             "",  # mask default
         ]
     )
     monkeypatch.setattr("builtins.input", lambda prompt: next(answers))
+    monkeypatch.setattr(wizard, "run_pairing", lambda host, verify=True: next(tokens))
     monkeypatch.setattr(
         wizard,
         "verify_connection",
-        lambda host, token: (token == "good-token", "The server rejected the token."),
+        lambda host, token, verify=True: (
+            token == "fresh-token",
+            "The server rejected the access token.",
+        ),
     )
 
     settings = wizard.run_setup_wizard({"mask": "*.raw", "timeout": 3})
-    assert settings["access_token"] == "good-token"
+    assert settings["access_token"] == "fresh-token"
 
 
-def test_run_setup_wizard_pairing_path(monkeypatch, tmp_path):
+def test_run_setup_wizard_pairing_retry_then_give_up(monkeypatch, tmp_path):
     source = tmp_path / "watched"
     source.mkdir()
     answers = iter(
         [
             "mascope.example.com",  # server address
-            "",  # auth method: default (pairing, since no existing token)
-            str(source),  # watched folder
-            "",  # subfolders default (no)
-            "",  # mask default
+            "",  # verify TLS default (yes)
+            "n",  # pairing did not complete - do not try again
         ]
     )
     monkeypatch.setattr("builtins.input", lambda prompt: next(answers))
-    monkeypatch.setattr(wizard, "run_pairing", lambda host: "paired-token")
-    monkeypatch.setattr(wizard, "verify_connection", lambda host, token: (True, ""))
+    # Pairing never completes; the user declines to retry and setup aborts.
+    monkeypatch.setattr(wizard, "run_pairing", lambda host, verify=True: None)
 
-    settings = wizard.run_setup_wizard({"mask": "*.raw", "timeout": 3})
-    assert settings["access_token"] == "paired-token"
-
-
-def test_run_setup_wizard_pairing_falls_back_to_manual(monkeypatch, tmp_path):
-    source = tmp_path / "watched"
-    source.mkdir()
-    answers = iter(
-        [
-            "mascope.example.com",  # server address
-            "p",  # auth method: pairing
-            "manual-token",  # manual entry after pairing fails
-            str(source),  # watched folder
-            "",  # subfolders default (no)
-            "",  # mask default
-        ]
-    )
-    monkeypatch.setattr("builtins.input", lambda prompt: next(answers))
-    monkeypatch.setattr(wizard, "run_pairing", lambda host: None)
-    monkeypatch.setattr(wizard, "verify_connection", lambda host, token: (True, ""))
-
-    settings = wizard.run_setup_wizard({"mask": "*.raw", "timeout": 3})
-    assert settings["access_token"] == "manual-token"
+    with pytest.raises(KeyboardInterrupt):
+        wizard.run_setup_wizard({"mask": "*.raw", "timeout": 3})
 
 
 def _post_sequence(monkeypatch, responses):
@@ -258,8 +273,7 @@ def test_run_setup_wizard_creates_missing_source(monkeypatch, tmp_path):
     answers = iter(
         [
             "mascope.example.com",
-            "m",  # auth method: manual token entry
-            "tok",
+            "",  # verify TLS default (yes)
             str(source),  # does not exist yet
             "y",  # create it
             "",  # subfolders default (no)
@@ -267,7 +281,10 @@ def test_run_setup_wizard_creates_missing_source(monkeypatch, tmp_path):
         ]
     )
     monkeypatch.setattr("builtins.input", lambda prompt: next(answers))
-    monkeypatch.setattr(wizard, "verify_connection", lambda host, token: (True, ""))
+    monkeypatch.setattr(wizard, "run_pairing", lambda host, verify=True: "paired-token")
+    monkeypatch.setattr(
+        wizard, "verify_connection", lambda host, token, verify=True: (True, "")
+    )
 
     settings = wizard.run_setup_wizard({"mask": "*.raw", "timeout": 3})
     assert settings["source"] == str(source)

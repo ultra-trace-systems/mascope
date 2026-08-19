@@ -59,6 +59,57 @@ def test_rejected_token_raises_authentication_error(monkeypatch, upload_file):
     assert "API token" in str(exc_info.value)
 
 
+def test_renew_agent_token_returns_new_token_and_lifetime(monkeypatch):
+    monkeypatch.setattr(
+        _agents.requests,
+        "post",
+        lambda *a, **k: _fake_response(
+            200, {"data": {"access_token": "fresh", "expires_in": 2592000}}
+        ),
+    )
+    token, expires_in = _agents.api_renew_agent_token("http://testserver", "current")
+    assert token == "fresh"
+    assert expires_in == 2592000
+
+
+def test_renew_agent_token_uses_configured_tls_verification(monkeypatch):
+    import mascope_sdk
+
+    captured = {}
+
+    def fake_post(url, headers, verify, timeout):
+        captured["verify"] = verify
+        return _fake_response(200, {"data": {"access_token": "fresh", "expires_in": 1}})
+
+    monkeypatch.setattr(_agents.requests, "post", fake_post)
+    # The agent sets TLS verification at the package level (mascope_sdk.VERIFY_TLS),
+    # which _get_verify() reads per request.
+    monkeypatch.setattr(mascope_sdk, "VERIFY_TLS", False)
+    _agents.api_renew_agent_token("http://testserver", "current")
+    assert captured["verify"] is False
+
+
+def test_renew_agent_token_missing_endpoint_signals_fallback(monkeypatch):
+    # A 404 means the server has no renewal endpoint (older release); the agent
+    # keeps its current token, exactly as the tus fallback does.
+    monkeypatch.setattr(
+        _agents.requests, "post", lambda *a, **k: _fake_response(404, {})
+    )
+    with pytest.raises(TusNotSupportedError):
+        _agents.api_renew_agent_token("http://testserver", "current")
+
+
+def test_renew_agent_token_rejected_token_raises_auth_error(monkeypatch):
+    # A 401 means the token is expired or revoked - the machine must re-pair.
+    monkeypatch.setattr(
+        _agents.requests,
+        "post",
+        lambda *a, **k: _fake_response(401, {"error": "expired"}),
+    )
+    with pytest.raises(AuthenticationError):
+        _agents.api_renew_agent_token("http://testserver", "current")
+
+
 def test_server_error_carries_backend_message(monkeypatch, upload_file):
     monkeypatch.setattr(
         _agents.requests,

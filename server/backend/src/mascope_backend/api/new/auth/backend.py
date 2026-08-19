@@ -13,10 +13,11 @@ from fastapi_users.authentication import (
 from rich.pretty import pretty_repr
 
 from mascope_backend.api.new.auth.access_token.util import (
-    get_token_service_and_device,
+    get_token_auth_context,
 )
 from mascope_backend.api.new.auth.access_token.validation import (
     ensure_device_bound,
+    ensure_device_token_fresh,
     touch_device_last_seen,
 )
 from mascope_backend.api.new.auth.strategies import (
@@ -90,7 +91,11 @@ async def get_enabled_backends(request: Request) -> list[AuthenticationBackend]:
                 detail="Unauthorized: Missing access token",
             ) from e
 
-        token_service_name, token_device_id = await get_token_service_and_device(token)
+        (
+            token_service_name,
+            token_device_id,
+            token_created_at,
+        ) = await get_token_auth_context(token)
 
         if token_service_name != request_service_name:
             runtime.logger.info(
@@ -106,9 +111,11 @@ async def get_enabled_backends(request: Request) -> list[AuthenticationBackend]:
             )
 
         # Device policy for agent tokens: refuse unbound ones when the
-        # deployment requires paired devices (raises a 401), and record when
-        # a bound device was last seen. No-op for non-agent services.
+        # deployment requires paired devices, refuse a device token past its
+        # short lifetime, and record when a bound device was last seen. All
+        # no-ops for non-agent services.
         ensure_device_bound(token_service_name, token_device_id)
+        ensure_device_token_fresh(token_service_name, token_device_id, token_created_at)
         if token_device_id is not None:
             await touch_device_last_seen(token_device_id)
 

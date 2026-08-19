@@ -155,11 +155,28 @@ unusable password-reset paths.
 
 Device tokens drop from 360 days to a short lifetime with automatic
 renewal: the agent rotates its token via an authenticated renewal endpoint,
-with a bounded overlap window so an upload in flight never dies mid-rotation
-(exact lifetime and cadence are implementation-time decisions, recorded in
-section 10). At-rest storage moves from the raw token to a digest in the
-same migration window. Pre-existing long-lived tokens keep working until
-strict mode (4.6) ends the transition per deployment.
+with a bounded overlap window so an upload in flight never dies mid-rotation.
+The short lifetime is enforced only for device-bound tokens, on top of the
+unchanged 360-day database-strategy cap; a token past the device lifetime is
+refused (renew or re-pair) rather than deleted. Renewal issues a fresh token
+whose clock restarts and reaps all but the two newest tokens for the device:
+the fresh one and the token it supersedes, which stays usable only until its
+own (unchanged) lifetime elapses — the overlap that lets an upload in flight
+during the switch finish, without extending any token's life. Implemented
+values: a 30-day device lifetime, two tokens kept; the agent renews at
+roughly half its lifetime.
+The machine account's own file-converter token (server-side, not
+device-bound) is minted on demand if missing, so a short device lifetime
+never strands uploads.
+
+**At-rest digest is deferred to phase F, deliberately.** The token is the
+`access_token` primary key and the client holds the raw value, so a digest
+cannot coexist with raw tokens in the same column: hashing the existing rows
+would invalidate every live credential at once. It becomes clean only once
+the campaign (section 6) has re-paired every agent — at which point no raw
+device token remains to preserve — so it lands with the phase-F cleanup that
+also drops legacy non-device token acceptance, as one re-issue rather than a
+mid-transition dual scheme. Recorded in section 10.
 
 ### 4.6 Strict mode
 

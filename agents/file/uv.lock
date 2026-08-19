@@ -156,7 +156,7 @@ dev = [
 
 [[package]]
 name = "mascope-runtime"
-version = "2026.7.28"
+version = "2026.8.11"
 source = { editable = "../../libraries/runtime" }
 dependencies = [
     { name = "loguru" },
@@ -170,13 +170,13 @@ requires-dist = [
     { name = "loguru", specifier = ">=0.7.2,<0.8" },
     { name = "pydantic", specifier = ">=2.13.4,<3" },
     { name = "rich", specifier = ">=15.0.0,<16" },
-    { name = "sentry-sdk", marker = "extra == 'sentry'", specifier = ">=2,<3" },
+    { name = "sentry-sdk", marker = "extra == 'sentry'", specifier = ">=2.68.0,<3" },
 ]
 provides-extras = ["logs", "sentry"]
 
 [[package]]
 name = "mascope-sdk"
-version = "2026.7.7"
+version = "2026.8.19"
 source = { editable = "../../libraries/sdk" }
 dependencies = [
     { name = "loguru" },
@@ -188,12 +188,19 @@ dependencies = [
 
 [package.metadata]
 requires-dist = [
+    { name = "ipykernel", marker = "extra == 'examples'", specifier = ">=7.3.0" },
     { name = "loguru", specifier = ">=0.7.3" },
+    { name = "matplotlib", marker = "extra == 'examples'", specifier = ">=3.8.0" },
+    { name = "nbformat", marker = "extra == 'examples'", specifier = ">=5.11.0" },
+    { name = "numpy", marker = "extra == 'examples'", specifier = ">=1.24.0" },
     { name = "pandas", specifier = ">=2.0.0" },
+    { name = "plotly", marker = "extra == 'examples'", specifier = ">=5.18.0" },
     { name = "python-dotenv", specifier = ">=1.0.0" },
     { name = "requests", specifier = ">=2.34.2,<3" },
-    { name = "tqdm", specifier = ">=4.69.0" },
+    { name = "scipy", marker = "extra == 'examples'", specifier = ">=1.11.0" },
+    { name = "tqdm", specifier = ">=4.70.0" },
 ]
+provides-extras = ["examples"]
 
 [[package]]
 name = "mdurl"
@@ -460,14 +467,14 @@ wheels = [
 
 [[package]]
 name = "tqdm"
-version = "4.69.0"
+version = "4.70.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "colorama", marker = "sys_platform == 'win32'" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/8c/69/40407dfc835517f058b603dbf37a6df094d8582b015a51eddc988febbcb7/tqdm-4.69.0.tar.gz", hash = "sha256:700c5e85dcd5f009dd6222588a29180a193a748247a5d855b4d67db93d79a53b", size = 792569, upload-time = "2026-07-17T18:09:06.2Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/21/3b/6c24bec5be5e743ffd99576daa5cc077722fc7d5bbc00bd133fa0c698dc6/tqdm-4.70.0.tar.gz", hash = "sha256:55b0b0dbd97462d06ebee91e4dac24ed4d4702be82b24f07e6c1d27e08cea220", size = 795438, upload-time = "2026-07-27T11:33:15.271Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/fe/21/99a0cdaf54eb35e77623c41b5a2c9472ee4404bba687052791fe2aba6773/tqdm-4.69.0-py3-none-any.whl", hash = "sha256:9979978912be667a6ef21fd5d8abf54e324e63d82f7f43c360792ebc2bc4e622", size = 676680, upload-time = "2026-07-17T18:09:04.172Z" },
+    { url = "https://files.pythonhosted.org/packages/f9/1c/01bfd571a64e7f270e6bab5e33777debe0edc56759233ce84f27dec92d14/tqdm-4.70.0-py3-none-any.whl", hash = "sha256:7f585706bfddbdebf89daac705b2dfcc16890130727d3197ca62c732b4310953", size = 80184, upload-time = "2026-07-27T11:33:13.167Z" },
 ]
 
 [[package]]
