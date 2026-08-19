@@ -7,6 +7,7 @@ from abc import ABC, ABCMeta, abstractmethod
 from pathlib import Path
 from queue import Empty, Queue
 from threading import Event, Thread
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import mascope_sdk
 from mascope_file.io import write_props
@@ -252,6 +253,7 @@ class BaseFileProcessor(Thread, ABC, metaclass=FileProcessorMeta):
                 sample_file_props,
                 instrument_function_id,
                 access_token=file_context.access_token,
+                device_id=getattr(file_context, "device_id", None),
             )
 
         except Exception as e:
@@ -347,6 +349,33 @@ class BaseFileProcessor(Thread, ABC, metaclass=FileProcessorMeta):
                 f"File {base_filename} not registered in file converter service"
             )
         return file_context
+
+    def _context_timezone(self) -> ZoneInfo | None:
+        """The uploading machine's timezone, resolved from the file context.
+
+        None when no context is registered, the agent reported no zone, or
+        the reported name is not a known IANA zone (logged; the offset then
+        falls back to the processor's own resolution order).
+        """
+        base_filename = os.path.basename(self.file_to_process)
+        context = self.socket_client.context_manager.get_context(base_filename)
+        zone_name = getattr(context, "instrument_timezone", None) if context else None
+        if not zone_name:
+            return None
+        try:
+            return ZoneInfo(zone_name)
+        except (ZoneInfoNotFoundError, ValueError, KeyError):
+            runtime.logger.warning(
+                f"Uploader reported unknown timezone '{zone_name}' for "
+                f"{base_filename}; falling back for the UTC offset"
+            )
+            return None
+
+    @property
+    def acquisition_timezone(self) -> str | None:
+        """IANA timezone of the uploading machine, when it reported a valid one."""
+        zone = self._context_timezone()
+        return zone.key if zone is not None else None
 
     def _get_sample_file_props(self) -> SampleFileProps:
         """Extract sample file properties from the opened file.

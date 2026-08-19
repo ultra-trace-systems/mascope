@@ -56,3 +56,21 @@ class SampleFileProps(BaseModel):
     timestamp: str = Field(description="Timestamp from the file in ISO format.")
 
     utc_offset: float = Field(description="Timestamp UTC offset in seconds.")
+
+    utc_offset_source: str = Field(
+        description=(
+            "What determined utc_offset: 'file' (an offset embedded in the "
+            "raw file), 'agent' (the IANA zone the uploading machine "
+            "reported), or 'guess' (the converter host's own clock, the "
+            "last-resort fallback)."
+        )
+    )
+
+    acquisition_timezone: str | None = Field(
+        default=None,
+        description=(
+            "IANA timezone of the uploading machine, when the agent reported "
+            "a valid one. Recorded even when an offset embedded in the file "
+            "took precedence."
+        ),
+    )

@@ -86,4 +86,6 @@ def _build_file_context(data: dict) -> FileContext:
         username=data["username"],
         role_id=data["role_id"],
         access_token=data["access_token"],
+        device_id=data.get("device_id"),
+        instrument_timezone=data.get("instrument_timezone"),
     )

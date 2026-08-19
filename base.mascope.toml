@@ -42,6 +42,12 @@ filestreams = './filestreams'
 # startup rather than silently requiring nothing. Requires
 # .runtime/secrets/mfa_encryption_key.txt (see docs/hosting.md).
 # mfa_required_min_role = "admin"
+# Agent credentials: when true, bearer tokens for the agent services
+# (file-agent, tof-agent, export-agent) are refused unless they are bound to
+# a paired device. Leave false until every agent machine on this deployment
+# has been (re-)paired - pairing binds the token to a device automatically;
+# tokens issued before the device registry have no binding.
+# require_device_tokens = false
 # scripts
 run = "uv run mascope-backend run api-server"
 

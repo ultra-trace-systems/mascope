@@ -254,30 +254,81 @@ class H5Processor(BaseFileProcessor):
         python_datetime = python_datetime.replace(microsecond=0)
         return python_datetime.isoformat()
 
+    def _acquisition_instant_utc(self) -> datetime:
+        """Acquisition start as an aware UTC instant.
+
+        Requires an open file handle (call under ``with_file_context``).
+
+        :return: Acquisition start in UTC
+        :rtype: datetime
+        """
+        try:
+            filetime = float(
+                self.file_handle["TimingData"].attrs["AcquisitionTimeZero"][0]
+            )
+        except IndexError:
+            filetime = float(
+                self.file_handle["TimingData"].attrs["AcquisitionTimeZero"]
+            )
+        # Windows FILETIME ticks: 100-nanosecond intervals since 1601-01-01 UTC
+        epoch = datetime(1601, 1, 1, tzinfo=timezone.utc)
+        return epoch + timedelta(microseconds=filetime // 10)
+
+    def _resolve_utc_offset(self) -> tuple[float, str]:
+        """Resolve the UTC offset, preferring what the file itself declares.
+
+        Order: the LocalTimeOffsetToUTC attribute the acquisition software
+        wrote ("file"); else the zone the uploading machine reported,
+        evaluated at the acquisition instant ("agent"); else the converter
+        host's zone at that instant ("guess") - the legacy fallback, wrong
+        whenever the instrument PC and the converter host disagree on
+        timezone or DST. Requires an open file handle.
+
+        :return: UTC offset [s] and its source ("file", "agent" or "guess")
+        :rtype: tuple[float, str]
+        """
+        try:
+            try:
+                hours = float(
+                    self.file_handle["TimingData"].attrs["LocalTimeOffsetToUTC"][0]
+                )
+            except IndexError:
+                hours = float(
+                    self.file_handle["TimingData"].attrs["LocalTimeOffsetToUTC"]
+                )
+            return hours * 3600.0, "file"
+        except KeyError:
+            pass
+
+        acquired_utc = self._acquisition_instant_utc()
+        zone = self._context_timezone()
+        if zone is not None:
+            offset = acquired_utc.astimezone(zone).utcoffset()
+            return offset.total_seconds(), "agent"
+        # astimezone() with no argument attaches the host's zone at that
+        # instant; total_seconds() keeps west-of-UTC offsets negative.
+        offset = acquired_utc.astimezone().utcoffset()
+        return offset.total_seconds(), "guess"
+
     @property
     @with_file_context
     def utc_offset(self) -> float:
-        """UTC offset in seconds
+        """UTC offset in seconds applied to the local timestamp
 
         :return: UTC offset in seconds
         :rtype: float
         """
-        try:
-            utc_offset = (
-                float(self.file_handle["TimingData"].attrs["LocalTimeOffsetToUTC"][0])
-                * 3600.0
-            )
-        except IndexError:
-            utc_offset = float(
-                self.file_handle["TimingData"].attrs["LocalTimeOffsetToUTC"] * 3600.0
-            )
-        except KeyError:
-            # Fallback to local timezone offset
-            now = datetime.now()
-            utc_offset = (
-                now - now.astimezone(timezone.utc).replace(tzinfo=None)
-            ).seconds
-        return utc_offset
+        return self._resolve_utc_offset()[0]
+
+    @property
+    @with_file_context
+    def utc_offset_source(self) -> str:
+        """What determined utc_offset: "file", "agent" or "guess"
+
+        :return: Offset source
+        :rtype: str
+        """
+        return self._resolve_utc_offset()[1]
 
     @staticmethod
     def _file_context_manager(file_path: str):

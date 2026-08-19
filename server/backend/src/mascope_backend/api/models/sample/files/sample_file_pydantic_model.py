@@ -52,7 +52,29 @@ class SampleFileBase(BaseModel):
 
 
 class SampleFileCreate(SampleFileBase):
-    pass
+    uploaded_by_device_id: int | None = Field(
+        None,
+        description=(
+            "The paired device the upload came from (the converter carries "
+            "it through from the upload). None for web and pre-registry "
+            "agent uploads. The uploading user is recorded server-side from "
+            "the authenticated request, never from the body."
+        ),
+    )
+    acquisition_timezone: str | None = Field(
+        None,
+        description=(
+            "IANA timezone of the uploading machine, when the agent "
+            "reported a valid one"
+        ),
+    )
+    utc_offset_source: str | None = Field(
+        None,
+        description=(
+            "What determined the UTC offset applied to datetime_utc: "
+            "'file', 'agent' or 'guess'"
+        ),
+    )
 
 
 class SampleFileUpdate(BaseModel):

@@ -23,7 +23,7 @@ from mascope_backend.api.new.auth.pairing.exceptions import (
     PairingCodeAlreadyApprovedException,
     PairingCodeInvalidException,
 )
-from mascope_backend.db import User
+from mascope_backend.db import AgentDevice, User, async_session
 from mascope_backend.runtime import runtime
 from mascope_backend.socket.storage import redis_storage_client
 
@@ -118,12 +118,25 @@ async def approve_pairing(user: User, user_code: str) -> dict:
     if record["status"] != "pending":
         raise PairingCodeAlreadyApprovedException()
 
+    # The machine becomes a registered device, sponsored by the approver; the
+    # token is bound to it so it can be listed and revoked per machine.
+    async with async_session() as session:
+        device = AgentDevice(
+            name=record["machine_name"] or "Unnamed agent",
+            service_name=record["service_name"],
+            sponsor_user_id=user.id,
+        )
+        session.add(device)
+        await session.commit()
+        await session.refresh(device)
+
     token = await create_access_token(
         user=user,
         service_name=record["service_name"],
         description=(
             f"Paired: {record['machine_name']}" if record["machine_name"] else "Paired"
         ),
+        device_id=device.device_id,
     )
 
     record["status"] = "approved"
