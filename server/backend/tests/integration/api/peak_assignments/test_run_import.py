@@ -1204,6 +1204,10 @@ class TestRecalibrationExcludesImports:
                         tier="identified",
                     )
                 )
+                # The verification's foreign key points at the assignment, and
+                # nothing declares a relationship between them for the unit of
+                # work to order by, so the assignment is written out first.
+                await session.flush()
                 session.add(
                     AssignmentVerification(
                         assignment_verification_id=gen_id(32),
