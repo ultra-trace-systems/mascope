@@ -219,6 +219,21 @@ const enterApp = async () => {
       />
     </template>
   </template>
+
+  <!-- Always a way out of the gate, like the password screen: a user on a
+       shared machine, signed into the wrong account, or on a deployment that
+       cannot store seeds must be able to sign out rather than be trapped here.
+       Hidden once enrolled - that step continues into the app instead. -->
+  <Button
+    v-if="step !== STEPS.codes"
+    label="Log out"
+    severity="secondary"
+    text
+    fluid
+    :disabled="busy"
+    style="margin-top: 1.5rem"
+    @click="app.auth.logout"
+  />
 </template>
 
 <style scoped>
