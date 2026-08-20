@@ -729,9 +729,16 @@ class BaseFileProcessor(Thread, ABC, metaclass=FileProcessorMeta):
                     if is_routine_file_failure(e):
                         # Routine data-side outcomes - a duplicate upload, or
                         # an acquisition that recorded no scans. The file
-                        # still fails, but neither is a fault in Mascope, so
-                        # they get one warning and no traceback.
-                        runtime.logger.warning(
+                        # still fails and the user is still notified over the
+                        # socket, but neither is a fault in Mascope.
+                        #
+                        # INFO, not WARNING: the error-monitoring sink
+                        # subscribes at WARNING (see mascope_runtime.logging),
+                        # so a warning here would still mint an event - and,
+                        # carrying no exception, it would be captured as a
+                        # message keyed on text that includes the filename,
+                        # turning one grouped issue into one issue per file.
+                        runtime.logger.info(
                             f"Failed to process file {Path(self.file_to_process).name}: {e}"
                         )
                     else:

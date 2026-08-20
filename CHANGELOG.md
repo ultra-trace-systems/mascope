@@ -392,6 +392,26 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
   message, so a restart during a bulk upload could mint an issue per file. A
   shutdown now reports one error naming how many pipelines it stopped, with
   the individual files listed in the server log.
+- A raw file that recorded too few scans to measure no longer fails
+  ingestion as an unexpected error. An aborted acquisition, or one that wrote
+  a file before its first scan, has nothing to convert, so the file still
+  fails and moves to `failed_files` - but the Orbitrap path surfaced the
+  reader's scan-selection error and the TOF path an index error off an empty
+  array, both reaching error monitoring with a traceback as though Mascope had
+  broken. Both now report an empty acquisition, which the converter treats
+  like a duplicate upload: the user gets a plain explanation in place of the
+  raw `IndexError` or `NoScansFoundError` text, and the failure is logged
+  below the level error monitoring subscribes to. Seen across several customer
+  deployments since 1.7.0.
+- A TOF acquisition that was aborted mid-run is no longer mistaken for an
+  empty one. `TimingData/BufTimes` is pre-allocated, so an aborted run ends in
+  unwritten rows of zeros; the length was read from the last row alone, which
+  made a file holding real scans look scanless. The scans recorded before the
+  abort are now used, so such a file ingests with the length it actually has.
+- A TOF file holding exactly one scan is refused instead of being ingested
+  with a NaN interval and length. One scan gives no inter-scan spacing to
+  average, and the resulting NaN was stored and only surfaced later, when
+  serializing the sample to JSON failed.
 - A successful `mascope prod update` - unattended or `--version` - now also
   moves the deployment checkout to the release it deployed. The checkout is
   what a boot redeploys, so an unattended update used to leave the server one

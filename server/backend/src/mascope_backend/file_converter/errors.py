@@ -26,14 +26,20 @@ def describe_exception(e: BaseException) -> str:
 
 
 class EmptyAcquisitionError(Exception):
-    """A raw file that carries no scans to ingest.
+    """A raw file that carries too few scans to ingest.
 
     Raised by a processor when the reader reports an empty acquisition - a run
-    that was aborted, or that wrote a file before recording a single scan.
-    Nothing downstream can be derived from such a file, so it still fails and
-    lands in ``failed_files``; the distinct type marks it as a property of the
-    data rather than a fault in Mascope, so ``BaseFileProcessor.run`` logs it
-    as a warning without a traceback and error monitoring stays quiet.
+    that was aborted, or that wrote a file before recording a single scan -
+    and also when a single scan was recorded, which yields no measurable time
+    axis. Nothing downstream can be derived from such a file, so it still
+    fails and lands in ``failed_files``; the distinct type marks it as a
+    property of the data rather than a fault in Mascope, so
+    ``BaseFileProcessor.run`` logs it at INFO without a traceback and error
+    monitoring stays quiet.
+
+    The message is written at the raise site because it names which of those
+    cases applies, and it reaches the user's notification verbatim through
+    ``describe_exception``.
     """
 
 
@@ -47,7 +53,7 @@ def is_routine_file_failure(e: BaseException) -> bool:
     reporting them as faults buries the failures that are ours to fix.
 
     :param e: The exception that failed the file.
-    :return: True when the run loop should log a bare warning instead of an
+    :return: True when the run loop should log a bare INFO line instead of an
         exception with its traceback.
     :rtype: bool
     """
