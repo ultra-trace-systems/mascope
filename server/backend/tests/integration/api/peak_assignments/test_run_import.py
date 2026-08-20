@@ -1710,3 +1710,195 @@ class TestRecalibrationExcludesImports:
 
         assert response.status_code == 200
         assert response.json()["results"] == 2
+
+
+class TestRunProvenanceIsServed:
+    """Stored is not disclosed: a reader has to be able to see it.
+
+    An import bypasses the server-side m/z verification gate because it
+    calibrates client-side, and the `calibration` it declares is what replaces
+    that gate - which only works if the run listing returns it. `tier_bands` is
+    the same argument for tiers: 'identified' means nothing comparable across
+    engines until the thresholds behind it are visible.
+    """
+
+    @pytest.mark.asyncio
+    async def test_an_imported_run_discloses_its_engine_bands_and_calibration(
+        self, editor_client, import_sample, feature_enabled
+    ):
+        await _post(editor_client, import_sample, _body([_row("peak-0")]))
+
+        response = await editor_client.get(
+            f"/api/peak-assignments/sample/{import_sample}/runs"
+        )
+
+        assert response.status_code == 200
+        record = response.json()["data"][0]
+        assert record["engine"] == "peaky"
+        assert record["tier_bands"] == TIER_BANDS
+        assert record["calibration"] == CALIBRATION
+
+    @pytest.mark.asyncio
+    async def test_an_in_app_run_reads_back_as_the_in_app_engine(
+        self, editor_client, import_sample, feature_enabled, async_session_factory
+    ):
+        """Never null, so a reader compares it without handling a sentinel."""
+        async with async_session_factory() as session:
+            session.add(
+                PeakAssignmentRun(
+                    peak_assignment_run_id=gen_id(),
+                    sample_item_id=import_sample,
+                    engine="mascope",
+                    engine_version="test",
+                    status="completed",
+                    tier_bands={"identified": 0.7, "candidate": 0.4},
+                    peak_assignment_run_utc_created=datetime.now(timezone.utc),
+                )
+            )
+            await session.commit()
+
+        response = await editor_client.get(
+            f"/api/peak-assignments/sample/{import_sample}/runs"
+        )
+
+        record = response.json()["data"][0]
+        assert record["engine"] == "mascope"
+        # An in-app run's calibration state is the sample's own, not a
+        # disclosure, so the column stays null on this side.
+        assert record["calibration"] is None
+
+
+class TestOwnerLinkageIsOneLevelDeep:
+    """Owner linkage models an isotopologue naming the M0 it belongs to.
+
+    Only the direct self-reference used to be checked, which let a two-row cycle
+    and arbitrary chains resolve into a ledger no in-app run can produce.
+    """
+
+    @pytest.mark.asyncio
+    async def test_a_row_that_is_not_an_iso_child_may_not_name_an_owner(
+        self, editor_client, import_sample, feature_enabled
+    ):
+        response = await _post(
+            editor_client,
+            import_sample,
+            _body(
+                [
+                    _row("peak-0", role="M0"),
+                    _row("peak-1", role="M0", owner_sample_peak_id="peak-0"),
+                ]
+            ),
+        )
+
+        assert response.status_code == 422
+
+    @pytest.mark.asyncio
+    async def test_a_two_row_cycle_is_refused(
+        self, editor_client, import_sample, feature_enabled, async_session_factory
+    ):
+        """A owns B, B owns A - both iso_child, so each owner is itself owned."""
+        response = await _post(
+            editor_client,
+            import_sample,
+            _body(
+                [
+                    _row("peak-0", role="iso_child", owner_sample_peak_id="peak-1"),
+                    _row("peak-1", role="iso_child", owner_sample_peak_id="peak-0"),
+                ]
+            ),
+        )
+
+        assert response.status_code == 422
+        async with async_session_factory() as session:
+            runs = (
+                (
+                    await session.execute(
+                        select(PeakAssignmentRun).where(
+                            PeakAssignmentRun.sample_item_id == import_sample
+                        )
+                    )
+                )
+                .scalars()
+                .all()
+            )
+        assert [run.status for run in runs] == ["importing"]
+
+    @pytest.mark.asyncio
+    async def test_a_chain_is_refused(
+        self, editor_client, import_sample, feature_enabled
+    ):
+        """peak-2 -> peak-1 -> peak-0: the middle row is an owned owner."""
+        response = await _post(
+            editor_client,
+            import_sample,
+            _body(
+                [
+                    _row("peak-0", role="M0"),
+                    _row("peak-1", role="iso_child", owner_sample_peak_id="peak-0"),
+                    _row("peak-2", role="iso_child", owner_sample_peak_id="peak-1"),
+                ]
+            ),
+        )
+
+        assert response.status_code == 422
+
+    @pytest.mark.asyncio
+    async def test_the_ordinary_one_level_link_still_lands(
+        self, editor_client, import_sample, feature_enabled, async_session_factory
+    ):
+        response = await _post(
+            editor_client,
+            import_sample,
+            _body(
+                [
+                    _row("peak-0", role="M0"),
+                    _row("peak-1", role="iso_child", owner_sample_peak_id="peak-0"),
+                ]
+            ),
+        )
+
+        assert response.status_code == 200
+        run_id = response.json()["data"][0]["peak_assignment_run_id"]
+        async with async_session_factory() as session:
+            rows = {row.sample_peak_id: row for row in await _rows_of(session, run_id)}
+        assert (
+            rows["peak-1"].owner_peak_assignment_id == rows["peak-0"].peak_assignment_id
+        )
+
+
+class TestAbandonTakesTheSampleClaim:
+    """The delete has to be exclusive with a chunk that is still in flight.
+
+    Without the claim it can land between a chunk's run lookup and its insert,
+    cascading the staged rows away underneath a request that is still running -
+    and the client is told its chunk broke a database constraint rather than
+    that its run is gone.
+    """
+
+    @pytest.mark.asyncio
+    async def test_a_delete_is_refused_while_the_sample_is_claimed(
+        self, editor_client, import_sample, feature_enabled
+    ):
+        from mascope_backend.api.new.peak_assignments.admission import assignment_claim
+
+        first = await _post(
+            editor_client,
+            import_sample,
+            _body([_row("peak-0")], complete=False, import_id="import-claimed"),
+        )
+        run_id = first.json()["data"][0]["peak_assignment_run_id"]
+
+        async with assignment_claim("sample", import_sample) as acquired:
+            assert acquired, "the fixture sample should be free to claim here"
+            blocked = await editor_client.delete(
+                f"/api/peak-assignments/sample/{import_sample}/runs/{run_id}"
+            )
+
+        assert blocked.status_code == 409
+
+        # And it succeeds once the claim is released, so the refusal was the
+        # claim and not the run's state.
+        released = await editor_client.delete(
+            f"/api/peak-assignments/sample/{import_sample}/runs/{run_id}"
+        )
+        assert released.status_code == 200

@@ -18,7 +18,11 @@ This reclaims three kinds of run:
   in-app engine or be imported from an external one, and a shared budget makes
   publishing destructive - three republished imports would evict every in-app
   run for that sample, ledger rows cascading with them. Separate quotas let the
-  two age out independently and neither starve the other.
+  two age out independently and neither starve the other. A second budget,
+  ``keep_per_sample_total``, bounds the sum across engines, because `engine` is
+  free text a client supplies and one that varies per build would otherwise
+  mint a fresh quota on every import; the in-app engine is exempt from it, so
+  the total can never eat the history the per-engine quota protects.
 - **Terminal non-completed runs** older than ``keep_failed_hours``. A failed run
   is invisible to the read model and can never become visible, so its rows are
   pure waste - but a just-failed run is kept briefly so its error is still
@@ -52,6 +56,7 @@ from datetime import datetime, timedelta, timezone
 
 from sqlalchemy import Select, and_, delete, func, or_, select
 
+from mascope_backend.api.new.peak_assignments.config import IN_APP_ENGINE
 from mascope_backend.db import PeakAssignment, PeakAssignmentRun, async_session
 from mascope_backend.runtime import runtime
 
@@ -61,6 +66,16 @@ from mascope_backend.runtime import runtime
 # stays proportional to the dataset rather than to how often assignment is
 # re-run.
 DEFAULT_KEEP_PER_SAMPLE = 3
+
+# Newest completed runs kept per sample across *all* engines. The per-engine
+# quota above cannot bound the table on its own: `engine` is free text a client
+# supplies, so one that varies per build or per release mints a fresh quota on
+# every import. This is the outer bound that makes the total finite again.
+#
+# Four engines' worth, so a deployment publishing from a couple of external
+# engines beside the in-app one never meets it, while a client cycling engine
+# names does.
+DEFAULT_KEEP_PER_SAMPLE_TOTAL = 12
 
 # Grace on terminal non-completed runs, so a failure stays inspectable for a day.
 DEFAULT_KEEP_FAILED_HOURS = 24
@@ -127,15 +142,16 @@ def _chunked(run_ids: Sequence[str], size: int) -> Iterator[Sequence[str]]:
 
 
 def _completed_runs_statement() -> Select:
-    """Scan completed runs ordered newest-first within each (sample, engine).
+    """Scan completed runs ordered newest-first within each sample.
 
     Ranked in Python over an ordered scan rather than with a window function, so
     the same code path works on any supported Postgres and stays readable; the
     run table is small relative to the assignment table.
 
-    Grouping by engine as well as sample is what keeps a published import from
-    evicting a sample's in-app history: each engine's runs age out of their own
-    quota, so republishing costs only the importer's.
+    Newest-first *within a sample* rather than within (sample, engine), because
+    two budgets are applied over this one scan and only this order serves both:
+    a per-sample ordering is also newest-first within any engine's subset of it,
+    while the reverse does not hold. See :func:`_select_prunable_run_ids`.
 
     NULLS LAST is load-bearing, not cosmetic. The timestamp column is nullable
     and Postgres orders DESC as NULLS FIRST, so a run with no timestamp would
@@ -153,7 +169,6 @@ def _completed_runs_statement() -> Select:
         .where(PeakAssignmentRun.status == "completed")
         .order_by(
             PeakAssignmentRun.sample_item_id,
-            PeakAssignmentRun.engine,
             PeakAssignmentRun.peak_assignment_run_utc_created.desc().nullslast(),
             PeakAssignmentRun.peak_assignment_run_id.desc(),
         )
@@ -210,6 +225,7 @@ async def _select_prunable_run_ids(
     keep_failed_hours: int,
     keep_running_hours: int = DEFAULT_KEEP_RUNNING_HOURS,
     keep_importing_hours: int = DEFAULT_KEEP_IMPORTING_HOURS,
+    keep_per_sample_total: int = DEFAULT_KEEP_PER_SAMPLE_TOTAL,
 ) -> list[str]:
     """Collect the run ids eligible for pruning.
 
@@ -218,22 +234,50 @@ async def _select_prunable_run_ids(
     :param keep_failed_hours: Grace period on terminal non-completed runs.
     :param keep_running_hours: Grace period on in-flight runs.
     :param keep_importing_hours: Grace period on assembling imports.
+    :param keep_per_sample_total: Newest completed runs to keep per sample
+        across all engines, which the in-app engine's quota is exempt from.
     :return: Run ids to delete.
     """
     prunable: list[str] = []
 
-    # Superseded completed runs: everything past the newest keep_per_sample for
-    # each (sample, engine) pair, so one engine's republished runs cannot evict
-    # the other's history.
+    # Superseded completed runs, under two budgets applied over one scan.
+    #
+    # The per-(sample, engine) quota is what keeps a published import from
+    # evicting a sample's in-app history: each engine ages out of its own
+    # allowance, so republishing costs only the importer's.
+    #
+    # The per-sample total is what keeps that from being unbounded. `engine` is
+    # free text a client supplies, so an engine naming itself per build or per
+    # release mints a fresh quota on every import and the table grows without
+    # limit - defeating the whole point of the pass. The total caps how many
+    # completed runs a sample keeps across all engines.
+    #
+    # The in-app engine is exempt from the total, and that exemption is the
+    # reason the two budgets can coexist: without it a burst of imports would
+    # fill the total and start evicting exactly the in-app history the
+    # per-engine quota exists to protect. In-app runs remain bounded by their
+    # own `keep_per_sample`, so the ceiling is keep_per_sample_total plus
+    # keep_per_sample, not unbounded.
+    #
+    # Counts are of runs *kept*, not runs seen: a run already condemned by the
+    # engine quota must not also consume a slot in the total.
     completed = (await session.execute(_completed_runs_statement())).all()
 
-    seen_per_sample_engine: dict[tuple[str, str], int] = {}
+    kept_per_engine: dict[tuple[str, str], int] = {}
+    kept_per_sample: dict[str, int] = {}
     for run_id, sample_item_id, engine in completed:
-        key = (sample_item_id, engine)
-        rank = seen_per_sample_engine.get(key, 0)
-        seen_per_sample_engine[key] = rank + 1
-        if rank >= keep_per_sample:
+        engine_key = (sample_item_id, engine)
+        if kept_per_engine.get(engine_key, 0) >= keep_per_sample:
             prunable.append(run_id)
+            continue
+        if (
+            engine != IN_APP_ENGINE
+            and kept_per_sample.get(sample_item_id, 0) >= keep_per_sample_total
+        ):
+            prunable.append(run_id)
+            continue
+        kept_per_engine[engine_key] = kept_per_engine.get(engine_key, 0) + 1
+        kept_per_sample[sample_item_id] = kept_per_sample.get(sample_item_id, 0) + 1
 
     now = datetime.now(timezone.utc)
     stale = (
@@ -259,6 +303,7 @@ async def prune_peak_assignment_runs(
     keep_failed_hours: int = DEFAULT_KEEP_FAILED_HOURS,
     keep_running_hours: int = DEFAULT_KEEP_RUNNING_HOURS,
     keep_importing_hours: int = DEFAULT_KEEP_IMPORTING_HOURS,
+    keep_per_sample_total: int = DEFAULT_KEEP_PER_SAMPLE_TOTAL,
     batch_size: int = DEFAULT_BATCH_SIZE,
 ) -> dict:
     """
@@ -278,6 +323,10 @@ async def prune_peak_assignment_runs(
     :param keep_importing_hours: Keep assembling imports younger than this; must
         be at least :data:`MIN_KEEP_IMPORTING_HOURS`.
     :type keep_importing_hours: int
+    :param keep_per_sample_total: Newest completed runs to keep per sample
+        across all engines; must be at least ``keep_per_sample``. The in-app
+        engine's own quota is exempt, so this bounds imported runs.
+    :type keep_per_sample_total: int
     :param batch_size: Runs deleted per committed batch.
     :type batch_size: int
     :return: Summary with prunable run count, deleted run count and freed rows.
@@ -297,6 +346,12 @@ async def prune_peak_assignment_runs(
             f"keep_importing_hours must be at least {MIN_KEEP_IMPORTING_HOURS}: "
             "a shorter grace can delete an import that is still uploading"
         )
+    if keep_per_sample_total < keep_per_sample:
+        raise ValueError(
+            "keep_per_sample_total must be at least keep_per_sample: a total "
+            "below the per-engine quota would evict runs the per-engine budget "
+            "promises to keep"
+        )
     if batch_size <= 0:
         raise ValueError("batch_size must be a positive integer")
 
@@ -307,6 +362,7 @@ async def prune_peak_assignment_runs(
             keep_failed_hours,
             keep_running_hours,
             keep_importing_hours,
+            keep_per_sample_total,
         )
 
         if not prunable:
@@ -382,6 +438,7 @@ def run_prune_peak_assignment_runs(
     keep_failed_hours: int = DEFAULT_KEEP_FAILED_HOURS,
     keep_running_hours: int = DEFAULT_KEEP_RUNNING_HOURS,
     keep_importing_hours: int = DEFAULT_KEEP_IMPORTING_HOURS,
+    keep_per_sample_total: int = DEFAULT_KEEP_PER_SAMPLE_TOTAL,
 ) -> dict:
     """
     Synchronous wrapper for CLI and script entry points.
@@ -391,6 +448,8 @@ def run_prune_peak_assignment_runs(
     :param keep_failed_hours: Keep terminal non-completed runs younger than this.
     :param keep_running_hours: Keep in-flight runs younger than this.
     :param keep_importing_hours: Keep assembling imports younger than this.
+    :param keep_per_sample_total: Newest completed runs kept per sample across
+        all engines.
     :return: Prune summary.
     :rtype: dict
     """
@@ -401,5 +460,6 @@ def run_prune_peak_assignment_runs(
             keep_failed_hours=keep_failed_hours,
             keep_running_hours=keep_running_hours,
             keep_importing_hours=keep_importing_hours,
+            keep_per_sample_total=keep_per_sample_total,
         )
     )

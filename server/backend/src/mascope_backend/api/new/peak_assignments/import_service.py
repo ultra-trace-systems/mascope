@@ -55,6 +55,7 @@ calibration pool.
 """
 
 import asyncio
+from collections import OrderedDict
 from datetime import datetime as dt
 from datetime import timezone
 
@@ -74,12 +75,14 @@ from mascope_backend.api.new.peak_assignments.admission import (
     in_flight_run_id,
 )
 from mascope_backend.api.new.peak_assignments.import_validation import (
+    OWNED_ROLE,
     chunk_offset_error,
     duplicate_peak_ids,
     is_chunk_replay,
     json_size_error,
     normalize_engine,
-    self_owner_errors,
+    owner_link_errors,
+    owner_of_owner_error,
     strip_server_owned_provenance,
     tier_coherence_error,
     unknown_peak_ids,
@@ -131,6 +134,63 @@ async def _load_peak_ids(sample) -> set[str]:
         average=False,
     )
     return {str(peak_id) for peak_id in peak_data.peak_ids}
+
+
+#: Peak id sets held for the life of one assembling import, keyed by run id.
+#:
+#: Every chunk validates its rows against the sample's peak ids, and re-reading
+#: the peak file per chunk means tens of blocking zarr reads for one dense
+#: ledger - each one inside the advisory claim, so a pooled connection is held
+#: across it. The set does not change while an import is running: the ledger is
+#: being written against exactly that set of peaks.
+#:
+#: Keyed by *run*, not by sample, deliberately. A sample-keyed cache would
+#: outlive the import and go stale if the sample were re-processed; this one is
+#: dropped when the run finalizes or is abandoned, so its lifetime is the window
+#: in which the peak set has to be stable anyway. It is a cache, not a store: a
+#: miss (another worker, or an entry evicted by the bound) just reads the file.
+_PEAK_IDS_BY_RUN: "OrderedDict[str, set[str]]" = OrderedDict()
+
+#: Assembling imports whose peak ids one worker holds. Bounded so a worker
+#: cannot accumulate sets for runs it never sees finish - admission allows one
+#: in-flight run per sample, so this is generous.
+_PEAK_ID_CACHE_MAX_RUNS = 32
+
+
+def _cache_peak_ids(run_id: str, peak_ids: set[str]) -> None:
+    """Hold a run's peak id set for its remaining chunks.
+
+    :param run_id: The run being assembled.
+    :param peak_ids: The sample's peak ids.
+    """
+    _PEAK_IDS_BY_RUN[run_id] = peak_ids
+    _PEAK_IDS_BY_RUN.move_to_end(run_id)
+    while len(_PEAK_IDS_BY_RUN) > _PEAK_ID_CACHE_MAX_RUNS:
+        _PEAK_IDS_BY_RUN.popitem(last=False)
+
+
+def _release_peak_ids(run_id: str) -> None:
+    """Drop a finished run's cached peak ids.
+
+    :param run_id: The run that finalized or was abandoned.
+    """
+    _PEAK_IDS_BY_RUN.pop(run_id, None)
+
+
+async def _known_peak_ids(sample, run_id: str | None) -> set[str]:
+    """The sample's peak ids, from this run's cache when it has one.
+
+    :param sample: The sample being imported into.
+    :param run_id: The run being appended to, or None while creating one.
+    :return: The sample's peak ids.
+    """
+    if run_id is not None and (cached := _PEAK_IDS_BY_RUN.get(run_id)) is not None:
+        _PEAK_IDS_BY_RUN.move_to_end(run_id)
+        return cached
+    peak_ids = await _load_peak_ids(sample)
+    if run_id is not None:
+        _cache_peak_ids(run_id, peak_ids)
+    return peak_ids
 
 
 #: Every foreign-key column an imported row can populate, as
@@ -251,8 +311,8 @@ def _validate_rows(rows, bands: dict, known_peak_ids: set[str]) -> None:
         raise UnprocessableImportException(
             f"peak {_names(unknown)} is not in this sample's peak file"
         )
-    if self_owned := self_owner_errors(rows):
-        raise UnprocessableImportException(self_owned[0])
+    if owner_errors := owner_link_errors(rows):
+        raise UnprocessableImportException(owner_errors[0])
 
     for row in rows:
         if error := tier_coherence_error(
@@ -373,6 +433,33 @@ async def _resolve_owners(session, run_id: str) -> None:
     )
     if unresolved:
         raise UnprocessableImportException(unresolved_owner_error(unresolved))
+
+    # The other half of the owner rule, which only the finished run can answer:
+    # an owner may arrive in any chunk, so "an owner is not itself owned" cannot
+    # be decided from one chunk's rows. With both halves in force the link is
+    # exactly one level deep, which is what rules out chains and cycles.
+    owned = PeakAssignment.__table__.alias("owned")
+    owner_is_child = (
+        (
+            await session.execute(
+                select(owned.c.sample_peak_id)
+                .join(
+                    PeakAssignment,
+                    PeakAssignment.owner_peak_assignment_id
+                    == owned.c.peak_assignment_id,
+                )
+                .where(
+                    PeakAssignment.peak_assignment_run_id == run_id,
+                    owned.c.role == OWNED_ROLE,
+                )
+                .distinct()
+            )
+        )
+        .scalars()
+        .all()
+    )
+    if owner_is_child:
+        raise UnprocessableImportException(owner_of_owner_error(owner_is_child))
 
 
 async def _run_for_import_key(session, sample_item_id: str, import_key: str):
@@ -692,7 +779,9 @@ async def _import_chunk(sample, body, user_id: int | None) -> dict:
 
     bands = _resolved_bands(body, run)
     if body.rows:
-        known_peak_ids = await _load_peak_ids(sample)
+        known_peak_ids = await _known_peak_ids(
+            sample, run.peak_assignment_run_id if run is not None else None
+        )
         total = staged + len(body.rows)
         if total > len(known_peak_ids):
             raise UnprocessableImportException(
@@ -711,6 +800,10 @@ async def _import_chunk(sample, body, user_id: int | None) -> dict:
 
     new_run = _new_run(sample, body, engine) if creating else None
     run_id = (new_run or run).peak_assignment_run_id
+    if new_run is not None and body.rows:
+        # The create read the file before the run had an id; hand the set to
+        # the run now so the chunks that follow do not read it again.
+        _cache_peak_ids(run_id, known_peak_ids)
 
     # One transaction for the run and this chunk's rows. On a create that is
     # what keeps a refusal the database raises from stranding an 'importing'
@@ -804,6 +897,7 @@ async def _finalize_import(sample, run_id: str, staged: int, user_id: int | None
         )
         await session.commit()
 
+    _release_peak_ids(run_id)
     runtime.logger.info(
         f"Imported peak assignment run '{run_id}' for sample "
         f"'{sample.sample_item_name}': {staged} row(s), by user {user_id}"
@@ -850,11 +944,36 @@ async def abandon_import_run(sample_item_id: str, peak_assignment_run_id: str) -
     Restricted to ``importing`` on purpose: a completed run is ledger data, and
     removing that is retention's business, not a client's.
 
+    Taken under the same advisory claim every other write on this sample holds.
+    Without it a delete can land between a chunk's run lookup and its insert,
+    cascading the staged rows away underneath a request that is still running:
+    the insert then fails on the run's foreign key, and the client is told its
+    chunk was refused by the database rather than that its run is gone. The
+    claim makes the two mutually exclusive for the price of one lock.
+
     :param sample_item_id: The sample the run belongs to.
     :param peak_assignment_run_id: The run to abandon.
     :return: Status envelope naming the run and the rows reclaimed.
+    :raises DuplicateException: When a chunk of this sample's import is in
+        flight, or the run is not an unfinished import.
     """
     sample = await fetch_sample(sample_item_id)
+    async with assignment_claim("sample", sample_item_id) as acquired:
+        if not acquired:
+            raise DuplicateException(
+                f"A peak assignment request is in flight for sample "
+                f"'{sample.sample_item_name}'. Retry when it has finished."
+            )
+        return await _abandon_run(sample, peak_assignment_run_id)
+
+
+async def _abandon_run(sample, peak_assignment_run_id: str) -> dict:
+    """Delete the addressed import and report what it reclaimed.
+
+    :param sample: The sample the run belongs to.
+    :param peak_assignment_run_id: The run to abandon.
+    :return: Status envelope naming the run and the rows reclaimed.
+    """
     async with async_session() as session:
         run = await _load_import_run(session, peak_assignment_run_id, sample)
         if run.status != "importing":
@@ -874,6 +993,7 @@ async def abandon_import_run(sample_item_id: str, peak_assignment_run_id: str) -
         )
         await session.commit()
 
+    _release_peak_ids(peak_assignment_run_id)
     message = (
         f"Abandoned import run '{peak_assignment_run_id}' for sample "
         f"'{sample.sample_item_name}', releasing {staged} staged row(s)."
