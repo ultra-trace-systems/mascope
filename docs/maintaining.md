@@ -624,6 +624,7 @@ assignments are recomputable by re-running assignment - and it runs whether or
 not the `peak_assignment` flag is enabled, since ledgers written before opting
 out still age out and an empty table costs one cheap query. Tune the policy in
 `/etc/mascope/prune.env` with `MASCOPE_PRUNE_KEEP_PER_SAMPLE` (default 3),
+`MASCOPE_PRUNE_KEEP_PER_SAMPLE_TOTAL` (default 12),
 `MASCOPE_PRUNE_KEEP_FAILED_HOURS` (default 24),
 `MASCOPE_PRUNE_KEEP_RUNNING_HOURS` (default 72, floored at 12 so runs that may
 still be executing cannot be pruned out from under a worker) and
@@ -635,6 +636,15 @@ server where assignment runs are also published from an external engine rather
 than only computed in the app: on a shared budget a few republished imports
 would evict every in-app run for that sample, ledger rows cascading with them.
 Each engine ages out of its own quota instead.
+
+That split needs an outer bound, because the engine name comes from the
+importing client: one that names itself per build or per release would mint a
+fresh quota on every import and grow the table without limit, defeating the
+pass. `MASCOPE_PRUNE_KEEP_PER_SAMPLE_TOTAL` caps how many completed runs a
+sample keeps across all engines. The in-app engine is exempt from that cap -
+otherwise a burst of imports would fill it and start evicting exactly the
+history the per-engine quota exists to protect - so a sample keeps at most the
+total plus the in-app engine's own quota.
 `MASCOPE_PRUNE_KEEP_IMPORTING_HOURS` covers a different case - an import that
 was started and never finished. Such a run holds staged rows *and* blocks new
 assignment work on its sample, so it is reclaimed on its own, shorter grace; a

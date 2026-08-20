@@ -8,7 +8,10 @@ engine and drops the rest, plus non-completed runs past a short grace period.
 Deleting a run cascades to its assignment rows.
 
 Set MASCOPE_PRUNE_DRY_RUN=1 to report what would be deleted without deleting.
-Override the policy with MASCOPE_PRUNE_KEEP_PER_SAMPLE (default 3),
+Override the policy with MASCOPE_PRUNE_KEEP_PER_SAMPLE (default 3, per sample
+AND engine), MASCOPE_PRUNE_KEEP_PER_SAMPLE_TOTAL (default 12, the bound across
+all engines that keeps a client-chosen engine name from minting unlimited
+quotas; the in-app engine is exempt from it),
 MASCOPE_PRUNE_KEEP_FAILED_HOURS (default 24), MASCOPE_PRUNE_KEEP_RUNNING_HOURS
 (default 72, floored at MIN_KEEP_RUNNING_HOURS - runs that may still be executing
 are not something an operator should be able to shorten into the danger zone) and
@@ -32,6 +35,7 @@ from mascope_backend.db.admin.peak_assignments.prune_runs import (
     DEFAULT_KEEP_FAILED_HOURS,
     DEFAULT_KEEP_IMPORTING_HOURS,
     DEFAULT_KEEP_PER_SAMPLE,
+    DEFAULT_KEEP_PER_SAMPLE_TOTAL,
     DEFAULT_KEEP_RUNNING_HOURS,
     MIN_KEEP_IMPORTING_HOURS,
     MIN_KEEP_RUNNING_HOURS,
@@ -97,6 +101,16 @@ async def run() -> None:
             "MASCOPE_PRUNE_KEEP_IMPORTING_HOURS",
             DEFAULT_KEEP_IMPORTING_HOURS,
             minimum=MIN_KEEP_IMPORTING_HOURS,
+        ),
+        keep_per_sample_total=_int_env(
+            "MASCOPE_PRUNE_KEEP_PER_SAMPLE_TOTAL",
+            DEFAULT_KEEP_PER_SAMPLE_TOTAL,
+            # Floored at the per-engine quota, which prune_peak_assignment_runs
+            # also enforces: a total below it would evict runs that budget
+            # promises to keep.
+            minimum=_int_env(
+                "MASCOPE_PRUNE_KEEP_PER_SAMPLE", DEFAULT_KEEP_PER_SAMPLE, minimum=1
+            ),
         ),
     )
     runtime.logger.info("=" * 80)

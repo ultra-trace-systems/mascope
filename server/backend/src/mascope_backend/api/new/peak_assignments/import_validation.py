@@ -191,22 +191,62 @@ def unknown_peak_ids(
     return unknown
 
 
-def self_owner_errors(rows: Sequence[Any]) -> list[str]:
-    """Reject rows that name themselves as their own owner.
+#: The role a row must carry to reference an owner. Owner linkage models one
+#: thing - an isotopologue satellite pointing at the M0 it belongs to - and the
+#: in-app engine builds it that way structurally.
+OWNED_ROLE = "iso_child"
 
-    Owner resolution matches ``owner_sample_peak_id`` to another row's
-    ``sample_peak_id`` within the run, so a self-reference would resolve
-    happily and produce a row that owns itself.
 
-    :param rows: Rows carrying ``sample_peak_id`` and ``owner_sample_peak_id``.
+def owner_link_errors(rows: Sequence[Any]) -> list[str]:
+    """Reject owner references that are not one isotopologue naming its M0.
+
+    Two rules, which together make the link a single level deep:
+
+    - a row with an owner must be an ``iso_child``;
+    - an ``iso_child`` may not itself be named as an owner (checked at finalize
+      by :func:`owner_of_owner_error`, since the owner may arrive in a later
+      chunk).
+
+    Depth follows from them rather than being policed directly, and so do
+    cycles: a cycle needs every row in it to be both a child and an owner, and
+    the pair forbids that. Checking only the direct self-reference - as this did
+    - left ``A owns B`` and ``B owns A`` to resolve happily into a ledger no
+    in-app run can produce, and left an ``iso_child`` free to own another.
+
+    :param rows: Rows carrying ``sample_peak_id``, ``role`` and
+        ``owner_sample_peak_id``.
     :return: One message per offending row.
     """
-    return [
-        f"row for peak '{row.sample_peak_id}' names itself as its owner"
-        for row in rows
-        if row.owner_sample_peak_id is not None
-        and row.owner_sample_peak_id == row.sample_peak_id
-    ]
+    errors: list[str] = []
+    for row in rows:
+        if row.owner_sample_peak_id is None:
+            continue
+        if row.owner_sample_peak_id == row.sample_peak_id:
+            errors.append(
+                f"row for peak '{row.sample_peak_id}' names itself as its owner"
+            )
+        elif row.role != OWNED_ROLE:
+            errors.append(
+                f"row for peak '{row.sample_peak_id}' has role '{row.role}' but "
+                f"names an owner; only an '{OWNED_ROLE}' belongs to another row"
+            )
+    return errors
+
+
+def owner_of_owner_error(peak_ids: Sequence[str], limit: int = 5) -> str:
+    """Message for owner rows that are themselves owned.
+
+    :param peak_ids: The offending owner rows' ``sample_peak_id`` values.
+    :param limit: Most values to name in the message.
+    :return: The error message.
+    """
+    shown = ", ".join(f"'{value}'" for value in list(peak_ids)[:limit])
+    more = "" if len(peak_ids) <= limit else f" (and {len(peak_ids) - limit} more)"
+    return (
+        f"peak {shown}{more} is named as an owner but is itself an "
+        f"'{OWNED_ROLE}'; owner linkage is one level deep, so an owner must be "
+        "the row its isotopologues belong to"
+    )
 
 
 def chunk_offset_error(index: int, staged_rows: int, chunk_rows: int) -> str | None:

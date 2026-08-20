@@ -25,7 +25,8 @@ from mascope_backend.api.new.peak_assignments.import_validation import (
     is_chunk_replay,
     json_size_error,
     normalize_engine,
-    self_owner_errors,
+    owner_link_errors,
+    owner_of_owner_error,
     strip_server_owned_provenance,
     tier_coherence_error,
     unknown_peak_ids,
@@ -36,9 +37,11 @@ from mascope_backend.api.new.peak_assignments.service import _provenance_scalars
 from mascope_backend.db import PeakAssignment
 
 
-def _row(sample_peak_id: str, owner: str | None = None):
+def _row(sample_peak_id: str, owner: str | None = None, role: str = "iso_child"):
     """A stand-in for a payload row, carrying only the owner-link fields."""
-    return SimpleNamespace(sample_peak_id=sample_peak_id, owner_sample_peak_id=owner)
+    return SimpleNamespace(
+        sample_peak_id=sample_peak_id, owner_sample_peak_id=owner, role=role
+    )
 
 
 class TestEngineIsReserved:
@@ -339,15 +342,50 @@ class TestPeakRules:
 
         assert len(unknown) == 3
 
+
+class TestOwnerLinkage:
+    """Owner linkage models one thing: an isotopologue naming the M0 it belongs
+    to. Two rules keep it that shape - a row with an owner is an `iso_child`,
+    and an `iso_child` is never named as an owner (the second is enforced at
+    finalize, since an owner may arrive in a later chunk). Depth and acyclicity
+    follow from the pair rather than being policed directly: a cycle needs every
+    row in it to be both a child and an owner, which the pair forbids.
+    """
+
     def test_a_row_cannot_own_itself(self):
         """It would resolve happily against its own sample_peak_id."""
-        errors = self_owner_errors([_row("p1", owner="p1"), _row("p2", owner="p1")])
+        errors = owner_link_errors([_row("p1", owner="p1"), _row("p2", owner="p1")])
 
         assert len(errors) == 1
         assert "p1" in errors[0]
 
     def test_a_normal_owner_link_is_fine(self):
-        assert self_owner_errors([_row("p2", owner="p1"), _row("p1")]) == []
+        assert owner_link_errors([_row("p2", owner="p1"), _row("p1", role="M0")]) == []
+
+    @pytest.mark.parametrize("role", ["M0", "reagent", "artifact", "unassigned"])
+    def test_only_an_iso_child_may_name_an_owner(self, role):
+        """Anything else pointing at an owner is not the shape the link models."""
+        errors = owner_link_errors([_row("p2", owner="p1", role=role)])
+
+        assert len(errors) == 1
+        assert role in errors[0]
+
+    def test_a_two_row_cycle_is_caught_by_the_role_rule(self):
+        """A owns B and B owns A: both would have to be owners *and* children.
+
+        Only the direct self-reference was checked before, so this pair resolved
+        happily into a cycle no in-app run can produce. The finalize half of the
+        rule is what rejects it - both rows are `iso_child`, so each is named as
+        an owner while being one.
+        """
+        assert owner_link_errors([_row("p1", owner="p2"), _row("p2", owner="p1")]) == []
+        message = owner_of_owner_error(["p1", "p2"])
+        assert "p1" in message and "iso_child" in message
+
+    def test_the_owner_of_owner_message_is_bounded(self):
+        message = owner_of_owner_error([f"p{index}" for index in range(20)], limit=3)
+
+        assert "and 17 more" in message
 
 
 class TestJsonSizeCap:

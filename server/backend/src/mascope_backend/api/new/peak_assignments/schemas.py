@@ -36,9 +36,26 @@ class PeakAssignmentRunRecord(BaseModel):
 
     peak_assignment_run_id: str
     sample_item_id: str
+    #: Which engine produced this run: the in-app engine, or an external one
+    #: that published its ledger here. Never null - existing rows were
+    #: backfilled to the in-app identity - so a reader can compare it without
+    #: handling a sentinel. The run selector's provenance badge renders this.
+    engine: str
     engine_version: str
     status: str
     config: dict | None = None
+    #: The identified/candidate fit-score thresholds this run tiered with.
+    #: Served because 'identified' means nothing comparable across engines
+    #: until the bands that produced it are visible: the server validates every
+    #: imported row against these, and a reader needs the same yardstick.
+    #: Null only for runs predating the column.
+    tier_bands: dict | None = None
+    #: What the producing engine calibrated against, as it disclosed at import.
+    #: An import bypasses the server-side m/z verification gate because it
+    #: calibrates client-side, and this disclosure is what replaces that gate -
+    #: which only works if a reader can actually see it. Null for in-app runs,
+    #: whose calibration state is the sample's own.
+    calibration: dict | None = None
     error: str | None = None
     peak_assignment_run_utc_created: datetime | None = None
     peak_assignment_run_utc_completed: datetime | None = None

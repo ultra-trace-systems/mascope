@@ -33,6 +33,8 @@ from mascope_backend.db.admin.peak_assignments import prune_runs
 from mascope_backend.db.admin.peak_assignments.prune_runs import (
     DEFAULT_KEEP_FAILED_HOURS,
     DEFAULT_KEEP_IMPORTING_HOURS,
+    DEFAULT_KEEP_PER_SAMPLE,
+    DEFAULT_KEEP_PER_SAMPLE_TOTAL,
     DEFAULT_KEEP_RUNNING_HOURS,
     IMPORTING_STATUS,
     IN_FLIGHT_STATUSES,
@@ -146,6 +148,96 @@ async def test_nothing_prunable_returns_empty():
     )
 
 
+class TestTheTotalBoundsTheEngineQuotas:
+    """The per-engine quota needs an outer bound, because `engine` is client input.
+
+    Nothing constrains what an importing client puts in `engine`, so one naming
+    itself per build or per release mints a fresh keep_per_sample quota on every
+    import and the table grows without limit - defeating the pass entirely. The
+    per-sample total caps the sum. The in-app engine is exempt from it, or a
+    burst of imports would fill the total and start evicting exactly the history
+    the per-engine quota exists to protect.
+    """
+
+    @pytest.mark.asyncio
+    async def test_a_client_cycling_engine_names_cannot_grow_without_limit(self):
+        """Five engines at the per-engine quota, over a total of six."""
+        rows = [
+            (f"{engine}-{index}", "si1", engine)
+            for engine in ("e1", "e2", "e3", "e4", "e5")
+            for index in range(2)
+        ]
+        session = _session(rows, [])
+
+        prunable = await _select_prunable_run_ids(
+            session, keep_per_sample=2, keep_failed_hours=24, keep_per_sample_total=6
+        )
+
+        # Six kept, the rest reclaimed - where the per-engine quota alone would
+        # have kept all ten.
+        assert len(rows) - len(prunable) == 6
+
+    @pytest.mark.asyncio
+    async def test_the_in_app_engine_is_exempt_from_the_total(self):
+        """Imports fill the total; the in-app run behind them still survives.
+
+        Ordered newest-first within the sample, so every import is newer than
+        the in-app run - the arrangement that would evict it if the total
+        applied to every engine alike.
+        """
+        rows = [(f"import-{index}", "si1", "peaky") for index in range(4)]
+        rows += [("in-app-1", "si1", IN_APP)]
+        session = _session(rows, [])
+
+        prunable = await _select_prunable_run_ids(
+            session, keep_per_sample=4, keep_failed_hours=24, keep_per_sample_total=4
+        )
+
+        assert "in-app-1" not in prunable
+        assert prunable == []
+
+    @pytest.mark.asyncio
+    async def test_the_in_app_engine_is_still_bounded_by_its_own_quota(self):
+        """Exempt from the total is not exempt from everything."""
+        rows = [(f"in-app-{index}", "si1", IN_APP) for index in range(5)]
+        session = _session(rows, [])
+
+        prunable = await _select_prunable_run_ids(
+            session, keep_per_sample=2, keep_failed_hours=24, keep_per_sample_total=2
+        )
+
+        assert prunable == ["in-app-2", "in-app-3", "in-app-4"]
+
+    @pytest.mark.asyncio
+    async def test_a_condemned_run_does_not_consume_a_slot_in_the_total(self):
+        """The total counts runs kept, not runs seen.
+
+        Otherwise runs already over their engine's quota would eat the total's
+        budget on the way past and evict runs that are within theirs.
+        """
+        rows = [(f"peaky-{index}", "si1", "peaky") for index in range(5)]
+        rows += [("other-1", "si1", "other")]
+        session = _session(rows, [])
+
+        prunable = await _select_prunable_run_ids(
+            session, keep_per_sample=2, keep_failed_hours=24, keep_per_sample_total=3
+        )
+
+        assert "other-1" not in prunable
+
+    @pytest.mark.asyncio
+    async def test_a_total_below_the_per_engine_quota_is_refused(self):
+        """It would evict runs the per-engine budget promises to keep."""
+        with pytest.raises(ValueError, match="keep_per_sample_total"):
+            await prune_peak_assignment_runs(
+                dry_run=True, keep_per_sample=3, keep_per_sample_total=2
+            )
+
+    def test_the_default_total_leaves_room_for_several_engines(self):
+        """A deployment with a couple of real engines never meets the cap."""
+        assert DEFAULT_KEEP_PER_SAMPLE_TOTAL >= 4 * DEFAULT_KEEP_PER_SAMPLE
+
+
 class TestBudgetIsPerSampleAndEngine:
     """Imported runs and in-app runs must not compete for one sample's quota.
 
@@ -207,15 +299,49 @@ class TestBudgetIsPerSampleAndEngine:
 
         assert prunable == ["a-old"]
 
-    def test_the_scan_orders_within_engine_before_recency(self):
-        """Ranking per pair only works if the scan groups by the pair."""
+    def test_the_scan_orders_by_recency_within_a_sample(self):
+        """Per-sample recency, which is what both budgets are ranked over.
+
+        The scan used to group by engine as well, and this asserted that. It no
+        longer does: a second budget - the per-sample total - has to be ranked
+        over the same single pass, and only a per-sample ordering serves both.
+        It serves the per-engine quota too, because an ordering that is
+        newest-first within a sample is also newest-first within any engine's
+        subset of it; the reverse does not hold, which is why this is the order
+        that survived.
+        """
         sql = str(_completed_runs_statement().compile(dialect=postgresql.dialect()))
         order_by = sql.split("ORDER BY", 1)[1]
 
-        assert order_by.index("sample_item_id") < order_by.index("engine")
-        assert order_by.index("engine") < order_by.index(
+        assert order_by.index("sample_item_id") < order_by.index(
             "peak_assignment_run_utc_created"
         )
+        assert "engine" not in order_by
+
+    @pytest.mark.asyncio
+    async def test_the_per_engine_quota_holds_when_engines_interleave(self):
+        """The behaviour dropping `engine` from the ORDER BY could have broken.
+
+        Runs arrive newest-first across the whole sample, so the two engines
+        alternate rather than arriving in contiguous blocks. Each engine's
+        quota still has to be counted over its own subset.
+        """
+        rows = [
+            ("peaky-3", "si1", "peaky"),
+            ("in-app-3", "si1", IN_APP),
+            ("peaky-2", "si1", "peaky"),
+            ("in-app-2", "si1", IN_APP),
+            ("peaky-1", "si1", "peaky"),
+            ("in-app-1", "si1", IN_APP),
+        ]
+        session = _session(rows, [])
+
+        prunable = await _select_prunable_run_ids(
+            session, keep_per_sample=2, keep_failed_hours=24
+        )
+
+        # The third of each engine, not the last two rows of the scan.
+        assert sorted(prunable) == ["in-app-1", "peaky-1"]
 
 
 def _hours_ago(hours: float) -> datetime:
