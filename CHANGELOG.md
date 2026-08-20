@@ -314,6 +314,34 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
   network drop. Servers keep accepting single-request uploads, so agents
   that have not been re-paired yet continue to work unchanged.
 
+- Restarting the server no longer abandons the files it was processing. A
+  container stop gave the worker Docker's default ten seconds before killing
+  it outright, which is not enough for automatic processing of a freshly
+  uploaded file - and a killed worker writes nothing, so the file was left
+  with its sample committed, no matched peaks, and no record anywhere of why.
+  The stop now allows ninety seconds, and shutdown spends up to sixty of them
+  waiting for the pipelines still running. Anything that overruns is stopped
+  deliberately rather than abandoned, so it still names the file it was
+  working on; a pipeline merely waiting out a retry delay gives up as soon as
+  the shutdown begins instead of holding the whole budget doing nothing.
+- Re-processing a batch of sample files no longer risks leaving files with no
+  samples at all. Every targeted file's samples were deleted up front, before
+  the loop that rebuilds them, so a re-processing run that was interrupted -
+  by a restart, or by an unhandled failure - left every file it had not
+  reached yet empty, which is worse than the state re-processing is meant to
+  repair. Each file is now reset, cleared and rebuilt in one step, so an
+  interrupted run leaves the files it never reached untouched.
+- Re-triggering processing on a file no longer duplicates its samples. A file
+  whose earlier processing was cut short keeps the samples that run had
+  already created, and processing it again added a second set rather than
+  replacing them - so the file ended up with a duplicate sample per
+  ionization mode. Existing automatic samples are now cleared before every
+  processing attempt, the first included.
+- Interrupted processing no longer floods error monitoring. Each affected file
+  reported itself as a separate error, and monitoring groups events by
+  message, so a restart during a bulk upload could mint an issue per file. A
+  shutdown now reports one error naming how many pipelines it stopped, with
+  the individual files listed in the server log.
 - A successful `mascope prod update` - unattended or `--version` - now also
   moves the deployment checkout to the release it deployed. The checkout is
   what a boot redeploys, so an unattended update used to leave the server one
