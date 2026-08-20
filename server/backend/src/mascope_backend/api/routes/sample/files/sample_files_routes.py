@@ -15,8 +15,8 @@ from fastapi import (
 from tuspyserver import create_tus_router
 
 from mascope_backend.api.controllers.sample.files.process.service import (
-    auto_process_sample_file,
     re_process_sample_files,
+    spawn_auto_process_sample_file,
 )
 from mascope_backend.api.controllers.sample.files.sample_files_controller import (
     compute_sample_file_peaks,
@@ -359,7 +359,7 @@ async def process_sample_item_route(
     process_id = gen_id(8)
 
     background_tasks.add_task(
-        auto_process_sample_file,
+        spawn_auto_process_sample_file,
         sample_file_id=sample_file_id,
         independent_transaction=True,
         user_id=user.id,

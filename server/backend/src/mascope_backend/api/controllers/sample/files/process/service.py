@@ -241,6 +241,17 @@ async def auto_process_sample_file(
                     process_id=process_id,
                     parent_id=parent_id,
                 )
+        except asyncio.CancelledError:
+            # CancelledError is a BaseException, so every `except Exception` in
+            # this pipeline misses it and a cancelled run used to vanish without
+            # a single line: sample_file and sample_item committed, no match rows,
+            # batch still settling `ready` (#1844). Say so, then let cancellation
+            # continue - it is not ours to swallow.
+            runtime.logger.error(
+                f"Auto-processing of sample file {sample_file_id} was cancelled "
+                f"on attempt {attempt + 1}; it will have no matched peaks"
+            )
+            raise
         except Exception as e:
             if attempt >= _AUTO_PROCESS_RETRIES or not _is_recoverable_error(e):
                 # Terminal. Nothing downstream says which file this was: the
@@ -262,7 +273,114 @@ async def auto_process_sample_file(
                 f"in {delay}s"
             )
             # Sleep outside the gate so a waiting pipeline can use the slot.
-            await asyncio.sleep(delay)
+            #
+            # Guarded separately: an exception raised inside an except clause is
+            # not caught by that try's other handlers, so a cancellation landing
+            # here would bypass the CancelledError branch above. This is the
+            # pipeline's longest-lived state - up to 210 s per file, entered
+            # exactly on the congestion that makes a restart likely - so it is
+            # the window most likely to be cancelled, and was the last one that
+            # could still go unreported.
+            try:
+                await asyncio.sleep(delay)
+            except asyncio.CancelledError:
+                runtime.logger.error(
+                    f"Auto-processing of sample file {sample_file_id} was "
+                    f"cancelled while waiting {delay}s to retry; it will have "
+                    f"no matched peaks"
+                )
+                raise
+
+
+#: How long a graceful shutdown waits for detached pipelines to finish. Long
+#: enough to cover a pipeline in its final retry backoff (30 + 60 + 120 s) plus
+#: the work after it, short enough that a deploy is not held indefinitely.
+AUTO_PROCESS_DRAIN_TIMEOUT_S = 300
+
+
+async def drain_auto_process_tasks(
+    timeout: float = AUTO_PROCESS_DRAIN_TIMEOUT_S,
+) -> None:
+    """Wait for detached auto-processing pipelines during a graceful shutdown.
+
+    Running the pipeline inside the request's ASGI call used to give this for
+    free: uvicorn waits on its connection tasks before shutting down, so an
+    in-flight pipeline completed. Detaching it (see
+    :func:`spawn_auto_process_sample_file`) removed that guarantee - the loop
+    would close on a pipeline that was seconds from finishing, leaving the file
+    in exactly the half-processed state #1844 is about.
+
+    Anything still running when the timeout expires is cancelled rather than
+    abandoned, so :func:`auto_process_sample_file` gets to name the files that
+    were truncated instead of them disappearing with the loop.
+
+    :param timeout: Seconds to wait before cancelling what remains.
+    """
+    try:
+        loop = asyncio.get_running_loop()
+        # This set is module-global and so outlives any single event loop, while
+        # the test suite and dev reloads create many. A task belonging to another
+        # loop can be neither awaited nor cancelled from here - asyncio raises -
+        # and a raise in a shutdown hook takes the whole teardown with it. Only
+        # this loop's tasks are ours to drain. In production there is one loop per
+        # worker, so this filters nothing.
+        pending = {
+            task
+            for task in _background_tasks
+            if not task.done() and task.get_loop() is loop
+        }
+        if not pending:
+            return
+
+        runtime.logger.info(
+            f"Waiting up to {timeout:.0f}s for {len(pending)} background "
+            f"task(s) to finish before shutdown"
+        )
+        done, still_running = await asyncio.wait(pending, timeout=timeout)
+
+        if not still_running:
+            runtime.logger.info(f"All {len(done)} background task(s) finished")
+            return
+
+        runtime.logger.warning(
+            f"{len(still_running)} background task(s) did not finish in "
+            f"{timeout:.0f}s; cancelling - affected sample files are named in "
+            f"the errors that follow"
+        )
+        for task in still_running:
+            task.cancel()
+        # Let each cancelled pipeline run its CancelledError handler before the
+        # loop closes; without this they are abandoned and report nothing.
+        await asyncio.gather(*still_running, return_exceptions=True)
+    except Exception:
+        # Draining is a courtesy to in-flight work; it must never be the reason a
+        # worker fails to shut down.
+        runtime.logger.exception(
+            "Draining background tasks failed; continuing with shutdown"
+        )
+
+
+async def spawn_auto_process_sample_file(**kwargs) -> None:
+    """Start the auto-processing pipeline detached from the request that triggered it.
+
+    Scheduled through FastAPI's ``BackgroundTasks`` so it still starts only after
+    the response (and so after the sample_file commit), but the pipeline itself
+    runs as a free-standing task rather than inside the request's ASGI call.
+
+    That matters because the pipeline outlives its request by minutes - the retry
+    backoff alone reaches into the hundreds of seconds - while the uploader that
+    triggered it works on a fixed client timeout. A task still tied to that
+    connection dies with it, and cancellation is a BaseException, so it took the
+    pipeline down without a single log line (#1844).
+
+    :param kwargs: Forwarded verbatim to :func:`auto_process_sample_file`.
+    """
+    task = asyncio.create_task(auto_process_sample_file(**kwargs))
+    # asyncio only holds a weak reference to tasks: keep one so the task cannot
+    # be garbage-collected mid-run, and observe its outcome so a failure is
+    # logged instead of dying as an unretrieved exception.
+    _background_tasks.add(task)
+    task.add_done_callback(_observe_background_task)
 
 
 async def _auto_process_sample_file(
