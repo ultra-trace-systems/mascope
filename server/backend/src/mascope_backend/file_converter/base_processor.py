@@ -726,21 +726,32 @@ class BaseFileProcessor(Thread, ABC, metaclass=FileProcessorMeta):
                 runtime.logger.exception(
                     f"Unexpected error in {self.__class__.__name__}"
                 )
-                if self.file_to_process is not None and file_basename is not None:
-                    # Ensure finalize is called before emission
-                    self._finalize()
+                # The recovery itself talks to the socket and the filesystem, so it
+                # can fail too - and an exception raised HERE escapes the while loop
+                # and kills the thread for good, which is how the converter used to
+                # stop processing every subsequent upload until restart (#1350).
+                # Recovery is best-effort by definition: log and keep serving.
+                try:
+                    if self.file_to_process is not None and file_basename is not None:
+                        # Ensure finalize is called before emission
+                        self._finalize()
 
-                    self.socket_client.emit(
-                        "file_processing_error",
-                        {
-                            "filename": file_basename,
-                            "instrument": instrument or "unknown",
-                            "error": describe_exception(e),
-                        },
+                        self.socket_client.emit(
+                            "file_processing_error",
+                            {
+                                "filename": file_basename,
+                                "instrument": instrument or "unknown",
+                                "error": describe_exception(e),
+                            },
+                        )
+
+                        # Clear context after emission
+                        self.socket_client.context_manager.clear_context(file_basename)
+                except Exception:
+                    runtime.logger.exception(
+                        f"{self.__class__.__name__} ({self.name}) could not report a "
+                        f"failed file; continuing so later files still process"
                     )
-
-                    # Clear context after emission
-                    self.socket_client.context_manager.clear_context(file_basename)
 
         # Out of main loop
         runtime.logger.info(f"Exiting {self.__class__.__name__} ({self.name})")
