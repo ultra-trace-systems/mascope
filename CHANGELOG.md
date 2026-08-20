@@ -126,7 +126,9 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
   imported verdicts are excluded from the instrument-wide confidence
   calibration, whose labels stay to runs this server computed. Tune the new
   grace on unfinished uploads with `MASCOPE_PRUNE_KEEP_IMPORTING_HOURS`
-  (default 24). Launching runs from the SDK and the run selector's engine badge
+  (default 24) and the ceiling on imported runs kept per sample across all
+  engines with `MASCOPE_PRUNE_KEEP_PER_SAMPLE_TOTAL` (default 12; runs this
+  server computed are exempt from it). Launching runs from the SDK and the run selector's engine badge
   come next.
 - The Python SDK can now read persisted peak-assignment results (read-only
   v1). A new `mascope.peak_assignments` resource reads the peak-centric
