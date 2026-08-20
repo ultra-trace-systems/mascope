@@ -40,7 +40,7 @@ The 'importing' status the import lifecycle adds needs no DDL: status is an
 unconstrained String column.
 
 Revision ID: d7c2b9e4f1a6
-Revises: c3a9e6f2b8d1
+Revises: c9f1a7e35d82
 Create Date: 2026-08-19 09:00:00.000000
 
 """
@@ -53,7 +53,7 @@ from alembic import op
 
 # revision identifiers, used by Alembic.
 revision: str = "d7c2b9e4f1a6"
-down_revision: Union[str, Sequence[str], None] = "c3a9e6f2b8d1"
+down_revision: Union[str, Sequence[str], None] = "c9f1a7e35d82"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
