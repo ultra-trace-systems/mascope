@@ -8,7 +8,7 @@ functions used across target collection-related controllers.
 
 from typing import TypedDict
 
-from sqlalchemy import select
+from sqlalchemy import or_, select
 
 from mascope_backend.api.lib.exceptions.api_exceptions import ApiException
 from mascope_backend.api.models.target.collections.target_collection_pydantic_model import (
@@ -16,6 +16,7 @@ from mascope_backend.api.models.target.collections.target_collection_pydantic_mo
 )
 from mascope_backend.db import (
     Dataset,
+    IonizationMode,
     SampleBatch,
     TargetCollection,
     async_session,
@@ -191,6 +192,39 @@ async def validate_scope_change(
     # Expanding to global is always safe — visible to everyone
     if new_workspace_id is None:
         return
+
+    # An ionization mode is global reference data: every workspace processing a
+    # sample under it reads the collections it names. Pulling one of those into
+    # a single workspace would leave the rest of the instance matching against
+    # a collection they cannot see, and would be a way around the read check on
+    # the mode routes - bind a global collection, then narrow it.
+    async with async_session() as session:
+        referencing_mode = (
+            await session.execute(
+                select(IonizationMode.ionization_mode_name)
+                .where(
+                    or_(
+                        IonizationMode.calibration_collection_id
+                        == target_collection_db.target_collection_id,
+                        IonizationMode.diagnostic_collection_id
+                        == target_collection_db.target_collection_id,
+                    )
+                )
+                .limit(1)
+            )
+        ).scalar_one_or_none()
+
+    if referencing_mode is not None:
+        msg = (
+            "Cannot change collection scope: the collection is used by "
+            f"ionization mode '{referencing_mode}', which is shared across "
+            "all workspaces."
+        )
+        raise ApiException(
+            user_message=msg,
+            tech_message=msg,
+            status_code=409,
+        )
 
     # No batch associations — scope change is safe
     if not target_collection_db.sample_batch:

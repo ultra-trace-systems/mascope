@@ -22,6 +22,7 @@ from datetime import datetime, timezone
 
 import pytest
 import pytest_asyncio
+from sqlalchemy import select
 
 from mascope_backend.db import (
     Dataset,
@@ -141,6 +142,33 @@ async def collections(async_session_factory):
     return ids
 
 
+@pytest_asyncio.fixture(scope="session")
+async def private_collection(async_session_factory, ion_dataset):
+    """A calibrants collection scoped to a workspace with no members.
+
+    ``ion_dataset``'s workspace has no membership rows, so no test client can
+    read this collection - which is what makes it usable for the negative case
+    below.
+    """
+    collection_id = gen_id()
+    async with async_session_factory() as session:
+        workspace_id = (
+            await session.execute(
+                select(Dataset.workspace_id).where(Dataset.dataset_id == ion_dataset)
+            )
+        ).scalar_one()
+        session.add(
+            TargetCollection(
+                target_collection_id=collection_id,
+                target_collection_name="Private Calibrants (ion-mode-test)",
+                target_collection_type="CALIBRANTS",
+                workspace_id=workspace_id,
+            )
+        )
+        await session.commit()
+    return collection_id
+
+
 @pytest_asyncio.fixture
 async def mode_ctx(
     async_session_factory, ion_dataset, ion_sample_file, mechanisms, collections
@@ -228,6 +256,68 @@ async def _batch_status(async_session_factory, batch_id):
     async with async_session_factory() as session:
         batch = await session.get(SampleBatch, batch_id)
         return batch.status
+
+
+# ============= The collections a mode may name =============
+
+
+@pytest.mark.asyncio
+async def test_editor_cannot_bind_an_unreadable_collection(
+    editor_client, mode_ctx, private_collection
+):
+    """A mode may not be pointed at a collection the caller cannot read.
+
+    Modes are global reference data: every workspace processing a sample under
+    one reads the collections it names. Binding a collection only the editor
+    can see would publish it through the mode, which is not theirs to grant.
+    """
+    resp = await editor_client.patch(
+        f"/api/ionization/modes/{mode_ctx['mode_id']}",
+        json=_body(mode_ctx, calibration_collection_id=private_collection),
+    )
+    assert resp.status_code == 403
+
+
+@pytest.mark.asyncio
+async def test_editor_can_bind_a_global_collection(editor_client, mode_ctx):
+    """An ordinary editor is not blocked from a global collection.
+
+    The read check has to be at guest level for this to hold:
+    ``check_target_collection_access`` demands the global *admin* role for any
+    higher bar on a collection with no workspace, which would lock the editors
+    who are supposed to manage modes out of every ordinary swap.
+    """
+    resp = await editor_client.patch(
+        f"/api/ionization/modes/{mode_ctx['mode_id']}",
+        json=_body(mode_ctx, calibration_collection_id=mode_ctx["cal_b"]),
+    )
+    assert resp.status_code == 200
+
+
+@pytest.mark.asyncio
+async def test_collection_used_by_a_mode_cannot_be_narrowed(
+    owner_client, async_session_factory, mode_ctx, ion_dataset
+):
+    """The same rule from the other side, so it cannot simply be walked around.
+
+    Without this, the check above buys nothing: bind a global collection to the
+    mode, then pull that collection into your own workspace. Refused even for a
+    superuser, because the objection is not about the caller's access - it is
+    that the rest of the instance still matches against the collection through
+    the mode.
+    """
+    async with async_session_factory() as session:
+        workspace_id = (
+            await session.execute(
+                select(Dataset.workspace_id).where(Dataset.dataset_id == ion_dataset)
+            )
+        ).scalar_one()
+
+    resp = await owner_client.patch(
+        f"/api/target/collections/{mode_ctx['cal_a']}",
+        json={"workspace_id": workspace_id},
+    )
+    assert resp.status_code == 409
 
 
 # ============= Editor level (PATCH / DELETE) =============
