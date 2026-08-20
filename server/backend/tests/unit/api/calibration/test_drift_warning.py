@@ -2,12 +2,15 @@
 
 import pytest
 
+from mascope_backend.api.controllers.calibration import calibration_controller
 from mascope_backend.api.controllers.calibration.calibration_controller import (
+    _drift_warning_due,
     acquisition_drift_limit_ppm,
     acquisition_drift_ppm,
     carry_acquisition_drift,
     warn_on_acquisition_drift,
 )
+from mascope_backend.api.models.calibration.config import calibration_config
 from mascope_backend.runtime import runtime
 
 
@@ -15,7 +18,16 @@ ORBI_FILE = "ORBI-1_file.raw"
 TOF_FILE = "TOF-1_file.h5"
 
 
-def _capture(fit, instrument="ORBI-1", filename=ORBI_FILE):
+@pytest.fixture(autouse=True)
+def reset_drift_suppression():
+    """Give every test an empty suppression window to start from."""
+    calibration_controller._drift_warned_at.clear()
+    yield
+    calibration_controller._drift_warned_at.clear()
+
+
+def _observe(fit, instrument="ORBI-1", filename=ORBI_FILE):
+    """Run one drift observation, returning the log records it produced."""
     records = []
     sink_id = runtime.logger.add(
         lambda message: records.append(message.record), level="TRACE"
@@ -25,6 +37,17 @@ def _capture(fit, instrument="ORBI-1", filename=ORBI_FILE):
     finally:
         runtime.logger.remove(sink_id)
     return records
+
+
+def _capture(fit, instrument="ORBI-1", filename=ORBI_FILE):
+    """A *first* observation of this drift: suppression window cleared first.
+
+    Tests of threshold and message content each want a fresh episode; the
+    once-a-day window is exercised separately in
+    :class:`TestDriftWarningSuppression`.
+    """
+    calibration_controller._drift_warned_at.clear()
+    return _observe(fit, instrument, filename)
 
 
 def _warnings(records):
@@ -174,3 +197,94 @@ class TestCarryAcquisitionDrift:
         carry_acquisition_drift(fit, {"status": "ok", "verified": True}, ORBI_FILE)
 
         assert "acquisition_drift" not in fit
+
+
+class TestDriftWarningSuppression:
+    """Drift persists until an instrument is retuned, so it is reported on a
+    schedule rather than per file. One production Orbitrap logged the warning
+    172 times in 19 hours, burying unrelated errors under the repeats.
+    """
+
+    DRIFTING = {"quality": {"pre_fit_mz_error_ppm": -12.53}}
+
+    def test_first_observation_warns(self):
+        assert len(_warnings(_observe(self.DRIFTING))) == 1
+
+    def test_repeat_within_the_window_is_suppressed(self):
+        _observe(self.DRIFTING)
+        assert _warnings(_observe(self.DRIFTING)) == []
+
+    def test_the_per_file_detail_survives_suppression(self):
+        # Suppression is about the monitoring event; the drill-down still
+        # needs a line for every affected file, magnitude included.
+        _observe(self.DRIFTING)
+        records = _observe({"quality": {"pre_fit_mz_error_ppm": -14.1}})
+        detail = [r for r in records if "drift detail" in r["message"]]
+        assert len(detail) == 1
+        assert detail[0]["level"].name == "INFO"
+        assert "-14.10 ppm" in detail[0]["message"]
+
+    def test_another_instrument_is_not_suppressed(self):
+        # The window is keyed per instrument - one drifting instrument must
+        # not mask another.
+        _observe(self.DRIFTING, instrument="ORBI-1")
+        warnings = _warnings(_observe(self.DRIFTING, instrument="ORBI-2"))
+        assert len(warnings) == 1
+        assert "ORBI-2" in warnings[0]["message"]
+
+    def test_an_unnamed_instrument_is_never_suppressed(self):
+        # With no name to key on, every such warning would share one entry,
+        # so the first unnamed instrument to drift would hide every other one
+        # for a day. Repeats are the lesser harm: monitoring groups them into
+        # a single issue anyway, since the message text is identical.
+        _observe(self.DRIFTING, instrument=None)
+        assert len(_warnings(_observe(self.DRIFTING, instrument=None))) == 1
+
+    def test_warning_returns_after_the_window_elapses(self):
+        # Still drifting a day later is worth saying again - the reminder is
+        # what keeps a needed retune from being forgotten. Backdate the
+        # recorded entry rather than patching the clock: `time.monotonic` is
+        # an attribute of the stdlib module, so patching it there freezes it
+        # for every other thread in the interpreter too.
+        assert len(_warnings(_observe(self.DRIFTING))) == 1
+        assert _warnings(_observe(self.DRIFTING)) == []
+
+        window = calibration_config.ACQUISITION_DRIFT_WARNING_INTERVAL_S
+        for key in list(calibration_controller._drift_warned_at):
+            calibration_controller._drift_warned_at[key] -= window
+        assert len(_warnings(_observe(self.DRIFTING))) == 1
+
+    def test_the_window_is_a_day(self):
+        # A shorter window reintroduces the flood; a longer one lets a
+        # retune-worthy instrument fall out of sight.
+        assert calibration_config.ACQUISITION_DRIFT_WARNING_INTERVAL_S == 24 * 60 * 60
+
+
+class TestDriftWarningDue:
+    KEY = ("ORBI-1", 10.0)
+
+    def test_first_call_is_due_and_records_the_time(self):
+        assert _drift_warning_due(self.KEY, 1000.0)
+        assert calibration_controller._drift_warned_at[self.KEY] == 1000.0
+
+    def test_within_the_window_is_not_due(self):
+        window = calibration_config.ACQUISITION_DRIFT_WARNING_INTERVAL_S
+        _drift_warning_due(self.KEY, 1000.0)
+        assert not _drift_warning_due(self.KEY, 1000.0 + window - 1)
+
+    def test_at_the_window_boundary_is_due_again(self):
+        window = calibration_config.ACQUISITION_DRIFT_WARNING_INTERVAL_S
+        _drift_warning_due(self.KEY, 1000.0)
+        assert _drift_warning_due(self.KEY, 1000.0 + window)
+
+    def test_becoming_due_restarts_the_window(self):
+        window = calibration_config.ACQUISITION_DRIFT_WARNING_INTERVAL_S
+        _drift_warning_due(self.KEY, 1000.0)
+        _drift_warning_due(self.KEY, 1000.0 + window)
+        assert not _drift_warning_due(self.KEY, 1000.0 + window + 1)
+
+    def test_the_same_instrument_at_another_threshold_is_independent(self):
+        # The threshold is part of the key, so a TOF-class limit and an
+        # Orbi-class limit never share a window.
+        _drift_warning_due(self.KEY, 1000.0)
+        assert _drift_warning_due(("ORBI-1", 50.0), 1000.0)

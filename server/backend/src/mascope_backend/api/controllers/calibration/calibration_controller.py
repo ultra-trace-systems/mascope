@@ -10,6 +10,7 @@ Tasks:
 - Calibrate individual samples, sample sets, and full batches
 """
 
+import time
 from typing import cast
 
 from sqlalchemy import and_, func, select
@@ -65,6 +66,36 @@ from mascope_backend.socket.notifications import (
 from mascope_signal.compute import get_sum_signal
 
 
+# Monotonic timestamp of the last emission of each distinct drift warning,
+# keyed by the (instrument, threshold) pair the warning is about rather than
+# by its rendered text: the two happen to correspond today, but keying on the
+# display string means rewording the message silently resets every window.
+# Per-process, and the backend runs several uvicorn workers, so an instrument
+# can still produce up to one warning per worker per window. That turns a
+# flood of hundreds a day into a handful, which is all this needs to do;
+# making it exact would mean a Redis round trip on a logging path, where a
+# blip must never be able to disturb a calibration.
+_drift_warned_at: dict[tuple[str, float], float] = {}
+
+
+def _drift_warning_due(key: tuple[str, float], now: float) -> bool:
+    """
+    Whether ``key`` is outside its suppression window, recording it if so.
+
+    :param key: The (instrument, threshold-ppm) pair being suppressed.
+    :param now: Current monotonic time in seconds.
+    :return: True when the warning should be emitted.
+    """
+    last = _drift_warned_at.get(key)
+    if (
+        last is not None
+        and now - last < calibration_config.ACQUISITION_DRIFT_WARNING_INTERVAL_S
+    ):
+        return False
+    _drift_warned_at[key] = now
+    return True
+
+
 def acquisition_drift_limit_ppm(filename: str) -> float:
     """
     Drift-warning threshold for the file's instrument class.
@@ -118,6 +149,17 @@ def warn_on_acquisition_drift(
     an issue per ppm value. Grouping is per instrument; the exact per-file
     magnitude follows at INFO.
 
+    Each (instrument, threshold) pair warns at most once per
+    ``ACQUISITION_DRIFT_WARNING_INTERVAL_S`` (see :func:`_drift_warning_due`).
+    Drift persists until someone retunes the instrument, so warning per
+    affected file says nothing the first one did not and buries unrelated
+    errors under hundreds of repeats a day. A warning that cannot name its
+    instrument is never suppressed, and the INFO detail line never is.
+
+    The window is not a magnitude tracker: because the text omits the ppm
+    value, drift that worsens inside the window raises no new warning. The
+    per-file INFO line carries the magnitude for that.
+
     :param fit: Applied fit dict (with the ``quality`` block when available).
     :param instrument: Instrument name for the warning message.
     :param filename: Sample filename: selects the class threshold, and is
@@ -127,11 +169,20 @@ def warn_on_acquisition_drift(
     pre_fit = acquisition_drift_ppm(fit, limit)
     if pre_fit is None:
         return
-    runtime.logger.warning(
+    message = (
         f"Acquisition m/z drift beyond {limit:g} ppm on instrument "
         f"'{instrument or 'unknown'}'. The applied calibration corrects it, "
         "but the instrument's internal m/z calibration likely needs retuning."
     )
+    # An unattributable warning is never suppressed. With no instrument name
+    # every such warning shares one key, so collapsing them would let the
+    # first drifting instrument hide every other one for a full day - the
+    # opposite of what the window is for.
+    if not instrument or _drift_warning_due((instrument, limit), time.monotonic()):
+        runtime.logger.warning(message)
+    # The per-file detail is unconditional: it never reaches monitoring, and
+    # it is what the drill-down needs to see every affected file, including
+    # those acquired while the warning itself is suppressed.
     runtime.logger.info(
         f"Acquisition drift detail: file '{filename}' was {pre_fit:+.2f} ppm "
         "off before calibration."
