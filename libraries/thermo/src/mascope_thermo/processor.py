@@ -12,8 +12,9 @@ from mascope_backend.file_converter.base_processor import (
     SampleFileProps,
     with_file_context,
 )
+from mascope_backend.file_converter.errors import EmptyAcquisitionError
 from mascope_thermo.backend import open_backend
-from mascope_thermo.thermo import get_polarity_options
+from mascope_thermo.thermo import NoScansFoundError, get_polarity_options
 
 
 _log = logging.getLogger(__name__)
@@ -86,7 +87,16 @@ class RawProcessor(BaseFileProcessor):
         :return: Sample length [s]
         :rtype: float
         """
-        times = self.file_handle.scan_times(ms_type=None)  # all scans, seconds
+        try:
+            times = self.file_handle.scan_times(ms_type=None)  # all scans, seconds
+        except NoScansFoundError as e:
+            # No filters are applied here, so the reader finding nothing means
+            # the file holds no scans at all - an aborted or empty
+            # acquisition. Surface it as such instead of letting a
+            # scan-selection error read as an unexpected fault.
+            raise EmptyAcquisitionError(
+                "The file contains no scans; the acquisition is empty or was aborted."
+            ) from e
         return float(times.max()) if times.size else 0.0  # [s]
 
     @property

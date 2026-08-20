@@ -27,7 +27,7 @@ from .api import (
     create_sample_file_db_record,
     delete_sample_file_by_filename,
 )
-from .errors import describe_exception
+from .errors import describe_exception, is_routine_file_failure
 from .peak_guard import PeakDetectionGuard
 from .runtime import runtime
 from .schema import SampleFileProps
@@ -726,8 +726,11 @@ class BaseFileProcessor(Thread, ABC, metaclass=FileProcessorMeta):
 
                 except Exception as e:
                     error_msg = describe_exception(e)
-                    if isinstance(e, FileExistsError):
-                        # Routine duplicate upload: one warning, no traceback
+                    if is_routine_file_failure(e):
+                        # Routine data-side outcomes - a duplicate upload, or
+                        # an acquisition that recorded no scans. The file
+                        # still fails, but neither is a fault in Mascope, so
+                        # they get one warning and no traceback.
                         runtime.logger.warning(
                             f"Failed to process file {Path(self.file_to_process).name}: {e}"
                         )
