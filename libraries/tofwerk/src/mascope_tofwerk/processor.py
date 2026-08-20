@@ -20,11 +20,43 @@ from mascope_backend.file_converter.errors import EmptyAcquisitionError
 from mascope_tofwerk.tofwerk import open_h5_file
 
 
-def _empty_acquisition() -> EmptyAcquisitionError:
-    """Build the empty-acquisition error shared by `interval` and `length`."""
-    return EmptyAcquisitionError(
-        "The file contains no scans; the acquisition is empty or was aborted."
-    )
+def _recorded_scan_times(buf_times) -> np.ndarray:
+    """
+    Scan start times actually recorded, with the unwritten tail trimmed off.
+
+    TofDaq pre-allocates ``TimingData/BufTimes`` as (writes x bufs) and fills
+    it as the run proceeds, so an aborted acquisition leaves a tail of zeros -
+    often whole rows of them. The recorded scans are therefore everything up
+    to the last non-zero entry *anywhere* in the array, not just in the last
+    row: a run that stopped mid-block still recorded every scan before it.
+
+    Index 0 is deliberately kept. Buf times are relative to acquisition start,
+    so the first scan legitimately reads 0.0 and is indistinguishable from an
+    unwritten slot by value alone - which is why a file whose every timestamp
+    is zero is reported as empty rather than as a scan at t=0.
+
+    :param buf_times: The ``TimingData/BufTimes`` dataset.
+    :return: 1-D array of recorded scan start times, at least two long.
+    :rtype: numpy.ndarray
+    :raises EmptyAcquisitionError: When fewer than two scans were recorded,
+        so no interval and no length can be measured.
+    """
+    times = np.asarray(buf_times[:]).flatten()
+    non_zero = np.where(times != 0)[0]
+    if non_zero.size == 0:
+        raise EmptyAcquisitionError(
+            "The file contains no scans; the acquisition is empty or was aborted."
+        )
+    recorded = times[: non_zero[-1] + 1]
+    if recorded.size < 2:
+        # One scan gives no inter-scan spacing to average; computing it anyway
+        # yields NaN (mean of an empty diff), which would otherwise be stored
+        # as the sample's interval and length.
+        raise EmptyAcquisitionError(
+            "The file contains only one scan; the acquisition was aborted "
+            "before a measurable time axis was recorded."
+        )
+    return recorded
 
 
 # Threshold factor for determining blank measurements based on noise level
@@ -107,20 +139,10 @@ class H5Processor(BaseFileProcessor):
         :return: Measurement interval [s]
         :rtype: float
         """
-        timestamps = self.file_handle["TimingData"]["BufTimes"][:].flatten()
-        non_zero_indices = np.where(timestamps != 0)[0]
-        if non_zero_indices.size == 0:
-            # Every buf timestamp is zero: the recorder created the file but
-            # never wrote a scan into it. Nothing here is measurable, so fail
-            # the file as an empty acquisition rather than indexing off the
-            # end of the array.
-            raise _empty_acquisition()
-
-        # Trim trailing zeros
-        timestamps = timestamps[: non_zero_indices[-1] + 1]
+        recorded = _recorded_scan_times(self.file_handle["TimingData"]["BufTimes"])
 
         # Calculate the mean difference between consecutive datapoints
-        differences = np.diff(timestamps)
+        differences = np.diff(recorded)
         return float(np.mean(differences))  # [s]
 
     @property
@@ -131,21 +153,15 @@ class H5Processor(BaseFileProcessor):
         :return: Sample length [s]
         :rtype: float
         """
-        # Get timestamp reference and retrieve first and last values
-        timestamps = self.file_handle["TimingData"]["BufTimes"]
-        if timestamps.shape[0] == 0:
-            # No buf rows at all - see the same guard in `interval`.
-            raise _empty_acquisition()
-        t_first = timestamps[0, 0]
-        # Last write may contain zero bufs, exclude them
-        t_last_bufs = timestamps[-1]
-        non_zero_bufs = t_last_bufs[t_last_bufs != 0]
-        if non_zero_bufs.size == 0:
-            raise _empty_acquisition()
-        t_last = non_zero_bufs[-1]
+        # One read of BufTimes serves both terms below. Deriving the interval
+        # here rather than through `self.interval` also avoids re-entering
+        # `with_file_context`, which would open the h5 file a second time.
+        recorded = _recorded_scan_times(self.file_handle["TimingData"]["BufTimes"])
+
         # Total length of the sample file is the difference between
         # starts of the first and the last scan + mean interval between scans
-        return float(t_last - t_first) + self.interval  # [s]
+        interval = float(np.mean(np.diff(recorded)))
+        return float(recorded[-1] - recorded[0]) + interval  # [s]
 
     @property
     @with_file_context

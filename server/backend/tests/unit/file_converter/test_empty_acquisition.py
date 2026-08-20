@@ -1,11 +1,18 @@
 """An acquisition that recorded no scans fails as data, not as a fault.
 
-A raw file with zero scans - an aborted run, or one that wrote a file before
-recording anything - has nothing to ingest, so the file still fails and lands
-in ``failed_files``. What it must not do is surface as an unexpected
+A raw file with too few scans - an aborted run, or one that wrote a file
+before recording anything - has nothing to ingest, so the file still fails and
+lands in ``failed_files``. What it must not do is surface as an unexpected
 exception: the Thermo path raised the reader's ``NoScansFoundError`` and the
 TOF path an ``IndexError`` off the end of an empty array, both reaching error
 monitoring with a traceback as if Mascope itself had broken.
+
+Two things this must not over-reach on, both covered below. A pre-allocated
+BufTimes array means an aborted TOF run ends in unwritten rows of zeros, so
+"the last write holds no scans" is not "the file holds no scans" - the scans
+before the abort are real and the file's length is measurable from them. And
+a run that recorded exactly one scan has no inter-scan spacing to average, so
+it must be refused rather than ingested with a NaN interval.
 """
 
 from contextlib import contextmanager
@@ -20,6 +27,7 @@ from mascope_backend.file_converter.errors import (
     describe_exception,
     is_routine_file_failure,
 )
+from mascope_backend.runtime import runtime
 from mascope_thermo.processor import RawProcessor
 from mascope_thermo.thermo import NoScansFoundError
 from mascope_tofwerk.processor import H5Processor
@@ -65,6 +73,14 @@ class _ScanlessRawFile:
             "time_range=(None, None), ms_type='None'"
         )
 
+    def acquisition_parameters(self, max_scans=None):  # noqa: ARG002
+        # The real backend selects ms_type="Ms" here, so a scanless file
+        # raises the same reader error as scan_times does.
+        raise NoScansFoundError(
+            "No scans found matching the specified filters: polarity='None', "
+            "time_range=(None, None), ms_type='Ms'"
+        )
+
 
 class _PopulatedRawFile:
     def scan_times(self, ms_type=None):  # noqa: ARG002
@@ -89,6 +105,24 @@ class TestThermoEmptyAcquisition:
     def test_populated_file_still_reports_its_length(self):
         assert _thermo(_PopulatedRawFile()).length == 3.0
 
+    def test_acquisition_params_does_not_report_a_scanless_file_as_a_fault(self):
+        # acquisition_params is read BEFORE length (SampleFileProps declares
+        # it earlier and _get_sample_file_props walks the fields in order), so
+        # its generic `except Exception` used to log a traceback at WARNING -
+        # the level the monitoring sink subscribes to - for every empty .raw,
+        # before length could fail it cleanly as data.
+        records = []
+        sink_id = runtime.logger.add(
+            lambda message: records.append(message.record), level="TRACE"
+        )
+        try:
+            assert _thermo(_ScanlessRawFile()).acquisition_params == {}
+        finally:
+            runtime.logger.remove(sink_id)
+
+        assert [r for r in records if r["level"].name in ("WARNING", "ERROR")] == []
+        assert any(r["exception"] is not None for r in records) is False
+
 
 class TestTofEmptyAcquisition:
     def test_all_zero_buf_times_raise_empty_acquisition(self):
@@ -101,9 +135,30 @@ class TestTofEmptyAcquisition:
         with pytest.raises(EmptyAcquisitionError):
             _tof(np.zeros((0, 2))).length
 
-    def test_last_write_of_only_zero_bufs_raises_empty_acquisition(self):
-        with pytest.raises(EmptyAcquisitionError):
-            _tof([[1.0, 2.0], [0.0, 0.0]]).length
+    def test_a_single_recorded_scan_is_not_measurable(self):
+        # One scan gives np.diff nothing to average. Before this guard the
+        # mean of an empty slice returned NaN, which pydantic accepts and the
+        # converter then stored as the sample's interval and length - only to
+        # fail later at JSON render, where allow_nan is False.
+        with pytest.raises(EmptyAcquisitionError, match="only one scan"):
+            _tof([[3.0, 0.0]]).interval
+        with pytest.raises(EmptyAcquisitionError, match="only one scan"):
+            _tof([[3.0, 0.0]]).length
+
+    def test_an_unfilled_last_write_is_not_an_empty_acquisition(self):
+        # The regression this replaces: BufTimes is pre-allocated, so an
+        # aborted run leaves whole trailing rows of zeros. Reading only the
+        # last row made a file with real scans look empty, and because that
+        # is classified routine it was discarded with no traceback to show
+        # the misdiagnosis. The recorded scans are 1.0 and 2.0.
+        assert _tof([[1.0, 2.0], [0.0, 0.0]]).length == pytest.approx(2.0)
+        assert _tof([[1.0, 2.0], [0.0, 0.0]]).interval == pytest.approx(1.0)
+
+    def test_an_aborted_run_keeps_every_scan_before_the_abort(self):
+        # Five scans at 1 s spacing, then two unwritten write blocks.
+        buf_times = [[1.0, 2.0, 3.0], [4.0, 5.0, 0.0], [0.0, 0.0, 0.0]]
+        assert _tof(buf_times).interval == pytest.approx(1.0)
+        assert _tof(buf_times).length == pytest.approx(5.0)  # (5-1) + 1
 
     def test_populated_file_still_reports_its_interval(self):
         assert _tof([[0.0, 1.0], [2.0, 3.0]]).interval == pytest.approx(1.0)

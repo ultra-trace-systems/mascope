@@ -114,6 +114,17 @@ class RawProcessor(BaseFileProcessor):
         """
         try:
             return self.file_handle.acquisition_parameters()
+        except NoScansFoundError:
+            # A scanless file has no per-scan trailer to sample. This property
+            # is read before `length`, so without this arm the generic handler
+            # below would log a traceback - and WARNING is the level the error
+            # monitoring sink subscribes to, so an empty acquisition would be
+            # reported as a fault before `length` ever gets to fail it as data.
+            _log.info(
+                "No scans to sample acquisition parameters from for %s",
+                self.file_to_process,
+            )
+            return {}
         except Exception:
             _log.warning(
                 "Could not read acquisition parameters for %s",

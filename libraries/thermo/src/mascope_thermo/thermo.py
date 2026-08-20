@@ -191,8 +191,12 @@ class ScanSelector:
 
         #TODO: can be removed if Thermo releases a fix for this issue
         """
-        has_only_one_scan = len(self.raw_scan_stats) == 1
-        if has_only_one_scan:
+        # <= 1, not == 1: a file with no scans at all would otherwise index
+        # off an empty TIC array below, raising IndexError from what is only
+        # meant to be an outlier check - and masking the NoScansFoundError
+        # that scan_indices_1based raises for exactly that case. Mirrors
+        # OpenTFRawBackend._bad_first_scan.
+        if len(self.raw_scan_stats) <= 1:
             return False
 
         tic_values = np.array([stats.TIC for stats in self.raw_scan_stats])

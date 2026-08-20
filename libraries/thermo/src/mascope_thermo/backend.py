@@ -987,6 +987,11 @@ class OpenTFRawBackend:
         )
 
         scans = self._all_scans()
+        # dtype=bool on every mask below: for a file with no scans the list
+        # comprehensions are empty and numpy would otherwise infer float64,
+        # making `mask &=` raise TypeError instead of letting the empty
+        # selection fall through to the NoScansFoundError this method exists
+        # to raise.
         mask = np.ones(len(scans), dtype=bool)
 
         if polarity:
@@ -995,7 +1000,7 @@ class OpenTFRawBackend:
                     f"Invalid polarity '{polarity}' provided. "
                     "Polarity must be '+' or '-'."
                 )
-            mask &= np.array([s["polarity"] == polarity for s in scans])
+            mask &= np.array([s["polarity"] == polarity for s in scans], dtype=bool)
 
         if t_min is not None or t_max is not None:
             start_s = np.array(
@@ -1017,7 +1022,7 @@ class OpenTFRawBackend:
                     f"Invalid scan type '{ms_type}' provided. "
                     "MS scan type must be 'Ms' or 'Ms2'."
                 )
-            mask &= np.array([int(s["ms_level"]) == level for s in scans])
+            mask &= np.array([int(s["ms_level"]) == level for s in scans], dtype=bool)
 
         # Mirror the ThermoBackend first-scan-outlier exclusion (thermo.py
         # scan_indices_1based) so both backends select the same scan set. The
