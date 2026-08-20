@@ -6,7 +6,6 @@ from fastapi import APIRouter, Depends
 
 from mascope_backend.api.lib.api_features import api_route
 from mascope_backend.api.new.auth.dependencies import (
-    admin_user,
     editor_user,
     guest_user,
 )
@@ -84,11 +83,17 @@ async def create_ionization_mode_route(
 async def update_ionization_mode_route(
     ionization_mode_id: str,
     ionization_mode_data: IonizationModeUpdate,
-    user=Depends(admin_user),
+    user=Depends(editor_user),
 ):
     """
-    Update an existing ionization mode. Admin-only: editing a mode affects how
-    all samples processed under it are calibrated and matched.
+    Update an existing ionization mode.
+
+    Editor level, matching creation of a mode and the whole instrument-config
+    surface, and matching what ``docs/authorization.md`` states for shared
+    reference data. Note that an edit is retroactive - it changes how samples
+    already processed under this mode are calibrated and matched - so it is a
+    heavier action than it looks, but that weight is not a reason to require a
+    global role that also carries user administration.
     """
     return await update_ionization_mode(ionization_mode_id, ionization_mode_data)
 
@@ -97,9 +102,9 @@ async def update_ionization_mode_route(
 @api_route()
 async def delete_ionization_mode_route(
     ionization_mode_id: str,
-    user=Depends(admin_user),
+    user=Depends(editor_user),
 ):
     """
-    Delete an ionization mode. Admin-only.
+    Delete an ionization mode. Editor level, as for creating and updating one.
     """
     return await delete_ionization_mode(ionization_mode_id)
