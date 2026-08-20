@@ -511,14 +511,26 @@ targeted/untargeted equivalence - **except**:
 
 `ionization_mechanism_id` is **nullable** - an external engine names adducts by
 notation, not by a deployment's mechanism ids (§8.5.2) - but a *supplied* id
-must exist and must match the sample's ionization mode and polarity, which is
-the constraint the in-app engine satisfies structurally (it can only emit
-mechanisms drawn from the sample's own mode, and filters them on
-`sample.polarity`). A nonexistent or mode-mismatched id is a **422 at
-validation time**, not an `IntegrityError` surfacing as a 500 out of the bulk
-insert after the whole payload has been uploaded. `alternatives` and
-`provenance` (JSON) are accepted as inspector detail, subject to the provenance
-rule below.
+must **exist on the deployment** and must **carry the sample's polarity**. A
+nonexistent or polarity-mismatched id is a **422 at validation time**, not an
+`IntegrityError` surfacing as a 500 out of the bulk insert after the whole
+payload has been uploaded. The same applies to `target_compound_id` and
+`target_ion_id`, the other two ids a row carries into a foreign key.
+
+**Membership of the sample's ionization *mode* is deliberately not required on
+top of polarity**, though the in-app engine does satisfy it structurally (it
+draws mechanisms from the sample's own mode and then filters them on
+`sample.polarity`). A mode is a deployment's narrowing of *what to search for* -
+which adducts this lab expects to see - rather than a property of the
+measurement, and a sample may carry no mode at all. Requiring it would refuse a
+correct adduct for a reason that says nothing about whether the ledger is right:
+an external engine that found `[M+Na]+` in a sample whose mode lists only
+protonation has made a claim about the data, not a configuration error. Polarity
+is the opposite kind of fact - a negative-mode adduct on a positive-mode sample
+cannot be true of that measurement - so that is the line the check draws.
+
+`alternatives` and `provenance` (JSON) are accepted as inspector detail, subject
+to the provenance rule below.
 
 **Reserved provenance keys, and where an engine's own numbers go.** The app
 reads a handful of keys out of the `provenance` blob and presents them as its
@@ -1123,18 +1135,24 @@ about at request time.
   promise.** `import_run` matches adduct notations against
   `mascope.ionization.list()` by exact string and leaves every non-match null;
   it does not guarantee that a supplied id is joinable, because it cannot
-  determine that. Two reasons. The normalization the server applies -
-  `to_mascope_ion_mech`, `to_custom_element_format`, `to_explicit_isotope_format`
-  and the `CUSTOM_ELEMENTS` table - is backend-only code, and the SDK depends on
-  nothing beyond requests, loguru, pandas, tqdm and python-dotenv, so a
-  mechanism the deployment stores in custom-element notation resolves to null
-  under plain string matching. And validity is per *sample*, not per deployment:
-  the server intersects the sample's ionization mode's mechanisms with the
-  sample's polarity, whereas `IonizationResource.list()` is a deployment-global
-  cached read and the SDK has no accessor for the sample-scoped list. A
-  client-resolved id can therefore be deployment-valid and sample-invalid -
-  which is precisely the 422 the resolution was meant to pre-empt. The server's
-  check stays the authority; how much further the client should go is a decision
+  determine that. The reason is **normalization**, not scope: the mapping the
+  server applies - `to_mascope_ion_mech`, `to_custom_element_format`,
+  `to_explicit_isotope_format` and the `CUSTOM_ELEMENTS` table - is backend-only
+  code, and the SDK depends on nothing beyond requests, loguru, pandas, tqdm and
+  python-dotenv, so a mechanism the deployment stores in custom-element notation
+  resolves to null under plain string matching.
+
+  The *scope* half of this argument no longer holds, and it is worth being
+  precise about why. It used to read: validity is per sample rather than per
+  deployment, because the server intersects the sample's ionization mode's
+  mechanisms with the sample's polarity, while `IonizationResource.list()` is a
+  deployment-global cached read. The mode clause is gone - §8.2 requires
+  existence and polarity only - and polarity is something the client *can*
+  check: the mechanism listing carries `ionization_mechanism_polarity` on every
+  row (the endpoint even filters on it), and the sample's polarity is on the
+  sample. So a client that wants to pre-empt the 422 has everything it needs to
+  do so, and the residual gap is the notation mapping alone. The server's check
+  stays the authority; how much further the client should go is a decision
   pending (§8.5.2).
 - **`recalibrate`** - still out of scope for the SDK (superuser admin op).
 
@@ -1265,10 +1283,18 @@ can be answered once real imported ledgers exist, not prerequisites.
   eligibility partition and derives its 409 from the admitted samples' run
   state, so both halves of its 202 now have machinery. The step includes the two
   frontend call sites, which stop treating a refusal as a success.
-- **Step 4 is safe to start** once `calibration` joins `engine` on
-  `PeakAssignmentRunRecord` - without it the calibration badge has no data. It
-  needs no peak-inspector work: §8.5.5 cleans the blob at import instead, so
-  what the inspector renders is Mascope's own or nothing.
+- **Step 4 is safe to start now.** Its prerequisite - `calibration` beside
+  `engine` on `PeakAssignmentRunRecord`, without which the calibration badge has
+  no data - is met: step 2 serves `engine`, `tier_bands` and `calibration` on
+  the run listing. That is earlier than this plan put the API half of run
+  provenance, and deliberately so. The *data* is what an import's trust model
+  rests on - an import bypasses the m/z verification gate and discloses what it
+  calibrated against instead, which is not a disclosure while nothing returns it
+  - whereas the *badge* is what step 4 is actually about. Withholding the fields
+  until the UI that renders them would have shipped an unauditable bypass in
+  between. Step 4 keeps the run selector, the engine badge and the
+  calibration badge. It needs no peak-inspector work: §8.5.5 cleans the blob at
+  import instead, so what the inspector renders is Mascope's own or nothing.
 - **Step 5 proceeds** once step 3 lands, since `assign_batch` wraps its
   partition body and polls by sample against the request timestamp. The
   retry-safety and error-body plumbing (§8.3) is independent of both and can be

@@ -21,6 +21,7 @@ from datetime import timezone
 from types import SimpleNamespace
 
 import pandas as pd
+from fastapi import status
 from sqlalchemy import func, insert, or_, select, update
 
 from mascope_backend.api.controllers.samples.lib.samples_fetch import fetch_sample
@@ -33,6 +34,7 @@ from mascope_backend.api.lib.api_features import (
     api_controller_background_task,
 )
 from mascope_backend.api.lib.exceptions.api_exceptions import (
+    CodedHTTPException,
     NotFoundException,
 )
 from mascope_backend.api.new.cheminfo.utils import (
@@ -152,6 +154,52 @@ _LEDGER_COLUMNS = tuple(
 )
 
 
+#: The status a run holds while an external client is still uploading its rows.
+#: Named here rather than imported from the import module so the read path does
+#: not depend on the write path.
+IMPORTING_STATUS = "importing"
+
+#: Code carried in the error payload when a read addresses a run that is still
+#: assembling. Part of the API contract: a client polling an import it launched
+#: has to tell "not finished yet, ask again" apart from the other things a 409
+#: on this surface can mean, and the run listing is what tells it when to stop.
+RUN_STILL_ASSEMBLING_CODE = "run_still_assembling"
+
+
+class RunStillAssemblingException(CodedHTTPException):
+    """A read named a run whose ledger is still arriving (409).
+
+    Only the *default* read resolves to the latest completed run; a read with an
+    explicit ``peak_assignment_run_id`` serves that run whatever its status, and
+    ``GET /sample/{id}/runs`` lists runs of every status - so an assembling
+    import is reachable by id, and the import's own first response hands the
+    client that id. Serving it would present a partial ledger as a ledger: the
+    rows are real but the set is not, and nothing in the payload says so.
+
+    Distinguished from the 'running' case on purpose. An in-app run writes its
+    whole ledger in one insert at the end, so reading it mid-flight yields an
+    empty result that is honest about itself; an import accumulates, so reading
+    it mid-flight yields a subset that is not.
+
+    :param peak_assignment_run_id: The run that was addressed.
+    :param sample_item_name: The sample it belongs to, for the message.
+    """
+
+    error_code = RUN_STILL_ASSEMBLING_CODE
+
+    def __init__(self, peak_assignment_run_id: str, sample_item_name: str):
+        super().__init__(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                f"Peak assignment run '{peak_assignment_run_id}' for sample "
+                f"'{sample_item_name}' is still being imported, so its ledger "
+                "is incomplete. Wait for the import to finish - the runs "
+                "endpoint reports its status - or read the sample's latest "
+                "completed run by omitting the run id."
+            ),
+        )
+
+
 def _provenance_scalars(provenance: dict | None) -> dict:
     """Collapse a provenance blob into the scalars the ledger renders.
 
@@ -187,6 +235,10 @@ async def get_peak_assignments(
     run when no run id is given. Optional filters narrow by confidence tier,
     peak role, or assignment source.
 
+    A requested run that is still being imported is refused with 409 rather than
+    served: its rows are real but its set is not, and the payload has no way to
+    say so. See :class:`RunStillAssemblingException`.
+
     Paged, and slim: the ledger is deliberately complete - one row per detected
     peak - so a dense sample runs to tens of thousands of rows, and the
     `alternatives`/`provenance` JSON would be ~74% of the bytes while only the
@@ -216,6 +268,10 @@ async def get_peak_assignments(
                 raise NotFoundException(
                     f"Peak assignment run '{peak_assignment_run_id}' not found "
                     f"for sample '{sample.sample_item_name}'"
+                )
+            if run.status == IMPORTING_STATUS:
+                raise RunStillAssemblingException(
+                    peak_assignment_run_id, sample.sample_item_name
                 )
         else:
             run = (
