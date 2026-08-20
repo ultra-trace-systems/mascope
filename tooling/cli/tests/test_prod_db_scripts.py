@@ -6,7 +6,11 @@ images, ``/root/.local/share/uv/tools`` on legacy ones), so the runner probes
 the container at runtime instead of hardcoding a path.
 """
 
+import re
 import subprocess
+from pathlib import Path
+
+import pytest
 
 from mascope_cli.cmd.prod.db import scripts
 
@@ -60,20 +64,45 @@ def test_uses_the_current_dockerfile_path_first():
     )
 
 
-def test_prune_env_vars_are_forwarded_into_the_container():
+def test_every_env_var_the_db_scripts_read_is_forwarded():
     # The prod runner only passes allowlisted env vars through `docker exec -e`;
     # a var missing from the list is silently unset inside the container. For
-    # the prune script that silence is dangerous: the documented
-    # MASCOPE_PRUNE_DRY_RUN=1 recipe would delete for real. Guard every var
-    # prune_peak_assignment_runs reads (see its `run()` in
-    # mascope_backend/db/scripts/prune_peak_assignment_runs.py).
-    for var in (
-        "MASCOPE_PRUNE_DRY_RUN",
-        "MASCOPE_PRUNE_KEEP_PER_SAMPLE",
-        "MASCOPE_PRUNE_KEEP_FAILED_HOURS",
-        "MASCOPE_PRUNE_KEEP_RUNNING_HOURS",
-    ):
-        assert var in scripts._FORWARDED_ENV_VARS
+    # the prune script that silence is dangerous in both directions: the
+    # documented MASCOPE_PRUNE_DRY_RUN=1 recipe would delete for real, and a
+    # retention knob an operator sets in /etc/mascope/prune.env would have no
+    # effect at all while appearing to.
+    #
+    # Derived from the scripts rather than hand-listed. The hand-listed version
+    # of this test stayed green through two knobs being added without the
+    # allowlist following them, because a list that has to be edited alongside
+    # the thing it guards is not a guard - it is a second copy.
+    script_dir = (
+        Path(__file__).resolve().parents[3]
+        / "server"
+        / "backend"
+        / "src"
+        / "mascope_backend"
+        / "db"
+        / "scripts"
+    )
+    if not script_dir.is_dir():
+        pytest.skip("backend sources not present in this checkout")
+
+    read_by_scripts = set()
+    for source in script_dir.glob("*.py"):
+        read_by_scripts.update(
+            re.findall(
+                r'(?:_int_env|_bool_env|os\.environ\.get|os\.getenv)\(\s*"(MASCOPE_[A-Z0-9_]+)"',
+                source.read_text(encoding="utf-8"),
+            )
+        )
+
+    assert read_by_scripts, "found no env reads; the pattern above has gone stale"
+    missing = sorted(read_by_scripts - set(scripts._FORWARDED_ENV_VARS))
+    assert not missing, (
+        f"{missing} are read by a db script but not forwarded into the "
+        "container, so an operator setting them gets silence"
+    )
 
 
 def test_password_change_env_vars_are_forwarded_into_the_container():

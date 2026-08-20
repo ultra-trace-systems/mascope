@@ -761,10 +761,85 @@ class TestEnvOverrides:
 
         assert prune_script._int_env("MASCOPE_PRUNE_KEEP_PER_SAMPLE", 3, minimum=1) == 3
 
+    def test_a_non_integer_falls_back_to_a_floored_default(self, monkeypatch):
+        """The typo path is floored too, or it reopens the abort by another door.
+
+        A mistyped total is exactly when an operator most needs the pass to keep
+        running: they get a warning in the log and the documented policy, not a
+        timer that fails every night.
+        """
+        monkeypatch.setenv("MASCOPE_PRUNE_KEEP_PER_SAMPLE_TOTAL", "twelve")
+
+        assert (
+            prune_script._int_env(
+                "MASCOPE_PRUNE_KEEP_PER_SAMPLE_TOTAL",
+                DEFAULT_KEEP_PER_SAMPLE_TOTAL,
+                minimum=DEFAULT_KEEP_PER_SAMPLE_TOTAL + 8,
+            )
+            == DEFAULT_KEEP_PER_SAMPLE_TOTAL + 8
+        )
+
     def test_an_unset_variable_uses_the_default(self, monkeypatch):
         monkeypatch.delenv("MASCOPE_PRUNE_KEEP_PER_SAMPLE", raising=False)
 
         assert prune_script._int_env("MASCOPE_PRUNE_KEEP_PER_SAMPLE", 3, minimum=1) == 3
+
+    def test_an_unset_variable_is_floored_too(self, monkeypatch):
+        """A default below the floor is still below the floor.
+
+        `keep_per_sample_total`'s floor is whatever `keep_per_sample` resolved
+        to, so an operator who raises only the per-engine quota past the total's
+        default would otherwise produce a pair the prune rejects outright - and
+        the fix would be the very variable they did not set.
+        """
+        monkeypatch.delenv("MASCOPE_PRUNE_KEEP_PER_SAMPLE_TOTAL", raising=False)
+
+        assert (
+            prune_script._int_env(
+                "MASCOPE_PRUNE_KEEP_PER_SAMPLE_TOTAL",
+                DEFAULT_KEEP_PER_SAMPLE_TOTAL,
+                minimum=DEFAULT_KEEP_PER_SAMPLE_TOTAL + 8,
+            )
+            == DEFAULT_KEEP_PER_SAMPLE_TOTAL + 8
+        )
+
+    @pytest.mark.asyncio
+    async def test_raising_the_per_engine_quota_alone_does_not_abort_the_pass(
+        self, monkeypatch
+    ):
+        """The whole point of flooring the default: the nightly pass survives.
+
+        `prune.env.example` ships the total commented out, so "raise
+        MASCOPE_PRUNE_KEEP_PER_SAMPLE" is the single change an operator is most
+        likely to make. Before the floor it produced keep_per_sample=20 against
+        a total of 12, which `prune_peak_assignment_runs` refuses - failing
+        every firing of the timer rather than keeping more runs.
+        """
+        monkeypatch.setenv("MASCOPE_PRUNE_KEEP_PER_SAMPLE", "20")
+        monkeypatch.delenv("MASCOPE_PRUNE_KEEP_PER_SAMPLE_TOTAL", raising=False)
+
+        keep_per_sample = prune_script._int_env(
+            "MASCOPE_PRUNE_KEEP_PER_SAMPLE", DEFAULT_KEEP_PER_SAMPLE, minimum=1
+        )
+        keep_per_sample_total = prune_script._int_env(
+            "MASCOPE_PRUNE_KEEP_PER_SAMPLE_TOTAL",
+            DEFAULT_KEEP_PER_SAMPLE_TOTAL,
+            minimum=keep_per_sample,
+        )
+
+        assert keep_per_sample_total >= keep_per_sample
+        # And the pair the script would pass is one the prune accepts: it gets
+        # past the guards to the empty selection rather than raising.
+        session = _session([], [])
+        assert (
+            await _select_prunable_run_ids(
+                session,
+                keep_per_sample,
+                DEFAULT_KEEP_FAILED_HOURS,
+                keep_per_sample_total=keep_per_sample_total,
+            )
+            == []
+        )
 
 
 def test_grace_defaults_hold_the_intended_order():

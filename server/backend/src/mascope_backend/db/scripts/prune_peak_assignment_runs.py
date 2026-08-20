@@ -62,14 +62,25 @@ def _int_env(name: str, default: int, minimum: int) -> int:
     :return: The override, or the default.
     :raises ValueError: When the variable parses but is below ``minimum``.
     """
+    # Both fallbacks are floored, not just the value that was supplied. A
+    # default is a default against the *other* settings' defaults, and a floor
+    # can be a value resolved at runtime: `keep_per_sample_total` is floored at
+    # whatever `keep_per_sample` came out as. An operator raising only the
+    # per-engine quota past this default would otherwise get a pair the prune
+    # rejects outright, aborting every nightly pass - and the remedy would be
+    # the very variable they did not set, or mistyped.
+    floored_default = max(default, minimum)
+
     raw = os.environ.get(name)
     if raw is None:
-        return default
+        return floored_default
     try:
         value = int(raw)
     except ValueError:
-        runtime.logger.warning(f"{name}='{raw}' is not an integer; using {default}")
-        return default
+        runtime.logger.warning(
+            f"{name}='{raw}' is not an integer; using {floored_default}"
+        )
+        return floored_default
     if value < minimum:
         raise ValueError(f"{name}={value} is below the minimum of {minimum}")
     return value
@@ -84,11 +95,12 @@ async def run() -> None:
         "yes",
         "on",
     }
+    keep_per_sample = _int_env(
+        "MASCOPE_PRUNE_KEEP_PER_SAMPLE", DEFAULT_KEEP_PER_SAMPLE, minimum=1
+    )
     result = await prune_peak_assignment_runs(
         dry_run=dry_run,
-        keep_per_sample=_int_env(
-            "MASCOPE_PRUNE_KEEP_PER_SAMPLE", DEFAULT_KEEP_PER_SAMPLE, minimum=1
-        ),
+        keep_per_sample=keep_per_sample,
         keep_failed_hours=_int_env(
             "MASCOPE_PRUNE_KEEP_FAILED_HOURS", DEFAULT_KEEP_FAILED_HOURS, minimum=0
         ),
@@ -107,10 +119,9 @@ async def run() -> None:
             DEFAULT_KEEP_PER_SAMPLE_TOTAL,
             # Floored at the per-engine quota, which prune_peak_assignment_runs
             # also enforces: a total below it would evict runs that budget
-            # promises to keep.
-            minimum=_int_env(
-                "MASCOPE_PRUNE_KEEP_PER_SAMPLE", DEFAULT_KEEP_PER_SAMPLE, minimum=1
-            ),
+            # promises to keep. Resolved once above rather than re-read here,
+            # so the floor is the value actually in force.
+            minimum=keep_per_sample,
         ),
     )
     runtime.logger.info("=" * 80)
