@@ -12,6 +12,16 @@ and (5) what the design deliberately does not attempt. The reader-facing
 authorization model this extends is described in
 [docs/authorization.md](../authorization.md).
 
+> **Status (2026-08-20): phases A-D are built and merged**, in #1851 (TOTP)
+> and #1877 (registry, attribution, machine accounts, token lifecycle, the
+> new agent). Section 4 has been reconciled with what shipped and now
+> describes running code, noting where the build departed from the design
+> and what it added on top; sections 5, 6 and 10 say what is left. Phases E
+> (the per-deployment rollout) and F (cleanup) have not started, so
+> everything about them is still plan. Nothing here is enabled by default:
+> `require_device_tokens` ships off, and existing agents keep working until
+> a deployment is cut over.
+
 ## 1. Problem
 
 Instrument PCs are unattended, frequently shared machines. The File Agent
@@ -101,7 +111,7 @@ Non-goals — each of these is a decision, not an omission:
   without adding per-deployment infrastructure. An OIDC layer can be
   revisited independently later.
 
-## 4. Target design
+## 4. The design, and what shipped
 
 ### 4.1 Device registry
 
@@ -110,25 +120,77 @@ reported at pairing, renameable), `service_name`, `sponsor_user_id`
 (FK `user`, `ON DELETE SET NULL` — the approver; same pattern as
 `workspace_member.granted_by`), `created_at`, `last_seen_at` (updated on
 authentication, throttled), `revoked_at` (nullable). `access_token` gains a
-nullable `device_id` FK; personal tokens (`mascope_sdk`) leave it null.
-Pairing approval creates the device row and its token in one step.
+nullable `device_id` FK, `ON DELETE CASCADE` so a credential can never
+outlive its device row; personal tokens (`mascope_sdk`) leave it null.
+
+Pairing approval turned out to need two stages rather than one: the device
+row and its machine account commit together, so `machine_user_id` is never
+briefly null, and the tokens are minted afterwards because the token
+strategy owns its own session. A failure between the two discards both and
+leaves the pending code approvable again.
+
+**Re-pairing a machine adds a device; it never replaces one.** There is no
+uniqueness on name and service, and no lookup for an existing device, so a
+machine paired twice has two device rows, two machine accounts, and an old
+credential that stays valid until its own lifetime lapses. That is the
+right default for attribution - history keeps pointing at the device that
+actually uploaded - but it means the rollout has to revoke the old device
+explicitly, per machine. Section 6 carries that step.
 
 ### 4.2 Persisted attribution
 
 `sample_file` gains `uploaded_by_user_id` and `uploaded_by_device_id`
 (nullable FKs, `ON DELETE SET NULL` so history survives account removal).
-Both upload paths set them at file creation, and the values are carried
-through the converter chain and surfaced in file listings. Existing rows
-stay null — pre-feature history is genuinely unattributable, and the UI
-should say "unknown (pre-dates attribution)" rather than guess.
+Both upload paths set them at file creation and the values are carried
+through the converter chain. Existing rows stay null — pre-feature history
+is genuinely unattributable.
+
+**The read half has not shipped.** Listings return the raw column values
+and nothing joins them to a person or a machine name; the frontend does not
+read them at all, so no "unknown (pre-dates attribution)" wording exists
+either. Attribution is recorded and queryable in the database, not yet
+visible in the product.
+
+Two mechanics worth knowing before building on this. The device id travels
+in the create request body rather than being taken from the caller, because
+the converter writes the record back later under its own credential; the
+controller honours it only when the caller is the machine account that
+device authenticates as, and degrades to unattributed with a warning rather
+than failing an ingest. And `uploaded_by_user_id` is always the
+authenticated account, which for an agent upload is the **machine account**,
+not the sponsor - so an agent upload populates both columns, and neither
+names a human.
+
+The migration that adds these columns also adds section 4.8's
+`acquisition_timezone` and `utc_offset_source`, so attribution and
+timestamp provenance arrived together.
 
 ### 4.3 Per-device management
 
-New endpoints: list own devices, rename, revoke **one** (removes its tokens,
-sets `revoked_at`); admins/owners additionally list and revoke any device.
-The settings pane's raw per-service "Regenerate" flow is replaced, for agent
-services, by a "Paired machines" list; `Regenerate` remains for
-`mascope_sdk` personal tokens, whose semantics are unchanged.
+New endpoints under `/api/auth/devices`: list the devices you sponsor,
+rename one, revoke **one**, and an admin-only view of every device.
+
+Revocation does more than the one line this section originally gave it, and
+the extra work is the point: it deletes the device's tokens *and* every
+token the device's machine account holds — including the machine account's
+own `file-converter` token, which is not device-bound and would otherwise
+keep working — then deactivates the machine account, then stamps
+`revoked_at` (idempotently, so the first revocation time survives). The
+device row is kept on purpose, so files it uploaded stay explainable.
+
+Two limits that differ from the original sketch. Revoking someone else's
+device is bounded by the same role ceiling as user management, so an admin
+cannot revoke a device sponsored by another admin or by an owner — not
+"admins/owners may revoke any device". And rename stayed sponsor-only:
+admins have no rename path. The admin-wide list has no consumer in the UI
+yet.
+
+The settings pane's raw per-service "Regenerate" flow is replaced, for the
+File Agent, by a "Paired machines" list with per-row rename and revoke;
+`Regenerate` remains for `mascope_sdk` personal tokens, whose semantics are
+unchanged, and for `tof-agent` and `export-agent`, whose clients cannot
+pair and for which it is the only way to issue a credential until phase F
+retires them.
 
 ### 4.4 Machine accounts
 
@@ -140,16 +202,34 @@ auto-provisions one machine account per device and makes it the token's
 subject, which is what breaks the offboarding coupling: sponsors vouch for
 devices, they do not own their credentials.
 
+A machine account is addressed as `device-<device_id>@agents.mascope.app`
+and named `<machine name> (agent #<device_id>)`. The domain is a
+deliberately mail-less subdomain rather than a reserved one, because the
+user schema validates the field as an email address; the device id keys
+both, so they are unique per device and obviously non-human in a listing.
+
 Workspace behavior follows the existing auto-creation rules
 ([authorization.md](../authorization.md#instrument-workspaces)): the
 machine account takes the "uploading user becomes owner" slot, and global
 admins/owners are auto-added as today. One addition: the device's sponsor
 is also added as workspace owner, so a plain-editor sponsor keeps seeing
-what their machine ingests without an admin's help.
+what their machine ingests without an admin's help. Beyond the design, a
+new machine account is also mirrored into the system workspaces its sponsor
+already belongs to — at exactly editor, and only where the sponsor holds at
+least editor — so an agent can ingest for the instruments its sponsor can
+see, and no others.
 
-Existing non-personal accounts that deployments created as workarounds are
-converted to machine accounts during the rollout, which also retires their
-unusable password-reset paths.
+Machine accounts are additionally fenced off from user management: they are
+excluded from the user listing, and a shared guard refuses updating,
+deleting, resetting MFA on, or stripping tokens from one through the human
+user routes. They are managed only through Paired machines.
+
+**Not built:** converting the non-personal accounts deployments already
+created as workarounds. There is no admin script and no API path for it, so
+the rollout currently leaves those accounts as ordinary person accounts,
+still carrying their unusable password-reset paths. Either phase E does it
+by hand per deployment, or phase F needs a conversion step; it should not
+stay implicit.
 
 ### 4.5 Token lifecycle
 
@@ -163,8 +243,13 @@ whose clock restarts and reaps all but the two newest tokens for the device:
 the fresh one and the token it supersedes, which stays usable only until its
 own (unchanged) lifetime elapses — the overlap that lets an upload in flight
 during the switch finish, without extending any token's life. Implemented
-values: a 30-day device lifetime, two tokens kept; the agent renews at
-roughly half its lifetime.
+values: a 30-day device lifetime, two tokens kept. The agent renews once a
+minute after start (to establish a known expiry), then at half the
+server-reported lifetime, never more often than hourly; a server with no
+renewal endpoint, or a credential that is not renewable, backs the loop off
+to seven days rather than ending it, and a transient failure retries in
+five minutes. The lifetime is a server constant, not a deployment
+setting.
 The machine account's own file-converter token (server-side, not
 device-bound) is minted on demand if missing, so a short device lifetime
 never strands uploads.
@@ -180,10 +265,11 @@ mid-transition dual scheme. Recorded in section 10.
 
 ### 4.6 Strict mode
 
-A per-deployment config flag (working name
-`[backend.auth] require_device_tokens`): when enabled, a bearer token for an
-agent service scope that has no device binding is refused with an
-actionable error. It ships default-off, is flipped per deployment at
+A per-deployment config flag, `require_device_tokens` under `[backend]`
+(not the `[backend.auth]` working name this section first used): when
+enabled, a bearer token for an agent service scope that has no device
+binding is refused with an actionable error the caller actually receives —
+see 4.7. It ships default-off, is flipped per deployment at
 campaign cutover, becomes default-on in a later release, and eventually the
 non-device code path is deleted outright. Flipping this flag is the
 auditable per-deployment closure event for the whole migration.
@@ -196,7 +282,39 @@ deployments alike); the renewal loop from 4.5; TLS verification on by
 default, with an explicit config opt-out for self-signed deployments
 instead of today's unconditional `verify=False`. It also becomes the
 migration target for TOF-agent sites: file-drop ingestion replaces the
-deprecated agent, and no compatibility shim is carried.
+deprecated agent.
+
+"No compatibility shim" turned out to need splitting. The *client* no
+longer falls back from resumable to legacy multipart uploads — a 401 at
+upload creation used to be read as "this server predates token-accessible
+resumable uploads", which latched the process onto the capped,
+non-resumable endpoint and blamed the server's version for what was usually
+a revoked credential. The *server* still serves the legacy route, because
+agents already installed at customer sites use it; it goes in phase F,
+after phase E has replaced them.
+
+Four behaviours were added during review, after this section was written,
+all of them about the moment a credential stops working — which is when a
+non-technical person at an instrument is involved:
+
+- **The agent checks its credential when it starts** and offers to pair
+  there and then if the server refuses it, rather than discovering it on
+  the first upload. Only an answered refusal prompts: a machine that boots
+  before its network is up logs and carries on, since pairing cannot fix
+  that. The check runs after the watcher starts, so a prompt nobody answers
+  cannot stop the agent collecting files.
+- **A refusal mid-session offers the same thing in the console** the agent
+  already has open, and resumes the upload it was holding once approved.
+  Both paths mean recovery is "start the agent", not "run it with a flag";
+  there is no separate pairing entry point.
+- **Refusals carry their own message to the caller.** A 401 is otherwise
+  genericized to "please sign in", which an unattended agent cannot act on;
+  the strict-mode and expired-credential refusals opt out of that and name
+  re-pairing instead, while ordinary sign-in failures are unchanged.
+- **Permanently refused uploads are not retried.** A file the server
+  understood and rejected — most often a name that does not identify an
+  instrument — fails once, with guidance on the two ways to fix it, instead
+  of re-transferring the whole file ten times.
 
 ### 4.8 Acquisition timestamps: the instrument PC's timezone
 
@@ -236,28 +354,41 @@ The fix replaces the guess with a fact:
   existing fix scripts are the argument for never applying an offset
   without recording where it came from.
 
-Old agents send nothing and get today's behavior; nothing breaks in the
-transition, and the campaign (section 6) is what retires the guess in
-practice.
+Resolving a zone at an acquisition time raised a case the design did not
+anticipate: a bare wall clock is not always one instant. When clocks go
+back the hour repeats, and when they go forward it does not exist at all.
+Rather than let the library pick silently, the resolution reports which of
+those it hit, records both candidate offsets, and settles on the
+pre-transition reading — deliberate and greppable, instead of an hour that
+is quietly wrong twice a year.
+
+Old agents send nothing and get today's behavior — their uploads are
+recorded with `utc_offset_source = 'guess'`, which is also how a deployment
+can tell how far the campaign has got: when no new file arrives with
+`guess`, or with a null `uploaded_by_device_id`, every agent on it has been
+re-paired. Nothing breaks in the transition, and the campaign (section 6)
+is what retires the guess in practice.
 
 ## 5. Build phases
 
-- **A — prerequisite:** land PR #1851 (TOTP). It already places pairing
+Phases A-D are **done and merged**; E and F have not started.
+
+- **A — prerequisite (DONE, #1851):** TOTP. It already places pairing
   approval and token regeneration behind MFA re-auth and touches the same
-  pairing routes and dialog this plan extends, so it goes first and this
-  work rebases on top.
-- **B — registry and attribution (server only):** 4.1, 4.2, 4.3, the 4.6
+  pairing routes and dialog this plan extends, so it went first and this
+  work rebased on top.
+- **B — registry and attribution (DONE, #1877):** 4.1, 4.2, 4.3, the 4.6
   flag (default off), the server and converter half of 4.8 (zone accepted,
   applied, and recorded when present), and the assessment checks from
   section 9. Safe to release at any time: existing agents are unaffected
   while the flag is off and send no zone.
-- **C — machine accounts:** 4.4, including converting the token subject for
+- **C — machine accounts (DONE, #1877):** 4.4, including converting the token subject for
   device-bound tokens and the workspace-membership addition.
-- **D — new agent:** 4.5, 4.7, and the agent half of 4.8 (the machine's
+- **D — new agent (DONE, #1877):** 4.5, 4.7, and the agent half of 4.8 (the machine's
   IANA timezone sent with every upload), plus the installer and
   [docs/user/instruments/index.md](../user/instruments/index.md) rewrite.
-- **E — rollout campaign:** section 6, per deployment.
-- **F — cleanup release:** remove the `tof-agent` service scope, socket
+- **E — rollout campaign (NOT STARTED):** section 6, per deployment.
+- **F — cleanup release (NOT STARTED):** remove the `tof-agent` service scope, socket
   namespace and acquisition event handlers, and non-device token acceptance
   for agent scopes; shrink pairing eligibility accordingly.
 
@@ -293,8 +424,14 @@ remotely:
    service, hostname description, and age.
 3. Each instrument PC, in a remote session: install the new agent, pair it
    (device row and machine account created; sponsor is the person
-   approving).
+   approving). If a machine ends up paired more than once — a retry, or a
+   re-pair later — revoke the superseded device: pairing adds, it does not
+   replace, so the older credential stays valid for up to its 30-day
+   lifetime otherwise (4.1).
 4. Personal accounts created with the site; shared operator logins retired.
+   Note there is no tooling for converting an existing shared account into
+   a machine account (4.4), so this step is retire-and-recreate by hand
+   unless phase F builds one.
 5. Deployment-wide password refresh triggered (the existing owner-level
    sweep; every account re-chooses a policy-conformant password on next
    sign-in).
@@ -346,16 +483,29 @@ upload checks to assert the legacy path is gone.
 
 ## 10. Open implementation questions
 
-- Device-token lifetime and renewal cadence, and the rotation overlap
-  window.
-- Machine-account identifier convention (synthetic, non-routable, and
-  obviously non-human in user listings).
-- Whether `export-agent` pairing is in use anywhere; its phase-F fate
-  follows from that.
-- Whether the token-digest migration lands with phase B or C.
+Settled by the phase A-D build, recorded here so they are not reopened:
+token lifetime, cadence and overlap (4.5); the machine-account identifier
+convention (4.4); and the token digest, which landed in neither B nor C and
+stays deferred to F for the reason 4.5 gives.
+
+Still open:
+
+- **`export-agent`.** No client for it exists in this repository, and
+  nothing here can show whether any deployment pairs one — the question the
+  design asked is still unanswered, and its phase-F fate follows from the
+  answer. It currently keeps its manual-token path because removing that
+  would leave no way to issue it a credential.
+- **Converting the non-personal accounts deployments created as
+  workarounds** (4.4). The design assumed the rollout would do it; nothing
+  was built, so it is either a manual step in E or a tool in F.
 - Whether the web upload path should pass the browser's timezone as a
-  weaker hint for 4.8, and how its provenance is labeled if so.
+  weaker hint for 4.8, and how its provenance is labeled if so. Nothing was
+  built; the server-side hook is generic enough to accept one, and the
+  `utc_offset_source` vocabulary would need a fourth value.
 - Whether to ship a zone-aware backfill tool for historical
   `datetime_utc` rows (the existing fixed-offset admin script, upgraded
   to resolve a zone per timestamp), applied per deployment where the
-  instrument PC's zone is known.
+  instrument PC's zone is known. Untouched.
+- **Whether attribution should be visible in the product** (4.2). It is
+  recorded but not surfaced anywhere; leaving it query-only is a defensible
+  answer, but it should be a decision rather than an oversight.
