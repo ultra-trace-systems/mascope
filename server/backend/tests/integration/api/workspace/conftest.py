@@ -292,6 +292,63 @@ async def alpha_item(async_session_factory, alpha_batch, sample_file):
 
 
 # ---------------------------------------------------------------------------
+# A file whose recorded instrument spelling differs from its workspace name
+# ---------------------------------------------------------------------------
+
+
+@pytest_asyncio.fixture(scope="session")
+async def cased_sample_file(async_session_factory):
+    """A file for the same instrument, recorded with different case/whitespace.
+
+    ``SampleFile.instrument`` is not normalised - the workspace migration
+    strips and lowercases precisely because the same physical instrument is
+    recorded several ways - and one workspace serves every variant. A file
+    spelled unlike the variant that named the workspace must still resolve to
+    it.
+    """
+    file_id = gen_id()
+    async with async_session_factory() as session:
+        session.add(
+            SampleFile(
+                sample_file_id=file_id,
+                filename=f"Test-Orbion_{file_id}.raw",
+                instrument=" Test-Orbion ",
+                datetime=_NOW_NAIVE,
+                datetime_utc=_NOW,
+                length=60.0,
+                range={"min": 0, "max": 500},
+                polarity="+",
+            )
+        )
+        await session.commit()
+    return file_id
+
+
+@pytest_asyncio.fixture(scope="session")
+async def cased_alpha_item(async_session_factory, alpha_batch, cased_sample_file):
+    """A sample item in Alpha backed by ``cased_sample_file``."""
+    item_id = gen_id()
+    async with async_session_factory() as session:
+        session.add(
+            SampleItem(
+                sample_item_id=item_id,
+                sample_batch_id=alpha_batch,
+                sample_file_id=cased_sample_file,
+                sample_item_name="Alpha Cased Item",
+                sample_item_type="ANALYSIS",
+                sample_item_attributes={},
+                polarity="+",
+                tic=1000.0,
+                t0=0.0,
+                t1=60.0,
+                sample_item_utc_created=_NOW,
+            )
+        )
+        await session.commit()
+    return item_id
+
+
+# ---------------------------------------------------------------------------
 # Sample file for beta workspace (exposed separately for ACL tests)
 # ---------------------------------------------------------------------------
 

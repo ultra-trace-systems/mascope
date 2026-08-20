@@ -40,7 +40,7 @@ All return ``WorkspaceMember`` on success or raise ``ForbiddenAccessException``.
 from collections.abc import Awaitable
 
 from fastapi import Depends, Path, Query
-from sqlalchemy import select
+from sqlalchemy import func, select
 
 from mascope_backend.api.new.auth.config import auth_settings
 from mascope_backend.api.new.auth.dependencies import current_active_user
@@ -134,14 +134,29 @@ async def _get_workspace_id_from_collection(target_collection_id: str) -> str | 
 
 
 async def _get_workspace_id_from_instrument(instrument: str) -> str | None:
-    """Resolve an instrument name to its system acquisition workspace ID."""
+    """Resolve an instrument name to its system acquisition workspace ID.
+
+    Matched case-insensitively and on the trimmed name, because
+    ``SampleFile.instrument`` is not normalised: the same physical instrument
+    is recorded with inconsistent case and stray whitespace, and one workspace
+    serves every variant. Both the migration that created these workspaces and
+    the acquisition service that creates new ones normalise the same way, and
+    ``ix_workspace_name_ci`` is unique on ``lower(workspace_name)``, so at most
+    one row can match.
+
+    Matching exact-case here would miss the workspace for any file whose
+    recorded spelling differs from the variant that happened to name it, and
+    the callers read that miss as "no such workspace" and refuse.
+    """
     from mascope_backend.api.models.dataset.config import dataset_config
 
-    workspace_name = f"{dataset_config.ACQUISITION_NAME_PREFIX} {instrument}"
+    workspace_name = (
+        f"{dataset_config.ACQUISITION_NAME_PREFIX} {instrument.strip()}".lower()
+    )
     async with async_session() as session:
         result = await session.execute(
             select(Workspace.workspace_id).where(
-                Workspace.workspace_name == workspace_name,
+                func.lower(Workspace.workspace_name) == workspace_name,
                 Workspace.is_system.is_(True),
             )
         )

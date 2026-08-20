@@ -114,6 +114,39 @@ async def test_calibrate_sample_as_outsider_forbidden(outsider_client, alpha_ite
     assert resp.status_code == 403
 
 
+# ============= The instrument spelling does not have to match =============
+
+
+@pytest.mark.asyncio
+async def test_calibrate_sample_with_differently_cased_instrument(
+    acq_admin_client, cased_alpha_item
+):
+    """A file recorded as " Test-Orbion " resolves to the same workspace.
+
+    ``SampleFile.instrument`` is not normalised, and one Acquisitions
+    workspace covers every spelling of an instrument - the migration that
+    created these workspaces groups by ``strip().lower()`` for exactly that
+    reason. Resolving the workspace by exact name would miss it and refuse the
+    admin who owns the instrument, with no fallback to rescue the request now
+    that calibration takes the strict form.
+    """
+    resp = await acq_admin_client.post(
+        f"/api/calibration/mz_calibrate/sample/{cased_alpha_item}", json=_params()
+    )
+    assert resp.status_code != 403
+
+
+@pytest.mark.asyncio
+async def test_calibrate_sample_with_cased_instrument_still_refuses_editor(
+    acq_editor_client, cased_alpha_item
+):
+    """The looser match widens the lookup, not the role it then enforces."""
+    resp = await acq_editor_client.post(
+        f"/api/calibration/mz_calibrate/sample/{cased_alpha_item}", json=_params()
+    )
+    assert resp.status_code == 403
+
+
 # ============= Names are withheld from a caller who cannot read them =============
 
 
