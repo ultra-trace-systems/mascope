@@ -63,6 +63,8 @@ Workspace → Dataset → Sample Batch → Sample Item
 
 Each workspace has its own member list. A user's **workspace role** (guest, editor, admin, or owner) in a given workspace determines what they can do with the data inside it.
 
+`GET /api/workspaces` reports this as `my_role` on each workspace, so the app can disable an action rather than offer one that would be refused. It describes membership only: a global admin also bypasses the instrument-workspace checks on raw files without holding a membership, so a check on a file-level action reads `my_role` *or* the global role.
+
 ### What each workspace role can do
 
 | Action                            | Guest | Editor | Admin | Owner |

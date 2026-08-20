@@ -15,6 +15,7 @@ import { api } from '@/api'
 import { useApp } from '@/stores'
 import { useMzFit } from '@/lib/mzFit'
 import { PaneSettingsCalibration } from '@/lib/panes'
+import { canCalibrateInstruments } from '@/lib/permissions'
 
 const mzFit = useMzFit()
 const confirm = useConfirm()
@@ -56,6 +57,21 @@ watchEffect(async () => {
         })
       : null
   previewSample.value = samples.value?.length > 0 ? { ...samples.value[0] } : null
+})
+
+// Gating the action here rather than only at the context menu covers every way
+// in - the sample and batch menus, and the batch status icon, which opens this
+// dialog directly. For a batch the instruments come from the samples this
+// dialog already loads, so the answer is exact rather than best-effort.
+const canCalibrate = computed(() => {
+  const instruments = batch.value
+    ? (samples.value ?? []).map((sample) => sample?.instrument)
+    : [original.value?.instrument]
+  return canCalibrateInstruments(
+    app.data.workspace.data,
+    app.auth.user,
+    instruments.filter(Boolean)
+  )
 })
 
 const state = reactive({
@@ -299,10 +315,14 @@ const formatter = new Intl.NumberFormat('en-US', {
       </section>
     </div>
     <menu class="dialog-actions">
+      <Message v-if="!canCalibrate" severity="warn" style="margin-inline-end: auto">
+        Applying a calibration rewrites the raw file, so it needs the admin role in the instrument's
+        workspace. You can review the fit here but not save it.
+      </Message>
       <Button label="Cancel" @click="() => (visible = false)" severity="secondary" />
       <Button
         label="Save"
-        :disabled="!mzFit.current || !mzFit.stats || mzFit.status === 'error'"
+        :disabled="!canCalibrate || !mzFit.current || !mzFit.stats || mzFit.status === 'error'"
         @click="save"
       />
     </menu>

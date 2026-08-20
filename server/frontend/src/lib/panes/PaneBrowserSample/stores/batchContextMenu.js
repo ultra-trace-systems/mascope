@@ -7,6 +7,7 @@ import { useApp } from '@/stores'
 import { useBatchDeleteDialog } from '@/lib/dialogs'
 import { generateCopyName } from '@/api/utils'
 import { peakAssignmentEnabled } from '@/lib/features'
+import { batchInstruments, canCalibrateInstruments } from '@/lib/permissions'
 
 import { useSampleContextMenu } from './sampleContextMenu.js'
 import { useCustomizerPopover } from './customizerPopover.js'
@@ -71,6 +72,18 @@ export const useBatchContextMenu = defineStore('browser.sample.batchCtxMenu', ()
           clipboard.samples.every(
             ({ sample_batch_id }) => sample_batch_id !== row.value?.sample_batch_id
           )))
+  )
+
+  // The backend checks every instrument the batch draws on, so this does too.
+  // The instruments come from the samples currently loaded for the batch; when
+  // none are, the list is empty and the helper leaves the entry enabled rather
+  // than hiding a capability it cannot rule out.
+  const canCalibrate = computed(() =>
+    canCalibrateInstruments(
+      app.data.workspace.data,
+      app.auth.user,
+      batchInstruments(app.data.sample.data, row.value?.sample_batch_id)
+    )
   )
 
   // context menu entries
@@ -200,6 +213,7 @@ export const useBatchContextMenu = defineStore('browser.sample.batchCtxMenu', ()
           command: () => {
             dialog.calibration = true
           },
+          disabled: !canCalibrate.value,
           visible: row.value !== null
         },
         {

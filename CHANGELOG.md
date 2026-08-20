@@ -73,6 +73,16 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
   from it before re-running `copy_examples`, or you keep the retired notebook
   and end up with batch-stages twice under two numbers.
 
+### Added
+
+- `GET /api/workspaces` now reports `my_role` on every record: the caller's own
+  role in that workspace. The app uses it to disable an action the backend would
+  refuse rather than offering it and surfacing a 403 on click - the Recalibrate
+  entries in the sample and batch menus, and the Save button in the calibration
+  dialog, are now disabled with an explanation for anyone without admin in the
+  relevant instrument workspace. Superusers report `owner` everywhere, matching
+  what the workspace checks grant them regardless of membership.
+
 ### Changed
 
 - Running an m/z calibration no longer requires the global `admin` role. It now

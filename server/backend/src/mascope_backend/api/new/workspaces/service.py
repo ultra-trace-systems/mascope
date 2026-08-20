@@ -82,8 +82,31 @@ async def get_workspaces(
 
     Regular users see only workspaces they are a member of.
     Superusers see all workspaces, annotated with ``is_member``.
+
+    Every record carries ``my_role``: the caller's own role in that workspace,
+    so a client can gate an action on what the backend will enforce instead of
+    offering it and letting the request come back 403. Superusers report
+    ``owner`` everywhere, which is what ``_enforce`` grants them regardless of
+    membership. It is ``None`` only for a workspace the caller is not a member
+    of, which only a superuser ever sees listed.
+
+    ``my_role`` describes workspace membership and nothing else. A global admin
+    additionally bypasses the instrument-workspace checks on raw files without
+    holding a membership, so a client gating a file-level action wants
+    ``my_role`` *or* the global role - see ``docs/authorization.md``.
     """
     async with async_session() as session:
+        # The caller's memberships, read once and used to annotate every record
+        # below. Kept separate from the listing query so the superuser branch
+        # (which does not join membership at all) can be annotated the same way.
+        member_rows = await session.execute(
+            select(
+                WorkspaceMember.workspace_id,
+                WorkspaceMember.workspace_role,
+            ).where(WorkspaceMember.user_id == user.id)
+        )
+        my_roles = dict(member_rows.all())
+
         query = select(Workspace)
 
         if workspace_status:
@@ -91,12 +114,7 @@ async def get_workspaces(
 
         if user.is_superuser:
             # Superusers see everything; annotate membership
-            member_result = await session.execute(
-                select(WorkspaceMember.workspace_id).where(
-                    WorkspaceMember.user_id == user.id
-                )
-            )
-            member_ids = set(member_result.scalars().all())
+            member_ids = set(my_roles)
         else:
             # Regular users see only their workspaces
             query = query.join(WorkspaceMember).where(
@@ -113,6 +131,9 @@ async def get_workspaces(
             record = ws.to_dict()
             if member_ids is not None:
                 record["is_member"] = ws.workspace_id in member_ids
+            record["my_role"] = (
+                "owner" if user.is_superuser else my_roles.get(ws.workspace_id)
+            )
             data.append(record)
 
         return {
