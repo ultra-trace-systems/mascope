@@ -24,6 +24,9 @@ acquisition/instrument routes):
 - ``check_sample_file_access_bulk``: list of sample_file_ids via items (single query)
 - ``check_sample_file_instrument_access``: sample_file_id via instrument → workspace
 - ``check_sample_file_instrument_access_bulk``: list of sample_file_ids via instruments
+- ``check_sample_item_file_instrument_access``: sample_item_id → its file's instrument
+- ``check_sample_batch_file_instrument_access``: sample_batch_id → its files' instruments
+- ``check_filename_file_instrument_access``: filename → that file's instrument
 - ``check_instrument_workspace_access``: instrument name → workspace
 - ``accessible_acquisition_instruments``: set of instruments user can access
 - ``check_target_collection_access``:  target_collection_id → workspace_id
@@ -340,6 +343,103 @@ async def check_sample_file_instrument_access_bulk(
         if workspace_id is None:
             raise ForbiddenAccessException()
         await _enforce(workspace_id, user, min_level)
+
+
+async def check_sample_item_file_instrument_access(
+    sample_item_id: str,
+    user: User,
+    min_role: str,
+) -> None:
+    """Check the instrument-workspace ACL for the raw file behind a sample item.
+
+    For operations that write to the underlying ``SampleFile`` rather than to
+    the item itself - m/z calibration is the case this exists for. Such a write
+    is not confined to the item's own workspace: every sample item referencing
+    the same file, in any workspace, sees the change. The instrument workspace
+    is what bounds that blast radius, so that is where the caller must hold a
+    role - the same rule already applied to deleting and reprocessing a file.
+
+    :param sample_item_id: The sample item whose file is being written.
+    :param user: The authenticated user.
+    :param min_role: Minimum role required in the instrument's workspace.
+    :raises ForbiddenAccessException: If the item does not exist, or its
+        instrument workspace denies access.
+    """
+    async with async_session() as session:
+        sample_file_id = (
+            await session.execute(
+                select(SampleItem.sample_file_id).where(
+                    SampleItem.sample_item_id == sample_item_id
+                )
+            )
+        ).scalar_one_or_none()
+
+    if sample_file_id is None:
+        raise ForbiddenAccessException()
+
+    await check_sample_file_instrument_access_bulk([sample_file_id], user, min_role)
+
+
+async def check_sample_batch_file_instrument_access(
+    sample_batch_id: str,
+    user: User,
+    min_role: str,
+) -> None:
+    """Check the instrument-workspace ACL for every raw file behind a batch.
+
+    The batch-wide counterpart of
+    ``check_sample_item_file_instrument_access``. A batch may draw on files
+    from more than one instrument, so every instrument involved is checked and
+    the caller needs the role in all of them.
+
+    A batch with no items resolves to an empty file list, which the bulk check
+    refuses. That is deliberate: nothing there can be calibrated anyway, and
+    refusing is the fail-closed answer.
+
+    :param sample_batch_id: The batch whose files are being written.
+    :param user: The authenticated user.
+    :param min_role: Minimum role required in each instrument's workspace.
+    :raises ForbiddenAccessException: If the batch has no items, or any
+        instrument workspace denies access.
+    """
+    async with async_session() as session:
+        result = await session.execute(
+            select(SampleItem.sample_file_id)
+            .distinct()
+            .where(SampleItem.sample_batch_id == sample_batch_id)
+        )
+        sample_file_ids = list(result.scalars().all())
+
+    await check_sample_file_instrument_access_bulk(sample_file_ids, user, min_role)
+
+
+async def check_filename_file_instrument_access(
+    filename: str,
+    user: User,
+    min_role: str,
+) -> None:
+    """Check the instrument-workspace ACL for a raw file named by its filename.
+
+    ``SampleFile.filename`` is unique, so it identifies a file as precisely as
+    its ID does; the m/z apply route happens to take the name.
+
+    :param filename: The raw file being written.
+    :param user: The authenticated user.
+    :param min_role: Minimum role required in the instrument's workspace.
+    :raises ForbiddenAccessException: If no such file exists, or its instrument
+        workspace denies access.
+    """
+    async with async_session() as session:
+        sample_file_id = (
+            await session.execute(
+                select(SampleFile.sample_file_id).where(SampleFile.filename == filename)
+            )
+        ).scalar_one_or_none()
+
+    if sample_file_id is None:
+        raise ForbiddenAccessException()
+
+    await check_sample_file_instrument_access_bulk([sample_file_id], user, min_role)
 
 
 async def check_instrument_workspace_access(

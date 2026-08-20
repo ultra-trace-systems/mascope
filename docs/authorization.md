@@ -15,6 +15,8 @@ Four roles are available, listed from least to most privileged:
 
 Each higher role inherits all permissions of the roles below it.
 
+The two layers are independent, and a global role does not cap the workspace roles an account may hold. An account with the global **guest** role that is an **editor** or **admin** of some workspace can create and modify data there, and the descriptions above should be read as instance-wide capability rather than as a ceiling. When auditing who can do what, read both layers — demoting someone's global role does not withdraw what their workspace memberships grant.
+
 ## Global role
 
 Every user account has a single global role (guest, editor, admin, or owner) set at registration. The global role controls:
@@ -22,7 +24,7 @@ Every user account has a single global role (guest, editor, admin, or owner) set
 - **Who can log in and access the application** — all roles can.
 - **User management** — admins can register and manage guests and editors; owners can manage all users including other admins and owners.
 - **Shared reference data** — instrument configurations, ionization modes, target compounds, and other system-wide resources. Guests can read; editors and above can create and modify. Note that editing shared reference data is retroactive: changing an ionization mode changes how samples already processed under it are calibrated and matched.
-- **Calibration** — all users can view calibration state; only admins can run calibrations (they affect data across workspaces).
+- **Calibration** — all users can view calibration state. Running one is governed by the instrument workspace, not the global role; see below.
 
 Global admins and owners also receive automatic membership in all instrument workspaces (see below).
 
@@ -108,6 +110,9 @@ Access to sample files (the raw measurement data uploaded from instruments) is c
 - **Viewing file lists**: a user sees files from instruments whose workspace they belong to, plus any files linked to samples in their other workspaces.
 - **Uploading files**: requires at least **editor** in the instrument workspace (or the upload creates the workspace and the user becomes owner).
 - **Deleting / reprocessing files**: requires at least **admin** in the instrument workspace.
+- **Running an m/z calibration**: requires at least **admin** in the instrument workspace, for the same reason as reprocessing. A calibration is written onto the file, so every sample item referencing it — in any workspace — sees the change. Membership of the workspace holding the sample is not sufficient and does not grant it.
+
+Fitting a calibration is separate and lighter: `POST /api/calibration/mz_fit` computes a fit and returns it without writing anything, so it needs only **editor** in the workspace holding the sample. Writing that fit to the file is the `mz_apply` step, which takes the instrument-workspace admin rule above.
 
 ## User-created workspaces
 

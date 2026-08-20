@@ -75,6 +75,17 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
 
 ### Changed
 
+- Running an m/z calibration no longer requires the global `admin` role. It now
+  requires `admin` in the *instrument* workspace holding the raw file, the same
+  bar already applied to deleting and reprocessing that file - which is the
+  right scope, because a calibration is written onto the file and every sample
+  item referencing it, in any workspace, sees the change. Fitting a calibration
+  (`POST /api/calibration/mz_fit`) computes without writing anything and is
+  scoped instead to `editor` in the workspace holding the sample. The practical
+  effect is that an analyst who needs to calibrate their own instrument's data
+  no longer has to be promoted to a role that also carries user administration.
+  Membership of the workspace holding the sample does not grant a calibration -
+  the file is shared, so the instrument workspace governs it.
 - Editing and deleting an ionization mode dropped from the global `admin` role
   to `editor`, matching what creating one already required, what the whole
   instrument-config surface requires, and what `docs/authorization.md` states
