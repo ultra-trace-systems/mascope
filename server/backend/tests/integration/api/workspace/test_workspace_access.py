@@ -239,14 +239,62 @@ async def test_list_workspaces_my_role_differs_from_global_role(
 
 
 @pytest.mark.asyncio
-async def test_list_workspaces_my_role_owner_for_superuser(owner_client, ws_beta):
+async def test_list_workspaces_my_role_owner_for_superuser(
+    owner_client, ws_beta, acquisitions_workspace
+):
     """A superuser reports ``owner`` everywhere, matching what _enforce grants.
 
-    ``ws_beta`` has the owner user as its only member, so this also covers the
-    ordinary membership path for that client.
+    ``acquisitions_workspace`` has no members at all, so it pins the part that
+    is not a tautology: the field is the *effective* role, reported without a
+    membership row behind it, not a literal read of one.
     """
     resp = await owner_client.get(_url())
     assert resp.status_code == 200
 
-    for record in resp.json()["data"]:
+    data = resp.json()["data"]
+    for record in data:
         assert record["my_role"] == "owner"
+
+    unmembered = next(w for w in data if w["workspace_id"] == acquisitions_workspace)
+    assert unmembered["is_member"] is False
+    assert unmembered["my_role"] == "owner"
+
+
+@pytest.mark.asyncio
+async def test_list_workspaces_omits_my_role_for_unjoined_workspace(
+    admin_client, ws_alpha, acquisitions_workspace
+):
+    """A global admin gets no ``my_role`` for a workspace they have not joined.
+
+    ``admin_client`` is a global admin (not a superuser) and a workspace admin
+    of Alpha, with no membership of the Acquisitions workspace - which is
+    therefore absent from the listing entirely, ``my_role`` and all. This is
+    exactly why the client helpers read ``my_role`` *or* the global role for a
+    file-level action rather than ``my_role`` alone: the global bypass leaves no
+    trace in this field.
+    """
+    resp = await admin_client.get(_url())
+    assert resp.status_code == 200
+
+    by_id = {w["workspace_id"]: w for w in resp.json()["data"]}
+    assert by_id[ws_alpha["workspace_id"]]["my_role"] == "admin"
+    assert acquisitions_workspace not in by_id
+
+
+@pytest.mark.asyncio
+async def test_list_workspaces_reports_instrument_for_acquisitions(
+    owner_client, ws_alpha, acquisitions_workspace
+):
+    """An acquisition workspace names the instrument whose files it holds.
+
+    The client matches on this instead of rebuilding
+    ``ACQUISITION_NAME_PREFIX`` itself. Asserted against a superuser so both
+    sides are in one listing: the acquisition workspace names its instrument,
+    and a user-created one reports ``None`` so the two cannot be confused.
+    """
+    resp = await owner_client.get(_url())
+    assert resp.status_code == 200
+
+    by_id = {w["workspace_id"]: w for w in resp.json()["data"]}
+    assert by_id[acquisitions_workspace]["instrument"] == "test-orbion"
+    assert by_id[ws_alpha["workspace_id"]]["instrument"] is None

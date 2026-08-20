@@ -90,49 +90,71 @@ async def get_workspaces(
     membership. It is ``None`` only for a workspace the caller is not a member
     of, which only a superuser ever sees listed.
 
+    Records also carry ``instrument``: the instrument an acquisition workspace
+    holds the raw files for, or ``None`` for every other workspace. It saves a
+    client rebuilding ``ACQUISITION_NAME_PREFIX`` to work out which workspace
+    governs a given instrument's files.
+
     ``my_role`` describes workspace membership and nothing else. A global admin
     additionally bypasses the instrument-workspace checks on raw files without
     holding a membership, so a client gating a file-level action wants
     ``my_role`` *or* the global role - see ``docs/authorization.md``.
     """
-    async with async_session() as session:
-        # The caller's memberships, read once and used to annotate every record
-        # below. Kept separate from the listing query so the superuser branch
-        # (which does not join membership at all) can be annotated the same way.
-        member_rows = await session.execute(
-            select(
-                WorkspaceMember.workspace_id,
-                WorkspaceMember.workspace_role,
-            ).where(WorkspaceMember.user_id == user.id)
-        )
-        my_roles = dict(member_rows.all())
+    from mascope_backend.api.models.dataset.config import dataset_config
 
+    acquisition_prefix = f"{dataset_config.ACQUISITION_NAME_PREFIX} "
+
+    async with async_session() as session:
         query = select(Workspace)
+        member_ids = None
+
+        if user.is_superuser:
+            # Superusers see every workspace and no join filters them, so their
+            # memberships have to be read separately to annotate ``is_member``.
+            member_result = await session.execute(
+                select(WorkspaceMember.workspace_id).where(
+                    WorkspaceMember.user_id == user.id
+                )
+            )
+            member_ids = set(member_result.scalars().all())
+        else:
+            # Regular users see only their workspaces, and the join that does
+            # the filtering already carries the role - reading it off that join
+            # keeps the endpoint at the one query it issued before ``my_role``
+            # existed.
+            query = (
+                query.add_columns(WorkspaceMember.workspace_role)
+                .join(
+                    WorkspaceMember,
+                    WorkspaceMember.workspace_id == Workspace.workspace_id,
+                )
+                .where(WorkspaceMember.user_id == user.id)
+            )
 
         if workspace_status:
             query = query.where(Workspace.workspace_status == workspace_status)
 
-        if user.is_superuser:
-            # Superusers see everything; annotate membership
-            member_ids = set(my_roles)
-        else:
-            # Regular users see only their workspaces
-            query = query.join(WorkspaceMember).where(
-                WorkspaceMember.user_id == user.id
-            )
-            member_ids = None
-
         query = query.order_by(asc(Workspace.workspace_name))
         result = await session.execute(query)
-        workspaces = result.scalars().all()
+
+        if user.is_superuser:
+            rows = [(ws, "owner") for ws in result.scalars().all()]
+        else:
+            rows = list(result.all())
 
         data = []
-        for ws in workspaces:
+        for ws, my_role in rows:
             record = ws.to_dict()
             if member_ids is not None:
                 record["is_member"] = ws.workspace_id in member_ids
-            record["my_role"] = (
-                "owner" if user.is_superuser else my_roles.get(ws.workspace_id)
+            record["my_role"] = my_role
+            # The instrument an acquisition workspace holds the raw files for,
+            # so a client gating a file-level action can match on it instead of
+            # rebuilding this name from a prefix of its own.
+            record["instrument"] = (
+                ws.workspace_name.removeprefix(acquisition_prefix)
+                if ws.is_system and ws.workspace_name.startswith(acquisition_prefix)
+                else None
             )
             data.append(record)
 
