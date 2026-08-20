@@ -4,6 +4,7 @@ import { defineStore } from 'pinia'
 import { useConfirm } from 'primevue/useconfirm'
 
 import { api } from '@/api'
+import { canCalibrateInstrument } from '@/lib/permissions'
 import { useApp } from '@/stores'
 
 import { useBatchContextMenu } from './batchContextMenu.js'
@@ -38,6 +39,13 @@ export const useSampleContextMenu = defineStore('browser.sample.sampleCtxMenu', 
           clipboard.samples.every(({ sample_batch_id }) => sample_batch_id !== pasteBatchId.value)))
   )
   const sampleContext = computed(() => row.value || app.data.sample.selected.length > 0)
+
+  // Calibration is governed by the raw file's instrument workspace, not by the
+  // workspace holding the sample, so it is answered per row rather than once
+  // for the pane.
+  const canCalibrate = computed(() =>
+    canCalibrateInstrument(app.data.workspace.data, app.auth.user, row.value?.instrument)
+  )
 
   // actions
   async function onClick(event) {
@@ -220,6 +228,7 @@ export const useSampleContextMenu = defineStore('browser.sample.sampleCtxMenu', 
             command: () => {
               dialog.calibration = true
             },
+            disabled: !canCalibrate.value,
             visible: !multiselecting
           },
           {

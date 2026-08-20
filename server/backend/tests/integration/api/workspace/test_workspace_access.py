@@ -198,3 +198,55 @@ async def test_delete_workspace_as_owner(owner_client):
     # Verify it's gone
     get_resp = await owner_client.get(_url(ws_id))
     assert get_resp.status_code == 404
+
+
+# ============= my_role annotation on the listing =============
+
+
+@pytest.mark.asyncio
+async def test_list_workspaces_reports_my_role(guest_client, ws_alpha):
+    """Each record carries the caller's own role in that workspace.
+
+    ``ws_alpha`` gives every standard test user a workspace role matching their
+    global role name, so the guest client is a workspace guest there.
+    """
+    resp = await guest_client.get(_url())
+    assert resp.status_code == 200
+
+    record = next(
+        w for w in resp.json()["data"] if w["workspace_id"] == ws_alpha["workspace_id"]
+    )
+    assert record["my_role"] == "guest"
+
+
+@pytest.mark.asyncio
+async def test_list_workspaces_my_role_differs_from_global_role(
+    acq_admin_client, acquisitions_workspace
+):
+    """``my_role`` reports the workspace role, not the global one.
+
+    ``acq_admin_user`` is a global *editor* who is an *admin* of the
+    Acquisitions workspace. A client gating the calibration controls reads this
+    field, so the two must not be conflated.
+    """
+    resp = await acq_admin_client.get(_url())
+    assert resp.status_code == 200
+
+    record = next(
+        w for w in resp.json()["data"] if w["workspace_id"] == acquisitions_workspace
+    )
+    assert record["my_role"] == "admin"
+
+
+@pytest.mark.asyncio
+async def test_list_workspaces_my_role_owner_for_superuser(owner_client, ws_beta):
+    """A superuser reports ``owner`` everywhere, matching what _enforce grants.
+
+    ``ws_beta`` has the owner user as its only member, so this also covers the
+    ordinary membership path for that client.
+    """
+    resp = await owner_client.get(_url())
+    assert resp.status_code == 200
+
+    for record in resp.json()["data"]:
+        assert record["my_role"] == "owner"
