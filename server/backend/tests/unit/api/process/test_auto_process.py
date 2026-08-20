@@ -587,8 +587,10 @@ async def test_retries_recoverable_error_then_succeeds():
 
     assert result == ok
     assert body.call_count == 2
-    # Partial sample items are cleaned up before the retry, not the first try.
-    cleanup.assert_called_once_with("sf-retry")
+    # Partial sample items are cleared before every attempt, the first included:
+    # the file may carry items from an earlier pipeline a restart cut short.
+    assert cleanup.call_count == 2
+    assert all(call.args == ("sf-retry",) for call in cleanup.call_args_list)
 
 
 @pytest.mark.asyncio
@@ -639,7 +641,8 @@ async def test_does_not_retry_non_recoverable_error():
 
     assert excinfo.value.status_code == 400
     assert body.call_count == 1
-    cleanup.assert_not_called()
+    # Cleared once, before the single attempt - not once per failure.
+    cleanup.assert_called_once_with("sf-bad")
 
 
 @pytest.mark.asyncio

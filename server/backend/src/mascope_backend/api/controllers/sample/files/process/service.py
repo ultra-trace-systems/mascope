@@ -86,10 +86,48 @@ CALIBRATION_ITERATIONS = 7
 #: pipeline-level retry.
 RETRYABLE_CALIBRATION_STATUS = (200, 207, 422)
 
-#: Fire-and-forget rematch tasks. asyncio only keeps weak references, so an
-#: unreferenced task can be garbage-collected mid-run; the done-callback below
-#: also surfaces failures that would otherwise die as unretrieved exceptions.
+#: Detached background work this module owns: the auto-processing pipelines
+#: started by :func:`spawn_auto_process_sample_file`, and the fire-and-forget
+#: rematch task each completed pipeline spawns. asyncio only keeps weak
+#: references, so an unreferenced task can be garbage-collected mid-run; the
+#: done-callback below also surfaces failures that would otherwise die as
+#: unretrieved exceptions. :func:`drain_auto_process_tasks` drains this set at
+#: shutdown, so anything added here is work a restart has to account for.
 _background_tasks: set[asyncio.Task] = set()
+
+#: Set once this worker has begun shutting down. A pipeline waiting out a retry
+#: backoff watches it and gives up at once rather than sleeping through the
+#: drain's whole budget, and cancellations are reported more quietly while it is
+#: set (see :func:`_report_cancelled`). Never cleared: shutdown is terminal for
+#: the process, and the tests that exercise it reset it explicitly.
+_shutdown = asyncio.Event()
+
+
+def _report_cancelled(sample_file_id: str, when: str) -> None:
+    """Report a cancelled pipeline at a level that matches its cause.
+
+    Cancellation during a shutdown drain is expected and arrives in bulk - one
+    per file still queued behind the ingest gate - and the error-monitoring
+    sink groups issues by the formatted message, so an ERROR carrying the
+    sample file id opens a separate issue for every file in an interrupted
+    burst. The drain reports the count itself as a single error; the per-file
+    detail stays at INFO, where the worker log still records exactly which
+    files were truncated.
+
+    A cancellation outside a drain is a fault - nobody asked for it - and keeps
+    the ERROR that makes it visible.
+
+    :param sample_file_id: File whose pipeline was cancelled.
+    :param when: Phrase naming the point it was cancelled at.
+    """
+    message = (
+        f"Auto-processing of sample file {sample_file_id} was cancelled "
+        f"{when}; it will have no matched peaks"
+    )
+    if _shutdown.is_set():
+        runtime.logger.info(message)
+    else:
+        runtime.logger.error(message)
 
 
 def _observe_background_task(task: asyncio.Task) -> None:
@@ -141,12 +179,22 @@ def _is_recoverable_error(exc: Exception) -> bool:
 
 
 async def _delete_partial_acquisition_items(sample_file_id: str) -> None:
-    """Delete ACQUISITION sample items a failed pipeline attempt left behind.
+    """Delete ACQUISITION sample items an earlier pipeline run left behind.
 
-    Sample items are committed independently before calibration + matching,
-    so a pipeline that failed later leaves them in place and a retry would
-    create duplicates. Only ACQUISITION items are removed - user-created
-    samples referencing the file are never touched.
+    Sample items are committed independently before calibration + matching, so
+    any run that stopped after that point leaves them in place: a failed
+    attempt, a run a restart cancelled, a worker killed outright.
+
+    Runs before every attempt, the first included. A re-triggered pipeline
+    (``POST /{sample_file_id}/process``) starts at attempt 0, and
+    :func:`create_acquisition_batches_and_items` never looks for existing items
+    before creating them - so without this, re-processing a file whose first
+    run was cut short gives it a duplicate ACQUISITION item per ionization
+    mode. For a file processed for the first time the delete matches nothing
+    and costs one statement.
+
+    Only ACQUISITION items are removed - user-created samples referencing the
+    file are never touched.
     """
     async with async_session() as session:
         result = await session.execute(
@@ -229,11 +277,12 @@ async def auto_process_sample_file(
     for attempt in range(_AUTO_PROCESS_RETRIES + 1):
         try:
             async with _auto_process_gate:
-                if attempt:
-                    # A failed attempt may have committed sample items before
-                    # dying in calibration/matching; remove them so the retry
-                    # cannot create duplicates.
-                    await _delete_partial_acquisition_items(sample_file_id)
+                # Any earlier run - a failed attempt, or a whole earlier
+                # pipeline a restart cut short - may have committed sample
+                # items before dying in calibration/matching. Clear them on
+                # every attempt, the first included, so neither a retry nor a
+                # re-triggered pipeline can duplicate them.
+                await _delete_partial_acquisition_items(sample_file_id)
                 return await _auto_process_sample_file(
                     sample_file_id=sample_file_id,
                     independent_transaction=independent_transaction,
@@ -243,14 +292,11 @@ async def auto_process_sample_file(
                 )
         except asyncio.CancelledError:
             # CancelledError is a BaseException, so every `except Exception` in
-            # this pipeline misses it and a cancelled run used to vanish without
-            # a single line: sample_file and sample_item committed, no match rows,
-            # batch still settling `ready` (#1844). Say so, then let cancellation
+            # this pipeline misses it and a cancelled run vanishes without a
+            # single line: sample_file and sample_item committed, no match rows,
+            # batch still settling `ready`. Say so, then let cancellation
             # continue - it is not ours to swallow.
-            runtime.logger.error(
-                f"Auto-processing of sample file {sample_file_id} was cancelled "
-                f"on attempt {attempt + 1}; it will have no matched peaks"
-            )
+            _report_cancelled(sample_file_id, f"on attempt {attempt + 1}")
             raise
         except Exception as e:
             if attempt >= _AUTO_PROCESS_RETRIES or not _is_recoverable_error(e):
@@ -272,30 +318,53 @@ async def auto_process_sample_file(
                 f"{sample_file_id} hit a recoverable error ({e}); retrying "
                 f"in {delay}s"
             )
-            # Sleep outside the gate so a waiting pipeline can use the slot.
+            # Waited outside the gate so a queued pipeline can use the slot,
+            # and raced against the shutdown signal rather than slept through.
+            # This is the pipeline's longest-lived state - up to 210 s per file,
+            # entered exactly on the congestion that makes a restart likely - so
+            # a draining worker that waited it out would spend its whole budget
+            # here, leaving none for the pipelines doing real work.
             #
-            # Guarded separately: an exception raised inside an except clause is
-            # not caught by that try's other handlers, so a cancellation landing
-            # here would bypass the CancelledError branch above. This is the
-            # pipeline's longest-lived state - up to 210 s per file, entered
-            # exactly on the congestion that makes a restart likely - so it is
-            # the window most likely to be cancelled, and was the last one that
-            # could still go unreported.
+            # Guarded for cancellation separately from the branch above: an
+            # exception raised inside an except clause is not caught by that
+            # try's other handlers, so a cancellation landing here would bypass
+            # it.
             try:
-                await asyncio.sleep(delay)
+                await asyncio.wait_for(_shutdown.wait(), timeout=delay)
+            except asyncio.TimeoutError:
+                continue  # the backoff elapsed undisturbed - take the retry
             except asyncio.CancelledError:
-                runtime.logger.error(
-                    f"Auto-processing of sample file {sample_file_id} was "
-                    f"cancelled while waiting {delay}s to retry; it will have "
-                    f"no matched peaks"
-                )
+                _report_cancelled(sample_file_id, f"while waiting {delay}s to retry")
                 raise
+            # Shutting down. Report it and stand down as cancelled rather than
+            # failed: the file is not at fault, and raising an ordinary
+            # exception would send the user an error notification per queued
+            # file on every restart.
+            _report_cancelled(
+                sample_file_id,
+                f"while waiting {delay}s to retry, because the worker is shutting down",
+            )
+            raise asyncio.CancelledError
 
 
-#: How long a graceful shutdown waits for detached pipelines to finish. Long
-#: enough to cover a pipeline in its final retry backoff (30 + 60 + 120 s) plus
-#: the work after it, short enough that a deploy is not held indefinitely.
-AUTO_PROCESS_DRAIN_TIMEOUT_S = 300
+#: How long a graceful shutdown waits for detached pipelines to finish.
+#:
+#: Deliberately far below the 210 s a pipeline can spend in retry backoff: the
+#: backoff now watches :data:`_shutdown` and stands down as soon as the drain
+#: starts (see :func:`auto_process_sample_file`), so the budget buys time for
+#: pipelines doing real work rather than for ones asleep. It also has to fit
+#: inside the container's stop grace period - Docker SIGKILLs the worker when
+#: that expires, and a SIGKILL raises nothing and logs nothing, which is the
+#: silence this whole path exists to remove. ``stop_grace_period`` is set above
+#: this value in docker-compose.yaml; raise them together or not at all.
+AUTO_PROCESS_DRAIN_TIMEOUT_S = 60
+
+#: How long the drain waits for cancelled pipelines to run their handlers.
+#: Bounded on purpose: unwinding a cancelled pipeline awaits a rollback, and a
+#: rollback on the saturated pool that caused the backoff in the first place can
+#: block. Draining is a courtesy to in-flight work and must never be the reason
+#: a worker fails to shut down.
+_DRAIN_CANCEL_GRACE_S = 10
 
 
 async def drain_auto_process_tasks(
@@ -308,7 +377,7 @@ async def drain_auto_process_tasks(
     in-flight pipeline completed. Detaching it (see
     :func:`spawn_auto_process_sample_file`) removed that guarantee - the loop
     would close on a pipeline that was seconds from finishing, leaving the file
-    in exactly the half-processed state #1844 is about.
+    half-processed.
 
     Anything still running when the timeout expires is cancelled rather than
     abandoned, so :func:`auto_process_sample_file` gets to name the files that
@@ -318,40 +387,62 @@ async def drain_auto_process_tasks(
     """
     try:
         loop = asyncio.get_running_loop()
-        # This set is module-global and so outlives any single event loop, while
-        # the test suite and dev reloads create many. A task belonging to another
-        # loop can be neither awaited nor cancelled from here - asyncio raises -
-        # and a raise in a shutdown hook takes the whole teardown with it. Only
-        # this loop's tasks are ours to drain. In production there is one loop per
-        # worker, so this filters nothing.
-        pending = {
-            task
-            for task in _background_tasks
-            if not task.done() and task.get_loop() is loop
-        }
-        if not pending:
+        deadline = loop.time() + timeout
+        # Before anything else: a pipeline parked in its retry backoff sees this
+        # and stands down immediately instead of holding the drain for up to
+        # 120 s doing nothing.
+        _shutdown.set()
+
+        def pending() -> set[asyncio.Task]:
+            """Tasks this loop still has to account for, re-read each pass."""
+            # Re-read rather than snapshotted once: a pipeline's last act is to
+            # spawn a rematch task into this same set (see
+            # :func:`_auto_process_sample_file`), so a single snapshot leaves
+            # that task abandoned when the loop closes - unwaited, uncancelled,
+            # unreported, which is exactly the failure the drain exists to stop.
+            #
+            # Only this loop's tasks are ours. The set is module-global and
+            # outlives any single loop, while the test suite and dev reloads
+            # create several, and a task belonging to another loop can be
+            # neither awaited nor cancelled from here - asyncio raises, and a
+            # raise in a shutdown hook takes the whole teardown with it. In
+            # production there is one loop per worker, so this filters nothing.
+            return {
+                task
+                for task in _background_tasks
+                if not task.done() and task.get_loop() is loop
+            }
+
+        outstanding = pending()
+        if not outstanding:
             return
 
         runtime.logger.info(
-            f"Waiting up to {timeout:.0f}s for {len(pending)} background "
+            f"Waiting up to {timeout:.0f}s for {len(outstanding)} background "
             f"task(s) to finish before shutdown"
         )
-        done, still_running = await asyncio.wait(pending, timeout=timeout)
+        while outstanding and (remaining := deadline - loop.time()) > 0:
+            await asyncio.wait(outstanding, timeout=remaining)
+            outstanding = pending()
 
-        if not still_running:
-            runtime.logger.info(f"All {len(done)} background task(s) finished")
+        if not outstanding:
+            runtime.logger.info("All background task(s) finished before shutdown")
             return
 
-        runtime.logger.warning(
-            f"{len(still_running)} background task(s) did not finish in "
-            f"{timeout:.0f}s; cancelling - affected sample files are named in "
-            f"the errors that follow"
-        )
-        for task in still_running:
+        for task in outstanding:
             task.cancel()
+        # One error for the whole drain, not one per file: the sink groups
+        # error-monitoring issues by message text, and an interrupted ingest
+        # burst can hold hundreds of queued pipelines. Each file is named at
+        # INFO by _report_cancelled.
+        runtime.logger.error(
+            f"Shutdown cancelled {len(outstanding)} background task(s) still "
+            f"running after {timeout:.0f}s; the affected sample files are named "
+            f"at INFO in this worker's log"
+        )
         # Let each cancelled pipeline run its CancelledError handler before the
         # loop closes; without this they are abandoned and report nothing.
-        await asyncio.gather(*still_running, return_exceptions=True)
+        await asyncio.wait(outstanding, timeout=_DRAIN_CANCEL_GRACE_S)
     except Exception:
         # Draining is a courtesy to in-flight work; it must never be the reason a
         # worker fails to shut down.
@@ -360,7 +451,13 @@ async def drain_auto_process_tasks(
         )
 
 
-async def spawn_auto_process_sample_file(**kwargs) -> None:
+async def spawn_auto_process_sample_file(
+    sample_file_id: str,
+    independent_transaction: bool = False,
+    user_id: int | None = None,
+    process_id: str | None = None,
+    parent_id: str | None = None,
+) -> None:
     """Start the auto-processing pipeline detached from the request that triggered it.
 
     Scheduled through FastAPI's ``BackgroundTasks`` so it still starts only after
@@ -369,13 +466,26 @@ async def spawn_auto_process_sample_file(**kwargs) -> None:
 
     That matters because the pipeline outlives its request by minutes - the retry
     backoff alone reaches into the hundreds of seconds - while the uploader that
-    triggered it works on a fixed client timeout. A task still tied to that
-    connection dies with it, and cancellation is a BaseException, so it took the
-    pipeline down without a single log line (#1844).
+    triggered it works on a fixed client timeout. Note that uvicorn does not in
+    fact cancel an ASGI call when its client disconnects, so this does not by
+    itself explain a pipeline vanishing; what detaching buys is that the
+    pipeline's lifetime stops being tied to a connection at all, and that
+    shutdown waits for it explicitly (:func:`drain_auto_process_tasks`) rather
+    than implicitly.
 
-    :param kwargs: Forwarded verbatim to :func:`auto_process_sample_file`.
+    The signature mirrors :func:`auto_process_sample_file` rather than taking
+    ``**kwargs`` so a renamed or mistyped argument at a trigger site is caught
+    where it is written, not as a TypeError inside a detached task.
     """
-    task = asyncio.create_task(auto_process_sample_file(**kwargs))
+    task = asyncio.create_task(
+        auto_process_sample_file(
+            sample_file_id=sample_file_id,
+            independent_transaction=independent_transaction,
+            user_id=user_id,
+            process_id=process_id,
+            parent_id=parent_id,
+        )
+    )
     # asyncio only holds a weak reference to tasks: keep one so the task cannot
     # be garbage-collected mid-run, and observe its outcome so a failure is
     # logged instead of dying as an unretrieved exception.
@@ -689,59 +799,37 @@ async def re_process_sample_files(
         # Passed all validations
         valid_sample_files.append(sample_file)
 
-    # --- Reset calibration so re-processing starts from the acquisition axis --- #
-    # Orbitrap calibration is cumulative (the file's m/z axes are rescaled in
-    # place), so without this a re-processed file silently keeps its previous
-    # calibration. A failed reset keeps the old calibration; the file still
-    # re-processes, so log instead of failing the whole request.
-    for sample_file in valid_sample_files:
-        try:
-            await reset_mz_calibration(sample_file)
-        except Exception:  # noqa: BLE001 - reset is best-effort per file
-            runtime.logger.exception(
-                "Failed to reset m/z calibration for "
-                f"'{sample_file.filename}' before re-processing; the previous "
-                "calibration remains in effect."
-            )
-
-    # --- Delete existing sample items for valid files --- #
-    if valid_sample_files:
-        valid_sample_file_ids = {sf.sample_file_id for sf in valid_sample_files}
-
-        async with async_session() as session:
-            # Collect existing sample items for notifications
-            acquisition_sample_items = (
-                (
-                    await session.execute(
-                        select(SampleItem).where(
-                            SampleItem.sample_file_id.in_(valid_sample_file_ids)
-                        )
-                    )
-                )
-                .scalars()
-                .all()
-            )
-            # Delete
-            await session.execute(
-                delete(SampleItem).where(
-                    SampleItem.sample_file_id.in_(valid_sample_file_ids)
-                )
-            )
-            await session.commit()
-
-            # Emit deletion notifications
-            for sample_item in acquisition_sample_items:
-                affected_sample_batch_ids.add(sample_item.sample_batch_id)
-                if independent_transaction:
-                    await emit_record_deleted(
-                        record_type="sample",
-                        record_id=sample_item.sample_item_id,
-                        room=sample_item.sample_batch_id,
-                    )
-
     # --- Process valid files --- #
+    # Each file is reset, cleared and rebuilt in one pass. Resetting the
+    # calibration and deleting the sample items for the whole batch up front
+    # would commit destruction the loop has not caught up with yet: a run that
+    # stops partway - a worker killed mid-deploy, an unhandled failure - would
+    # leave every file it never reached with no sample items at all and no
+    # calibration, which is worse than the half-processed state re-processing is
+    # meant to repair.
     for sample_file in valid_sample_files:
         try:
+            # Orbitrap calibration is cumulative (the file's m/z axes are
+            # rescaled in place), so without this a re-processed file silently
+            # keeps its previous calibration. A failed reset keeps the old
+            # calibration; the file still re-processes, so log instead of
+            # failing the whole request.
+            try:
+                await reset_mz_calibration(sample_file)
+            except Exception:  # noqa: BLE001 - reset is best-effort per file
+                runtime.logger.exception(
+                    "Failed to reset m/z calibration for "
+                    f"'{sample_file.filename}' before re-processing; the "
+                    "previous calibration remains in effect."
+                )
+
+            affected_sample_batch_ids.update(
+                await _clear_sample_items_for_reprocessing(
+                    sample_file_id=sample_file.sample_file_id,
+                    independent_transaction=independent_transaction,
+                )
+            )
+
             result = await auto_process_sample_file(
                 sample_file_id=sample_file.sample_file_id,
                 independent_transaction=False,
@@ -826,6 +914,57 @@ async def re_process_sample_files(
             )
         )
         raise_api_warning(message, notification_data, status_code=207)
+
+
+async def _clear_sample_items_for_reprocessing(
+    sample_file_id: str,
+    independent_transaction: bool,
+) -> set[str]:
+    """Delete one file's sample items immediately before it is re-processed.
+
+    Called per file from inside :func:`re_process_sample_files`' processing
+    loop rather than for the whole batch up front, so the deletion is never
+    committed further ahead than the rebuild that follows it.
+
+    Unlike :func:`_delete_partial_acquisition_items` this removes every sample
+    item on the file, not only the ACQUISITION ones - re-processing has already
+    refused any file carrying user-created samples.
+
+    :param sample_file_id: File whose sample items are being rebuilt.
+    :param independent_transaction: Whether to emit deletion events itself.
+    :return: Batch IDs the removed items belonged to, for UI reloads.
+    """
+    async with async_session() as session:
+        # Read the fields out inside the session: the rows are gone by the time
+        # the notifications below are emitted.
+        removed = [
+            (item.sample_item_id, item.sample_batch_id)
+            for item in (
+                (
+                    await session.execute(
+                        select(SampleItem).where(
+                            SampleItem.sample_file_id == sample_file_id
+                        )
+                    )
+                )
+                .scalars()
+                .all()
+            )
+        ]
+        await session.execute(
+            delete(SampleItem).where(SampleItem.sample_file_id == sample_file_id)
+        )
+        await session.commit()
+
+    affected_sample_batch_ids = {batch_id for _, batch_id in removed}
+    if independent_transaction:
+        for sample_item_id, sample_batch_id in removed:
+            await emit_record_deleted(
+                record_type="sample",
+                record_id=sample_item_id,
+                room=sample_batch_id,
+            )
+    return affected_sample_batch_ids
 
 
 async def create_acquisition_batches_and_items(
