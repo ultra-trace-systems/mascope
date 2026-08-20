@@ -7,8 +7,17 @@ the container at runtime instead of hardcoding a path.
 """
 
 import subprocess
+from pathlib import Path
+
+import pytest
 
 from mascope_cli.cmd.prod.db import scripts
+
+
+# Guarded the same way as test_systemd_units.py: repo-root tooling/systemd is
+# not present in every checkout or packaged layout, and a missing directory
+# should skip rather than fail with an unrelated FileNotFoundError.
+SYSTEMD_DIR = Path(__file__).resolve().parents[3] / "tooling" / "systemd"
 
 
 def _fake_run(returncode: int, stdout: str):
@@ -87,3 +96,36 @@ def test_password_change_env_vars_are_forwarded_into_the_container():
         "MASCOPE_CLEAR_PASSWORD_CHANGE_EMAILS",
     ):
         assert var in scripts._FORWARDED_ENV_VARS
+
+
+def test_skip_backup_warns_an_interactive_operator():
+    # A human at the terminal can still abort at the confirmation prompt that
+    # prints right after, so the notice is a real warning.
+    assert scripts.skip_backup_log_level(False) == "WARNING"
+
+
+def test_skip_backup_stays_below_warning_when_unattended():
+    # Under --yes there is nobody to react, and --skip-backup is a settled
+    # configuration choice rather than a moment of risk: the nightly
+    # mascope-assignment-prune unit passes it on every firing by design. At
+    # WARNING it reached error monitoring, minting an event per server per
+    # night that no operator could ever act on.
+    assert scripts.skip_backup_log_level(True) == "INFO"
+
+
+@pytest.mark.skipif(
+    not SYSTEMD_DIR.is_dir(), reason="repo-root tooling/systemd not available"
+)
+def test_the_prune_unit_runs_unattended():
+    # The level choice above only keeps the timer quiet because the unit
+    # passes --yes alongside --skip-backup. If it ever drops --yes, the
+    # nightly noise returns - and the run would block on a prompt no one
+    # answers.
+    unit = (SYSTEMD_DIR / "mascope-assignment-prune.service").read_text(
+        encoding="utf-8"
+    )
+    exec_start = next(
+        line for line in unit.splitlines() if line.startswith("ExecStart=")
+    )
+    assert "--skip-backup" in exec_start
+    assert "--yes" in exec_start
