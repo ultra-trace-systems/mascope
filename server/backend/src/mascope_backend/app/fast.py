@@ -17,7 +17,11 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
-from mascope_backend.api.lib.exceptions.api_exceptions import handle_exception
+from mascope_backend.api.lib.exceptions.api_exceptions import (
+    ApiException,
+    api_e_response_json,
+    handle_exception,
+)
 from mascope_backend.api.lib.rate_limit import client_ip
 from mascope_backend.api.routes import routers
 from mascope_backend.db import init_db
@@ -308,6 +312,41 @@ async def http_exception_handler(request: Request, exc: HTTPException) -> JSONRe
         # internal "HTTPException on METHOD /path" wording.
         context_message = "Request failed"
     return handle_exception(exc, context_message, response_type="http")
+
+
+@fast.exception_handler(ApiException)
+async def api_exception_handler(request: Request, exc: ApiException) -> JSONResponse:
+    """
+    Return an ApiException that escaped a route as its own JSON response.
+
+    ``@api_route`` already converts ApiException into a response itself, so
+    this handler covers the routes Mascope does not own - the tus upload
+    routes in particular, plus the undecorated auth routes (login, logout,
+    mfa/verify, pairing, access-token regenerate). The tus routes reach
+    ``@api_controller``-decorated code that *raises* ApiException, but
+    tuspyserver generates the routes themselves, so they cannot carry
+    ``@api_route`` and nothing converted it. Without a handler for the type,
+    the exception fell through to ``global_exception_handler``, and
+    Starlette's ServerErrorMiddleware re-raises after that handler responds -
+    so a routine 401 (an upload token expiring mid-transfer) was captured by
+    error monitoring as an unhandled server fault.
+
+    The routes are attached with ``include_router``, not ``mount``: a mounted
+    sub-application carries its own ExceptionMiddleware and would not be
+    covered by a handler registered here.
+
+    The exception carries its own status code and user message, and is
+    serialized exactly as ``@api_route`` serializes one. Every ApiException
+    that can reach this handler today is built by ``process_exception``, which
+    logs it at its proper level; one raised directly would arrive unlogged, so
+    keep that in mind before raising ApiException from an undecorated route.
+
+    :param request: The incoming request.
+    :param exc: The escaped ApiException.
+    :return: The exception's structured JSON response.
+    :rtype: JSONResponse
+    """
+    return api_e_response_json(exc)
 
 
 @fast.exception_handler(Exception)
