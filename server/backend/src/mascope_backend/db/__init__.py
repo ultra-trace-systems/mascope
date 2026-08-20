@@ -29,7 +29,23 @@ from mascope_runtime.config import BackendConfig
 ASYNC_SESSION_MAKER: async_sessionmaker[AsyncSession] | None = None
 db_cfg = cast(BackendConfig, runtime.config).database
 
-# Semaphore to limit concurrent database operations
+# Admission control for the dependency-injected session path.
+#
+# DELIBERATELY sized at pool_size, NOT pool_size + max_overflow. It looks like an
+# artificial cap - get_async_session backs the FastAPI-Users auth dependencies, so
+# a permit is held for the whole request and only pool_size requests per worker can
+# be resolving auth at once - but the headroom it leaves is load-bearing.
+#
+# A permit holder needs more than one connection. The auth SELECT opens a
+# transaction on the injected session that is not committed, so that connection is
+# held until the request ends; dependencies and controllers that run while it is
+# still open (require_workspace_role -> _get_workspace_membership, and the ~270
+# other async_session() call sites) then check out a SECOND connection, ungated.
+# Leaving max_overflow free is what makes that second checkout possible.
+#
+# Raising this to the pool ceiling deadlocks the worker: every permit holder takes
+# its auth connection, the pool is empty, and all of them then block on their
+# nested checkout until pool_timeout (120 s) expires. See #1845.
 db_semaphore = asyncio.Semaphore(db_cfg.pool_size)
 
 
