@@ -32,9 +32,12 @@ acquisition/instrument routes):
 - ``accessible_acquisition_instruments``: set of instruments user can access
 - ``check_target_collection_access``:  target_collection_id → workspace_id
 - ``accessible_workspace_ids_for_user``: set of workspace_ids user is a member of
+- ``access_granted``: run any of the above and report pass/fail as a bool
 
 All return ``WorkspaceMember`` on success or raise ``ForbiddenAccessException``.
 """
+
+from collections.abc import Awaitable
 
 from fastapi import Depends, Path, Query
 from sqlalchemy import select
@@ -211,6 +214,24 @@ async def _enforce(
 # ---------------------------------------------------------------------------
 # Public: explicit check (for body-param routes)
 # ---------------------------------------------------------------------------
+
+
+async def access_granted(check: Awaitable[object]) -> bool:
+    """Report whether an access check passes instead of raising when it does not.
+
+    For the few places that need to *vary* a response on access rather than
+    refuse the request outright - naming an object in a message only to a
+    caller who could have read that name anyway. Everything that gates an
+    action awaits the check directly and lets it raise.
+
+    :param check: An un-awaited call to one of the check functions here.
+    :return: ``True`` if the check passed, ``False`` if it refused.
+    """
+    try:
+        await check
+    except ForbiddenAccessException:
+        return False
+    return True
 
 
 async def accessible_acquisition_instruments(user: User) -> set[str] | None:

@@ -29,7 +29,10 @@ from mascope_backend.api.models.calibration.calibration_pydantic_model import (
 )
 from mascope_backend.api.new.auth.dependencies import current_active_user, guest_user
 from mascope_backend.api.new.workspaces.dependencies import (
+    access_granted,
+    check_batch_access,
     check_filename_file_instrument_access,
+    check_sample_access,
     check_sample_batch_file_instrument_access,
     check_sample_item_file_instrument_access,
     check_sample_or_file_instrument_access,
@@ -38,6 +41,21 @@ from mascope_backend.db.id import gen_id
 
 
 calibration_router = APIRouter(prefix="/api/calibration", tags=["Calibration"])
+
+
+async def _sample_label(sample_item_id: str, sample: dict, user) -> str:
+    """The sample's name for a message, or an empty string if it is not the
+    caller's to read.
+
+    The routes below admit an admin of the file's instrument workspace, which
+    says nothing about membership of the workspace holding the sample. Naming
+    it unconditionally would report a name the caller cannot reach through any
+    read route, so the name is included only when a guest-level read would have
+    returned it.
+    """
+    if await access_granted(check_sample_access(sample_item_id, user, "guest")):
+        return f" '{sample['sample_item_name']}'"
+    return ""
 
 
 @calibration_router.get("/mz_calibration")
@@ -118,7 +136,7 @@ async def calibration_mz_fit_route(
     # Verify the existance of sample item
     sample_data = await get_sample_item(sample_item_id)
     sample = sample_data.get("data")
-    sample_item_name = sample["sample_item_name"]
+    named = await _sample_label(sample_item_id, sample, user)
 
     # Get data for notifications
     process_id = gen_id(8)
@@ -132,7 +150,7 @@ async def calibration_mz_fit_route(
         process_id=process_id,
     )
     return {
-        "message": f"Started to m/z fit sample '{sample_item_name}', please wait.",
+        "message": f"Started to m/z fit sample{named}, please wait.",
         "process_id": process_id,
     }
 
@@ -225,7 +243,7 @@ async def calibration_mz_calibrate_sample_route(
     # Verify the existance of sample item
     sample_data = await get_sample_item(sample_item_id)
     sample = sample_data.get("data")
-    sample_item_name = sample["sample_item_name"]
+    named = await _sample_label(sample_item_id, sample, user)
 
     # Get data for notifications
     process_id = gen_id(8)
@@ -239,7 +257,7 @@ async def calibration_mz_calibrate_sample_route(
         process_id=process_id,
     )
     return {
-        "message": f"Started to m/z calibrate sample '{sample_item_name}', please wait.",
+        "message": f"Started to m/z calibrate sample{named}, please wait.",
         "process_id": process_id,
     }
 
@@ -278,8 +296,17 @@ async def calibration_mz_calibrate_batch_route(
     # Verify the existance of sample batch and check status
     sample_batch = await fetch_sample_batch(sample_batch_id)
 
+    # Admin in the instrument workspace does not imply membership of the
+    # workspace holding this batch, so its name goes into the messages below
+    # only for a caller who could have read that name through the batch routes.
+    named = (
+        f" '{sample_batch.sample_batch_name}'"
+        if await access_granted(check_batch_access(sample_batch_id, user, "guest"))
+        else ""
+    )
+
     if sample_batch.status == "processing":
-        msg = f"Sample batch '{sample_batch.sample_batch_name}' is currently processing. Please wait for completion and try again later."
+        msg = f"Sample batch{named} is currently processing. Please wait for completion and try again later."
         notification_data = {"sample_batch_id": sample_batch_id}
         raise ApiException(msg, notification_data, 409)
 
@@ -295,6 +322,6 @@ async def calibration_mz_calibrate_batch_route(
         process_id=process_id,
     )
     return {
-        "message": f"Started to m/z calibrate sample batch '{sample_batch.sample_batch_name}', please wait.",
+        "message": f"Started to m/z calibrate sample batch{named}, please wait.",
         "process_id": process_id,
     }

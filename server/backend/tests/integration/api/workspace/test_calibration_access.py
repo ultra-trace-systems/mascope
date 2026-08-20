@@ -114,6 +114,63 @@ async def test_calibrate_sample_as_outsider_forbidden(outsider_client, alpha_ite
     assert resp.status_code == 403
 
 
+# ============= Names are withheld from a caller who cannot read them =============
+
+
+@pytest.mark.asyncio
+async def test_calibrate_batch_does_not_name_an_unreadable_batch(
+    acq_admin_client, alpha_batch
+):
+    """The instrument role authorises the write, not a read of the batch.
+
+    ``acq_admin_client`` is admin of the instrument workspace and no member of
+    Alpha, so it may calibrate this batch but could not have learned its name
+    through any read route. The confirmation must not hand the name over.
+    """
+    resp = await acq_admin_client.post(
+        f"/api/calibration/mz_calibrate/batch/{alpha_batch}", json=_params()
+    )
+    assert resp.status_code != 403
+    assert "Alpha Batch" not in resp.text
+
+
+@pytest.mark.asyncio
+async def test_calibrate_batch_names_a_readable_batch(admin_client, alpha_batch):
+    """A caller who is a member of the batch's workspace still gets the name.
+
+    ``admin_client`` is a global admin - so it clears the instrument check -
+    and a workspace admin of Alpha, so withholding the name here would only
+    make the confirmation worse.
+    """
+    resp = await admin_client.post(
+        f"/api/calibration/mz_calibrate/batch/{alpha_batch}", json=_params()
+    )
+    assert resp.status_code != 403
+    assert "Alpha Batch" in resp.text
+
+
+@pytest.mark.asyncio
+async def test_calibrate_sample_does_not_name_an_unreadable_sample(
+    acq_admin_client, alpha_item
+):
+    """Same for the per-sample route."""
+    resp = await acq_admin_client.post(
+        f"/api/calibration/mz_calibrate/sample/{alpha_item}", json=_params()
+    )
+    assert resp.status_code != 403
+    assert "Alpha Item" not in resp.text
+
+
+@pytest.mark.asyncio
+async def test_mz_fit_does_not_name_an_unreadable_sample(acq_admin_client, alpha_item):
+    """And for the fit, which admits the instrument admin for the same reason."""
+    resp = await acq_admin_client.post(
+        f"/api/calibration/mz_fit?sample_item_id={alpha_item}", json=_params()
+    )
+    assert resp.status_code != 403
+    assert "Alpha Item" not in resp.text
+
+
 # ============= mz_apply: keyed on the filename, same instrument rule =============
 
 
