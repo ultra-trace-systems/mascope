@@ -75,6 +75,12 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
 
 ### Changed
 
+- Editing and deleting an ionization mode dropped from the global `admin` role
+  to `editor`, matching what creating one already required, what the whole
+  instrument-config surface requires, and what `docs/authorization.md` states
+  for shared reference data. Guests remain read-only. Note that such an edit is
+  retroactive: it changes how samples already processed under the mode are
+  calibrated and matched.
 - With the opt-in peak-centric assignment feature enabled, the legacy Match
   tab (briefly renamed "Fit" under the flag) is retired: the Sample view
   already carries the spectrum-envelope and time-series duties it duplicated,

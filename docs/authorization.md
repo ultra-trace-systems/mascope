@@ -21,7 +21,7 @@ Every user account has a single global role (guest, editor, admin, or owner) set
 
 - **Who can log in and access the application** — all roles can.
 - **User management** — admins can register and manage guests and editors; owners can manage all users including other admins and owners.
-- **Shared reference data** — instrument configurations, ionization modes, target compounds, and other system-wide resources. Guests can read; editors and above can create and modify.
+- **Shared reference data** — instrument configurations, ionization modes, target compounds, and other system-wide resources. Guests can read; editors and above can create and modify. Note that editing shared reference data is retroactive: changing an ionization mode changes how samples already processed under it are calibrated and matched.
 - **Calibration** — all users can view calibration state; only admins can run calibrations (they affect data across workspaces).
 
 Global admins and owners also receive automatic membership in all instrument workspaces (see below).

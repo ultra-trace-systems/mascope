@@ -2,8 +2,8 @@
 Tests: editing ionization modes via ``PATCH /api/ionization/modes/{id}``.
 
 Covers the editable-ionization-mode changes:
-- Editing (PATCH) and deleting (DELETE) a mode are admin-only; editors are
-  forbidden (create stays at editor level and is not exercised here).
+- Editing (PATCH) and deleting (DELETE) a mode are editor level, matching
+  creation and the instrument-config surface; guests remain read-only.
 - The calibration / diagnostic collection of a mode may be changed to another
   collection (previously only allowed when not yet defined), but cannot be
   cleared back to null.
@@ -11,9 +11,11 @@ Covers the editable-ionization-mode changes:
   ``recalibrate`` when the calibration collection changes, otherwise
   ``rematch`` when mechanisms or the diagnostic collection change.
 
-The mode update endpoint is gated purely on the global ``admin`` role and has
-no workspace ACL, so the global ``admin_client`` / ``editor_client`` fixtures
-from ``tests/integration/api/conftest.py`` are sufficient.
+The mode endpoints are gated purely on the global role and have no workspace
+ACL, so the global ``guest_client`` / ``editor_client`` / ``admin_client``
+fixtures from ``tests/integration/api/conftest.py`` are sufficient. The
+behavioural tests below still drive the endpoint as an admin, which remains
+permitted since the roles are hierarchical.
 """
 
 from datetime import datetime, timezone
@@ -228,22 +230,44 @@ async def _batch_status(async_session_factory, batch_id):
         return batch.status
 
 
-# ============= Admin-only (PATCH / DELETE) =============
+# ============= Editor level (PATCH / DELETE) =============
 
 
 @pytest.mark.asyncio
-async def test_editor_cannot_update_mode(editor_client, mode_ctx):
-    """Editors cannot edit an ionization mode (admin-only)."""
+async def test_editor_can_update_mode(editor_client, mode_ctx):
+    """Editors can edit an ionization mode, as they can create one."""
     resp = await editor_client.patch(
+        f"/api/ionization/modes/{mode_ctx['mode_id']}", json=_body(mode_ctx)
+    )
+    assert resp.status_code == 200
+
+
+@pytest.mark.asyncio
+async def test_editor_can_delete_mode(editor_client, mode_ctx):
+    """Editors are not refused the delete endpoint on role grounds.
+
+    ``mode_ctx`` builds a mode that samples reference, which the endpoint
+    refuses on business grounds (400) whatever the caller's role. That is
+    exactly what makes it a usable authorization test: reaching the 400 proves
+    the request got past the role check, which is the part under test here.
+    """
+    resp = await editor_client.delete(f"/api/ionization/modes/{mode_ctx['mode_id']}")
+    assert resp.status_code != 403
+
+
+@pytest.mark.asyncio
+async def test_guest_cannot_update_mode(guest_client, mode_ctx):
+    """Guests remain read-only on shared reference data."""
+    resp = await guest_client.patch(
         f"/api/ionization/modes/{mode_ctx['mode_id']}", json=_body(mode_ctx)
     )
     assert resp.status_code == 403
 
 
 @pytest.mark.asyncio
-async def test_editor_cannot_delete_mode(editor_client, mode_ctx):
-    """Editors cannot delete an ionization mode (admin-only)."""
-    resp = await editor_client.delete(f"/api/ionization/modes/{mode_ctx['mode_id']}")
+async def test_guest_cannot_delete_mode(guest_client, mode_ctx):
+    """Guests remain read-only on shared reference data."""
+    resp = await guest_client.delete(f"/api/ionization/modes/{mode_ctx['mode_id']}")
     assert resp.status_code == 403
 
 
