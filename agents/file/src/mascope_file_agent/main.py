@@ -15,7 +15,7 @@ import mascope_sdk
 from mascope_file_agent import __version__
 from mascope_file_agent import config as agent_config
 from mascope_file_agent.config import ConfigError
-from mascope_file_agent.wizard import run_setup_wizard
+from mascope_file_agent.wizard import run_pairing, run_setup_wizard
 from mascope_runtime import Runtime
 
 
@@ -247,6 +247,74 @@ def get_upload_filename(filepath: str) -> str | None:
     return f"{prefix}{stem}{suffix}{ext}"
 
 
+# Serializes the re-pair offer: three upload workers hitting a dead credential
+# at once must not each prompt. Declining is remembered so the console does not
+# nag on every file for the rest of the session.
+_repair_lock = Lock()
+_repair_declined = False
+
+REPAIR_BANNER = """
+=== This machine's Mascope credential was refused ===
+{reason}
+
+Pairing again takes a few seconds: this window shows a code, and someone
+signed in to Mascope approves it under 'Pair an agent'.
+"""
+
+REPAIR_DECLINED_NOTE = """
+Not pairing. Uploads stay paused until this machine is paired again - use
+'Mascope File Agent - pair this machine' in the Start Menu when you are ready.
+"""
+
+
+def _offer_repair(token_used: str, reason: str) -> bool:
+    """Offer to pair this machine again after the server refused its credential.
+
+    Recovery used to mean re-launching the agent with ``--setup``, which is a
+    lot to ask of whoever runs the instrument: the console is already open in
+    front of them and the credential is already known to be dead. Pairing needs
+    a person with an editor account to approve in the browser either way, so
+    asking here changes nothing about who may connect a machine.
+
+    :param token_used: The credential the failed attempt used; a different live
+        token means another worker already fixed it.
+    :type token_used: str
+    :param reason: The server's explanation, shown to the operator.
+    :type reason: str
+    :return: Whether the caller should retry the upload.
+    :rtype: bool
+    """
+    global _repair_declined
+
+    if not (sys.stdin and sys.stdin.isatty()):
+        return False  # started without a console; the log line has to do
+
+    with _repair_lock:
+        if current_access_token() != token_used:
+            return True  # another worker re-paired while this one waited
+        if _repair_declined:
+            return False
+        print(REPAIR_BANNER.format(reason=reason))
+        try:
+            answer = input("Pair this machine again now? [Y/n]: ").strip().lower()
+        except (EOFError, KeyboardInterrupt):
+            _repair_declined = True
+            return False
+        if answer in ("n", "no"):
+            _repair_declined = True
+            print(REPAIR_DECLINED_NOTE)
+            return False
+
+        token = run_pairing(HOST, verify=getattr(runtime.config, "verify_tls", True))
+        if not token:
+            _repair_declined = True
+            return False
+        _set_access_token(token)
+        _persist_token(token)
+        runtime.logger.info("Paired again; resuming uploads.")
+        return True
+
+
 def process_file_upload(filepath: str, max_retries: int = 10) -> None:
     """Process file upload
 
@@ -254,6 +322,7 @@ def process_file_upload(filepath: str, max_retries: int = 10) -> None:
     :type filepath: str
     """
     for attempt in range(1, max_retries + 1):
+        token_used = current_access_token()
         try:
             upload_sample_file(filepath)
             return
@@ -261,14 +330,16 @@ def process_file_upload(filepath: str, max_retries: int = 10) -> None:
             runtime.logger.error(f"File upload failed: {ve}")
             break  # do not retry on validation errors
         except AuthenticationError as e:
+            if _offer_repair(token_used, str(e)):
+                continue  # fresh credential in hand - try this file again
             runtime.logger.error(
                 f"File upload failed for file {os.path.basename(filepath)}: {e} "
                 "Retrying will not help - the server rejected this machine's "
                 "credential. It may have been revoked, or have expired while "
-                "the agent was offline. Re-pair this machine by starting the "
-                "agent with --setup."
+                "the agent was offline. Pair this machine again with 'Mascope "
+                "File Agent - pair this machine' in the Start Menu."
             )
-            break  # a rejected token stays rejected; do not retry
+            break  # a rejected token stays rejected until the machine re-pairs
         except (NotFoundError, ValidationError) as e:
             runtime.logger.error(
                 f"File upload failed for file {os.path.basename(filepath)}: {e} "
