@@ -123,6 +123,15 @@ services:
     image: ghcr.io/ultra-trace-systems/mascope/backend:${MASCOPE_VERSION:-latest}
     container_name: ${MASCOPE_BACKEND_CONTAINER_NAME:-mascope_prod_backend}
     restart: unless-stopped
+    # Long enough for the lifespan to drain in-flight auto-processing
+    # (AUTO_PROCESS_DRAIN_TIMEOUT_S, 60s) plus its cancel grace, with margin.
+    # Docker's 10s default would SIGKILL the worker mid-drain, and a SIGKILL
+    # raises nothing and logs nothing - the pipeline just stops, leaving the
+    # sample file committed with no matched peaks and no explanation. Inherited
+    # by file_converter through the anchor, which wants the same protection for
+    # a conversion in flight. Raise together with the drain timeout, never
+    # below it.
+    stop_grace_period: 90s
     logging: *default-logging
     build:
       dockerfile: server/backend/Dockerfile

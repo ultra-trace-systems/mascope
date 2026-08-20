@@ -49,6 +49,8 @@ async def lifespan(app: FastAPI):
     - Connect to Redis for cross-worker session storage
 
     Worker shutdown tasks:
+    - Drain detached auto-processing pipelines (waits, then cancels what
+      overruns, so a truncated pipeline still names its file)
     - Disconnect Redis client
 
     :param app: FastAPI application instance
