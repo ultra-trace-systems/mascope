@@ -383,16 +383,21 @@ async def test_drain_waits_for_tasks_spawned_while_it_is_draining(
 ):
     """A pipeline's last act is to spawn a rematch task into the same set.
 
-    A drain that snapshots the set once would return before that task exists,
+    A drain that snapshots the set once returns before that task has finished,
     leaving it abandoned when the loop closes - unwaited, uncancelled and
     unreported, the exact failure the drain is here to stop.
+
+    The follow-up deliberately awaits something that outlives a single loop
+    pass. With ``sleep(0)`` it completes in the same pass that resolves the
+    drain's wait, so a one-shot snapshot passes this test too and it proves
+    nothing about the re-read.
     """
     from mascope_backend.api.controllers.sample.files.process import service
 
     finished = []
 
     async def followup():
-        await asyncio.sleep(0)
+        await asyncio.sleep(0.02)
         finished.append("followup")
 
     async def pipeline():
@@ -405,7 +410,10 @@ async def test_drain_waits_for_tasks_spawned_while_it_is_draining(
 
     await service.drain_auto_process_tasks(timeout=5)
 
+    # Asserted at the moment the drain returns: waiting afterwards would see
+    # the follow-up finish on its own and hide an abandonment.
     assert finished == ["pipeline", "followup"]
+    assert all(task.done() for task in isolated_background_state)
 
 
 @pytest.mark.asyncio

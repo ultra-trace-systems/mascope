@@ -89,6 +89,15 @@ services:
     command: "api-server"
     container_name: mascope_demo_backend
     restart: unless-stopped
+    # Long enough for the lifespan to drain in-flight auto-processing
+    # (AUTO_PROCESS_DRAIN_TIMEOUT_S, 60s) plus its cancel grace, with margin.
+    # Docker's 10s default would SIGKILL the worker mid-drain, and a SIGKILL
+    # raises nothing and logs nothing - the pipeline just stops, leaving the
+    # sample file committed with no matched peaks and no explanation. Inherited
+    # by file_converter through the anchor, which wants the same protection for
+    # a conversion in flight. Raise together with the drain timeout, never
+    # below it.
+    stop_grace_period: 90s
     depends_on:
       demo_init:
         condition: service_completed_successfully
