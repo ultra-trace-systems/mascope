@@ -97,7 +97,9 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
   carries user administration. Membership of the workspace holding the sample
   does not grant a calibration - the file is shared, so the instrument workspace
   governs it, and unlike deleting a file there is no fallback through the
-  workspace an item happens to sit in.
+  workspace an item happens to sit in. Because the instrument role can reach a
+  batch or sample the caller could not have listed, the confirmation the route
+  returns names it only when a guest-level read would have returned the name.
 - Editing and deleting an ionization mode dropped from the global `admin` role
   to `editor`, matching what creating one already required, what the whole
   instrument-config surface requires, and what `docs/authorization.md` states
@@ -106,7 +108,12 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
   remain read-only. Note that such an edit is retroactive: it changes how
   samples already processed under the mode are calibrated and matched, and
   flags every affected batch - in every workspace, not only the editor's own -
-  for recalibration or rematching.
+  for recalibration or rematching. Because the mode is read instance-wide, the
+  calibration and diagnostic collections it names must now be readable by the
+  editor setting them, and a collection a mode uses can no longer be narrowed
+  into a single workspace afterwards - either way round, one workspace's
+  private collection would otherwise govern how every other workspace's
+  samples are matched.
 - With the opt-in peak-centric assignment feature enabled, the legacy Match
   tab (briefly renamed "Fit" under the flag) is retired: the Sample view
   already carries the spectrum-envelope and time-series duties it duplicated,

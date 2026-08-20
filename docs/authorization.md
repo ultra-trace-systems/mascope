@@ -24,6 +24,8 @@ Every user account has a single global role (guest, editor, admin, or owner) set
 - **Who can log in and access the application** — all roles can.
 - **User management** — admins can register and manage guests and editors; owners can manage all users including other admins and owners.
 - **Shared reference data** — instrument configurations, ionization modes, target compounds, and other system-wide resources. Guests can read; editors and above can create and modify. Note that editing shared reference data is retroactive and instance-wide: changing an ionization mode changes how samples already processed under it are calibrated and matched, and flags every affected batch for recalibration or rematching — in every workspace, not only the editor's own.
+
+  Because a mode is read instance-wide, the calibration and diagnostic collections it names must be readable by the editor setting them, and a collection an ionization mode uses cannot afterwards be narrowed into a single workspace. Otherwise one workspace's private collection would end up governing how every other workspace's samples are matched.
 - **Calibration** — all users can view calibration state. Running one is governed by the instrument workspace, not the global role; see below.
 
 Global admins and owners also receive automatic membership in all instrument workspaces (see below).
@@ -113,6 +115,8 @@ Access to sample files (the raw measurement data uploaded from instruments) is c
 - **Uploading files**: requires at least **editor** in the instrument workspace (or the upload creates the workspace and the user becomes owner).
 - **Deleting / reprocessing files**: requires at least **admin** in the instrument workspace, *or* admin in a workspace holding a sample item that references the file.
 - **Running an m/z calibration**: requires at least **admin** in the instrument workspace, for the same reason as reprocessing — a calibration is written onto the file, so every sample item referencing it, in any workspace, sees the change.
+
+The instrument role authorises the write and says nothing about the workspace the addressed batch or sample sits in, so a calibration can reach an object the caller could not have listed. The confirmation the route returns therefore names that batch or sample only when a guest-level read would have returned the name; otherwise it is left out. Note that the progress notifications the background job emits to the caller are not filtered this way.
 
 Calibration takes that rule in its **strict** form: unlike deleting or reprocessing, there is no fallback through the workspace an item happens to sit in. Membership of the workspace holding the sample is not sufficient and does not grant a calibration. (The fallback on delete and reprocess is long-standing and is documented here as it behaves, not as an endorsement; the two paths are worth reconciling separately.)
 
