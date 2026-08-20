@@ -49,6 +49,10 @@ Source: "dist\Mascope-File-Agent.exe"; DestDir: "{app}"; Flags: ignoreversion
 
 [Icons]
 Name: "{userprograms}\Mascope File Agent"; Filename: "{app}\Mascope-File-Agent.exe"
+; Pairing a machine again (revoked, or the credential lapsed while it was off)
+; is done by the person at the instrument, who should not have to find a
+; terminal and remember a flag. Named to sort next to the agent itself.
+Name: "{userprograms}\Mascope File Agent - pair this machine"; Filename: "{app}\Mascope-File-Agent.exe"; Parameters: "--setup"
 Name: "{userstartup}\Mascope File Agent"; Filename: "{app}\Mascope-File-Agent.exe"; Tasks: startup
 
 [Run]

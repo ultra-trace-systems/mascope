@@ -51,8 +51,10 @@ USER_CONFIG_HEADER = """\
 #   access_token - this machine's credential, obtained by pairing during
 #                  setup and renewed automatically. Do not edit it by hand;
 #                  to pair again (after revoking the machine, or if the
-#                  credential expired while the agent was offline) start the
-#                  agent with the --setup flag.
+#                  credential expired while the agent was offline) use
+#                  'Mascope File Agent - pair this machine' in the Start
+#                  Menu, or answer the prompt the agent shows when an
+#                  upload is refused.
 #   source       - full path of the folder to watch for new data files
 #   mask         - pattern of the files to upload, e.g. "*.raw"
 #   recursive    - true to also watch subfolders of source (the agent's own
