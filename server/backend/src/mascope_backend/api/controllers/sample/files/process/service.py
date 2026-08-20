@@ -174,6 +174,22 @@ _AUTO_PROCESS_RETRIES = 3
 _AUTO_PROCESS_RETRY_DELAYS_S = (30, 60, 120)
 _RECOVERABLE_STATUS_CODES = {502, 503, 504}
 
+# One lock per (dataset, daily ACQUISITION batch name). Held only across the
+# get-or-create below, never across the whole pipeline. Entries are kept for the
+# life of the worker: one per dataset per day per ionization mode, so the set is
+# small and bounded by ingest variety rather than by file count.
+_acquisition_batch_locks: dict[tuple[str, str], asyncio.Lock] = {}
+
+
+def _acquisition_batch_lock(dataset_id: str, batch_name: str) -> asyncio.Lock:
+    """Return the lock guarding get-or-create for one daily ACQUISITION batch.
+
+    :param dataset_id: ID of the ACQUISITION dataset the batch belongs to.
+    :param batch_name: Generated daily batch name, unique per ionization mode.
+    :return: The lock for this batch, created on first use.
+    """
+    return _acquisition_batch_locks.setdefault((dataset_id, batch_name), asyncio.Lock())
+
 
 def _is_recoverable_error(exc: Exception) -> bool:
     """Whether a failed auto-process attempt is worth retrying.
@@ -1027,8 +1043,17 @@ async def create_acquisition_batches_and_items(
         )
 
         # --- Get or create daily ACQUISITION batch for this ionization mode ---
-        # Wrapped the entire get-or-create logic in semaphore to prevent race conditions
-        async with db_semaphore:
+        # Serialize per batch name so concurrent ingest of files sharing a day and
+        # ionization mode cannot both read "absent" and both create. This block
+        # used to rely on db_semaphore alone for that, which never excluded
+        # anything - a semaphore with N permits admits N holders - which is what
+        # the duplicate warning below has been recovering from.
+        #
+        # The lock is taken OUTSIDE the semaphore on purpose: waiters then queue
+        # without holding a permit, so a contended batch name cannot starve the
+        # auth path of the few permits it has. Worker-local only - two workers can
+        # still race, which the warning below still covers.
+        async with _acquisition_batch_lock(dataset_id, batch_name), db_semaphore:
             # Check if batch already exists
             batch_data = (
                 await get_sample_batches(
