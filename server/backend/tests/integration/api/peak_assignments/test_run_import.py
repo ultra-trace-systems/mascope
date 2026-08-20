@@ -18,6 +18,7 @@ from types import SimpleNamespace
 import pytest
 import pytest_asyncio
 from sqlalchemy import delete, select
+from sqlalchemy.exc import DBAPIError
 
 from mascope_backend.api.controllers.samples.lib.samples_fetch import fetch_sample
 from mascope_backend.api.new.peak_assignments import import_service
@@ -1037,6 +1038,66 @@ class TestValidation:
             )
         assert field in raised.value.detail
         assert "no-such-id" in raised.value.detail
+
+    @pytest.mark.asyncio
+    async def test_a_database_refusal_on_create_rolls_the_run_back(
+        self,
+        editor_client,
+        import_sample,
+        feature_enabled,
+        async_session_factory,
+        monkeypatch,
+    ):
+        """The run and the first chunk's rows share one transaction.
+
+        The sibling test above provokes a refusal the payload rules catch
+        before the run is built, so it never reaches that transaction. This
+        one refuses at the insert - where a genuine race or a constraint no
+        payload rule models yet would land - and pins what the shared
+        transaction is for: the run must not survive the rows it was created
+        with.
+        """
+
+        class _Refusal(Exception):
+            sqlstate = "23505"
+
+            def __str__(self):
+                return "duplicate key value violates unique constraint"
+
+        real_insert = import_service.insert
+
+        def _refusing_insert(table):
+            statement = real_insert(table)
+            if table is PeakAssignment:
+                raise DBAPIError("INSERT", {}, _Refusal())
+            return statement
+
+        monkeypatch.setattr(import_service, "insert", _refusing_insert)
+
+        refused = await _post(editor_client, import_sample, _body([_row("peak-0")]))
+        assert refused.status_code == 422
+
+        async with async_session_factory() as session:
+            runs = (
+                (
+                    await session.execute(
+                        select(PeakAssignmentRun).where(
+                            PeakAssignmentRun.sample_item_id == import_sample
+                        )
+                    )
+                )
+                .scalars()
+                .all()
+            )
+        assert runs == [], "the refused insert left its run behind"
+
+        # The sample is free again: a fresh import is admitted rather than
+        # refused by an 'importing' run nothing will ever finish. Restore only
+        # the insert - undoing every patch would take the feature-flag override
+        # with it and the next request would be refused by the gate instead.
+        monkeypatch.setattr(import_service, "insert", real_insert)
+        accepted = await _post(editor_client, import_sample, _body([_row("peak-0")]))
+        assert accepted.status_code == 200
 
     @pytest.mark.asyncio
     async def test_a_refused_create_leaves_no_run_holding_the_sample(
