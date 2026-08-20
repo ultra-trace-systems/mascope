@@ -9,27 +9,38 @@
 // that would have worked is a worse bug, because the user has no way to
 // discover the capability they actually have.
 //
+// That rule only holds if "not loaded" and "loaded, and the answer is no" stay
+// distinguishable. Both arrive here as a missing workspace record, so the
+// not-loaded cases are tested for up front rather than left to fall through
+// into a level comparison that would read them as a refusal.
+//
 // Workspace roles arrive as `my_role` on each record from `GET /api/workspaces`.
 
 import { ROLES, roleLevel } from '@/lib/roles'
 
-// Instrument workspaces are system workspaces named "Acquisitions <instrument>"
-// (ACQUISITION_NAME_PREFIX on the backend).
+// Instrument workspaces are system workspaces carrying the instrument they hold
+// the raw files for. Older payloads report only the name the backend builds
+// from ACQUISITION_NAME_PREFIX, so that spelling stays a fallback.
 const ACQUISITION_PREFIX = 'Acquisitions'
+
+const matchesInstrument = (workspace, instrument) => {
+  if (workspace?.instrument) return workspace.instrument.toLowerCase() === instrument.toLowerCase()
+  const target = `${ACQUISITION_PREFIX} ${instrument}`.toLowerCase()
+  return workspace?.workspace_name?.toLowerCase() === target
+}
 
 /**
  * The system workspace holding raw files for `instrument`, if it is loaded.
  *
- * Compared case-insensitively while the backend's lookup is exact. Being the
- * looser of the two is deliberate: a mismatch here can only over-report a
- * capability, which the backend then refuses, rather than hide a real one.
+ * Matches on the record's own `instrument` field, falling back to the
+ * `Acquisitions <instrument>` name the backend derives it from. Compared
+ * case-insensitively while the backend's lookup is exact: being the looser of
+ * the two can only over-report a capability, which the backend then refuses,
+ * rather than hide a real one.
  */
 export const instrumentWorkspace = (workspaces, instrument) => {
   if (!instrument) return undefined
-  const target = `${ACQUISITION_PREFIX} ${instrument}`.toLowerCase()
-  return (workspaces ?? []).find(
-    (ws) => ws?.is_system && ws?.workspace_name?.toLowerCase() === target
-  )
+  return (workspaces ?? []).find((ws) => ws?.is_system && matchesInstrument(ws, instrument))
 }
 
 /** The caller's own level in a workspace record; 0 when not a member. */
@@ -43,10 +54,16 @@ export const myLevel = (workspace) => roleLevel(workspace?.my_role)
  * there is the bar. Global admins are allowed because the backend's
  * instrument-workspace checks bypass for them - including on workspaces created
  * before they were promoted, where they hold no membership at all.
+ *
+ * Returns `true` while the account or the workspace list is still loading: an
+ * empty list is not evidence of a missing membership, and treating it as one
+ * would disable the control for exactly the instrument admin it exists for.
  */
 export const canCalibrateInstrument = (workspaces, user, instrument) => {
-  if ((user?.role_id ?? 0) >= ROLES.admin) return true
+  if (!user) return true
+  if ((user.role_id ?? 0) >= ROLES.admin) return true
   if (!instrument) return true
+  if (!workspaces?.length) return true
   return myLevel(instrumentWorkspace(workspaces, instrument)) >= ROLES.admin
 }
 

@@ -44,7 +44,7 @@ export const useSampleContextMenu = defineStore('browser.sample.sampleCtxMenu', 
   // workspace holding the sample, so it is answered per row rather than once
   // for the pane.
   const canCalibrate = computed(() =>
-    canCalibrateInstrument(app.data.workspace.data, app.auth.user, row.value?.instrument)
+    canCalibrateInstrument(app.data.workspace.list, app.auth.user, row.value?.instrument)
   )
 
   // actions

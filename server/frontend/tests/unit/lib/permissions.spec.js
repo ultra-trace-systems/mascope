@@ -8,12 +8,21 @@ import {
   myLevel
 } from '@/lib/permissions'
 
+// Shape of a record from GET /api/workspaces: the backend names the instrument
+// on the record, and the workspace name it derived that from is still there.
 const acq = (instrument, my_role) => ({
   workspace_id: `ws-${instrument}`,
   workspace_name: `Acquisitions ${instrument}`,
+  instrument,
   is_system: true,
   my_role
 })
+
+// A record from a backend that predates the `instrument` field.
+const legacyAcq = (instrument, my_role) => {
+  const { instrument: _dropped, ...rest } = acq(instrument, my_role)
+  return rest
+}
 
 const guest = { role_id: 100 }
 const editor = { role_id: 200 }
@@ -28,6 +37,17 @@ describe('instrumentWorkspace', () => {
   it('matches case-insensitively, staying looser than the backend lookup', () => {
     const workspaces = [acq('OrbiHel', 'admin')]
     expect(instrumentWorkspace(workspaces, 'orbihel')?.workspace_id).toBe('ws-OrbiHel')
+  })
+
+  it('falls back to the workspace name when no instrument field is present', () => {
+    const workspaces = [legacyAcq('OrbiHel', 'admin')]
+    expect(instrumentWorkspace(workspaces, 'orbihel')?.workspace_id).toBe('ws-OrbiHel')
+  })
+
+  it('prefers the instrument field over the derived name', () => {
+    // A renamed workspace still governs the instrument it holds files for.
+    const renamed = { ...acq('orbion', 'admin'), workspace_name: 'Lab 2 intake' }
+    expect(instrumentWorkspace([renamed], 'orbion')?.workspace_id).toBe('ws-orbion')
   })
 
   it('ignores a non-system workspace with a colliding name', () => {
@@ -88,6 +108,18 @@ describe('canCalibrateInstrument', () => {
   it('stays enabled when the instrument is unknown', () => {
     expect(canCalibrateInstrument([], editor, undefined)).toBe(true)
   })
+
+  it('stays enabled while the workspace list is still loading', () => {
+    // The store starts at [], which is not evidence of a missing membership.
+    // Reading it as one would disable the control for the instrument admin the
+    // whole feature exists for, in the window before the first sync lands.
+    expect(canCalibrateInstrument([], editor, 'orbion')).toBe(true)
+    expect(canCalibrateInstrument(undefined, editor, 'orbion')).toBe(true)
+  })
+
+  it('stays enabled while the account is still loading', () => {
+    expect(canCalibrateInstrument([acq('orbion', 'editor')], undefined, 'orbion')).toBe(true)
+  })
 })
 
 describe('canCalibrateInstruments', () => {
@@ -96,6 +128,10 @@ describe('canCalibrateInstruments', () => {
   it('requires every instrument to pass', () => {
     expect(canCalibrateInstruments(workspaces, editor, ['orbion'])).toBe(true)
     expect(canCalibrateInstruments(workspaces, editor, ['orbion', 'tofwerk'])).toBe(false)
+  })
+
+  it('stays enabled while the workspace list is still loading', () => {
+    expect(canCalibrateInstruments([], editor, ['orbion', 'tofwerk'])).toBe(true)
   })
 
   it('stays enabled when no instruments are known', () => {

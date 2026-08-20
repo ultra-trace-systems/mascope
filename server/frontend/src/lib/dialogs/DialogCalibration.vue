@@ -68,7 +68,7 @@ const canCalibrate = computed(() => {
     ? (samples.value ?? []).map((sample) => sample?.instrument)
     : [original.value?.instrument]
   return canCalibrateInstruments(
-    app.data.workspace.data,
+    app.data.workspace.list,
     app.auth.user,
     instruments.filter(Boolean)
   )
