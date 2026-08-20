@@ -542,3 +542,27 @@ async def test_spawned_pipeline_runs_the_real_retry_loop(
         # And the drain gets it back out of there.
         await service.drain_auto_process_tasks(timeout=5)
         assert task.done()
+
+
+@pytest.mark.asyncio
+async def test_a_cancelled_rematch_names_itself_too(mock_runtime):
+    """Rematch tasks share the task set, so the drain cancels them as well.
+
+    They had the pipeline's silence for the same reason - CancelledError is a
+    BaseException, and ``_observe_background_task`` returns early for anything
+    cancelled - so the drain's promise that the log names what it stopped used
+    to hold for pipelines and quietly fail for these.
+    """
+    from mascope_backend.api.controllers.sample.files.process import service
+
+    with patch(
+        f"{_SVC}.rematch_samples",
+        AsyncMock(side_effect=asyncio.CancelledError()),
+    ):
+        with pytest.raises(asyncio.CancelledError):
+            await service._rematch_when_slot_free(sample_item_ids={"si-1", "si-2"})
+
+    messages = _messages(mock_runtime.logger.error)
+    assert any("Rematch of 2 affected sample(s)" in m for m in messages), messages
+    # And the gate is handed back, or the next pipeline waits on a dead slot.
+    assert service._auto_process_gate._value == service._AUTO_PROCESS_CONCURRENCY

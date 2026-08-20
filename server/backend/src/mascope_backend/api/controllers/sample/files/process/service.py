@@ -120,10 +120,19 @@ def _report_cancelled(sample_file_id: str, when: str) -> None:
     :param sample_file_id: File whose pipeline was cancelled.
     :param when: Phrase naming the point it was cancelled at.
     """
-    message = (
+    _log_cancellation(
         f"Auto-processing of sample file {sample_file_id} was cancelled "
         f"{when}; it will have no matched peaks"
     )
+
+
+def _log_cancellation(message: str) -> None:
+    """Log a cancellation at INFO during a drain, ERROR otherwise.
+
+    See :func:`_report_cancelled` for why the level moves.
+
+    :param message: The already-formatted description of what was cancelled.
+    """
     if _shutdown.is_set():
         runtime.logger.info(message)
     else:
@@ -222,7 +231,21 @@ async def _rematch_when_slot_free(**kwargs) -> dict:
     blocks the pipeline that scheduled it.
     """
     async with _auto_process_gate:
-        return await rematch_samples(**kwargs)
+        try:
+            return await rematch_samples(**kwargs)
+        except asyncio.CancelledError:
+            # These share _background_tasks with the pipelines, so the drain
+            # cancels them too - and they had the same silence: CancelledError
+            # is a BaseException, so the controller decorator's except Exception
+            # misses it and _observe_background_task returns early for anything
+            # cancelled. Without this the drain's "what was cancelled is named
+            # below" promise holds for pipelines and quietly fails for these.
+            sample_item_ids = kwargs.get("sample_item_ids") or ()
+            _log_cancellation(
+                f"Rematch of {len(sample_item_ids)} affected sample(s) was "
+                "cancelled; their matches are left as they were"
+            )
+            raise
 
 
 @api_controller_background_task(
@@ -437,7 +460,7 @@ async def drain_auto_process_tasks(
         # INFO by _report_cancelled.
         runtime.logger.error(
             f"Shutdown cancelled {len(outstanding)} background task(s) still "
-            f"running after {timeout:.0f}s; the affected sample files are named "
+            f"running after {timeout:.0f}s; what each was working on is named "
             f"at INFO in this worker's log"
         )
         # Let each cancelled pipeline run its CancelledError handler before the
