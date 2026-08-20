@@ -564,6 +564,42 @@ async def acq_guest_user(async_session_factory, roles, acquisitions_workspace):
         return user
 
 
+@pytest_asyncio.fixture(scope="session")
+async def acq_admin_user(async_session_factory, roles, acquisitions_workspace):
+    """A user who is an admin of the Acquisitions workspace.
+
+    Deliberately holds the *global* ``editor`` role, not ``admin``: the point
+    of the fixture is to prove that operations writing to a raw file need a
+    role in the instrument's workspace and nothing more. If this user could
+    only calibrate by also being a global admin, the gate would be back where
+    it started.
+    """
+    async with async_session_factory() as session:
+        user = User(
+            email="acq_admin@test.com",
+            username="acq_admin_user",
+            hashed_password="123456",
+            is_active=True,
+            is_verified=False,
+            role_id=roles["editor"].role_id,
+        )
+        session.add(user)
+        await session.flush()
+
+        member = WorkspaceMember(
+            workspace_member_id=gen_id(),
+            workspace_id=acquisitions_workspace,
+            user_id=user.id,
+            workspace_role="admin",
+            granted_at=_NOW,
+            granted_by=user.id,
+        )
+        session.add(member)
+        await session.commit()
+        await session.refresh(user)
+        return user
+
+
 @pytest_asyncio.fixture
 async def acq_editor_client(acq_editor_user, create_jwt_auth_token):
     """AsyncClient authenticated as an Acquisitions workspace editor."""
@@ -588,6 +624,22 @@ async def acq_guest_client(acq_guest_user, create_jwt_auth_token):
     from mascope_backend.app.fast import fast
 
     token = create_jwt_auth_token(acq_guest_user)
+    async with AsyncClient(
+        transport=ASGITransport(app=fast),
+        base_url="http://test",
+        cookies={auth_settings.COOKIE_NAME: token},
+    ) as client:
+        yield client
+
+
+@pytest_asyncio.fixture
+async def acq_admin_client(acq_admin_user, create_jwt_auth_token):
+    """AsyncClient authenticated as an Acquisitions workspace admin."""
+    from httpx import ASGITransport, AsyncClient
+
+    from mascope_backend.app.fast import fast
+
+    token = create_jwt_auth_token(acq_admin_user)
     async with AsyncClient(
         transport=ASGITransport(app=fast),
         base_url="http://test",

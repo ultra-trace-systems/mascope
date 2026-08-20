@@ -27,7 +27,13 @@ from mascope_backend.api.models.calibration.calibration_pydantic_model import (
     GetMzCalibrationQueryParams,
     MzCalibrationParams,
 )
-from mascope_backend.api.new.auth.dependencies import admin_user, guest_user
+from mascope_backend.api.new.auth.dependencies import current_active_user, guest_user
+from mascope_backend.api.new.workspaces.dependencies import (
+    check_filename_file_instrument_access,
+    check_sample_access,
+    check_sample_batch_file_instrument_access,
+    check_sample_item_file_instrument_access,
+)
 from mascope_backend.db.id import gen_id
 
 
@@ -80,9 +86,14 @@ async def calibration_mz_fit_route(
     sample_item_id: str = Query(
         ..., description="The sample item ID to query for sample mz_calibration"
     ),
-    user=Depends(admin_user),
+    user=Depends(current_active_user),
 ):
     """Initiate m/z fitting for a sample.
+
+    A fit is computed and returned but never written to the sample file (see
+    ``calibration_mz_fit``), so this is scoped to the sample's own workspace at
+    editor level - the same bar as running a match. Writing the result to the
+    file is a separate call with a stricter check.
 
     :param mz_calibration_params: Parameters for m/z calibration.
     :type mz_calibration_params: MzCalibrationParams
@@ -90,11 +101,13 @@ async def calibration_mz_fit_route(
     :type background_tasks: BackgroundTasks
     :param sample_item_id: The sample item ID.
     :type sample_item_id: str
-    :param user: The current authenticated admin, defaults to Depends(admin_user).
+    :param user: The current authenticated user, defaults to Depends(current_active_user).
     :type user: User, optional
     :return: Message confirming start of m/z fit calibration.
     :rtype: dict
     """
+    await check_sample_access(sample_item_id, user, "editor")
+
     # Verify the existance of sample item
     sample_data = await get_sample_item(sample_item_id)
     sample = sample_data.get("data")
@@ -125,9 +138,14 @@ async def calibration_mz_apply_route(
     body: CalibrationMzApplyBody,
     background_tasks: BackgroundTasks,
     filename: str = Query(..., description="The filename to aply m/z fit"),
-    user=Depends(admin_user),
+    user=Depends(current_active_user),
 ):
     """Apply m/z calibration to a sample file.
+
+    Writes the calibration onto the file itself, so every sample item
+    referencing it - in any workspace - is affected. Admin in the file's
+    instrument workspace is therefore the bar, matching what deleting or
+    reprocessing the same file already requires.
 
     :param body: The calibration apply body.
     :type body: CalibrationMzApplyBody
@@ -135,11 +153,13 @@ async def calibration_mz_apply_route(
     :type background_tasks: BackgroundTasks
     :param filename: The filename to apply m/z calibration.
     :type filename: str
-    :param user: The current authenticated admin, defaults to Depends(admin_user).
+    :param user: The current authenticated user, defaults to Depends(current_active_user).
     :type user: User, optional
     :return: Message confirming application of m/z calibration.
     :rtype: dict
     """
+    await check_filename_file_instrument_access(filename, user, "admin")
+
     # Verify the existance of sample file
     sample_file_data = await get_sample_files(filename=filename)
     if not sample_file_data["data"][0]:
@@ -170,9 +190,13 @@ async def calibration_mz_calibrate_sample_route(
     sample_item_id: str,
     mz_calibration_params: MzCalibrationParams,
     background_tasks: BackgroundTasks,
-    user=Depends(admin_user),
+    user=Depends(current_active_user),
 ):
     """m/z calibrate specific sample.
+
+    Fits and then applies, so it writes to the sample's underlying file and
+    carries the same cross-workspace effect as ``/mz_apply``. Gated on admin in
+    that file's instrument workspace.
 
     :param sample_item_id: The ID of the sample item.
     :type sample_item_id: str
@@ -180,11 +204,13 @@ async def calibration_mz_calibrate_sample_route(
     :type mz_calibration_params: MzCalibrationParams
     :param background_tasks: Background tasks for async processing.
     :type background_tasks: BackgroundTasks
-    :param user: The current authenticated admin, defaults to Depends(admin_user).
+    :param user: The current authenticated user, defaults to Depends(current_active_user).
     :type user: User, optional
     :return: Message confirming start of sample calibration.
     :rtype: dict
     """
+    await check_sample_item_file_instrument_access(sample_item_id, user, "admin")
+
     # Verify the existance of sample item
     sample_data = await get_sample_item(sample_item_id)
     sample = sample_data.get("data")
@@ -215,12 +241,15 @@ async def calibration_mz_calibrate_batch_route(
     sample_batch_id: str,
     mz_calibration_params: MzCalibrationParams,
     background_tasks: BackgroundTasks,
-    user=Depends(admin_user),
+    user=Depends(current_active_user),
 ):
     """
     m/z calibrate all samples in a batch.
     - Processing batches cannot be calibrated
     - Sets batch status to "processing" during calibration and "rematch" after completion
+
+    Writes to the file behind every sample in the batch, so admin is required
+    in the instrument workspace of each instrument the batch draws on.
 
     :param sample_batch_id: The sample batch ID.
     :type sample_batch_id: str
@@ -228,11 +257,13 @@ async def calibration_mz_calibrate_batch_route(
     :type mz_calibration_params: MzCalibrationParams
     :param background_tasks: Background tasks for async processing.
     :type background_tasks: BackgroundTasks
-    :param user: The current authenticated admin, defaults to Depends(admin_user).
+    :param user: The current authenticated user, defaults to Depends(current_active_user).
     :type user: User, optional
     :return: Message confirming start of batch calibration.
     :rtype: dict
     """
+    await check_sample_batch_file_instrument_access(sample_batch_id, user, "admin")
+
     # Verify the existance of sample batch and check status
     sample_batch = await fetch_sample_batch(sample_batch_id)
 
