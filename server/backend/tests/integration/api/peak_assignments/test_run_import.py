@@ -1902,3 +1902,97 @@ class TestAbandonTakesTheSampleClaim:
             f"/api/peak-assignments/sample/{import_sample}/runs/{run_id}"
         )
         assert released.status_code == 200
+
+
+class TestAnAssemblingRunIsNotServedByExplicitId:
+    """A partial ledger must not be served as a ledger.
+
+    The default read resolves to the latest *completed* run, so it is safe on
+    its own - but a read with an explicit run id serves whatever it names, the
+    runs endpoint lists runs of every status, and the import's own first
+    response hands the client the id. That is three ways to reach a half-built
+    ledger whose rows are real while its set is not.
+    """
+
+    @pytest.mark.asyncio
+    async def test_reading_an_importing_run_by_id_is_refused(
+        self, editor_client, import_sample, feature_enabled
+    ):
+        first = await _post(
+            editor_client,
+            import_sample,
+            _body([_row("peak-0")], complete=False, import_id="import-partial"),
+        )
+        run_id = first.json()["data"][0]["peak_assignment_run_id"]
+
+        response = await editor_client.get(
+            f"/api/peak-assignments/sample/{import_sample}",
+            params={"peak_assignment_run_id": run_id},
+        )
+
+        assert response.status_code == 409
+
+    @pytest.mark.asyncio
+    async def test_the_same_run_reads_normally_once_it_completes(
+        self, editor_client, import_sample, feature_enabled
+    ):
+        """The refusal is about the status, not the run."""
+        first = await _post(
+            editor_client,
+            import_sample,
+            _body([_row("peak-0")], complete=False, import_id="import-partial"),
+        )
+        run_id = first.json()["data"][0]["peak_assignment_run_id"]
+        await _post(
+            editor_client,
+            import_sample,
+            _body(
+                [_row("peak-1")],
+                run_id=run_id,
+                index=1,
+                complete=True,
+                import_id="import-partial",
+            ),
+        )
+
+        response = await editor_client.get(
+            f"/api/peak-assignments/sample/{import_sample}",
+            params={"peak_assignment_run_id": run_id},
+        )
+
+        assert response.status_code == 200
+        assert response.json()["total"] == 2
+
+    @pytest.mark.asyncio
+    async def test_an_in_app_run_still_in_flight_is_not_refused(
+        self, editor_client, import_sample, feature_enabled, async_session_factory
+    ):
+        """'running' is deliberately outside this guard.
+
+        The in-app engine writes its whole ledger in one insert at the end, so a
+        read mid-flight returns an empty result that is honest about itself -
+        unlike an import, which accumulates. Widening the refusal to every
+        non-terminal status would change behaviour this endpoint already
+        promises for in-app runs.
+        """
+        run_id = gen_id()
+        async with async_session_factory() as session:
+            session.add(
+                PeakAssignmentRun(
+                    peak_assignment_run_id=run_id,
+                    sample_item_id=import_sample,
+                    engine="mascope",
+                    engine_version="test",
+                    status="running",
+                    peak_assignment_run_utc_created=datetime.now(timezone.utc),
+                )
+            )
+            await session.commit()
+
+        response = await editor_client.get(
+            f"/api/peak-assignments/sample/{import_sample}",
+            params={"peak_assignment_run_id": run_id},
+        )
+
+        assert response.status_code == 200
+        assert response.json()["total"] == 0

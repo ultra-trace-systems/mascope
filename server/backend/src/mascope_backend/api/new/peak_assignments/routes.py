@@ -137,6 +137,10 @@ async def get_peak_assignments_route(
     inspector detail (~74% of a full row's bytes) and are served per assignment
     by the sibling detail endpoint instead.
 
+    Returns 404 for a run id this sample does not have, and 409 (with the code
+    `run_still_assembling`) for one whose import has not finished - a partial
+    ledger is not served as a ledger.
+
     :param sample_item_id: The unique identifier of the sample.
     :param query_params: Optional run id and tier/role/source filters.
     :param user: The current authenticated user. Requires workspace guest role.
