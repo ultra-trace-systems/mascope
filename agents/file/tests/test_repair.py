@@ -5,11 +5,20 @@ console the operator already has open, whether to pair again - rather than
 telling them to relaunch it with a flag. Recovery is the moment a
 non-technical user is involved, so the prompt has to appear exactly once,
 survive being declined, and never block a machine started without a console.
+
+The same offer runs once at startup, so a machine revoked while it was off
+is fixed before an acquisition needs it - but only on an answered refusal,
+never when the server simply could not be reached.
 """
 
 import pytest
 
 from mascope_file_agent import main
+from mascope_file_agent.wizard import (
+    CREDENTIAL_OK,
+    CREDENTIAL_REJECTED,
+    CREDENTIAL_UNREACHABLE,
+)
 from mascope_sdk.exceptions import AuthenticationError
 
 
@@ -132,3 +141,54 @@ def test_a_concurrent_repair_is_reused(monkeypatch, agent):
     main._set_access_token("someone-elses-fresh-token")
 
     assert main._offer_repair("dead-token", "refused") is True
+
+
+def test_startup_offers_to_pair_when_the_credential_is_refused(monkeypatch, agent):
+    """A machine revoked while it was off is fixed before any file needs it."""
+    monkeypatch.setattr(
+        main,
+        "check_credential",
+        lambda host, token, verify: (CREDENTIAL_REJECTED, "refused"),
+    )
+    monkeypatch.setattr("builtins.input", lambda _: "y")
+    monkeypatch.setattr(main, "run_pairing", lambda host, verify: "fresh-token")
+
+    main._check_credential_at_start()
+
+    assert main.current_access_token() == "fresh-token"
+
+
+def test_startup_does_not_prompt_when_the_server_is_unreachable(monkeypatch, agent):
+    """No network yet is not a refusal - pairing cannot fix it, so do not ask.
+
+    This is the case that makes the check safe on an instrument PC that
+    starts the agent at sign-in, before the network is up.
+    """
+    monkeypatch.setattr(
+        main,
+        "check_credential",
+        lambda host, token, verify: (CREDENTIAL_UNREACHABLE, "no route to host"),
+    )
+    monkeypatch.setattr(
+        "builtins.input", lambda _: pytest.fail("must not prompt when unreachable")
+    )
+    monkeypatch.setattr(
+        main, "run_pairing", lambda host, verify: pytest.fail("must not pair")
+    )
+
+    main._check_credential_at_start()
+
+    assert main.current_access_token() == "dead-token"
+
+
+def test_startup_is_silent_when_the_credential_is_good(monkeypatch, agent):
+    monkeypatch.setattr(
+        main, "check_credential", lambda host, token, verify: (CREDENTIAL_OK, "")
+    )
+    monkeypatch.setattr(
+        "builtins.input", lambda _: pytest.fail("a good credential must not prompt")
+    )
+
+    main._check_credential_at_start()
+
+    assert main.current_access_token() == "dead-token"

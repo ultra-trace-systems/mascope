@@ -15,7 +15,13 @@ import mascope_sdk
 from mascope_file_agent import __version__
 from mascope_file_agent import config as agent_config
 from mascope_file_agent.config import ConfigError
-from mascope_file_agent.wizard import run_pairing, run_setup_wizard
+from mascope_file_agent.wizard import (
+    CREDENTIAL_OK,
+    CREDENTIAL_REJECTED,
+    check_credential,
+    run_pairing,
+    run_setup_wizard,
+)
 from mascope_runtime import Runtime
 
 
@@ -262,8 +268,8 @@ signed in to Mascope approves it under 'Pair an agent'.
 """
 
 REPAIR_DECLINED_NOTE = """
-Not pairing. Uploads stay paused until this machine is paired again - use
-'Mascope File Agent - pair this machine' in the Start Menu when you are ready.
+Not pairing. Uploads stay paused until this machine is paired again - start
+the Mascope File Agent again when you are ready and it will ask.
 """
 
 
@@ -315,6 +321,40 @@ def _offer_repair(token_used: str, reason: str) -> bool:
         return True
 
 
+def _check_credential_at_start() -> None:
+    """Ask the server about this machine's credential before any file needs it.
+
+    A credential that lapsed while the machine was off, or was revoked, is
+    only discovered when the first acquisition tries to upload - which is the
+    worst moment for whoever is running the instrument, and the point at which
+    data is already waiting. Asking once at startup moves that discovery to
+    where a person is most likely to be looking at the window.
+
+    Only an answered refusal prompts. A machine that just booted may have no
+    network yet, and a server may be restarting; pairing fixes neither, so
+    those are logged and left to the upload retries.
+    """
+    outcome, message = check_credential(
+        HOST,
+        current_access_token(),
+        verify=getattr(runtime.config, "verify_tls", True),
+    )
+    if outcome == CREDENTIAL_OK:
+        return
+    if outcome == CREDENTIAL_REJECTED:
+        if not _offer_repair(current_access_token(), message):
+            runtime.logger.error(
+                f"This machine's Mascope credential was refused: {message} "
+                "Uploads will fail until it is paired again - start the "
+                "Mascope File Agent from the Start Menu and answer the prompt."
+            )
+        return
+    runtime.logger.info(
+        f"Could not confirm this machine's credential at startup: {message} "
+        "Continuing; uploads and token renewal retry on their own."
+    )
+
+
 def process_file_upload(filepath: str, max_retries: int = 10) -> None:
     """Process file upload
 
@@ -336,8 +376,8 @@ def process_file_upload(filepath: str, max_retries: int = 10) -> None:
                 f"File upload failed for file {os.path.basename(filepath)}: {e} "
                 "Retrying will not help - the server rejected this machine's "
                 "credential. It may have been revoked, or have expired while "
-                "the agent was offline. Pair this machine again with 'Mascope "
-                "File Agent - pair this machine' in the Start Menu."
+                "the agent was offline. Start the Mascope File Agent again "
+                "from the Start Menu and it will offer to pair this machine."
             )
             break  # a rejected token stays rejected until the machine re-pairs
         except (NotFoundError, ValidationError) as e:
@@ -779,6 +819,7 @@ def run() -> None:
         runtime.config.source, runtime.config.mask, recursive=runtime.config.recursive
     )
     uploader.watcher.run_as_daemon()
+    _check_credential_at_start()
     _start_token_renewal(uploader.shutdown_event)
     uploader.run_until_complete()
     executor.shutdown(wait=True)
