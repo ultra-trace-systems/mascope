@@ -24,22 +24,32 @@ urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 VERIFY_TIMEOUT = 15  # seconds
 
 
-def verify_connection(
-    host: str, access_token: str, verify: bool = True
-) -> tuple[bool, str]:
-    """Check that the server is reachable and accepts the access token.
+#: Outcomes of :func:`check_credential`. REJECTED means the server answered
+#: and refused this credential, which pairing fixes; UNREACHABLE covers every
+#: way the question went unanswered - no network yet on a machine that just
+#: booted, a server being restarted, a mistyped address - none of which pairing
+#: would fix, and none of which should send anyone looking for a pairing code.
+CREDENTIAL_OK = "ok"
+CREDENTIAL_REJECTED = "rejected"
+CREDENTIAL_UNREACHABLE = "unreachable"
 
-    Calls a cheap authenticated endpoint with the file-agent service
-    headers, exactly as uploads will.
+
+def check_credential(
+    host: str, access_token: str, verify: bool = True
+) -> tuple[str, str]:
+    """Ask the server whether it still accepts this machine's credential.
+
+    Calls a cheap authenticated endpoint with the file-agent service headers,
+    exactly as uploads will.
 
     :param host: Normalized server host
     :type host: str
-    :param access_token: The access token to verify
+    :param access_token: The access token to check
     :type access_token: str
     :param verify: Whether to verify the server's TLS certificate
     :type verify: bool
-    :return: (ok, user-facing error message when not ok)
-    :rtype: tuple[bool, str]
+    :return: (outcome, user-facing message when not ok)
+    :rtype: tuple[str, str]
     """
     url = f"{base_url(host)}/api/sample/files"
     try:
@@ -67,7 +77,7 @@ def verify_connection(
         # responds with JSON.
         content_type = resp.headers.get("content-type", "")
         if "json" not in content_type.lower():
-            return False, (
+            return CREDENTIAL_UNREACHABLE, (
                 f"The address {base_url(host)} responded, but it does not "
                 "look like the Mascope API (it returned a web page instead "
                 "of data), so uploads would fail. In a development setup, "
@@ -75,13 +85,33 @@ def verify_connection(
                 "frontend dev server cannot receive uploads. In production, "
                 "use the normal Mascope web app address."
             )
-        return True, ""
+        return CREDENTIAL_OK, ""
     if resp.status_code in (401, 403):
-        return False, (
+        return CREDENTIAL_REJECTED, (
             "The server rejected the access token. Pair the agent again to "
             "get a fresh one."
         )
-    return False, f"Unexpected response from the server (HTTP {resp.status_code})."
+    return CREDENTIAL_UNREACHABLE, (
+        f"Unexpected response from the server (HTTP {resp.status_code})."
+    )
+
+
+def verify_connection(
+    host: str, access_token: str, verify: bool = True
+) -> tuple[bool, str]:
+    """Whether the server accepts this credential, for the setup wizard.
+
+    :param host: Normalized server host
+    :type host: str
+    :param access_token: The access token to verify
+    :type access_token: str
+    :param verify: Whether to verify the server's TLS certificate
+    :type verify: bool
+    :return: (ok, user-facing error message when not ok)
+    :rtype: tuple[bool, str]
+    """
+    outcome, message = check_credential(host, access_token, verify=verify)
+    return outcome == CREDENTIAL_OK, message
 
 
 def _prompt(label: str, default: str = "") -> str:

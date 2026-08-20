@@ -6,15 +6,18 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
 
 ### Added
 
-- Pairing a machine again no longer means relaunching the agent from a
-  terminal. When the server refuses this machine's credential - it was
-  revoked, or it lapsed while the machine was off - the agent explains why in
-  the window that is already open and offers to pair again there; approving
-  the code in Mascope resumes the upload it was holding. The installer also
-  adds a **Mascope File Agent - pair this machine** Start Menu entry for when
-  the window has been closed. Recovery is the moment the person at the
-  instrument is involved, and it previously asked them for a command line and
-  a flag.
+- Pairing a machine again is now just starting the agent. On every start it
+  asks the server whether this machine's credential is still accepted, and
+  offers to pair right there when it is not - so a machine that was revoked,
+  or left off long enough for its credential to lapse, is fixed before the
+  first acquisition needs it rather than after an upload has already failed.
+  The same offer appears if a credential is refused mid-session, and
+  approving the code in Mascope resumes the upload the agent was holding.
+  Recovery previously meant relaunching the agent from a terminal with a
+  flag, which is a lot to ask of whoever is running the instrument.
+  A credential that cannot be checked - a machine that just booted with no
+  network yet, a server being restarted - is not treated as a refusal: the
+  agent says so and carries on, since pairing would not fix it.
 
 - Instrument-agent credentials are now short-lived and renew themselves. A
   paired device's token expires in 30 days instead of 360, and the File Agent

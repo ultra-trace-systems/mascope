@@ -49,10 +49,10 @@ Each paired machine gets its own token, so pairing a new instrument PC
 never disconnects an existing one. The token is **short-lived and the agent
 renews it automatically** in the background — you never copy or paste one,
 and there is nothing to rotate by hand. If an instrument PC is left off for
-long enough that its token lapses, just pair it again: open **Mascope File
-Agent - pair this machine** in the Start Menu. The agent also offers to pair
-right in its own window the next time an upload is refused, so in practice
-you can just answer that prompt.
+long enough that its token lapses, just start the agent: it checks with the
+server as it starts, and offers to pair again when the credential is no
+longer accepted. It makes the same offer if a credential is refused while it
+is running.
 
 Setup also asks whether to **verify the server's TLS certificate**. Leave
 this on for a normal Mascope server; answer No only for a self-signed or
@@ -85,8 +85,11 @@ All settings live in one file on the instrument PC:
 Restart the agent after editing the file (close its console window, then
 start it again from the Start Menu). Alternatively, run the guided setup
 again — it walks through all the settings above, offering the current
-values as defaults — by opening **Mascope File Agent - pair this machine**
-in the Start Menu.
+values as defaults — by starting the agent with the `--setup` flag:
+
+```
+%LocalAppData%\Programs\Mascope File Agent\Mascope-File-Agent.exe --setup
+```
 
 !!! tip "When acquisition times look shifted by an hour"
 
@@ -134,8 +137,8 @@ The agent prints its version when it starts, and uninstalling (Windows
   enabled.
 - *"The server rejected the access token"* or *"This agent credential has
   expired"*: the machine's token has lapsed or its device was revoked.
-  Answer the prompt the agent shows in its window, or open **Mascope File
-  Agent - pair this machine** in the Start Menu — pairing a machine never
+  Answer the prompt the agent shows in its window, or close it and start
+  the agent again — it offers to pair on start. Pairing a machine never
   affects the others. (The agent renews its token on its own while it
   is running, so this only happens after a long offline period or a
   deliberate revocation.)
