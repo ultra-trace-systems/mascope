@@ -24,6 +24,8 @@ import pytest
 
 
 _SVC = "mascope_backend.api.controllers.sample.files.process.service"
+_NOTIF = "mascope_backend.socket.notifications"
+_UTILS = "mascope_backend.api.lib.utils"
 
 
 @pytest.fixture(autouse=True)
@@ -64,14 +66,25 @@ def _messages(mock_logger_method):
     return [call.args[0] for call in mock_logger_method.call_args_list]
 
 
-async def _settle_into_the_backoff(body):
+async def _settle_into_the_backoff(body, max_passes=200):
     """Run a pipeline task until its first attempt has failed.
 
     The only suspension point after that failure is the backoff itself, so the
     caller can act on it as soon as this returns.
+
+    Bounded so a pipeline that never reaches its body fails the test in
+    milliseconds instead of spinning the suite to a standstill - which is
+    exactly what a detached task dying before it starts looks like.
     """
-    while body.await_count == 0:
+    for _ in range(max_passes):
         await asyncio.sleep(0)
+        if body.await_count:
+            break
+    else:
+        raise AssertionError(
+            "the pipeline body was never reached - the task finished or died "
+            "before its first attempt"
+        )
     await asyncio.sleep(0)
 
 
@@ -309,6 +322,34 @@ async def test_spawn_forwards_every_argument(isolated_background_state):
     }
 
 
+@pytest.mark.asyncio
+async def test_spawn_omits_an_absent_process_id_rather_than_passing_none(
+    isolated_background_state,
+):
+    """An absent process id must stay absent, not arrive as an explicit None.
+
+    ``api_controller_background_task`` reads it as
+    ``kwargs.get("process_id", gen_id(8))``, so a forwarded ``None`` skips the
+    generated default and reaches ``UserNotification``, whose ``process_id`` is
+    a required ``str``. That ValidationError is raised outside the decorator's
+    try block, so the pipeline dies before its first attempt and the detached
+    task just looks like it finished.
+    """
+    from mascope_backend.api.controllers.sample.files.process import service
+
+    seen = {}
+
+    async def pipeline(**kwargs):
+        seen.update(kwargs)
+
+    with patch.object(service, "auto_process_sample_file", pipeline):
+        await service.spawn_auto_process_sample_file(sample_file_id="sf-001")
+        await asyncio.gather(*isolated_background_state)
+
+    assert "process_id" not in seen
+    assert seen["parent_id"] is None
+
+
 # --------------------------------------------------------------------------
 # Draining at shutdown
 # --------------------------------------------------------------------------
@@ -465,3 +506,39 @@ async def test_drain_ignores_tasks_from_another_loop(
 
     mock_runtime.logger.exception.assert_not_called()
     foreign.cancel.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_spawned_pipeline_runs_the_real_retry_loop(
+    isolated_background_state, mock_runtime
+):
+    """The spawn path must reach the pipeline body, not just a stubbed stand-in.
+
+    Every other spawn test replaces ``auto_process_sample_file`` wholesale, so
+    none of them would notice a detached task that died before the pipeline
+    started - the failure would look exactly like a task that finished.
+    """
+    from mascope_backend.api.controllers.sample.files.process import service
+
+    body = AsyncMock(side_effect=ConnectionError("503"))
+
+    with (
+        patch(f"{_SVC}._auto_process_sample_file", body),
+        patch(f"{_SVC}._delete_partial_acquisition_items", AsyncMock()),
+        patch(f"{_SVC}._is_recoverable_error", lambda _e: True),
+        patch.object(service, "_AUTO_PROCESS_RETRY_DELAYS_S", (600, 600, 600)),
+        patch(f"{_NOTIF}.handle_notifications", new_callable=AsyncMock),
+        patch(f"{_UTILS}.handle_reloads", new_callable=AsyncMock),
+    ):
+        await service.spawn_auto_process_sample_file(
+            sample_file_id="sf-001", independent_transaction=True
+        )
+        await _settle_into_the_backoff(body)
+
+        task = next(iter(isolated_background_state))
+        assert body.await_count == 1, "the detached task must reach the pipeline"
+        assert not task.done(), "and park in its backoff rather than fall through"
+
+        # And the drain gets it back out of there.
+        await service.drain_auto_process_tasks(timeout=5)
+        assert task.done()

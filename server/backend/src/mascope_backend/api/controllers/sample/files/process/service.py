@@ -477,15 +477,21 @@ async def spawn_auto_process_sample_file(
     ``**kwargs`` so a renamed or mistyped argument at a trigger site is caught
     where it is written, not as a TypeError inside a detached task.
     """
-    task = asyncio.create_task(
-        auto_process_sample_file(
-            sample_file_id=sample_file_id,
-            independent_transaction=independent_transaction,
-            user_id=user_id,
-            process_id=process_id,
-            parent_id=parent_id,
-        )
-    )
+    forwarded = {
+        "sample_file_id": sample_file_id,
+        "independent_transaction": independent_transaction,
+        "user_id": user_id,
+        "parent_id": parent_id,
+    }
+    # Omitted rather than forwarded as None. api_controller_background_task
+    # reads it as ``kwargs.get("process_id", gen_id(8))``, so an absent key
+    # gets a generated id while an explicit None reaches UserNotification,
+    # whose process_id is a required str - and that ValidationError is raised
+    # outside the decorator's try, killing the pipeline before it starts.
+    if process_id is not None:
+        forwarded["process_id"] = process_id
+
+    task = asyncio.create_task(auto_process_sample_file(**forwarded))
     # asyncio only holds a weak reference to tasks: keep one so the task cannot
     # be garbage-collected mid-run, and observe its outcome so a failure is
     # logged instead of dying as an unretrieved exception.
