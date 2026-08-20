@@ -50,8 +50,9 @@ It is an engineering design + phased plan, not a user guide.
 > verification, and fit wrappers (§8.3). The old open question "should the SDK
 > trigger runs?" (§9.1) is resolved **yes** - §8.3 records why the ground
 > shifted. Decisions in §8 are settled unless marked otherwise; the open points
-> are collected in §8.5, three of them as **decisions pending** that hold
-> sequenced steps - §8.4's start/hold status says which.
+> are collected in §8.5. The three that were **decisions pending** - holding
+> sequenced steps until answered - are all resolved and shipped in step 2; what
+> remains in §8.5 is two **open questions**, which hold nothing.
 
 > **Scope decision (v1): read-only.** v1 exposes only *reading* persisted assignment
 > results. It does **not** trigger assignment runs or write verifications from the
@@ -394,7 +395,8 @@ assign button". It is **run import**: making Mascope's run ledger the canonical
 store for assignment runs computed *outside* Mascope. Everything in this
 section is decided unless the text says otherwise; the open points are collected
 in §8.5, and the three that a sequenced step cannot be built around are marked
-there as decisions pending. §8.4 closes with what that leaves safe to start.
+there. The three decisions that once held steps are resolved and shipped;
+§8.4 closes with what that leaves safe to start.
 
 ### 8.1 Purpose: closing the peaky loop
 
@@ -539,16 +541,26 @@ own judgement: the peak inspector renders `provenance.p_correct` under
 `provenance.calibration.provisional`, and the batch fold-in reads
 `provenance["p_correct"]` when it rolls a batch peak's consensus. Nulling the
 flattened columns therefore does not achieve what it is for - nothing reads
-those columns - so the keys the server presents as its own (`p_correct`,
-`p_correct_provisional`, `corroboration_adducts`, `calibration`) are **reserved
-at the top level of an imported blob** and rejected there with a 422 naming
-them.
+those columns - so the keys the server derives those values from are **reserved
+at the top level of an imported blob** and **stripped** there before the row is
+stored.
 
-They are rejected rather than silently dropped because an external engine that
-shares this one's scoring lineage will use those names for its *own* numbers,
-and a quiet strip would look like data loss. Those numbers are wanted, so the
-import gives them a home instead: an `engine_provenance` object inside
-`provenance`, which the server stores verbatim and never interprets. The
+Three keys, which are the ones `_provenance_scalars` reads and not the names of
+the columns it renders: `p_correct`, plus the two objects it reaches into -
+`calibration` (for `.provisional`) and `corroboration` (for `.n_adducts`). The
+rendered names `p_correct_provisional` and `corroboration_adducts` are *not*
+reserved, because nothing reads them out of the blob; sending them is harmless
+and they are simply never looked at.
+
+Stripped rather than rejected. An external engine that shares this one's scoring
+lineage will plausibly use these names for its *own* numbers, so a payload
+carrying them is not malformed - it is just not authoritative about them, and
+refusing the whole import over a naming collision would be the wrong trade. What
+the server guarantees is only that an imported row's rendered confidence is
+empty, not that the importer was careful. An engine that wants its own numbers
+kept should put them under names of its own - `provenance.engine_provenance` is
+the convention this document uses elsewhere - which the server stores verbatim
+and never interprets. The
 distinction the contract needs is not "foreign numbers are unwelcome" but
 "whose number is this" - keeping both, under names that say which engine
 produced them, is what makes an in-app run and an imported run comparable at
@@ -565,11 +577,24 @@ alone.
 client cannot supply `owner_peak_assignment_id` - those ids do not exist until
 the server mints them - so an `iso_child` row references its owner as
 `owner_sample_peak_id`: the owner row's `sample_peak_id`, which identifies a
-row uniquely within the import because a run holds at most one row per peak. At
-finalize the server resolves every reference to the minted
-`owner_peak_assignment_id` (inserting owners before children, as the in-app
-persist already does); an unresolvable reference - no such row in the import -
-is a 422.
+row uniquely within the import because a run holds at most one row per peak.
+
+Rows are inserted in payload order and the reference is **staged** on
+`owner_sample_peak_id`, not resolved on the way in - an owner may arrive in a
+later chunk than its children, so "insert owners first" is not something the
+server can arrange across requests. At finalize a single set-based
+`UPDATE ... FROM` joins each staged reference to its owner within the run and
+writes the minted `owner_peak_assignment_id`; an unresolvable reference - no
+such row in the import - is a 422.
+
+**The link is one level deep, and two rules keep it that way.** A row carrying
+an owner must have `role='iso_child'` (checked per chunk), and an `iso_child`
+may not itself be named as an owner (checked at finalize, since the owner may
+be in another chunk). Depth follows from the pair, and so does acyclicity: a
+cycle needs every row in it to be both a child and an owner, which the two rules
+forbid together. Checking only the direct self-reference - the first
+implementation - left `A owns B` with `B owns A` to resolve happily into a shape
+no in-app run can produce.
 
 **One logical import, one or more requests.** A dense sample's full ledger with
 `alternatives`/`provenance` is tens of thousands of rows at ~2.8 KB each - too
@@ -588,15 +613,24 @@ ledger *read*). So the endpoint caps `rows` per request and supports assembly:
   the common case for slim ledgers - finalizes: payload-wide validation, owner
   resolution, `status='completed'`, batch fold-in.
 
-Every accepted chunk answers with the same four fields, which is the whole state
-a client needs to continue or resume:
+Every accepted chunk answers with the standard list envelope
+(`{status, message, results, data}`), and the import's state is the single
+record in `data[0]` - four fields, which is the whole state a client needs to
+continue or resume:
 
 | field | meaning |
 | --- | --- |
 | `peak_assignment_run_id` | the run, minted on the create and repeated on every chunk |
-| `rows_accepted` | rows staged so far - and therefore the next `chunk.index`, since the index is an offset |
+| `rows` | rows staged so far - and therefore the next `chunk.index`, since the index is an offset |
 | `max_rows_per_request` | the deployment's effective per-request row cap |
-| `status` | `importing` while assembling, `completed` after the finalizing chunk |
+| `run_status` | `importing` while assembling, `completed` after the finalizing chunk |
+
+**Read the run's state from `data[0].run_status`, not from the envelope's
+`status`.** The envelope carries its own top-level `status`, and it is the
+literal `"success"` on every accepted request - the same field every other
+endpoint's envelope has. A client that reads `status` expecting
+`importing`/`completed` gets `"success"` forever and never learns the import
+finished.
 
 **The per-request cap is a number, and it has a byte consequence the client
 cannot see.** The cap is **1000 rows** - the ledger read's `DEFAULT_PAGE_LIMIT`,
@@ -627,12 +661,12 @@ wraps `requests.post` in its own retry loop (4 attempts, on `Timeout`,
 `ConnectionError` and 502/503/504) and exposes no way to disable it, so a read
 timeout after the server has applied a chunk *will* re-send it. The protocol
 therefore makes `chunk.index` a monotonic, server-checked row offset: a chunk
-whose index equals `rows_accepted` is applied; a chunk that repeats an offset
+whose index equals the run's `rows` is applied; a chunk that repeats an offset
 already applied - the retry case, where the server committed and the client
 never saw the response - is an **idempotent no-op returning the current row
-count**; an index ahead of `rows_accepted` (a gap) or one that lands inside an
+count**; an index ahead of `rows` (a gap) or one that lands inside an
 applied chunk rather than on its boundary (a rewind) is a 409. The client
-resynchronises from `rows_accepted`. Without this, a retried append duplicates
+resynchronises from the `rows` the last response it saw reported. Without this, a retried append duplicates
 rows straight onto `uq_peak_assignment_run_id_sample_peak_id` and fails an
 otherwise healthy import. This is the same problem the repo already solved for
 file upload: the tus path is offset-addressed and re-syncs from the
@@ -796,15 +830,22 @@ accept what is merely the importer's judgement.
   cross-sample `TIER_RANK` roll-up in `compute_consensus`.
 
   The rule has **one stated exemption, and it covers most of a complete
-  ledger**: a null `fit_score` is not banded. `fit_score` is legitimately NULL
-  for a peak no stage explained - `build_unassigned_assignments` writes
-  `tier='unassigned'` with a null score - and the only in-repo band function,
-  `tier_for_score(None, ...)`, answers `below_assignability`, which is the wrong
-  tier for such a row. Banded literally, both client- and server-side, the check
-  would reject exactly the rows the completeness rule below invites. So a null
-  `fit_score` is checked against `tier` instead of against the bands: a null
-  score requires `tier='unassigned'`, and `tier='unassigned'` requires a null
-  score. Every other row is banded.
+  ledger**: a null `fit_score` is not banded, and it admits **two** tiers,
+  because the in-app ledger writes both. `build_unassigned_assignments` writes
+  `tier='unassigned'` with a null score for a peak no stage explained; and
+  `tier_for_score(None, ...)` answers `below_assignability`, which the engine
+  pairs with a null `fit_score` on an *assigned* row whose score came back
+  non-finite (`_score_or_none` nulls it, `tier_for_score` bands it). Neither is
+  a claim about confidence, so neither is worth refusing.
+
+  An earlier revision of this section called `below_assignability` "the wrong
+  tier for such a row" and required `tier='unassigned'` for a null score. That
+  was implemented and it was wrong in a specific, costly way: it refused rows
+  Mascope's own engine produces, so an external engine that read a ledger
+  through the SDK could not publish it back - the round trip this whole section
+  exists to enable. The check now delegates to `tier_for_score` rather than
+  restating it, so the two cannot drift again; a null score accepts
+  `unassigned` or `below_assignability`, and every other row is banded.
 - **Provenance is inspector detail, never a server judgement.** The ledger
   renders a calibrated `p_correct` (with its provisional marker) and an adduct
   corroboration count on every row; `_provenance_scalars` flattens those out of
@@ -828,9 +869,9 @@ accept what is merely the importer's judgement.
   retracted.) Since this section positively directs an importer's own confidence
   *into* the blob, and peaky shares the scoring lineage that builds those key
   names, a collision is likely by accident rather than by malice. Closing it
-  needs a key policy on the blob - reserve and strip, or make the reading
-  surfaces engine-aware - which is a **decision pending** (§8.5.5), and one
-  step 2's validation has to carry once made.
+  needs a key policy on the blob, and the one chosen is **reserve and strip**
+  (§8.5.5): step 2's validation drops the three keys the reading surfaces
+  derive from, so an imported row renders no confidence of this server's.
 - **Peak existence.** Every `sample_peak_id` must exist in the sample's peak
   file; a row for a peak the sample does not have is a 422. Use the **id-only**
   read - `extract_peaks(..., areas=False, heights=False, average=False)` - not
@@ -1152,8 +1193,8 @@ about at request time.
   row (the endpoint even filters on it), and the sample's polarity is on the
   sample. So a client that wants to pre-empt the 422 has everything it needs to
   do so, and the residual gap is the notation mapping alone. The server's check
-  stays the authority; how much further the client should go is a decision
-  pending (§8.5.2).
+  stays the authority, and how much further the client goes is settled at the
+  floor (§8.5.2): exact-string match, null on any mismatch.
 - **`recalibrate`** - still out of scope for the SDK (superuser admin op).
 
 **Step 5 is not purely additive: two pieces of shared SDK plumbing come with
@@ -1400,25 +1441,29 @@ document cites it.
    §8.3 pins with a request timestamp so a sample's earlier run cannot be
    mistaken for this batch's.
 5. **Reserved keys in an imported `provenance` blob.** *Resolved: the keys the
-   server presents as its own are reserved at import, and an engine's own
-   numbers get a sanctioned home beside them* (§8.2, "Reserved provenance
-   keys").
+   server derives its own judgement from are stripped at import, and an
+   engine's own numbers keep a sanctioned home beside them* (§8.2, "Reserved
+   provenance keys").
 
    Nulling the flattened P(correct) columns is necessary and not sufficient,
    because nothing reads those columns: the peak inspector renders
    `provenance.p_correct` from the stored blob under "Calibrated probability the
    assignment is correct", and the batch fold-in reads `provenance["p_correct"]`
-   when rolling up consensus. Reserving is enforced once, at the write boundary,
+   when rolling up consensus. Stripping is enforced once, at the write boundary,
    where it cannot be forgotten; making each reading surface engine-aware would
    have to be re-implemented correctly at every present and future read site,
    and the site that matters most is not a display but the consensus roll-up.
 
-   The importer's numbers are kept, not discarded - they move to
-   `provenance.engine_provenance`, stored verbatim. Comparing this engine's
-   calibrated probability against an external one's is a first-class use of the
-   import path, so both have to survive under names that say which engine
-   produced them; a blob where the two are indistinguishable would defeat the
-   comparison as surely as dropping one of them.
+   Note what the server does and does not do here. It strips the three reserved
+   keys and stores the rest of the blob verbatim - it does **not** relocate
+   them, and a value sent under a reserved name is gone. Keeping an engine's own
+   numbers is therefore the importer's job: send them under a name of your own,
+   for which `provenance.engine_provenance` is this document's convention.
+   Comparing this engine's calibrated probability against an external one's is a
+   first-class use of the import path, so both have to survive under names that
+   say which engine produced them - but only one side of that is enforced. The
+   server guarantees an imported row renders no confidence of *its* own; it does
+   not guarantee the importer was careful with *theirs*.
 
 ---
 
@@ -1444,8 +1489,9 @@ document cites it.
    the sample id too, matching the route shape; no `get(..., detail=True)`
    opt-in.
 
-The open v2 questions - and the three decisions still pending, which §8.4 maps
-onto the steps they hold - live in §8.5.
+The open v2 questions live in §8.5. The three decisions that used to hold
+sequenced steps are resolved and implemented in step 2, so nothing there gates a
+step any more.
 
 **Related tracker issues:**
 [#1725](https://github.com/ultra-trace-systems/mascope/issues/1725) (ledger response slimming -
