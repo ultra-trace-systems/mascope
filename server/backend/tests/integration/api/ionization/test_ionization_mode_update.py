@@ -250,9 +250,11 @@ async def test_editor_can_delete_mode(editor_client, mode_ctx):
     refuses on business grounds (400) whatever the caller's role. That is
     exactly what makes it a usable authorization test: reaching the 400 proves
     the request got past the role check, which is the part under test here.
+    Asserted as the exact status rather than "not 403", so a 500 or a moved
+    route cannot pass it by accident.
     """
     resp = await editor_client.delete(f"/api/ionization/modes/{mode_ctx['mode_id']}")
-    assert resp.status_code != 403
+    assert resp.status_code == 400
 
 
 @pytest.mark.asyncio
