@@ -1,6 +1,9 @@
 from fastapi import HTTPException, status
 
-from mascope_backend.api.lib.exceptions.api_exceptions import CodedHTTPException
+from mascope_backend.api.lib.exceptions.api_exceptions import (
+    ClientFacingDetail,
+    CodedHTTPException,
+)
 
 
 #: Code carried in the error payload's ``detail`` when an account owes a
@@ -53,3 +56,14 @@ class InvalidTokenException(HTTPException):
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail=detail,
         )
+
+
+class AgentCredentialRefusedException(InvalidTokenException, ClientFacingDetail):
+    """An agent credential was refused, with remediation the operator can act on.
+
+    Kept an :class:`InvalidTokenException` on purpose: the token validation
+    path, the converter-token lookup and the socket handshake all catch that
+    type, and a refusal that escaped them would be re-raised as a generic
+    "Token validation failed" - losing this message and logging an error for
+    a routine, expected outcome.
+    """

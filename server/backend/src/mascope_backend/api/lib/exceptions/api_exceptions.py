@@ -41,6 +41,23 @@ class CodedHTTPException(HTTPException):
     error_code: str = ""
 
 
+class ClientFacingDetail:
+    """
+    Marker: this exception's ``detail`` is written for the caller and must
+    survive the 401 genericization below.
+
+    A 401 normally answers "please sign in", which is right for a browser
+    whose session lapsed and useless to an unattended agent, which has no
+    session and cannot sign in. A refusal that carries remediation the caller
+    can actually act on mixes this in to keep its own wording. That wording
+    reaches the response body, so it must stay a fixed, internals-free string
+    - never interpolated from a token, an account or a path.
+
+    Declared here for the same reason as CodedHTTPException above: the auth
+    package imports this module, so the dependency only runs one way.
+    """
+
+
 #: Context prefixes added by the wrapping layers (api_controller,
 #: api_controller_background_task, api_route). Used to detect messages that
 #: already carry an operation context so nesting does not stack prefixes.
@@ -144,6 +161,11 @@ def process_exception(e: Exception, context_message: str) -> ApiException:
                 tech_message = {"code": e.error_code, "error_id": error_id}
 
             match e:
+                case ClientFacingDetail() if (
+                    e.status_code == status.HTTP_401_UNAUTHORIZED and e.detail
+                ):
+                    # The refusal wrote remediation for whoever hit it; keep it.
+                    user_message = compose_user_message(context_message, e.detail)
                 case _ if e.status_code == status.HTTP_401_UNAUTHORIZED:
                     user_message = f"{context_message}. Please sign in to the Mascope."
                 case _ if (

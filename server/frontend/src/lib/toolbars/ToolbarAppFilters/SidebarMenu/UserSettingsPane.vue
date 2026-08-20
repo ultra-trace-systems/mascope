@@ -60,6 +60,11 @@ const SERVICE_CONFIGS = [
   },
   {
     id: 'file-agent',
+    // The shipped File Agent obtains its credential by pairing and has no way
+    // to accept a pasted one, so a token minted here could not be used. The
+    // TOF and CSV export agents keep their entry: they are external clients
+    // that cannot pair, and this is their only way to get a credential.
+    pairedOnly: true,
     label: 'File Agent',
     minRole: 200 // editor role_id
   },
@@ -84,7 +89,9 @@ const currentServiceConfig = computed(() =>
 
 // Available token types based on user role
 const availableTokenTypes = computed(() =>
-  SERVICE_CONFIGS.filter((config) => app.auth.user.role_id >= config.minRole)
+  SERVICE_CONFIGS.filter(
+    (config) => !config.pairedOnly && app.auth.user.role_id >= config.minRole
+  )
 )
 
 const tokenItems = computed(() =>
@@ -280,9 +287,9 @@ const vHelpLayer = app.ui.help.directive(layer)
       </p>
       <p>
         The File Agent uploads data files from an instrument PC automatically — its
-        Windows installer can be downloaded below. Agents can be connected without
-        copy-pasting a token: choose pairing in the agent setup, then enter the
-        code it shows via 'Pair an agent'.
+        Windows installer can be downloaded below. It is connected by pairing, not
+        by copying a token: run its setup, then enter the code it shows via
+        'Pair an agent'.
       </p>
       <p>
         Machines you have paired appear under 'Paired machines', where each can be

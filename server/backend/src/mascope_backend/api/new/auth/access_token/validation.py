@@ -10,7 +10,10 @@ from mascope_backend.api.new.auth.access_token.util import (
     get_token_service,
 )
 from mascope_backend.api.new.auth.config import auth_settings
-from mascope_backend.api.new.auth.exceptions import InvalidTokenException
+from mascope_backend.api.new.auth.exceptions import (
+    AgentCredentialRefusedException,
+    InvalidTokenException,
+)
 from mascope_backend.api.new.auth.pairing.config import pairing_settings
 from mascope_backend.api.new.auth.strategies.database import (
     get_database_strategy_context,
@@ -36,14 +39,14 @@ def ensure_device_bound(service_name: str, device_id: int | None) -> None:
     :type service_name: str
     :param device_id: The token's device binding, None when unbound.
     :type device_id: int | None
-    :raises InvalidTokenException: The deployment requires paired devices and
-        this agent token has none (issued before the device registry, or its
-        device was removed).
+    :raises AgentCredentialRefusedException: The deployment requires paired
+        devices and this agent token has none (issued before the device
+        registry, or its device was removed).
     """
     if service_name not in pairing_settings.ALLOWED_SERVICES:
         return
     if device_id is None and runtime.config.require_device_tokens:
-        raise InvalidTokenException(
+        raise AgentCredentialRefusedException(
             "This deployment accepts only paired agent credentials. "
             "Re-pair this machine from the agent's setup wizard to get a new token."
         )
@@ -65,7 +68,8 @@ def ensure_device_token_fresh(
     :param service_name: The token's service scope.
     :param device_id: The token's device binding; None means not a device token.
     :param created_at: When the token was issued.
-    :raises InvalidTokenException: The device token has outlived its lifetime.
+    :raises AgentCredentialRefusedException: The device token has outlived its
+        lifetime.
     """
     if device_id is None or created_at is None:
         return
@@ -73,7 +77,7 @@ def ensure_device_token_fresh(
         seconds=auth_settings.access_token.DEVICE_TOKEN_LIFETIME_SECONDS
     )
     if dt.now(timezone.utc) - created_at > lifetime:
-        raise InvalidTokenException(
+        raise AgentCredentialRefusedException(
             "This agent credential has expired. The agent renews its token "
             "automatically; if it has been offline past the token's lifetime, "
             "re-pair the machine from the agent's setup wizard."
