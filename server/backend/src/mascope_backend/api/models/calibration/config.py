@@ -24,6 +24,13 @@ class CalibrationConfig(BaseModel):
     ACQUISITION_DRIFT_WARNING_PPM: float = 10.0
     TOF_ACQUISITION_DRIFT_WARNING_PPM: float = 50.0
 
+    # How long a given drift warning stays suppressed after it fires. Drift is
+    # a standing condition an operator resolves by retuning the instrument,
+    # not an event per file: a busy instrument otherwise reports it on every
+    # acquisition (one production Orbitrap logged it 172 times in 19 hours).
+    # One reminder a day is enough to keep it visible until it is fixed.
+    ACQUISITION_DRIFT_WARNING_INTERVAL_S: float = 24 * 60 * 60
+
     # TOF calibration parameters
     TOF_MZ_ERROR_TOLERANCE: int = 15  # in ppm
     TOF_DEFAULT_REFINE_WINDOW: int = 100
