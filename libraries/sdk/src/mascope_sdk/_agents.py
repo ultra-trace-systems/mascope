@@ -20,11 +20,9 @@ from requests.exceptions import RequestException, Timeout
 
 from ._http import _is_retryable, _raise_for_status
 from .exceptions import (
-    AuthenticationError,
     MascopeAPIError,
     MascopeConnectionError,
     MascopeTimeoutError,
-    NotFoundError,
     TusNotSupportedError,
 )
 
@@ -244,8 +242,8 @@ def api_renew_agent_token(url: str, access_token: str) -> tuple[str, int]:
     :param access_token: The agent's current device token.
     :return: ``(new_token, expires_in_seconds)``.
     :rtype: tuple[str, int]
-    :raises TusNotSupportedError: the server has no renewal endpoint (404/401
-        with no token acceptance) - keep the current token.
+    :raises TusNotSupportedError: the server has no renewal endpoint (404) -
+        keep the current token.
     :raises AuthenticationError: the current token is expired or revoked.
     :raises MascopeTimeoutError: if the request times out.
     :raises MascopeConnectionError: if the server cannot be reached.
@@ -326,17 +324,16 @@ def api_post_file_tus(
         machine could not name its zone; the server then falls back to its own.
     :type timezone: str, optional
     :raises ValueError: if ``upload_filename`` contains path components.
-    :raises TusNotSupportedError: if the creation request is rejected with
-        404/401, meaning the server has no token-accessible TUS endpoint
-        (older Mascope release) - the caller's signal to fall back to the
-        legacy upload endpoint.
+    :raises AuthenticationError: if the credential is rejected (401), e.g. a
+        revoked device, an expired device token, or a deployment that accepts
+        only paired agent credentials. There is no fallback: the caller must
+        report it rather than retry against another endpoint.
     :raises MascopeTimeoutError: if a request times out (after retries).
     :raises MascopeConnectionError: if the server cannot be reached (after retries).
     :raises MascopeAPIError: on an error response; the concrete subclass
         (``AuthenticationError``, ``NotFoundError``, ``ValidationError``,
-        ``ServerError``) and message carry the specific cause. Errors
-        during chunk transfer keep these normal types and never signal
-        fallback.
+        ``ServerError``) and message carry the specific cause, for the
+        creation request and the chunk transfer alike.
     """
     if upload_filename:
         filename = _sanitize_upload_filename(upload_filename)
@@ -377,18 +374,13 @@ def api_post_file_tus(
             f"and your network connection ({e.__class__.__name__}).",
             url=create_url,
         ) from e
-    try:
-        _raise_for_status(resp, create_url)
-    except (NotFoundError, AuthenticationError) as e:
-        # Only the creation request may signal fallback: a 404 means no
-        # TUS route, a 401 a route that is not token-accessible - both an
-        # older Mascope release. The same statuses during chunk transfer
-        # (e.g. the upload vanishing in a backend restart) keep their
-        # normal types, so a transfer hiccup can never latch callers onto
-        # the legacy path.
-        raise TusNotSupportedError(
-            e.message, status_code=e.status_code, url=create_url
-        ) from e
+    # Every error keeps its own type, creation included. A 401 here is a
+    # rejected credential - a revoked device, an expired device token, or a
+    # deployment that requires paired devices - and callers must surface it
+    # as such; it was once read as "this server predates token-accessible
+    # TUS uploads", which sent agents to the capped legacy endpoint and
+    # reported a server-version problem instead of the credential one.
+    _raise_for_status(resp, create_url)
 
     # The Location header's host/scheme depend on proxy headers; only its
     # upload id is trustworthy. Address the upload via our own base URL.

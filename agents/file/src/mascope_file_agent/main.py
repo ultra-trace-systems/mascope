@@ -21,7 +21,6 @@ from mascope_runtime import Runtime
 
 mascope_sdk.SERVICE_NAME = "file-agent"
 from mascope_sdk import (  # noqa: E402  (needs SERVICE_NAME set first)
-    api_post_file,
     api_post_file_tus,
     api_renew_agent_token,
 )
@@ -215,15 +214,6 @@ def _start_token_renewal(stop_event) -> None:
     thread.start()
 
 
-# Size cap for the legacy single-request upload endpoint only; resumable
-# TUS uploads are chunked and have no practical size limit.
-FILE_UPLOAD_SIZE_LIMIT = 100 * 1024**2  # 100 MB
-
-# Set after the first upload attempt shows the server has no
-# token-accessible TUS endpoint (older Mascope release), so every
-# subsequent file skips the doomed TUS attempt.
-_legacy_upload = False
-
 HOST = None
 PORT = None
 URL = None
@@ -273,8 +263,10 @@ def process_file_upload(filepath: str, max_retries: int = 10) -> None:
         except AuthenticationError as e:
             runtime.logger.error(
                 f"File upload failed for file {os.path.basename(filepath)}: {e} "
-                "Retrying will not help - fix the access_token in the "
-                "file-agent configuration and restart the agent."
+                "Retrying will not help - the server rejected this machine's "
+                "credential. It may have been revoked, or have expired while "
+                "the agent was offline. Re-pair this machine by starting the "
+                "agent with --setup."
             )
             break  # a rejected token stays rejected; do not retry
         except (NotFoundError, ValidationError) as e:
@@ -284,8 +276,9 @@ def process_file_upload(filepath: str, max_retries: int = 10) -> None:
                 "A 404 usually means the configured host is not the Mascope "
                 "API (in development setups the frontend dev server cannot "
                 "receive uploads; use the backend address, e.g. "
-                "http://localhost:8090). Fix 'host' in the file-agent "
-                "configuration and restart the agent."
+                "http://localhost:8090), or that the server is too old to "
+                "accept agent uploads. Fix 'host' in the file-agent "
+                "configuration and restart the agent, or update the server."
             )
             break  # a wrong address or rejected payload cannot heal by waiting
         except Exception as e:
@@ -315,16 +308,15 @@ def upload_sample_file(filepath: str) -> None:
     """Upload the acquired file to Mascope server using Mascope API
 
     Uploads with the resumable TUS protocol (chunked, no size limit).
-    Servers without token-accessible TUS uploads (older Mascope releases)
-    are detected on the first attempt and fall back to the legacy
-    single-request endpoint, which caps files at 100 MB.
+    There is no fallback to the legacy single-request endpoint: every
+    supported server accepts agent TUS uploads, so a refusal here is a real
+    failure - a rejected credential above all - and must be reported as one
+    rather than retried against a capped endpoint.
 
     :param filepath: Full path to the file to be uploaded
     :type filepath: str
     :raises Exception: Raises an exception if the request fails (status code != 200)
     """
-    global _legacy_upload
-
     # Validate file extension before upload request
     file_ext = os.path.splitext(filepath)[1].lower()
     mask_ext = os.path.splitext(runtime.config.mask)[1].lower()
@@ -340,45 +332,8 @@ def upload_sample_file(filepath: str) -> None:
 
     # Raises a typed mascope_sdk exception carrying the specific cause
     # (rejected token, timeout, connection error, server error message).
-    if not _legacy_upload:
-        try:
-            api_post_file_tus(
-                url=URL,
-                access_token=current_access_token(),
-                filepath=filepath,
-                upload_filename=upload_filename,
-                timezone=_timezone,
-            )
-            runtime.logger.info(
-                f"File upload of file {os.path.basename(filepath)} succeeded!"
-            )
-            return
-        except TusNotSupportedError as e:
-            # Raised only by the upload *creation* request (404: no TUS
-            # route, 401: route not token-accessible) - an older server.
-            # The legacy attempt below gives the definitive answer (a
-            # genuinely bad token fails there with the proper message).
-            # Mid-transfer errors keep their normal types and are retried
-            # by process_file_upload, so a backend restart mid-upload can
-            # never latch the agent onto the capped legacy path.
-            runtime.logger.info(
-                "The server does not accept agent TUS uploads, falling back "
-                f"to the legacy upload endpoint: {e}"
-            )
-            _legacy_upload = True
-
-    # Legacy single-request upload: enforce its size cap
-    file_size = os.stat(filepath).st_size
-    if file_size > FILE_UPLOAD_SIZE_LIMIT:
-        raise ValueError(
-            f"File size ({round(file_size / (1024**2), 1)} MB) exceeds the maximum "
-            f"allowed size ({FILE_UPLOAD_SIZE_LIMIT / (1024**2)} MB) of the "
-            "server's upload endpoint. Upgrading the Mascope server enables "
-            "uploads of any size."
-        )
-    api_post_file(
+    api_post_file_tus(
         url=URL,
-        path="sample/files/upload",
         # The live token, not runtime.config's boot-time snapshot: renewal
         # rotates it and the server reaps the superseded ones, so a stale copy
         # here would 401 non-retryably while the agent holds a valid credential.
@@ -387,7 +342,6 @@ def upload_sample_file(filepath: str) -> None:
         upload_filename=upload_filename,
         timezone=_timezone,
     )
-
     runtime.logger.info(f"File upload of file {os.path.basename(filepath)} succeeded!")
 
 

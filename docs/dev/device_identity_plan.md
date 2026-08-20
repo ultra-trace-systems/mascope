@@ -257,10 +257,30 @@ practice.
   IANA timezone sent with every upload), plus the installer and
   [docs/user/instruments/index.md](../user/instruments/index.md) rewrite.
 - **E — rollout campaign:** section 6, per deployment.
-- **F — cleanup release:** remove the legacy multipart upload fallback
-  (pre-tus agents no longer exist), the `tof-agent` service scope, socket
+- **F — cleanup release:** remove the `tof-agent` service scope, socket
   namespace and acquisition event handlers, and non-device token acceptance
   for agent scopes; shrink pairing eligibility accordingly.
+
+  The agent's *client-side* fallback to the legacy multipart endpoint is
+  already gone in phase D: every supported server accepts agent TUS
+  uploads, so a refusal at upload creation is a rejected credential and is
+  reported as one. The legacy route itself stays until this phase, because
+  agents already installed at customer sites still use it and phase E is
+  what replaces them - removing it earlier would break acquisition at every
+  site the moment the server updated.
+
+  Its other consumers are small and must be handled with it: the demo
+  bundle rebuild uploads through `mascope_sdk.api_post_file`
+  (`tooling/cli/.../demo/_rebuild.py`), which keeps that function public
+  API, and `stores/data/modules/sample.js` still carries an `upload` action
+  posting to the route with no callers left (the browser uploads through
+  Uppy/TUS) - delete it with the route.
+
+  Progress towards this is measurable on a live deployment rather than
+  assumed: uploads from an agent that has not been re-paired have
+  `sample_file.uploaded_by_device_id IS NULL`, and their acquisition times
+  are stored with `utc_offset_source = 'guess'`. When neither appears for
+  new files, every agent on that deployment has been replaced.
 
 ## 6. Rollout campaign
 
