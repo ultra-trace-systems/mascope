@@ -46,23 +46,30 @@ export const useLoader = (name, key, method, refs, config, logger) => {
 
     const hasUnmetDeps = unmetDeps.length > 0
 
-    // Load data
-    if (hasUnmetDeps) {
-      records.value = []
-      logger.debug(`waiting for ${unmetDeps.join(', ')} dependency change`)
-    } else {
-      // Load data from API
-      records.value = (await method(args)) || []
-      // Add index field to all records
-      records.value.forEach((record, idx) => (record.index = (idx + 1).toString()))
+    // Load data. `pending` is cleared in `finally` because a rejected fetch
+    // would otherwise latch it: the pane keeps rendering its spinner for the
+    // rest of the session, with only the interceptor's toast to explain it.
+    // Records are left as they were on failure - the previous rows are stale
+    // but truthful, where an empty list would read as "this sample has none".
+    try {
+      if (hasUnmetDeps) {
+        records.value = []
+        logger.debug(`waiting for ${unmetDeps.join(', ')} dependency change`)
+      } else {
+        // Load data from API
+        records.value = (await method(args)) || []
+        // Add index field to all records
+        records.value.forEach((record, idx) => (record.index = (idx + 1).toString()))
+      }
+
+      // Status logging
+      logSyncStatus(oldCount, records.value.length, context, hasUnmetDeps, logger)
+
+      // state management
+      refocus()
+    } finally {
+      pending.value = false
     }
-
-    // Status logging
-    logSyncStatus(oldCount, records.value.length, context, hasUnmetDeps, logger)
-
-    // state management
-    refocus()
-    pending.value = false
   }
 
   /**

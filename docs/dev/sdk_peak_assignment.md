@@ -928,10 +928,16 @@ accept what is merely the importer's judgement.
   engine)**, so imports and in-app runs age out of their own quotas and neither
   can starve the other. §8.4 step 2 carries the prune change with the endpoint;
   the doc's earlier "imported and app-computed runs share the per-sample budget"
-  is retracted, because sharing it is what made publishing destructive. The
-  ledger is still a store of runs rather than an archive of every run ever: a
-  published run that must stay current is republished, and now that costs only
-  the importer's own quota.
+  is retracted, because sharing it is what made publishing destructive. A second
+  budget, `keep_per_sample_total` (**12** by default), bounds the sum across
+  engines: `engine` is free text the client supplies, so a name that varies per
+  build would otherwise mint a fresh quota on every import. **The in-app engine
+  is exempt from that total**, which is what keeps the guarantee absolute - an
+  import can never evict a sample's in-app history, whatever it calls itself.
+  The ledger is still a store of runs rather than an archive of every run ever:
+  a published run that must stay current is republished, and that costs the
+  importer's own quota and, across enough engines, the shared outer bound -
+  never the app's.
 - **Default-read consequence.** `get()` and the app's ledger read default to
   the *latest completed* run, whatever its engine, so a fresh import is what a
   reader sees by default. That is the point - published runs are first-class -

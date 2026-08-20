@@ -103,8 +103,15 @@ export const usePeakAssignment = defineStore('app.data.peakAssignment', () => {
         // switch the run store briefly still holds the old sample's run; using
         // it would 404. Null here (skip the fetch) until the run store
         // re-focuses this sample's latest run, then deps update and we load.
+        // An import still assembling is offered in the run selector but its
+        // ledger is not servable - the read refuses it, since the rows staged
+        // so far are real while the set is not. Skip the fetch rather than
+        // let the panel ask for rows the server will not give.
+        const servable = run && run.status !== 'importing'
         const peak_assignment_run_id =
-          run && run.sample_item_id === sample_item_id ? run.peak_assignment_run_id : null
+          servable && run.sample_item_id === sample_item_id
+            ? run.peak_assignment_run_id
+            : null
         return { sample_item_id, peak_assignment_run_id }
       },
       selection: true
