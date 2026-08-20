@@ -162,6 +162,30 @@ async def test_mz_apply_unknown_filename_forbidden(acq_admin_client):
     assert resp.status_code == 403
 
 
+@pytest.mark.asyncio
+async def test_mz_apply_unknown_filename_not_found_for_superuser(owner_client):
+    """A caller who bypasses the ACL entirely gets 404, not 403.
+
+    There is nothing to fail closed about for someone who clears every
+    instrument workspace: hiding the miss behind a 403 would only stop the
+    route saying what is actually wrong. The check has to answer this before it
+    resolves the filename, which is the ordering being pinned here.
+    """
+    resp = await owner_client.post(
+        "/api/calibration/mz_apply?filename=no-such-file.raw", json={"fit": {}}
+    )
+    assert resp.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_calibrate_sample_unknown_id_not_found_for_superuser(owner_client):
+    """Same ordering for the per-sample route."""
+    resp = await owner_client.post(
+        "/api/calibration/mz_calibrate/sample/no-such-item", json=_params()
+    )
+    assert resp.status_code == 404
+
+
 # ============= mz_fit: computes without writing, so scoped to the sample =============
 
 
@@ -169,6 +193,22 @@ async def test_mz_apply_unknown_filename_forbidden(acq_admin_client):
 async def test_mz_fit_as_data_workspace_editor(editor_client, alpha_item):
     """An editor of the item's own workspace may fit; the fit is never written."""
     resp = await editor_client.post(
+        f"/api/calibration/mz_fit?sample_item_id={alpha_item}", json=_params()
+    )
+    assert resp.status_code != 403
+
+
+@pytest.mark.asyncio
+async def test_mz_fit_as_acquisitions_admin(acq_admin_client, alpha_item):
+    """An admin of the file's instrument workspace may fit without joining Alpha.
+
+    ``acq_admin_client`` is no member of the workspace holding ``alpha_item``,
+    so the sample-workspace path refuses it - but it may write a calibration
+    onto that file outright, and the calibration dialog will not enable Save
+    until a fit comes back. Scoping the fit to the sample's workspace alone
+    would leave the dialog permanently unusable for exactly this operator.
+    """
+    resp = await acq_admin_client.post(
         f"/api/calibration/mz_fit?sample_item_id={alpha_item}", json=_params()
     )
     assert resp.status_code != 403
