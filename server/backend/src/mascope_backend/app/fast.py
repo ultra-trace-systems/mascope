@@ -83,6 +83,18 @@ async def lifespan(app: FastAPI):
     yield
 
     # --- SHUTDOWN TASKS ---
+    # Auto-processing runs detached from the request that scheduled it, so uvicorn
+    # does not wait on it the way it waits on connection tasks. Drain it here or a
+    # deploy truncates in-flight pipelines mid-file (#1844).
+    from mascope_backend.api.controllers.sample.files.process.service import (
+        drain_auto_process_tasks,
+    )
+
+    runtime.logger.info(
+        f"Fast App shutdown: draining background tasks [Worker {worker_pid}]"
+    )
+    await drain_auto_process_tasks()
+
     runtime.logger.info(
         f"Fast App shutdown: closing Redis storage client [Worker {worker_pid}]"
     )

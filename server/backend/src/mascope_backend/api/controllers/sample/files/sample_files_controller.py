@@ -322,14 +322,14 @@ async def create_sample_file(
 
         # Step 6: Trigger automatic processing of the sample file
         from mascope_backend.api.controllers.sample.files.process.service import (
-            auto_process_sample_file,
+            spawn_auto_process_sample_file,
         )
 
         #  TODO Most likely can be moved to module imports after removing circular import
         # with process_instrument_config https://github.com/ultra-trace-systems/mascope/issues/1248
 
         background_tasks.add_task(
-            auto_process_sample_file,
+            spawn_auto_process_sample_file,
             sample_file_id=new_sample_file.sample_file_id,
             independent_transaction=True,
             user_id=user_id,
