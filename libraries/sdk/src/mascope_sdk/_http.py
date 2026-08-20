@@ -30,6 +30,20 @@ DEFAULT_TIMEOUT = (30, 300)
 #: Status codes that are safe to retry (transient server errors).
 _RETRYABLE_STATUS_CODES = {502, 503, 504}
 
+#: Client errors (4xx) that a later identical request can still satisfy, so
+#: they stay retryable while every other 4xx is terminal. 408 and 425 are the
+#: server asking for the request again; 429 is a rate limit, which nginx
+#: applies to /api/ (see docs/hosting.md) and which clears on its own; 409 is
+#: the TUS offset disagreement the chunk loop resolves by resuming from the
+#: server's offset.
+_TRANSIENT_CLIENT_STATUS_CODES = {408, 409, 425, 429}
+
+#: Of those, the ones a caller may simply send again. 409 is excluded: an
+#: offset disagreement is resolved by resuming from the offset the server
+#: reports, which only the TUS chunk loop knows how to do - repeating the
+#: request unchanged would just disagree again.
+_RETRYABLE_CLIENT_STATUS_CODES = _TRANSIENT_CLIENT_STATUS_CODES - {409}
+
 #: Default retry settings.
 RETRY_MAX_ATTEMPTS = 4
 RETRY_BACKOFF_BASE = 2  # seconds; delays will be 2, 4, 8, ...
@@ -84,11 +98,16 @@ def _raise_for_status(response: requests.Response, url: str) -> None:
             status_code=status_code,
             url=url,
         )
-    elif status_code in (411, 413):
-        # Length Required / Payload Too Large: a client error the request can
-        # never satisfy by retrying - e.g. an upload over the per-upload cap.
-        # Raise a terminal (non-retryable) error so callers fail fast with the
-        # server's reason instead of retrying the same rejected request.
+    elif (
+        status_code is not None
+        and 400 <= status_code < 500
+        and status_code not in _TRANSIENT_CLIENT_STATUS_CODES
+    ):
+        # The server understood the request and rejected it: an upload over the
+        # per-upload cap (413), a length it must declare up front (411), a name
+        # that does not identify an instrument (400). Repeating it byte for byte
+        # cannot change the answer, so raise a terminal error and let the caller
+        # report the server's reason once instead of retrying into a timeout.
         raise ValidationError(
             message=message,
             status_code=status_code,
@@ -113,6 +132,14 @@ def _is_retryable(exc: Exception) -> bool:
     if isinstance(exc, (MascopeConnectionError, MascopeTimeoutError)):
         return True
     if isinstance(exc, ServerError) and exc.status_code in _RETRYABLE_STATUS_CODES:
+        return True
+    if (
+        isinstance(exc, MascopeAPIError)
+        and exc.status_code in _RETRYABLE_CLIENT_STATUS_CODES
+    ):
+        # A rate limit or a "send it again" clears on its own. Without this a
+        # chunk refused mid-transfer ended the whole upload, and the caller
+        # started the file again from its first byte rather than resuming.
         return True
     return False
 

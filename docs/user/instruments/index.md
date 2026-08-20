@@ -135,6 +135,14 @@ The agent prints its version when it starts, and uninstalling (Windows
   token), copy the file back into the watched folder to retry. The
   `failed_uploads` folder itself is never watched, even with `recursive`
   enabled.
+- *"Failed to get instrument type"*: the file name does not identify an
+  instrument. Mascope takes the instrument from the start of the name, up to
+  the first underscore — `Orbion_2026.05.03…` is instrument `Orbion` — and it
+  must be one this deployment knows. Either name the files that way in the
+  acquisition software, or set `filename_prefix` in the configuration to add
+  it, including the underscore (`filename_prefix = 'Orbion_'`). The agent does
+  not retry these: the server has understood the name and refused it, so the
+  file is set aside in `failed_uploads` immediately.
 - *"The server rejected the access token"* or *"This agent credential has
   expired"*: the machine's token has lapsed or its device was revoked.
   Answer the prompt the agent shows in its window, or close it and start

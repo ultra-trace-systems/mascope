@@ -129,10 +129,15 @@ def process_exception(e: Exception, context_message: str) -> ApiException:
             status_code = 503  # Service Unavailable
 
         case SQLAlchemyError():
+            # A database failure is this server's problem, not a malformed
+            # request, and callers act on that distinction: an agent treats a
+            # 4xx as final and sets the file aside, while a 5xx is worth
+            # retrying. Reported as 400 it made a transient database fault
+            # look like a file the server would never accept.
             user_message = (
                 f"{context_message}. Database operation failed (ref: {error_id[:8]})."
             )
-            status_code = 400  # Bad Request
+            status_code = 500  # Internal Server Error
 
         case ApiException():
             user_message = e.user_message
@@ -223,8 +228,10 @@ def process_exception(e: Exception, context_message: str) -> ApiException:
         case AttributeError():
             # str(e) can name internal attributes/objects; keep it out of the
             # client response (the full message is still logged server-side).
+            # 500 like RuntimeError below: an attribute the code did not expect
+            # is a fault here, and nothing the caller sent can fix it.
             user_message = f"{context_message}. Unexpected error (ref: {error_id[:8]})."
-            status_code = 400  # Bad Request
+            status_code = 500  # Internal Server Error
 
         case RuntimeError():
             # RuntimeError messages often embed internal paths/state; do not

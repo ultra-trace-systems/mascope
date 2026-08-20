@@ -8,9 +8,16 @@ on the wire.
 
 import json
 
+import pytest
 import requests
 
 from mascope_sdk import _http
+from mascope_sdk.exceptions import (
+    AuthenticationError,
+    MascopeAPIError,
+    NotFoundError,
+    ValidationError,
+)
 
 
 def _fake_ok_response() -> requests.Response:
@@ -119,3 +126,51 @@ def test_extract_error_message_falls_back_to_detail():
     response = _fake_error_response(404, {"detail": "Not found"})
 
     assert _http._extract_error_message(response) == "Not found"
+
+
+def _response(status: int, body: bytes = b'{"error": "nope"}') -> requests.Response:
+    response = requests.Response()
+    response.status_code = status
+    response._content = body
+    return response
+
+
+@pytest.mark.parametrize("status", [400, 405, 411, 413, 415, 422])
+def test_permanent_client_errors_are_terminal(status):
+    """A request the server understood and rejected must not be retried.
+
+    Callers decide whether to retry from the exception type, so a 400 that
+    arrived as a plain MascopeAPIError was indistinguishable from a transient
+    fault and got retried into a timeout - ten attempts for a file whose name
+    the server will never accept.
+    """
+    with pytest.raises(ValidationError) as exc_info:
+        _http._raise_for_status(_response(status), "http://server/api/x")
+
+    assert exc_info.value.status_code == status
+    assert not _http._is_retryable(exc_info.value)
+
+
+@pytest.mark.parametrize("status", [408, 409, 425, 429])
+def test_transient_client_errors_stay_retryable(status):
+    """These clear on their own: a rate limit, a timeout, a TUS offset clash.
+
+    They must NOT become terminal, or a busy deployment would strand uploads
+    that a moment's wait would have carried.
+    """
+    with pytest.raises(MascopeAPIError) as exc_info:
+        _http._raise_for_status(_response(status), "http://server/api/x")
+
+    assert not isinstance(exc_info.value, ValidationError)
+    assert exc_info.value.status_code == status
+    # 409 is resolved by resuming from the server's offset, which only the
+    # TUS chunk loop can do; the rest are safe to simply send again.
+    assert _http._is_retryable(exc_info.value) is (status != 409)
+
+
+def test_auth_and_not_found_keep_their_own_types():
+    """The terminal rule must not swallow the types callers act on."""
+    with pytest.raises(AuthenticationError):
+        _http._raise_for_status(_response(401), "http://server/api/x")
+    with pytest.raises(NotFoundError):
+        _http._raise_for_status(_response(404), "http://server/api/x")

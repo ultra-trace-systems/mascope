@@ -355,6 +355,45 @@ def _check_credential_at_start() -> None:
     )
 
 
+def _rejection_guidance(error: Exception) -> str:
+    """What the operator should do about an upload the server refused outright.
+
+    These are not failures waiting to clear: the request was understood and
+    rejected, so the only useful thing the agent can do is name the cause and
+    the fix. The commonest by far is a file whose name does not identify an
+    instrument, which the person at the acquisition software can correct.
+
+    :param error: The terminal error raised by the upload.
+    :type error: Exception
+    :return: A sentence or two of guidance, appended to the log line.
+    :rtype: str
+    """
+    message = str(error).lower()
+
+    if "instrument" in message:
+        return (
+            "Mascope reads the instrument from the start of the file name, up "
+            "to the first underscore - 'Orbion_...' is instrument 'Orbion' - "
+            "and this name does not give one it recognizes. Either have the "
+            "acquisition software name files that way, or set "
+            "'filename_prefix' in the agent configuration to add it, "
+            "including the underscore (filename_prefix = 'Orbion_')."
+        )
+    if isinstance(error, NotFoundError):
+        return (
+            "A 404 usually means the configured host is not the Mascope API "
+            "(in development setups the frontend dev server cannot receive "
+            "uploads; use the backend address, e.g. http://localhost:8090), "
+            "or that the server is too old to accept agent uploads. Fix "
+            "'host' in the agent configuration and restart it, or update the "
+            "server."
+        )
+    return (
+        "The server understood the request and rejected it, so sending the "
+        "same file again cannot succeed."
+    )
+
+
 def process_file_upload(filepath: str, max_retries: int = 10) -> None:
     """Process file upload
 
@@ -382,16 +421,10 @@ def process_file_upload(filepath: str, max_retries: int = 10) -> None:
             break  # a rejected token stays rejected until the machine re-pairs
         except (NotFoundError, ValidationError) as e:
             runtime.logger.error(
-                f"File upload failed for file {os.path.basename(filepath)}: {e} "
-                "Retrying will not help - the server rejected the request. "
-                "A 404 usually means the configured host is not the Mascope "
-                "API (in development setups the frontend dev server cannot "
-                "receive uploads; use the backend address, e.g. "
-                "http://localhost:8090), or that the server is too old to "
-                "accept agent uploads. Fix 'host' in the file-agent "
-                "configuration and restart the agent, or update the server."
+                f"File upload failed for file {os.path.basename(filepath)}: "
+                f"{e} {_rejection_guidance(e)}"
             )
-            break  # a wrong address or rejected payload cannot heal by waiting
+            break  # a rejected file cannot heal by waiting
         except Exception as e:
             # Timeouts, connection and server errors are transient - retry.
             # The message carries the specific cause (e.g. connection refused,
@@ -404,15 +437,24 @@ def process_file_upload(filepath: str, max_retries: int = 10) -> None:
             )
             runtime.logger.info("Retrying upload in 30 seconds...")
             time.sleep(30)
-    # Max retries exceeded, give up
+    # Out of attempts, or refused outright: set the file aside where the
+    # operator can find it, and say how to make it try again.
+    name = os.path.basename(filepath)
+    try:
+        failed_dir = mkdir(runtime.config.source, "failed_uploads")
+        shutil.copyfile(filepath, os.path.join(failed_dir, name))
+    except OSError as e:
+        # The file can disappear mid-retry (an operator tidying up, an
+        # instrument rewriting it). Nothing left to preserve, and this runs in
+        # a worker thread whose exceptions nobody sees, so say it and stop.
+        runtime.logger.error(f"Gave up on {name}, and could not keep a copy: {e}")
+        return
     runtime.logger.error(
-        f"File upload failed for file {os.path.basename(filepath)} after {attempt} attempts"
+        f"Gave up on {name} after {attempt} "
+        f"attempt{'s' if attempt != 1 else ''}. A copy is in {failed_dir} - "
+        "once the cause is fixed, put it back in the watched folder to "
+        "upload it."
     )
-    # Move failed file into a separate directory
-    failed_dir = mkdir(runtime.config.source, "failed_uploads")
-    failed_filepath = os.path.join(failed_dir, os.path.basename(filepath))
-    shutil.copyfile(filepath, failed_filepath)
-    runtime.logger.debug(f"Copied failed file to {failed_filepath}")
 
 
 def upload_sample_file(filepath: str) -> None:

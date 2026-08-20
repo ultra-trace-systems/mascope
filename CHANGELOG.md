@@ -183,6 +183,18 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
 
 ### Fixed
 
+- A file the server rejects outright is no longer retried ten times over five
+  minutes before being set aside. Anything the server understood and refused -
+  most often a name that does not identify an instrument, but also an upload
+  over the size cap - now fails on the first attempt, and the agent explains
+  the cause and the fix instead of repeating a request that cannot succeed:
+  Mascope reads the instrument from the start of the file name up to the first
+  underscore, so either the acquisition software names files that way or
+  `filename_prefix` in the agent configuration adds it. Rate limits, request
+  timeouts and server errors are still retried, since those do clear. The
+  agent also now says where it put a file it gave up on, and how to make it
+  try again.
+
 - A refused agent credential now says so, instead of telling an unattended
   machine to sign in. When a deployment accepts only paired machines, or a
   device token expired while the agent was offline, the refusal names

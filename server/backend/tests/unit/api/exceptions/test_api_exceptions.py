@@ -88,7 +88,11 @@ class TestProcessExceptionDoesNotLeakInternals:
             AttributeError("'NoneType' object has no attribute '_engine'")
         )
 
-        assert api_exc.status_code == 400
+        # 500, not 400: an attribute the code did not expect is a fault here,
+        # and nothing the caller sent can fix it. Clients act on the class -
+        # the File Agent sets a file aside for good on a 4xx and retries a
+        # 5xx - so reporting a server fault as a client error stranded files.
+        assert api_exc.status_code == 500
         assert "_engine" not in api_exc.user_message
         assert api_exc.user_message.startswith("Test context. Unexpected error")
 
@@ -228,7 +232,7 @@ class TestProcessExceptionLogLevels:
             FileNotFoundError(2, "No such file", "/some/path"),  # default -> 500
             RuntimeError("boom"),  # 500
             HTTPException(status_code=500, detail="Upstream failed"),
-            # 4xx-mapped exception types that signal server-side faults
+            # Faults that reach the pipeline as ordinary Python exceptions
             AttributeError("'NoneType' object has no attribute '_engine'"),
             SQLAlchemyError("connection reset"),
         ],
@@ -299,7 +303,7 @@ class TestApiEResponseJson:
     [
         (RuntimeError("boom"), 500),
         (ValueError("bad value"), 400),
-        (AttributeError("missing attr"), 400),
+        (AttributeError("missing attr"), 500),
     ],
 )
 def test_status_codes_and_opaque_detail(exc, expected_status):
@@ -311,8 +315,9 @@ def test_status_codes_and_opaque_detail(exc, expected_status):
 def test_pool_timeout_maps_to_503():
     """
     Connection-pool starvation is transient server congestion: it must answer
-    503 (retryable) rather than the generic SQLAlchemyError 400, so batch
-    clients like the file converter retry instead of quarantining files.
+    503, the status that says "busy, come back", rather than the generic
+    SQLAlchemyError 500, so batch clients like the file converter retry
+    promptly instead of treating it as a fault to report.
     """
     from sqlalchemy.exc import TimeoutError as SQLAlchemyTimeoutError
 
