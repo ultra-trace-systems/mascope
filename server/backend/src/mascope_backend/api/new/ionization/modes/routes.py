@@ -22,12 +22,39 @@ from mascope_backend.api.new.ionization.modes.service import (
     get_ionization_modes_by_filename,
     update_ionization_mode,
 )
+from mascope_backend.api.new.workspaces.dependencies import (
+    check_target_collection_access,
+)
 from mascope_backend.db import User
 
 
 ionization_mode_router = APIRouter(
     prefix="/api/ionization/modes", tags=["ionization modes"]
 )
+
+
+async def _check_referenced_collections(mode_data, user: User) -> None:
+    """Refuse a calibration or diagnostic collection the caller cannot read.
+
+    A mode is global reference data, so the collections it names are read by
+    every workspace that processes a sample under it. Binding one the caller
+    alone can see would publish it to the whole instance through the mode,
+    which is not the editor's to grant - and ``validate_scope_change`` refuses
+    the same move from the other direction, so a collection cannot be bound
+    while global and narrowed afterwards.
+
+    Read (guest) access is the bar: naming a collection is not a mutation of
+    it. Only ids the request actually sets are checked, so a mode already
+    bound to a workspace collection stays editable in every other respect.
+
+    :param mode_data: The create or update body.
+    :param user: The authenticated user.
+    :raises ForbiddenAccessException: If a named collection is not readable.
+    """
+    for field in ("calibration_collection_id", "diagnostic_collection_id"):
+        collection_id = getattr(mode_data, field, None)
+        if collection_id is not None:
+            await check_target_collection_access(collection_id, user, "guest")
 
 
 @ionization_mode_router.get("/{ionization_mode_id}")
@@ -75,6 +102,7 @@ async def create_ionization_mode_route(
     """
     Create a new ionization mode.
     """
+    await _check_referenced_collections(ionization_mode_data, user)
     return await create_ionization_mode(ionization_mode_data)
 
 
@@ -95,6 +123,7 @@ async def update_ionization_mode_route(
     heavier action than it looks, but that weight is not a reason to require a
     global role that also carries user administration.
     """
+    await _check_referenced_collections(ionization_mode_data, user)
     return await update_ionization_mode(ionization_mode_id, ionization_mode_data)
 
 
