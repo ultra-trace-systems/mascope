@@ -53,8 +53,10 @@ _FORWARDED_ENV_VARS = [
     # prune_peak_assignment_runs
     "MASCOPE_PRUNE_DRY_RUN",
     "MASCOPE_PRUNE_KEEP_PER_SAMPLE",
+    "MASCOPE_PRUNE_KEEP_PER_SAMPLE_TOTAL",
     "MASCOPE_PRUNE_KEEP_FAILED_HOURS",
     "MASCOPE_PRUNE_KEEP_RUNNING_HOURS",
+    "MASCOPE_PRUNE_KEEP_IMPORTING_HOURS",
     # require_password_change
     "MASCOPE_REQUIRE_PASSWORD_CHANGE_DRY_RUN",
     # clear_password_change_requirement
