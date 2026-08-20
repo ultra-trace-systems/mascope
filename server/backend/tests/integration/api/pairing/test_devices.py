@@ -134,6 +134,17 @@ async def test_revoking_one_device_leaves_the_other(
     resp = await editor_client.delete(f"/api/auth/devices/{device_a}")
     assert resp.status_code == 200, resp.text
 
+    # The revoke response describes the device the same way the list routes
+    # do. It was built by hand and reported no sponsor at all, so a client
+    # updating its row from this payload blanked the sponsor out.
+    revoked_payload = resp.json()["data"]
+    listed = await editor_client.get("/api/auth/devices")
+    listed_a = next(d for d in listed.json()["data"] if d["device_id"] == device_a)
+    assert revoked_payload["sponsor_username"] == listed_a["sponsor_username"]
+    assert revoked_payload["sponsor_username"] is not None
+    assert revoked_payload["token_count"] == 0
+    assert revoked_payload["revoked_at"] is not None
+
     async with async_session_factory() as session:
         # The revoked device's token is gone; the other survives.
         surviving = (

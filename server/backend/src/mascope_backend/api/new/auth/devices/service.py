@@ -219,7 +219,16 @@ async def revoke_device(actor: User, device_id: int) -> dict:
         if device.revoked_at is None:
             device.revoked_at = dt.now(timezone.utc)
         await session.commit()
-        await session.refresh(device)
+        # Serialize through the statement the list routes use, so a revoked
+        # device reports its sponsor and its now-zero token count exactly as
+        # GET /devices does. Building the response by hand here is what left
+        # sponsor_username null while the row still had a sponsor.
+        row = (
+            await session.execute(
+                _device_rows_stmt().where(AgentDevice.device_id == device_id)
+            )
+        ).one()
+        revoked = _to_device_read(*row)
 
     runtime.logger.warning(
         f"Device '{device.name}' (id {device.device_id}, {device.service_name}) "
@@ -227,7 +236,7 @@ async def revoke_device(actor: User, device_id: int) -> dict:
     )
     return {
         "message": f"Device '{device.name}' revoked; its tokens no longer authenticate.",
-        "data": _to_device_read(device, None, 0),
+        "data": revoked,
     }
 
 

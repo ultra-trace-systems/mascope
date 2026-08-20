@@ -26,17 +26,15 @@ uploads them to your Mascope server automatically.
 
 3. When the agent first starts, a guided setup runs in the console window.
    It asks for the **Mascope server address** (for example
-   `mascope.example.com`), then connects the agent to your account —
-   choose **pairing** (the default):
+   `mascope.example.com`) and whether to verify the server's TLS
+   certificate (answer *no* only for a self-signed test server), then
+   pairs the agent with your account:
    1. The agent shows a short pairing code, for example `BCD-234`.
    2. Log in to Mascope in your browser (*editor* role or higher), open
       the **Home menu** (house icon, top-left) **Settings** tab, and under
       **API Access Tokens** click **Pair an agent**.
    3. Enter the code and approve — the agent picks up its access token
       automatically within a few seconds.
-
-   (Alternatively, choose manual entry and paste a **File Agent** access
-   token generated under **API Access Tokens**.)
 
 4. Finally the setup asks for the **folder to watch** for new data files
    (any folder on the PC — where the agent is installed does not matter),

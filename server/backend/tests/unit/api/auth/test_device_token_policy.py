@@ -52,3 +52,43 @@ def test_non_agent_services_are_never_gated(strict_mode, service):
     # touch them even when it is on.
     strict_mode(True)
     validation.ensure_device_bound(service, device_id=None)
+
+
+def test_refusals_deliver_their_own_remediation(strict_mode):
+    """The refusal must reach the caller, not be genericized into "sign in".
+
+    An agent has no session and cannot sign in, so a 401 answering "please
+    sign in to the Mascope" tells its operator nothing. Both refusals opt out
+    of that genericization by carrying ``ClientFacingDetail``; if that marker
+    is dropped, the wording below still exists in the log and nowhere else.
+    """
+    from datetime import datetime, timedelta, timezone
+
+    from mascope_backend.api.lib.exceptions.api_exceptions import ClientFacingDetail
+
+    strict_mode(True)
+    with pytest.raises(InvalidTokenException) as unbound:
+        validation.ensure_device_bound(AGENT_SERVICE, device_id=None)
+    assert isinstance(unbound.value, ClientFacingDetail)
+    assert "paired agent credentials" in unbound.value.detail
+
+    stale = datetime.now(timezone.utc) - timedelta(days=365)
+    with pytest.raises(InvalidTokenException) as expired:
+        validation.ensure_device_token_fresh(
+            AGENT_SERVICE, device_id=7, created_at=stale
+        )
+    assert isinstance(expired.value, ClientFacingDetail)
+    assert "expired" in expired.value.detail
+
+
+def test_ordinary_token_failures_stay_generic():
+    """Only the two agent refusals opt in; the rest keep "please sign in".
+
+    Their details name internals ("Invalid token format", "Token validation
+    failed") and must not reach a client.
+    """
+    from mascope_backend.api.lib.exceptions.api_exceptions import ClientFacingDetail
+
+    assert not isinstance(
+        InvalidTokenException("Invalid access token."), ClientFacingDetail
+    )

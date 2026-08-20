@@ -170,6 +170,22 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
 
 ### Fixed
 
+- A refused agent credential now says so, instead of telling an unattended
+  machine to sign in. When a deployment accepts only paired machines, or a
+  device token expired while the agent was offline, the refusal names
+  re-pairing as the fix and the agent reports it; previously every such 401
+  was rewritten to "Please sign in to the Mascope", which no agent can act
+  on and which pointed operators at the wrong thing entirely. Ordinary
+  sign-in failures are unchanged.
+- Revoking a paired machine now reports that machine the same way the device
+  list does. The revoke response named no sponsor at all, so a client
+  refreshing its row from that payload blanked the sponsor out.
+- The settings pane no longer offers a **File Agent** token to generate by
+  hand. The agent takes a paired credential and cannot accept a pasted one,
+  so that token had no use; machines are connected under **Paired machines**.
+  The TOF and CSV export agents keep theirs, which is still how they are
+  issued a credential.
+
 - The File Agent no longer falls back to the legacy single-request upload
   endpoint, and no longer reports a rejected credential as an out-of-date
   server. Every supported server accepts resumable agent uploads, so a
