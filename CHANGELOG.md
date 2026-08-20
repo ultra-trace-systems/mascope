@@ -58,6 +58,15 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
   `jwt_secret_key.txt`, which can be rotated freely. A deployment without the
   key starts normally and refuses only enrolment. See
   [Authorization](docs/authorization.md) and `docs/dev/mfa_totp_plan.md`.
+- `GET /api/workspaces` now reports `my_role` on every record: the caller's own
+  role in that workspace, plus `instrument` on an acquisition workspace, naming
+  the instrument whose raw files it holds. The app uses them to disable an
+  action the backend would refuse rather than offering it and surfacing a 403 on
+  click - the Recalibrate entries in the sample and batch menus, and the Save
+  button in the calibration dialog, are now disabled with an explanation for
+  anyone without admin in the relevant instrument workspace. Superusers report
+  `owner` everywhere, matching what the workspace checks grant them regardless
+  of membership.
 
 ### Removed
 
@@ -73,35 +82,31 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
   from it before re-running `copy_examples`, or you keep the retired notebook
   and end up with batch-stages twice under two numbers.
 
-### Added
-
-- `GET /api/workspaces` now reports `my_role` on every record: the caller's own
-  role in that workspace. The app uses it to disable an action the backend would
-  refuse rather than offering it and surfacing a 403 on click - the Recalibrate
-  entries in the sample and batch menus, and the Save button in the calibration
-  dialog, are now disabled with an explanation for anyone without admin in the
-  relevant instrument workspace. Superusers report `owner` everywhere, matching
-  what the workspace checks grant them regardless of membership.
-
 ### Changed
 
 - Running an m/z calibration no longer requires the global `admin` role. It now
-  requires `admin` in the *instrument* workspace holding the raw file, the same
-  bar already applied to deleting and reprocessing that file - which is the
+  requires `admin` in the *instrument* workspace holding the raw file - the
   right scope, because a calibration is written onto the file and every sample
-  item referencing it, in any workspace, sees the change. Fitting a calibration
-  (`POST /api/calibration/mz_fit`) computes without writing anything and is
-  scoped instead to `editor` in the workspace holding the sample. The practical
-  effect is that an analyst who needs to calibrate their own instrument's data
-  no longer has to be promoted to a role that also carries user administration.
-  Membership of the workspace holding the sample does not grant a calibration -
-  the file is shared, so the instrument workspace governs it.
+  item referencing it, in any workspace, sees the change, which is the same
+  reason deleting and reprocessing that file are governed there. Fitting a
+  calibration (`POST /api/calibration/mz_fit`) computes without writing anything
+  and is scoped instead to `editor` in the workspace holding the sample, or
+  `admin` in its instrument workspace - a caller who may write the calibration
+  can preview it. The practical effect is that an analyst who needs to calibrate
+  their own instrument's data no longer has to be promoted to a role that also
+  carries user administration. Membership of the workspace holding the sample
+  does not grant a calibration - the file is shared, so the instrument workspace
+  governs it, and unlike deleting a file there is no fallback through the
+  workspace an item happens to sit in.
 - Editing and deleting an ionization mode dropped from the global `admin` role
   to `editor`, matching what creating one already required, what the whole
   instrument-config surface requires, and what `docs/authorization.md` states
-  for shared reference data. Guests remain read-only. Note that such an edit is
-  retroactive: it changes how samples already processed under the mode are
-  calibrated and matched.
+  for shared reference data. The edit and delete controls in the Ionization
+  Modes pane follow, so the widened permission is actually reachable. Guests
+  remain read-only. Note that such an edit is retroactive: it changes how
+  samples already processed under the mode are calibrated and matched, and
+  flags every affected batch - in every workspace, not only the editor's own -
+  for recalibration or rematching.
 - With the opt-in peak-centric assignment feature enabled, the legacy Match
   tab (briefly renamed "Fit" under the flag) is retired: the Sample view
   already carries the spectrum-envelope and time-series duties it duplicated,
