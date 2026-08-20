@@ -30,9 +30,9 @@ from mascope_backend.api.models.calibration.calibration_pydantic_model import (
 from mascope_backend.api.new.auth.dependencies import current_active_user, guest_user
 from mascope_backend.api.new.workspaces.dependencies import (
     check_filename_file_instrument_access,
-    check_sample_access,
     check_sample_batch_file_instrument_access,
     check_sample_item_file_instrument_access,
+    check_sample_or_file_instrument_access,
 )
 from mascope_backend.db.id import gen_id
 
@@ -95,6 +95,11 @@ async def calibration_mz_fit_route(
     editor level - the same bar as running a match. Writing the result to the
     file is a separate call with a stricter check.
 
+    An admin of the file's instrument workspace is admitted as well, because
+    that role may write a calibration onto the file outright: refusing it the
+    preview of what it is about to write would leave the calibration dialog
+    unusable for the very operator the write was scoped to.
+
     :param mz_calibration_params: Parameters for m/z calibration.
     :type mz_calibration_params: MzCalibrationParams
     :param background_tasks: Background tasks for async processing.
@@ -106,7 +111,9 @@ async def calibration_mz_fit_route(
     :return: Message confirming start of m/z fit calibration.
     :rtype: dict
     """
-    await check_sample_access(sample_item_id, user, "editor")
+    await check_sample_or_file_instrument_access(
+        sample_item_id, user, "editor", "admin"
+    )
 
     # Verify the existance of sample item
     sample_data = await get_sample_item(sample_item_id)
@@ -144,8 +151,10 @@ async def calibration_mz_apply_route(
 
     Writes the calibration onto the file itself, so every sample item
     referencing it - in any workspace - is affected. Admin in the file's
-    instrument workspace is therefore the bar, matching what deleting or
-    reprocessing the same file already requires.
+    instrument workspace is therefore the bar, for the same reason deleting or
+    reprocessing the file is governed there. Note the strict form: unlike those
+    two, membership of a workspace holding an item that references the file does
+    not stand in for the instrument role.
 
     :param body: The calibration apply body.
     :type body: CalibrationMzApplyBody
@@ -160,9 +169,11 @@ async def calibration_mz_apply_route(
     """
     await check_filename_file_instrument_access(filename, user, "admin")
 
-    # Verify the existance of sample file
+    # Verify the existance of sample file. Indexing into ``data`` before testing
+    # it would raise IndexError on the empty list an unknown filename returns -
+    # reachable now that a caller who bypasses the instrument ACL gets this far.
     sample_file_data = await get_sample_files(filename=filename)
-    if not sample_file_data["data"][0]:
+    if not sample_file_data["data"]:
         raise NotFoundException(f"Sample file '{filename}' not found")
 
     # Get data for notifications
