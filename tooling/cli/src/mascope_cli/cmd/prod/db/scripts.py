@@ -18,7 +18,12 @@ from typing import Annotated
 
 import typer
 
-from mascope_cli.pg import check_prerequisites, dirs, pg_dump
+from mascope_cli.pg import (
+    check_prerequisites,
+    dirs,
+    pg_dump,
+    skip_backup_log_level,
+)
 from mascope_cli.runtime import runtime
 
 
@@ -218,9 +223,11 @@ def run_script(
 
     # --- Backup ---
     if skip_backup:
-        runtime.logger.warning(
+        # WARNING interactively, INFO under --yes: see skip_backup_log_level.
+        runtime.logger.log(
+            skip_backup_log_level(yes),
             "Skipping pre-script backup (--skip-backup). "
-            "No restore point will exist if this script corrupts data."
+            "No restore point will exist if this script corrupts data.",
         )
         if not yes:
             typer.confirm(
