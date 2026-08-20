@@ -149,6 +149,42 @@ jobs:
           MASCOPE_PATH: ${{ github.workspace }}
         run: uv run pytest libraries/ -v
 
+  pentest-selftest:
+    name: Pen-test suite selftests
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+        with:
+          version: "0.11.2"
+
+      - name: Install dependencies
+        run: uv sync --group dev
+
+      - name: Run the pen-test suite's selftests
+        # These assess the suite itself, not a deployment: the report and
+        # baseline logic, and the closed-world check that every control is
+        # either covered by a mutation or listed as uncovered with a reason.
+        # They need no target and no credentials, which is why they can run on
+        # every PR while the assessment itself cannot.
+        #
+        # The guarantee is worth nothing if nobody runs it: a control added with
+        # neither a mutation nor an uncovered entry is exactly the "nobody knows
+        # whether it can fail" state the mutation guard exists to prevent, and
+        # until this job existed the check ran only when someone remembered.
+        working-directory: security/pentest
+        env:
+          # A closed port, so the session-start build probe fails immediately
+          # instead of waiting out a timeout against a target that is not there.
+          MASCOPE_PENTEST_TARGET: http://127.0.0.1:9
+        run: uv run --no-sync pytest selftest/ -v
+
   file-agent:
     name: File Agent tests
     runs-on: ubuntu-latest
