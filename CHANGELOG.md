@@ -170,6 +170,18 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
 
 ### Fixed
 
+- The File Agent no longer falls back to the legacy single-request upload
+  endpoint, and no longer reports a rejected credential as an out-of-date
+  server. Every supported server accepts resumable agent uploads, so a
+  refusal when an upload is created means the credential was refused - a
+  revoked machine, a token that expired while the agent was offline, or a
+  deployment that accepts only paired machines - and the agent now says so
+  and stops, instead of concluding the server was too old and quietly
+  moving that process to the single-request endpoint for the rest of its
+  life, where uploads are capped at 100 MB and no longer resume after a
+  network drop. Servers keep accepting single-request uploads, so agents
+  that have not been re-paired yet continue to work unchanged.
+
 - A successful `mascope prod update` - unattended or `--version` - now also
   moves the deployment checkout to the release it deployed. The checkout is
   what a boot redeploys, so an unattended update used to leave the server one

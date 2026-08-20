@@ -48,10 +48,11 @@ USER_CONFIG_HEADER = """\
 # Mascope File Agent configuration
 #
 #   host         - Mascope server address, e.g. "mascope.example.com"
-#   access_token - API access token. To create one: log in to Mascope in the
-#                  browser, click your profile icon to open the sidebar, and
-#                  under "API Access Tokens" generate a "File Agent" token
-#                  (editor role or higher required).
+#   access_token - this machine's credential, obtained by pairing during
+#                  setup and renewed automatically. Do not edit it by hand;
+#                  to pair again (after revoking the machine, or if the
+#                  credential expired while the agent was offline) start the
+#                  agent with the --setup flag.
 #   source       - full path of the folder to watch for new data files
 #   mask         - pattern of the files to upload, e.g. "*.raw"
 #   recursive    - true to also watch subfolders of source (the agent's own

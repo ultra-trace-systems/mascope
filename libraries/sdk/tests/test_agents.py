@@ -92,7 +92,7 @@ def test_renew_agent_token_uses_configured_tls_verification(monkeypatch):
 
 def test_renew_agent_token_missing_endpoint_signals_fallback(monkeypatch):
     # A 404 means the server has no renewal endpoint (older release); the agent
-    # keeps its current token, exactly as the tus fallback does.
+    # keeps its current token and backs off instead of ending the loop.
     monkeypatch.setattr(
         _agents.requests, "post", lambda *a, **k: _fake_response(404, {})
     )
@@ -316,25 +316,30 @@ def test_tus_upload_does_not_retry_client_errors(monkeypatch, upload_file):
     assert attempts["n"] == 1  # a rejected request cannot heal by waiting
 
 
-@pytest.mark.parametrize("status", [404, 401])
-def test_tus_create_failure_signals_fallback(monkeypatch, upload_file, status):
-    # The File Agent falls back to the legacy endpoint on this: a 404
-    # means no TUS route (old server), a 401 means the route is not
-    # token-accessible (old server) or a genuinely bad token.
+@pytest.mark.parametrize(
+    "status, expected",
+    [(404, NotFoundError), (401, AuthenticationError)],
+)
+def test_tus_create_failure_keeps_its_type(monkeypatch, upload_file, status, expected):
+    # Creation errors are reported as themselves. A 401 here is a rejected
+    # credential - a revoked device, a device token that expired while the
+    # agent was offline, or a deployment that accepts only paired
+    # credentials - and was previously reported as a server too old for
+    # token-accessible TUS, which sent the agent to the capped legacy
+    # endpoint and named the wrong cause.
     monkeypatch.setattr(
         _agents.requests, "post", lambda *a, **k: _fake_response(status)
     )
 
-    with pytest.raises(TusNotSupportedError) as exc_info:
+    with pytest.raises(expected) as exc_info:
         _agents.api_post_file_tus("http://testserver", "tok", upload_file)
 
     assert exc_info.value.status_code == status
 
 
-def test_tus_mid_transfer_404_is_not_a_fallback_signal(monkeypatch, upload_file):
+def test_tus_mid_transfer_404_keeps_its_type(monkeypatch, upload_file):
     # An upload vanishing mid-transfer (e.g. backend restart clearing the
-    # temp dir) must keep its normal type: TusNotSupportedError would
-    # latch the agent onto the 100 MB legacy path for its lifetime.
+    # temp dir) is retryable by the caller and must stay a NotFoundError.
     monkeypatch.setattr(_agents.requests, "post", _fake_create({}))
     monkeypatch.setattr(_agents.requests, "patch", lambda *a, **k: _fake_response(404))
 
@@ -452,7 +457,7 @@ def test_tus_create_carries_the_timezone_in_upload_metadata(monkeypatch, upload_
 
     monkeypatch.setattr(_agents.requests, "post", capture)
 
-    with pytest.raises(TusNotSupportedError):
+    with pytest.raises(NotFoundError):
         _agents.api_post_file_tus(
             url="http://server",
             access_token="t",
@@ -475,7 +480,7 @@ def test_tus_create_omits_the_timezone_when_unknown(monkeypatch, upload_file):
 
     monkeypatch.setattr(_agents.requests, "post", capture)
 
-    with pytest.raises(TusNotSupportedError):
+    with pytest.raises(NotFoundError):
         _agents.api_post_file_tus(
             url="http://server", access_token="t", filepath=upload_file
         )
