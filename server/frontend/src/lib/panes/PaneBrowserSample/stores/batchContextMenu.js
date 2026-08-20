@@ -80,9 +80,9 @@ export const useBatchContextMenu = defineStore('browser.sample.batchCtxMenu', ()
   // than hiding a capability it cannot rule out.
   const canCalibrate = computed(() =>
     canCalibrateInstruments(
-      app.data.workspace.data,
+      app.data.workspace.list,
       app.auth.user,
-      batchInstruments(app.data.sample.data, row.value?.sample_batch_id)
+      batchInstruments(app.data.sample.list, row.value?.sample_batch_id)
     )
   )
 
