@@ -29,24 +29,35 @@ from mascope_runtime.config import BackendConfig
 ASYNC_SESSION_MAKER: async_sessionmaker[AsyncSession] | None = None
 db_cfg = cast(BackendConfig, runtime.config).database
 
-# Admission control for the dependency-injected session path.
-#
-# DELIBERATELY sized at pool_size, NOT pool_size + max_overflow. It looks like an
-# artificial cap - get_async_session backs the FastAPI-Users auth dependencies, so
-# a permit is held for the whole request and only pool_size requests per worker can
-# be resolving auth at once - but the headroom it leaves is load-bearing.
+# Admission control for the dependency-injected session path (get_async_session
+# only - nothing else may take a permit; see _DB_SEMAPHORE_PERMITS).
 #
 # A permit holder needs more than one connection. The auth SELECT opens a
 # transaction on the injected session that is not committed, so that connection is
 # held until the request ends; dependencies and controllers that run while it is
-# still open (require_workspace_role -> _get_workspace_membership, and the ~270
+# still open (require_workspace_role -> _get_workspace_membership, and the ~290
 # other async_session() call sites) then check out a SECOND connection, ungated.
-# Leaving max_overflow free is what makes that second checkout possible.
+# Free capacity beyond the admitted holders is what makes that second checkout
+# possible.
 #
-# Raising this to the pool ceiling deadlocks the worker: every permit holder takes
-# its auth connection, the pool is empty, and all of them then block on their
-# nested checkout until pool_timeout (120 s) expires. See #1845.
-db_semaphore = asyncio.Semaphore(db_cfg.pool_size)
+# So the size is NOT a free choice, and NOT simply pool_size. Two conditions have
+# to hold at once for N admitted holders:
+#
+#   N <= pool_size     - their own connections fit in the base pool
+#   N <= max_overflow  - the overflow can serve all N nested checkouts at once
+#
+# hence min(). Sizing at the pool ceiling (pool_size + max_overflow) deadlocks the
+# worker: every holder takes its auth connection, the pool is empty, and all of
+# them then block on their nested checkout until pool_timeout (120 s) expires - on
+# prod defaults, ten requests stalling a worker for two minutes. Sizing at
+# pool_size alone is only safe while max_overflow >= pool_size, which prod (3/7)
+# and dev (5/10) satisfy but the shipped base defaults (3/2) do not - so the
+# condition is computed here rather than restated in a comment and left to drift.
+#
+# max(1, ...) keeps a max_overflow of 0 from producing a semaphore that admits
+# nobody. See #1845.
+_DB_SEMAPHORE_PERMITS = max(1, min(db_cfg.pool_size, db_cfg.max_overflow))
+db_semaphore = asyncio.Semaphore(_DB_SEMAPHORE_PERMITS)
 
 
 # Database configuration and session management
@@ -219,8 +230,22 @@ def _log_pool_configuration() -> None:
             f"Worker {worker_pid} pool config: "
             f"size={engine.pool.size()}, "
             f"max_overflow={engine.pool._max_overflow}, "
-            f"timeout={engine.pool._timeout}s"
+            f"timeout={engine.pool._timeout}s, "
+            f"session_admissions={_DB_SEMAPHORE_PERMITS}"
         )
+        # Say so when the overflow is what caps admissions, rather than letting
+        # the throttle look like the pool size it no longer follows. Raising
+        # pool_size is the obvious response to pool exhaustion, and on its own
+        # it does not raise this: the nested checkout every admitted request
+        # makes is served from max_overflow.
+        if db_cfg.max_overflow < db_cfg.pool_size:
+            runtime.logger.warning(
+                f"max_overflow ({db_cfg.max_overflow}) is below pool_size "
+                f"({db_cfg.pool_size}), so concurrent injected sessions are "
+                f"capped at {_DB_SEMAPHORE_PERMITS} instead of "
+                f"{db_cfg.pool_size}. Raise max_overflow to at least pool_size "
+                "to use the whole base pool."
+            )
     except Exception as e:
         runtime.logger.debug(f"Could not log pool configuration: {e}")
 

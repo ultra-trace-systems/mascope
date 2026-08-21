@@ -287,6 +287,30 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
   and it is reported rather than replaced because a fresh watcher would
   re-offer files that are already being converted. (#1350)
 
+- A day's acquisitions no longer split across duplicate batches. Files
+  converted in one sweep share a day and an ionization mode, so they belong in
+  one daily batch - but each upload is handled independently, and several
+  arriving together could each find no batch yet and each create one. The
+  day's samples were then divided between the copies, each carrying its own
+  calibration and matching, and the batch list showed the same day twice.
+  The daily batch is now unique in the database, so whichever upload gets
+  there first creates it and the rest join it, however many arrive at once and
+  whichever server process handles them. Existing duplicates are merged on
+  upgrade: the oldest batch of each day keeps its samples and receives the
+  others', and it is marked for re-matching so its results cover the whole day
+  again.
+- A file acquired just after midnight on New Year no longer lands in the
+  previous year's acquisition dataset under a batch named for the new year.
+  The dataset was picked by UTC year while the batch was named for the
+  instrument's local date, so on an instrument ahead of UTC one local day
+  owned batches in two different years. Both now follow the instrument's own
+  clock.
+- Two ionization modes that share a display name no longer share a daily
+  batch. Only a mode's token has to be unique, so identically named positive
+  and negative variants produced one batch name for both, and the second
+  polarity's samples were filed under the first one's batch - inheriting its
+  polarity and its calibration and diagnostic collections. Each polarity now
+  gets its own batch.
 - A file the server rejects outright is no longer retried ten times over five
   minutes before being set aside. Anything the server understood and refused -
   most often a name that does not identify an instrument, but also an upload

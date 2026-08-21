@@ -11,6 +11,7 @@ from sqlalchemy import (
     func,
     select,
 )
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import joinedload
 
 import mascope_file.name as m_name
@@ -298,29 +299,26 @@ async def get_batch_targets(sample_batch_id: str, deduplicate: bool = False) -> 
     }
 
 
-@api_controller()
-async def create_sample_batch(
+async def _insert_sample_batch(
     sample_batch: SampleBatchCreate,
     independent_transaction: bool = False,
 ) -> dict:
-    """
-    Creates a new sample batch with the specified details.
-    Validates constraints for ACQUISITION batches.
+    """Validate and insert one sample batch, letting ``IntegrityError`` through.
 
-    Steps:
-    - Validate batch constraints:
-        - dataset type constraints for ACQUISITION batches
-        - target collection type constraints for the sample batch type
-        - ionization mechanism polarity compatibility
-    - Construct a new SampleBatch object with the provided details and a generated unique ID.
-    - Associate the new sample batch with target collections if any are provided in the request.
-    - Commit the transaction to persist the new sample batch in the database.
-    - Return the details of the created sample batch as a dictionary.
+    Split out of :func:`create_sample_batch` so a caller that recovers from a
+    natural-key collision - :func:`get_or_create_acquisition_batch` - can still
+    see the ``IntegrityError``. The ``@api_controller`` decorator on the public
+    entry point rewrites every exception into an ``ApiException`` (a
+    ``SQLAlchemyError`` becomes a generic 500), which erases the distinction
+    between "another worker already created this row" and a real database
+    fault, and 500 is not in ``_RECOVERABLE_STATUS_CODES`` either.
 
     :param sample_batch: Data for creating the sample batch.
     :type sample_batch: SampleBatchCreate
-    :param independent_transaction: Flag indicating if the operation is an independent transaction, defaults to False.
+    :param independent_transaction: Whether to emit the creation event here.
     :type independent_transaction: bool, optional
+    :raises IntegrityError: When the insert violates a constraint - notably
+        ``uq_sample_batch_acquisition_natural_key`` on a concurrent create.
     :return: The created sample batch data.
     :rtype: dict
     """
@@ -392,6 +390,170 @@ async def create_sample_batch(
         "message": f"Sample batch '{new_sample_batch.sample_batch_name}' was created.",
         "data": batch_data,
     }
+
+
+@api_controller()
+async def create_sample_batch(
+    sample_batch: SampleBatchCreate,
+    independent_transaction: bool = False,
+) -> dict:
+    """
+    Creates a new sample batch with the specified details.
+    Validates constraints for ACQUISITION batches.
+
+    Steps:
+    - Validate batch constraints:
+        - dataset type constraints for ACQUISITION batches
+        - target collection type constraints for the sample batch type
+        - ionization mechanism polarity compatibility
+    - Construct a new SampleBatch object with the provided details and a generated unique ID.
+    - Associate the new sample batch with target collections if any are provided in the request.
+    - Commit the transaction to persist the new sample batch in the database.
+    - Return the details of the created sample batch as a dictionary.
+
+    :param sample_batch: Data for creating the sample batch.
+    :type sample_batch: SampleBatchCreate
+    :param independent_transaction: Flag indicating if the operation is an independent transaction, defaults to False.
+    :type independent_transaction: bool, optional
+    :return: The created sample batch data.
+    :rtype: dict
+    """
+    return await _insert_sample_batch(
+        sample_batch=sample_batch,
+        independent_transaction=independent_transaction,
+    )
+
+
+async def _find_acquisition_batch(
+    dataset_id: str, sample_batch_name: str, polarity: str
+) -> dict | None:
+    """Look up the daily ACQUISITION batch for one dataset, name and polarity.
+
+    Duplicate-tolerant: databases that predate
+    ``uq_sample_batch_acquisition_natural_key`` can hold duplicate daily
+    batches from get-or-create races, so return the oldest and break ties on
+    the primary key. Without that tiebreaker two workers recovering from the
+    same race can pick *different* rows - equal ``sample_batch_utc_created``
+    values are the likely case, since the duplicates were inserted racing the
+    same read - and the day's samples keep splitting instead of converging.
+
+    Polarity is part of the lookup because ``ionization_mode_name`` carries no
+    uniqueness (only ``ionization_mode_token`` does), so an admin who names the
+    positive and negative variant of a mode alike renders one batch name for
+    both. Matching on it too keeps the two polarities in their own batches
+    rather than filing the second one under the first one's polarity and
+    target collections. Two modes that share a name *and* a polarity still
+    collapse - fixing that needs the mode on the batch, not just its name.
+
+    :param dataset_id: ID of the ACQUISITION dataset the batch belongs to.
+    :type dataset_id: str
+    :param sample_batch_name: Generated daily batch name.
+    :type sample_batch_name: str
+    :param polarity: Ionization mode polarity the batch was created for.
+    :type polarity: str
+    :return: The matching batch, or None.
+    :rtype: dict | None
+    """
+    async with async_session() as session:
+        batches = (
+            (
+                await session.execute(
+                    select(SampleBatch)
+                    .where(
+                        SampleBatch.dataset_id == dataset_id,
+                        SampleBatch.sample_batch_type == "ACQUISITION",
+                        SampleBatch.sample_batch_name == sample_batch_name,
+                        SampleBatch.polarity == polarity,
+                    )
+                    .order_by(
+                        SampleBatch.sample_batch_utc_created.asc().nulls_last(),
+                        SampleBatch.sample_batch_id.asc(),
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+
+    if len(batches) > 1:
+        # Recovered data anomaly: worth one grouped warning issue
+        runtime.logger.warning(
+            f"{len(batches)} duplicate ACQUISITION batches found for "
+            f"'{sample_batch_name}' ({polarity}) in dataset {dataset_id}, "
+            "using the oldest"
+        )
+    return SampleBatchRead.model_validate(batches[0]).model_dump() if batches else None
+
+
+@api_controller()
+async def get_or_create_acquisition_batch(sample_batch: SampleBatchCreate) -> dict:
+    """Get or create the daily ACQUISITION batch for one dataset and mode.
+
+    Concurrent ingest of files that share a day and an ionization mode resolves
+    to a single batch name, so a plain read-then-write lets several callers
+    read "absent" and all create. The recovery is the same shape as
+    :func:`~mascope_backend.api.controllers.dataset.acquisition.service.get_acquisition_dataset`
+    one call frame up: insert, and on the natural-key collision fetch the row
+    the winner committed. It holds across processes, which matters because
+    production runs several uvicorn workers (``workers = "auto"``) and each
+    converted file arrives as its own load-balanced request - so the files of
+    one watcher scan routinely land on *different* workers, where an
+    in-process lock is several unrelated objects.
+
+    :param sample_batch: Data for creating the batch if it does not exist.
+    :type sample_batch: SampleBatchCreate
+    :raises ValueError: When called with a non-ACQUISITION batch type.
+    :return: dict with ``"data"`` holding the batch and ``"created"`` saying
+        whether this call is the one that inserted it.
+    :rtype: dict
+    """
+    if sample_batch.sample_batch_type != "ACQUISITION":
+        raise ValueError(
+            "get_or_create_acquisition_batch only handles ACQUISITION batches; "
+            f"got '{sample_batch.sample_batch_type}'"
+        )
+
+    existing = await _find_acquisition_batch(
+        dataset_id=sample_batch.dataset_id,
+        sample_batch_name=sample_batch.sample_batch_name,
+        polarity=sample_batch.polarity,
+    )
+    if existing is not None:
+        return {
+            "message": (
+                f"Sample batch '{sample_batch.sample_batch_name}' already exists."
+            ),
+            "data": existing,
+            "created": False,
+        }
+
+    try:
+        created = await _insert_sample_batch(
+            sample_batch=sample_batch, independent_transaction=True
+        )
+        return {**created, "created": True}
+    except IntegrityError:
+        # Another worker committed the same natural key first - adopt its row.
+        existing = await _find_acquisition_batch(
+            dataset_id=sample_batch.dataset_id,
+            sample_batch_name=sample_batch.sample_batch_name,
+            polarity=sample_batch.polarity,
+        )
+        if existing is None:
+            # Not the natural-key collision (e.g. a foreign-key violation) -
+            # surface the original IntegrityError instead of masking it.
+            raise
+        runtime.logger.debug(
+            f"ACQUISITION batch '{sample_batch.sample_batch_name}' created "
+            f"concurrently, reusing {existing['sample_batch_id']}"
+        )
+        return {
+            "message": (
+                f"Sample batch '{sample_batch.sample_batch_name}' already exists."
+            ),
+            "data": existing,
+            "created": False,
+        }
 
 
 @api_controller()

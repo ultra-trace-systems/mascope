@@ -582,6 +582,33 @@ class SampleBatch(Base):
         passive_deletes=True,
     )
 
+    __table_args__ = (
+        # Daily ACQUISITION batches are auto-created per (dataset, day,
+        # ionization mode) by a read-then-write get-or-create that races under
+        # concurrent ingest - three files of one watcher scan share a day and a
+        # mode, so they resolve to one batch name. Constrain the natural key so
+        # the race fails loudly and is recovered in
+        # get_or_create_acquisition_batch instead of inserting duplicates that
+        # split the day's samples across two batches.
+        #
+        # `polarity` is in the key because the name alone does not identify the
+        # mode: it embeds `ionization_mode_name`, which carries no uniqueness
+        # (only `ionization_mode_token` does), so an admin who names the
+        # positive and negative variant alike renders one name for both. Two
+        # modes sharing a name AND a polarity still collapse onto one batch -
+        # separating those needs the mode id on the batch.
+        #
+        # Partial: ANALYSIS batches are user-named and have no such invariant.
+        Index(
+            "uq_sample_batch_acquisition_natural_key",
+            "dataset_id",
+            "sample_batch_name",
+            "polarity",
+            unique=True,
+            postgresql_where=text("sample_batch_type = 'ACQUISITION'"),
+        ),
+    )
+
 
 @event.listens_for(SampleBatch, "after_insert")
 @event.listens_for(SampleBatch, "after_update")
