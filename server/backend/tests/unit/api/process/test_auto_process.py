@@ -194,8 +194,16 @@ async def test_passes_instrument_year_and_user_to_get_acquisition_dataset():
 
 
 @pytest.mark.asyncio
-async def test_derives_year_from_datetime_utc():
-    """Year is derived from datetime_utc (preferred over datetime)."""
+async def test_derives_year_from_instrument_local_datetime():
+    """Year comes from the instrument's local clock, like the batch inside it.
+
+    This used to prefer `datetime_utc`, which put a file acquired just after
+    local New Year midnight into the previous year's dataset - while the daily
+    batch and the sample item inside that dataset were both named from the
+    local `datetime`. One instrument-local day then owned batches in two
+    year-datasets, which no uniqueness on (dataset, name, polarity) can merge.
+    The container now follows the same clock as its contents.
+    """
     from mascope_backend.api.controllers.sample.files.process.service import (
         auto_process_sample_file,
     )
@@ -205,7 +213,7 @@ async def test_derives_year_from_datetime_utc():
         datetime_local=datetime(2025, 1, 1, 0, 30, 0),
     )
     ion_mode = _make_ionization_mode()
-    dataset = _make_dataset(dataset_id="ds-2024")
+    dataset = _make_dataset(dataset_id="ds-2025")
     batch = _make_batch()
     sample_item = _make_sample_item()
 
@@ -231,10 +239,10 @@ async def test_derives_year_from_datetime_utc():
         process_id="proc-001",
     )
 
-    # datetime_utc year (2024) should be used, not datetime year (2025)
+    # Local datetime year (2025) is used, not the datetime_utc year (2024)
     mocks["get_acquisition_dataset"].assert_called_once_with(
         instrument="Orbion",
-        year=2024,
+        year=2025,
         user_id=42,
     )
 

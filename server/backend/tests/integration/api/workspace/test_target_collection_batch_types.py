@@ -14,6 +14,7 @@ Key behaviour under test:
 
 import pytest
 import pytest_asyncio
+from sqlalchemy import delete
 
 from mascope_backend.db import SampleBatch, TargetCollection
 from mascope_backend.db.id import gen_id
@@ -24,19 +25,33 @@ _BATCH_NAME = "Acquisition Batch (type-compat)"
 
 @pytest_asyncio.fixture
 async def acquisition_batch(async_session_factory, alpha_dataset):
-    """An ACQUISITION-type sample batch inside the Alpha dataset."""
+    """An ACQUISITION-type sample batch inside the Alpha dataset.
+
+    The name carries the batch id and the row is dropped afterwards: this
+    fixture is function-scoped while `alpha_dataset` is not, and
+    `uq_sample_batch_acquisition_natural_key` makes (dataset, name, polarity)
+    unique for ACQUISITION batches - so a fixed name would collide with the
+    leftover from whichever test ran first.
+    """
     batch_id = gen_id()
     async with async_session_factory() as session:
         session.add(
             SampleBatch(
                 sample_batch_id=batch_id,
                 dataset_id=alpha_dataset,
-                sample_batch_name=_BATCH_NAME,
+                sample_batch_name=f"{_BATCH_NAME} {batch_id}",
                 sample_batch_type="ACQUISITION",
             )
         )
         await session.commit()
-    return batch_id
+
+    yield batch_id
+
+    async with async_session_factory() as session:
+        await session.execute(
+            delete(SampleBatch).where(SampleBatch.sample_batch_id == batch_id)
+        )
+        await session.commit()
 
 
 @pytest_asyncio.fixture

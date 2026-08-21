@@ -513,47 +513,38 @@ async def get_or_create_acquisition_batch(sample_batch: SampleBatchCreate) -> di
             f"got '{sample_batch.sample_batch_type}'"
         )
 
-    existing = await _find_acquisition_batch(
-        dataset_id=sample_batch.dataset_id,
-        sample_batch_name=sample_batch.sample_batch_name,
-        polarity=sample_batch.polarity,
-    )
-    if existing is not None:
-        return {
-            "message": (
-                f"Sample batch '{sample_batch.sample_batch_name}' already exists."
-            ),
-            "data": existing,
-            "created": False,
-        }
+    key = {
+        "dataset_id": sample_batch.dataset_id,
+        "sample_batch_name": sample_batch.sample_batch_name,
+        "polarity": sample_batch.polarity,
+    }
 
-    try:
-        created = await _insert_sample_batch(
-            sample_batch=sample_batch, independent_transaction=True
-        )
-        return {**created, "created": True}
-    except IntegrityError:
-        # Another worker committed the same natural key first - adopt its row.
-        existing = await _find_acquisition_batch(
-            dataset_id=sample_batch.dataset_id,
-            sample_batch_name=sample_batch.sample_batch_name,
-            polarity=sample_batch.polarity,
-        )
-        if existing is None:
-            # Not the natural-key collision (e.g. a foreign-key violation) -
-            # surface the original IntegrityError instead of masking it.
-            raise
-        runtime.logger.debug(
-            f"ACQUISITION batch '{sample_batch.sample_batch_name}' created "
-            f"concurrently, reusing {existing['sample_batch_id']}"
-        )
-        return {
-            "message": (
-                f"Sample batch '{sample_batch.sample_batch_name}' already exists."
-            ),
-            "data": existing,
-            "created": False,
-        }
+    existing = await _find_acquisition_batch(**key)
+    if existing is None:
+        try:
+            return {
+                **await _insert_sample_batch(
+                    sample_batch=sample_batch, independent_transaction=True
+                ),
+                "created": True,
+            }
+        except IntegrityError:
+            # Another worker committed the same natural key first - adopt its
+            # row. A None here is not that collision (e.g. a foreign-key
+            # violation), so surface the original error instead of masking it.
+            existing = await _find_acquisition_batch(**key)
+            if existing is None:
+                raise
+            runtime.logger.debug(
+                f"ACQUISITION batch '{sample_batch.sample_batch_name}' created "
+                f"concurrently, reusing {existing['sample_batch_id']}"
+            )
+
+    return {
+        "message": f"Sample batch '{sample_batch.sample_batch_name}' already exists.",
+        "data": existing,
+        "created": False,
+    }
 
 
 @api_controller()
