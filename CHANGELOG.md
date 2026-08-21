@@ -274,6 +274,19 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
 
 ### Fixed
 
+- The file converter keeps converting uploads after a processor thread dies.
+  The thread's own recovery handler could raise and take the thread down for
+  good, and nothing above it noticed: its queue filled with files nobody would
+  convert, and the service went on accepting uploads it would never process
+  until someone restarted it. Recovery is now best-effort, and the service
+  watches its worker threads - a dead one is reported and replaced, and the
+  file it was converting is handed back to the queue, since the folder watcher
+  only offers a file once. A slot that keeps dying is retired, but it keeps
+  saying so rather than going quiet. The watchers are watched too: they feed
+  every upload, so losing one is the same silent stall from the other end,
+  and it is reported rather than replaced because a fresh watcher would
+  re-offer files that are already being converted. (#1350)
+
 - A file the server rejects outright is no longer retried ten times over five
   minutes before being set aside. Anything the server understood and refused -
   most often a name that does not identify an instrument, but also an upload

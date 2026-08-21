@@ -643,6 +643,41 @@ class BaseFileProcessor(Thread, ABC, metaclass=FileProcessorMeta):
         """Strip path and file extension"""
         return os.path.splitext(os.path.basename(filepath))[0]
 
+    def requeue_inflight(self) -> str | None:
+        """Offer the file this thread was converting back to the queue.
+
+        Called by the service's supervisor once this thread has died, so the
+        replacement picks the file up. It is the only way back for a file that
+        was already dequeued: the watcher computes new work as a difference
+        against its previous walk, so a file still sitting in the streams
+        folder is never offered again.
+
+        The marker is cleared as the file is handed over, so a slot whose
+        replacement could not be built does not offer the same path again on
+        its next attempt. A file that is no longer in the streams folder was
+        already converted or moved aside, and re-queueing it would fail a
+        second time and report that failure to the user for an upload that
+        actually succeeded.
+
+        :return: The path handed back, or None if there was nothing to hand back
+        :rtype: str | None
+        """
+        path = self.file_to_process
+        if path is None:
+            return None
+        self.file_to_process = None
+        if not os.path.exists(path):
+            # The marker outlived the work: nothing left to retry. Say so, so
+            # that a file which is missing for some other reason - an unmounted
+            # streams share, say - is not dropped without a word.
+            runtime.logger.warning(
+                f"{self.__class__.__name__} ({self.name}) died holding {path}, "
+                f"which is no longer in the streams folder; not re-queued"
+            )
+            return None
+        self.file_queue.put(path)
+        return path
+
     def run(self):
         """Main processing loop."""
         runtime.logger.info(f"Running {self.__class__.__name__} ({self.name})")
@@ -718,20 +753,28 @@ class BaseFileProcessor(Thread, ABC, metaclass=FileProcessorMeta):
                     self.socket_client.context_manager.clear_context(file_basename)
                     self._handle_failed_file(self.file_to_process)
 
+                # Handled either way: the file has been deleted or moved
+                # aside, so it is no longer in flight. Clearing the marker
+                # is what stops a later death from offering an already
+                # converted file back to the queue.
+                self.file_to_process = None
+
             except Empty:
                 # No file to process, continue
                 continue
             except Exception as e:
-                # Catch any unexpected errors
-                runtime.logger.exception(
-                    f"Unexpected error in {self.__class__.__name__}"
-                )
                 # The recovery itself talks to the socket and the filesystem, so it
                 # can fail too - and an exception raised HERE escapes the while loop
                 # and kills the thread for good, which is how the converter used to
                 # stop processing every subsequent upload until restart (#1350).
-                # Recovery is best-effort by definition: log and keep serving.
+                # Recovery is best-effort by definition: log and keep serving. The
+                # reporting call is inside the guard as well, so that reporting the
+                # failure can never itself become the failure.
                 try:
+                    # Catch any unexpected errors
+                    runtime.logger.exception(
+                        f"Unexpected error in {self.__class__.__name__}"
+                    )
                     if self.file_to_process is not None and file_basename is not None:
                         # Ensure finalize is called before emission
                         self._finalize()
@@ -747,7 +790,18 @@ class BaseFileProcessor(Thread, ABC, metaclass=FileProcessorMeta):
 
                         # Clear context after emission
                         self.socket_client.context_manager.clear_context(file_basename)
+
+                        # Move the file aside exactly as the inner handler does.
+                        # Surviving the error is only half the job: without this
+                        # the file stays in the streams folder, where the
+                        # watcher's previous-walk baseline never offers it again
+                        # and nobody goes looking for it.
+                        self._handle_failed_file(self.file_to_process)
+                        self.file_to_process = None
                 except Exception:
+                    # Leave the in-flight marker set: the file is still wherever
+                    # it was, so if this thread does die later the supervisor
+                    # should still offer it back to the queue.
                     runtime.logger.exception(
                         f"{self.__class__.__name__} ({self.name}) could not report a "
                         f"failed file; continuing so later files still process"
