@@ -1108,7 +1108,15 @@ class OpenTFRawBackend:
         ]
 
     def mass_range(self) -> tuple[float, float]:
+        from mascope_thermo.thermo import NoScansFoundError
+
         scans = self._all_scans()
+        if not scans:
+            # min()/max() over an empty file would raise a bare ValueError
+            # ("arg is an empty sequence"), which reads as a fault. Every other
+            # accessor reports a scanless file with NoScansFoundError, and
+            # callers are built on that.
+            raise NoScansFoundError("No scans found: the file holds no scans.")
         return (
             float(min(s["low_mz"] for s in scans)),
             float(max(s["high_mz"] for s in scans)),
