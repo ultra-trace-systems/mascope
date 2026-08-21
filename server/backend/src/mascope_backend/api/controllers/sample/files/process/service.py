@@ -25,8 +25,7 @@ from mascope_backend.api.controllers.match.match_controller import (
     rematch_samples,
 )
 from mascope_backend.api.controllers.sample.batches.sample_batches_controller import (
-    create_sample_batch,
-    get_sample_batches,
+    get_or_create_acquisition_batch,
 )
 from mascope_backend.api.controllers.sample.items.sample_items_controller import (
     create_sample_items,
@@ -61,7 +60,6 @@ from mascope_backend.db import (
     SampleFile,
     SampleItem,
     async_session,
-    db_semaphore,
 )
 from mascope_backend.db.id import gen_id
 from mascope_backend.runtime import runtime
@@ -173,22 +171,6 @@ _auto_process_gate = asyncio.Semaphore(_AUTO_PROCESS_CONCURRENCY)
 _AUTO_PROCESS_RETRIES = 3
 _AUTO_PROCESS_RETRY_DELAYS_S = (30, 60, 120)
 _RECOVERABLE_STATUS_CODES = {502, 503, 504}
-
-# One lock per (dataset, daily ACQUISITION batch name). Held only across the
-# get-or-create below, never across the whole pipeline. Entries are kept for the
-# life of the worker: one per dataset per day per ionization mode, so the set is
-# small and bounded by ingest variety rather than by file count.
-_acquisition_batch_locks: dict[tuple[str, str], asyncio.Lock] = {}
-
-
-def _acquisition_batch_lock(dataset_id: str, batch_name: str) -> asyncio.Lock:
-    """Return the lock guarding get-or-create for one daily ACQUISITION batch.
-
-    :param dataset_id: ID of the ACQUISITION dataset the batch belongs to.
-    :param batch_name: Generated daily batch name, unique per ionization mode.
-    :return: The lock for this batch, created on first use.
-    """
-    return _acquisition_batch_locks.setdefault((dataset_id, batch_name), asyncio.Lock())
 
 
 def _is_recoverable_error(exc: Exception) -> bool:
@@ -553,7 +535,15 @@ async def _auto_process_sample_file(
     sample_file = await fetch_sample_file(sample_file_id=sample_file_id)
 
     # --- Get ACQUISITION dataset for the instrument --- #
-    file_dt = sample_file.datetime_utc or sample_file.datetime
+    # The year-dataset and the daily batch inside it must be dated off the SAME
+    # clock. `datetime` is the instrument's local time and `datetime_utc` its
+    # UTC equivalent, and the batch name and sample item name below are both
+    # built from the local one - so taking the year from UTC put a file
+    # acquired just after local New Year midnight into the previous year's
+    # dataset under a batch named for the new year. One instrument-local day
+    # then owned batches in two datasets, which no uniqueness on
+    # (dataset, name, polarity) can merge.
+    file_dt = sample_file.datetime or sample_file.datetime_utc
     acquisition_dataset = (
         await get_acquisition_dataset(
             instrument=sample_file.instrument,
@@ -1043,82 +1033,52 @@ async def create_acquisition_batches_and_items(
         )
 
         # --- Get or create daily ACQUISITION batch for this ionization mode ---
-        # Serialize per batch name so concurrent ingest of files sharing a day and
-        # ionization mode cannot both read "absent" and both create. This block
-        # used to rely on db_semaphore alone for that, which never excluded
-        # anything - a semaphore with N permits admits N holders - which is what
-        # the duplicate warning below has been recovering from.
-        #
-        # The lock is taken OUTSIDE the semaphore on purpose: waiters then queue
-        # without holding a permit, so a contended batch name cannot starve the
-        # auth path of the few permits it has. Worker-local only - two workers can
-        # still race, which the warning below still covers.
-        async with _acquisition_batch_lock(dataset_id, batch_name), db_semaphore:
-            # Check if batch already exists
-            batch_data = (
-                await get_sample_batches(
-                    dataset_id=dataset_id,
-                    sample_batch_type=["ACQUISITION"],
-                    sample_batch_name=batch_name,
+        # Get DIAGNOSTICS and CALIBRATION target collections for ACQUISITION
+        # batches. Resolved before the call because it only reads attributes of
+        # the already-loaded ionization mode - no query - and the get-or-create
+        # needs them ready for the branch that inserts.
+        target_collection_ids = []
+        if ionization_mode.diagnostic_collection_id:
+            target_collection_ids.append(ionization_mode.diagnostic_collection_id)
+        if ionization_mode.calibration_collection_id:
+            target_collection_ids.append(ionization_mode.calibration_collection_id)
+
+        # Mutual exclusion lives in the database: the batch's natural key is
+        # constrained by uq_sample_batch_acquisition_natural_key, and
+        # get_or_create_acquisition_batch adopts the winner's row when the
+        # insert collides. Nothing in this process can do that job - production
+        # runs several uvicorn workers and each converted file is its own
+        # load-balanced request, so the files of one watcher scan land on
+        # different workers.
+        batch_result = await get_or_create_acquisition_batch(
+            sample_batch=SampleBatchCreate(
+                dataset_id=dataset_id,
+                sample_batch_name=batch_name,
+                sample_batch_description=(
+                    "Auto-generated daily acquisition batch "
+                    f"for {sample_file.instrument}"
+                ),
+                sample_batch_type="ACQUISITION",
+                polarity=ionization_mode.ionization_mode_polarity,
+                target_collection_ids=target_collection_ids,
+            )
+        )
+        acquisition_sample_batch = batch_result.get("data")
+
+        if batch_result.get("created"):
+            if not target_collection_ids:
+                runtime.logger.info(
+                    "No "
+                    f"{', '.join(sample_batch_config.ACQUISITION_COLLECTION_TYPES)}"
+                    " target collections found for ACQUISITION batch"
                 )
-            ).get("data", [])
-
-            if len(batch_data) > 1:
-                # Recovered data anomaly: worth one grouped warning issue
-                runtime.logger.warning(
-                    f"Multiple ACQUISITION batches found for {batch_name} with "
-                    f"ionization mode {ion_mode_name}, using first one."
-                )
-
-            if batch_data:
-                acquisition_sample_batch = batch_data[0]
-                runtime.logger.debug(
-                    "Using existing ACQUISITION batch: "
-                    f"{acquisition_sample_batch['sample_batch_name']}"
-                )
-            else:
-                # Create new ACQUISITION batch
-                # Get DIAGNOSTICS and CALIBRATION target collections for
-                # ACQUISITION batches
-                target_collection_ids = []
-                if ionization_mode.diagnostic_collection_id:
-                    target_collection_ids.append(
-                        ionization_mode.diagnostic_collection_id
-                    )
-                if ionization_mode.calibration_collection_id:
-                    target_collection_ids.append(
-                        ionization_mode.calibration_collection_id
-                    )
-
-                if not target_collection_ids:
-                    runtime.logger.info(
-                        "No "
-                        f"{', '.join(sample_batch_config.ACQUISITION_COLLECTION_TYPES)}"
-                        " target collections found for ACQUISITION batch"
-                    )
-
-                # Create new ACQUISITION batch with defined build params
-                acquisition_sample_batch = (
-                    await create_sample_batch(
-                        sample_batch=SampleBatchCreate(
-                            dataset_id=dataset_id,
-                            sample_batch_name=batch_name,
-                            sample_batch_description=(
-                                "Auto-generated daily acquisition batch "
-                                f"for {sample_file.instrument}"
-                            ),
-                            sample_batch_type="ACQUISITION",
-                            polarity=ionization_mode.ionization_mode_polarity,
-                            target_collection_ids=target_collection_ids,
-                        ),
-                        independent_transaction=True,
-                    )
-                ).get("data")
-
-                runtime.logger.debug(
-                    "Created new ACQUISITION batch: "
-                    f"{acquisition_sample_batch['sample_batch_name']}"
-                )
+            runtime.logger.debug(
+                f"Created new ACQUISITION batch: {batch_name} ({ion_mode_name})"
+            )
+        else:
+            runtime.logger.debug(
+                f"Using existing ACQUISITION batch: {batch_name} ({ion_mode_name})"
+            )
 
         acquisition_sample_batches.append(acquisition_sample_batch)
 
