@@ -274,6 +274,19 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
 
 ### Fixed
 
+- `mascope prod db script list` and `run` now work on a server where only the
+  operator CLI is installed (`uv tool install mascope-cli`, the documented
+  no-source-checkout path). The runner looked for the maintenance scripts in
+  the host's own Python, which only a monorepo install has, so on every other
+  server the documented recipes - `require_password_change`,
+  `prune_peak_assignment_runs` and the rest - crashed with
+  `ModuleNotFoundError`, and the nightly assignment-run retention timer, which
+  runs the same command, failed on every firing. The scripts are now
+  discovered inside the backend container, where they run anyway, so the list
+  always matches the deployed release; the host's copy is consulted only when
+  the container cannot be asked. A stopped stack is reported as such, before
+  any pre-script backup is taken.
+
 - The file converter keeps converting uploads after a processor thread dies.
   The thread's own recovery handler could raise and take the thread down for
   good, and nothing above it noticed: its queue filled with files nobody would
