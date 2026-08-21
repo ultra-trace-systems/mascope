@@ -136,7 +136,8 @@ class ScanSelector:
             [
                 filter.Polarity.ToString() == polarity_verbose
                 for filter in self.raw_scan_filters
-            ]
+            ],
+            dtype=bool,
         )
 
     def _time_mask(self) -> np.ndarray:
@@ -179,7 +180,8 @@ class ScanSelector:
             [
                 filter.MSOrder.ToString() == self._ms_type
                 for filter in self.raw_scan_filters
-            ]
+            ],
+            dtype=bool,
         )
 
     def _bad_first_scan(self) -> bool:
@@ -211,6 +213,11 @@ class ScanSelector:
         time range, and scan type.
         The scans are 1-based indexed, as per the Thermo library convention.
         """
+        # dtype=bool on every mask combined below: for a file with no scans
+        # the mask comprehensions are empty and numpy would otherwise infer
+        # float64, making `mask &=` raise TypeError instead of letting the
+        # empty selection fall through to the NoScansFoundError this property
+        # exists to raise. Mirrors OpenTFRawBackend._selected.
         mask = np.ones(len(self.all_scan_indices), dtype=bool)
 
         if self._polarity:
