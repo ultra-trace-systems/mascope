@@ -12,7 +12,10 @@ from mascope_backend.file_converter.base_processor import (
     SampleFileProps,
     with_file_context,
 )
-from mascope_backend.file_converter.errors import EmptyAcquisitionError
+from mascope_backend.file_converter.errors import (
+    EMPTY_ACQUISITION_MESSAGE,
+    EmptyAcquisitionError,
+)
 from mascope_thermo.backend import open_backend
 from mascope_thermo.thermo import NoScansFoundError, get_polarity_options
 
@@ -84,20 +87,19 @@ class RawProcessor(BaseFileProcessor):
     def length(self) -> float:
         """Length of the sample file in seconds
 
+        No filters are applied, so a reader that finds nothing here is
+        reporting a file with no scans at all. It says so with
+        ``NoScansFoundError``, which ``_get_sample_file_props`` names as an
+        empty acquisition for the extraction as a whole.
+
         :return: Sample length [s]
         :rtype: float
+        :raises NoScansFoundError: When the file holds no scans.
         """
-        try:
-            times = self.file_handle.scan_times(ms_type=None)  # all scans, seconds
-        except NoScansFoundError as e:
-            # No filters are applied here, so the reader finding nothing means
-            # the file holds no scans at all - an aborted or empty
-            # acquisition. Surface it as such instead of letting a
-            # scan-selection error read as an unexpected fault.
-            raise EmptyAcquisitionError(
-                "The file contains no scans; the acquisition is empty or was aborted."
-            ) from e
-        return float(times.max()) if times.size else 0.0  # [s]
+        times = self.file_handle.scan_times(ms_type=None)  # all scans, seconds
+        # No `if times.size` guard: scan selection raises rather than handing
+        # back an empty array, so max() always has something to take.
+        return float(times.max())  # [s]
 
     @property
     @with_file_context
@@ -115,11 +117,13 @@ class RawProcessor(BaseFileProcessor):
         try:
             return self.file_handle.acquisition_parameters()
         except NoScansFoundError:
-            # A scanless file has no per-scan trailer to sample. This property
-            # is read before `length`, so without this arm the generic handler
-            # below would log a traceback - and WARNING is the level the error
-            # monitoring sink subscribes to, so an empty acquisition would be
-            # reported as a fault before `length` ever gets to fail it as data.
+            # A scanless file has no per-scan trailer to sample, and neither
+            # has one whose scans are all MS2. Either way it is a property of
+            # the data, so it must not reach the generic handler below: that
+            # logs a traceback at WARNING, the level the error-monitoring sink
+            # subscribes to, and this property is read before the one that
+            # fails the file - so an empty acquisition would be reported as a
+            # fault before the extraction could fail it as data.
             _log.info(
                 "No scans to sample acquisition parameters from for %s",
                 self.file_to_process,
@@ -132,6 +136,26 @@ class RawProcessor(BaseFileProcessor):
                 exc_info=True,
             )
             return {}
+
+    def _get_sample_file_props(self) -> SampleFileProps:
+        """Extract the sample file properties, naming a scanless file as data.
+
+        Every property that asks the reader for scans raises
+        ``NoScansFoundError`` when the file recorded none, and which property
+        gets there first is decided by the order of the schema fields. Naming
+        the condition once, around the whole walk, is what keeps that ordering
+        from mattering: no property has to carry its own arm, a property added
+        later is covered by construction, and both reader backends are covered
+        by the same one.
+
+        :return: The properties extracted from the file
+        :rtype: SampleFileProps
+        :raises EmptyAcquisitionError: When the file recorded no scans.
+        """
+        try:
+            return super()._get_sample_file_props()
+        except NoScansFoundError as e:
+            raise EmptyAcquisitionError(EMPTY_ACQUISITION_MESSAGE) from e
 
     @property
     def method_file(self) -> str:

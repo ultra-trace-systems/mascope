@@ -25,21 +25,43 @@ def describe_exception(e: BaseException) -> str:
     return message
 
 
+#: The file recorded nothing at all - the run was aborted before its first
+#: scan, or the acquisition software wrote the file and never filled it.
+EMPTY_ACQUISITION_MESSAGE = (
+    "The file contains no scans; the acquisition is empty or was aborted."
+)
+
+#: Exactly one scan: there is a spectrum but no second one to measure the
+#: spacing against, so neither an interval nor a length can be derived.
+SINGLE_SCAN_MESSAGE = (
+    "The file contains only one scan; the acquisition was aborted before a "
+    "measurable time axis was recorded."
+)
+
+#: Scans were recorded but their timestamps are not a usable axis - a partly
+#: written or corrupted timing block leaves entries that are not finite.
+UNUSABLE_SCAN_TIMES_MESSAGE = (
+    "The file's scan timestamps are incomplete, so the acquisition has no "
+    "measurable time axis."
+)
+
+
 class EmptyAcquisitionError(Exception):
     """A raw file that carries too few scans to ingest.
 
     Raised by a processor when the reader reports an empty acquisition - a run
     that was aborted, or that wrote a file before recording a single scan -
-    and also when a single scan was recorded, which yields no measurable time
-    axis. Nothing downstream can be derived from such a file, so it still
-    fails and lands in ``failed_files``; the distinct type marks it as a
+    and also when what was recorded yields no measurable time axis, such as a
+    single scan. Nothing downstream can be derived from such a file, so it
+    still fails and lands in ``failed_files``; the distinct type marks it as a
     property of the data rather than a fault in Mascope, so
     ``BaseFileProcessor.run`` logs it at INFO without a traceback and error
     monitoring stays quiet.
 
-    The message is written at the raise site because it names which of those
-    cases applies, and it reaches the user's notification verbatim through
-    ``describe_exception``.
+    The raise site picks which of the messages above applies, because only it
+    knows which case it found; the wording lives here because it reaches the
+    user's notification verbatim through ``describe_exception`` and both
+    reader paths must say the same thing about the same condition.
     """
 
 
