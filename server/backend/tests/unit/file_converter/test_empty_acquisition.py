@@ -185,3 +185,113 @@ class TestRoutineFailureReporting:
         # describe_exception prefixes the class name only for cryptic builtin
         # messages; this one already reads as a sentence.
         assert describe_exception(EmptyAcquisitionError(EMPTY_MESSAGE)) == EMPTY_MESSAGE
+
+
+class TestRealScanSelection:
+    """The reader's own scan selection, not a stand-in for it.
+
+    ``RawProcessor.length`` catches ``NoScansFoundError``, so the guard is
+    only as good as the reader actually raising it. On an empty scan list the
+    mask comprehensions are empty and numpy infers float64, which made
+    ``mask &=`` raise ``TypeError`` - straight past the except clause and into
+    monitoring as an unexpected fault. A stubbed reader cannot see this.
+    """
+
+    @staticmethod
+    def _scanless_backend():
+        from mascope_thermo.backend import OpenTFRawBackend
+
+        backend = OpenTFRawBackend.__new__(OpenTFRawBackend)
+        backend._raw = None
+        backend._scans = []  # a file the reader opened but found no scans in
+        return backend
+
+    def test_ms_type_filter_on_an_empty_file_raises_the_reader_error(self):
+        with pytest.raises(NoScansFoundError):
+            self._scanless_backend()._selected(None, None, None, "Ms")
+
+    def test_polarity_filter_on_an_empty_file_raises_the_reader_error(self):
+        with pytest.raises(NoScansFoundError):
+            self._scanless_backend()._selected("+", None, None, None)
+
+    def test_unfiltered_selection_on_an_empty_file_raises_the_reader_error(self):
+        with pytest.raises(NoScansFoundError):
+            self._scanless_backend()._selected(None, None, None, None)
+
+    def test_the_processor_guard_therefore_catches_it(self):
+        # End to end over the real reader: the error the processor catches is
+        # the error the reader raises.
+        backend = self._scanless_backend()
+        processor = _thermo(backend)
+        with pytest.raises(EmptyAcquisitionError):
+            processor.length
+
+
+class _ScanlessReaderHandle:
+    """Every scan-derived reader call on a file that recorded nothing."""
+
+    def num_scans(self):
+        return 0
+
+    def scan_times(self, ms_type=None):  # noqa: ARG002
+        raise NoScansFoundError(
+            "No scans found matching the specified filters: polarity='None', "
+            "time_range=(None, None), ms_type='None'"
+        )
+
+    def acquisition_parameters(self):
+        raise NoScansFoundError("No scans to sample.")
+
+    def created(self):
+        from datetime import datetime, timezone
+
+        return datetime(2026, 8, 19, 7, 42, tzinfo=timezone.utc)
+
+
+class TestPropertyExtractionReportsNoFault:
+    """Extraction runs several properties before the one that fails.
+
+    ``acquisition_params`` is read before ``length``, and its generic handler
+    logged the reader's failure at WARNING with a traceback - so the file was
+    reported as a fault before ``length`` could fail it as data. The property
+    that ultimately raises is therefore not the whole story; nothing along the
+    way may reach the monitoring threshold either.
+    """
+
+    @staticmethod
+    def _extract():
+        processor = _thermo(_ScanlessReaderHandle())
+        processor.file_to_process = "ORBI-1_empty.raw"
+
+        records = []
+        sink_id = runtime.logger.add(
+            lambda message: records.append(message.record), level="TRACE"
+        )
+        try:
+            with pytest.raises(EmptyAcquisitionError):
+                processor._get_sample_file_props()
+        finally:
+            runtime.logger.remove(sink_id)
+        return records
+
+    def test_extraction_fails_as_an_empty_acquisition(self):
+        self._extract()  # the pytest.raises inside is the assertion
+
+    def test_no_property_along_the_way_reports_a_fault(self):
+        from mascope_runtime.logging import _SENTRY_LEVELS
+
+        records = self._extract()
+        offenders = [
+            (r["level"].name, r["message"])
+            for r in records
+            if r["level"].name in _SENTRY_LEVELS
+        ]
+        assert offenders == []
+
+    def test_acquisition_params_is_read_before_length(self):
+        # Pins the ordering the test above depends on: if length ever moved
+        # first, that test would pass without exercising the earlier property.
+        from mascope_backend.file_converter.schema import SampleFileProps
+
+        fields = list(SampleFileProps.model_fields)
+        assert fields.index("acquisition_params") < fields.index("length")
