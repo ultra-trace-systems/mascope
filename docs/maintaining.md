@@ -442,6 +442,11 @@ mascope prod db script run require_password_change
 The script sends no live notification - there is no socket server in that process
 - so sessions already open transition when their next request is refused.
 
+Maintenance scripts like this one ship in the backend image, and
+`mascope prod db script` lists and runs them inside the backend container -
+`mascope prod db script list` shows what the deployed release offers, and both
+`list` and `run` need the stack up. The CLI itself needs no source checkout.
+
 **Time it deliberately.** Changing a password revokes that user's API access
 tokens; see below.
 
@@ -744,6 +749,12 @@ grace period, or a confirm, and never applies while snoozed. Run
 `cat "$(mascope path)/.runtime/update/state.json"` for its `first_seen_at` /
 `snooze_until` / `confirmed` state. `mascope prod update --confirm` applies it at
 the next window.
+
+**`mascope prod db script` cannot find a mascope Python / lists no scripts.**
+The scripts are discovered and run inside the backend container, so the stack
+must be up: `mascope prod ps`, then `mascope prod up --detach`. The nightly
+`mascope-assignment-prune.service` is affected the same way - a firing while
+the stack is down fails, and the next one runs the pass again.
 
 **Backend unhealthy after an update.** The updater stops and leaves the stack in
 place (no automatic rollback). Investigate with `mascope prod logs backend`. To

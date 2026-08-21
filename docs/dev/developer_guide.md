@@ -1509,7 +1509,12 @@ mascope prod db script run <script_name>
 
 #### Maintenance scripts
 
-Scripts in `mascope_backend/db/scripts/` are auto-detected by the CLI via their `main()` callable.
+Scripts in `mascope_backend/db/scripts/` are auto-detected by the CLI. `mascope dev db script`
+scans the checkout for modules with a `main()` callable; `mascope prod db script` lists the
+package inside the backend container instead (every module that is not a subpackage or a
+`_private` helper), so it works on a server with only the operator CLI installed and always
+reflects the deployed image. Every module in the package is therefore an entry point: give it
+a `main()` and an `if __name__ == "__main__":` guard.
 `mascope dev/prod db script run <name>` always takes a backup before executing the script.
 Scripts must not use `input()` - they run non-interactively.
 
