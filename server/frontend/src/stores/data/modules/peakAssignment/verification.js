@@ -70,7 +70,17 @@ export const usePeakAssignmentVerification = defineStore(
         body,
         { use: 'create', type: 'verify_assignment' }
       )
-      await data.load('verification')
+      // sync() records a failed refetch rather than rejecting, so re-raise it
+      // here: the caller treats a resolved verify() as "saved and visible", and
+      // would otherwise close the form over a badge that never refreshed.
+      //
+      // Read the outcome this call returns, not the store's `error` ref: the ref
+      // belongs to whichever sync wrote it last, so a deps-driven reload landing
+      // in between would either hand us a failure that is not ours or hide one
+      // that is. A superseded refetch reports no error - the newer sync owns the
+      // list and its own error surface by then.
+      const outcome = await data.load('verification')
+      if (outcome.error) throw outcome.error
       return response?.data?.[0] ?? null
     }
 

@@ -88,7 +88,12 @@ async function computeBatchPeaks() {
 </script>
 
 <template>
-  <BaseTabbedPanel :breadcrumb="breadcrumb" :loading="ledger.pending">
+  <BaseTabbedPanel
+    :breadcrumb="breadcrumb"
+    :loading="ledger.pending"
+    :error="ledger.error"
+    :onRetry="() => ledger.load('retry')"
+  >
     <template #menu>
       <Button
         label="Compute batch peaks"

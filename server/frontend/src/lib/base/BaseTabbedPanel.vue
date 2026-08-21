@@ -4,7 +4,7 @@ import Panel from 'primevue/panel'
 import Button from 'primevue/button'
 import ProgressSpinner from 'primevue/progressspinner'
 
-import { BaseBreadcrumb, BaseStatusIcon } from '@/lib/base'
+import { BaseBreadcrumb, BaseLoadError, BaseStatusIcon } from '@/lib/base'
 
 const props = defineProps({
   label: {
@@ -28,6 +28,19 @@ const props = defineProps({
     type: Boolean,
     required: false,
     default: false
+  },
+  // Last load failure, if any. When set the panel explains itself instead of
+  // rendering an empty body the user cannot account for.
+  error: {
+    type: [Error, Object, String],
+    required: false,
+    default: null
+  },
+  // Optional retry action offered alongside the error message
+  onRetry: {
+    type: Function,
+    required: false,
+    default: null
   },
   contextMenu: {
     type: Object,
@@ -130,6 +143,7 @@ onUnmounted(() => {
         <span>loading...</span>
       </div>
     </div>
+    <BaseLoadError v-else-if="error" :error="error" :onRetry="onRetry" />
     <template v-else>
       <slot></slot>
     </template>

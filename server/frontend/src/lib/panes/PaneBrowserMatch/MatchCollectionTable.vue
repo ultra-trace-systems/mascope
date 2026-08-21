@@ -67,6 +67,8 @@ const breadcrumb = computed(() => {
   <BaseTabbedPanel
     :breadcrumb="breadcrumb"
     :loading="app.data.match.collection.pending"
+    :error="app.data.match.collection.error"
+    :onRetry="() => app.data.match.collection.load('retry')"
     :contextMenu="contextMenu"
     :pt="
       app.ui.help.right(`

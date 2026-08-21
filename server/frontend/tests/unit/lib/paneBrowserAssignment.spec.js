@@ -39,6 +39,7 @@ vi.mock('@/stores', () => ({ useApp: () => makeApp() }))
 
 vi.mock('@/lib/base', () => ({
   BaseTabbedPanel: { template: '<div><slot name="menu" /><slot /></div>' },
+  BaseLoadError: true,
   BaseTierTag: true,
   BaseVerdictBadge: true
 }))

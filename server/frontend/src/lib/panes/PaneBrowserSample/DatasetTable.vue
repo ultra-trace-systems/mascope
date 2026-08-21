@@ -51,6 +51,9 @@ const tableHeight = computed(() => ((height.value - padding) * app.ui.split.top)
         : `Datasets (${app.data.dataset.list?.length})`
     "
     icon="pi ph ph-folders"
+    :loading="app.data.dataset.pending"
+    :error="app.data.dataset.error"
+    :onRetry="() => app.data.dataset.load('retry')"
     :contextMenu="contextMenu"
     :pt="
       app.ui.help.right(`

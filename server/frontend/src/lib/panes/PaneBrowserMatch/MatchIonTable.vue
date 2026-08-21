@@ -323,6 +323,8 @@ watch(
   <BaseTabbedPanel
     :breadcrumb="breadcrumb"
     :loading="app.data.match.ion.pending"
+    :error="app.data.match.ion.error"
+    :onRetry="() => app.data.match.ion.load('retry')"
     :pt="
       app.ui.help.right(
         `<h1>Match Browser: Ions</h1>
