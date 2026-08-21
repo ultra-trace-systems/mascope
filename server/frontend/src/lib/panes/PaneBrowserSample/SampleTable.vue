@@ -135,6 +135,8 @@ const openCalibration = (sample) => {
         : `Samples (${samples.length})`
     "
     icon="pi pi-tags"
+    :error="app.data.sample.error"
+    :onRetry="() => app.data.sample.load('retry')"
     :clear="app.data.batch.unfocus"
     :back-label="'Back to batches'"
     :contextMenu="contextMenu"

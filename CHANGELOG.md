@@ -311,6 +311,19 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
   polarity's samples were filed under the first one's batch - inheriting its
   polarity and its calibration and diagnostic collections. Each polarity now
   gets its own batch.
+
+- A browser pane whose data fails to load now says so and offers **Try again**,
+  instead of going blank or spinning. The shared data-store loader records the
+  failure rather than swallowing it, and the sample, batch, dataset, peak, match
+  and assignment panes render it in place of their list. The rows and the
+  selection are kept across the failure, so a transient 500 no longer costs the
+  user their place in the sample they were reading; the pane shows the error
+  rather than the stale list, so nothing out of date is presented as current.
+  Overlapping loads - a dependency change, a socket reload and the retry button
+  can all be in flight at once - now settle by which was started last rather
+  than which finished first, so a slow failure can no longer raise an error
+  banner over data that has already loaded.
+
 - A file the server rejects outright is no longer retried ten times over five
   minutes before being set aside. Anything the server understood and refused -
   most often a name that does not identify an instrument, but also an upload

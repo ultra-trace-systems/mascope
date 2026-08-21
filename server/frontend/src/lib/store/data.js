@@ -33,6 +33,7 @@ export const useData = (
   // State
   const records = shallowRef([]) // private
   const pending = ref(false)
+  const error = ref(null) // last sync failure, cleared on the next attempt
   const list = computed(() => records.value) // read-only data
 
   // Selection - conditionally initialize
@@ -60,7 +61,7 @@ export const useData = (
     name,
     key,
     method,
-    { records, pending, selection, detailed },
+    { records, pending, error, selection, detailed },
     { deps, read },
     logger
   )
@@ -69,7 +70,7 @@ export const useData = (
   const { cleanup: cleanupEvents } = useEvents(
     name,
     key,
-    { records, selection, detailed },
+    { records, error, selection, detailed },
     { sync, reloadRecord },
     events,
     logger,
@@ -117,6 +118,7 @@ export const useData = (
   return {
     list,
     pending,
+    error,
     load,
     filtered,
     filteredIds,

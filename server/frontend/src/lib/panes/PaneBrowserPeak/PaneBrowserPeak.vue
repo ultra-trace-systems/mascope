@@ -8,7 +8,7 @@ import ProgressSpinner from 'primevue/progressspinner'
 import TabMenu from 'primevue/tabmenu'
 
 import { num } from '@/lib/formatters'
-import { BaseTierTag } from '@/lib/base'
+import { BaseLoadError, BaseTierTag } from '@/lib/base'
 import { peakAssignmentEnabled } from '@/lib/features'
 import { useApp } from '@/stores'
 import { usePeakScroller } from './stores'
@@ -139,7 +139,7 @@ onBeforeUnmount(() => {
       <span v-else style="opacity: 0.5">{{ app.data.peak.list.length }} peaks &middot; no run</span>
     </template>
     <DataTable
-      v-if="!app.data.peak.pending"
+      v-if="!app.data.peak.pending && !app.data.peak.error"
       ref="peakTable"
       :value="app.data.peak.list"
       dataKey="peak_id"
@@ -181,7 +181,13 @@ onBeforeUnmount(() => {
           {{ num.peakIntensity.format(data.area) }}
         </template>
       </Column>
-      <Column v-if="!peakAssignmentEnabled" field="match" header="formula" sortable style="height: 20px">
+      <Column
+        v-if="!peakAssignmentEnabled"
+        field="match"
+        header="formula"
+        sortable
+        style="height: 20px"
+      >
         <template #body="{ data }">
           <div class="formula-buttons">
             <Button
@@ -219,7 +225,11 @@ onBeforeUnmount(() => {
           </div>
         </template>
       </Column>
-      <Column v-if="peakAssignmentEnabled" header="assignment" style="height: 20px; min-width: 9rem">
+      <Column
+        v-if="peakAssignmentEnabled"
+        header="assignment"
+        style="height: 20px; min-width: 9rem"
+      >
         <template #body="{ data }">
           <div v-if="assignmentFor(data)" class="assignment-cell">
             <span class="formula" v-if="assignmentFor(data).assigned_formula">
@@ -242,11 +252,18 @@ onBeforeUnmount(() => {
         </template>
       </Column>
     </DataTable>
-    <div v-else class="center" style="width: 100%; height: 220px">
+    <div v-else-if="app.data.peak.pending" class="center" style="width: 100%; height: 220px">
       <div class="col">
         <ProgressSpinner />
       </div>
     </div>
+    <BaseLoadError
+      v-else
+      :error="app.data.peak.error"
+      fallback="Could not load the peaks for this sample."
+      :onRetry="() => app.data.peak.load('retry')"
+      style="height: 220px"
+    />
   </Panel>
 </template>
 

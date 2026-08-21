@@ -11,7 +11,7 @@ import ProgressSpinner from 'primevue/progressspinner'
 import ToggleSwitch from 'primevue/toggleswitch'
 
 import { getApiErrorMessage, isRefusedRequest } from '@/api/utils'
-import { BaseTabbedPanel, BaseTierTag, BaseVerdictBadge } from '@/lib/base'
+import { BaseLoadError, BaseTabbedPanel, BaseTierTag, BaseVerdictBadge } from '@/lib/base'
 import { PeakAssignConfigForm } from '@/lib/dialogs'
 import { num } from '@/lib/formatters'
 import { formatIsotopeFormula } from '@/lib/chem'
@@ -364,6 +364,16 @@ const isoCount = (row) => assignments.value.childrenOf(row.peak_assignment_id).l
         <i style="opacity: 0.6"> Select a sample to view or run its peak assignments. </i>
       </div>
     </div>
+    <!-- Ahead of the empty state: a run list that failed to load must not read
+         as "this sample has none", which invites an Assign run the user does
+         not need. -->
+    <div v-else-if="runs.error" class="center empty">
+      <BaseLoadError
+        :error="runs.error"
+        fallback="Could not load the assignment runs for this sample."
+        :onRetry="() => runs.load('retry')"
+      />
+    </div>
     <div v-else-if="!runs.list.length" class="center empty">
       <div class="col" style="gap: 0.75rem; text-align: center; max-width: 40ch">
         <strong><span class="pi ph ph-info" /> No assignment runs</strong>
@@ -411,6 +421,15 @@ const isoCount = (row) => assignments.value.childrenOf(row.peak_assignment_id).l
 
       <div v-if="assignments.pending" class="center loading-region">
         <ProgressSpinner />
+      </div>
+      <!-- Inline rather than through the panel's :error, so the run selector and
+           tier strip above stay usable while only the ledger is unavailable. -->
+      <div v-else-if="assignments.error" class="center loading-region">
+        <BaseLoadError
+          :error="assignments.error"
+          fallback="Could not load this run."
+          :onRetry="() => assignments.load('retry')"
+        />
       </div>
       <DataTable
         v-else
