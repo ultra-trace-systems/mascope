@@ -18,7 +18,10 @@ from threading import Event
 
 import pytest
 
-from mascope_backend.file_converter.errors import EmptyAcquisitionError
+from mascope_backend.file_converter.errors import (
+    EMPTY_ACQUISITION_MESSAGE,
+    EmptyAcquisitionError,
+)
 from mascope_backend.runtime import runtime
 from mascope_runtime.logging import _SENTRY_LEVELS
 from mascope_tofwerk.processor import H5Processor
@@ -100,9 +103,7 @@ def _at_or_above_warning(records):
 
 
 class TestRoutineFailureStaysOutOfMonitoring:
-    FAILURE = EmptyAcquisitionError(
-        "The file contains no scans; the acquisition is empty or was aborted."
-    )
+    FAILURE = EmptyAcquisitionError(EMPTY_ACQUISITION_MESSAGE)
 
     def test_it_is_logged_below_the_monitoring_threshold(self):
         records, _, _ = _run_once(self.FAILURE)

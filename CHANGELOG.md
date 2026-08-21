@@ -403,15 +403,18 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
   raw `IndexError` or `NoScansFoundError` text, and the failure is logged
   below the level error monitoring subscribes to. Seen across several customer
   deployments since 1.7.0.
-- A TOF acquisition that was aborted mid-run is no longer mistaken for an
-  empty one. `TimingData/BufTimes` is pre-allocated, so an aborted run ends in
-  unwritten rows of zeros; the length was read from the last row alone, which
-  made a file holding real scans look scanless. The scans recorded before the
-  abort are now used, so such a file ingests with the length it actually has.
-- A TOF file holding exactly one scan is refused instead of being ingested
-  with a NaN interval and length. One scan gives no inter-scan spacing to
-  average, and the resulting NaN was stored and only surfaced later, when
-  serializing the sample to JSON failed.
+- A TOF acquisition that was aborted mid-run now ingests with the length it
+  actually has. `TimingData/BufTimes` is pre-allocated, so an aborted run ends
+  in unwritten rows; the sample length was measured from the last row alone,
+  which is what raised the index error above when that row held nothing. It is
+  now measured from every scan recorded before the abort, and each of the h5
+  readers trims the unwritten tail the same way, so they agree on which scans
+  the file holds.
+- A TOF file that recorded no usable time axis is refused instead of being
+  ingested with a NaN interval and length. Exactly one scan gives no
+  inter-scan spacing to average, and an unwritten slot between two recorded
+  scans leaves a hole in the axis; either way the resulting NaN was stored and
+  only surfaced later, when serializing the sample to JSON failed.
 - A successful `mascope prod update` - unattended or `--version` - now also
   moves the deployment checkout to the release it deployed. The checkout is
   what a boot redeploys, so an unattended update used to leave the server one
