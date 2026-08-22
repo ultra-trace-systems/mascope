@@ -5,6 +5,13 @@ Discovers and executes maintenance scripts from
 `mascope_backend.db.scripts.*` inside the production backend container,
 with automatic pre-execution backup.
 
+Discovery happens inside the container as well. The standalone operator CLI
+(`uv tool install mascope-cli`) ships without `mascope_backend`, so there is
+nothing to discover on the host - and even on a monorepo install the
+container's copy is the one the script will run in, so it is the one that
+should be listed. The host install is consulted only when the container
+cannot be asked.
+
 Scripts are data-manipulation entry points — see `mascope_backend.db.admin`
 for the distinction from Alembic schema migrations.
 """
@@ -68,15 +75,74 @@ _FORWARDED_ENV_VARS = [
     "MASCOPE_CLEAR_PASSWORD_CHANGE_EMAILS",
 ]
 
+# Runs inside the backend container (`<container_python> -c ...`) and prints
+# one script name per line. It lists the package by file instead of importing
+# each module, so the probe has no import side effects and cannot be broken
+# by one script's imports. Every module in the package is an entry point by
+# convention (`python -m` with a main()); subpackages and `_private` helpers
+# are not scripts.
+_LIST_SCRIPTS_SNIPPET = "\n".join(
+    [
+        "import pkgutil",
+        f"import {_SCRIPTS_MODULE} as scripts",
+        "for module in pkgutil.iter_modules(scripts.__path__):",
+        "    if not module.ispkg and not module.name.startswith('_'):",
+        "        print(module.name)",
+    ]
+)
 
-def _discover_scripts() -> dict[str, str]:
+
+def _discover_container_scripts(
+    container: str, container_python: str
+) -> dict[str, str] | None:
     """
-    Discover available scripts from mascope_backend.db.scripts.
+    List the maintenance scripts shipped in the backend container.
+
+    :param container: Backend container name.
+    :type container: str
+    :param container_python: Interpreter inside the container, as resolved by
+        :func:`_resolve_container_python`.
+    :type container_python: str
+    :return: Mapping of CLI name to dotted module path, or ``None`` when the
+        container could not be asked (the exec failed, or the package is not
+        importable there) - distinct from a package with no scripts in it.
+    :rtype: dict[str, str] | None
+    """
+    result = subprocess.run(
+        ["docker", "exec", container, container_python, "-c", _LIST_SCRIPTS_SNIPPET],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if result.returncode != 0:
+        detail = result.stderr.strip().splitlines()
+        runtime.logger.warning(
+            f"Could not list scripts inside '{container}' "
+            f"(exit {result.returncode}): {detail[-1] if detail else 'no output'}"
+        )
+        return None
+
+    names = [line.strip() for line in result.stdout.splitlines()]
+    return {name: f"{_SCRIPTS_MODULE}.{name}" for name in names if name.isidentifier()}
+
+
+def _discover_host_scripts() -> dict[str, str]:
+    """
+    Discover scripts from the host's own ``mascope_backend`` install.
+
+    Only a monorepo install has the package; the standalone operator CLI does
+    not, and gets an empty mapping here. Scans the package directory for .py
+    files (excluding __init__) that expose a main() callable.
 
     :return: Mapping of CLI name to dotted module path.
     :rtype: dict[str, str]
     """
-    spec = importlib.util.find_spec(_SCRIPTS_MODULE)
+    try:
+        spec = importlib.util.find_spec(_SCRIPTS_MODULE)
+    except ModuleNotFoundError:
+        # find_spec imports the parent package first, so a host without
+        # mascope_backend raises here rather than returning None.
+        return {}
     if spec is None or spec.submodule_search_locations is None:
         return {}
 
@@ -98,6 +164,28 @@ def _discover_scripts() -> dict[str, str]:
             runtime.logger.debug(f"Skipping script module '{module_path}': {e}")
 
     return result
+
+
+def _discover_scripts(container: str, container_python: str | None) -> dict[str, str]:
+    """
+    Discover the available scripts, asking the backend container first.
+
+    :param container: Backend container name.
+    :type container: str
+    :param container_python: Interpreter inside the container, or ``None``
+        when none could be resolved (the container is down), in which case the
+        host install is consulted instead.
+    :type container_python: str | None
+    :return: Mapping of CLI name to dotted module path; empty when neither
+        the container nor the host could provide one.
+    :rtype: dict[str, str]
+    """
+    if container_python is not None:
+        found = _discover_container_scripts(container, container_python)
+        if found is not None:
+            return found
+        runtime.logger.warning("Falling back to the host install's scripts.")
+    return _discover_host_scripts()
 
 
 def _resolve_container_python(container: str) -> str | None:
@@ -129,14 +217,29 @@ def _resolve_container_python(container: str) -> str | None:
         "done; "
         "exit 1"
     )
-    result = subprocess.run(
-        ["docker", "exec", container, "sh", "-c", probe],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
+    try:
+        result = subprocess.run(
+            ["docker", "exec", container, "sh", "-c", probe],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    except OSError:
+        # No docker binary on this host: same outcome as a stopped container.
+        return None
     lines = [line.strip() for line in result.stdout.splitlines() if line.strip()]
     return lines[-1] if result.returncode == 0 and lines else None
+
+
+def _no_container_python_message(container: str) -> str:
+    """Explain a failed interpreter lookup, and what to do about it."""
+    return (
+        f"Could not find a mascope Python in container '{container}'. "
+        "Scripts are discovered and run inside the backend container, so the "
+        "stack must be running (`mascope prod up --detach`) and the container "
+        "must be built from the mascope image "
+        f"(looked for {', '.join(_PYTHON_CANDIDATES)} and python/python3 on PATH)."
+    )
 
 
 @prod_db_scripts_app.callback()
@@ -153,13 +256,29 @@ def main() -> None:
 
 @prod_db_scripts_app.command("list")
 def list_scripts() -> None:
-    """List available maintenance scripts."""
-    scripts = _discover_scripts()
+    """List the maintenance scripts shipped in the backend container."""
+    backend_container = runtime.full_config.backend.get_backend_container_name(_MODE)
+    container_python = _resolve_container_python(backend_container)
+    scripts = _discover_scripts(backend_container, container_python)
+
     if not scripts:
-        runtime.logger.warning("No scripts found in mascope_backend.db.scripts")
-        return
+        if container_python is None:
+            runtime.logger.error(_no_container_python_message(backend_container))
+        else:
+            runtime.logger.error(
+                f"No scripts found in {_SCRIPTS_MODULE} "
+                f"(container '{backend_container}')"
+            )
+        raise typer.Exit(1)
+
+    if container_python is None:
+        runtime.logger.warning(
+            f"Backend container '{backend_container}' is not running; listing "
+            "the host install's scripts instead, which may not match the "
+            "deployed image."
+        )
     runtime.logger.info("Available scripts:")
-    for name, module in scripts.items():
+    for name in scripts:
         runtime.logger.info(f"  {name}")
 
 
@@ -205,7 +324,16 @@ def run_script(
     if not check_prerequisites(_MODE):
         return
 
-    scripts = _discover_scripts()
+    backend_container = runtime.full_config.backend.get_backend_container_name(_MODE)
+
+    # The script can only run inside the container, so a stopped stack fails
+    # here - before a backup is taken for a run that cannot happen.
+    container_python = _resolve_container_python(backend_container)
+    if container_python is None:
+        runtime.logger.error(_no_container_python_message(backend_container))
+        raise typer.Exit(1)
+
+    scripts = _discover_scripts(backend_container, container_python)
 
     if script not in scripts:
         runtime.logger.error(
@@ -254,17 +382,6 @@ def run_script(
 
     # --- Execute inside backend container ---
     module = scripts[script]
-    backend_container = runtime.full_config.backend.get_backend_container_name(_MODE)
-
-    container_python = _resolve_container_python(backend_container)
-    if container_python is None:
-        runtime.logger.error(
-            f"Could not find a mascope Python in container '{backend_container}'. "
-            "Is the backend container running, and built from the mascope image? "
-            f"(looked for {', '.join(_PYTHON_CANDIDATES)} and python/python3 on PATH)"
-        )
-        raise typer.Exit(1)
-
     runtime.logger.info(
         f"Running in '{backend_container}' ({container_python}): {module}"
     )
