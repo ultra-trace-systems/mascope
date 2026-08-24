@@ -22,6 +22,10 @@ from mascope_backend.api.new.ionization.modes.service import (
     get_ionization_modes_by_filename,
     update_ionization_mode,
 )
+from mascope_backend.api.new.ionization.modes.util import (
+    COLLECTION_ID_FIELDS,
+    fetch_mode_collection_ids,
+)
 from mascope_backend.api.new.workspaces.dependencies import (
     check_target_collection_access,
 )
@@ -33,7 +37,11 @@ ionization_mode_router = APIRouter(
 )
 
 
-async def _check_referenced_collections(mode_data, user: User) -> None:
+async def _check_referenced_collections(
+    mode_data,
+    user: User,
+    stored: dict[str, str | None] | None = None,
+) -> None:
     """Refuse a calibration or diagnostic collection the caller cannot read.
 
     A mode is global reference data, so the collections it names are read by
@@ -44,17 +52,34 @@ async def _check_referenced_collections(mode_data, user: User) -> None:
     while global and narrowed afterwards.
 
     Read (guest) access is the bar: naming a collection is not a mutation of
-    it. Only ids the request actually sets are checked, so a mode already
-    bound to a workspace collection stays editable in every other respect.
+    it. Only ids this request *changes* are checked, compared against *stored*:
+    the client sends the mode's current binding back on every edit, so checking
+    by value would make a mode already bound to a workspace collection
+    uneditable by anyone outside that workspace. Re-stating a binding publishes
+    nothing that the mode does not already publish.
+
+    An id being dropped or replaced is deliberately not checked. Unbinding only
+    narrows what the mode exposes, and requiring read access over the outgoing
+    collection would make a mode stuck on an unreadable one unrepairable -
+    which is the failure this argument exists to prevent.
 
     :param mode_data: The create or update body.
     :param user: The authenticated user.
-    :raises ForbiddenAccessException: If a named collection is not readable.
+    :param stored: The mode's current collection ids, or ``None`` on create,
+        where every id the request names is new.
+    :raises ForbiddenAccessException: If a newly named collection is not
+        readable.
     """
-    for field in ("calibration_collection_id", "diagnostic_collection_id"):
+    current = stored or {}
+    for field in COLLECTION_ID_FIELDS:
         collection_id = getattr(mode_data, field, None)
-        if collection_id is not None:
-            await check_target_collection_access(collection_id, user, "guest")
+        if collection_id is None:
+            # Omitted, or an explicit null the update service drops in order to
+            # preserve the stored binding. Either way nothing new is named.
+            continue
+        if collection_id == current.get(field):
+            continue
+        await check_target_collection_access(collection_id, user, "guest")
 
 
 @ionization_mode_router.get("/{ionization_mode_id}")
@@ -123,7 +148,11 @@ async def update_ionization_mode_route(
     heavier action than it looks, but that weight is not a reason to require a
     global role that also carries user administration.
     """
-    await _check_referenced_collections(ionization_mode_data, user)
+    await _check_referenced_collections(
+        ionization_mode_data,
+        user,
+        await fetch_mode_collection_ids(ionization_mode_id),
+    )
     return await update_ionization_mode(ionization_mode_id, ionization_mode_data)
 
 
