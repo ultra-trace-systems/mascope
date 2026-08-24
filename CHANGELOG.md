@@ -174,8 +174,16 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
   `mascope prod mfa reset <email>` on the host for when nobody who could do that
   can sign in either. None of them reveals or changes a password.
   **New secret**: `.runtime/secrets/mfa_encryption_key.txt` encrypts the stored
-  TOTP seeds. `mascope prod up` generates it when missing before starting, so
-  an existing deployment picks it up on its next start.
+  TOTP seeds. The 2.0.0 CLI generates it when missing before starting the stack,
+  so an existing deployment picks it up on its next start - once that CLI is
+  installed. **Upgrading:** reinstall the CLI *before* `mascope prod update`,
+  right after checking out the release. The older CLI knows nothing about the
+  secret, and compose refuses to create the backend without the file after
+  stopping the running one. This applies to the unattended updater too: it
+  never reinstalls itself, so on a server running `mascope-update.timer`,
+  reinstall the CLI as soon as the timer reports 2.0.0 applied - otherwise the
+  next reboot starts the 2.0.0 compose file with the old CLI. See
+  [maintaining.md](docs/maintaining.md#rolling-out-a-release-across-several-servers).
   Back it up with the others and do not rotate it casually: replacing it makes
   every enrolled seed undecryptable, and each of those users has to sign in with
   a recovery code and enrol again. It is deliberately separate from

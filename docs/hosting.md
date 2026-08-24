@@ -60,8 +60,10 @@ and the checkout.
    ```
 
    `mascope prod up` generates a missing *newly introduced* secret on its own
-   (today that is `mfa_encryption_key.txt`), so an existing deployment picks it
-   up on its next start. The three long-standing secrets are never generated
+   (today that is `mfa_encryption_key.txt`) - the CLI does that, so an existing
+   deployment picks the secret up on its next start only once the CLI has been
+   reinstalled from the new release (see "Update to a new release" below). The
+   three long-standing secrets are never generated
    automatically: on an existing deployment a missing one is a problem to
    investigate, and a fresh random value would break against the existing
    database or end every session.
@@ -150,6 +152,12 @@ and the checkout.
 cd mascope
 git fetch --tags
 git checkout v1.1.0          # the new release tag
+
+# Reinstall the CLI before touching the stack: the checkout above brought in
+# the release's docker-compose.yaml, and a secret a release adds there is
+# provisioned only by the matching CLI.
+CFLAGS="-std=c17" uv tool install --force --reinstall --python 3.12 .   --with-executables-from mascope-cli
+
 mascope prod docker pull     # pulls the v1.1.0 images
 mascope prod up              # recreates the containers
 ```

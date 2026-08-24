@@ -63,7 +63,10 @@ Version  backend latest · frontend latest  DRIFT (this checkout deploys v1.6.1)
 Drift means the next `mascope prod up` - a restart, or a reboot - moves the
 stack to a different release than the one it is serving. Resolve it by bringing
 the two into line: `git checkout <tag>` for the release the server should run,
-then `mascope prod update`.
+then reinstall the CLI from that checkout, then `mascope prod update` - in that
+order, see [Rolling out a release across several
+servers](#rolling-out-a-release-across-several-servers) for why the CLI has to
+move before the stack does.
 
 ## Provisioning
 
@@ -186,6 +189,12 @@ tag out first is equivalent:
 
 ```sh
 git fetch --tags && git checkout v1.3.0
+
+# CLI before stack: the checkout just swapped in that release's
+# docker-compose.yaml, and a release that adds a compose secret has it created
+# only by the matching CLI.
+CFLAGS="-std=c17" uv tool install --force --reinstall --python 3.12 .   --with-executables-from mascope-cli
+
 mascope prod update          # deploys v1.3.0; the UI then shows v1.3.0
 ```
 
@@ -232,6 +241,12 @@ doctor reports the gap as DRIFT until the checkout is aligned by hand:
 ```sh
 cd "$(mascope path)"
 git fetch --tags && git checkout vX.Y.Z   # the release the update applied
+
+# Reinstall in the same breath. The unattended updater deliberately never
+# reinstalls itself, so aligning the checkout alone leaves the new release's
+# docker-compose.yaml paired with the old CLI - and the next reboot's
+# `mascope prod up` runs that pairing.
+CFLAGS="-std=c17" uv tool install --force --reinstall --python 3.12 .   --with-executables-from mascope-cli
 ```
 
 Steer a pending migration update:
@@ -264,6 +279,13 @@ section documents the manual per-server equivalent. The procedure per server
 cd <deployment>            # the mascope checkout, e.g. ~/mascope
 git fetch --tags origin
 git checkout vX.Y.Z        # the release you are rolling out
+
+# CLI first, stack second. The checkout above already swapped in the release's
+# docker-compose.yaml, and a release that adds a compose secret (2.0.0 adds
+# mfa_encryption_key) has that file created only by the matching CLI - the
+# older one stops the backend and then cannot recreate it.
+CFLAGS="-std=c17" uv tool install --force --reinstall --python 3.12 .   --with-executables-from mascope-cli
+
 mascope prod update        # pulls the tagged images, rolling restart (~30 s)
 ```
 
@@ -284,11 +306,17 @@ curl -sI https://<name>/ | head -1           # app serves through its proxy
 
 Two gotchas this procedure exists to avoid:
 
-- **The CLI is not refreshed by `prod update`.** It only pulls images; the
-  `mascope` binary is a `uv` tool installed by `tooling/ubuntu.sh`. If a release
-  adds or changes CLI commands, reinstall the CLI (`ubuntu.sh reinstall`, or the
-  `uv tool install` step it runs) - `prod update` now warns when the running CLI
-  has drifted from the checkout.
+- **The CLI is not refreshed by `prod update` - and it has to be refreshed
+  first.** `prod update` only pulls images; the `mascope` binary is a `uv` tool
+  installed by `tooling/ubuntu.sh`. Reinstall it between the checkout and the
+  update, as in the sequence above: the checkout brings in the release's
+  `docker-compose.yaml`, and a release that adds a compose secret (2.0.0 adds
+  `mfa_encryption_key`) has it provisioned only by the matching CLI - compose
+  then refuses to recreate the backend it has just stopped. Prefer the
+  `uv tool install` line over `ubuntu.sh reinstall`: reinstall goes through the
+  uninstall path, which deletes `.runtime/state.json` and with it the server's
+  active environment. `prod update` still warns when the running CLI has
+  drifted from the checkout - but by then the update has already run.
 - **Host env vars apply at login.** If a rollout also changes something in
   `/etc/environment` (e.g. a new `MASCOPE_*` var), start the stack from a
   **fresh** shell session, or the value interpolates empty.
@@ -489,7 +517,7 @@ reset.
 
 **The encryption key.** `.runtime/secrets/mfa_encryption_key.txt` encrypts the
 stored TOTP seeds. `mascope prod up` generates it when missing, so it appears
-on a deployment's first start under a release that knows it. Two properties
+on a deployment's first start once that release's CLI is installed. Two properties
 matter:
 
 - **It is not in the nightly backups** - deliberately, so a database dump (or

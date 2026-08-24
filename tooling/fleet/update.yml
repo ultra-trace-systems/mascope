@@ -59,10 +59,11 @@
     # run images with that tag. Checking the checkout alone would wrongly skip
     # a server where a previous run died between checkout and stack update;
     # .env's MASCOPE_VERSION is not consulted because it is not kept current.
-    # A skipped server also skips the CLI reinstall: with checkout and stack
-    # both already on the release, a stale CLI could only come from an earlier
-    # run that failed at the reinstall step - which any_errors_fatal made loud
-    # - and -e force=true redoes it.
+    # A skipped server safely skips the CLI reinstall too: the reinstall runs
+    # BEFORE the stack update, so a stack already on the release proves the
+    # reinstall that preceded it succeeded. A run that died at the reinstall
+    # left the stack on the old release, so already_current is false there and
+    # a plain re-run redoes both steps - no -e force=true needed.
     - name: Work out whether this server is already on the release
       ansible.builtin.set_fact:
         already_current: >-
@@ -106,23 +107,31 @@
       register: checkout
       changed_when: "'HEAD is now at' in (checkout.stderr + checkout.stdout)"
 
-    - name: Update the stack (pull images, rolling restart)
-      ansible.builtin.shell:
-        cmd: bash -lc "cd {{ mascope_checkout }} && PYTHONUTF8=1 mascope prod update"
-      changed_when: true
-
-    # prod update refreshes images but not the uv-tool CLI; reinstalling here
-    # keeps the CLI in lockstep with the checkout (the stale-CLI drift that
-    # once hid `prod doctor`). ~1 min per server, idempotent. Unlike
-    # `ubuntu.sh reinstall`, this does NOT clear .runtime/state.json, so the
-    # server's active env is preserved (clear_state runs on the uninstall
-    # side, which reinstall goes through and a bare install does not).
+    # Before the stack update, not after: the checkout above has already
+    # swapped in the release's docker-compose.yaml (the deployment checkout is
+    # MASCOPE_PATH), and a release may add a compose secret that only the
+    # matching CLI provisions - 2.0.0 adds `mfa_encryption_key`, written by
+    # `prod update` -> `_ensure_secrets`. Driving the new compose file with the
+    # still-installed older CLI makes compose refuse to create the backend on
+    # the missing secret file, after it has already stopped the running one:
+    # the server would end the play with its backend down and any_errors_fatal
+    # would halt the roll. Reinstalling also keeps the CLI in lockstep with the
+    # checkout (the stale-CLI drift that once hid `prod doctor`). ~1 min per
+    # server, idempotent. Unlike `ubuntu.sh reinstall`, this does NOT clear
+    # .runtime/state.json, so the server's active env is preserved (clear_state
+    # runs on the uninstall side, which reinstall goes through and a bare
+    # install does not).
     - name: Reinstall the mascope CLI to match the checkout
       ansible.builtin.shell:
         cmd: >-
           bash -lc "cd {{ mascope_checkout }} && CFLAGS='-std=c17'
           uv tool install --force --reinstall --python 3.12 .
           --with-executables-from mascope-cli"
+      changed_when: true
+
+    - name: Update the stack (pull images, rolling restart)
+      ansible.builtin.shell:
+        cmd: bash -lc "cd {{ mascope_checkout }} && PYTHONUTF8=1 mascope prod update"
       changed_when: true
 
     - name: Verify with doctor (fails the rollout if unhealthy)
