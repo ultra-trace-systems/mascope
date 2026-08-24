@@ -76,21 +76,24 @@ _REPOINT_ITEMS_SQL = f"""
     WHERE si.sample_batch_id = d.dup_id
 """
 
-# Composite primary key (target_collection_id, sample_batch_id), so a link the
-# keeper already has cannot be repointed onto it - and does not need to be. The
-# duplicate's leftover rows cascade away with it.
-_REPOINT_COLLECTIONS_SQL = f"""
+# Composite primary key (target_collection_id, sample_batch_id): the keeper can
+# hold a collection at most once, and two duplicates of the same keeper can each
+# hold one it lacks. Insert the union instead of repointing rows: an UPDATE
+# evaluates a NOT EXISTS guard against the statement's starting snapshot, so it
+# cannot see a link the same statement just moved onto the keeper, and the second
+# duplicate's row would collide on the primary key. DISTINCT covers the links two
+# duplicates both carry, ON CONFLICT the ones the keeper already has. The
+# duplicates' own rows are left where they are and cascade away with them
+# (fk_target_collection_in_sample_batch_sample_batch_id_sample_batch is ON DELETE
+# CASCADE), so this must stay ahead of the DELETE below.
+_COPY_COLLECTIONS_SQL = f"""
     WITH keepers AS ({_KEEPERS_CTE}), duplicates AS ({_DUPLICATES_CTE})
-    UPDATE target_collection_in_sample_batch tc
-    SET sample_batch_id = d.keep_id
-    FROM duplicates d
-    WHERE tc.sample_batch_id = d.dup_id
-      AND NOT EXISTS (
-          SELECT 1
-          FROM target_collection_in_sample_batch existing
-          WHERE existing.sample_batch_id = d.keep_id
-            AND existing.target_collection_id = tc.target_collection_id
-      )
+    INSERT INTO target_collection_in_sample_batch
+        (target_collection_id, sample_batch_id)
+    SELECT DISTINCT tc.target_collection_id, d.keep_id
+    FROM target_collection_in_sample_batch tc
+    JOIN duplicates d ON tc.sample_batch_id = d.dup_id
+    ON CONFLICT (target_collection_id, sample_batch_id) DO NOTHING
 """
 
 # Batch peaks are anchors derived from a batch's members; the keeper's set no
@@ -115,7 +118,7 @@ _DELETE_DUPLICATES_SQL = f"""
 def upgrade() -> None:
     connection = op.get_bind()
     repointed = connection.execute(text(_REPOINT_ITEMS_SQL))
-    connection.execute(text(_REPOINT_COLLECTIONS_SQL))
+    connection.execute(text(_COPY_COLLECTIONS_SQL))
     connection.execute(text(_FLAG_KEEPERS_SQL))
     deleted = connection.execute(text(_DELETE_DUPLICATES_SQL))
     if deleted.rowcount:
