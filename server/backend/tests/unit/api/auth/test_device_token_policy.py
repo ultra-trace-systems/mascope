@@ -11,6 +11,7 @@ import pytest
 from mascope_backend.api.new.auth.access_token import validation
 from mascope_backend.api.new.auth.exceptions import InvalidTokenException
 from mascope_backend.api.new.auth.pairing.config import pairing_settings
+from mascope_runtime.config import BackendConfig
 
 
 @pytest.fixture
@@ -92,3 +93,15 @@ def test_ordinary_token_failures_stay_generic():
     assert not isinstance(
         InvalidTokenException("Invalid access token."), ClientFacingDetail
     )
+
+
+def test_require_device_tokens_ships_off():
+    """The flag defaults off, which is what makes the migration state work.
+
+    Tokens issued before the device registry keep authenticating until a
+    deployment has re-paired every agent machine and turns this on. Flipping
+    the default would refuse them on upgrade, with no pairing done yet. The
+    class default is asserted, not ``runtime.config``, so an env overlay in a
+    developer's ``mascope.toml`` cannot make this flap.
+    """
+    assert BackendConfig(name="backend").require_device_tokens is False
