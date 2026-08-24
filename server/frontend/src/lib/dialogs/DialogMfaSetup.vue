@@ -155,11 +155,16 @@ const close = () => {
 </script>
 
 <template>
+  <!-- Both flags, not just :closable - PrimeVue's Escape handler never consults
+       closable, and closing here runs reset(), which drops recovery codes the
+       server cannot reissue. The keydown listener is bound once, when the
+       dialog opens, so this dialog must never open already on the codes step. -->
   <Dialog
     v-model:visible="visible"
     modal
     header="Two-factor authentication"
     :closable="step !== STEPS.codes"
+    :closeOnEscape="step !== STEPS.codes"
     :style="{ width: '30rem' }"
   >
     <Message v-if="error" severity="error" style="margin-bottom: 1rem">{{ error }}</Message>

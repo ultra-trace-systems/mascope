@@ -285,6 +285,14 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
 
 ### Fixed
 
+- Pressing Escape no longer throws away two-factor recovery codes. The last
+  step of setup deliberately offers no close button, because the codes are
+  shown once and two-factor is already switched on by the time they appear -
+  but Escape closed the dialog anyway and cleared them. It is now ignored
+  until the codes have been acknowledged. An account whose two-factor is
+  required by server policy could not turn the factor off to enrol again, so
+  the only way back was an administrator reset.
+
 - `mascope logs query` now searches the whole retention window. Rotated days
   are kept as zip archives, which the query silently ignored - however wide
   the requested time range, only the days not yet compressed were read, in
