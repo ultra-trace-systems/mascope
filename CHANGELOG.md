@@ -234,10 +234,13 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
   flags every affected batch - in every workspace, not only the editor's own -
   for recalibration or rematching. Because the mode is read instance-wide, the
   calibration and diagnostic collections it names must now be readable by the
-  editor setting them, and a collection a mode uses can no longer be narrowed
+  editor binding them, and a collection a mode uses can no longer be narrowed
   into a single workspace afterwards - either way round, one workspace's
   private collection would otherwise govern how every other workspace's
-  samples are matched.
+  samples are matched. Only a binding the edit actually *changes* is checked:
+  the pane sends the mode's current collections back with every save, so a
+  mode already pointing at a workspace-scoped collection stays editable by
+  anyone who may edit modes, and can be moved off it again.
 - Launching a peak assignment now answers with the outcome instead of an
   unconditional acknowledgement. `POST /api/peak-assignments/sample/{id}/assign`
   returns 202 carrying the id of the run it just created - so a caller can follow

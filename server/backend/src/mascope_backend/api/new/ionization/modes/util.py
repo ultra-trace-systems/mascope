@@ -9,6 +9,39 @@ from mascope_backend.db import (
 from mascope_backend.runtime import runtime
 
 
+COLLECTION_ID_FIELDS = ("calibration_collection_id", "diagnostic_collection_id")
+
+
+async def fetch_mode_collection_ids(ionization_mode_id: str) -> dict[str, str | None]:
+    """Fetch the calibration and diagnostic collection ids a mode is bound to.
+
+    Used by the update route to tell a binding the request is *changing* from
+    one it is merely echoing back.
+
+    A mode that does not exist reports no bindings, so every id the request
+    names counts as new and is checked. That fails closed; the service's own
+    lookup still answers 404 for a caller who clears the check.
+
+    :param ionization_mode_id: The ID of the ionization mode to read.
+    :type ionization_mode_id: str
+    :return: The mode's current collection ids, keyed by field name.
+    :rtype: dict[str, str | None]
+    """
+    async with async_session() as session:
+        row = (
+            await session.execute(
+                select(
+                    IonizationMode.calibration_collection_id,
+                    IonizationMode.diagnostic_collection_id,
+                ).where(IonizationMode.ionization_mode_id == ionization_mode_id)
+            )
+        ).one_or_none()
+
+    if row is None:
+        return dict.fromkeys(COLLECTION_ID_FIELDS)
+    return {field: getattr(row, field) for field in COLLECTION_ID_FIELDS}
+
+
 async def fetch_all_ionization_modes() -> list[IonizationMode]:
     """Fetch all ionization modes from the database.
 
