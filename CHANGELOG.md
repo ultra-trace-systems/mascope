@@ -285,6 +285,18 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
 
 ### Fixed
 
+- `mascope logs query` now searches the whole retention window. Rotated days
+  are kept as zip archives, which the query silently ignored - however wide
+  the requested time range, only the days not yet compressed were read, in
+  practice the current day. Archives are now unpacked and included, an
+  unreadable archive is skipped with a warning instead of failing the query,
+  and a half-written log line no longer aborts the read. Time intervals are
+  validated too: `--interval 60d` used to be cast to 60 *seconds*, quietly
+  collapsing the window - shorthand like `60d` or `12h` now means what it
+  says, spelled-out forms like `60 days` keep working, and anything else is
+  rejected with a clear error rather than narrowing the query. The same
+  validation guards `mascope logs gc --retain`.
+
 - `mascope prod db script list` and `run` now work on a server where only the
   operator CLI is installed (`uv tool install mascope-cli`, the documented
   no-source-checkout path). The runner looked for the maintenance scripts in

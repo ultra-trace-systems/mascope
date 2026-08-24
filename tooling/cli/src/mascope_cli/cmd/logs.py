@@ -39,7 +39,7 @@ def query(
         typer.Option(
             "--interval",
             "-i",
-            help="A range of time to query across. Relative to --to or --from if provided, or to now otherwise.",
+            help="A range of time to query across, e.g. '60d' or '60 days'. Relative to --to or --from if provided, or to now otherwise.",
         ),
     ] = None,
     to_datetime: Annotated[
@@ -149,6 +149,7 @@ def gc(
         typer.Option(
             "--retain",
             "-r",
+            help="Keep logs newer than this interval, e.g. '14d' or '2 weeks'",
         ),
     ] = None,
     dev: Annotated[

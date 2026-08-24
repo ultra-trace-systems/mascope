@@ -5,7 +5,8 @@ These run real DuckDB queries against NDJSON log files written into a temp
 directory shaped like a runtime env's log dir (`<base>/<mode>/<date>.<module>.log`),
 and cover the agent-facing behaviors: raw NDJSON output (--json), newest-N
 limiting, grep patterns containing SQL-hostile quotes, the per-service filter,
-and the empty-glob case. They skip when the optional `duckdb` dependency
+the empty-glob case, rotated `.log.zip` archive inclusion, and interval
+validation. They skip when the optional `duckdb` dependency
 (`mascope_runtime[logs]`) is not installed.
 
 Record timestamps are written with the machine's local UTC offset: naive
@@ -15,6 +16,7 @@ local zone), mirroring how the CLI is used on a server.
 
 import datetime
 import json
+import zipfile
 
 import pytest
 
@@ -48,9 +50,9 @@ class _FakeRuntime:
         self.logger = rl.logger
 
 
-def _time(hour, minute, second):
-    """2026-06-23 HH:MM:SS in the machine's local zone, loguru-repr style."""
-    naive = datetime.datetime(2026, 6, 23, hour, minute, second)
+def _time(hour, minute, second, day=23):
+    """2026-06-<day> HH:MM:SS in the machine's local zone, loguru-repr style."""
+    naive = datetime.datetime(2026, 6, day, hour, minute, second)
     return naive.astimezone().isoformat(sep=" ", timespec="microseconds")
 
 
@@ -220,3 +222,184 @@ def test_pretty_output_decodes_json_escapes(log_env, capsys):
 
     assert sink_lines == [QUOTED_MESSAGE]
     assert "Printed 1 lines" in capsys.readouterr().out
+
+
+# --- rotated archives -------------------------------------------------------
+
+
+def _write_zip(path, member_name, content):
+    with zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr(member_name, content)
+
+
+def _ndjson(records):
+    return "".join(json.dumps(record) + "\n" for record in records)
+
+
+@pytest.fixture
+def archived_log_env(tmp_path):
+    """A log dir mixing live files with rotated, truncated, corrupt and empty archives."""
+    log_dir = tmp_path / "dev"
+    log_dir.mkdir()
+    _write_ndjson(
+        log_dir / "2026-06-23.backend.log",
+        [_record(_time(10, 0, i), f"live event {i}") for i in range(2)],
+    )
+    # a plainly-named rotated day and a worker-suffixed one (both shapes occur)
+    _write_zip(
+        log_dir / "2026-06-22.backend.log.zip",
+        "2026-06-22.backend.log",
+        _ndjson([_record(_time(9, 0, 0, day=22), "archived event day22")]),
+    )
+    _write_zip(
+        log_dir / "2026-06-21.backend.2026-06-22_00-00-00_000001.log.zip",
+        "2026-06-21.backend.log",
+        _ndjson([_record(_time(9, 0, 0, day=21), "archived event day21")]),
+    )
+    _write_zip(
+        log_dir / "2026-06-22.file-converter.log.zip",
+        "2026-06-22.file-converter.log",
+        _ndjson(
+            [
+                _record(
+                    _time(9, 30, 0, day=22),
+                    "archived converter event",
+                    module="file-converter",
+                )
+            ]
+        ),
+    )
+    # a member whose tail was cut mid-record: the valid line must survive
+    _write_zip(
+        log_dir / "2026-06-20.backend.log.zip",
+        "2026-06-20.backend.log",
+        _ndjson([_record(_time(8, 0, 0, day=20), "salvaged event")])
+        + '{"text": "half a rec',
+    )
+    # a corrupt container and an empty one (both occur in production rotation)
+    (log_dir / "2026-06-19.backend.log.zip").write_bytes(b"this is not a zip archive")
+    with zipfile.ZipFile(log_dir / "2026-06-18.backend.log.zip", "w"):
+        pass
+    return rl.RuntimeLogging(_FakeRuntime(str(tmp_path)))
+
+
+def test_query_includes_rotated_archives(archived_log_env, capsys):
+    archived_log_env.query(json_output=True)
+
+    assert _messages(capsys) == [
+        "salvaged event",
+        "archived event day21",
+        "archived event day22",
+        "archived converter event",
+        "live event 0",
+        "live event 1",
+    ]
+
+
+def test_service_filter_spans_archives(archived_log_env, capsys):
+    archived_log_env.query(json_output=True, service="backend")
+
+    assert _messages(capsys) == [
+        "salvaged event",
+        "archived event day21",
+        "archived event day22",
+        "live event 0",
+        "live event 1",
+    ]
+
+
+def test_time_filter_applies_to_archived_days(archived_log_env, capsys):
+    archived_log_env.query(
+        json_output=True,
+        from_datetime="2026-06-22 00:00:00",
+        to_datetime="2026-06-22 23:59:59",
+    )
+
+    assert _messages(capsys) == ["archived event day22", "archived converter event"]
+
+
+def test_unreadable_archive_warns_and_is_skipped(archived_log_env, capsys):
+    warnings = []
+    sink_id = rl.logger.add(
+        lambda message: warnings.append(message.record["message"]), level="WARNING"
+    )
+    try:
+        archived_log_env.query(json_output=True)
+    finally:
+        rl.logger.remove(sink_id)
+
+    assert any("skipped 1 unreadable log archive" in message for message in warnings)
+    assert len(_messages(capsys)) == 6
+
+
+# --- interval validation ----------------------------------------------------
+
+
+def test_interval_shorthand_matches_spelled_out(log_env, capsys):
+    log_env.query(
+        json_output=True,
+        from_datetime="2026-06-23 10:00:03",
+        interval="2s",
+        service="backend",
+    )
+
+    assert _messages(capsys) == ["backend event 3", "backend event 4"]
+
+
+def test_invalid_interval_is_rejected_not_narrowed(log_env, capsys):
+    """'60d'-style typos used to cast to seconds, silently collapsing the window."""
+    errors = []
+    sink_id = rl.logger.add(
+        lambda message: errors.append(message.record["message"]), level="ERROR"
+    )
+    try:
+        log_env.query(json_output=True, interval="60x")
+        log_env.query(json_output=True, interval="60")
+    finally:
+        rl.logger.remove(sink_id)
+
+    assert _json_lines(capsys) == []
+    assert len([error for error in errors if "invalid interval" in error]) == 2
+
+
+@pytest.mark.parametrize(
+    ("raw", "normalized"),
+    [
+        ("60d", "60 days"),
+        ("12H", "12 hours"),
+        ("2w", "2 weeks"),
+        ("45 s", "45 seconds"),
+        ("60 days", "60 days"),
+        ("1 hour 30 minutes", "1 hour 30 minutes"),
+        ("3months", "3 months"),
+        ("60", None),
+        ("60x", None),
+        ("days", None),
+        ("1; DROP TABLE log", None),
+    ],
+)
+def test_normalize_interval(raw, normalized):
+    assert rl._normalize_interval(raw) == normalized
+
+
+# --- gc interval handling ---------------------------------------------------
+
+
+def test_gc_retain_shorthand_dryrun_keeps_files(log_env, tmp_path):
+    log_env.gc(mode="dev", before=None, retain="7d", dryrun=True)
+
+    assert (tmp_path / "dev" / "2026-06-23.backend.log").exists()
+
+
+def test_gc_invalid_retain_is_rejected(log_env, tmp_path):
+    errors = []
+    sink_id = rl.logger.add(
+        lambda message: errors.append(message.record["message"]), level="ERROR"
+    )
+    try:
+        log_env.gc(mode="dev", before=None, retain="7x", dryrun=False)
+    finally:
+        rl.logger.remove(sink_id)
+
+    assert any("invalid retain interval" in message for message in errors)
+    assert (tmp_path / "dev" / "2026-06-23.backend.log").exists()

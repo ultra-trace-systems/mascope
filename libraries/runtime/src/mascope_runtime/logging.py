@@ -37,7 +37,10 @@ import json
 import logging as std_logging
 import os
 import re
+import shutil
 import sys
+import tempfile
+import zipfile
 from types import TracebackType
 from typing import Callable, List
 
@@ -61,6 +64,77 @@ def _duckdb():
             "Log querying requires duckdb - install mascope_runtime[logs]"
         ) from error
     return duckdb
+
+
+_INTERVAL_SHORTHAND_UNITS = {
+    "s": "seconds",
+    "m": "minutes",
+    "h": "hours",
+    "d": "days",
+    "w": "weeks",
+}
+_INTERVAL_LONG_UNIT = r"(?:second|minute|hour|day|week|month|year)s?"
+
+
+def _normalize_interval(value: str) -> str | None:
+    """
+    Normalize a user-supplied time interval into a string DuckDB parses the
+    way the user meant it.
+
+    DuckDB's interval cast is lenient with unrecognised text: `'60d'` casts
+    to 60 *seconds*, not 60 days, silently collapsing the queried window.
+    Only two spellings are accepted - compact shorthand (`60d`, `12h`) and
+    spelled-out units (`60 days`, `1 hour 30 minutes`) - and everything else
+    is rejected so a typo cannot quietly narrow a query.
+
+    :param value: the raw interval string
+    :return: a normalized interval string, or None when unrecognised
+    """
+    text = value.strip().lower()
+    compact = re.fullmatch(r"(\d+)\s*([smhdw])", text)
+    if compact:
+        return f"{int(compact.group(1))} {_INTERVAL_SHORTHAND_UNITS[compact.group(2)]}"
+    if re.fullmatch(
+        rf"\d+\s*{_INTERVAL_LONG_UNIT}(?:\s+\d+\s*{_INTERVAL_LONG_UNIT})*", text
+    ):
+        pairs = re.findall(rf"(\d+)\s*({_INTERVAL_LONG_UNIT})", text)
+        return " ".join(f"{int(number)} {unit}" for number, unit in pairs)
+    return None
+
+
+def _extract_log_archives(archives: List[str], dest_dir: str) -> tuple[int, int]:
+    """
+    Extract rotated log archives into ``dest_dir`` as flat ``*.log`` files.
+
+    Rotated days exist only as zip containers (the file sink's
+    ``compression``), and DuckDB reads gzip but not zip members, so querying
+    past days means unpacking them first. Truncated and empty archives occur
+    in production (rotation under multi-worker contention), so an unreadable
+    archive is skipped and counted rather than failing the query.
+
+    Member names are untrusted zip content: extracted files get flat
+    sequential names and the member name is never used as a path, so a
+    hostile archive cannot escape ``dest_dir``.
+
+    :param archives: paths of ``.log.zip`` files to extract
+    :param dest_dir: directory to extract into
+    :return: (extracted member files, skipped unreadable archives)
+    """
+    extracted = 0
+    skipped = 0
+    for archive_index, archive in enumerate(sorted(archives)):
+        try:
+            with zipfile.ZipFile(archive) as container:
+                for member_index, member in enumerate(container.namelist()):
+                    target = os.path.join(
+                        dest_dir, f"{archive_index:05d}_{member_index:03d}.log"
+                    )
+                    with container.open(member) as source, open(target, "wb") as sink:
+                        shutil.copyfileobj(source, sink)
+                    extracted += 1
+        except (zipfile.BadZipFile, OSError):
+            skipped += 1
+    return extracted, skipped
 
 
 # --- optional GlitchTip/Sentry error reporting ------------------------------
@@ -605,7 +679,7 @@ class RuntimeLogging:
         :param grep_context: the number of rows before and after a `grep` match to include
         :param from_datetime: the start of the time range
         :param to_datetime: end of the time range
-        :param interval: the interval of the time range
+        :param interval: the width of the time range, e.g. '60d' or '60 days'
         :param mode: the runtime mode (dev or prod)
         :param service: only logs of one service/module (e.g. "backend")
         :param json_output: print raw NDJSON records instead of pretty lines
@@ -620,13 +694,23 @@ class RuntimeLogging:
                 f"runtime.logging.query: invalid service name {service!r}"
             )
             return
+        if interval:
+            normalized_interval = _normalize_interval(interval)
+            if normalized_interval is None:
+                self.runtime.logger.error(
+                    f"runtime.logging.query: invalid interval {interval!r} - "
+                    "give a number with a unit, e.g. '60d', '12h' or '60 days'"
+                )
+                return
+            interval = normalized_interval
 
         # PREPARE - collect key variables and clauses. User-provided values go
         # through `params` (prepared-statement placeholders), never into the
         # SQL text: a quote in --grep or --from must not break (or inject
         # into) the query.
         pattern = f"*.{service}.log" if service else "*.log"
-        log_path = os.path.join(self.dir, mode or self.runtime.mode, pattern)
+        log_dir = os.path.join(self.dir, mode or self.runtime.mode)
+        log_path = os.path.join(log_dir, pattern)
         level_no = {
             "trace": 5,
             "debug": 10,
@@ -664,97 +748,142 @@ class RuntimeLogging:
                 )
                 params = [datetime.datetime.now().isoformat(), interval]
 
-        # BUILD - construct the queries
-        base_query = f"""
-            SELECT
-                json_extract(json, '$.record.time.repr')::TIMESTAMPTZ as timestamp,
-                json.record.level.name as level,
-                json.record.level.no as level_no,
-                json.record.extra.status_code as status,
-                json.record.extra.method as method,
-                json.record.message as message,
-                json.record.extra.mod as module,
-                json.record.name as path,
-                json.record.function as func,
-                json.record.line as line,
-                json.record.extra.key as key,
-                json
-            FROM read_ndjson_objects('{log_path}')
-            WHERE
-                level_no >= {level_no}
-                {from_clause}
-                {to_clause}
-        """
-        if not grep:
-            # DESC + LIMIT selects the *most recent* N rows; the fetched rows
-            # are reversed below so the printout still reads oldest-first.
-            query = f"""
-                WITH log AS (
-                    {base_query}
+        # COLLECT - resolve the files to read. Rotated days exist only as
+        # `.log.zip` archives, invisible to a `*.log` glob - without them a
+        # query covers only the days not yet compressed, however wide the
+        # requested time range. Rotation may also timestamp-suffix the stem,
+        # so both archive shapes are matched.
+        if service:
+            archive_patterns = [f"*.{service}.log.zip", f"*.{service}.*.log.zip"]
+        else:
+            archive_patterns = ["*.log.zip"]
+        archives = sorted(
+            {
+                path
+                for archive_pattern in archive_patterns
+                for path in glob.glob(os.path.join(log_dir, archive_pattern))
+            }
+        )
+        sources = sorted(glob.glob(log_path))
+        temp_dir = None
+        if archives:
+            temp_dir = tempfile.mkdtemp(prefix="mascope-log-query-")
+            extracted, skipped = _extract_log_archives(archives, temp_dir)
+            if skipped:
+                self.runtime.logger.warning(
+                    f"runtime.logging.query: skipped {skipped} unreadable log archive(s)"
                 )
-                SELECT
-                  timestamp,
-                  level,
-                  message,
-                  json
-                FROM log
-                ORDER BY log.timestamp DESC
-                {limit_clause}
-            """
-        elif grep:
-            query = f"""
-                WITH log AS (
-                    {base_query}
-                ),
-                context AS (
-                    SELECT
-                        log.*,
-                        STRING_AGG(
-                            CONCAT_WS(' ',
-                                log.level,
-                                log.status,
-                                log.method,
-                                log.message,
-                                CONCAT_WS(
-                                    ' ❯ ',
-                                    log.module,
-                                    log.path,
-                                    CONCAT(log.func, ':', log.line),
-                                    log.key
-                                )
-                            ),
-                            ' '
-                        )
-                        OVER (
-                            ORDER BY log.timestamp ROWS
-                            BETWEEN {grep_context} PRECEDING
-                            AND {grep_context} FOLLOWING
-                        ) as context,
-                    FROM log
-                    ORDER BY log.timestamp
-                )
-                SELECT
-                  timestamp,
-                  level,
-                  message,
-                  json
-                FROM context ctx
-                WHERE ctx.context LIKE '%' || ? || '%'
-                ORDER BY ctx.timestamp DESC
-                {limit_clause}
-            """
-            params.append(grep)
+            if extracted:
+                sources += sorted(glob.glob(os.path.join(temp_dir, "*.log")))
 
-        # EXECUTE - run the query and print the logs
-        duckdb = _duckdb()
         try:
-            with duckdb.connect() as conn:
-                records = conn.execute(query, params).fetchall()
-        except duckdb.IOException:
-            # read_ndjson_objects raises when the glob matches no files
-            # (e.g. a --service with no log files); that is an empty result,
-            # not a crash.
-            records = []
+            # BUILD - construct the queries. The source paths come from the
+            # runtime's own log dir and the temp dir above (never from user
+            # input; the service name is validated), quoted for the SQL
+            # literal all the same. ignore_errors skips malformed lines -
+            # half-written records and truncated archive members occur in
+            # production and must not fail the whole query.
+            files_sql = ", ".join(
+                "'" + source.replace("'", "''") + "'" for source in sources
+            )
+            base_query = f"""
+                SELECT
+                    json_extract(json, '$.record.time.repr')::TIMESTAMPTZ as timestamp,
+                    json.record.level.name as level,
+                    json.record.level.no as level_no,
+                    json.record.extra.status_code as status,
+                    json.record.extra.method as method,
+                    json.record.message as message,
+                    json.record.extra.mod as module,
+                    json.record.name as path,
+                    json.record.function as func,
+                    json.record.line as line,
+                    json.record.extra.key as key,
+                    json
+                FROM read_ndjson_objects([{files_sql}], ignore_errors=true)
+                WHERE
+                    level_no >= {level_no}
+                    {from_clause}
+                    {to_clause}
+            """
+            if not grep:
+                # DESC + LIMIT selects the *most recent* N rows; the fetched
+                # rows are reversed below so the printout still reads
+                # oldest-first.
+                query = f"""
+                    WITH log AS (
+                        {base_query}
+                    )
+                    SELECT
+                      timestamp,
+                      level,
+                      message,
+                      json
+                    FROM log
+                    ORDER BY log.timestamp DESC
+                    {limit_clause}
+                """
+            elif grep:
+                query = f"""
+                    WITH log AS (
+                        {base_query}
+                    ),
+                    context AS (
+                        SELECT
+                            log.*,
+                            STRING_AGG(
+                                CONCAT_WS(' ',
+                                    log.level,
+                                    log.status,
+                                    log.method,
+                                    log.message,
+                                    CONCAT_WS(
+                                        ' ❯ ',
+                                        log.module,
+                                        log.path,
+                                        CONCAT(log.func, ':', log.line),
+                                        log.key
+                                    )
+                                ),
+                                ' '
+                            )
+                            OVER (
+                                ORDER BY log.timestamp ROWS
+                                BETWEEN {grep_context} PRECEDING
+                                AND {grep_context} FOLLOWING
+                            ) as context,
+                        FROM log
+                        ORDER BY log.timestamp
+                    )
+                    SELECT
+                      timestamp,
+                      level,
+                      message,
+                      json
+                    FROM context ctx
+                    WHERE ctx.context LIKE '%' || ? || '%'
+                    ORDER BY ctx.timestamp DESC
+                    {limit_clause}
+                """
+                params.append(grep)
+
+            # EXECUTE - run the query and print the logs
+            if not sources:
+                # no log files to read (e.g. a --service that never logged):
+                # an empty result, not a crash
+                records = []
+            else:
+                duckdb = _duckdb()
+                try:
+                    with duckdb.connect() as conn:
+                        records = conn.execute(query, params).fetchall()
+                except duckdb.IOException:
+                    # a file vanishing between the glob and the read (e.g.
+                    # rotation mid-query) is an empty result, not a crash
+                    records = []
+        finally:
+            if temp_dir:
+                shutil.rmtree(temp_dir, ignore_errors=True)
         # undo the DESC ordering used for LIMIT: print oldest-first
         records.reverse()
         for (
@@ -810,9 +939,16 @@ class RuntimeLogging:
             return
 
         if retain:
+            normalized_retain = _normalize_interval(retain)
+            if normalized_retain is None:
+                self.runtime.logger.error(
+                    f"runtime.logging.gc: invalid retain interval {retain!r} - "
+                    "give a number with a unit, e.g. '14d' or '2 weeks'"
+                )
+                return
             with _duckdb().connect() as conn:
-                max_date = conn.sql(
-                    f"SELECT current_date - INTERVAL {retain}"
+                max_date = conn.execute(
+                    "SELECT current_date - CAST(? AS INTERVAL)", [normalized_retain]
                 ).fetchall()[0][0]
         elif before:
             max_date = datetime.datetime.strptime(before, "%Y-%m-%d")
