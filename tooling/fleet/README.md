@@ -124,7 +124,9 @@ ansible-playbook site.yml --check --diff -K --limit <host>
 `site.yml` owns host *configuration*; `update.yml` performs the recurring
 *operation* of deploying a release — one server at a time, verifying each with
 `mascope prod doctor` and stopping the rollout on the first failure. It also
-reinstalls the `mascope` CLI so it cannot drift behind the checkout. No sudo
+reinstalls the `mascope` CLI, before the stack update, so it cannot drift
+behind the checkout - and so a release that adds a compose secret is
+provisioned by the CLI that knows about it. No sudo
 (and therefore no vault password) is needed:
 
 ```sh

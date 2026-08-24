@@ -351,7 +351,7 @@ Running Mascope in `prod` mode requires the following "secrets" to be present in
 - `mascope.app.pem`: SSL certificate
 - `server_owner_secret_key.txt`: First owner registration private key (arbitrary string)
 - `mfa_encryption_key.txt`: Encryption key for stored two-factor (TOTP) seeds
-  (arbitrary string; `mascope prod up` generates it when missing — see
+  (arbitrary string; `mascope prod up` generates it when missing, once the release's CLI is installed — see
   [maintaining.md](../maintaining.md#two-factor-authentication) before ever
   replacing it, as a changed key voids every enrolled second factor)
 
@@ -2764,6 +2764,7 @@ The checked-out git tag selects the version (it sets `MASCOPE_VERSION`, which pi
 
 ```sh
 git checkout v1.0.0
+CFLAGS="-std=c17" uv tool install --force --reinstall --python 3.12 .   --with-executables-from mascope-cli   # CLI first: see hosting.md
 mascope prod docker pull && mascope prod up
 ```
 
@@ -2789,7 +2790,7 @@ Publishing then triggers two automations:
 - **Zenodo** archives the release and mints a new version DOI; the concept DOI (the README badge and the `doi:` in `CITATION.cff`) keeps resolving to the latest. The sync itself breaks silently (hook removed, the linked account's GitHub authorization lapsed, a repo rename not re-enabled on zenodo.org), so the `verify-zenodo` job in `build-release-images.yaml` polls the Zenodo API and **fails the release run** if the version has not appeared within 20 minutes. When it turns red: re-sync and re-enable the repository at <https://zenodo.org/account/settings/github/> (installs a fresh webhook), then re-fire the archive. A release Zenodo never *received* re-fires by flipping it to draft and publishing it again; one Zenodo lists as *errored* has to be deleted and recreated (same tag, original notes, `--latest=false` unless it is the newest) because Zenodo permanently refuses events for a release id it has already seen. Backfill oldest-first - the concept DOI resolves to the most recently *archived* version, not the highest.
 - The **`build-release-images`** workflow (`.github/workflows/build-release-images.yaml`) **builds** the images from the tag and pushes `ghcr.io/ultra-trace-systems/mascope/<service>:vX.Y.Z`. It rebuilds (rather than re-tagging) on purpose: on a tag checkout `parse_version()` resolves to the tag, so `vX.Y.Z` both tags the images and **bakes in** as the version the app reports.
 
-So the one version flows everywhere: git tag, GitHub Release, Zenodo DOI, the image tag, and the in-app version. To deploy a release, on the server `git checkout vX.Y.Z` (then `mascope prod docker pull && mascope prod up`) - `parse_version()` resolves the tag, so it pulls the `vX.Y.Z` images and the UI shows `vX.Y.Z`. A regular `master` checkout deploys/shows the build tag `{date}-{hash}` instead; `latest` keeps tracking master for dev/staging and the demo. (You can also pin explicitly with `MASCOPE_VERSION=vX.Y.Z`, which the CLI no longer overrides.)
+So the one version flows everywhere: git tag, GitHub Release, Zenodo DOI, the image tag, and the in-app version. To deploy a release, on the server `git checkout vX.Y.Z` (then reinstall the CLI from the checkout, then `mascope prod docker pull && mascope prod up`) - `parse_version()` resolves the tag, so it pulls the `vX.Y.Z` images and the UI shows `vX.Y.Z`. A regular `master` checkout deploys/shows the build tag `{date}-{hash}` instead; `latest` keeps tracking master for dev/staging and the demo. (You can also pin explicitly with `MASCOPE_VERSION=vX.Y.Z`, which the CLI no longer overrides.)
 
 > `release` events run the workflow from the repository's **default branch**, so `build-release-images.yaml` must be present there to fire.
 

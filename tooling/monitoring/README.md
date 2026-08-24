@@ -262,8 +262,9 @@ one.
 
 > The `doctor` command requires an up-to-date `mascope` CLI. `mascope prod
 > update` refreshes images but **not** the CLI binary — if `doctor` is missing,
-> rerun the `uv tool install` step from `tooling/ubuntu.sh` (or
-> `ubuntu.sh reinstall`).
+> rerun the `uv tool install` step from `tooling/ubuntu.sh`. Not
+> `ubuntu.sh reinstall`: that goes through the uninstall path, which deletes
+> `.runtime/state.json` and with it the server's active environment.
 
 **Deliberate overlap with the disk-check timer.** `mascope-disk-check.timer`
 (see `tooling/systemd/`) also watches the disk and pings healthchecks.io. That
