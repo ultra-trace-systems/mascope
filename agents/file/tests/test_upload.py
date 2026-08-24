@@ -64,6 +64,37 @@ def test_uploads_via_tus(monkeypatch, sample_file):
     assert tus_calls[0]["filepath"] == sample_file
 
 
+def test_uploads_with_the_live_token_not_the_config_snapshot(monkeypatch, sample_file):
+    """Renewal rotates the token under the uploader; the send must follow it.
+
+    The server keeps only the newest two tokens per device, so the one the
+    agent booted with is reaped at the second renewal - about 15 days in for
+    a 30-day credential. An uploader reading runtime.config's snapshot would
+    send that dead token from then on, and a 401 is terminal in
+    process_file_upload: no retry, straight to failed_uploads. Renewal keeps
+    succeeding on the live token meanwhile, so nothing else complains and a
+    headless agent has only a log line to show for it.
+    """
+    tus_calls = []
+    monkeypatch.setattr(
+        main, "api_post_file_tus", lambda **kwargs: tus_calls.append(kwargs)
+    )
+    # The config still holds what the agent booted with; renewal has since
+    # rotated the live token. Both globals go through monkeypatch so the
+    # rotation is undone afterwards - they are shared module state.
+    main.runtime.config.access_token = "stale-boot-token"
+    monkeypatch.setattr(main, "_access_token", None)
+    monkeypatch.setattr(main, "_timezone", "Europe/Helsinki")
+    main._set_access_token("live-token")
+
+    main.upload_sample_file(sample_file)
+
+    assert tus_calls[0]["access_token"] == "live-token"
+    # The zone resolved at start travels with every upload; without it the
+    # converter resolves the acquisition time in the server's zone instead.
+    assert tus_calls[0]["timezone"] == "Europe/Helsinki"
+
+
 @pytest.mark.parametrize(
     "error",
     [
