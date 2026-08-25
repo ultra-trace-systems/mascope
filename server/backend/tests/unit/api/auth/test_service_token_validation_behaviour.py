@@ -139,6 +139,44 @@ class TestRefuses:
         assert f"not authorized for {SERVICE}" in str(excinfo.value.detail)
 
 
+class TestTheSharedContextCacheIsNotAGrant:
+    @pytest.mark.asyncio
+    async def test_a_cached_context_is_still_refused_for_another_service(
+        self, monkeypatch
+    ):
+        # The auth-context entry is keyed on the token alone, not the service,
+        # because it is a fact about the row rather than a decision about a
+        # request. That is only safe while the service comparison happens after
+        # the lookup on every call - cached or not. If it ever moved behind the
+        # cache, one accepted service would become an acceptance everywhere.
+        _install(monkeypatch, row=(SERVICE, None, _fresh()))
+        assert (
+            await validation_mod.validate_service_access_token(TOKEN, SERVICE) is USER
+        )
+
+        with pytest.raises(InvalidTokenException) as excinfo:
+            await validation_mod.validate_service_access_token(TOKEN, "mascope_sdk")
+        assert "not authorized for mascope_sdk" in str(excinfo.value.detail)
+
+    @pytest.mark.asyncio
+    async def test_the_context_comes_from_the_cache_when_one_is_held(self, monkeypatch):
+        # Discriminating on purpose: the seeded entry and the token row
+        # disagree, so only a path that actually reads the cache can produce
+        # this outcome. Assert against agreeing values instead and the test
+        # passes whether or not this path is cached at all - which is how a
+        # caching change ships green and inert.
+        from mascope_backend.api.new.auth.config import auth_settings
+
+        token_cache.put_auth_context(
+            TOKEN, ("mascope_sdk", None, _fresh()), auth_settings.access_token
+        )
+        _install(monkeypatch, row=(SERVICE, None, _fresh()))
+
+        with pytest.raises(InvalidTokenException) as excinfo:
+            await validation_mod.validate_service_access_token(TOKEN, SERVICE)
+        assert f"not authorized for {SERVICE}" in str(excinfo.value.detail)
+
+
 class TestErrorPrecedence:
     @pytest.mark.asyncio
     async def test_the_user_lookup_still_runs_before_the_service_check(

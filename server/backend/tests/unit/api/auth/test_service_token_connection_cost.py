@@ -4,11 +4,11 @@
 converter emits them throughout an upload - and re-checks a token in
 ``access_token.service``. It is *not* the HTTP bearer path: an
 ``Authorization`` + ``X-Service-Name`` request is authenticated by
-``get_enabled_backends`` in ``api/new/auth/backend.py``, which does its own
-lookup. Both are ungated: the semaphore in ``mascope_backend.db`` guards only
-the dependency-injected session path, so nothing bounds how many run at once,
-and the per-call connection cost is what decides whether load saturates the
-pool.
+``get_enabled_backends`` in ``api/new/auth/backend.py``. The two share the
+token lookup itself (``util.resolve_token_context``) and nothing else. Both are
+ungated: the semaphore in ``mascope_backend.db`` guards only the
+dependency-injected session path, so nothing bounds how many run at once, and
+the per-call connection cost is what decides whether load saturates the pool.
 
 It did. Under a converter upload run this path held three connections per
 call; every waiter then blocked for ``pool_timeout`` (120 s) and the worker
@@ -43,13 +43,14 @@ TOKEN = "tok-abc"
 
 
 class SessionLedger:
-    """Counts sessions opened, and how many were open at once."""
+    """Counts sessions opened, how many were open at once, and queries run."""
 
     def __init__(self, row):
         self.row = row
         self.open = 0
         self.peak = 0
         self.total = 0
+        self.queries = 0
 
     def __call__(self):
         return _FakeSessionContext(self)
@@ -63,7 +64,7 @@ class _FakeSessionContext:
         self._ledger.open += 1
         self._ledger.total += 1
         self._ledger.peak = max(self._ledger.peak, self._ledger.open)
-        return _FakeSession(self._ledger.row)
+        return _FakeSession(self._ledger)
 
     async def __aexit__(self, *exc):
         self._ledger.open -= 1
@@ -71,11 +72,12 @@ class _FakeSessionContext:
 
 
 class _FakeSession:
-    def __init__(self, row):
-        self._row = row
+    def __init__(self, ledger):
+        self._ledger = ledger
 
     async def execute(self, _statement):
-        return _FakeResult(self._row)
+        self._ledger.queries += 1
+        return _FakeResult(self._ledger.row)
 
     async def commit(self):
         return None
@@ -147,6 +149,17 @@ class TestConnectionCost:
         assert ledger.total == 1
 
     @pytest.mark.asyncio
+    async def test_it_reads_the_token_row_once(self, ledger):
+        # Sessions are the pool cost, but the count of reads is what said this
+        # path was doing avoidable work: one session holding four queries would
+        # satisfy the assertion above and still be the bug. read_token is
+        # stubbed out by the fixture, so what is counted here is the context
+        # lookup alone.
+        await validation_mod.validate_service_access_token(TOKEN, SERVICE)
+
+        assert ledger.queries == 1
+
+    @pytest.mark.asyncio
     async def test_every_session_is_released(self, ledger):
         await validation_mod.validate_service_access_token(TOKEN, SERVICE)
 
@@ -210,3 +223,20 @@ class TestCachedValidationCostsNothing:
             await validation_mod.validate_service_access_token(TOKEN, SERVICE)
 
         assert ledger.total == 1
+
+    @pytest.mark.asyncio
+    async def test_a_second_service_reuses_the_row_this_path_already_read(self, ledger):
+        # The user cache is keyed per service, so a token presented for a
+        # second service misses it and validates again - but the row it needs
+        # is the same row, and the shared context lookup is what stops that
+        # from being a second read. Counted rather than assumed: this is the
+        # assertion that fails if this path stops going through the cache.
+        await validation_mod.validate_service_access_token(TOKEN, SERVICE)
+        first = ledger.queries
+
+        with pytest.raises(InvalidTokenException):
+            await validation_mod.validate_service_access_token(
+                TOKEN, "some-other-service"
+            )
+
+        assert ledger.queries == first
