@@ -126,7 +126,10 @@ if ($Sign) {
             Where-Object { Test-Path $_ } |
             Select-Object -Last 1
     }
-    if (-not $signtool) {
+    # Test-Path again rather than only in the discovery branch above: an
+    # override that points at a path which no longer exists would otherwise
+    # sail through the preflight and fail at the sign call, minutes later.
+    if (-not $signtool -or -not (Test-Path $signtool)) {
         throw 'signtool.exe not found - install the Windows SDK or set MASCOPE_SIGNTOOL'
     }
     $signtoolVersion = [version](
@@ -148,7 +151,9 @@ if ($Sign) {
             "${env:ProgramFiles(x86)}\Microsoft\ArtifactSigningClientTools\bin\x64\Azure.CodeSigning.Dlib.dll"
         ) | Where-Object { Test-Path $_ } | Select-Object -First 1
     }
-    if (-not $dlib) {
+    # as with signtool: the override branch has not been Test-Path'd, and CI
+    # is the branch that takes it
+    if (-not $dlib -or -not (Test-Path $dlib)) {
         throw 'Azure.CodeSigning.Dlib.dll not found - set MASCOPE_SIGNING_DLIB'
     }
 
