@@ -880,7 +880,9 @@ did and logs a warning that the installer is unsigned; setting it back to
 empty is the rollback if signing ever starts failing releases. The account
 name, certificate profile and regional endpoint live in the `AZURE_SIGNING_*`
 repository variables (`gh variable list`), so no signing identity is
-hardcoded in the repo.
+hardcoded in the repo. Only `AZURE_SIGNING_ACCOUNT` and
+`AZURE_SIGNING_PROFILE` have to be set; leave `AZURE_SIGNING_ENDPOINT` unset
+and `build.ps1` uses its default region.
 
 CI authenticates with OIDC federation - there is no Azure client secret to
 rotate. That is why the job declares `environment: release-signing`: without
@@ -917,14 +919,17 @@ account and no signing tooling.
 You need the [Artifact Signing Client
 Tools](https://learn.microsoft.com/azure/artifact-signing/how-to-signing-integrations)
 (`winget install -e --id Microsoft.Azure.ArtifactSigningClientTools`), a
-Windows SDK `signtool.exe` of at least 10.0.22621.755, and the **Artifact
-Signing Certificate Profile Signer** role on the profile you are signing with.
-Then:
+Windows SDK `signtool.exe` of at least 10.0.22621.755, **Inno Setup 6.3 or
+newer** (older 6.x has no `signcheck` flag, and ISCC only rejects it after
+PyInstaller has run and the payload has burned a signature), and the
+**Artifact Signing Certificate Profile Signer** role on the profile you are
+signing with. Then:
 
 ```powershell
 az login
 ./build.ps1 -Version v0.0.0-rehearsal -Installer -Sign `
-    -SigningAccount <account> -SigningProfile <profile>-test
+    -SigningAccount <account> -SigningProfile <profile>-test `
+    -AllowTestCertificate
 ```
 
 Two environment variables override discovery when the defaults do not fit:
@@ -941,8 +946,14 @@ Rehearse against the **Public Trust Test** profile, never the production one.
 Test certificates carry the Lifetime Signing EKU
 (`1.3.6.1.4.1.311.10.3.13`) and a `CN=...(TEST ONLY)` subject, and anything
 signed with one **expires after 72 hours no matter how well it is
-timestamped**. `build.ps1` detects that EKU, prints a warning, and skips chain
-validation - a test profile chains to an untrusted root by design, so
+timestamped**.
+
+`build.ps1` detects that EKU and **fails the build** on it, which is why the
+rehearsal above passes `-AllowTestCertificate`. The release workflow never
+passes that switch, so an `AZURE_SIGNING_PROFILE` left pointing at a test
+profile stops the release instead of handing customers an installer that
+stops verifying three days later. With the switch, build.ps1 warns and skips
+chain validation - a test profile chains to an untrusted root by design, so
 `signtool verify /pa` can never pass on it. Full chain validation still
 applies to production certificates.
 

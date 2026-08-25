@@ -59,18 +59,22 @@ FinishedLabel=Setup has finished installing [name] on your computer.%n%nWhen the
 [Tasks]
 Name: "startup"; Description: "Start the File Agent automatically when you sign in to Windows"
 
-[Files]
-#ifdef SignToolName
 ; signcheck signs nothing: build.ps1 has already signed the exe by the time
 ; ISCC runs, and this aborts the compile if it has not. That ordering cannot
 ; be recovered later - Inno stores the source bytes verbatim and Authenticode
 ; covers the whole PE, so an unsigned payload can only be fixed by rebuilding
 ; - and it fails silently otherwise, shipping an installer that looks signed
 ; but drops an unsigned exe onto the customer's machine. Needs Inno Setup 6.3+.
-Source: "dist\Mascope-File-Agent.exe"; DestDir: "{app}"; Flags: ignoreversion signcheck
+; Only the flag differs between a signing and an unsigned build, so it is the
+; only thing the conditional produces - the entry itself stays single-sourced.
+#ifdef SignToolName
+  #define PayloadFlags "ignoreversion signcheck"
 #else
-Source: "dist\Mascope-File-Agent.exe"; DestDir: "{app}"; Flags: ignoreversion
+  #define PayloadFlags "ignoreversion"
 #endif
+
+[Files]
+Source: "dist\Mascope-File-Agent.exe"; DestDir: "{app}"; Flags: {#PayloadFlags}
 
 [Icons]
 Name: "{userprograms}\Mascope File Agent"; Filename: "{app}\Mascope-File-Agent.exe"
