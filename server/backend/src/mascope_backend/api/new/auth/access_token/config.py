@@ -25,6 +25,19 @@ class AccessTokenConfig(BaseModel):
         360 * 24 * 60 * 60
     )  # Access token lifetime  - 360 days in seconds
 
+    # How long a successful service-token validation is reused before the
+    # database is consulted again. A resumable upload revalidates the same
+    # token once per chunk, and each validation costs two connections on a
+    # path with no admission control - enough of them at once exhausted a
+    # production pool and stalled the worker for a minute.
+    #
+    # The cost of caching is that revoking a token (unpairing a device,
+    # clearing a user's credentials) takes effect within this window rather
+    # than immediately, per worker. Seconds, deliberately: long enough to
+    # collapse an upload's chunk burst into one validation, short enough that
+    # revocation is still prompt. Set to 0 to validate every request.
+    SERVICE_TOKEN_CACHE_TTL_SECONDS: float = 5.0
+
     # Device-bound agent tokens live on shared instrument PCs in plaintext, so
     # they expire far sooner than the 360-day default above and the agent
     # renews them automatically. Enforced only for tokens bound to a device

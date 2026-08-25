@@ -10,6 +10,7 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
+from mascope_backend.api.new.auth.access_token import cache as token_cache
 from mascope_backend.api.new.auth.access_token import util as token_util
 from mascope_backend.api.new.auth.access_token import validation as validation_mod
 from mascope_backend.api.new.auth.exceptions import InvalidTokenException
@@ -57,6 +58,14 @@ class _Result:
         # against the pre-collapse code as well, so they can show that the
         # outcomes did not change.
         return None if self._row is None else self._row[0]
+
+
+@pytest.fixture(autouse=True)
+def _no_cached_validations():
+    """Each case validates for real; a hit from a previous one would mask it."""
+    token_cache.clear()
+    yield
+    token_cache.clear()
 
 
 def _install(monkeypatch, *, row, user=USER):

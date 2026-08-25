@@ -22,6 +22,7 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
+from mascope_backend.api.new.auth.access_token import cache as token_cache
 from mascope_backend.api.new.auth.access_token import util as token_util
 from mascope_backend.api.new.auth.access_token import validation as validation_mod
 from mascope_backend.api.new.auth.strategies import database as strategy_mod
@@ -84,6 +85,14 @@ class _FakeResult:
         # against the pre-collapse code as well, so they can show that the
         # outcomes did not change.
         return None if self._row is None else self._row[0]
+
+
+@pytest.fixture(autouse=True)
+def _no_cached_validations():
+    """Measure the cold path: a cached hit does no database work at all."""
+    token_cache.clear()
+    yield
+    token_cache.clear()
 
 
 @pytest.fixture
@@ -170,3 +179,23 @@ class TestAdmissionControlAssumption:
 
         assert db._DB_SEMAPHORE_PERMITS <= db.db_cfg.max_overflow
         assert db._DB_SEMAPHORE_PERMITS <= db.db_cfg.pool_size
+
+
+class TestCachedValidationCostsNothing:
+    @pytest.mark.asyncio
+    async def test_a_repeat_validation_opens_no_session(self, ledger):
+        # The reason the cache exists: an upload revalidates the same token
+        # once per chunk, and every repeat used to pay the full cost.
+        await validation_mod.validate_service_access_token(TOKEN, SERVICE)
+        first = ledger.total
+
+        await validation_mod.validate_service_access_token(TOKEN, SERVICE)
+
+        assert ledger.total == first
+
+    @pytest.mark.asyncio
+    async def test_a_burst_of_repeats_costs_one_validation(self, ledger):
+        for _ in range(20):
+            await validation_mod.validate_service_access_token(TOKEN, SERVICE)
+
+        assert ledger.total <= 2
