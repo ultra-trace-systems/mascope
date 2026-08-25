@@ -28,6 +28,9 @@ Design principles:
 - Explicit organization: Test fixtures are organized by their scope and purpose
 """
 
+import sys
+
+import pytest
 import pytest_asyncio
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
@@ -39,6 +42,65 @@ from test_utils import (
 )
 
 from mascope_backend.db import Base
+
+
+# --- Process-global application state ---
+
+#: Module-level caches and throttles that outlive a test. They are per worker
+#: by design in production; in a test session "per worker" is the whole run, so
+#: without this every test inherits whatever the previous one left behind. The
+#: auth token cache is keyed on the token string, and the suite reuses fixed
+#: token literals, so a row deleted and recreated between two tests can still
+#: be served from the previous test's entry. The last_seen throttle is worse:
+#: a test that fakes the monotonic clock leaves a stamp from that fake clock
+#: behind, and a later real call comparing against it silently skips its write.
+#:
+#: Reached through ``sys.modules`` rather than imported. Importing anything
+#: under ``mascope_backend.api.new.auth`` executes that package's ``__init__``,
+#: which pulls in the whole auth stack - fastapi-users, the database strategy,
+#: and a read of the JWT secret file at import. That would become a
+#: collection-time requirement for every backend run, including the migration
+#: tests and the library tests, which need none of it.
+_PROCESS_GLOBAL_STATE = (
+    ("mascope_backend.api.new.auth.access_token.cache", "_entries"),
+    ("mascope_backend.api.new.auth.access_token.validation", "_last_seen_written_at"),
+)
+
+
+def _clear_process_global_state() -> None:
+    """Empty every process-global container listed in `_PROCESS_GLOBAL_STATE`.
+
+    Resolved per call: the container is looked up on the module each time, so a
+    test that monkeypatched one gets the real object cleared after monkeypatch
+    has restored it.
+
+    :return: None
+    """
+    for module_name, attribute in _PROCESS_GLOBAL_STATE:
+        module = sys.modules.get(module_name)
+        if module is not None:
+            getattr(module, attribute).clear()
+
+
+@pytest.fixture(autouse=True)
+def reset_process_global_state():
+    """Give every test an empty auth cache and last_seen throttle.
+
+    Autouse at the rootdir conftest, so it covers unit, integration, system and
+    migration tests alike, and is set up before every function-scoped fixture a
+    test module defines. Higher-scoped fixtures still wrap it, so a
+    session-scoped fixture that warmed either container during setup would have
+    its work cleared by the first test; nothing does that today.
+
+    The per-module clearing fixtures in tests/unit/api/auth/ are kept
+    deliberately rather than folded into this one. Double clearing is free, and
+    they state the precondition where it is read.
+
+    :yield: None
+    """
+    _clear_process_global_state()
+    yield
+    _clear_process_global_state()
 
 
 # --- Connection URLs ---
