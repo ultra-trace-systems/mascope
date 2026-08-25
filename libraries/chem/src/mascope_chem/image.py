@@ -257,12 +257,17 @@ def gen_spec_stack_image(
 
     # Check aceraging parameter
     if avg_s <= 0:
-        # Set avg_s to data time resolution
-        avg_s = (sub_xarray.time[1] - sub_xarray.time[0]).item()  # ns
-        avg_s *= 1e-9  # ns -> s
+        # Set avg_s to data time resolution. The coord's resolution is not
+        # fixed - pandas 2 forces nanoseconds while pandas 3 keeps the
+        # microseconds it was built from - so .item() hands back an int of ns
+        # on one and a datetime.timedelta on the other. Timedelta takes both.
+        avg_s = pd.Timedelta(
+            (sub_xarray.time[1] - sub_xarray.time[0]).item()
+        ).total_seconds()
 
-    # Resample to 'avg_s'
-    sub_xarray = sub_xarray.resample(time="%.1fS" % avg_s).mean()
+    # Resample to 'avg_s'. The offset alias must be lowercase: pandas 3 removed
+    # the uppercase "S" and raises on it rather than rewriting it.
+    sub_xarray = sub_xarray.resample(time="%.1fs" % avg_s).mean()
 
     # Generate trace per spectrum
     traces = []
@@ -270,7 +275,7 @@ def gen_spec_stack_image(
         imgi = gen_spec_image(
             spectrum, y_range=None, img_width=img_width, img_height=200
         )
-        t = spectrum.time.data.item() * 1e-9
+        t = pd.Timedelta(spectrum.time.data.item()).total_seconds()
         traces.append({"t_range": [t, t], "img": imgi})
 
     # Stack images
