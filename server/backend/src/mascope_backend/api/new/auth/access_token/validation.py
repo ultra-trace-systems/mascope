@@ -5,6 +5,7 @@ from datetime import timedelta, timezone
 
 from sqlalchemy import or_, update
 
+from mascope_backend.api.new.auth.access_token import cache as token_cache
 from mascope_backend.api.new.auth.access_token.util import get_token_auth_context
 from mascope_backend.api.new.auth.config import auth_settings
 from mascope_backend.api.new.auth.exceptions import (
@@ -124,6 +125,16 @@ async def validate_service_access_token(access_token: str, service_name: str):
         if not isinstance(access_token, str):
             raise InvalidTokenException("Invalid token format: not a string")
 
+        # Step 1b. A validation this recent is reused rather than repeated.
+        # An upload revalidates the same token once per chunk; see
+        # access_token.cache for what that costs and what caching it trades
+        # away (revocation becomes effective within the window, not at once).
+        cached_user = token_cache.get(
+            access_token, service_name, auth_settings.access_token
+        )
+        if cached_user is not None:
+            return cached_user
+
         # Step 2. Token validation using access token strategy
         from mascope_backend.api.new.users.user_manager.util import (
             get_user_manager_context,
@@ -168,6 +179,12 @@ async def validate_service_access_token(access_token: str, service_name: str):
                     ensure_device_bound(service_name, device_id)
                     ensure_device_token_fresh(service_name, device_id, created_at)
 
+                    # Only successes are cached: tokens are minted on demand,
+                    # so a cached rejection would refuse one that had just
+                    # been created.
+                    token_cache.put(
+                        access_token, service_name, user, auth_settings.access_token
+                    )
                     return user
 
     except InvalidTokenException as e:
