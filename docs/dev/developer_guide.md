@@ -867,6 +867,111 @@ Unit tests for the config handling are hermetic; run them with `uv run pytest` i
 > [!IMPORTANT]
 > Windows prevents applications from writing into `Program Files` directory. Therefore, when testing the agent with TofDaq Recorder, its data directory must be outside `Program Files`.
 
+### Signing the File Agent installer
+
+Release builds are Authenticode-signed through [Azure Artifact
+Signing](https://learn.microsoft.com/azure/artifact-signing) (the service
+formerly called Trusted Signing), so customers see the publisher name instead
+of an "unknown publisher" SmartScreen dialog.
+
+Signing is opt-in and gated on the `AZURE_SIGNING_ACCOUNT` repository
+variable. While it is empty, `build-file-agent` builds exactly as it always
+did and logs a warning that the installer is unsigned; setting it back to
+empty is the rollback if signing ever starts failing releases. The account
+name, certificate profile and regional endpoint live in the `AZURE_SIGNING_*`
+repository variables (`gh variable list`), so no signing identity is
+hardcoded in the repo.
+
+CI authenticates with OIDC federation - there is no Azure client secret to
+rotate. That is why the job declares `environment: release-signing`: without
+an environment the OIDC subject is `repo:<org>/<repo>:ref:refs/tags/<TAG>`, a
+different string on every release, and Entra matches federated-credential
+subjects exactly, with no wildcards.
+
+**Three files are signed per release, and the order is load-bearing:** the
+PyInstaller exe first, while it is still a standalone PE, then the uninstaller
+stub and the setup exe. Inno Setup stores the payload verbatim and
+Authenticode covers the whole PE, so once ISCC has embedded the exe those
+bytes are unreachable - signing it afterwards is impossible, and patching them
+would break the installer's own signature. The `signcheck` flag on the
+`[Files]` entry in `installer.iss` enforces this by aborting the compile if
+the payload arrives unsigned.
+
+> [!WARNING]
+> Never remove `signcheck`. Without it the failure is silent and it is the bad
+> kind: the installer is itself correctly signed, but drops an **unsigned exe**
+> onto the customer's machine, and nobody notices until someone inspects the
+> installed file.
+
+Timestamping is not defensive, it is mandatory. Artifact Signing certificates
+are valid for **72 hours**, so an installer signed without an RFC 3161
+countersignature stops verifying three days after the release is cut, in
+customers' hands. `build.ps1` fails the build on a signature that lacks one.
+
+#### Signing locally
+
+Only needed to rehearse the pipeline; ordinary development never signs.
+`./build.ps1` and `./build.ps1 -Installer` work unchanged with no Azure
+account and no signing tooling.
+
+You need the [Artifact Signing Client
+Tools](https://learn.microsoft.com/azure/artifact-signing/how-to-signing-integrations)
+(`winget install -e --id Microsoft.Azure.ArtifactSigningClientTools`), a
+Windows SDK `signtool.exe` of at least 10.0.22621.755, and the **Artifact
+Signing Certificate Profile Signer** role on the profile you are signing with.
+Then:
+
+```powershell
+az login
+./build.ps1 -Version v0.0.0-rehearsal -Installer -Sign `
+    -SigningAccount <account> -SigningProfile <profile>-test
+```
+
+Two environment variables override discovery when the defaults do not fit:
+`MASCOPE_SIGNTOOL` and `MASCOPE_SIGNING_DLIB` (CI uses the latter to point at
+a pinned NuGet copy of the dlib).
+
+> [!IMPORTANT]
+> `az` must be on `PATH`. The dlib authenticates via `AzureCliCredential`,
+> which shells out to `az`; when it cannot find it, signing fails with
+> `SignerSign() failed (0x80004005)` - which reads like a permissions problem
+> and is not.
+
+Rehearse against the **Public Trust Test** profile, never the production one.
+Test certificates carry the Lifetime Signing EKU
+(`1.3.6.1.4.1.311.10.3.13`) and a `CN=...(TEST ONLY)` subject, and anything
+signed with one **expires after 72 hours no matter how well it is
+timestamped**. `build.ps1` detects that EKU, prints a warning, and skips chain
+validation - a test profile chains to an untrusted root by design, so
+`signtool verify /pa` can never pass on it. Full chain validation still
+applies to production certificates.
+
+One gotcha if you are testing `signcheck` itself: Inno signs the uninstaller
+stub *before* it processes `[Files]`, so a deliberately broken sign tool trips
+that check first and `signcheck` never runs. Use a working sign tool and an
+unsigned payload instead.
+
+#### Checking a released installer
+
+```powershell
+signtool verify /pa /v /all /tw Mascope-File-Agent-Setup.exe
+Get-AuthenticodeSignature Mascope-File-Agent-Setup.exe | Format-List
+```
+
+`Status: Valid` with a populated `TimeStamperCertificate` is what you want.
+Every release also records the certificate subject and issuing CA to the
+workflow run summary - check that first if someone reports a SmartScreen
+prompt on a correctly signed installer, because Artifact Signing rotates
+subscribers onto new intermediate CAs without notice and a fresh CA carries no
+reputation of its own.
+
+> [!NOTE]
+> Signing does not remove the SmartScreen dialog on day one. Reputation
+> accrues per file hash over weeks of downloads, EV certificates lost their
+> instant bypass in 2024, and Artifact Signing does not issue EV certificates
+> at all. What signing buys immediately is the publisher name and eligibility
+> for Smart App Control and WDAC/AppLocker publisher rules.
+
 ## 📡 Backend
 
 ```sh
