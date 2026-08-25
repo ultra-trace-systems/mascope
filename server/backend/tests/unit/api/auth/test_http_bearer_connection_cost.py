@@ -2,11 +2,12 @@
 
 ``get_enabled_backends`` authenticates every ``Authorization`` +
 ``X-Service-Name`` request - the converter's uploads and metadata writes, the
-SDK, the agents. It is a separate implementation from the Socket.IO path in
-``validate_service_access_token``, and it was doing two ungated database round
-trips per request: the token lookup, and a ``last_seen`` write whose throttle
-lived in a WHERE clause, so it opened a session and committed on every request
-to change nothing 59 times out of 60.
+SDK, the agents. It is a different entry point from the Socket.IO path in
+``validate_service_access_token`` (the two share the token lookup itself,
+through ``util.resolve_token_context``, but nothing else), and it was doing two
+ungated database round trips per request: the token lookup, and a ``last_seen``
+write whose throttle lived in a WHERE clause, so it opened a session and
+committed on every request to change nothing 59 times out of 60.
 
 Neither is deadlock-shaped - they run sequentially, and the injected session
 has not touched the database yet at this point - so this is about volume, not
@@ -26,13 +27,17 @@ from the production path, which is the failure mode that let a previous fix in
 this repo ship green and broken.
 """
 
+import asyncio
 from datetime import datetime, timedelta, timezone
 
 import pytest
+from sqlalchemy import exc as sa_exc
 
 from mascope_backend.api.new.auth import backend as auth_backend
 from mascope_backend.api.new.auth.access_token import cache as token_cache
+from mascope_backend.api.new.auth.access_token import util as token_util
 from mascope_backend.api.new.auth.access_token import validation as validation_mod
+from mascope_backend.api.new.auth.exceptions import AgentCredentialRefusedException
 
 
 TOKEN = "tok-http"
@@ -85,7 +90,7 @@ class LookupCounter:
 @pytest.fixture
 def counted_lookup(monkeypatch):
     counter = LookupCounter()
-    monkeypatch.setattr(auth_backend, "get_token_auth_context", counter)
+    monkeypatch.setattr(token_util, "get_token_auth_context", counter)
     return counter
 
 
@@ -121,7 +126,7 @@ class TestTokenLookupIsReused:
         # claiming another: the comparison happens after the lookup, cached or
         # not. Otherwise the cache would be a privilege escalation.
         monkeypatch.setattr(
-            auth_backend, "get_token_auth_context", LookupCounter(service="mascope_sdk")
+            token_util, "get_token_auth_context", LookupCounter(service="mascope_sdk")
         )
         await auth_backend.get_enabled_backends(_Request(service="mascope_sdk"))
 
@@ -134,7 +139,7 @@ class TestTokenLookupIsReused:
         # device_id is used for the paired-device gate and the last_seen write;
         # a cached context that lost it would silently unbind the request.
         monkeypatch.setattr(
-            auth_backend, "get_token_auth_context", LookupCounter(device_id=DEVICE_ID)
+            token_util, "get_token_auth_context", LookupCounter(device_id=DEVICE_ID)
         )
         writes = []
         monkeypatch.setattr(auth_backend, "touch_device_last_seen", _record(writes))
@@ -196,28 +201,94 @@ class TestRevocationStaysImmediateHere:
         )
 
 
+class _SessionCtx:
+    """An ``async_session()`` stand-in yielding a prepared session double."""
+
+    def __init__(self, session):
+        self._session = session
+
+    async def __aenter__(self):
+        return self._session
+
+    async def __aexit__(self, *exc):
+        return False
+
+
+class _RecordingSession:
+    """Accepts and records statements, and commits without complaint."""
+
+    def __init__(self, sink):
+        self.sink = sink
+
+    async def execute(self, statement):
+        self.sink.append(statement)
+
+    async def commit(self):
+        return None
+
+
 class TestLastSeenWriteIsThrottled:
-    def test_the_first_call_is_due(self):
-        assert validation_mod._due_for_last_seen_write(DEVICE_ID) is True
+    def test_asking_does_not_claim_the_window(self):
+        # The point of splitting the predicate from the mark: when one call
+        # both decided and recorded, a caller that asked and then failed to
+        # write had already bought itself 60 s of silence.
+        assert validation_mod._is_due_for_last_seen_write(DEVICE_ID) is True
+        assert validation_mod._is_due_for_last_seen_write(DEVICE_ID) is True
 
-    def test_a_second_call_within_the_window_is_not(self):
-        validation_mod._due_for_last_seen_write(DEVICE_ID)
+    def test_marking_claims_the_window(self):
+        validation_mod._mark_last_seen_written(DEVICE_ID)
 
-        assert validation_mod._due_for_last_seen_write(DEVICE_ID) is False
+        assert validation_mod._is_due_for_last_seen_write(DEVICE_ID) is False
 
     def test_another_device_is_tracked_separately(self):
-        validation_mod._due_for_last_seen_write(DEVICE_ID)
+        validation_mod._mark_last_seen_written(DEVICE_ID)
 
-        assert validation_mod._due_for_last_seen_write(DEVICE_ID + 1) is True
+        assert validation_mod._is_due_for_last_seen_write(DEVICE_ID + 1) is True
 
     def test_it_becomes_due_again_after_the_window(self, monkeypatch):
         clock = [1000.0]
-        monkeypatch.setattr(validation_mod.time, "monotonic", lambda: clock[0])
-        assert validation_mod._due_for_last_seen_write(DEVICE_ID) is True
+
+        class _FakeTime:
+            @staticmethod
+            def monotonic():
+                return clock[0]
+
+        # Patch the name validation.py holds, not time.monotonic itself:
+        # validation_mod.time IS the stdlib module, so setattr on it would
+        # freeze the clock process-wide - including asyncio's event loop, which
+        # reads its own time from the same function, and the token cache.
+        monkeypatch.setattr(validation_mod, "time", _FakeTime)
+        validation_mod._mark_last_seen_written(DEVICE_ID)
+        assert validation_mod._is_due_for_last_seen_write(DEVICE_ID) is False
 
         clock[0] += validation_mod.DEVICE_LAST_SEEN_THROTTLE_S
 
-        assert validation_mod._due_for_last_seen_write(DEVICE_ID) is True
+        assert validation_mod._is_due_for_last_seen_write(DEVICE_ID) is True
+
+    def test_releasing_a_stale_mark_leaves_a_newer_one_alone(self, monkeypatch):
+        # A write can outlive its own window: the pool's timeout is twice the
+        # throttle. By the time it fails, a later request may legitimately hold
+        # the claim, and clearing that one would let the herd back in.
+        #
+        # A driven clock, not two real calls: time.monotonic() is
+        # GetTickCount64 on Windows, resolution 15.6 ms, so back-to-back marks
+        # return the same float and the two claims would be indistinguishable -
+        # green on a Linux CI runner and red on a developer's machine.
+        clock = [1000.0]
+
+        class _FakeTime:
+            @staticmethod
+            def monotonic():
+                return clock[0]
+
+        monkeypatch.setattr(validation_mod, "time", _FakeTime)
+        stale = validation_mod._mark_last_seen_written(DEVICE_ID)
+        clock[0] += 1.0
+        validation_mod._mark_last_seen_written(DEVICE_ID)
+
+        validation_mod._release_last_seen_mark(DEVICE_ID, stale)
+
+        assert validation_mod._is_due_for_last_seen_write(DEVICE_ID) is False
 
     @pytest.mark.asyncio
     async def test_a_throttled_call_opens_no_session(self, monkeypatch):
@@ -230,35 +301,133 @@ class TestLastSeenWriteIsThrottled:
 
         # Mark the device as just written, so the next call must skip the
         # database entirely rather than issuing its no-op UPDATE.
-        validation_mod._due_for_last_seen_write(DEVICE_ID)
+        validation_mod._mark_last_seen_written(DEVICE_ID)
         monkeypatch.setattr(validation_mod, "async_session", lambda: _Ctx())
 
         await validation_mod.touch_device_last_seen(DEVICE_ID)
 
     @pytest.mark.asyncio
-    async def test_a_due_call_still_writes(self, monkeypatch):
+    async def test_a_due_call_still_writes_and_claims_the_window(self, monkeypatch):
         # The throttle must not become "never write": last_seen is what the
         # device registry reports, and a device that stopped being written
         # would look offline.
+        executed = []
+        monkeypatch.setattr(
+            validation_mod,
+            "async_session",
+            lambda: _SessionCtx(_RecordingSession(executed)),
+        )
+
+        await validation_mod.touch_device_last_seen(DEVICE_ID)
+
+        assert len(executed) == 1
+        assert validation_mod._is_due_for_last_seen_write(DEVICE_ID) is False
+
+    @pytest.mark.asyncio
+    async def test_a_failed_write_leaves_the_next_request_due(self, monkeypatch):
+        # The reason for the split. A write that never landed must not buy 60 s
+        # of silence: pool exhaustion is when this write fails, and it is also
+        # when an operator most wants to know what a device is doing.
+        class _Session:
+            async def execute(self, statement):
+                raise sa_exc.TimeoutError("QueuePool limit reached")
+
+            async def commit(self):
+                raise AssertionError("commit reached after a failed execute")
+
+        monkeypatch.setattr(
+            validation_mod, "async_session", lambda: _SessionCtx(_Session())
+        )
+
+        with pytest.raises(sa_exc.TimeoutError):
+            await validation_mod.touch_device_last_seen(DEVICE_ID)
+
+        assert validation_mod._is_due_for_last_seen_write(DEVICE_ID) is True
+
+    @pytest.mark.asyncio
+    async def test_a_cancelled_write_leaves_the_next_request_due(self, monkeypatch):
+        # A client that hangs up mid-request cancels the task. CancelledError
+        # is a BaseException, so `except Exception` would miss it and the
+        # device would go unreported for the window.
+        started = asyncio.Event()
+
+        class _Session:
+            async def execute(self, statement):
+                started.set()
+                await asyncio.Event().wait()
+
+            async def commit(self):
+                return None
+
+        monkeypatch.setattr(
+            validation_mod, "async_session", lambda: _SessionCtx(_Session())
+        )
+
+        task = asyncio.create_task(validation_mod.touch_device_last_seen(DEVICE_ID))
+        await started.wait()
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+        assert validation_mod._is_due_for_last_seen_write(DEVICE_ID) is True
+
+    @pytest.mark.asyncio
+    async def test_a_committed_write_survives_a_cancellation_on_the_way_out(
+        self, monkeypatch
+    ):
+        # AsyncSession.__aexit__ awaits a shielded close(), which is a
+        # cancellation point. A mark placed after the `async with` would be
+        # skipped here even though the row is written, and every later request
+        # in the window would re-issue an UPDATE that already committed.
+        class _Session:
+            async def execute(self, statement):
+                return None
+
+            async def commit(self):
+                return None
+
+        class _CancellingCtx(_SessionCtx):
+            async def __aexit__(self, *exc):
+                raise asyncio.CancelledError()
+
+        monkeypatch.setattr(
+            validation_mod, "async_session", lambda: _CancellingCtx(_Session())
+        )
+
+        with pytest.raises(asyncio.CancelledError):
+            await validation_mod.touch_device_last_seen(DEVICE_ID)
+
+        assert validation_mod._is_due_for_last_seen_write(DEVICE_ID) is False
+
+    @pytest.mark.asyncio
+    async def test_a_write_in_flight_blocks_a_concurrent_one(self, monkeypatch):
+        # The claim is taken before the await, so an agent's parallel upload
+        # workers do not each check out a connection for the same row. This
+        # path takes no admission permit, so nothing else bounds them.
+        started = asyncio.Event()
+        release = asyncio.Event()
         executed = []
 
         class _Session:
             async def execute(self, statement):
                 executed.append(statement)
+                started.set()
+                await release.wait()
 
             async def commit(self):
                 return None
 
-        class _Ctx:
-            async def __aenter__(self):
-                return _Session()
+        monkeypatch.setattr(
+            validation_mod, "async_session", lambda: _SessionCtx(_Session())
+        )
 
-            async def __aexit__(self, *exc):
-                return False
-
-        monkeypatch.setattr(validation_mod, "async_session", lambda: _Ctx())
+        first = asyncio.create_task(validation_mod.touch_device_last_seen(DEVICE_ID))
+        await started.wait()
 
         await validation_mod.touch_device_last_seen(DEVICE_ID)
+
+        release.set()
+        await first
 
         assert len(executed) == 1
 
@@ -288,7 +457,7 @@ class TestCacheDoesNotOutliveTokenFreshness:
                 type(self).calls += 1
                 return ("file-agent", DEVICE_ID, created)
 
-        monkeypatch.setattr(auth_backend, "get_token_auth_context", _AgeingLookup())
+        monkeypatch.setattr(token_util, "get_token_auth_context", _AgeingLookup())
         monkeypatch.setattr(auth_backend, "touch_device_last_seen", _record([]))
         request = _Request(service="file-agent")
 
@@ -306,8 +475,13 @@ class TestCacheDoesNotOutliveTokenFreshness:
 
         monkeypatch.setattr(validation_mod, "dt", _Clock)
 
-        with pytest.raises(Exception) as excinfo:
+        # Named, not "anything with 401 in it": get_enabled_backends raises a
+        # bare 401 on four other branches, so a looser assertion would stay
+        # green with the freshness check deleted and the request falling
+        # through to a different refusal.
+        with pytest.raises(
+            AgentCredentialRefusedException,
+            match="This agent credential has expired",
+        ) as excinfo:
             await auth_backend.get_enabled_backends(request)
-        assert "401" in str(excinfo.value) or getattr(
-            excinfo.value, "status_code", None
-        ) in (401, 403)
+        assert excinfo.value.status_code == 401

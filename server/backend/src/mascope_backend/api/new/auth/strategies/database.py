@@ -55,6 +55,12 @@ async def get_access_token_db_context(session: AsyncSession | None = None):
     path that takes no admission-control permit (see ``mascope_backend.db``),
     so nothing bounds how many requests do that concurrently.
 
+    Sharing has a price the caller owns: everything on one session is one
+    transaction, so a commit from any of them would commit whatever the others
+    have pending. The one caller that shares today puts three readers on it -
+    this adapter, the user manager's, and the token-context lookup - and none
+    of them writes.
+
     :param session: Existing session to bind the adapter to; when None the
         context manages its own.
     :type session: AsyncSession | None

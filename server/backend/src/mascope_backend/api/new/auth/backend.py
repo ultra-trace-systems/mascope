@@ -12,9 +12,8 @@ from fastapi_users.authentication import (
 )
 from rich.pretty import pretty_repr
 
-from mascope_backend.api.new.auth.access_token import cache as token_cache
 from mascope_backend.api.new.auth.access_token.util import (
-    get_token_auth_context,
+    resolve_token_context,
 )
 from mascope_backend.api.new.auth.access_token.validation import (
     ensure_device_bound,
@@ -103,17 +102,11 @@ async def get_enabled_backends(request: Request) -> list[AuthenticationBackend]:
         # still reads the token row and its expiry on every request, so a
         # deleted or expired token is refused now, as before. See
         # access_token.cache.get_auth_context.
-        token_context = token_cache.get_auth_context(token, auth_settings.access_token)
-        if token_context is None:
-            token_context = await get_token_auth_context(token)
-            token_cache.put_auth_context(
-                token, token_context, auth_settings.access_token
-            )
         (
             token_service_name,
             token_device_id,
             token_created_at,
-        ) = token_context
+        ) = await resolve_token_context(token, auth_settings.access_token)
 
         if token_service_name != request_service_name:
             runtime.logger.info(

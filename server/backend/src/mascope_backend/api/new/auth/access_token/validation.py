@@ -7,7 +7,7 @@ from datetime import timedelta, timezone
 from sqlalchemy import or_, update
 
 from mascope_backend.api.new.auth.access_token import cache as token_cache
-from mascope_backend.api.new.auth.access_token.util import get_token_auth_context
+from mascope_backend.api.new.auth.access_token.util import resolve_token_context
 from mascope_backend.api.new.auth.config import auth_settings
 from mascope_backend.api.new.auth.exceptions import (
     AgentCredentialRefusedException,
@@ -83,60 +83,131 @@ def ensure_device_token_fresh(
         )
 
 
-#: Monotonic time of this worker's last last_seen write per device. Bounded by
-#: the number of paired devices a deployment has, which is small and finite.
+#: Monotonic time of this worker's claim on the last_seen write per device.
+#: Bounded by the number of paired devices a deployment has, which is small and
+#: finite. An entry means "this worker has a write for this device in flight,
+#: or landed one within the window" - taken by _mark_last_seen_written, handed
+#: back by _release_last_seen_mark when the write does not land.
 _last_seen_written_at: dict[int, float] = {}
 
 
-def _due_for_last_seen_write(device_id: int) -> bool:
+def _is_due_for_last_seen_write(device_id: int) -> bool:
     """
     Whether this worker should issue a last_seen write for ``device_id``.
 
+    Pure: asking does not claim the window. :func:`_mark_last_seen_written`
+    does that, and the caller claims before issuing the write rather than
+    after, so concurrent requests for one device do not each check out a
+    connection for a row only one of them can change.
+
     :param device_id: The authenticated device.
-    :return: True when no write has been made within the throttle window.
+    :return: True when no write has been claimed within the throttle window.
     :rtype: bool
     """
-    now = time.monotonic()
     last = _last_seen_written_at.get(device_id)
-    if last is not None and now - last < DEVICE_LAST_SEEN_THROTTLE_S:
-        return False
-    _last_seen_written_at[device_id] = now
-    return True
+    if last is None:
+        return True
+    return time.monotonic() - last >= DEVICE_LAST_SEEN_THROTTLE_S
+
+
+def _mark_last_seen_written(device_id: int) -> float:
+    """
+    Claim the throttle window for ``device_id``.
+
+    :param device_id: The authenticated device.
+    :return: The stamp written, for :func:`_release_last_seen_mark`.
+    :rtype: float
+    """
+    stamp = time.monotonic()
+    _last_seen_written_at[device_id] = stamp
+    return stamp
+
+
+def _release_last_seen_mark(device_id: int, stamp: float) -> None:
+    """
+    Give a claimed window back, so the next request retries the write.
+
+    Only when the claim is still the one ``stamp`` made: a write can outlive
+    its own window (the pool's timeout is twice the throttle), by which time a
+    later request may legitimately hold the claim, and clearing that one would
+    let the herd back in.
+
+    The identity check is only as fine-grained as the platform clock. Linux
+    gives nanoseconds, so it is exact where this runs; on a coarse clock two
+    claims taken inside one tick compare equal and a failure could release the
+    newer one. The cost of that is one extra UPDATE, never a lost write.
+
+    :param device_id: The authenticated device.
+    :param stamp: The value :func:`_mark_last_seen_written` returned.
+    """
+    if _last_seen_written_at.get(device_id) == stamp:
+        del _last_seen_written_at[device_id]
 
 
 async def touch_device_last_seen(device_id: int) -> None:
     """
     Record that a device authenticated, at most once per throttle window.
 
-    The throttle lives in the WHERE clause, so the common case is a no-op
-    UPDATE matching zero rows.
+    Two gates, doing different jobs. The in-process claim keeps this worker to
+    one write per device per window and, because it is taken before the await,
+    to one write *in flight* per device: this path takes no admission-control
+    permit (see :mod:`mascope_backend.db`), so N concurrent agent requests
+    would otherwise be N concurrent checkouts for a row only one of them can
+    change. The WHERE clause is the cross-worker backstop - several workers may
+    each claim once per window, and it keeps that to one actual update, exactly
+    as before.
+
+    A write that does not land gives its claim back, so the next request
+    retries rather than the device going unreported for the rest of the
+    window. That matters most under pool exhaustion, which is both when the
+    write fails and when an operator most wants to know what a device is doing.
+    It also means the caller must keep letting this raise: swallowing the error
+    here would turn every request into another parked pool waiter.
 
     :param device_id: The authenticated device.
     :type device_id: int
     """
     now = dt.now(timezone.utc)
-    if not _due_for_last_seen_write(device_id):
-        # The WHERE clause below already makes the common case a no-op UPDATE,
-        # but it still costs a session, a connection and a commit on every
-        # request - once per chunk for an upload, to change nothing 59 times
-        # out of 60. This gate skips the round trip entirely. It is per worker,
-        # so several workers may each write once per window; the WHERE clause
-        # is what keeps that to one actual update, exactly as before.
+    if not _is_due_for_last_seen_write(device_id):
+        # Skips the round trip entirely. Without it this costs a session, a
+        # connection and a commit on every request - once per chunk for an
+        # upload, to change nothing 59 times out of 60.
         return
+    stamp = _mark_last_seen_written(device_id)
+    committed = False
     cutoff = now - timedelta(seconds=DEVICE_LAST_SEEN_THROTTLE_S)
-    async with async_session() as session:
-        await session.execute(
-            update(AgentDevice)
-            .where(AgentDevice.device_id == device_id)
-            .where(
-                or_(
-                    AgentDevice.last_seen_at.is_(None),
-                    AgentDevice.last_seen_at < cutoff,
+    try:
+        async with async_session() as session:
+            await session.execute(
+                update(AgentDevice)
+                .where(AgentDevice.device_id == device_id)
+                .where(
+                    or_(
+                        AgentDevice.last_seen_at.is_(None),
+                        AgentDevice.last_seen_at < cutoff,
+                    )
                 )
+                .values(last_seen_at=now)
             )
-            .values(last_seen_at=now)
-        )
-        await session.commit()
+            await session.commit()
+            # Re-stamp from the commit rather than the attempt, and here rather
+            # than after the block: AsyncSession.__aexit__ awaits a shielded
+            # close(), which is a cancellation point, so a client that hangs up
+            # while the connection is released would skip a mark placed after
+            # the `async with` and leave every later request in the window
+            # re-issuing an UPDATE that already committed. Nothing is awaited
+            # between commit() returning and these two lines.
+            stamp = _mark_last_seen_written(device_id)
+            committed = True
+    except BaseException:
+        # BaseException, not Exception: a cancelled write (the client hung up)
+        # raises CancelledError, which is not an Exception, and is exactly the
+        # write the next request should retry. `committed` is what stops a
+        # failure while the session is being released from un-marking a write
+        # that is already durable.
+        if not committed:
+            _release_last_seen_mark(device_id, stamp)
+        raise
 
 
 async def validate_service_access_token(access_token: str, service_name: str):
@@ -198,8 +269,13 @@ async def validate_service_access_token(access_token: str, service_name: str):
                     # path that takes no permit. Sharing the session means this
                     # function never needs a connection it does not already
                     # hold. The exceptions raised are unchanged.
-                    token_service, device_id, created_at = await get_token_auth_context(
-                        access_token, session
+                    #
+                    # Stays here, after read_token: hoisting it above the
+                    # session would report a wrong-service token before a
+                    # missing user, and an agent operator is told to do
+                    # different things about those two.
+                    token_service, device_id, created_at = await resolve_token_context(
+                        access_token, auth_settings.access_token, session
                     )
                     if token_service != service_name:
                         raise InvalidTokenException(
