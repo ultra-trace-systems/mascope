@@ -422,6 +422,13 @@ def test_every_env_var_the_db_scripts_read_is_forwarded():
     # of this test stayed green through two knobs being added without the
     # allowlist following them, because a list that has to be edited alongside
     # the thing it guards is not a guard - it is a second copy.
+    #
+    # Every SCREAMING_CASE name, not only the MASCOPE_-prefixed ones: five of
+    # the thirteen forwarded vars (DRY_RUN, BATCH_SIZE, MIN_DATETIME,
+    # UTC_OFFSET_HOURS, ALLOW_MATCHED_LOSS) carry no prefix, so a prefix-only
+    # pattern is blind to the majority spelling of exactly what it guards.
+    # Anchoring on the env-reading calls keeps that from over-matching: no
+    # script reads an unrelated variable (PATH, HOME) through them.
     script_dir = (
         Path(__file__).resolve().parents[3]
         / "server"
@@ -438,7 +445,7 @@ def test_every_env_var_the_db_scripts_read_is_forwarded():
     for source in script_dir.glob("*.py"):
         read_by_scripts.update(
             re.findall(
-                r'(?:_int_env|_bool_env|os\.environ\.get|os\.getenv)\(\s*"(MASCOPE_[A-Z0-9_]+)"',
+                r'(?:_int_env|_bool_env|os\.environ\.get|os\.getenv)\(\s*"([A-Z][A-Z0-9_]*)"',
                 source.read_text(encoding="utf-8"),
             )
         )
