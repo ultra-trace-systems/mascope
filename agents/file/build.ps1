@@ -4,11 +4,23 @@
 #
 #   ./build.ps1                              # exe only, version from git
 #   ./build.ps1 -Version v1.4.0 -Installer   # stamped exe + installer (CI)
+#
+#   # signed release build against a production certificate profile - what
+#   # the release workflow runs, and the only form that may be shipped
 #   ./build.ps1 -Version v1.4.0 -Installer -Sign `
 #       -SigningAccount <account> -SigningProfile <profile>
 #
+#   # local rehearsal against a Public Trust *Test* profile, which needs
+#   # -AllowTestCertificate: without it the Lifetime Signing EKU those
+#   # certificates carry fails the build, which is what keeps a 72-hour
+#   # installer out of a release
+#   ./build.ps1 -Version v0.0.0-rehearsal -Installer -Sign `
+#       -SigningAccount <account> -SigningProfile <profile>-test `
+#       -AllowTestCertificate
+#
 # -Installer requires Inno Setup 6 (preinstalled on GitHub windows runners;
-# locally: winget install JRSoftware.InnoSetup).
+# locally: winget install JRSoftware.InnoSetup). Signing additionally needs
+# Inno Setup 6.3+, for the signcheck flag installer.iss relies on.
 #
 # -Sign is opt-in Authenticode signing through Azure Artifact Signing (the
 # service formerly called Trusted Signing). Leave it off and the build is
@@ -25,12 +37,27 @@ param(
     [string]$Version,
     [switch]$Installer,
     [switch]$Sign,
-    [string]$SigningEndpoint = 'https://neu.codesigning.azure.net',
+    # Empty counts as "not given" and falls back to $DefaultSigningEndpoint
+    # below. It cannot be a parameter default: CI passes the
+    # AZURE_SIGNING_ENDPOINT repository variable straight through and that
+    # variable is normally unset, and PowerShell applies a default only when
+    # the parameter is unbound - an empty string still binds and would win.
+    [string]$SigningEndpoint,
     [string]$SigningAccount,
-    [string]$SigningProfile
+    [string]$SigningProfile,
+    # Rehearsal escape hatch, for local runs against a Public Trust *Test*
+    # certificate profile. Without it a test signature fails the build, which
+    # is what keeps a 72-hour installer out of a release; see the verification
+    # block at the bottom.
+    [switch]$AllowTestCertificate
 )
 
 $ErrorActionPreference = 'Stop'
+
+# North Europe, the region holding the Artifact Signing account. Override
+# with -SigningEndpoint when the account and its certificate profile live
+# somewhere else.
+$DefaultSigningEndpoint = 'https://neu.codesigning.azure.net'
 
 # resolve the version: parameter > git describe > 'dev'
 if (-not $Version) {
@@ -38,27 +65,51 @@ if (-not $Version) {
 }
 Write-Host "Building Mascope File Agent $Version"
 
-# bake the version into the package so the frozen exe can report it
-Set-Content -Path './src/mascope_file_agent/_version.py' `
-    -Value "__version__ = `"$Version`""
+# --------------------------------------------------------------------------
+# Preflight. Everything external this build depends on is resolved here,
+# before PyInstaller runs, because PyInstaller takes minutes and none of
+# these checks need its output. Discovering a missing Inno Setup or an
+# unusable signing setup afterwards throws that time away, and in a release
+# run it leaves the release with no installer asset at all.
+# --------------------------------------------------------------------------
 
-# create the binary in the virtual env
-uv run pyinstaller @(
-    './src/mascope_file_agent/main.py'
-    '--onefile', '--name', 'Mascope-File-Agent'   # make one executable file
-    '--noconfirm'                                 # replace dist w/o confirming
-    '--console'                                   # open the console for logs
-    '--icon=assets/icon.ico'                      # use the Mascope icon
-    '--collect-all', 'mascope_runtime'            # bundle runtime lib
-    '--collect-all', 'mascope_sdk'                # bundle mascope api wrapper
-    '--collect-all', 'tzlocal'                    # name this machine's IANA zone
-)
-if ($LASTEXITCODE -ne 0) { throw 'PyInstaller build failed' }
+if ($Installer) {
+    # locate ISCC.exe (Inno Setup 6)
+    $iscc = (Get-Command iscc -ErrorAction SilentlyContinue)?.Source
+    if (-not $iscc) {
+        $iscc = @(
+            "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
+            "$env:LOCALAPPDATA\Programs\Inno Setup 6\ISCC.exe"
+        ) | Where-Object { Test-Path $_ } | Select-Object -First 1
+    }
+    if (-not $iscc) {
+        throw 'Inno Setup 6 (ISCC.exe) not found - install it or drop -Installer'
+    }
+
+    # VersionInfoVersion must be numeric a.b.c.d; derive it from a vX.Y.Z
+    # release tag, fall back to zeros for dev/dated builds
+    $numericVersion = if ($Version -match '^v?(\d+)\.(\d+)\.(\d+)$') {
+        "$($Matches[1]).$($Matches[2]).$($Matches[3]).0"
+    } else {
+        '0.0.0.0'
+    }
+}
 
 if ($Sign) {
+    # Repository variables reach us verbatim - GitHub does not trim them - so
+    # normalise before validating. A value copy-pasted out of the Azure portal
+    # with a trailing space is otherwise non-empty, passes the check below,
+    # and only fails at the sign call minutes later; and "   " would pass as
+    # an account name entirely. Quoting makes this safe when a parameter was
+    # never bound at all.
+    $SigningAccount  = "$SigningAccount".Trim()
+    $SigningProfile  = "$SigningProfile".Trim()
+    $SigningEndpoint = "$SigningEndpoint".Trim()
+
     if (-not $SigningAccount -or -not $SigningProfile) {
         throw '-Sign needs -SigningAccount and -SigningProfile'
     }
+    if (-not $SigningEndpoint) { $SigningEndpoint = $DefaultSigningEndpoint }
 
     # signtool.exe must come from Windows SDK 10.0.22621.755 or newer; the
     # Artifact Signing dlib refuses older ones, and the symptom is the
@@ -151,7 +202,30 @@ if ($Sign) {
         ' /tr http://timestamp.acs.microsoft.com /td SHA256' +
         ' /dlib $q' + $dlib + '$q' +
         ' /dmdf $q' + $metadata + '$q $f'
+}
 
+# --------------------------------------------------------------------------
+# Build.
+# --------------------------------------------------------------------------
+
+# bake the version into the package so the frozen exe can report it
+Set-Content -Path './src/mascope_file_agent/_version.py' `
+    -Value "__version__ = `"$Version`""
+
+# create the binary in the virtual env
+uv run pyinstaller @(
+    './src/mascope_file_agent/main.py'
+    '--onefile', '--name', 'Mascope-File-Agent'   # make one executable file
+    '--noconfirm'                                 # replace dist w/o confirming
+    '--console'                                   # open the console for logs
+    '--icon=assets/icon.ico'                      # use the Mascope icon
+    '--collect-all', 'mascope_runtime'            # bundle runtime lib
+    '--collect-all', 'mascope_sdk'                # bundle mascope api wrapper
+    '--collect-all', 'tzlocal'                    # name this machine's IANA zone
+)
+if ($LASTEXITCODE -ne 0) { throw 'PyInstaller build failed' }
+
+if ($Sign) {
     # Sign the payload exe now, while it is still a standalone PE. Inno
     # Setup stores it verbatim and Authenticode covers the appended
     # PyInstaller archive, so this has to happen before ISCC compresses it -
@@ -164,26 +238,6 @@ if ($Sign) {
 }
 
 if ($Installer) {
-    # locate ISCC.exe (Inno Setup 6)
-    $iscc = (Get-Command iscc -ErrorAction SilentlyContinue)?.Source
-    if (-not $iscc) {
-        $iscc = @(
-            "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
-            "$env:LOCALAPPDATA\Programs\Inno Setup 6\ISCC.exe"
-        ) | Where-Object { Test-Path $_ } | Select-Object -First 1
-    }
-    if (-not $iscc) {
-        throw 'Inno Setup 6 (ISCC.exe) not found - install it or drop -Installer'
-    }
-
-    # VersionInfoVersion must be numeric a.b.c.d; derive it from a vX.Y.Z
-    # release tag, fall back to zeros for dev/dated builds
-    $numericVersion = if ($Version -match '^v?(\d+)\.(\d+)\.(\d+)$') {
-        "$($Matches[1]).$($Matches[2]).$($Matches[3]).0"
-    } else {
-        '0.0.0.0'
-    }
-
     $isccArgs = @("/DAppVersion=$Version", "/DFileVersion=$numericVersion")
     if ($Sign) {
         # /S defines the sign tool, /D switches installer.iss onto its
@@ -193,6 +247,11 @@ if ($Installer) {
     }
     $isccArgs += 'installer.iss'
 
+    # Splatting an array at a NATIVE command is plain argv passing and is
+    # safe. Splatting one at a PowerShell script is not: there the elements
+    # bind positionally, so "-Installer" would arrive as a value rather than
+    # as a switch. Anything invoking build.ps1 itself must pass named
+    # parameters (or splat a hashtable).
     & $iscc @isccArgs
     if ($LASTEXITCODE -ne 0) { throw 'Installer build failed' }
     Write-Host "Installer built: dist\Mascope-File-Agent-Setup.exe"
@@ -212,15 +271,23 @@ if ($Sign) {
 
         # A Public Trust *Test* profile deliberately chains to a root that is
         # not in any trust store, so full Authenticode verification cannot
-        # pass and must not be treated as a build failure - otherwise the
-        # pipeline can never be rehearsed without spending real signatures.
-        # Detect it by the Lifetime Signing EKU, which is what marks these
-        # certificates as test-only and is also why anything signed with one
-        # expires after 72 hours no matter how well it is timestamped.
+        # pass on it. Detect it by the Lifetime Signing EKU, which is what
+        # marks these certificates as test-only and is also why anything
+        # signed with one expires after 72 hours no matter how well it is
+        # timestamped. That makes it a build failure by default: the release
+        # job never passes -AllowTestCertificate, so a certificate profile
+        # variable left pointing at a test profile stops the release instead
+        # of shipping customers an installer that dies in three days.
         $ekus = $sig.SignerCertificate.Extensions |
             Where-Object { $_.Oid.Value -eq '2.5.29.37' } |
             ForEach-Object { $_.EnhancedKeyUsages.Value }
         if ($ekus -contains '1.3.6.1.4.1.311.10.3.13') {
+            if (-not $AllowTestCertificate) {
+                $subject = $sig.SignerCertificate.Subject
+                throw "TEST certificate ($subject) signed $file - it expires 72 " +
+                    'hours from signing and must never be released. Pass ' +
+                    '-AllowTestCertificate to rehearse the pipeline with it.'
+            }
             Write-Warning ("TEST certificate ({0}) - skipping chain validation. " -f `
                 $sig.SignerCertificate.Subject)
             Write-Warning "$file expires 72 hours from signing and must never be released."

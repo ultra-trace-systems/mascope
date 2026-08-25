@@ -117,8 +117,12 @@ jobs:
     # a hard cap of 20 credentials per app. Naming an environment makes the
     # subject the constant `repo:ultra-trace-systems/mascope:environment:
     # release-signing`, which one credential covers for every future release.
-    # Add required reviewers to the environment if code signing should need a
-    # human approval; leave it unprotected and this stays fully automatic.
+    # Mind the scope: `environment:` is job-level and unconditional, so any
+    # protection rule put on release-signing gates the whole job - the agent
+    # tests and the UNSIGNED build too, including the documented rollback of
+    # clearing AZURE_SIGNING_ACCOUNT. Leave it unprotected and this stays
+    # fully automatic; add required reviewers only if every File Agent
+    # release waiting on a human is acceptable.
     environment: release-signing
     permissions:
       # contents:write to upload the installer as a release asset.
@@ -169,11 +173,24 @@ jobs:
         # runtime the dlib targets.
         env:
           DLIB_VERSION: "1.0.128"
+          # Pinned by content, not just by version. Expand-Archive ignores
+          # the .signature.p7s a .nupkg carries, so nothing else here checks
+          # what was actually downloaded - and this DLL is loaded into
+          # signtool at the moment the job holds a live Artifact Signing
+          # identity, which makes substituting it the cheapest way to get a
+          # release signed under our publisher name. Refresh together with
+          # DLIB_VERSION: (Get-FileHash <pkg> -Algorithm SHA256).Hash
+          DLIB_SHA256: "74BD7D27E6CE1051409C38D9B46BC8DF0400ECD643D51FFBF2AC00869061E40B"
         run: |
           $pkg = "microsoft.artifactsigning.client"
           $url = "https://api.nuget.org/v3-flatcontainer/$pkg/$env:DLIB_VERSION/$pkg.$env:DLIB_VERSION.nupkg"
-          Invoke-WebRequest -Uri $url -OutFile "$env:RUNNER_TEMP\dlib.zip"
-          Expand-Archive "$env:RUNNER_TEMP\dlib.zip" -DestinationPath "$env:RUNNER_TEMP\dlib" -Force
+          $zip = "$env:RUNNER_TEMP\dlib.zip"
+          Invoke-WebRequest -Uri $url -OutFile $zip
+          $actual = (Get-FileHash $zip -Algorithm SHA256).Hash
+          if ($actual -ne $env:DLIB_SHA256) {
+            throw "dlib package hash mismatch for $pkg $env:DLIB_VERSION - expected $env:DLIB_SHA256, got $actual"
+          }
+          Expand-Archive $zip -DestinationPath "$env:RUNNER_TEMP\dlib" -Force
           $dlib = "$env:RUNNER_TEMP\dlib\bin\x64\Azure.CodeSigning.Dlib.dll"
           if (-not (Test-Path $dlib)) { throw "dlib missing from the package: $dlib" }
           Add-Content -Path $env:GITHUB_ENV -Value "MASCOPE_SIGNING_DLIB=$dlib"
@@ -195,18 +212,29 @@ jobs:
           tenant-id: ${{ secrets.AZURE_TENANT_ID }}
           subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
 
+      # The signed and unsigned builds are two steps gated on the same
+      # variable as everything else above, rather than one step that decides
+      # in PowerShell. That kept an argument array around, and splatting an
+      # array at a PowerShell script binds POSITIONALLY - "-Installer" would
+      # arrive as a value rather than as a switch, so the installer would
+      # never be built and -Sign would never take effect, both silently.
+      # Written out literally, the call cannot drift like that.
       - name: Build the executable and installer
+        if: vars.AZURE_SIGNING_ACCOUNT != ''
         working-directory: agents/file
         # Inno Setup 6 is preinstalled on the GitHub windows runner image
         # (6.7.1, which has the signcheck flag installer.iss relies on).
         # -Sign makes build.ps1 sign the payload exe before ISCC embeds it,
         # then hand ISCC a sign tool for the uninstaller stub and the setup
         # exe: three signatures per release, against the Basic tier's
-        # 5,000/month. build.ps1 fails the job on a signing error and on a
-        # signature that verifies without a timestamp, so an unsigned or
-        # 72-hour installer cannot reach the upload step below.
+        # 5,000/month. build.ps1 fails the job on a signing error, on a
+        # signature that verifies without a timestamp, and on a test
+        # certificate profile, so an unsigned, 72-hour or test-signed
+        # installer cannot reach the upload step below.
         env:
           TAG: ${{ github.event.release.tag_name }}
+          # may be empty: build.ps1 reads an empty endpoint as "not given"
+          # and falls back to its own default region
           SIGNING_ENDPOINT: ${{ vars.AZURE_SIGNING_ENDPOINT }}
           SIGNING_ACCOUNT: ${{ vars.AZURE_SIGNING_ACCOUNT }}
           SIGNING_PROFILE: ${{ vars.AZURE_SIGNING_PROFILE }}
@@ -214,20 +242,21 @@ jobs:
           # account's Sign Transactions log points back at this run
           MASCOPE_SIGNING_CORRELATION_ID: ${{ github.run_id }}
         run: |
-          $buildArgs = @("-Version", $env:TAG, "-Installer")
-          if ($env:SIGNING_ACCOUNT) {
-            $buildArgs += @(
-              "-Sign"
-              "-SigningEndpoint", $env:SIGNING_ENDPOINT
-              "-SigningAccount", $env:SIGNING_ACCOUNT
-              "-SigningProfile", $env:SIGNING_PROFILE
-            )
-          } else {
-            # loud, because an unsigned release asset looks identical to a
-            # signed one until a customer double-clicks it
-            Write-Output "::warning::AZURE_SIGNING_ACCOUNT is not set - the installer will be UNSIGNED"
-          }
-          ./build.ps1 @buildArgs
+          ./build.ps1 -Version "$env:TAG" -Installer -Sign `
+            -SigningEndpoint "$env:SIGNING_ENDPOINT" `
+            -SigningAccount "$env:SIGNING_ACCOUNT" `
+            -SigningProfile "$env:SIGNING_PROFILE"
+
+      - name: Build the executable and installer (unsigned)
+        if: vars.AZURE_SIGNING_ACCOUNT == ''
+        working-directory: agents/file
+        env:
+          TAG: ${{ github.event.release.tag_name }}
+        run: |
+          # loud, because an unsigned release asset looks identical to a
+          # signed one until a customer double-clicks it
+          Write-Output "::warning::AZURE_SIGNING_ACCOUNT is not set - the installer will be UNSIGNED"
+          ./build.ps1 -Version "$env:TAG" -Installer
 
       - name: Record the signing certificate chain
         if: vars.AZURE_SIGNING_ACCOUNT != ''
