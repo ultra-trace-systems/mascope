@@ -20,6 +20,7 @@ from mascope_backend.api.lib.api_features import api_controller
 from mascope_backend.api.lib.exceptions.api_exceptions import (
     NotFoundException,
 )
+from mascope_backend.api.lib.utils import strings_json_safe
 from mascope_backend.api.models.match.ions.match_ion_pydantic_model import (
     MatchIonBase,
 )
@@ -263,7 +264,9 @@ async def get_match_ions(
         data_df = deduplicate_match_df(
             data_df, id_keys=("target_ion_id", "sample_item_id")
         )
-        data = data_df.to_dict(orient="records")
+        # Nullable label columns come back as NaN under pandas 3's str dtype,
+        # which starlette cannot serialize.
+        data = strings_json_safe(data_df).to_dict(orient="records")
         # Update total after deduplication
         total = len(data)
 
