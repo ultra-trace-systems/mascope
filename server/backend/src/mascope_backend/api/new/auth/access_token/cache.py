@@ -98,13 +98,20 @@ def put(token: str, service_name: str, user: Any, config: AccessTokenConfig) -> 
     ttl = _ttl(config)
     if ttl <= 0:
         return
+    # Sweep first, on every write. Entries expire lazily on read, so one that
+    # is never looked up again would otherwise sit here indefinitely - and it
+    # holds a User row, which carries the password hash and the MFA secret.
+    # Bounded work: the table is capped, and this runs only on a cache miss.
+    _evict_expired()
+    key = _key(token, service_name)
+    # Re-insert rather than overwrite: assigning to an existing key keeps its
+    # original position, so a token refreshed on every chunk would keep the
+    # place of its first use and be the first thing FIFO evicts.
+    _entries.pop(key, None)
     if len(_entries) >= _MAX_ENTRIES:
-        _evict_expired()
-        if len(_entries) >= _MAX_ENTRIES:
-            # Still full: drop the oldest insertion. dicts preserve insertion
-            # order, so this is the entry least recently established.
-            _entries.pop(next(iter(_entries)), None)
-    _entries[_key(token, service_name)] = (time.monotonic() + ttl, user)
+        # Still full after the sweep: drop the oldest insertion.
+        _entries.pop(next(iter(_entries)), None)
+    _entries[key] = (time.monotonic() + ttl, user)
 
 
 def _evict_expired() -> None:
