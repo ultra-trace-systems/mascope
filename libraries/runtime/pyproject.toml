@@ -21,7 +21,9 @@ dependencies = [
 [project.optional-dependencies]
 # Log querying/garbage collection (RuntimeLogging.query/gc) reads the JSON
 # log files through duckdb; only the CLI's `mascope logs` needs it.
-logs = ["duckdb>=1.5.5,<2"]
+# duckdb imports pytz for its timezone support but does not declare it; it
+# used to arrive transitively through pandas, which dropped pytz in 3.0.
+logs = ["duckdb>=1.5.5,<2", "pytz>=2024.1"]
 # Error reporting to a self-hosted GlitchTip/Sentry. Only needed when
 # MASCOPE_SENTRY_DSN is set; RuntimeLogging installs the sink lazily, so the
 # base install stays lean. See tooling/monitoring/ and docs/maintaining.md.

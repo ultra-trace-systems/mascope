@@ -1659,7 +1659,7 @@ requires-dist = [
     { name = "alembic", marker = "extra == 'dev'", specifier = ">=1.19.1" },
     { name = "mascope-reference", marker = "extra == 'dev'", editable = "libraries/reference" },
     { name = "mascope-runtime", extras = ["logs"], editable = "libraries/runtime" },
-    { name = "pandas", marker = "extra == 'demo'", specifier = ">=3.0.5" },
+    { name = "pandas", marker = "extra == 'demo'", specifier = ">=2.0.0" },
     { name = "psycopg2-binary", marker = "extra == 'dev'", specifier = ">=2.9.12" },
     { name = "pyyaml", marker = "extra == 'dev'", specifier = ">=6,<7" },
     { name = "requests", marker = "extra == 'demo'", specifier = ">=2.32.0,<3" },
@@ -1767,6 +1767,7 @@ dependencies = [
 [package.optional-dependencies]
 logs = [
     { name = "duckdb" },
+    { name = "pytz" },
 ]
 sentry = [
     { name = "sentry-sdk" },
@@ -1777,6 +1778,7 @@ requires-dist = [
     { name = "duckdb", marker = "extra == 'logs'", specifier = ">=1.5.5,<2" },
     { name = "loguru", specifier = ">=0.7.2,<0.8" },
     { name = "pydantic", specifier = ">=2.13.4,<3" },
+    { name = "pytz", marker = "extra == 'logs'", specifier = ">=2024.1" },
     { name = "rich", specifier = ">=15.0.0,<16" },
     { name = "sentry-sdk", marker = "extra == 'sentry'", specifier = ">=2.68.0,<3" },
 ]
@@ -1811,7 +1813,7 @@ requires-dist = [
     { name = "matplotlib", marker = "extra == 'examples'", specifier = ">=3.8.0" },
     { name = "nbformat", marker = "extra == 'examples'", specifier = ">=5.11.0" },
     { name = "numpy", marker = "extra == 'examples'", specifier = ">=1.24.0" },
-    { name = "pandas", specifier = ">=3.0.5" },
+    { name = "pandas", specifier = ">=2.0.0" },
     { name = "plotly", marker = "extra == 'examples'", specifier = ">=5.18.0" },
     { name = "python-dotenv", specifier = ">=1.0.0" },
     { name = "requests", specifier = ">=2.34.2,<3" },
@@ -1926,7 +1928,7 @@ requires-dist = [
     { name = "isospecpy", specifier = ">=2.4.0" },
     { name = "mascope-sdk", editable = "libraries/sdk" },
     { name = "numpy", specifier = ">=1.26" },
-    { name = "pandas", specifier = ">=3.0.5" },
+    { name = "pandas", specifier = ">=2.3.1" },
     { name = "polars", specifier = ">=1.43.2" },
     { name = "pyarrow", specifier = ">=25.0.0" },
     { name = "pyteomics", specifier = ">=5.0.1" },
@@ -2793,6 +2795,15 @@ sdist = { url = "https://files.pythonhosted.org/packages/05/57/da1992e44663b7136
 wheels = [
     { url = "https://files.pythonhosted.org/packages/ac/4b/52414f442624d2589f5374a48c08d5ae94f24bea67fc13a20a752884e5b7/pythonnet-3.1.0-cp310.cp311.cp312.cp313.cp314-none-any.whl", hash = "sha256:698dd88edc198819ad63b624a6ebe76208c7b46e4fe13626f65e484f0358d6ba", size = 217578, upload-time = "2026-05-23T20:30:19.527Z" },
     { url = "https://files.pythonhosted.org/packages/db/67/031124fdcb937c266a3265118525bbf6dc13b8c79786d6a7290aecb6e7bb/pythonnet-3.1.0-cp310.cp311.cp312.cp313.cp314-none-win32.win_amd64.whl", hash = "sha256:7bdd4de03df3547a48122a3989265c8b31d5be0d19dadffa009eec7df8085e0b", size = 1644898, upload-time = "2026-05-23T20:30:16.213Z" },
+]
+
+[[package]]
+name = "pytz"
+version = "2026.3.post1"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/fb/48/fb042503b6ca6cd271261dc559fd6432f7d8c713153e9ec5c591af4dfc1c/pytz-2026.3.post1.tar.gz", hash = "sha256:2211d3fcf9a797d3405cac96ac7f61d80e6a644f72a3309607282fe8a2010c5d", size = 319745, upload-time = "2026-07-25T15:12:07.385Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/0f/7b/39c34ca613b0b198cb866466651b26b045e2009864c5183c979a3b83f383/pytz-2026.3.post1-py2.py3-none-any.whl", hash = "sha256:dd95840dd199baea12d9cc096a1d452caa6596a1c1e4b5f3dbd1541855d5e815", size = 508283, upload-time = "2026-07-25T15:12:05.782Z" },
 ]
 
 [[package]]
