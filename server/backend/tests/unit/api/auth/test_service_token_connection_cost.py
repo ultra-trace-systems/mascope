@@ -1,21 +1,29 @@
-"""How many database connections one bearer-token validation holds.
+"""How many database connections one service-token validation holds.
 
-Every request from an agent, the file converter or the SDK runs
-``validate_service_access_token`` before anything else. It takes no
-admission-control permit - the semaphore in ``mascope_backend.db`` guards only
-the dependency-injected session path - so nothing bounds how many of these run
-at once. Its per-call connection cost is therefore the thing that decides
-whether a bulk upload saturates the pool.
+``validate_service_access_token`` authenticates Socket.IO events - the
+converter emits them throughout an upload - and re-checks a token in
+``access_token.service``. It is *not* the HTTP bearer path: an
+``Authorization`` + ``X-Service-Name`` request is authenticated by
+``get_enabled_backends`` in ``api/new/auth/backend.py``, which does its own
+lookup. Both are ungated: the semaphore in ``mascope_backend.db`` guards only
+the dependency-injected session path, so nothing bounds how many run at once,
+and the per-call connection cost is what decides whether load saturates the
+pool.
 
-It did. Under a converter upload run, this path held three connections per
-request against a pool with roughly five to spare, every waiter then blocked
-for ``pool_timeout`` (120 s), and the worker stopped serving anything at all
-for a minute - including unrelated requests, which failed with
-``QueuePool limit ... reached``.
+It did. Under a converter upload run this path held three connections per
+call; every waiter then blocked for ``pool_timeout`` (120 s) and the worker
+stopped serving anything at all for a minute. Thirty-five of the thirty-nine
+``QueuePool limit ... reached`` failures in that window were this function
+failing to get a connection for itself.
 
-These tests pin the cost. They are about connection accounting, not auth
-behaviour; the behaviour is pinned in
-:mod:`test_service_token_validation_behaviour`.
+The property these tests hold it to is not "few connections" but **never hold
+one while needing another**: a caller that does can block on a connection only
+it could release, which is the deadlock ``mascope_backend.db`` documents and
+sizes its semaphore to prevent. Peak 2 was not good enough; peak 1 is the
+invariant.
+
+These tests are about connection accounting, not auth behaviour; the
+behaviour is pinned in :mod:`test_service_token_validation_behaviour`.
 """
 
 from datetime import datetime, timedelta, timezone
@@ -25,6 +33,7 @@ import pytest
 from mascope_backend.api.new.auth.access_token import cache as token_cache
 from mascope_backend.api.new.auth.access_token import util as token_util
 from mascope_backend.api.new.auth.access_token import validation as validation_mod
+from mascope_backend.api.new.auth.exceptions import InvalidTokenException
 from mascope_backend.api.new.auth.strategies import database as strategy_mod
 from mascope_backend.api.new.users.user_manager import util as user_mgr_mod
 
@@ -118,22 +127,24 @@ def ledger(monkeypatch):
 
 class TestConnectionCost:
     @pytest.mark.asyncio
-    async def test_one_validation_holds_at_most_two_connections(self, ledger):
-        # The strategy and the user manager share one session, so the peak is
-        # that session plus the single token-context lookup. It was three:
-        # a session each, plus the lookup nested inside both.
+    async def test_it_never_holds_one_connection_while_needing_another(self, ledger):
+        # The invariant, not merely a smaller number. A call that holds a
+        # connection and then checks out a second can, with enough concurrent
+        # callers, block forever on a connection only it could release - the
+        # deadlock mascope_backend.db sizes db_semaphore to prevent, on a path
+        # that takes no permit. Peak 1 is the only value that removes it.
         await validation_mod.validate_service_access_token(TOKEN, SERVICE)
 
-        assert ledger.peak <= 2
+        assert ledger.peak == 1
 
     @pytest.mark.asyncio
-    async def test_it_opens_no_more_sessions_than_it_holds(self, ledger):
+    async def test_it_opens_a_single_session(self, ledger):
         # Five were opened before: two held, plus an existence check, a service
         # name query and the token-context lookup - three round trips for one
         # row that a single query already returns.
         await validation_mod.validate_service_access_token(TOKEN, SERVICE)
 
-        assert ledger.total <= 2
+        assert ledger.total == 1
 
     @pytest.mark.asyncio
     async def test_every_session_is_released(self, ledger):
@@ -146,7 +157,7 @@ class TestConnectionCost:
         # A leaked connection on the rejection path would starve the pool
         # faster than the success path ever could: a wrong-service token is
         # retried, and each retry would cost a connection permanently.
-        with pytest.raises(Exception):
+        with pytest.raises(InvalidTokenException):
             await validation_mod.validate_service_access_token(
                 TOKEN, "some-other-service"
             )
@@ -198,4 +209,4 @@ class TestCachedValidationCostsNothing:
         for _ in range(20):
             await validation_mod.validate_service_access_token(TOKEN, SERVICE)
 
-        assert ledger.total <= 2
+        assert ledger.total == 1

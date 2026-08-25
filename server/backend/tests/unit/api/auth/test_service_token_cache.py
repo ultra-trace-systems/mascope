@@ -68,9 +68,12 @@ class TestScoping:
 
 class TestDisabling:
     def test_a_zero_ttl_never_stores(self):
+        # Asserting on get() alone would pass even if put() stored the entry,
+        # because get() also short-circuits on a zero TTL. Check the table.
         cfg = _config(0)
         token_cache.put(TOKEN, SERVICE, USER, cfg)
 
+        assert token_cache._entries == {}
         assert token_cache.get(TOKEN, SERVICE, cfg) is None
 
     def test_a_zero_ttl_never_reads_an_existing_entry(self):
@@ -136,3 +139,29 @@ class TestRevocationWindow:
         # This number is how long a revoked credential keeps working on a
         # worker that has seen it. It is a security limit, not a tuning knob.
         assert 0 < AccessTokenConfig().SERVICE_TOKEN_CACHE_TTL_SECONDS <= 15
+
+
+class TestEntriesDoNotLinger:
+    def test_an_expired_entry_is_swept_without_being_read(self):
+        # A cached User carries its password hash and MFA secret. An entry
+        # nobody looks up again must not keep them alive past its window.
+        expired = _config(0.01)
+        token_cache.put("abandoned", SERVICE, USER, expired)
+        time.sleep(0.05)
+
+        token_cache.put("something-else", SERVICE, USER, _config(60))
+
+        assert len(token_cache._entries) == 1
+
+    def test_a_refreshed_token_is_not_the_first_evicted(self):
+        # Re-caching on every chunk must move a token to the back of the
+        # eviction queue, not leave it at the position of its first use.
+        cfg = _config(60)
+        token_cache.put("hot", SERVICE, USER, cfg)
+        for i in range(token_cache._MAX_ENTRIES - 1):
+            token_cache.put(f"cold-{i}", SERVICE, USER, cfg)
+        token_cache.put("hot", SERVICE, USER, cfg)  # refreshed, as a chunk would
+
+        token_cache.put("newcomer", SERVICE, USER, cfg)  # forces an eviction
+
+        assert token_cache.get("hot", SERVICE, cfg) is USER

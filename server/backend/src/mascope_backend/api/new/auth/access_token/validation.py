@@ -158,15 +158,18 @@ async def validate_service_access_token(access_token: str, service_name: str):
                             "Token validation failed, no associated user found"
                         )
 
-                    # Service scope, device binding and token age in one lookup.
-                    # This used to call get_token_service as well, which re-read
-                    # the same row twice more (an existence check and a service
-                    # name query) for values this call already returns - three
-                    # round trips, and three connection checkouts, for one row.
-                    # get_token_auth_context raises the same two exceptions with
-                    # the same messages, so the outcomes are unchanged.
+                    # Service scope, device binding and token age in one
+                    # lookup, run on the session already open above. This used
+                    # to call get_token_service as well, which re-read the same
+                    # row twice more for values this query already returns; and
+                    # it used to open its own session, which meant holding one
+                    # connection while needing a second - the pattern
+                    # mascope_backend.db documents as the worker deadlock, on a
+                    # path that takes no permit. Sharing the session means this
+                    # function never needs a connection it does not already
+                    # hold. The exceptions raised are unchanged.
                     token_service, device_id, created_at = await get_token_auth_context(
-                        access_token
+                        access_token, session
                     )
                     if token_service != service_name:
                         raise InvalidTokenException(
