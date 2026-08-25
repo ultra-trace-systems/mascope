@@ -1,9 +1,21 @@
 # Weekly dependency update PRs. Actions are SHA-pinned in the workflows;
 # Dependabot keeps the pins (and their version comments) fresh.
+#
+# IMPORTANT: Dependabot reads this file from the DEFAULT branch (master) only.
+# Every entry sets `target-branch: develop`, so the config lives on master while
+# the PRs it produces land on develop. An edit to this file that reaches only
+# develop does nothing until it is promoted to master.
+#
+# Trade-off of `target-branch`: the options below stop applying to Dependabot
+# *security* updates, which always target the default branch. Security updates
+# are currently disabled for this repository, so nothing is lost today. If they
+# are ever enabled, note that the `ignore` entries would not be honoured on
+# security PRs - the licence check in CI is what actually enforces that hold.
 version: 2
 updates:
   - package-ecosystem: github-actions
     directory: /
+    target-branch: develop
     schedule:
       interval: weekly
     groups:
@@ -12,6 +24,7 @@ updates:
 
   - package-ecosystem: uv
     directory: /
+    target-branch: develop
     schedule:
       interval: weekly
     open-pull-requests-limit: 5
@@ -21,9 +34,21 @@ updates:
 
   - package-ecosystem: npm
     directory: /server/frontend
+    target-branch: develop
     schedule:
       interval: weekly
     open-pull-requests-limit: 5
     groups:
       npm-minor-and-patch:
         update-types: ["minor", "patch"]
+    ignore:
+      # PrimeVue 5 relicensed from MIT to the commercial PrimeUI license: it
+      # requires a license key, and the free Community tier only covers
+      # organizations under its revenue, headcount and funding thresholds.
+      # Hold the MIT 4.x line until that is decided - see issue #1930.
+      - dependency-name: "primevue"
+        update-types: ["version-update:semver-major"]
+      # primeicons 8 carries the same PrimeUI license; 7.0.0 is the last MIT
+      # release and is what we install. Same hold, same issue.
+      - dependency-name: "primeicons"
+        update-types: ["version-update:semver-major"]
