@@ -34,3 +34,7 @@ updates:
       # Hold the MIT 4.x line until that is decided - see issue #1930.
       - dependency-name: "primevue"
         update-types: ["version-update:semver-major"]
+      # primeicons 8 carries the same PrimeUI license; 7.0.0 is the last MIT
+      # release and is what we install. Same hold, same issue.
+      - dependency-name: "primeicons"
+        update-types: ["version-update:semver-major"]
