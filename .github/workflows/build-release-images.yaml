@@ -109,9 +109,27 @@ jobs:
   build-file-agent:
     runs-on: windows-latest
     timeout-minutes: 30
+    # Referencing a GitHub environment is what makes OIDC federation work at
+    # all here, and it is not optional. A job with no environment presents
+    # Entra the subject `repo:<org>/<repo>:ref:refs/tags/<TAG>` - a different
+    # string on every release - and Entra matches a federated credential's
+    # subject as an exact, case-sensitive string with no wildcard support and
+    # a hard cap of 20 credentials per app. Naming an environment makes the
+    # subject the constant `repo:ultra-trace-systems/mascope:environment:
+    # release-signing`, which one credential covers for every future release.
+    # Add required reviewers to the environment if code signing should need a
+    # human approval; leave it unprotected and this stays fully automatic.
+    environment: release-signing
     permissions:
-      # contents:write to upload the installer as a release asset
+      # contents:write to upload the installer as a release asset.
+      # id-token:write mints the short-lived OIDC token that azure/login
+      # trades for an Entra access token, so no Azure client secret is
+      # stored anywhere and nothing expires annually. A job-level
+      # permissions block is exhaustive - every scope not listed drops to
+      # none - so contents:write has to stay listed next to it or
+      # `gh release upload` loses its token after signing succeeds.
       contents: write
+      id-token: write
     env:
       # mascope terminal logs contain a glyph that breaks cp1252 when
       # output is captured (see the developer guide)
@@ -131,10 +149,111 @@ jobs:
         working-directory: agents/file
         run: uv run pytest tests/
 
+      # Signing is gated on the repository variable AZURE_SIGNING_ACCOUNT
+      # rather than hardcoded, because Azure identity validation is a 1-20
+      # business day human process that gates certificate-profile creation.
+      # This workflow can therefore land, be reviewed and keep cutting
+      # releases before any of that finishes; setting the variable is the
+      # single switch that turns signing on, and setting it back to empty is
+      # the rollback if signing ever starts failing releases.
+      - name: Fetch the Artifact Signing dlib
+        if: vars.AZURE_SIGNING_ACCOUNT != ''
+        # signtool.exe reaches Azure Artifact Signing through a "dlib"
+        # plugin that is not on the runner image. Pull it straight out of
+        # the NuGet flat container instead of `nuget install`, so the
+        # version is pinned in this file and the unpacked layout is
+        # deterministic - a .nupkg is a plain zip, and its bin\x64 holds the
+        # dlib plus the Visual C++ runtime DLLs it depends on. Everything
+        # else it needs is already on windows-latest: Windows SDK
+        # 10.1.26100 (signtool must be >= 10.0.22621.755) and the .NET 8
+        # runtime the dlib targets.
+        env:
+          DLIB_VERSION: "1.0.128"
+        run: |
+          $pkg = "microsoft.artifactsigning.client"
+          $url = "https://api.nuget.org/v3-flatcontainer/$pkg/$env:DLIB_VERSION/$pkg.$env:DLIB_VERSION.nupkg"
+          Invoke-WebRequest -Uri $url -OutFile "$env:RUNNER_TEMP\dlib.zip"
+          Expand-Archive "$env:RUNNER_TEMP\dlib.zip" -DestinationPath "$env:RUNNER_TEMP\dlib" -Force
+          $dlib = "$env:RUNNER_TEMP\dlib\bin\x64\Azure.CodeSigning.Dlib.dll"
+          if (-not (Test-Path $dlib)) { throw "dlib missing from the package: $dlib" }
+          Add-Content -Path $env:GITHUB_ENV -Value "MASCOPE_SIGNING_DLIB=$dlib"
+
+      - name: Log in to Azure
+        if: vars.AZURE_SIGNING_ACCOUNT != ''
+        # OIDC federation against the app registration whose federated
+        # credential trusts exactly this repository and this environment.
+        # The three values are identifiers rather than credentials - they
+        # grant nothing without a token GitHub will only mint for the
+        # subject above - but they live in secrets for consistency with the
+        # rest of the repo. This leaves the Azure CLI logged in for the
+        # remainder of the job, which is the identity build.ps1's dlib
+        # picks up (its metadata.json excludes every other credential
+        # source, so there is exactly one way in).
+        uses: azure/login@f5d393ae46f8fde4be8b75f32e3fc50e654ad0ca # v3.0.1
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
       - name: Build the executable and installer
         working-directory: agents/file
         # Inno Setup 6 is preinstalled on the GitHub windows runner image
-        run: ./build.ps1 -Version "${{ github.event.release.tag_name }}" -Installer
+        # (6.7.1, which has the signcheck flag installer.iss relies on).
+        # -Sign makes build.ps1 sign the payload exe before ISCC embeds it,
+        # then hand ISCC a sign tool for the uninstaller stub and the setup
+        # exe: three signatures per release, against the Basic tier's
+        # 5,000/month. build.ps1 fails the job on a signing error and on a
+        # signature that verifies without a timestamp, so an unsigned or
+        # 72-hour installer cannot reach the upload step below.
+        env:
+          TAG: ${{ github.event.release.tag_name }}
+          SIGNING_ENDPOINT: ${{ vars.AZURE_SIGNING_ENDPOINT }}
+          SIGNING_ACCOUNT: ${{ vars.AZURE_SIGNING_ACCOUNT }}
+          SIGNING_PROFILE: ${{ vars.AZURE_SIGNING_PROFILE }}
+          # stamped into the sign request so a line in the Artifact Signing
+          # account's Sign Transactions log points back at this run
+          MASCOPE_SIGNING_CORRELATION_ID: ${{ github.run_id }}
+        run: |
+          $buildArgs = @("-Version", $env:TAG, "-Installer")
+          if ($env:SIGNING_ACCOUNT) {
+            $buildArgs += @(
+              "-Sign"
+              "-SigningEndpoint", $env:SIGNING_ENDPOINT
+              "-SigningAccount", $env:SIGNING_ACCOUNT
+              "-SigningProfile", $env:SIGNING_PROFILE
+            )
+          } else {
+            # loud, because an unsigned release asset looks identical to a
+            # signed one until a customer double-clicks it
+            Write-Output "::warning::AZURE_SIGNING_ACCOUNT is not set - the installer will be UNSIGNED"
+          }
+          ./build.ps1 @buildArgs
+
+      - name: Record the signing certificate chain
+        if: vars.AZURE_SIGNING_ACCOUNT != ''
+        working-directory: agents/file
+        # Which intermediate CA the service issued from is the first thing
+        # to check when someone reports a SmartScreen prompt on a correctly
+        # signed installer: Artifact Signing rotates subscribers onto new
+        # intermediate CAs without notice, and a freshly minted CA carries
+        # no reputation of its own. Recording it per release makes "did the
+        # CA change between v1.4.0 and v1.4.1" answerable months later,
+        # which is what an Azure support ticket will ask for.
+        run: |
+          $sig = Get-AuthenticodeSignature "dist/Mascope-File-Agent-Setup.exe"
+          $rows = @(
+            "### File Agent installer signature"
+            ""
+            "| field | value |"
+            "| --- | --- |"
+            "| status | $($sig.Status) |"
+            "| subject | $($sig.SignerCertificate.Subject) |"
+            "| issuing CA | $($sig.SignerCertificate.Issuer) |"
+            "| certificate expires | $($sig.SignerCertificate.NotAfter.ToString('u')) |"
+            "| timestamped by | $($sig.TimeStamperCertificate.Subject) |"
+          )
+          $rows | Add-Content -Path $env:GITHUB_STEP_SUMMARY
+          $rows | Write-Host
 
       - name: Upload the installer to the release
         env:
