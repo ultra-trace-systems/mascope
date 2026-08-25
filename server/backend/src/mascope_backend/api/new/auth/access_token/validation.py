@@ -1,5 +1,6 @@
 """Access token validation."""
 
+import time
 from datetime import datetime as dt
 from datetime import timedelta, timezone
 
@@ -82,6 +83,27 @@ def ensure_device_token_fresh(
         )
 
 
+#: Monotonic time of this worker's last last_seen write per device. Bounded by
+#: the number of paired devices a deployment has, which is small and finite.
+_last_seen_written_at: dict[int, float] = {}
+
+
+def _due_for_last_seen_write(device_id: int) -> bool:
+    """
+    Whether this worker should issue a last_seen write for ``device_id``.
+
+    :param device_id: The authenticated device.
+    :return: True when no write has been made within the throttle window.
+    :rtype: bool
+    """
+    now = time.monotonic()
+    last = _last_seen_written_at.get(device_id)
+    if last is not None and now - last < DEVICE_LAST_SEEN_THROTTLE_S:
+        return False
+    _last_seen_written_at[device_id] = now
+    return True
+
+
 async def touch_device_last_seen(device_id: int) -> None:
     """
     Record that a device authenticated, at most once per throttle window.
@@ -93,6 +115,14 @@ async def touch_device_last_seen(device_id: int) -> None:
     :type device_id: int
     """
     now = dt.now(timezone.utc)
+    if not _due_for_last_seen_write(device_id):
+        # The WHERE clause below already makes the common case a no-op UPDATE,
+        # but it still costs a session, a connection and a commit on every
+        # request - once per chunk for an upload, to change nothing 59 times
+        # out of 60. This gate skips the round trip entirely. It is per worker,
+        # so several workers may each write once per window; the WHERE clause
+        # is what keeps that to one actual update, exactly as before.
+        return
     cutoff = now - timedelta(seconds=DEVICE_LAST_SEEN_THROTTLE_S)
     async with async_session() as session:
         await session.execute(

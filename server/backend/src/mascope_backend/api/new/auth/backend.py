@@ -12,6 +12,7 @@ from fastapi_users.authentication import (
 )
 from rich.pretty import pretty_repr
 
+from mascope_backend.api.new.auth.access_token import cache as token_cache
 from mascope_backend.api.new.auth.access_token.util import (
     get_token_auth_context,
 )
@@ -20,6 +21,7 @@ from mascope_backend.api.new.auth.access_token.validation import (
     ensure_device_token_fresh,
     touch_device_last_seen,
 )
+from mascope_backend.api.new.auth.config import auth_settings
 from mascope_backend.api.new.auth.strategies import (
     get_database_strategy,
     get_jwt_strategy,
@@ -91,11 +93,27 @@ async def get_enabled_backends(request: Request) -> list[AuthenticationBackend]:
                 detail="Unauthorized: Missing access token",
             ) from e
 
+        # One row read per token per cache window instead of per request. The
+        # converter issues several bearer requests per file and one per upload
+        # chunk, and this lookup takes no admission-control permit (see
+        # mascope_backend.db), so it was unbounded concurrent database work on
+        # the hottest path in the system.
+        #
+        # Caching it defers no revocation: the auth backend selected below
+        # still reads the token row and its expiry on every request, so a
+        # deleted or expired token is refused now, as before. See
+        # access_token.cache.get_auth_context.
+        token_context = token_cache.get_auth_context(token, auth_settings.access_token)
+        if token_context is None:
+            token_context = await get_token_auth_context(token)
+            token_cache.put_auth_context(
+                token, token_context, auth_settings.access_token
+            )
         (
             token_service_name,
             token_device_id,
             token_created_at,
-        ) = await get_token_auth_context(token)
+        ) = token_context
 
         if token_service_name != request_service_name:
             runtime.logger.info(
