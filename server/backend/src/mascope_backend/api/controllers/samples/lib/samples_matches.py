@@ -9,6 +9,7 @@ from __future__ import annotations
 import pandas as pd
 from sqlalchemy import and_, label, select
 
+from mascope_backend.api.lib.utils import strings_json_safe
 from mascope_backend.api.new.match.params.lib import apply_match_params
 from mascope_backend.db import (
     MatchCollection,
@@ -134,6 +135,10 @@ async def query_peak_matches(
         )
         .reset_index()
     )
+
+    # target_compound_name is nullable, so under pandas 3 the NULLs arrive as
+    # NaN rather than None and would break serialization of the response.
+    agg = strings_json_safe(agg)
 
     grouped = agg.groupby("sample_peak_id", sort=False)
     peak_id_to_match = {
