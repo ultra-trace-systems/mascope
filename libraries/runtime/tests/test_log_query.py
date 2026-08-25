@@ -403,3 +403,57 @@ def test_gc_invalid_retain_is_rejected(log_env, tmp_path):
 
     assert any("invalid retain interval" in message for message in errors)
     assert (tmp_path / "dev" / "2026-06-23.backend.log").exists()
+
+
+# --- gc coverage of rotated archives ----------------------------------------
+
+
+def test_gc_collects_stale_archives_too(archived_log_env, tmp_path):
+    """Retention has to reach the archives, or it barely reaches anything.
+
+    Rotated days exist only as `.log.zip`, so they are the bulk of a log dir -
+    a sweep of `*.log` alone deletes the one uncompressed day and reports
+    "garbage collected log files older than <date>" over a directory it left
+    almost untouched. The same sweep is what the query above now reads from,
+    so the two must agree about which days still exist.
+    """
+    log_dir = tmp_path / "dev"
+    archives = sorted(path.name for path in log_dir.glob("*.log.zip"))
+    assert archives, "fixture no longer writes archives"
+
+    # Every file the fixture wrote is dated June 2026; `before` is a fixed date
+    # rather than a retain interval so this cannot drift with the wall clock.
+    archived_log_env.gc(mode="dev", before="2026-07-01", retain=None, dryrun=False)
+
+    assert list(log_dir.glob("*.log.zip")) == [], (
+        f"stale archives survived the sweep: {archives}"
+    )
+    assert list(log_dir.glob("*.log")) == []
+
+
+def test_gc_dryrun_keeps_archives(archived_log_env, tmp_path):
+    """A preview must not delete the archives it now also lists."""
+    log_dir = tmp_path / "dev"
+    before = sorted(path.name for path in log_dir.iterdir())
+
+    archived_log_env.gc(mode="dev", before="2026-07-01", retain=None, dryrun=True)
+
+    assert sorted(path.name for path in log_dir.iterdir()) == before
+
+
+def test_gc_keeps_fresh_archives(archived_log_env, tmp_path):
+    """Only stale ones go: an archive inside the window is left alone."""
+    log_dir = tmp_path / "dev"
+
+    archived_log_env.gc(mode="dev", before="2026-06-01", retain=None, dryrun=False)
+
+    assert sorted(path.name for path in log_dir.glob("*.log.zip")) == sorted(
+        [
+            "2026-06-18.backend.log.zip",
+            "2026-06-19.backend.log.zip",
+            "2026-06-20.backend.log.zip",
+            "2026-06-21.backend.2026-06-22_00-00-00_000001.log.zip",
+            "2026-06-22.backend.log.zip",
+            "2026-06-22.file-converter.log.zip",
+        ]
+    )

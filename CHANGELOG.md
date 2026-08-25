@@ -295,7 +295,9 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
   collapsing the window - shorthand like `60d` or `12h` now means what it
   says, spelled-out forms like `60 days` keep working, and anything else is
   rejected with a clear error rather than narrowing the query. The same
-  validation guards `mascope logs gc --retain`.
+  validation guards `mascope logs gc --retain`, which now also collects the
+  archives - it swept only the uncompressed files, so it reported a retention
+  window it was not enforcing over most of the directory.
 
 - `mascope prod db script list` and `run` now work on a server where only the
   operator CLI is installed (`uv tool install mascope-cli`, the documented
