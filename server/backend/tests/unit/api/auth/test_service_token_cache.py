@@ -7,9 +7,8 @@ window has to be small, bounded, and genuinely switchable off - which is what
 these tests hold it to.
 """
 
-import time
-
 import pytest
+from pydantic import ValidationError
 
 from mascope_backend.api.new.auth.access_token import cache as token_cache
 from mascope_backend.api.new.auth.access_token.config import AccessTokenConfig
@@ -31,6 +30,38 @@ def _config(ttl):
     return AccessTokenConfig(SERVICE_TOKEN_CACHE_TTL_SECONDS=ttl)
 
 
+class _FakeClock:
+    """A monotonic clock the test drives, so expiry is exact and instant."""
+
+    def __init__(self, start=1000.0):
+        self.now = start
+
+    def advance(self, seconds):
+        self.now += seconds
+
+    def monotonic(self):
+        return self.now
+
+
+def _fake_clock(monkeypatch, start=1000.0):
+    """Give the cache a clock this test controls.
+
+    Swaps the ``time`` name in the cache's own namespace, not
+    ``time.monotonic`` itself: ``cache.time`` IS the stdlib module, so patching
+    through it would freeze the clock for the whole process - asyncio's event
+    loop reads its own time from the same function, and this suite runs on one
+    session-scoped loop.
+
+    :param monkeypatch: The pytest monkeypatch fixture.
+    :param start: Initial value for the fake clock.
+    :return: The clock, to advance.
+    :rtype: _FakeClock
+    """
+    clock = _FakeClock(start)
+    monkeypatch.setattr(token_cache, "time", clock)
+    return clock
+
+
 class TestReuse:
     def test_a_stored_validation_is_returned(self):
         cfg = _config(60)
@@ -41,12 +72,23 @@ class TestReuse:
     def test_an_unknown_token_misses(self):
         assert token_cache.get("never-seen", SERVICE, _config(60)) is None
 
-    def test_the_entry_expires(self):
-        cfg = _config(0.05)
+    def test_the_entry_expires(self, monkeypatch):
+        clock = _fake_clock(monkeypatch)
+        cfg = _config(5)
         token_cache.put(TOKEN, SERVICE, USER, cfg)
-        time.sleep(0.08)
+        clock.advance(5)
 
         assert token_cache.get(TOKEN, SERVICE, cfg) is None
+
+    def test_the_entry_survives_until_the_window_closes(self, monkeypatch):
+        # The other half of the bound. Without this nothing here would fail if
+        # put() stamped the expiry in the past and every entry were born dead.
+        clock = _fake_clock(monkeypatch)
+        cfg = _config(5)
+        token_cache.put(TOKEN, SERVICE, USER, cfg)
+        clock.advance(4.9)
+
+        assert token_cache.get(TOKEN, SERVICE, cfg) is USER
 
 
 class TestScoping:
@@ -110,25 +152,38 @@ class TestBounded:
 
         assert len(token_cache._entries) <= token_cache._MAX_ENTRIES
 
-    def test_expired_entries_are_reclaimed_before_eviction(self):
-        # Filling up with live entries should not throw away a token that is
-        # still in use while dead ones sit in the table.
-        expired = _config(0.01)
-        for i in range(token_cache._MAX_ENTRIES):
-            token_cache.put(f"stale-{i}", SERVICE, USER, expired)
-        time.sleep(0.05)
+    def test_expired_entries_are_reclaimed_before_eviction(self, monkeypatch):
+        # Filling up must not throw away a token that is still in use while
+        # dead ones sit in the table. The live entry is deliberately the
+        # oldest - it is what plain FIFO discards first - and the dead ones sit
+        # behind it, where a front-to-back sweep does not reach them.
+        # Reclaiming them is what has to happen before anything live goes.
+        #
+        # A driven clock, not sleeps: against a real one the fill loop outlives
+        # any TTL short enough to be worth waiting for, so the table never
+        # reaches the cap and the branch under test never runs. That is exactly
+        # how the previous version of this test passed while asserting nothing.
+        clock = _fake_clock(monkeypatch)
+        live, short = _config(60), _config(1)
 
-        fresh = _config(60)
-        token_cache.put("live", SERVICE, USER, fresh)
+        token_cache.put("hot", SERVICE, USER, live)
+        for i in range(token_cache._MAX_ENTRIES - 1):
+            token_cache.put(f"stale-{i}", SERVICE, USER, short)
+        assert len(token_cache._entries) == token_cache._MAX_ENTRIES
 
-        assert token_cache.get("live", SERVICE, fresh) is USER
-        assert len(token_cache._entries) < token_cache._MAX_ENTRIES
+        clock.advance(2)  # every stale entry is dead now; "hot" is not
+        token_cache.put("newcomer", SERVICE, USER, live)
+
+        assert token_cache.get("hot", SERVICE, live) is USER
+        assert len(token_cache._entries) == 2
 
 
 class TestRevocationWindow:
     def test_clearing_forces_the_next_request_to_revalidate(self):
-        # The escape hatch a revocation path can reach for, and what the TTL
-        # bounds in its absence.
+        # Kept as an escape hatch and used by tests; nothing in the application
+        # calls it, and nothing usefully could - the cache is per worker, so
+        # clearing it where a revocation was served leaves every other worker's
+        # copy standing. The TTL is the real bound.
         cfg = _config(60)
         token_cache.put(TOKEN, SERVICE, USER, cfg)
         token_cache.clear()
@@ -140,18 +195,34 @@ class TestRevocationWindow:
         # worker that has seen it. It is a security limit, not a tuning knob.
         assert 0 < AccessTokenConfig().SERVICE_TOKEN_CACHE_TTL_SECONDS <= 15
 
+    def test_a_window_of_minutes_is_refused_by_the_config(self):
+        # And the limit is enforced where it is declared, not left to whoever
+        # edits the default next.
+        with pytest.raises(ValidationError):
+            AccessTokenConfig(SERVICE_TOKEN_CACHE_TTL_SECONDS=300)
+
 
 class TestEntriesDoNotLinger:
-    def test_an_expired_entry_is_swept_without_being_read(self):
+    def test_an_expired_entry_is_swept_without_being_read(self, monkeypatch):
         # A cached User carries its password hash and MFA secret. An entry
         # nobody looks up again must not keep them alive past its window.
-        expired = _config(0.01)
-        token_cache.put("abandoned", SERVICE, USER, expired)
-        time.sleep(0.05)
+        clock = _fake_clock(monkeypatch)
+        token_cache.put("abandoned", SERVICE, USER, _config(5))
+        clock.advance(6)
 
         token_cache.put("something-else", SERVICE, USER, _config(60))
 
         assert len(token_cache._entries) == 1
+
+    def test_switching_the_cache_off_does_not_pin_what_it_already_holds(self):
+        # get() short-circuits on a zero TTL, so an entry left behind would
+        # never be read again and never swept: a User row, password hash and
+        # MFA secret included, held for the life of the worker.
+        token_cache.put(TOKEN, SERVICE, USER, _config(60))
+
+        token_cache.put("anything", SERVICE, USER, _config(0))
+
+        assert token_cache._entries == {}
 
     def test_a_refreshed_token_is_not_the_first_evicted(self):
         # Re-caching on every chunk must move a token to the back of the
