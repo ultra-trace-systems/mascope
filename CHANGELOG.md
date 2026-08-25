@@ -285,6 +285,22 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
 
 ### Fixed
 
+- A bulk upload run no longer makes the server stop answering. Every request
+  from an agent, the file converter or the SDK is checked against its access
+  token, and that check was opening five database connections and holding
+  three of them - so enough uploads at once used up the connections the rest
+  of the server needed, and unrelated requests waited on a pool that had
+  nothing left to give until they timed out. On one production server that
+  meant a worker serving nothing for a minute. The check now holds one
+  connection, reads the token row once, and reuses a successful validation for
+  a few seconds, so a resumable upload's chunks no longer re-run it once per
+  chunk. Reusing it means revoking a credential - unpairing a machine,
+  clearing an account's tokens - takes effect within those few seconds rather
+  than instantly, and a role change that a service connection reads inside
+  that window is kept for the life of that connection rather than the few
+  seconds. This makes the exhaustion far less likely rather than impossible;
+  a heavy enough run can still reach the limit.
+
 - Pressing Escape no longer throws away two-factor recovery codes. The last
   step of setup deliberately offers no close button, because the codes are
   shown once and two-factor is already switched on by the time they appear -
