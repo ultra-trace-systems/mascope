@@ -5,10 +5,7 @@ from datetime import timedelta, timezone
 
 from sqlalchemy import or_, update
 
-from mascope_backend.api.new.auth.access_token.util import (
-    get_token_auth_context,
-    get_token_service,
-)
+from mascope_backend.api.new.auth.access_token.util import get_token_auth_context
 from mascope_backend.api.new.auth.config import auth_settings
 from mascope_backend.api.new.auth.exceptions import (
     AgentCredentialRefusedException,
@@ -132,29 +129,46 @@ async def validate_service_access_token(access_token: str, service_name: str):
             get_user_manager_context,
         )
 
-        async with get_database_strategy_context() as database_strategy:
-            async with get_user_manager_context() as user_manager:
-                user = await database_strategy.read_token(access_token, user_manager)
-                if not user:
-                    raise InvalidTokenException(
-                        "Token validation failed, no associated user found"
+        # One session for both adapters. They are used sequentially, never
+        # concurrently, so a session each bought nothing and cost a second
+        # connection held for the whole call. This path takes no admission
+        # permit (see mascope_backend.db), so its concurrency is bounded only
+        # by how many bearer requests are in flight - which is what exhausted
+        # the pool under a bulk upload: every waiter then blocked for
+        # pool_timeout and the worker stopped serving anything at all.
+        async with async_session() as session:
+            async with get_database_strategy_context(session) as database_strategy:
+                async with get_user_manager_context(session) as user_manager:
+                    user = await database_strategy.read_token(
+                        access_token, user_manager
                     )
+                    if not user:
+                        raise InvalidTokenException(
+                            "Token validation failed, no associated user found"
+                        )
 
-                # Verify service name
-                token_service = await get_token_service(access_token)
-                if token_service != service_name:
-                    raise InvalidTokenException(
-                        f"The provided token is not authorized for {service_name}. Please try to refresh the token."
+                    # Service scope, device binding and token age in one lookup.
+                    # This used to call get_token_service as well, which re-read
+                    # the same row twice more (an existence check and a service
+                    # name query) for values this call already returns - three
+                    # round trips, and three connection checkouts, for one row.
+                    # get_token_auth_context raises the same two exceptions with
+                    # the same messages, so the outcomes are unchanged.
+                    token_service, device_id, created_at = await get_token_auth_context(
+                        access_token
                     )
+                    if token_service != service_name:
+                        raise InvalidTokenException(
+                            f"The provided token is not authorized for {service_name}. Please try to refresh the token."
+                        )
 
-                # Device policy for agent tokens (no-op for other services):
-                # the deployment's paired-device requirement and the short
-                # device-token lifetime.
-                _svc, device_id, created_at = await get_token_auth_context(access_token)
-                ensure_device_bound(service_name, device_id)
-                ensure_device_token_fresh(service_name, device_id, created_at)
+                    # Device policy for agent tokens (no-op for other services):
+                    # the deployment's paired-device requirement and the short
+                    # device-token lifetime.
+                    ensure_device_bound(service_name, device_id)
+                    ensure_device_token_fresh(service_name, device_id, created_at)
 
-                return user
+                    return user
 
     except InvalidTokenException as e:
         # Routine 401-class condition (expired/mismatched service token, cured
