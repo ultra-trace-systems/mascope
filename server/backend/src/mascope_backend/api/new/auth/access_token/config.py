@@ -4,7 +4,7 @@ Configuration settings specific to access tokens used for service-to-service aut
 
 from typing import List
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 class AccessTokenConfig(BaseModel):
@@ -36,7 +36,15 @@ class AccessTokenConfig(BaseModel):
     # than immediately, per worker. Seconds, deliberately: long enough to
     # collapse an upload's chunk burst into one validation, short enough that
     # revocation is still prompt. Set to 0 to validate every request.
-    SERVICE_TOKEN_CACHE_TTL_SECONDS: float = 5.0
+    #
+    # The ceiling is here rather than in a comment because this is how long a
+    # revoked credential keeps working, not a tuning knob: one minute is where
+    # "seconds, deliberately" stops being true. Nothing supplies this value
+    # from outside the source - AccessTokenConfig is a plain BaseModel with no
+    # env or toml layer - so the bound guards a future edit, and an edit past
+    # it fails at import, which is to say at startup. A negative value is
+    # clamped to "off" by the cache rather than refused (see cache._ttl).
+    SERVICE_TOKEN_CACHE_TTL_SECONDS: float = Field(5.0, le=60.0)
 
     # Device-bound agent tokens live on shared instrument PCs in plaintext, so
     # they expire far sooner than the 360-day default above and the agent
