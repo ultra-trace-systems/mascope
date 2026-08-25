@@ -921,6 +921,11 @@ class RuntimeLogging:
         Garbage collect stale or empty log files, either 'before' a specified date
         or excluding a time interval (in days, weeks or months) to 'retain'.
 
+        Rotated `.log.zip` archives are collected alongside live `.log` files:
+        they are dated the same way and hold most of what a log dir keeps, so
+        sweeping only the live files would leave the retention this command
+        reports unenforced.
+
         :param mode: the runtime mode (dev or prod)
         :param before: the maximum date before which to delete log files
         :param retain: a time interval for which to keep log files
@@ -960,8 +965,18 @@ class RuntimeLogging:
 
         prefix = "[DRY RUN] " if dryrun else ""
 
-        log_path = os.path.join(self.dir, mode, "*.log")
-        for f in sorted(glob.glob(log_path)):
+        # Rotated days survive only as `.log.zip` containers, and they are the
+        # bulk of what a log dir holds - collecting `*.log` alone leaves a
+        # retention window the command reports as enforced but is not. Both
+        # shapes carry the same `<YYYY-MM-DD>.` prefix, so the date below reads
+        # off either. A zero-byte `.zip` is a rotation that died mid-write and
+        # is swept as empty, exactly like a zero-byte `.log`.
+        log_dir = os.path.join(self.dir, mode)
+        targets = sorted(
+            glob.glob(os.path.join(log_dir, "*.log"))
+            + glob.glob(os.path.join(log_dir, "*.log.zip"))
+        )
+        for f in targets:
             raw_date = os.path.split(f)[-1].split(".")[0]
             parsed_date = datetime.datetime.strptime(raw_date, "%Y-%m-%d")
             stale = parsed_date < max_date
