@@ -16,6 +16,7 @@ from httpx import ASGITransport, AsyncClient
 from sqlalchemy import delete, func, select, update
 
 from mascope_backend.accounts import ACCOUNT_TYPE_MACHINE
+from mascope_backend.api.new.auth.access_token import cache as token_cache
 from mascope_backend.api.new.auth.access_token import validation
 from mascope_backend.api.new.auth.access_token.service import (
     create_access_token,
@@ -153,6 +154,16 @@ async def test_device_token_past_its_lifetime_is_refused(
             .values(created_at=dt.now(timezone.utc) - timedelta(seconds=lifetime + 60))
         )
         await session.commit()
+
+    # Backdating a live row simulates the passage of time, which is something
+    # production never does: created_at is written once at insert and updated
+    # nowhere, so the per-worker auth-context cache holds an immutable value
+    # and the freshness check still compares it against a live clock. The cache
+    # legitimately does not observe this mutation, so drop it to let the
+    # simulation take effect. The invariant it stands in for - a cached context
+    # does not keep a token alive past its lifetime - is pinned directly in
+    # tests/unit/api/auth/test_http_bearer_connection_cost.py.
+    token_cache.clear()
 
     async with _bearer_client(token) as client:
         stale = await client.get("/api/sample/files", params={"page": 0, "limit": 1})
