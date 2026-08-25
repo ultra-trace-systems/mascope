@@ -1805,7 +1805,7 @@ requires-dist = [
     { name = "loguru", specifier = ">=0.7.3" },
     { name = "matplotlib", marker = "extra == 'examples'", specifier = ">=3.8.0" },
     { name = "nbformat", marker = "extra == 'examples'", specifier = ">=5.11.0" },
-    { name = "numpy", marker = "extra == 'examples'", specifier = ">=2.5.2" },
+    { name = "numpy", marker = "extra == 'examples'", specifier = ">=1.24.0" },
     { name = "pandas", specifier = ">=2.0.0" },
     { name = "plotly", marker = "extra == 'examples'", specifier = ">=5.18.0" },
     { name = "python-dotenv", specifier = ">=1.0.0" },
@@ -1920,7 +1920,7 @@ dev = [
 requires-dist = [
     { name = "isospecpy", specifier = ">=2.4.0" },
     { name = "mascope-sdk", editable = "libraries/sdk" },
-    { name = "numpy", specifier = ">=2.5.2" },
+    { name = "numpy", specifier = ">=1.26" },
     { name = "pandas", specifier = ">=2.3.1" },
     { name = "polars", specifier = ">=1.43.2" },
     { name = "pyarrow", specifier = ">=25.0.0" },
