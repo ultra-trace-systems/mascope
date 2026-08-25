@@ -47,6 +47,16 @@ INSTRUMENT_GHOST = "attrib-orbi-ghost"
 
 ALL_INSTRUMENTS = (INSTRUMENT_AGENT, INSTRUMENT_FORGED, INSTRUMENT_GHOST)
 
+#: The machines these tests pair, one per test for the same reason the
+#: instruments are one per test. Bound to names here so the teardown deletes
+#: exactly them - a literal at the call site could drift out of that set and
+#: leave a device behind in the shared database.
+MACHINE_AGENT = "ORBI-ATTRIB"
+MACHINE_FORGED = "ORBI-FORGED"
+MACHINE_GHOST = "ORBI-GHOST"
+
+ALL_MACHINES = (MACHINE_AGENT, MACHINE_FORGED, MACHINE_GHOST)
+
 
 @pytest_asyncio.fixture(autouse=True)
 async def clean_state(async_session_factory):
@@ -54,7 +64,15 @@ async def clean_state(async_session_factory):
 
     Deleting the machine accounts cascades to their access tokens
     (``access_token.user_id`` is ``ON DELETE CASCADE``), and the device rows go
-    last because everything pointing at them is ``ON DELETE SET NULL``.
+    last because everything pointing at them is ``ON DELETE SET NULL`` - which
+    is also why the accounts are selected through the devices while those rows
+    still carry the link.
+
+    Scoped to this module's own devices rather than to every machine account
+    and every file-agent device in the database. The integration database is
+    shared for the whole session, so a blanket sweep running after each of
+    these tests would reach into whatever another module had paired - the same
+    reason each test here uses an instrument of its own.
     """
     yield
     async with async_session_factory() as session:
@@ -62,10 +80,17 @@ async def clean_state(async_session_factory):
             delete(SampleFile).where(SampleFile.instrument.in_(ALL_INSTRUMENTS))
         )
         await session.execute(
-            delete(User).where(User.account_type == ACCOUNT_TYPE_MACHINE)
+            delete(User).where(
+                User.account_type == ACCOUNT_TYPE_MACHINE,
+                User.id.in_(
+                    select(AgentDevice.machine_user_id).where(
+                        AgentDevice.name.in_(ALL_MACHINES)
+                    )
+                ),
+            )
         )
         await session.execute(
-            delete(AgentDevice).where(AgentDevice.service_name == "file-agent")
+            delete(AgentDevice).where(AgentDevice.name.in_(ALL_MACHINES))
         )
         await session.commit()
 
@@ -156,7 +181,7 @@ async def test_agent_upload_records_its_device_and_machine_account(
     so if the column stops being written nothing else in the suite notices.
     """
     device_id, machine, _agent_token = await provision_device(
-        test_users["editor"].id, machine_name="ORBI-ATTRIB"
+        test_users["editor"].id, machine_name=MACHINE_AGENT
     )
     # The converter authenticates as the machine account on its own unbound
     # file-converter token - this is the credential that writes the record.
@@ -196,7 +221,7 @@ async def test_a_user_cannot_claim_a_device_they_do_not_authenticate_as(
     never from the body.
     """
     device_id, machine, _agent_token = await provision_device(
-        test_users["editor"].id, machine_name="ORBI-FORGED"
+        test_users["editor"].id, machine_name=MACHINE_FORGED
     )
     assert machine.id != test_users["editor"].id  # the claim really is someone else's
 
@@ -223,7 +248,7 @@ async def test_an_unknown_device_id_degrades_to_unattributed(
     the file is on disk by then and nothing re-posts it.
     """
     _device_id, machine, _agent_token = await provision_device(
-        test_users["editor"].id, machine_name="ORBI-GHOST"
+        test_users["editor"].id, machine_name=MACHINE_GHOST
     )
     converter_token = await create_access_token(
         user=machine, service_name="file-converter"
