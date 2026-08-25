@@ -184,8 +184,11 @@ class Spectra:
         # Group by the cluster_id to aggregate peaks
         grouped = clustered_df.groupby("cluster_id")
 
-        # Calculate total intensity, SNR, and weighted averages for m/z and resolution
-        total_intensity = grouped["intensity"].sum().values
+        # Calculate total intensity, SNR, and weighted averages for m/z and resolution.
+        # Every array below is taken as an owned copy: pandas hands out read-only views
+        # into its own buffers, and the spectrum we build scales them in place and
+        # outlives the frame they came from.
+        total_intensity = grouped["intensity"].sum().to_numpy(copy=True)
 
         weighted_avg_mz = grouped[["mz", "intensity"]].apply(
             lambda g: np.average(g["mz"], weights=g["intensity"])
@@ -202,7 +205,9 @@ class Spectra:
             return numerator / denominator if denominator > 0 else 0.0
 
         total_snr = (
-            grouped[["signal_to_noise", "intensity"]].apply(compute_total_snr).values
+            grouped[["signal_to_noise", "intensity"]]
+            .apply(compute_total_snr)
+            .to_numpy(copy=True)
         )
 
         if average and len(self.spectra) > 0:
@@ -210,12 +215,14 @@ class Spectra:
             total_snr /= len(self.spectra)
 
         # Create lists of grouped peak IDs
-        peak_ids = grouped["peak_id"].apply(lambda ids: ids.tolist()).values
+        peak_ids = (
+            grouped["peak_id"].apply(lambda ids: ids.tolist()).to_numpy(copy=True)
+        )
 
         return CentroidedSpectrum(
-            mz=weighted_avg_mz.values,
+            mz=weighted_avg_mz.to_numpy(copy=True),
             intensity=total_intensity,
-            resolution=weighted_avg_res.values,
+            resolution=weighted_avg_res.to_numpy(copy=True),
             signal_to_noise=total_snr,
             peak_id=peak_ids,
             metadata={"average": average, "window_factor": window_factor},
