@@ -577,6 +577,14 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
   longer imports modules that need the runtime secrets to load. And a failing
   suite now fails the command - backend, libraries or frontend - which
   previously reported success whatever pytest answered.
+- The SDK's `matching.match_compound()` works again. The endpoint behind it
+  builds a throwaway target compound to match against and rolls everything
+  back afterwards, but since the schema-constraints migration the flush of
+  the compound's ions violated a foreign key - the throwaway compound row
+  itself was never written - so every call returned HTTP 500. The app was
+  unaffected (it uses the ion and multi-compound variants), which is why the
+  break went unnoticed; the SDK's live contract tests now cover this surface,
+  so it cannot break silently again.
 
 - A bulk upload run no longer makes the server stop answering. Every request
   from an agent, the file converter or the SDK is checked against its access
