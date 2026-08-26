@@ -43,7 +43,7 @@ dependencies = [
     # (Windows dev runs); Linux containers use the system tzdata either way.
     "tzdata>=2025.1",
     "typer>=0.27.1,<0.28",
-    "uvicorn>=0.34,<0.35",
+    "uvicorn>=0.34,<0.53",
     "websocket-client~=1.8",
     "zarr==2.18.2", # TODO: Resolve dependency issue https://github.com/ultra-trace-systems/mascope/issues/479
     "numcodecs==0.15.1", # TODO: See issue above
