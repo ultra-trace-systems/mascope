@@ -32,3 +32,30 @@ describe('peakAssignmentEnabled', () => {
     expect(peakAssignmentEnabled).toBe(true)
   })
 })
+
+describe('maxUploadBytes', () => {
+  const GB = 1024 ** 3
+
+  beforeEach(() => vi.resetModules())
+  afterEach(() => vi.doUnmock('@/lib/runtime'))
+
+  it('is the 5 GB default when the runtime does not set the cap', async () => {
+    const { maxUploadBytes } = await loadFeatures({ api_port: 8090 })
+    expect(maxUploadBytes).toBe(5 * GB)
+  })
+
+  it('is the 5 GB default when there is no meta at all', async () => {
+    const { maxUploadBytes } = await loadFeatures(undefined)
+    expect(maxUploadBytes).toBe(5 * GB)
+  })
+
+  it('follows the cap the deployment configures', async () => {
+    const { maxUploadBytes } = await loadFeatures({ tus_max_upload_gb: 20 })
+    expect(maxUploadBytes).toBe(20 * GB)
+  })
+
+  it('falls back to the default for a value that is not a number', async () => {
+    const { maxUploadBytes } = await loadFeatures({ tus_max_upload_gb: 'lots' })
+    expect(maxUploadBytes).toBe(5 * GB)
+  })
+})
