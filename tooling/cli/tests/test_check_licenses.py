@@ -82,9 +82,14 @@ def test_an_identifier_off_the_allowlist_is_reported_by_name(declared):
     assert verdict(declared) == f"not on the allowlist: {declared}"
 
 
-def test_spdx_identifiers_are_matched_exactly():
-    """Casing is not normalised; a differently-cased spelling is a finding."""
-    assert verdict("mit") == "not on the allowlist: mit"
+@pytest.mark.parametrize("spelling", ["mit", "MIT", "Mit", "apache-2.0", "APACHE-2.0"])
+def test_spdx_identifiers_are_matched_case_insensitively(spelling):
+    """
+    SPDX defines identifiers as case-insensitive. Matching them exactly names
+    an approved licence as "not on the allowlist", which invites a second
+    ALLOWED entry for a licence that is already there.
+    """
+    assert verdict(spelling) is None
 
 
 # --------------------------------------------------------------------------
@@ -312,18 +317,37 @@ def test_a_reviewed_package_is_exempt_only_at_the_pinned_version(tmp_path):
     assert at("3.0.4") == [("combine-errors@3.0.4", "<none>", "declares no licence")]
 
 
-def test_a_reviewed_entry_that_is_gone_is_reported(tmp_path, capsys):
-    path = lockfile(
+def _without_reviewed(tmp_path):
+    return lockfile(
         tmp_path,
         {
             "": {"name": "mascope"},
             "node_modules/vue": {"version": "3.5.0", "license": "MIT"},
         },
     )
-    assert licences.check(path) == []
+
+
+def test_a_reviewed_entry_that_is_gone_is_reported(tmp_path, capsys, monkeypatch):
+    monkeypatch.delenv("GITHUB_ACTIONS", raising=False)
+    assert licences.check(_without_reviewed(tmp_path)) == []
     out = capsys.readouterr().out
     for stale in licences.REVIEWED:
         assert f"note: {stale} is no longer installed" in out
+
+
+def test_a_stale_entry_becomes_an_annotation_under_actions(
+    tmp_path, capsys, monkeypatch
+):
+    """
+    Nobody opens the log of a job that passed, so on a green run the note has
+    to be an annotation or it is not a signal at all.
+    """
+    monkeypatch.setenv("GITHUB_ACTIONS", "true")
+    assert licences.check(_without_reviewed(tmp_path)) == []
+    out = capsys.readouterr().out
+    for stale in licences.REVIEWED:
+        assert f"::warning file=tooling/check-licenses.py::{stale} is no longer" in out
+    assert "note:" not in out
 
 
 # --------------------------------------------------------------------------
@@ -348,3 +372,124 @@ def test_a_lockfile_holding_only_the_root_entry_is_refused(tmp_path):
     path = lockfile(tmp_path, {"": {"name": "mascope"}})
     with pytest.raises(SystemExit, match="refusing to pass on nothing"):
         licences.check(path)
+
+
+# --------------------------------------------------------------------------
+# Scoped grants
+# --------------------------------------------------------------------------
+
+
+def test_a_scoped_licence_is_cleared_for_the_package_it_was_argued_for():
+    """MPL-2.0 was reasoned about lightningcss, including its platform binaries."""
+    assert "MPL-2.0" in licences.SCOPED
+    assert licences.judge("lightningcss@1.30.2", "MPL-2.0") == []
+    assert licences.judge("lightningcss-linux-x64-gnu@1.30.2", "MPL-2.0") == []
+
+
+def test_a_scoped_licence_does_not_carry_to_another_package():
+    """
+    The whole point of the scope: the next MPL dependency has to be read on
+    its own terms rather than inheriting an argument made about lightningcss.
+    """
+    assert verdict("MPL-2.0") == "cleared only for other packages: MPL-2.0"
+    findings = licences.judge("some-other-pkg@1.0.0", "MPL-2.0")
+    assert findings == [
+        ("some-other-pkg@1.0.0", "MPL-2.0", "cleared only for other packages: MPL-2.0")
+    ]
+
+
+def test_a_scoped_licence_is_reported_differently_from_an_unknown_one():
+    """ "Not on the allowlist" would be a lie - it is on a list, just not this one."""
+    assert "allowlist" not in verdict("MPL-2.0")
+    assert verdict("AGPL-3.0") == "not on the allowlist: AGPL-3.0"
+
+
+def test_a_scoped_grant_still_obeys_or_semantics():
+    assert licences.judge("some-other-pkg@1.0.0", "(MIT OR MPL-2.0)") == []
+    assert licences.judge("lightningcss@1.0.0", "MIT AND MPL-2.0") == []
+
+
+def test_a_scoped_package_name_is_matched_by_prefix_not_substring():
+    """A prefix keeps the platform binaries in; a substring would let anything in."""
+    assert licences.judge("not-lightningcss@1.0.0", "MPL-2.0") != []
+
+
+# --------------------------------------------------------------------------
+# One package, however many paths
+# --------------------------------------------------------------------------
+
+
+def test_a_hoisted_package_is_reported_once(tmp_path):
+    """
+    npm puts one package at several paths. Reporting each copy padded the
+    count, so "6 packages need a decision" could mean one package six times.
+    """
+    path = lockfile(
+        tmp_path,
+        {
+            "": {"name": "mascope"},
+            "node_modules/vue": {"version": "3.5.0", "license": "MIT"},
+            "node_modules/ansi-regex": {"version": "5.0.1", "license": "AGPL-3.0"},
+            "node_modules/a/node_modules/ansi-regex": {
+                "version": "5.0.1",
+                "license": "AGPL-3.0",
+            },
+            "node_modules/b/node_modules/ansi-regex": {
+                "version": "5.0.1",
+                "license": "AGPL-3.0",
+            },
+        },
+    )
+    assert licences.check(path) == [
+        ("ansi-regex@5.0.1", "AGPL-3.0", "not on the allowlist: AGPL-3.0")
+    ]
+
+
+def test_a_hoisted_package_counts_once_when_clean(tmp_path, capsys):
+    path = lockfile(
+        tmp_path,
+        {
+            "": {"name": "mascope"},
+            "node_modules/vue": {"version": "3.5.0", "license": "MIT"},
+            "node_modules/a/node_modules/vue": {"version": "3.5.0", "license": "MIT"},
+        },
+    )
+    assert licences.check(path) == []
+    assert "1 packages, every licence allowed" in capsys.readouterr().out
+
+
+def test_two_versions_of_one_package_are_reported_separately(tmp_path):
+    path = lockfile(
+        tmp_path,
+        {
+            "": {"name": "mascope"},
+            "node_modules/vue": {"version": "3.5.0", "license": "MIT"},
+            "node_modules/ansi-regex": {"version": "5.0.1", "license": "AGPL-3.0"},
+            "node_modules/a/node_modules/ansi-regex": {
+                "version": "6.2.2",
+                "license": "AGPL-3.0",
+            },
+        },
+    )
+    assert [ident for ident, _, _ in licences.check(path)] == [
+        "ansi-regex@5.0.1",
+        "ansi-regex@6.2.2",
+    ]
+
+
+def test_a_non_string_licence_field_is_a_finding(tmp_path):
+    """npm no longer writes this shape; an unreadable one must not read as fine."""
+    path = lockfile(
+        tmp_path,
+        {
+            "": {"name": "mascope"},
+            "node_modules/vue": {"version": "3.5.0", "license": "MIT"},
+            "node_modules/old": {
+                "version": "1.0.0",
+                "license": {"type": "MIT", "url": "https://example.invalid"},
+            },
+        },
+    )
+    assert [(i, r) for i, _, r in licences.check(path)] == [
+        ("old@1.0.0", "non-string licence field")
+    ]

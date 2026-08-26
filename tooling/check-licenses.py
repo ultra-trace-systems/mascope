@@ -17,11 +17,14 @@
 # is the property that stays true and has no base ref to get wrong.
 #
 # No network, no node_modules, no dependencies - the lockfile already records a
-# licence per package. Runnable locally exactly the way CI runs it:
-#   python3 tooling/check-licenses.py
+# licence per package. CI runs it as `python3 tooling/check-licenses.py`; the
+# portable spelling, which also works on Windows where there is no `python3`,
+# is:
+#   uv run --no-project python tooling/check-licenses.py
 from __future__ import annotations
 
 import json
+import os
 import re
 import sys
 from pathlib import Path
@@ -29,8 +32,8 @@ from pathlib import Path
 
 LOCKFILES = ("server/frontend/package-lock.json",)
 
-# Permissive licences cleared for use in Mascope. Every entry is one somebody
-# looked at; adding one is a deliberate act, not a convenience.
+# Permissive licences cleared for anything that declares them. Every entry is
+# one somebody looked at; adding one is a deliberate act, not a convenience.
 ALLOWED = {
     "MIT",
     "ISC",
@@ -39,20 +42,38 @@ ALLOWED = {
     "BSD-3-Clause",
     "BlueOak-1.0.0",
     "OFL-1.1",
-    # File-level (weak) copyleft, and the only MPL entry is lightningcss plus
-    # its platform binaries, pulled in transitively by vite. We consume it
-    # unmodified and never redistribute it: the frontend image is a multi-stage
-    # build that copies only `dist/`, so node_modules never reaches a published
-    # artefact, and a CSS transformer's output is our CSS, not its own. MPL's
-    # obligations are per-file and do not reach Apache-2.0 code they are
-    # combined with. Modifying it, or shipping node_modules, would each need a
-    # fresh look.
-    "MPL-2.0",
+}
+
+# Licences cleared only for the packages named here, because the argument for
+# them is about those packages rather than about the licence. Values are
+# package-name prefixes. This is REVIEWED's instinct applied to a licence
+# rather than a version: a grant reasoned out for one dependency should not be
+# inherited in silence by the next thing that happens to share its licence.
+SCOPED = {
+    # File-level (weak) copyleft. lightningcss and its per-platform binaries
+    # are pulled in transitively by vite. We consume it unmodified and never
+    # redistribute it: the frontend image is a multi-stage build that copies
+    # only `dist/`, so node_modules never reaches a published artefact, and a
+    # CSS transformer's output is our CSS, not its own. MPL's obligations are
+    # per-file and do not reach the Apache-2.0 code they are combined with.
+    # Modifying it, shipping node_modules, or a *different* MPL dependency
+    # would each need a fresh look - which is what the scope is for.
+    "MPL-2.0": ("lightningcss",),
 }
 
 # SPDX exceptions - the right-hand side of `X WITH Y`. Empty on purpose: nothing
 # uses one today, so any WITH clause that appears is something nobody has read.
 ALLOWED_EXCEPTIONS: set[str] = set()
+
+# SPDX identifiers are case-insensitive, so match on a folded key while keeping
+# the declared spelling for the message. Without this, "apache-2.0" reads as
+# "not on the allowlist" - naming a licence that is in fact approved, and
+# inviting a second ALLOWED entry for the same thing.
+_ALLOWED_FOLDED = {identifier.casefold() for identifier in ALLOWED}
+_SCOPED_FOLDED = {
+    identifier.casefold(): prefixes for identifier, prefixes in SCOPED.items()
+}
+_EXCEPTIONS_FOLDED = {exception.casefold() for exception in ALLOWED_EXCEPTIONS}
 
 # Packages whose registry metadata carries no licence field, verified by hand.
 # Pinned to an exact version so a bump comes back for a fresh look instead of
@@ -85,11 +106,16 @@ _RESERVED = _OPERATORS | frozenset({"(", ")"})
 NOT_SPDX = "not an SPDX expression - read the actual licence text"
 
 HOWTO = """
-Each finding above is one of three things:
+Each finding above is one of these:
 
   * a permissive licence nobody has approved yet - add the SPDX identifier to
     ALLOWED in tooling/check-licenses.py, in its own commit, with a comment
     saying who decided and on what basis;
+
+  * a licence cleared only for named packages ("cleared only for other
+    packages") - the argument recorded in SCOPED was made about a different
+    dependency, so it does not carry over. Read this one, and either widen
+    that entry's prefixes with the reasoning, or treat it as below;
 
   * a package with no licence in its registry metadata - verify it by hand
     (its LICENSE file, or its README) and add name@version to REVIEWED with
@@ -194,7 +220,18 @@ def _render(node: tuple) -> str:
     return "(" + joiner.join(_render(operand) for operand in node[1]) + ")"
 
 
-def _unmet(node: tuple) -> list[tuple[str, str]]:
+def _clearance(name: str, package: str) -> str | None:
+    """Why ``name`` is not cleared for ``package``, or ``None`` if it is."""
+    folded = name.casefold()
+    if folded in _ALLOWED_FOLDED:
+        return None
+    prefixes = _SCOPED_FOLDED.get(folded)
+    if prefixes is None:
+        return "licence"
+    return None if package.startswith(prefixes) else "scoped"
+
+
+def _unmet(node: tuple, package: str) -> list[tuple[str, str]]:
     """Return what stops ``node`` being allowed, as ``(kind, detail)`` pairs.
 
     An empty list means allowed. AND needs every operand, so its operands'
@@ -202,18 +239,21 @@ def _unmet(node: tuple) -> list[tuple[str, str]]:
     soon as any option is allowed, and names the whole choice when none is -
     which points at the failing subexpression rather than at identifiers the
     reader might otherwise take for requirements.
+
+    ``package`` is the npm package name, which decides the SCOPED grants.
     """
     if node[0] == "licence":
         _, name, exception = node
         reasons = []
-        if name not in ALLOWED:
-            reasons.append(("licence", name))
-        if exception is not None and exception not in ALLOWED_EXCEPTIONS:
+        kind = _clearance(name, package)
+        if kind is not None:
+            reasons.append((kind, name))
+        if exception is not None and exception.casefold() not in _EXCEPTIONS_FOLDED:
             reasons.append(("exception", exception))
         return reasons
     if node[0] == "and":
-        return [reason for operand in node[1] for reason in _unmet(operand)]
-    per_option = [_unmet(option) for option in node[1]]
+        return [reason for operand in node[1] for reason in _unmet(operand, package)]
+    per_option = [_unmet(option, package) for option in node[1]]
     if any(not reasons for reasons in per_option):
         return []
     return [("choice", _render(node))]
@@ -224,6 +264,7 @@ def _describe(reasons: list[tuple[str, str]]) -> str:
     parts = []
     for kind, label in (
         ("licence", "not on the allowlist"),
+        ("scoped", "cleared only for other packages"),
         ("exception", "unreviewed exception"),
         ("choice", "no allowed option in"),
     ):
@@ -234,14 +275,35 @@ def _describe(reasons: list[tuple[str, str]]) -> str:
 
 
 def judge(ident: str, declared: str) -> list[tuple[str, str, str]]:
-    """Return findings for one package's declared licence string."""
+    """Return findings for one package's declared licence string.
+
+    ``ident`` is ``name@version`` as built by ``check``; the package name is
+    recovered from it because SCOPED grants are decided by which package
+    declares the licence, not just by the licence.
+    """
+    package = ident.rsplit("@", 1)[0]
     node = parse_expression(declared)
     if node is None:
         return [(ident, declared, NOT_SPDX)]
-    reasons = _unmet(node)
+    reasons = _unmet(node, package)
     if not reasons:
         return []
     return [(ident, declared, _describe(reasons))]
+
+
+def _note(message: str) -> None:
+    """Surface a housekeeping note somewhere it will actually be read.
+
+    These fire on an otherwise green run, and nobody opens the log of a job
+    that passed - so under Actions the note goes out as a workflow annotation,
+    which shows on the run summary and against the file in the diff. Stale
+    entries would otherwise accumulate unseen, which is the exact rot the
+    version pins exist to prevent.
+    """
+    if os.environ.get("GITHUB_ACTIONS") == "true":
+        print(f"::warning file=tooling/check-licenses.py::{message}")
+    else:
+        print(f"note: {message}")
 
 
 def check(lock_path: Path) -> list[tuple[str, str, str]]:
@@ -258,35 +320,40 @@ def check(lock_path: Path) -> list[tuple[str, str, str]]:
     if len(packages) < 2:
         sys.exit(f"{lock_path}: no packages found - refusing to pass on nothing")
 
-    problems: list[tuple[str, str, str]] = []
+    problems: set[tuple[str, str, str]] = set()
     seen_reviewed: set[str] = set()
-    checked = 0
+    seen: set[str] = set()
 
     for path, package in packages.items():
         if path == "" or package.get("link"):
             continue  # the root project itself, and workspace symlinks
-        checked += 1
         name = path.rsplit("node_modules/", 1)[-1]
         ident = f"{name}@{package.get('version', '?')}"
+        # npm hoists one package to several paths; `problems` is a set so a
+        # duplicate reports once instead of padding the count with copies.
+        seen.add(ident)
 
         if ident in REVIEWED:
             seen_reviewed.add(ident)
             continue
 
-        declared = package.get("license", package.get("licenses"))
+        declared = package.get("license")
         if declared is None:
-            problems.append((ident, "<none>", "declares no licence"))
+            problems.add((ident, "<none>", "declares no licence"))
         elif not isinstance(declared, str):
-            problems.append((ident, json.dumps(declared), "non-string licence field"))
+            # npm normalises `license` to a string, and does not copy the
+            # deprecated `licenses` array into a v2+ lockfile at all. Guarded
+            # anyway: a shape we cannot read must not pass as "nothing wrong".
+            problems.add((ident, json.dumps(declared), "non-string licence field"))
         else:
-            problems.extend(judge(ident, declared))
+            problems.update(judge(ident, declared))
 
     for stale in sorted(set(REVIEWED) - seen_reviewed):
-        print(f"note: {stale} is no longer installed - drop it from REVIEWED")
+        _note(f"{stale} is no longer installed - drop it from REVIEWED")
 
     if not problems:
-        print(f"OK  {lock_path}: {checked} packages, every licence allowed")
-    return problems
+        print(f"OK  {lock_path}: {len(seen)} packages, every licence allowed")
+    return sorted(problems)
 
 
 def main() -> int:
@@ -296,7 +363,7 @@ def main() -> int:
     for name in LOCKFILES:
         lock_path = root / name
         if not lock_path.is_file():
-            sys.exit(f"{name}: not found (run this from anywhere in the repo)")
+            sys.exit(f"{name}: not found - update LOCKFILES if the lockfile moved")
         problems = check(lock_path)
         if problems:
             findings.append((lock_path, problems))
