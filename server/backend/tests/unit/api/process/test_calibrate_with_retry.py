@@ -30,12 +30,13 @@ _SAMPLE = {
 }
 
 
-async def _run(side_effect) -> tuple[AsyncMock, list]:
+async def _run(side_effect, user_id: int | None = 1) -> tuple[AsyncMock, list]:
     """Run calibrate_with_retry against a mocked calibration, capturing logs.
 
-    Also mocks the failure recorder so no database is needed; the mock and the
-    return value are exposed as attributes on the returned calibrate mock
-    (``recorder`` / ``result``) for outcome assertions.
+    Also mocks the failure recorder and the notification emitter so neither a
+    database nor a Socket.IO server is needed; the mocks and the return value
+    are exposed as attributes on the returned calibrate mock (``recorder`` /
+    ``notifier`` / ``result``) for outcome assertions.
     """
     records = []
     sink_id = runtime.logger.add(
@@ -43,17 +44,28 @@ async def _run(side_effect) -> tuple[AsyncMock, list]:
     )
     calibrate = AsyncMock(side_effect=side_effect)
     recorder = AsyncMock()
+    notifier = AsyncMock()
     try:
         with (
             patch(f"{_SVC}.calibration_mz_calibrate_sample", calibrate),
             patch(f"{_SVC}._record_calibration_failure", recorder),
+            patch(f"{_SVC}.emit_user_notification", notifier),
         ):
-            result = await calibrate_with_retry(sample=_SAMPLE, sample_file_id="sf-001")
+            result = await calibrate_with_retry(
+                sample=_SAMPLE, sample_file_id="sf-001", user_id=user_id
+            )
     finally:
         runtime.logger.remove(sink_id)
     calibrate.recorder = recorder
+    calibrate.notifier = notifier
     calibrate.result = result
     return calibrate, records
+
+
+def _emitted(notifier: AsyncMock):
+    """The single UserNotification the emitter mock was handed."""
+    assert notifier.await_count == 1
+    return notifier.await_args.args[0]
 
 
 def _monitored(records: list) -> list:
@@ -148,3 +160,62 @@ async def test_fault_records_failure_and_returns_false():
     assert calibrate.result is False
     calibrate.recorder.assert_awaited_once()
     assert calibrate.recorder.await_args.kwargs["attempts"] == 1
+
+
+@pytest.mark.asyncio
+async def test_give_up_emits_one_summary_notification():
+    """One report for the whole loop, not one per attempt per nesting level.
+
+    The nested controllers stay quiet for a dependent task, so this summary is
+    the only notice the user gets - the pipeline's own notification reports
+    plain success for the file.
+    """
+    calibrate, _ = await _run(
+        ApiException(
+            "m/z fitting sample '2025-09-20 10:30:00' warning: "
+            "Not enough calibration peaks",
+            {"data": {"warning": "Not enough calibration peaks", "error": None}},
+            200,
+        )
+    )
+
+    notification = _emitted(calibrate.notifier)
+    assert notification.status == "warning"
+    # Parent-less, or the frontend logs it without ever displaying it.
+    assert notification.parent_id is None
+    assert notification.type == "mz_calibration"
+    assert calibrate.notifier.await_args.kwargs["user_id"] == 1
+    assert _SAMPLE["sample_item_name"] in notification.message
+    assert f"after {CALIBRATION_ITERATIONS} attempts" in notification.message
+    assert "Not enough calibration peaks" in notification.message
+    # The consequence no per-attempt warning ever mentioned.
+    assert "skipped" in notification.message
+
+
+@pytest.mark.asyncio
+async def test_fault_emits_one_error_notification():
+    """A fault stops at the first attempt, so no attempt count is claimed."""
+    calibrate, _ = await _run(ApiException("Database failed", {}, 500))
+
+    notification = _emitted(calibrate.notifier)
+    assert notification.status == "error"
+    assert "after" not in notification.message
+    assert "Database failed" in notification.message
+
+
+@pytest.mark.asyncio
+async def test_success_emits_no_summary():
+    calibrate, _ = await _run(None)
+
+    calibrate.notifier.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_summary_skipped_without_a_user():
+    """Nobody to notify: emit_user_notification rejects an empty audience."""
+    calibrate, _ = await _run(
+        ApiException("m/z fitting warning: few peaks", {}, 200), user_id=None
+    )
+
+    assert calibrate.result is False
+    calibrate.notifier.assert_not_awaited()

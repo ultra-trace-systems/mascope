@@ -63,6 +63,10 @@ from mascope_backend.db import (
 )
 from mascope_backend.db.id import gen_id
 from mascope_backend.runtime import runtime
+from mascope_backend.socket.notifications import (
+    UserNotification,
+    emit_user_notification,
+)
 from mascope_backend.socket.records.service import (
     emit_record_deleted,
 )
@@ -1145,6 +1149,62 @@ async def _record_calibration_failure(
         )
 
 
+async def _report_calibration_given_up(
+    sample: dict,
+    error: ApiException,
+    attempts: int,
+    mz_error_tolerance: float | None,
+    user_id: int | None,
+    status: str,
+) -> None:
+    """
+    Tell the user once, at the end, that the sample was not calibrated.
+
+    The nested controllers no longer report each attempt (see
+    :func:`api_controller_background_task`): they repeated the same sentence
+    once per nesting level per attempt, and none of them said how many
+    attempts had been spent or that matching and assignment would be skipped.
+    This is the only notification that outlives the loop, so it carries both.
+
+    Deliberately parent-less: the frontend displays only parent-less
+    notifications, and this is the one report the user gets - the pipeline's
+    own notification still reports plain success for a file whose samples all
+    failed to calibrate.
+    """
+    if user_id is None:
+        # Nobody to notify - a pipeline started without a user (tests,
+        # background reprocessing). The failure is still logged and persisted.
+        return
+    data = (
+        error.tech_message.get("data") if isinstance(error.tech_message, dict) else None
+    )
+    reason = (data or {}).get("warning") or (data or {}).get("error")
+    reason = str(reason or error.user_message).rstrip(".")
+    attempted = f" after {attempts} attempts" if attempts > 1 else ""
+    tolerance = (
+        f" (m/z error tolerance widened to {mz_error_tolerance:g} ppm)"
+        if attempts > 1 and mz_error_tolerance is not None
+        else ""
+    )
+    await emit_user_notification(
+        UserNotification(
+            process_id=gen_id(8),
+            type="mz_calibration",
+            status=status,
+            message=(
+                f"Could not m/z calibrate sample "
+                f"'{sample['sample_item_name']}'{attempted}{tolerance}: "
+                f"{reason}. Matching and peak assignment were skipped for it."
+            ),
+            data={
+                "sample_item_id": sample["sample_item_id"],
+                "filename": sample["filename"],
+            },
+        ),
+        user_id=user_id,
+    )
+
+
 async def calibrate_with_retry(
     sample: dict,
     sample_file_id: str | None = None,
@@ -1159,8 +1219,10 @@ async def calibrate_with_retry(
     RETRYABLE_CALIBRATION_STATUS); any other failure stops the loop at once.
 
     When every attempt fails, the outcome is persisted on the sample file via
-    :func:`_record_calibration_failure` and ``False`` is returned so the caller
-    can skip steps that assume a calibrated m/z axis (matching, assignment).
+    :func:`_record_calibration_failure`, reported to the user once via
+    :func:`_report_calibration_given_up`, and ``False`` is returned so the
+    caller can skip steps that assume a calibrated m/z axis (matching,
+    assignment).
 
     :param sample: Sample dict to calibrate
     :type sample: dict
@@ -1200,12 +1262,21 @@ async def calibrate_with_retry(
                     attempts=i,
                     mz_error_tolerance=mz_calibration_params.mz_error_tolerance,
                 )
+                await _report_calibration_given_up(
+                    sample,
+                    e,
+                    attempts=i,
+                    mz_error_tolerance=mz_calibration_params.mz_error_tolerance,
+                    user_id=user_id,
+                    status="error",
+                )
                 return False
             if i == CALIBRATION_ITERATIONS:
                 # INFO: an expected data condition (a spectrum too poor to
                 # yield calibration peaks), and this fires per sample of every
-                # upload. For 200/207 the warning notification has already
-                # reached the user; a 422 degenerate fit is recorded only here.
+                # upload. The nested attempts report nothing themselves, so the
+                # summary below is the user's only notice that this sample was
+                # left uncalibrated.
                 runtime.logger.info(
                     "Gave up m/z calibration at m/z error tolerance "
                     f"{mz_calibration_params.mz_error_tolerance} "
@@ -1216,6 +1287,14 @@ async def calibrate_with_retry(
                     e,
                     attempts=i,
                     mz_error_tolerance=mz_calibration_params.mz_error_tolerance,
+                )
+                await _report_calibration_given_up(
+                    sample,
+                    e,
+                    attempts=i,
+                    mz_error_tolerance=mz_calibration_params.mz_error_tolerance,
+                    user_id=user_id,
+                    status="warning",
                 )
                 return False
             else:
