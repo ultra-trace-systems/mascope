@@ -67,3 +67,37 @@ jobs:
 
       - name: Check dependency licences against the allowlist
         run: python3 tooling/check-licenses.py npm
+
+  python:
+    name: Licence audit, Python
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      # No matrix and no `ref:`, unlike the npm job above, and the difference is
+      # not an oversight. uv.lock records no licence metadata, so the Python
+      # check has to read installed distributions - which means installing the
+      # audited tree, and installing runs its build backends. That is executing
+      # the audited branch's code in a privileged context, the thing the npm job
+      # goes out of its way to avoid, and no data-only trick avoids it here.
+      #
+      # So this audits the branch the run started on and nothing else: master on
+      # the nightly schedule, or whichever branch you dispatch it from. develop's
+      # Python tree is covered by the required per-PR check rather than here.
+      - name: Checkout the auditing ref
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+        with:
+          version: "0.11.2"
+
+      - name: Install every dependency group
+        # The lockfile spans every group, and a package it names that is not
+        # installed cannot have its licence read - the checker reports those
+        # rather than skipping them, so install the lot.
+        run: uv sync --all-groups
+
+      - name: Check Python dependency licences against the allowlist
+        run: uv run --no-sync python tooling/check-licenses.py python

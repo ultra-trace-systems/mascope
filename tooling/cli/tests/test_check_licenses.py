@@ -76,7 +76,17 @@ def test_every_allowlisted_identifier_parses_and_passes(identifier):
 
 
 @pytest.mark.parametrize(
-    "declared", ["AGPL-3.0", "GPL-3.0-or-later", "0BSD", "UNLICENSED", "CC-BY-4.0"]
+    "declared",
+    [
+        "AGPL-3.0",
+        "GPL-3.0-or-later",
+        "SSPL-1.0",
+        "EUPL-1.2",
+        # npm's marker for "proprietary, do not publish". Note it is not the
+        # `Unlicense` public-domain dedication, which IS allowed - the two
+        # differ by one character and mean opposite things.
+        "UNLICENSED",
+    ],
 )
 def test_an_identifier_off_the_allowlist_is_reported_by_name(declared):
     assert verdict(declared) == f"not on the allowlist: {declared}"
@@ -100,7 +110,9 @@ def test_spdx_identifiers_are_matched_case_insensitively(spelling):
 def test_and_requires_every_operand():
     assert verdict("(BSD-3-Clause AND Apache-2.0)") is None
     assert verdict("MIT AND AGPL-3.0") == "not on the allowlist: AGPL-3.0"
-    assert verdict("MIT AND GPL-3.0 AND Zlib") == "not on the allowlist: GPL-3.0, Zlib"
+    assert verdict("MIT AND GPL-3.0 AND SSPL-1.0") == (
+        "not on the allowlist: GPL-3.0, SSPL-1.0"
+    )
 
 
 @pytest.mark.parametrize(
@@ -157,10 +169,15 @@ def test_parentheses_group_without_changing_a_lone_identifier():
 
 
 def test_an_exception_nobody_has_read_is_a_finding():
-    assert licences.ALLOWED_EXCEPTIONS == set(), "the cases below assume none"
-    assert verdict("Apache-2.0 WITH LLVM-exception") == (
-        "unreviewed exception: LLVM-exception"
+    assert verdict("Apache-2.0 WITH Classpath-exception-2.0") == (
+        "unreviewed exception: Classpath-exception-2.0"
     )
+
+
+def test_a_reviewed_exception_passes():
+    """llvmlite declares this one, and it only widens Apache-2.0."""
+    assert "LLVM-exception" in licences.ALLOWED_EXCEPTIONS
+    assert verdict("BSD-2-Clause AND Apache-2.0 WITH LLVM-exception") is None
 
 
 def test_a_licence_and_its_exception_are_reported_together():
@@ -300,7 +317,7 @@ def test_a_scoped_and_nested_package_is_named_by_its_package_name(tmp_path):
 def test_a_reviewed_package_is_exempt_only_at_the_pinned_version(tmp_path):
     """The pin is the point: a bump comes back for a fresh look."""
     reviewed = "combine-errors@3.0.3"
-    assert reviewed in licences.REVIEWED
+    assert reviewed in licences.NPM_REVIEWED
 
     def at(version):
         path = lockfile(
@@ -331,7 +348,7 @@ def test_a_reviewed_entry_that_is_gone_is_reported(tmp_path, capsys, monkeypatch
     monkeypatch.delenv("GITHUB_ACTIONS", raising=False)
     assert licences.check(_without_reviewed(tmp_path)) == []
     out = capsys.readouterr().out
-    for stale in licences.REVIEWED:
+    for stale in licences.NPM_REVIEWED:
         assert f"note: {stale} is no longer installed" in out
 
 
@@ -345,7 +362,7 @@ def test_a_stale_entry_becomes_an_annotation_under_actions(
     monkeypatch.setenv("GITHUB_ACTIONS", "true")
     assert licences.check(_without_reviewed(tmp_path)) == []
     out = capsys.readouterr().out
-    for stale in licences.REVIEWED:
+    for stale in licences.NPM_REVIEWED:
         assert f"::warning file=tooling/check-licenses.py::{stale} is no longer" in out
     assert "note:" not in out
 
@@ -379,39 +396,56 @@ def test_a_lockfile_holding_only_the_root_entry_is_refused(tmp_path):
 # --------------------------------------------------------------------------
 
 
-def test_a_scoped_licence_is_cleared_for_the_package_it_was_argued_for():
-    """MPL-2.0 was reasoned about lightningcss, including its platform binaries."""
-    assert "MPL-2.0" in licences.SCOPED
-    assert licences.judge("lightningcss@1.30.2", "MPL-2.0") == []
-    assert licences.judge("lightningcss-linux-x64-gnu@1.30.2", "MPL-2.0") == []
+@pytest.fixture
+def scoped(monkeypatch):
+    """Install a synthetic SCOPED grant.
+
+    These pin the mechanism, not the allowlist's current contents - coupling
+    them to whichever licence happens to be scoped today means every future
+    allowlist decision breaks unrelated tests, which is how the first version
+    of this file broke when MPL-2.0 moved to ALLOWED.
+    """
+
+    def install(identifier, prefixes):
+        monkeypatch.setattr(licences, "SCOPED", {identifier: prefixes})
+        monkeypatch.setattr(
+            licences, "_SCOPED_FOLDED", {identifier.casefold(): prefixes}
+        )
+
+    return install
 
 
-def test_a_scoped_licence_does_not_carry_to_another_package():
-    """
-    The whole point of the scope: the next MPL dependency has to be read on
-    its own terms rather than inheriting an argument made about lightningcss.
-    """
-    assert verdict("MPL-2.0") == "cleared only for other packages: MPL-2.0"
-    findings = licences.judge("some-other-pkg@1.0.0", "MPL-2.0")
-    assert findings == [
-        ("some-other-pkg@1.0.0", "MPL-2.0", "cleared only for other packages: MPL-2.0")
+def test_a_scoped_licence_is_cleared_for_the_package_it_was_argued_for(scoped):
+    scoped("EPL-2.0", ("somelib",))
+    assert licences.judge("somelib@1.0.0", "EPL-2.0") == []
+    assert licences.judge("somelib-linux-x64@1.0.0", "EPL-2.0") == []
+
+
+def test_a_scoped_licence_does_not_carry_to_another_package(scoped):
+    """The point of the scope: the next arrival is read on its own terms."""
+    scoped("EPL-2.0", ("somelib",))
+    assert licences.judge("other-pkg@1.0.0", "EPL-2.0") == [
+        ("other-pkg@1.0.0", "EPL-2.0", "cleared only for other packages: EPL-2.0")
     ]
 
 
-def test_a_scoped_licence_is_reported_differently_from_an_unknown_one():
-    """ "Not on the allowlist" would be a lie - it is on a list, just not this one."""
-    assert "allowlist" not in verdict("MPL-2.0")
+def test_a_scoped_licence_is_reported_differently_from_an_unknown_one(scoped):
+    """ "Not on the allowlist" would be untrue - it is on a list, not this one."""
+    scoped("EPL-2.0", ("somelib",))
+    assert "allowlist" not in licences.judge("other@1.0.0", "EPL-2.0")[0][2]
     assert verdict("AGPL-3.0") == "not on the allowlist: AGPL-3.0"
 
 
-def test_a_scoped_grant_still_obeys_or_semantics():
-    assert licences.judge("some-other-pkg@1.0.0", "(MIT OR MPL-2.0)") == []
-    assert licences.judge("lightningcss@1.0.0", "MIT AND MPL-2.0") == []
+def test_a_scoped_grant_still_obeys_or_semantics(scoped):
+    scoped("EPL-2.0", ("somelib",))
+    assert licences.judge("other@1.0.0", "(MIT OR EPL-2.0)") == []
+    assert licences.judge("somelib@1.0.0", "MIT AND EPL-2.0") == []
 
 
-def test_a_scoped_package_name_is_matched_by_prefix_not_substring():
-    """A prefix keeps the platform binaries in; a substring would let anything in."""
-    assert licences.judge("not-lightningcss@1.0.0", "MPL-2.0") != []
+def test_a_scoped_package_name_is_matched_by_prefix_not_substring(scoped):
+    """A prefix keeps the platform binaries in; a substring lets anything in."""
+    scoped("EPL-2.0", ("somelib",))
+    assert licences.judge("not-somelib@1.0.0", "EPL-2.0") != []
 
 
 # --------------------------------------------------------------------------
@@ -493,3 +527,255 @@ def test_a_non_string_licence_field_is_a_finding(tmp_path):
     assert [(i, r) for i, _, r in licences.check(path)] == [
         ("old@1.0.0", "non-string licence field")
     ]
+
+
+# --------------------------------------------------------------------------
+# The Python side: uv.lock plus installed distribution metadata
+# --------------------------------------------------------------------------
+
+
+class FakeMetadata:
+    """The subset of importlib.metadata's message object the checker uses."""
+
+    def __init__(self, name, expression=None, classifiers=(), free=None):
+        self._fields = {
+            "Name": name,
+            "License-Expression": expression,
+            "License": free,
+        }
+        self._classifiers = list(classifiers)
+
+    def get(self, key, default=None):
+        return self._fields.get(key, default) or default
+
+    def get_all(self, key):
+        return self._classifiers if key == "Classifier" else None
+
+
+def uv_lock(tmp_path, packages, first_party=()):
+    """Write a uv.lock with ``packages`` as {name: version}."""
+    lines = []
+    for name, version in packages.items():
+        lines += [
+            "[[package]]",
+            f'name = "{name}"',
+            f'version = "{version}"',
+            'source = { registry = "https://pypi.org/simple" }',
+            "",
+        ]
+    for name in first_party:
+        lines += [
+            "[[package]]",
+            f'name = "{name}"',
+            'version = "0.0.0"',
+            'source = { editable = "libraries/x" }',
+            "",
+        ]
+    path = tmp_path / "uv.lock"
+    path.write_text("\n".join(lines), encoding="utf-8")
+    return path
+
+
+@pytest.fixture
+def environment(monkeypatch):
+    """Stand in for the installed distributions the checker reads."""
+
+    import importlib.metadata
+
+    def install(metadatas):
+        class FakeDist:
+            def __init__(self, metadata):
+                self.metadata = metadata
+
+        # Patch the function on the real module rather than swapping the module
+        # in sys.modules: `import importlib.metadata` resolves the attribute off
+        # the package, so a swapped entry is bypassed and the real import breaks.
+        monkeypatch.setattr(
+            importlib.metadata,
+            "distributions",
+            lambda: [FakeDist(m) for m in metadatas],
+        )
+
+    return install
+
+
+def test_a_declared_spdx_expression_is_judged_directly(tmp_path, environment):
+    """PEP 639 metadata is already SPDX, so it goes straight to the parser."""
+    environment(
+        [
+            FakeMetadata("anyio", expression="MIT"),
+            FakeMetadata("cryptography", expression="Apache-2.0 OR BSD-3-Clause"),
+        ]
+    )
+    lock = uv_lock(tmp_path, {"anyio": "4.0.0", "cryptography": "43.0.0"})
+    assert licences.check_python(lock) == []
+
+
+def test_an_or_expression_from_pypi_needs_only_one_allowed_option(
+    tmp_path, environment
+):
+    """cryptography really does declare this; reading OR as AND would fail it."""
+    environment([FakeMetadata("cryptography", expression="Apache-2.0 OR BSD-3-Clause")])
+    lock = uv_lock(tmp_path, {"cryptography": "43.0.0"})
+    assert licences.check_python(lock) == []
+
+
+def test_a_classifier_is_mapped_to_spdx(tmp_path, environment):
+    environment(
+        [
+            FakeMetadata(
+                "aiosqlite", classifiers=["License :: OSI Approved :: MIT License"]
+            )
+        ]
+    )
+    lock = uv_lock(tmp_path, {"aiosqlite": "0.20.0"})
+    assert licences.check_python(lock) == []
+
+
+def test_several_classifiers_all_have_to_be_allowed(tmp_path, environment):
+    """Two licence classifiers mean both apply, which is what AND means."""
+    environment(
+        [
+            FakeMetadata(
+                "odd",
+                classifiers=[
+                    "License :: OSI Approved :: MIT License",
+                    "License :: OSI Approved :: GNU Affero General Public License v3",
+                ],
+            )
+        ]
+    )
+    lock = uv_lock(tmp_path, {"odd": "1.0.0"})
+    findings = licences.check_python(lock)
+    assert len(findings) == 1
+    assert "unmapped classifier" in findings[0][2], (
+        "the AGPL classifier must not be masked by the MIT one alongside it"
+    )
+
+
+def test_an_unmapped_classifier_is_a_finding_naming_its_source(tmp_path, environment):
+    """psycopg2's LGPL classifier is not in CLASSIFIERS, and must not pass."""
+    environment(
+        [
+            FakeMetadata(
+                "somelib",
+                classifiers=[
+                    "License :: OSI Approved :: GNU Library or Lesser "
+                    "General Public License (LGPL)"
+                ],
+            )
+        ]
+    )
+    lock = uv_lock(tmp_path, {"somelib": "1.0.0"})
+    findings = licences.check_python(lock)
+    assert len(findings) == 1
+    assert "unmapped classifier" in findings[0][2]
+
+
+def test_free_text_is_normalised_only_where_it_is_unambiguous(tmp_path, environment):
+    environment(
+        [
+            FakeMetadata("asttokens", free="Apache 2.0"),
+            FakeMetadata("partd", free="BSD"),
+            FakeMetadata("vague", free="see the website"),
+        ]
+    )
+    lock = uv_lock(tmp_path, {"asttokens": "3.0.1", "partd": "1.4.2", "vague": "1.0.0"})
+    findings = licences.check_python(lock)
+    assert [ident for ident, _, _ in findings] == ["vague@1.0.0"]
+    assert "License free text" in findings[0][2]
+
+
+def test_a_verdict_says_when_it_came_from_weaker_evidence(tmp_path, environment):
+    """A classifier is coarser than SPDX; the reader should know which it was."""
+    environment(
+        [
+            FakeMetadata(
+                "gpl-thing",
+                classifiers=["License :: OSI Approved :: MIT License"],
+                free=None,
+            ),
+            FakeMetadata("clean", expression="AGPL-3.0"),
+        ]
+    )
+    lock = uv_lock(tmp_path, {"gpl-thing": "1.0.0", "clean": "1.0.0"})
+    findings = {ident: reason for ident, _, reason in licences.check_python(lock)}
+    # The SPDX-declared one carries no provenance suffix; there is nothing to
+    # double-check about where the string came from.
+    assert findings["clean@1.0.0"] == "not on the allowlist: AGPL-3.0"
+
+
+def test_a_package_declaring_nothing_is_a_finding(tmp_path, environment):
+    environment([FakeMetadata("mystery")])
+    lock = uv_lock(tmp_path, {"mystery": "1.0.0"})
+    assert licences.check_python(lock) == [
+        ("mystery@1.0.0", "<none>", "declares no licence")
+    ]
+
+
+def test_first_party_packages_are_not_checked(tmp_path, environment):
+    """Our own code is covered by this repository's LICENSE, not by a gate."""
+    environment([FakeMetadata("anyio", expression="MIT")])
+    lock = uv_lock(
+        tmp_path, {"anyio": "4.0.0"}, first_party=["mascope-chem", "mascope-backend"]
+    )
+    assert licences.check_python(lock) == []
+
+
+def test_a_locked_package_that_is_not_installed_is_a_finding(tmp_path, environment):
+    """
+    Reading an environment is what disqualified `npm query` for the npm side.
+    A package nobody could read is not a licence anybody approved.
+    """
+    environment([FakeMetadata("anyio", expression="MIT")])
+    lock = uv_lock(tmp_path, {"anyio": "4.0.0", "mac-only-thing": "0.1.4"})
+    assert licences.check_python(lock) == [
+        ("mac-only-thing@0.1.4", "<not installed>", "locked but not installed here")
+    ]
+
+
+def test_an_unsynced_environment_is_refused_rather_than_reported(tmp_path, environment):
+    """The false green the npm side was designed to avoid: nothing installed."""
+    environment([])
+    lock = uv_lock(tmp_path, {f"pkg{n}": "1.0.0" for n in range(10)})
+    with pytest.raises(SystemExit, match="uv sync"):
+        licences.check_python(lock)
+
+
+def test_a_lockfile_with_no_third_party_packages_is_refused(tmp_path, environment):
+    environment([])
+    lock = uv_lock(tmp_path, {}, first_party=["mascope"])
+    with pytest.raises(SystemExit, match="refusing to pass"):
+        licences.check_python(lock)
+
+
+def test_reviewed_python_packages_are_exempt_at_the_pinned_version(
+    tmp_path, environment
+):
+    reviewed = "psycopg2-binary@2.9.12"
+    assert reviewed in licences.PYTHON_REVIEWED
+
+    def at(version):
+        environment(
+            [
+                FakeMetadata(
+                    "psycopg2-binary",
+                    classifiers=[
+                        "License :: OSI Approved :: GNU Library or Lesser "
+                        "General Public License (LGPL)"
+                    ],
+                )
+            ]
+        )
+        return licences.check_python(uv_lock(tmp_path, {"psycopg2-binary": version}))
+
+    assert at("2.9.12") == []
+    assert at("3.0.0") != []
+
+
+def test_names_are_normalised_between_the_lockfile_and_the_environment(
+    tmp_path, environment
+):
+    """uv.lock writes `clr-loader`; the installed distribution says `clr_loader`."""
+    environment([FakeMetadata("clr_loader", expression="MIT")])
+    assert licences.check_python(uv_lock(tmp_path, {"clr-loader": "0.3.1"})) == []
