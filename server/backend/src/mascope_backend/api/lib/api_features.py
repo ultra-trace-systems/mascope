@@ -227,8 +227,10 @@ def api_controller_background_task(
     The decorator supports two types of Socket.IO communications: (controlled by independent_transaction):
     1. Notifications: User-facing messages about task progress/status
        - Success: Always sent
-       - Warnings: Sent unless the warning is re-raised to a parent handler
-         (ApiException with status_code 200/207), which reports it instead
+       - Warnings: Reported unless the warning is re-raised to a parent
+         handler (ApiException with status_code 200/207), which reports it
+         instead; the re-raised case still emits the packet flagged `silent`,
+         which only ends the task's progress bar in the frontend
        - Errors: Only sent for independent transactions
     2. Reloads: Data refresh signals for UI components
        - Success: Sent for independent transactions or rematch_batch
@@ -320,22 +322,28 @@ def api_controller_background_task(
                     notification.message = e.user_message
                     notification.error = {"detail": e.tech_message}
 
-                    # Emit only when nobody upstream will: a nested, dependent
-                    # task's warning is re-raised below and reported again by
-                    # whoever owns the process. Emitting here too filed one
-                    # notification per nesting level per retry - fourteen for a
-                    # single sample that would not calibrate (7 attempts x
+                    # A nested, dependent task's warning is re-raised below
+                    # and reported again by whoever owns the process, so
+                    # reporting it here as well filed one notification per
+                    # nesting level per retry - fourteen for a single sample
+                    # that would not calibrate (7 attempts x
                     # calibration_mz_fit + calibration_mz_calibrate_sample).
-                    # The condition is the exact complement of the re-raise
-                    # below, so no warning is both silenced here and dropped.
-                    # Nothing that was visible stops being visible: the
-                    # frontend already displays only parent-less notifications
-                    # (stores/ui/notification.js), so these were log and
-                    # badge-count entries only.
-                    if independent_transaction or not parent_id:
-                        await handle_notifications(
-                            error_notification_rooms, notification, kwargs, None
-                        )
+                    # The copy is suppressed under the same condition as the
+                    # re-raise below, so no warning is both silenced here and
+                    # never reported.
+                    # The frontend never displayed these - it shows only
+                    # parent-less notifications (stores/ui/notification.js) -
+                    # but they did more than fill the log and the badge: on
+                    # this path it is the only non-pending packet the child's
+                    # process id sends, and that is what ends its progress bar.
+                    # So the packet is flagged rather than dropped: a `silent`
+                    # one still ends the progress, and the store keeps it out
+                    # of the log, off the badge and away from the toast.
+                    if not independent_transaction and parent_id:
+                        notification.silent = True
+                    await handle_notifications(
+                        error_notification_rooms, notification, kwargs, None
+                    )
                     if independent_transaction or (
                         func.__name__ == "rematch_batch" and parent_id
                     ):
