@@ -227,7 +227,8 @@ def api_controller_background_task(
     The decorator supports two types of Socket.IO communications: (controlled by independent_transaction):
     1. Notifications: User-facing messages about task progress/status
        - Success: Always sent
-       - Warnings: Always sent (ApiException with status_code 200)
+       - Warnings: Sent unless the warning is re-raised to a parent handler
+         (ApiException with status_code 200/207), which reports it instead
        - Errors: Only sent for independent transactions
     2. Reloads: Data refresh signals for UI components
        - Success: Sent for independent transactions or rematch_batch
@@ -319,10 +320,22 @@ def api_controller_background_task(
                     notification.message = e.user_message
                     notification.error = {"detail": e.tech_message}
 
-                    #  Emit warning user notifications for both independent and dependent transactions
-                    await handle_notifications(
-                        error_notification_rooms, notification, kwargs, None
-                    )
+                    # Emit only when nobody upstream will: a nested, dependent
+                    # task's warning is re-raised below and reported again by
+                    # whoever owns the process. Emitting here too filed one
+                    # notification per nesting level per retry - fourteen for a
+                    # single sample that would not calibrate (7 attempts x
+                    # calibration_mz_fit + calibration_mz_calibrate_sample).
+                    # The condition is the exact complement of the re-raise
+                    # below, so no warning is both silenced here and dropped.
+                    # Nothing that was visible stops being visible: the
+                    # frontend already displays only parent-less notifications
+                    # (stores/ui/notification.js), so these were log and
+                    # badge-count entries only.
+                    if independent_transaction or not parent_id:
+                        await handle_notifications(
+                            error_notification_rooms, notification, kwargs, None
+                        )
                     if independent_transaction or (
                         func.__name__ == "rematch_batch" and parent_id
                     ):
