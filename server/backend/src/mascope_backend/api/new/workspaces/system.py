@@ -7,13 +7,16 @@ Registration does it for a person; pairing approval does it for the machine
 account behind an instrument agent, which would otherwise be refused on every
 upload to an instrument whose workspace already exists.
 
-Kept here, importing nothing above the ORM, so both callers share one
-definition rather than each growing its own loop.
+Kept here so both callers share one definition rather than each growing its
+own loop. ``mirror_system_workspaces`` still imports nothing above the ORM,
+which the pairing path relies on; ``add_to_system_workspaces`` goes through
+the workspace-member controller and imports it inside the function so that
+stays true.
 """
 
 from sqlalchemy import select
 
-from mascope_backend.db import Workspace, WorkspaceMember
+from mascope_backend.db import Workspace, WorkspaceMember, async_session
 from mascope_backend.db.id import gen_id
 from mascope_backend.roles import ROLE_ACCESS_LEVELS
 
@@ -78,14 +81,27 @@ async def mirror_system_workspaces(
     return added
 
 
-async def add_to_system_workspaces(session, user_id: int, workspace_role: str) -> int:
+async def add_to_system_workspaces(user_id: int, workspace_role: str) -> int:
     """
     Give an account membership in every system workspace.
 
-    Adds to the given session without committing - the caller owns the
-    transaction, so this can be part of a larger atomic provisioning step.
+    Goes through the workspace-member controller rather than inserting the
+    rows here, so a membership created at registration is built exactly like
+    one an administrator adds through the members endpoint - same validation,
+    same duplicate rule, same record-reload event.
 
-    :param session: An open async session.
+    There is no acting member to bound the grant, so the role ceiling is passed
+    as the role being granted. Self-referential on purpose: a no-op that can
+    never let this path assign more than it was asked for, which is the honest
+    encoding of a system-initiated grant without opening a bypass door in a
+    security helper four route paths depend on.
+
+    Each membership is its own transaction, because the controller owns one. A
+    failure part-way leaves the memberships already granted in place - the
+    better of the two half-states, since the account can then reach the
+    instruments it was enrolled in rather than none of them. Registration was
+    never atomic with this anyway: the user row is committed before this runs.
+
     :param user_id: The account to enrol.
     :type user_id: int
     :param workspace_role: Workspace role granted in each system workspace.
@@ -93,23 +109,42 @@ async def add_to_system_workspaces(session, user_id: int, workspace_role: str) -
     :return: How many memberships were added.
     :rtype: int
     """
-    workspace_ids = (
-        (
-            await session.execute(
-                select(Workspace.workspace_id).where(Workspace.is_system.is_(True))
+    # Imported here, not at module scope: mirror_system_workspaces above is
+    # imported by the pairing path and stays deliberately ORM-only.
+    from mascope_backend.api.lib.exceptions.api_exceptions import ApiException
+    from mascope_backend.api.new.workspaces.service import add_workspace_member
+
+    async with async_session() as session:
+        workspace_ids = (
+            (
+                await session.execute(
+                    select(Workspace.workspace_id).where(Workspace.is_system.is_(True))
+                )
             )
+            .scalars()
+            .all()
         )
-        .scalars()
-        .all()
-    )
+
+    added = 0
     for workspace_id in workspace_ids:
-        session.add(
-            WorkspaceMember(
-                workspace_member_id=gen_id(),
+        try:
+            await add_workspace_member(
                 workspace_id=workspace_id,
                 user_id=user_id,
                 workspace_role=workspace_role,
+                caller_role=workspace_role,
                 granted_by=None,
             )
-        )
-    return len(workspace_ids)
+        except ApiException as e:
+            # Already a member. An instrument workspace being created
+            # concurrently enrols every existing account, so it can win that
+            # race; the membership being asked for exists, nothing to do.
+            # Matched on the status, never on the original exception class:
+            # add_workspace_member is wrapped in @api_controller, which turns
+            # WorkspaceMemberAlreadyExistsException (an HTTPException, not an
+            # ApiException) into ApiException(status_code=409).
+            if e.status_code != 409:
+                raise
+            continue
+        added += 1
+    return added
