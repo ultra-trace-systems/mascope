@@ -6,6 +6,10 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
 
 ### Added
 
+- The notifications tab has a **Clear** button. It empties the log only:
+  running processes keep their progress bars, and nothing is deleted on the
+  server.
+
 - Pairing a machine again is now just starting the agent. On every start it
   asks the server whether this machine's credential is still accepted, and
   offers to pair right there when it is not - so a machine that was revoked,
