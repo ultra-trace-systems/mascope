@@ -368,6 +368,7 @@ jobs:
           npx playwright install --with-deps chromium
 
       - name: Wait for the stack to come up
+        id: wait-stack
         run: |
           # demo_init downloads and restores the demo bundle on first start,
           # so allow generous time before the frontend answers.
@@ -403,6 +404,10 @@ jobs:
         run: npm run test:e2e
 
       - name: Run SDK contract tests
+        # Independent signal from the Playwright suite: run whenever the
+        # stack came up, even if an e2e step failed, so an unrelated frontend
+        # failure does not hide an SDK/API contract break on the same PR.
+        if: ${{ !cancelled() && steps.wait-stack.outcome == 'success' }}
         env:
           MASCOPE_SDK_CONTRACT: "1"
           MASCOPE_PATH: ${{ github.workspace }}
