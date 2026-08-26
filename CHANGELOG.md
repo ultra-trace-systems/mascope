@@ -29,11 +29,13 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
   checking before commercial use was matched against in every run with
   nothing to say so. Setting `reference_licenses` under `[backend]` limits
   matching to the licences listed; leaving it unset keeps matching against
-  everything loaded, which is what deployments do today. `mascope reference
-  status` shows the effective set and which of the loaded sources it admits,
-  and every run records what it was allowed to match. Annotation is
-  unaffected - a licence outside the set is still shown on results, it is
-  just not matched against.
+  everything loaded, which is what deployments do today. The licences are
+  matched as exact tags, so an allowlist has to name every tag it keeps -
+  `mascope reference status` prints the whole tag vocabulary beside the
+  effective set and which of the loaded sources that set admits, and every
+  run records what it was allowed to match. Annotation is unaffected - a
+  licence outside the set is still shown on results, it is just not matched
+  against.
 
 - Pairing a machine again is now just starting the agent. On every start it
   asks the server whether this machine's credential is still accepted, and

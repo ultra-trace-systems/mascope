@@ -379,6 +379,51 @@ def _print_license_gate(
     console.print(table)
 
 
+def _registered_licenses() -> dict[str, list[str]]:
+    """Licence tag -> the registered sources that carry it by default.
+
+    Read off the adapter registry rather than written down here, so a source
+    added later cannot leave the vocabulary out of date.
+
+    :return: Tag -> source names, ordered by tag.
+    """
+    tags: dict[str, list[str]] = {}
+    for name in available_sources():
+        tags.setdefault(get_adapter(name).license, []).append(name)
+    return dict(sorted(tags.items()))
+
+
+def _print_known_licenses(allowed: list[str] | None) -> None:
+    """List every licence tag in use, marking the ones a gate leaves out.
+
+    The gate is an exact string match on the tag a record carries, so an
+    allowlist that omits one drops those records with nothing in a result to
+    say why. Listing the whole vocabulary - not only the sources that happen to
+    be loaded here - is what stops an operator declining one source and
+    silently losing another they never considered.
+
+    :param allowed: The configured allowlist, or None for no gating.
+    """
+    table = Table(title="Reference licence tags (matched as exact strings)")
+    table.add_column("Licence tag")
+    table.add_column("Default for")
+    table.add_column("Stage A")
+    for tag, names in _registered_licenses().items():
+        matched = allowed is None or tag in allowed
+        table.add_row(
+            Text(tag),
+            Text(", ".join(names)),
+            "[green]matched[/green]" if matched else "[red]NOT matched[/red]",
+        )
+    console.print(table)
+    console.print(
+        "If you set an allowlist, any tag you leave out is dropped silently, "
+        "and a source added by a later release brings a tag your list will not "
+        "name - so re-check it after an upgrade. 'custom' is the tag on every "
+        "hand-authored row that carries no licence of its own."
+    )
+
+
 @reference_app.command()
 def status() -> None:
     """Show ingested sources, their versions, and what Stage A may match."""
@@ -410,6 +455,10 @@ def status() -> None:
 
     if not rows:
         runtime.logger.info("No reference sources ingested yet.")
+        # Printed before the early return as well: an operator with an empty
+        # mirror is exactly the one about to write `reference_licenses` for the
+        # first time, and the vocabulary is what they need to write it.
+        _print_known_licenses(allowed)
         return
 
     table = Table(title="Reference sources")
@@ -433,3 +482,4 @@ def status() -> None:
         )
     console.print(table)
     _print_license_gate(rows, record_licenses, allowed)
+    _print_known_licenses(allowed)

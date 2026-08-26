@@ -7,9 +7,11 @@ before any database work: declining must abort without a connection being
 opened, which is what makes a mistyped command harmless.
 
 `status` is the one place an operator can see which reference records peak
-assignment is actually allowed to match. The tests at the bottom pin both
-halves of that: the default (unconfigured = everything matched, and no extra
-query paid for), and what a configured allowlist reports per active source.
+assignment is actually allowed to match. The tests at the bottom pin three
+things: the default (unconfigured = everything matched, and no extra query
+paid for), what a configured allowlist reports per active source, and that the
+full licence-tag vocabulary is printed either way - the gate is an exact string
+match, so a tag the operator never saw is a tag they drop without noticing.
 """
 
 import pytest
@@ -249,3 +251,69 @@ def test_sources_flags_nothing_when_no_gate_is_configured(monkeypatch):
     result = runner.invoke(reference_app, ["sources"])
     assert result.exit_code == 0, result.output
     assert "(outside this deployment" not in _flat(result.output)
+
+
+def test_status_names_every_licence_tag_when_ungated(mirror, monkeypatch):
+    """The vocabulary is what an operator needs *before* writing an allowlist,
+    and only three of the six tags are loaded on this mirror - so it has to come
+    from the adapter registry, not from whatever happens to be ingested."""
+
+    def _boom(*args, **kwargs):
+        raise AssertionError("no gate configured: nothing to roll up")
+
+    monkeypatch.setattr(reference_main, "_record_licenses", _boom)
+    result = runner.invoke(reference_app, ["status"])
+    assert result.exit_code == 0, result.output
+    flat = _flat(result.output)
+    assert "Reference licence tags" in flat
+    assert "CC-BY-4.0 chebi, lipidmaps matched" in flat
+    assert "CC0 coconut matched" in flat
+    assert "custom custom matched" in flat
+    assert "hmdb-attribution hmdb matched" in flat
+    assert "open norman matched" in flat
+    assert "public-domain comptox, pubchem matched" in flat
+
+
+def test_status_names_the_tags_a_gate_leaves_out(mirror, gate):
+    """The allowlist that reads as obviously safe - the three most permissive
+    tags - also declines NORMAN and every hand-authored row carrying no licence
+    of its own. Naming those is the point of the table: the gate is an exact
+    string match, and a record it drops leaves no trace in a result."""
+    gate(["public-domain", "CC0", "CC-BY-4.0"])
+    result = runner.invoke(reference_app, ["status"])
+    assert result.exit_code == 0, result.output
+    flat = _flat(result.output)
+    assert "public-domain comptox, pubchem matched" in flat
+    assert "open norman NOT matched" in flat
+    assert "hmdb-attribution hmdb NOT matched" in flat
+    assert "custom custom NOT matched" in flat
+
+
+def test_the_documented_tag_vocabulary_covers_every_adapter():
+    """The docs and both toml comments list the tags by hand, so they can go
+    stale the moment an adapter is added - the exact silent-shrink this section
+    exists to prevent, one release later. This fails the suite instead.
+
+    Both toml copies are checked, since they ship separately and have to say
+    the same thing: the repo root one and the copy `mascope init` writes.
+    """
+    from pathlib import Path
+
+    copies = {
+        "tooling/cli/.../data/base.mascope.toml": (
+            Path(reference_main.__file__).parents[2] / "data" / "base.mascope.toml"
+        ),
+        # Off this test's own location, not the installed package's: the repo
+        # root copy only exists in a monorepo checkout.
+        "base.mascope.toml": Path(__file__).parents[3] / "base.mascope.toml",
+    }
+    tags = list(reference_main._registered_licenses())
+
+    for label, path in copies.items():
+        block = path.read_text(encoding="utf-8")
+        block = block.split("# Reference chemistry:")[1].split("# scripts")[0]
+        missing = [tag for tag in tags if tag not in block]
+        assert not missing, (
+            f"licence tags missing from {label}: {missing}. Add them there, in "
+            "docs/maintaining.md and in the config.py field comment."
+        )

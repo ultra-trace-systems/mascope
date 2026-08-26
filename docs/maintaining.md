@@ -729,20 +729,48 @@ it; prior versions stay on disk until pruned.
 
 ### Reference licence gating
 
-Every mirrored record carries the licence of the source it came from, and the
-sources do not all permit the same use: PubChem and CompTox are public domain,
-ChEBI and LIPID MAPS are CC-BY-4.0, COCONUT is CC0, and HMDB is free for
-academic use with commercial terms to be verified separately. **By default
-peak assignment matches against every active source, whatever its licence.**
-That is the behaviour every deployment has always had, and it is unchanged.
+Every mirrored record carries a licence **tag** - a short exact string, not a
+licence document. The eight registered adapters carry six distinct tags between
+them, and a hand-authored list can also set the tag per row, in which case the
+row's own tag wins over the adapter's:
+
+| Licence tag | Default for | Note |
+|---|---|---|
+| `CC-BY-4.0` | `chebi`, `lipidmaps` | attribution required |
+| `CC0` | `coconut` | |
+| `custom` | `custom` | every hand-authored row with no `license` column of its own |
+| `hmdb-attribution` | `hmdb` | free with attribution; verify commercial terms first |
+| `open` | `norman` | |
+| `public-domain` | `comptox`, `pubchem` | |
+
+`mascope reference sources` names each source's tag and `mascope reference
+status` prints this whole table with the gate's verdict on each row (monorepo
+checkouts only, like the rest of `mascope reference`). Those two read the
+adapter registry, so they cannot fall out of date when a source is added - the
+table above is written by hand and can, which is why the allowlist is worth
+re-checking after an upgrade that adds a source.
+
+**By default peak assignment matches against every active source, whatever its
+licence.** That is the behaviour every deployment has always had, and it is
+unchanged.
 
 A deployment that must not match against some of them restricts assignment to
-an allowlist of licences in the env's config toml:
+an allowlist of tags in the env's config toml. The gate is an **exact string
+match** on the tag, so the allowlist has to name every tag you want kept -
+anything left out is dropped, and dropped silently:
 
 ```toml
 [backend]
-reference_licenses = ["public-domain", "CC0", "CC-BY-4.0"]
+# Declines HMDB, keeps the other five tags. An example, not a default.
+reference_licenses = ["public-domain", "CC-BY-4.0", "CC0", "open", "custom"]
 ```
+
+Write it that way round - start from the full list and delete the tags you
+decline - rather than allowlisting the two or three you had in mind. An
+allowlist of `["public-domain", "CC0", "CC-BY-4.0"]` reads as harmless and
+also drops every `norman` record, plus every hand-authored row that carries no
+licence of its own - which on most deployments is the target list loaded with
+`reference_sync custom` above.
 
 Restart the backend to apply it (`mascope prod up`); no rebuild is needed -
 this is backend-only and never reaches the browser. The gate gets applied at
@@ -760,7 +788,10 @@ unidentified. Two places do say so:
   `mascope reference`) prints the effective set and, for each active source,
   whether Stage A matches all, some, or none of its records. It reports the
   **per-record** licences, which the `custom` adapter lets a hand-authored list
-  set per row, so a list can be partly matched.
+  set per row, so a list can be partly matched. It then repeats the tag table
+  above with each tag marked matched or not, so the tags an allowlist leaves
+  out are named on screen - including tags belonging to a source this
+  deployment has not loaded yet.
 - Every assignment run records the set in force when it ran, as
   `reference_licenses` in the run's `config` - served by
   `GET /api/peak-assignments/sample/{id}/runs`, and by the SDK's

@@ -333,11 +333,21 @@ class BackendConfig(ModuleConfig):
     # turns this on. Pairing binds new tokens to a device automatically.
     require_device_tokens: bool = False
     # Allowlist of per-record reference licences the peak-assignment database
-    # stage (Stage A) may match against, e.g.
-    # ["public-domain", "CC0", "CC-BY-4.0"]. The reference mirror carries a
+    # stage (Stage A) may match against. The reference mirror carries a
     # licence per record from ingest through to results, and some sources
     # (HMDB) permit academic use only - this is what stops a commercial
     # deployment matching against them.
+    #
+    # MATCHED AS AN EXACT STRING, so a tag left out of the list is dropped
+    # with nothing in a result to say why. Write the allowlist by starting
+    # from the whole vocabulary and deleting what you decline, e.g. to
+    # decline HMDB only:
+    #     ["public-domain", "CC-BY-4.0", "CC0", "open", "custom"]
+    # The six tags are enumerated with their sources in base.mascope.toml and
+    # docs/maintaining.md, and `mascope reference status` prints them from the
+    # adapter registry on a monorepo checkout. A written-out list also freezes
+    # the vocabulary: a source added by a later release brings a tag the list
+    # does not name, so re-check it after an upgrade.
     #
     # UNSET IS THE DEFAULT AND MEANS NO GATING: every active source is matched,
     # exactly as before this setting existed. That is deliberate. Narrowing the
