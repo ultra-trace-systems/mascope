@@ -36,6 +36,13 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
   run records what it was allowed to match. Annotation is unaffected - a
   licence outside the set is still shown on results, it is just not matched
   against.
+- `mascope env sync` takes `--from` and `--to` (both `YYYY-MM-DD`, both
+  inclusive) to transfer only part of the filestore. The window selects on
+  acquisition date - the date the data was measured, which is what the
+  filestore is laid out by - rather than on when a file was last written.
+  It filters the files only: the database is never filtered, so combining a
+  window with a full database sync leaves rows whose files were not
+  transferred, and the command warns when you do.
 
 - Pairing a machine again is now just starting the agent. On every start it
   asks the server whether this machine's credential is still accepted, and
@@ -479,6 +486,15 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
   out as a run-on with nothing separating one entry from the next, the reasons
   carrying no trailing punctuation to stand in for the break. Toasts already
   showed these correctly.
+- `mascope env sync` now leaves files the application can actually use.
+  Ownership is not carried across the transfer, so files land owned by
+  whoever runs the receiving end; when that differs from the uid the stack
+  runs as, Mascope could not read or write what had just been synced. The
+  sync now detects the mismatch and prints the exact `chown` to fix it, and
+  `--chown` attempts it directly where passwordless sudo is available.
+  File permissions are also set explicitly rather than following the
+  receiving account's umask - note that this applies to a re-sync as well, so
+  permissions tightened by hand on an existing target are reset.
 
 - A bulk upload run no longer makes the server stop answering. Every request
   from an agent, the file converter or the SDK is checked against its access
