@@ -495,6 +495,14 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
   File permissions are also set explicitly rather than following the
   receiving account's umask - note that this applies to a re-sync as well, so
   permissions tightened by hand on an existing target are reset.
+- A TOF file whose spectrum holds no detectable peaks is now ingested as a
+  blank measurement instead of failing. Deciding whether a measurement is
+  blank compares its largest peak against the spread of the others, and a
+  spectrum with no peaks left nothing to compare: the comparison raised, so
+  the file was reported as a fault in Mascope and never got its peak
+  timeseries, while larger files from the same instrument went through
+  normally. A spectrum with no peaks is what a blank measurement is, and it
+  is now classified as one.
 
 - A bulk upload run no longer makes the server stop answering. Every request
   from an agent, the file converter or the SDK is checked against its access
