@@ -2,9 +2,13 @@ from datetime import datetime, timezone
 
 from fastapi import HTTPException, status
 from sqlalchemy import asc, desc, func, select
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from mascope_backend.api.lib.api_features import api_controller
-from mascope_backend.api.lib.exceptions.api_exceptions import NotFoundException
+from mascope_backend.api.lib.exceptions.api_exceptions import (
+    DuplicateException,
+    NotFoundException,
+)
 from mascope_backend.api.models.dataset.config import dataset_config
 from mascope_backend.api.models.dataset.dataset_pydantic_model import (
     DatasetCreate,
@@ -22,6 +26,49 @@ from mascope_backend.socket.records import (
     emit_record_reload,
     emit_record_updated,
 )
+
+
+async def _assert_name_available(
+    session: AsyncSession,
+    workspace_id: str,
+    dataset_name: str,
+    exclude_dataset_id: str | None = None,
+) -> None:
+    """Refuse a dataset name that is already taken in this workspace.
+
+    Matched case-insensitively, mirroring the workspace name check in
+    `api/new/workspaces/service.py`: two datasets differing only in case read
+    as the same row in the workspace list, so accepting both is the bug.
+
+    The check is a read followed by a write in a separate statement, so two
+    concurrent creates can both pass it and both insert. There is no unique
+    index on (workspace_id, dataset_name) to catch the loser - closing that
+    race needs one, which is deliberately not part of this change.
+
+    :param session: The session the caller is about to write through.
+    :type session: AsyncSession
+    :param workspace_id: The workspace the name must be unique within.
+    :type workspace_id: str
+    :param dataset_name: The proposed name.
+    :type dataset_name: str
+    :param exclude_dataset_id: Dataset to ignore when matching, so a rename
+                               that keeps the dataset's own name is a no-op
+                               rather than a conflict, defaults to None.
+    :type exclude_dataset_id: str | None, optional
+    :raises DuplicateException: If another dataset in the workspace already
+                                carries the name.
+    """
+    stmt = select(Dataset.dataset_id).where(
+        Dataset.workspace_id == workspace_id,
+        func.lower(Dataset.dataset_name) == dataset_name.strip().lower(),
+    )
+    if exclude_dataset_id is not None:
+        stmt = stmt.where(Dataset.dataset_id != exclude_dataset_id)
+
+    if (await session.execute(stmt)).first() is not None:
+        raise DuplicateException(
+            f"A dataset named '{dataset_name.strip()}' already exists in this workspace."
+        )
 
 
 @api_controller()
@@ -167,10 +214,11 @@ async def create_dataset(
     Creates a new dataset with the specified details.
 
     Steps:
-    1. Create a new Dataset object with the provided details and the generated ID.
-    2. Add the new dataset to the session and commit the changes to the database.
-    3. Emit a signal to inform clients about the creation of the new dataset.
-    4. Return the details of the created dataset.
+    1. Refuse a name another dataset in the workspace already carries.
+    2. Create a new Dataset object with the provided details and the generated ID.
+    3. Add the new dataset to the session and commit the changes to the database.
+    4. Emit a signal to inform clients about the creation of the new dataset.
+    5. Return the details of the created dataset.
 
     :param workspace_id: The ID of the workspace to which the dataset belongs.
     :type workspace_id: str
@@ -179,11 +227,16 @@ async def create_dataset(
     :param independent_transaction: Flag to indicate if the operation should be treated
                                     as an independent transaction, defaults to False.
     :type independent_transaction: bool, optional
+    :raises DuplicateException: If the workspace already has a dataset with
+                                this name (case-insensitive).
     :return: The created dataset's details.
     :rtype: dict
     """
     async with async_session() as session:
-        # Step 1: Generate unique ID and create new dataset
+        # Step 1: Refuse a name already used in this workspace
+        await _assert_name_available(session, workspace_id, dataset.dataset_name)
+
+        # Step 2: Generate unique ID and create new dataset
         new_dataset = Dataset(
             dataset_id=gen_id(16),
             workspace_id=workspace_id,
@@ -197,12 +250,12 @@ async def create_dataset(
             dataset_utc_created=datetime.now(timezone.utc),
         )
 
-        # Step 2: Add to session and commit
+        # Step 3: Add to session and commit
         session.add(new_dataset)
         await session.commit()
         await session.refresh(new_dataset)
 
-    # Step 3: Emit creation event to all clients
+    # Step 4: Emit creation event to all clients
     dataset_data = DatasetRead.model_validate(new_dataset).model_dump()
     if independent_transaction:
         await emit_record_created(
@@ -212,7 +265,7 @@ async def create_dataset(
             room=workspace_id,
         )
 
-    # Step 4: Return the new dataset details
+    # Step 5: Return the new dataset details
     return {
         "message": f"Dataset '{new_dataset.dataset_name}' created successfully.",
         "data": dataset_data,
@@ -248,6 +301,8 @@ async def update_dataset(
                                     transaction, defaults to False.
     :type independent_transaction: bool, optional
     :raises NotFoundException: If no dataset is found with the provided ID.
+    :raises DuplicateException: If the rename would collide with another
+                                dataset in the same workspace.
     :return: The updated dataset data as a dictionary.
     :rtype: dict
     """
@@ -268,6 +323,17 @@ async def update_dataset(
             # Acquisition datasets are system-managed; prevent renaming.
             raise ValueError(
                 "Acquisition dataset names are managed by the system and cannot be renamed."
+            )
+
+        # Step 2b: Refuse a rename onto a name already used in this workspace.
+        # The dataset itself is excluded, so re-sending its current name (the
+        # edit dialog always submits the name field) stays a no-op.
+        if update_data.get("dataset_name") is not None:
+            await _assert_name_available(
+                session,
+                existing_dataset.workspace_id,
+                update_data["dataset_name"],
+                exclude_dataset_id=dataset_id,
             )
 
         # Step 3: Update the dataset properties
@@ -367,6 +433,7 @@ async def move_dataset(
     - Reject ACQUISITION datasets, which are auto-managed across workspaces.
     - Reject a no-op move where the target equals the source.
     - Validate the target workspace exists, is non-system and active.
+    - Reject a move whose name is already taken in the target workspace.
     - Reassign workspace_id, bump the modified timestamp and commit.
     - Broadcast a dataset reload so clients re-fetch their workspace list.
 
@@ -383,6 +450,8 @@ async def move_dataset(
     :raises NotFoundException: If the dataset is missing or no longer in the
                                source workspace.
     :raises WorkspaceNotFoundException: If the target workspace does not exist.
+    :raises DuplicateException: If the target workspace already has a dataset
+                                with this name.
     :raises HTTPException: 400 for ACQUISITION datasets, no-op moves, or an
                            inactive target; 403 for a system target.
     :return: The moved dataset's details.
@@ -422,6 +491,14 @@ async def move_dataset(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="Cannot move datasets into an archived workspace.",
             )
+
+        # --- Refuse a move that would duplicate a name in the target ---
+        await _assert_name_available(
+            session,
+            target_workspace_id,
+            dataset.dataset_name,
+            exclude_dataset_id=dataset_id,
+        )
 
         # --- Reassign workspace and bump modification timestamp ---
         dataset.workspace_id = target_workspace_id

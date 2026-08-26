@@ -42,6 +42,7 @@ import jwt
 import pytest
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
+from test_utils import gen_test_id
 
 from mascope_backend.api.new.auth.access_token.service import create_access_token
 from mascope_backend.api.new.auth.config import auth_settings
@@ -292,11 +293,15 @@ def provision_device(async_session_factory):
 def dataset_create_data():
     """Sample data for dataset creation requests.
 
+    The name is uniquified per test: dataset names are unique per workspace,
+    and `test_workspace` is session-scoped, so a fixed literal would make the
+    second test that posts this payload fail with a 409.
+
     :return: Dictionary with dataset creation data
     :rtype: dict
     """
     return {
-        "dataset_name": "New Test Dataset",
+        "dataset_name": f"New Test Dataset {gen_test_id(8)}",
         "dataset_description": "Created during integration test",
         "dataset_type": "ANALYSIS",
     }
@@ -306,11 +311,14 @@ def dataset_create_data():
 def dataset_update_data():
     """Sample data for dataset update requests.
 
+    Uniquified for the same reason as `dataset_create_data`: renamed datasets
+    are left behind in the session-scoped workspace.
+
     :return: Dictionary with dataset update data
     :rtype: dict
     """
     return {
-        "dataset_name": "Updated Test Dataset",
+        "dataset_name": f"Updated Test Dataset {gen_test_id(8)}",
         "dataset_description": "Updated during integration test",
     }
 

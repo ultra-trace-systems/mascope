@@ -456,3 +456,197 @@ async def test_dataset_lifecycle(
             f"/api/workspaces/{test_workspace}/datasets/{dataset_id}"
         )
     ).status_code == 404
+
+
+# ============= Duplicate Name Tests =============
+
+
+@pytest.mark.asyncio
+async def test_create_dataset_duplicate_name_rejected(
+    test_workspace, editor_client, dataset_create_data
+):
+    """A second dataset with the same name in one workspace is refused."""
+    first = await editor_client.post(
+        f"/api/workspaces/{test_workspace}/datasets", json=dataset_create_data
+    )
+    assert first.status_code == 201
+
+    second = await editor_client.post(
+        f"/api/workspaces/{test_workspace}/datasets", json=dataset_create_data
+    )
+    assert second.status_code == status.HTTP_409_CONFLICT
+    assert "already exists" in second.json()["error"]
+    assert dataset_create_data["dataset_name"] in second.json()["error"]
+
+
+@pytest.mark.asyncio
+async def test_create_dataset_duplicate_name_is_case_insensitive(
+    test_workspace, editor_client, dataset_create_data
+):
+    """Names differing only in case count as the same name."""
+    assert (
+        await editor_client.post(
+            f"/api/workspaces/{test_workspace}/datasets", json=dataset_create_data
+        )
+    ).status_code == 201
+
+    upper = {
+        **dataset_create_data,
+        "dataset_name": dataset_create_data["dataset_name"].upper(),
+    }
+    response = await editor_client.post(
+        f"/api/workspaces/{test_workspace}/datasets", json=upper
+    )
+    assert response.status_code == status.HTTP_409_CONFLICT
+
+
+@pytest.mark.asyncio
+async def test_create_dataset_duplicate_name_ignores_surrounding_whitespace(
+    test_workspace, editor_client, dataset_create_data
+):
+    """Padding the name does not buy a second dataset with the same name."""
+    assert (
+        await editor_client.post(
+            f"/api/workspaces/{test_workspace}/datasets", json=dataset_create_data
+        )
+    ).status_code == 201
+
+    padded = {
+        **dataset_create_data,
+        "dataset_name": f"  {dataset_create_data['dataset_name']}  ",
+    }
+    response = await editor_client.post(
+        f"/api/workspaces/{test_workspace}/datasets", json=padded
+    )
+    assert response.status_code == status.HTTP_409_CONFLICT
+
+
+@pytest.mark.asyncio
+async def test_create_dataset_strips_surrounding_whitespace(
+    test_workspace, editor_client, dataset_create_data
+):
+    """A padded name is stored trimmed."""
+    padded = {
+        **dataset_create_data,
+        "dataset_name": f"  {dataset_create_data['dataset_name']}  ",
+    }
+    response = await editor_client.post(
+        f"/api/workspaces/{test_workspace}/datasets", json=padded
+    )
+    assert response.status_code == 201
+    assert (
+        response.json()["data"]["dataset_name"] == (dataset_create_data["dataset_name"])
+    )
+
+
+@pytest.mark.asyncio
+async def test_create_dataset_same_name_allowed_in_other_workspace(
+    test_workspace, second_test_workspace, editor_client, dataset_create_data
+):
+    """Uniqueness is per workspace, not global."""
+    assert (
+        await editor_client.post(
+            f"/api/workspaces/{test_workspace}/datasets", json=dataset_create_data
+        )
+    ).status_code == 201
+    assert (
+        await editor_client.post(
+            f"/api/workspaces/{second_test_workspace}/datasets",
+            json=dataset_create_data,
+        )
+    ).status_code == 201
+
+
+@pytest.mark.asyncio
+async def test_rename_dataset_to_existing_name_rejected(
+    test_workspace, editor_client, dataset_create_data
+):
+    """Renaming onto a sibling's name is refused and leaves the name alone."""
+    first = await editor_client.post(
+        f"/api/workspaces/{test_workspace}/datasets", json=dataset_create_data
+    )
+    assert first.status_code == 201
+    taken_name = first.json()["data"]["dataset_name"]
+
+    second_payload = {
+        **dataset_create_data,
+        "dataset_name": f"{dataset_create_data['dataset_name']} other",
+    }
+    second = await editor_client.post(
+        f"/api/workspaces/{test_workspace}/datasets", json=second_payload
+    )
+    assert second.status_code == 201
+    second_id = second.json()["data"]["dataset_id"]
+
+    rename = await editor_client.patch(
+        f"/api/workspaces/{test_workspace}/datasets/{second_id}",
+        json={"dataset_name": taken_name},
+    )
+    assert rename.status_code == status.HTTP_409_CONFLICT
+    assert "already exists" in rename.json()["error"]
+
+    unchanged = await editor_client.get(
+        f"/api/workspaces/{test_workspace}/datasets/{second_id}"
+    )
+    assert unchanged.json()["data"]["dataset_name"] == second_payload["dataset_name"]
+
+
+@pytest.mark.asyncio
+async def test_update_dataset_keeps_own_name(
+    test_workspace, editor_client, dataset_create_data
+):
+    """Re-sending a dataset's own name is a no-op, not a conflict.
+
+    The edit dialog always submits the name field, so a description-only
+    edit would 409 if the dataset were not excluded from the check.
+    """
+    create_response = await editor_client.post(
+        f"/api/workspaces/{test_workspace}/datasets", json=dataset_create_data
+    )
+    assert create_response.status_code == 201
+    dataset_id = create_response.json()["data"]["dataset_id"]
+
+    response = await editor_client.patch(
+        f"/api/workspaces/{test_workspace}/datasets/{dataset_id}",
+        json={
+            "dataset_name": dataset_create_data["dataset_name"],
+            "dataset_description": "Same name, new description",
+        },
+    )
+    assert response.status_code == 200
+    assert response.json()["data"]["dataset_description"] == (
+        "Same name, new description"
+    )
+
+
+@pytest.mark.asyncio
+async def test_move_dataset_into_workspace_with_same_name_rejected(
+    test_workspace, second_test_workspace, editor_client, dataset_create_data
+):
+    """A move that would collide in the target workspace is refused."""
+    source = await editor_client.post(
+        f"/api/workspaces/{test_workspace}/datasets", json=dataset_create_data
+    )
+    assert source.status_code == 201
+    dataset_id = source.json()["data"]["dataset_id"]
+
+    assert (
+        await editor_client.post(
+            f"/api/workspaces/{second_test_workspace}/datasets",
+            json=dataset_create_data,
+        )
+    ).status_code == 201
+
+    response = await editor_client.post(
+        f"/api/workspaces/{test_workspace}/datasets/{dataset_id}/move",
+        json={"target_workspace_id": second_test_workspace},
+    )
+    assert response.status_code == status.HTTP_409_CONFLICT
+    assert "already exists" in response.json()["error"]
+
+    # The dataset is still where it was
+    assert (
+        await editor_client.get(
+            f"/api/workspaces/{test_workspace}/datasets/{dataset_id}"
+        )
+    ).status_code == 200

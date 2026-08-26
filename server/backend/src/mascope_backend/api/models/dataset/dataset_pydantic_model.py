@@ -37,15 +37,19 @@ class DatasetBaseValidator:
         """
         Validates that `dataset_name` is not an empty string or just whitespace.
 
+        The name is stripped, so surrounding padding cannot side-step the
+        per-workspace uniqueness check and stored names stay normalised
+        (workspace names are handled the same way).
+
         :param dataset_name: The name provided for the dataset.
         :raises ValueError: If the dataset_name is an empty string or only whitespace.
-        :return: The dataset_name if it is valid.
+        :return: The stripped dataset_name if it is valid.
         """
         if dataset_name is not None and dataset_name.strip() == "":
             raise ValueError(
                 "The dataset name cannot be empty or contain only whitespace."
             )
-        return dataset_name
+        return dataset_name.strip() if dataset_name is not None else None
 
 
 class DatasetValidator(DatasetBaseValidator):
