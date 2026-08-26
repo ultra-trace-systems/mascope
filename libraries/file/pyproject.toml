@@ -10,7 +10,6 @@ dependencies = [
     "numpy~=2.5",
     "xarray>=2026.7.0",
     "zarr",
-    "numcodecs==0.15.1", # TODO: See issue above 
     # Cross-process zarr write lock. Came in via zarr 2 before; zarr 3 removed
     # its synchronizers, so mascope_file.io uses fasteners directly.
     "fasteners~=0.20",

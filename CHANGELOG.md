@@ -216,6 +216,16 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
 
 ### Changed
 
+- Dropped the exact `numcodecs` pin and relaxed `zarr` to a `>=3.3,<4` range,
+  closing a long-standing TODO. `numcodecs` is not imported anywhere in Mascope;
+  it arrives through `zarr`, which declares `numcodecs>=0.14` itself, so pinning
+  it in three places only fought that constraint. It is also what blocked the
+  routine 0.15 to 0.16 bump: `numcodecs` 0.16 removed two symbols that `zarr` 2
+  imported at module scope, so neither package could move until `zarr` 3 landed.
+  The chunking failure the pins were introduced for does not reproduce: TOF files
+  from three instruments now convert and load cleanly, so dependency updates to
+  either package are ordinary bumps again, judged by the test suites.
+
 - Upgraded `zarr` from 2.18.2 to 3.3.0. Existing sample files are unaffected:
   zarr 3 reads and updates the v2 stores already in the filestore in place, and
   Mascope now pins the default on-disk format to v2 so newly written stores
