@@ -445,6 +445,16 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
   clears on its own costs only a delay. Upload fragments abandoned by clients
   are also cleared after 24 hours without progress; previously they survived
   until the next restart.
+- A sample whose spectrum will not m/z calibrate now reports once, at the
+  end, instead of filing up to fourteen identical warnings. Every level of
+  the retry reported the same failure separately, which flooded the
+  notification log and the sidebar badge without any of the copies saying
+  how many attempts had been spent or what had been skipped as a result.
+  The single report names the sample, the attempts, the tolerance it gave up
+  at, the reason, and that matching and peak assignment were skipped for it.
+  A failure that previously produced no toast at all now produces one per
+  affected sample, because the pipeline's own notification still reports
+  success for a file whose samples all failed to calibrate.
 
 - A bulk upload run no longer makes the server stop answering. Every request
   from an agent, the file converter or the SDK is checked against its access
