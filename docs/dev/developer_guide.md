@@ -316,7 +316,7 @@ The filter is a path filter, not a database query: the filestore stores samples 
 > [!IMPORTANT]
 > `--from` / `--to` filter the filestore only - **the database is never filtered**. A date-limited sync that also syncs the database leaves the target holding sample rows whose files were not transferred, and those samples fail to load. The command warns when you do this; add `--skip-db` to sync only the files.
 
-If no filestore data falls inside the window the sync fails rather than silently transferring nothing.
+If no filestore data falls inside the window the sync fails rather than silently transferring nothing. The sync also fails when the source filestore cannot be listed in full - a mistyped env name, an unreadable directory, a dangling symlink under a filestore on a data volume - rather than filtering against a partial listing and reporting success on an incomplete transfer.
 
 #### Ownership and permissions after sync
 

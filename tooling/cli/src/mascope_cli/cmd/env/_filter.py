@@ -173,9 +173,14 @@ def source_date_dir_names(
                          existing ControlMaster connection. Pass `[]` or
                          `None` for a standalone connection.
     :type control_args: list[str] | None
-    :return: Sorted, de-duplicated directory names. Empty when the source has
-             no filestore.
+    :return: Sorted, de-duplicated directory names. Empty when the source
+             filestore holds no directories, or, locally, when there is no
+             filestore at all.
     :rtype: list[str]
+    :raises RuntimeError: If the remote listing did not complete - a missing
+                          source env, an unreadable instrument directory, a
+                          dangling symlink. A partial listing is never
+                          returned: it would silently narrow the transfer.
     """
     if remote is None:
         filestore = local_env_dir(env_name) / "filestore"
@@ -196,6 +201,16 @@ def source_date_dir_names(
         text=True,
         check=False,
     )
+    if result.returncode != 0:
+        # find prints what it could read before exiting non-zero, so a partial
+        # listing is indistinguishable from a complete one at this point.
+        # Filtering against it would drop whole dates from the transfer while
+        # rsync still reported success.
+        detail = (result.stderr or "").strip() or "no error output"
+        raise RuntimeError(
+            f"Could not list the filestore of env '{env_name}' on {remote} "
+            f"(find exited {result.returncode}): {detail}"
+        )
     return sorted(
         {
             PurePosixPath(line.strip()).name

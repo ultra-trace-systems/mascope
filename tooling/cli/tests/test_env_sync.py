@@ -8,7 +8,9 @@ they regress:
   Only a real rsync proves the rules select the right files, so these tests
   assert the rule *strings* and their order — in particular that the trailing
   `- /filestore/*/*` survives (without it a "filtered" sync quietly transfers
-  everything) and that nothing outside `/filestore/` is ever mentioned.
+  everything) and that nothing outside `/filestore/` is ever mentioned. A
+  source listing that did not complete is rejected here too, so an incomplete
+  date list can never quietly shrink the transfer.
 - the permission and ownership handling. rsync carries neither modes nor
   ownership across, so the mode bits must be pinned on the command line and a
   receiving uid that cannot be used by the app must be reported.
@@ -294,17 +296,60 @@ def test_source_date_dir_names_remote(monkeypatch):
     assert "-mindepth 2 -maxdepth 2 -type d" in command
 
 
-def test_source_date_dir_names_remote_survives_a_failed_find(monkeypatch):
+def _fake_find(monkeypatch, returncode=0, stdout="", stderr=""):
+    """Route the remote `find` of `source_date_dir_names` to a canned result."""
     monkeypatch.setattr(
         _filter.subprocess,
         "run",
-        lambda args, **kw: subprocess.CompletedProcess(args, 1, stdout=""),
+        lambda args, **kw: subprocess.CompletedProcess(
+            args, returncode, stdout=stdout, stderr=stderr
+        ),
     )
     monkeypatch.setattr(_filter, "cygwin_bin", lambda name: name)
     monkeypatch.setattr(_filter, "get_identity_args", lambda: [])
     monkeypatch.setattr(_filter, "remote_env_dir", lambda *a, **kw: "/srv/env")
 
+
+def test_source_date_dir_names_remote_empty_filestore_is_not_a_failure(monkeypatch):
+    # A listing that completed and found nothing is the one case that may
+    # come back empty - the caller turns that into "nothing to sync".
+    _fake_find(monkeypatch, returncode=0, stdout="")
+
     assert _filter.source_date_dir_names("user@host", "e", []) == []
+
+
+def test_source_date_dir_names_remote_raises_when_the_find_fails(monkeypatch):
+    # Swallowing this reports a mistyped source env as an empty date window:
+    # nothing else in the sync validates the source, and the --skip-db that
+    # goes with --from/--to removes the database error that would surface it.
+    _fake_find(
+        monkeypatch,
+        returncode=1,
+        stdout="",
+        stderr="find: '/srv/env/filestore': No such file or directory\n",
+    )
+
+    with pytest.raises(RuntimeError) as excinfo:
+        _filter.source_date_dir_names("user@host", "e", [])
+
+    assert "Could not list the filestore" in str(excinfo.value)
+    assert "No such file or directory" in str(excinfo.value)
+
+
+def test_source_date_dir_names_remote_rejects_a_partial_find(monkeypatch):
+    # The dangerous one: find prints what it could read and still exits
+    # non-zero (an unreadable instrument directory, or a dangling symlink
+    # under -L). Filtering against that list drops whole dates from the
+    # transfer while rsync goes on to report success.
+    _fake_find(
+        monkeypatch,
+        returncode=1,
+        stdout="/srv/env/filestore/instrumentA/2026.03.01\n",
+        stderr="find: '/srv/env/filestore/instrumentB': Permission denied\n",
+    )
+
+    with pytest.raises(RuntimeError, match="Permission denied"):
+        _filter.source_date_dir_names("user@host", "e", [])
 
 
 # --- _sync.sync_filestore: rsync command construction ---
@@ -389,6 +434,24 @@ def test_sync_filestore_raises_when_no_dates_match(
 ):
     with pytest.raises(RuntimeError, match="No filestore data matches"):
         _sync.sync_filestore("sync-src", "sync-dst", from_date=DAY(2030, 1, 1))
+
+    assert captured_rsync["cmds"] == []
+
+
+def test_sync_filestore_stops_when_the_source_cannot_be_listed(
+    monkeypatch, posix_sync, captured_rsync, source_env
+):
+    # The point of raising rather than returning the partial list: the sync
+    # has to stop, not narrow. Transferring what the incomplete listing named
+    # would drop whole dates and still exit successfully, which is worse than
+    # failing - the operator would have no reason to look.
+    def _incomplete(*args, **kwargs):
+        raise RuntimeError("Could not list the filestore of env 'e' on host")
+
+    monkeypatch.setattr(_sync, "source_date_dir_names", _incomplete)
+
+    with pytest.raises(RuntimeError, match="Could not list the filestore"):
+        _sync.sync_filestore("sync-src", "sync-dst", from_date=DAY(2026, 3, 1))
 
     assert captured_rsync["cmds"] == []
 
