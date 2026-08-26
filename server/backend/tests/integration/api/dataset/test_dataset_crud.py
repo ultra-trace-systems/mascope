@@ -598,7 +598,7 @@ async def test_update_dataset_keeps_own_name(
     """Re-sending a dataset's own name is a no-op, not a conflict.
 
     The edit dialog always submits the name field, so a description-only
-    edit would 409 if the dataset were not excluded from the check.
+    edit would 409 if an unchanged name still ran the check.
     """
     create_response = await editor_client.post(
         f"/api/workspaces/{test_workspace}/datasets", json=dataset_create_data

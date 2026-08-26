@@ -36,14 +36,31 @@ async def _assert_name_available(
 ) -> None:
     """Refuse a dataset name that is already taken in this workspace.
 
-    Matched case-insensitively, mirroring the workspace name check in
-    `api/new/workspaces/service.py`: two datasets differing only in case read
-    as the same row in the workspace list, so accepting both is the bug.
+    Both sides of the comparison are lower-cased and trimmed, so neither a
+    difference in case nor surrounding spaces buys a second dataset that
+    reads as the same row in the workspace list. Trimming the stored side
+    matters as much as trimming the proposed one: names have only been
+    stripped on the way in since this check existed - the validator used to
+    reject a whitespace-only name and keep every other name verbatim - so
+    older rows can still carry padding, while `DatasetRead` renders every
+    name stripped. This mirrors the workspace name check in
+    `api/new/workspaces/service.py`.
+
+    The two sides trim differently, and the gap is deliberate rather than
+    overlooked: SQL `trim()` removes spaces, while Python's `str.strip()`
+    removes every kind of whitespace. A legacy row stored with a leading tab
+    therefore still renders stripped and still evades this check. Closing
+    that needs the same backfill a unique index would, so it is left with the
+    index rather than half-solved here.
 
     The check is a read followed by a write in a separate statement, so two
     concurrent creates can both pass it and both insert. There is no unique
     index on (workspace_id, dataset_name) to catch the loser - closing that
-    race needs one, which is deliberately not part of this change.
+    race needs one, which is deliberately not part of this change. A
+    workspace can therefore already hold two datasets sharing a name: from a
+    lost race, from before this check existed, or from ACQUISITION rows,
+    which are inserted without coming through here at all. Callers have to
+    stay usable in that state rather than assume it away.
 
     :param session: The session the caller is about to write through.
     :type session: AsyncSession
@@ -51,16 +68,20 @@ async def _assert_name_available(
     :type workspace_id: str
     :param dataset_name: The proposed name.
     :type dataset_name: str
-    :param exclude_dataset_id: Dataset to ignore when matching, so a rename
-                               that keeps the dataset's own name is a no-op
-                               rather than a conflict, defaults to None.
+    :param exclude_dataset_id: Dataset to ignore when matching, defaults to
+                               None. A guard rather than a requirement for
+                               today's callers: `update_dataset` skips this
+                               call entirely when the submitted name is the
+                               dataset's own, and `move_dataset` searches a
+                               workspace the dataset is not in yet, so
+                               neither can match itself even without it.
     :type exclude_dataset_id: str | None, optional
     :raises DuplicateException: If another dataset in the workspace already
                                 carries the name.
     """
     stmt = select(Dataset.dataset_id).where(
         Dataset.workspace_id == workspace_id,
-        func.lower(Dataset.dataset_name) == dataset_name.strip().lower(),
+        func.lower(func.trim(Dataset.dataset_name)) == dataset_name.strip().lower(),
     )
     if exclude_dataset_id is not None:
         stmt = stmt.where(Dataset.dataset_id != exclude_dataset_id)
@@ -228,7 +249,8 @@ async def create_dataset(
                                     as an independent transaction, defaults to False.
     :type independent_transaction: bool, optional
     :raises DuplicateException: If the workspace already has a dataset with
-                                this name (case-insensitive).
+                                this name (ignoring case and surrounding
+                                spaces).
     :return: The created dataset's details.
     :rtype: dict
     """
@@ -285,10 +307,12 @@ async def update_dataset(
 
     Steps:
     1. Fetch the existing dataset by its ID from the database.
-    2. If the dataset is found, update its properties with the new data provided.
-    3. Set the dataset's modification timestamp to the current UTC time.
-    4. Commit the updated dataset to the database.
-    5. Emit socket.io events to inform clients about the dataset update.
+    2. Refuse a rename onto a name the workspace already uses. A name equal to
+       the dataset's own is not a rename and is not checked.
+    3. If the dataset is found, update its properties with the new data provided.
+    4. Set the dataset's modification timestamp to the current UTC time.
+    5. Commit the updated dataset to the database.
+    6. Emit socket.io events to inform clients about the dataset update.
 
     :param dataset_id: The unique identifier of the dataset to update.
     :type dataset_id: str
@@ -326,13 +350,19 @@ async def update_dataset(
             )
 
         # Step 2b: Refuse a rename onto a name already used in this workspace.
-        # The dataset itself is excluded, so re-sending its current name (the
-        # edit dialog always submits the name field) stays a no-op.
-        if update_data.get("dataset_name") is not None:
+        # Only a name that actually changes is checked, compared the way the
+        # check itself compares - ignoring case and padding. The edit dialog
+        # always submits the name field, and a workspace can already hold two
+        # datasets sharing a name (nothing has ever prevented it: there is no
+        # unique index), so querying on an unchanged name would refuse a
+        # description-only edit, naming a field the user never touched.
+        current_name_key = existing_dataset.dataset_name.strip().lower()
+        new_name = update_data.get("dataset_name")
+        if new_name is not None and new_name.strip().lower() != current_name_key:
             await _assert_name_available(
                 session,
                 existing_dataset.workspace_id,
-                update_data["dataset_name"],
+                new_name,
                 exclude_dataset_id=dataset_id,
             )
 
