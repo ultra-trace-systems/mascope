@@ -443,6 +443,13 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
   affected sample, because the pipeline's own notification still reports
   success for a file whose samples all failed to calibrate.
 
+- Calibrating a set of samples now says which ones failed. The warning at the
+  end of the run only counted them - "Failed to calibrate 3 sample(s)." - and
+  left the names in a payload nothing reads, so it told the user how many
+  samples to go looking for but not which. It now names each failed sample
+  with its reason, and once there are more than ten it names the first ten and
+  reports the rest as a count.
+
 - A bulk upload run no longer makes the server stop answering. Every request
   from an agent, the file converter or the SDK is checked against its access
   token, and that check was opening five database connections and holding

@@ -41,6 +41,14 @@ class UserNotification(BaseModel):
     error: dict[str, object] | None = Field(
         None, description="Optional error details when status is 'error'."
     )
+    silent: bool | None = Field(
+        None,
+        description=(
+            "When true the frontend uses this packet only to end the "
+            "process's progress bar: it is not logged, counted on the "
+            "notification badge or displayed."
+        ),
+    )
 
     @field_validator("status")
     @classmethod

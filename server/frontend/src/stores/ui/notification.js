@@ -19,6 +19,7 @@ export const useNotification = defineStore('app.ui.notification', () => {
 
   /**
    * Central handler for incoming notifications. Decides whether to display, log, or track a notification based on its properties.
+   * A `silent` notification only ends the progress of the process it belongs to.
    * @param {Object} notification - The notification object received from the server
    */
   function handleNotification(notification) {
@@ -27,6 +28,19 @@ export const useNotification = defineStore('app.ui.notification', () => {
       id,
       timestamp: new Date(),
       ...notification
+    }
+
+    // A `silent` packet carries nothing for the user to read: the server
+    // suppressed the user-facing copy of this warning because a parent handler
+    // reports it, and sends this one only so the progress entry the process
+    // already opened ends now instead of waiting out its fallback timeout.
+    // It is never logged, counted on the badge, or displayed.
+    if (notification.silent) {
+      const tracked = state.progress.find((proc) => proc.process_id === notification.process_id)
+      if (tracked) {
+        updateProcess(tracked, newNotification)
+      }
+      return
     }
 
     // Increments recentWarnings or recentErrors counters based on notification status.

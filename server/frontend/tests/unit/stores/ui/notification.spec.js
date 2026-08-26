@@ -77,6 +77,43 @@ describe('notification store', () => {
     expect(store.latest).toBe(null)
   })
 
+  it('ends a tracked process on a silent packet, without logging or counting it', () => {
+    store.push({
+      type: 'calibration_mz_fit',
+      status: 'pending',
+      process_id: 'child',
+      parent_id: 'root',
+      progress: 10
+    })
+    expect(store.progress).toHaveLength(1)
+
+    // What the backend sends when a parent handler reports the warning: the
+    // bar has to clear now, not 30 seconds later, but nothing about it may
+    // reach the drawer or the badge.
+    store.push({
+      type: 'calibration_mz_fit',
+      status: 'warning',
+      process_id: 'child',
+      parent_id: 'root',
+      message: 'careful',
+      silent: true
+    })
+
+    expect(store.progress).toHaveLength(0)
+    expect(store.log).toHaveLength(0)
+    expect(store.recentWarnings).toBe(0)
+    expect(store.latest).toBe(null)
+  })
+
+  it('ignores a silent packet for a process it is not tracking', () => {
+    store.push({ type: 'mz_fit', status: 'warning', process_id: 'gone', silent: true })
+
+    expect(store.progress).toHaveLength(0)
+    expect(store.log).toHaveLength(0)
+    expect(store.recentWarnings).toBe(0)
+    expect(store.latest).toBe(null)
+  })
+
   it('expires an idle pending process after its timeout', () => {
     store.push({ type: 'mz_fit', status: 'pending', process_id: 'p1', progress: 10 })
     expect(store.progress).toHaveLength(1)

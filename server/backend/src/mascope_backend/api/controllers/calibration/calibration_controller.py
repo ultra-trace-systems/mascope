@@ -760,6 +760,42 @@ async def calibration_mz_calibrate_sample(
     }
 
 
+# How many failed samples the batch calibration warning names one by one
+# before it reports the rest as a count. The message is the only part of the
+# failure that reaches the user - the notification pane renders type, status
+# and message, and nothing consumes the per-sample detail carried in the
+# payload - so it has to name them, without letting a large batch turn one
+# notification into a wall of text.
+MAX_LISTED_CALIBRATION_FAILURES = 10
+
+
+def _compose_calibration_failure_message(failed_sample_items: list[dict]) -> str:
+    """
+    Summarise a batch calibration's failures, naming the samples.
+
+    Same shape as the aggregate ``re_process_sample_files`` builds for its own
+    partial failures: a count, then one line per failure giving the sample and
+    the reason, truncated to ``MAX_LISTED_CALIBRATION_FAILURES`` entries.
+
+    :param failed_sample_items: Per-sample failure records collected by
+        :func:`calibration_mz_calibrate_samples`.
+    :type failed_sample_items: list[dict]
+    :return: Warning message naming the samples that were not calibrated.
+    :rtype: str
+    """
+    listed = failed_sample_items[:MAX_LISTED_CALIBRATION_FAILURES]
+    lines = [
+        f"{failed['sample_item']['sample_item_name']}: {failed['warning_message']}"
+        for failed in listed
+    ]
+    remaining = len(failed_sample_items) - len(listed)
+    if remaining:
+        lines.append(f"...and {remaining} more.")
+    return "\n".join(
+        [f"Failed to calibrate {len(failed_sample_items)} sample(s)."] + lines
+    )
+
+
 @api_controller_background_task(
     success_notification_rooms=["user_id"],
     success_reload=[("match", "affected_sample_batch_ids")],
@@ -782,7 +818,7 @@ async def calibration_mz_calibrate_samples(
     - Calibrate each sample, collecting affected IDs
     - On per-sample failure, log warning and continue
     - Fetch affected batch IDs from all touched sample IDs
-    - Raise warning if any samples failed
+    - Raise a warning naming every failed sample if any failed
     - Return calibration summary and notification data
 
     :param sample_item_ids: List of sample item IDs to be calibrated.
@@ -876,7 +912,7 @@ async def calibration_mz_calibrate_samples(
 
     # --- Raise warning if any samples failed ---
     if failed_sample_items:
-        warning_message = f"Failed to calibrate {len(failed_sample_items)} sample(s)."
+        warning_message = _compose_calibration_failure_message(failed_sample_items)
         raise_api_warning(
             warning_message,
             {
