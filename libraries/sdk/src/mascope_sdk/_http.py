@@ -27,8 +27,11 @@ from .exceptions import (
 # Default timeout values (connect, read) in seconds
 DEFAULT_TIMEOUT = (30, 300)
 
-#: Status codes that are safe to retry (transient server errors).
-_RETRYABLE_STATUS_CODES = {502, 503, 504}
+#: Status codes that are safe to retry (transient server errors). 507 is the
+#: server refusing an upload because its disk is nearly full: a squeeze that
+#: clears when space is freed, and instrument raw data is irreplaceable, so a
+#: client must keep trying rather than set the file aside.
+_RETRYABLE_STATUS_CODES = {502, 503, 504, 507}
 
 #: Client errors (4xx) that a later identical request can still satisfy, so
 #: they stay retryable while every other 4xx is terminal. 408 and 425 are the

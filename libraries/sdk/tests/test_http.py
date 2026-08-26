@@ -16,6 +16,7 @@ from mascope_sdk.exceptions import (
     AuthenticationError,
     MascopeAPIError,
     NotFoundError,
+    ServerError,
     ValidationError,
 )
 
@@ -166,6 +167,22 @@ def test_transient_client_errors_stay_retryable(status):
     # 409 is resolved by resuming from the server's offset, which only the
     # TUS chunk loop can do; the rest are safe to simply send again.
     assert _http._is_retryable(exc_info.value) is (status != 409)
+
+
+@pytest.mark.parametrize("status", [502, 503, 504, 507])
+def test_transient_server_errors_stay_retryable(status):
+    """507 belongs here with the gateway errors, not with the 4xx refusals.
+
+    The backend answers 507 when an upload would leave its disk below the
+    free-space floor. That clears when space is freed, and instrument raw data
+    is irreplaceable, so a client must keep trying rather than treat the
+    refusal as final and set the file aside.
+    """
+    with pytest.raises(ServerError) as exc_info:
+        _http._raise_for_status(_response(status), "http://server/api/x")
+
+    assert exc_info.value.status_code == status
+    assert _http._is_retryable(exc_info.value)
 
 
 def test_auth_and_not_found_keep_their_own_types():
