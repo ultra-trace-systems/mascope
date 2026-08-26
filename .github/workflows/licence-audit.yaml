@@ -27,11 +27,11 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  audit:
+  npm:
     # Deliberately not named "Dependency licences" - that is the per-PR check
     # required by branch protection, and two jobs reporting the same check name
     # would make it ambiguous which one satisfied it.
-    name: Licence audit (${{ matrix.ref }})
+    name: Licence audit, npm (${{ matrix.ref }})
     runs-on: ubuntu-latest
     timeout-minutes: 5
     strategy:
@@ -40,21 +40,30 @@ jobs:
       matrix:
         ref: [develop, master]
     steps:
-      - name: Checkout ${{ matrix.ref }}
+      # Checked out WITHOUT a ref, so the checker and this workflow always come
+      # from the branch the run started on, never from the branch under audit.
+      # The next step explains why that separation matters.
+      - name: Checkout the auditing ref
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ matrix.ref }}
           persist-credentials: false
 
-      - name: Check dependency licences against the allowlist
+      - name: Take the audited ref's lockfile
+        env:
+          # Passed as an environment variable rather than interpolated into the
+          # script: a `${{ }}` inside `run:` is substituted before the shell
+          # ever sees it.
+          AUDIT_REF: ${{ matrix.ref }}
         run: |
-          # Runs the audited ref's own copy of the checker against its own
-          # lockfile. A ref from before the gate landed has neither; say so
-          # out loud rather than exiting 0 as though something had been
-          # checked - a check that did not run must not look like one that
-          # passed. This heals itself once the gate reaches that branch.
-          if [ ! -f tooling/check-licenses.py ]; then
-            echo "::warning::${{ matrix.ref }} predates the licence gate - nothing audited on this ref"
-            exit 0
-          fi
-          python3 tooling/check-licenses.py
+          # Only the lockfile crosses over - data, never code. A scheduled run
+          # executes with the default branch's privileges, so running a script
+          # out of an audited branch would hand that privilege to whatever
+          # landed there, and "whatever landed there without the gate noticing"
+          # is the exact case this audit exists to catch. Reading its lockfile
+          # with the auditing branch's checker gives the same answer and
+          # executes nothing from it.
+          git fetch --depth=1 origin "$AUDIT_REF"
+          git checkout FETCH_HEAD -- server/frontend/package-lock.json
+
+      - name: Check dependency licences against the allowlist
+        run: python3 tooling/check-licenses.py npm
