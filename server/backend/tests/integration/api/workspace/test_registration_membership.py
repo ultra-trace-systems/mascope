@@ -191,17 +191,23 @@ async def test_registration_announces_the_new_membership(
     """The enrolment emits the record-reload event a member addition emits.
 
     Going through the controller is what puts this on the wire; the hand-built
-    insert it replaced was silent, so an open workspace list never learned
-    about the new member.
+    insert it replaced was silent. The members dialog reloads its roster on
+    this broadcast and filters it by ``record_id``, so both the event and the
+    workspace it names are part of that contract.
     """
     emit = AsyncMock()
     monkeypatch.setattr(workspaces_service, "emit_record_reload", emit)
 
     user_id = await _register(owner_client, role_id=300)
 
-    rooms = [
-        call.kwargs.get("room")
+    calls = [
+        call
         for call in emit.await_args_list
         if call.kwargs.get("record_type") == "workspace"
     ]
-    assert [acquisitions_workspace, f"user-{user_id}"] in rooms
+    assert [acquisitions_workspace, f"user-{user_id}"] in [
+        call.kwargs.get("room") for call in calls
+    ]
+    # The members dialog only reloads for the workspace it is showing, so the
+    # broadcast has to name the workspace it is about.
+    assert acquisitions_workspace in [call.kwargs.get("record_id") for call in calls]

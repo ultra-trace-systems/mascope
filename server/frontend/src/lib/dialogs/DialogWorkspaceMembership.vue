@@ -1,5 +1,5 @@
 <script setup>
-import { ref, computed, watch } from 'vue'
+import { ref, computed, watch, onUnmounted } from 'vue'
 
 import Dialog from 'primevue/dialog'
 import Button from 'primevue/button'
@@ -8,6 +8,7 @@ import Column from 'primevue/column'
 import Select from 'primevue/select'
 import { useConfirm } from 'primevue/useconfirm'
 
+import { api } from '@/api'
 import { useApp } from '@/stores'
 import { workspaceRoles, prettyWorkspaceRoleName, roleLevel } from '@/lib/roles'
 
@@ -154,10 +155,59 @@ const invalidCreated = computed(() => {
   return !created.value?.user_id
 })
 
+// A membership can change while this dialog sits open: another administrator
+// editing the same workspace, or an account being registered, which enrols the
+// new account in every system workspace. Both go through the member
+// controller, which announces the change on the workspace record-reload
+// channel - so listen for it and refresh the roster in place.
+const onWorkspaceReload = ({ record_id } = {}) => {
+  // The broadcast reaches every room this tab is subscribed to, and the
+  // list-level ones (a workspace created or deleted) name no workspace at all.
+  // Only the ones naming the workspace on screen say anything about this list.
+  if (!record_id || record_id !== props.workspace?.workspace_id) return
+  loadMembers()
+}
+
+// The announcement only reaches rooms this tab has joined, and the workspace
+// store joins just the focused one. The dialog can be opened on another: the
+// workspace pane's context menu passes the right-clicked workspace, which need
+// not be the selected one. So join this workspace's room for as long as the
+// dialog needs it, and never touch the focused workspace's own subscription -
+// dropping that would take the store's live updates down with it.
+const ownsSubscription = ref(false)
+
+const subscribe = () => {
+  const id = props.workspace?.workspace_id
+  if (!id || id === app.data.workspace.focusedId) return
+  api.socket.addSubscription(id)
+  ownsSubscription.value = id
+}
+
+const unsubscribe = () => {
+  if (!ownsSubscription.value) return
+  api.socket.removeSubscription(ownsSubscription.value)
+  ownsSubscription.value = false
+}
+
+const teardown = () => {
+  api.socket.off('workspace_reload', onWorkspaceReload)
+  unsubscribe()
+}
+
 watch(visible, (v) => {
   reset()
-  if (v) loadMembers()
+  if (v) {
+    api.socket.on('workspace_reload', onWorkspaceReload)
+    subscribe()
+    loadMembers()
+  } else {
+    teardown()
+  }
 })
+
+// The dialog is hidden rather than unmounted, so the close branch above is the
+// usual teardown; this catches the view being torn down with it still open.
+onUnmounted(teardown)
 </script>
 
 <template>
