@@ -502,7 +502,11 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
   the file was reported as a fault in Mascope and never got its peak
   timeseries, while larger files from the same instrument went through
   normally. A spectrum with no peaks is what a blank measurement is, and it
-  is now classified as one.
+  is now classified as one. The same comparison was written a second time
+  where instrument functions are fitted, and failed there on exactly these
+  spectra; both readings now come from one shared measurement, and asking
+  for a fit on such a file reports too few quality peaks rather than a
+  numerical error.
 
 - A bulk upload run no longer makes the server stop answering. Every request
   from an agent, the file converter or the SDK is checked against its access

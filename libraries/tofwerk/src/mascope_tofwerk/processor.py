@@ -3,7 +3,6 @@ from datetime import datetime, timedelta, timezone
 
 import numpy as np
 from scipy.signal import find_peaks
-from scipy.stats import median_abs_deviation
 
 import mascope_signal.compute as m_compute
 from mascope_backend.api.new.instrument_configs.schemas import (
@@ -22,6 +21,7 @@ from mascope_backend.file_converter.errors import (
     UNUSABLE_SCAN_TIMES_MESSAGE,
     EmptyAcquisitionError,
 )
+from mascope_signal.noise import max_peak_snr
 from mascope_tofwerk.tofwerk import (
     NoScansRecordedError,
     open_h5_file,
@@ -99,37 +99,31 @@ class H5Processor(BaseFileProcessor):
         maximum peak height to the noise level (signal to noise ratio).
         If the maximum peak to noise ratio is below a defined threshold,
         the measurement is classified as blank.
+
+        The measurement comes from ``max_peak_snr``, shared with the
+        ambient-spectrum detection in ``mascope_signal.instrument_func.fit``
+        so the two cannot come to disagree about what the noise level is. It
+        answers the two degenerate spectra specially - no peaks at all, and no
+        measurable noise floor - and both are blank measurements here.
         """
         # Get the sum signal and find potential peaks
         sum_signal = m_compute.get_sum_signal(self.filename).values
         peak_indices, _ = find_peaks(sum_signal)
         peak_heights = sum_signal[peak_indices]
 
-        if peak_heights.size == 0:
-            # No detectable peaks at all - a flat or empty sum signal, which is
-            # the definition of a blank measurement. Answered here rather than
-            # by the noise guard below, because the MAD of an empty array is
-            # NaN and not 0, so that guard never fires for this case and the
-            # np.max() further down would raise on the empty array instead.
+        max_signal_to_noise = max_peak_snr(peak_heights, NOISE_THRESHOLD_FACTOR)
+        if max_signal_to_noise is None:
+            # No noise floor to measure against - a single peak, or a saturated
+            # signal whose peaks are all the same height. Nothing stands out
+            # from the rest, so the measurement is blank. A signal with no
+            # peaks at all is scored 0.0 instead and reaches the same answer
+            # below; the shared measure is what keeps the empty array away from
+            # the np.max() that used to raise on it here.
             return True
-
-        # Compute noise level
-        noise_mad = median_abs_deviation(peak_heights, scale="normal")
-        if not np.isfinite(noise_mad) or noise_mad == 0:
-            # Only one peak, or the signal is saturated. Either way there is no
-            # noise level to compare a signal-to-noise ratio against, so the
-            # measurement is blank. The finiteness half states that intent for
-            # every undefined MAD rather than only the zero one; the empty case
-            # it would otherwise catch is already answered above.
-            return True
-        noise_std = 1.4826 * noise_mad
-        noise_threshold = noise_std * NOISE_THRESHOLD_FACTOR
-
-        max_signal_to_noise = np.max(peak_heights) / noise_threshold
 
         # bool(), not the numpy bool the comparison yields: the property is
         # annotated bool and the other returns are real bools, so without it
-        # the answer's type depends on which branch produced it.
+        # the answer's type would depend on which branch produced it.
         return bool(max_signal_to_noise < BLANK_SNR_THRESHOLD)
 
     @with_file_context

@@ -6,10 +6,11 @@ from lmfit.models import SkewedGaussianModel, SplineModel
 from scipy.interpolate import interp1d
 from scipy.optimize import curve_fit
 from scipy.signal import find_peaks
-from scipy.stats import linregress, median_abs_deviation
+from scipy.stats import linregress
 
 from mascope_file.name import get_instrument_type
 from mascope_signal.compute import get_sum_signal
+from mascope_signal.noise import max_peak_snr
 from mascope_signal.runtime import runtime
 
 
@@ -130,20 +131,27 @@ def fit_instrument_functions(filename: str, dmz=0.5, r_sq_thres=0.95) -> tuple:
 def _is_ambient_tof_spectrum(spec: np.ndarray) -> tuple[bool, float]:
     """Detect if TOF spectrum should be treated as ambient using SNR.
 
-    Uses the same MAD-based SNR method as TOF blank detection, but with
-    an ambient-specific threshold.
+    Uses the same MAD-based SNR measure as TOF blank detection - the shared
+    ``max_peak_snr`` - but with an ambient-specific threshold, and it reads a
+    missing noise floor the opposite way: a spectrum whose peaks are all the
+    same height has an unbounded ratio here, not a blank one.
+
+    :param spec: Spectrum counts / intensity
+    :type spec: np.ndarray
+    :return: Whether the spectrum is ambient, and the signal-to-noise ratio it
+        was judged on
+    :rtype: tuple[bool, float]
     """
     peak_indices, _ = find_peaks(spec)
     peak_heights = spec[peak_indices]
 
-    noise_mad = median_abs_deviation(peak_heights, scale="normal")
-    noise_std = 1.4826 * noise_mad
-    noise_threshold = noise_std * NOISE_THRESHOLD_FACTOR
-
-    if noise_threshold <= 0:
+    signal_to_noise = max_peak_snr(peak_heights, NOISE_THRESHOLD_FACTOR)
+    if signal_to_noise is None:
+        # No noise floor to divide by, so the tallest peak is unbounded against
+        # it - unless it does not rise above zero either, which is no signal at
+        # all. A spectrum with no peaks never lands here: the shared measure
+        # scores it 0.0, which is what keeps np.max() off an empty array.
         signal_to_noise = float("inf") if np.max(peak_heights) > 0 else 0.0
-    else:
-        signal_to_noise = float(np.max(peak_heights) / noise_threshold)
 
     return signal_to_noise < AMBIENT_SNR_THRESHOLD, signal_to_noise
 
