@@ -105,17 +105,32 @@ class H5Processor(BaseFileProcessor):
         peak_indices, _ = find_peaks(sum_signal)
         peak_heights = sum_signal[peak_indices]
 
+        if peak_heights.size == 0:
+            # No detectable peaks at all - a flat or empty sum signal, which is
+            # the definition of a blank measurement. Answered here rather than
+            # by the noise guard below, because the MAD of an empty array is
+            # NaN and not 0, so that guard never fires for this case and the
+            # np.max() further down would raise on the empty array instead.
+            return True
+
         # Compute noise level
         noise_mad = median_abs_deviation(peak_heights, scale="normal")
-        if noise_mad == 0:
-            # Only one peak, or the signal is saturated, or it's truly empty
+        if not np.isfinite(noise_mad) or noise_mad == 0:
+            # Only one peak, or the signal is saturated. Either way there is no
+            # noise level to compare a signal-to-noise ratio against, so the
+            # measurement is blank. The finiteness half states that intent for
+            # every undefined MAD rather than only the zero one; the empty case
+            # it would otherwise catch is already answered above.
             return True
         noise_std = 1.4826 * noise_mad
         noise_threshold = noise_std * NOISE_THRESHOLD_FACTOR
 
         max_signal_to_noise = np.max(peak_heights) / noise_threshold
 
-        return max_signal_to_noise < BLANK_SNR_THRESHOLD
+        # bool(), not the numpy bool the comparison yields: the property is
+        # annotated bool and the other returns are real bools, so without it
+        # the answer's type depends on which branch produced it.
+        return bool(max_signal_to_noise < BLANK_SNR_THRESHOLD)
 
     @with_file_context
     def _read_recorded_scan_times(self) -> np.ndarray:
