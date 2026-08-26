@@ -37,7 +37,6 @@ docs = ["mkdocs-material>=9.7,<10"]
 dev = [
     { include-group = "lint" },
     "deptry>=0.25.1,<0.26",
-    "austin-dist~=4.0",
     # jupyter
     "jupyterlab>=4.6.3,<5",
     "ipywidgets~=8.1",
