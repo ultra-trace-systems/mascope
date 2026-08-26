@@ -285,6 +285,13 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
 
 ### Fixed
 
+- A tab that loses its connection now says so once, instead of once per
+  retry. Socket.IO retries a lost connection indefinitely, and each attempt
+  filed its own "Trying to reconnect..." notification - roughly one every
+  five seconds, which filled the log's 250-entry limit in about twenty
+  minutes and pushed out every real notification. The retries are still
+  visible in the browser console.
+
 - A bulk upload run no longer makes the server stop answering. Every request
   from an agent, the file converter or the SDK is checked against its access
   token, and that check was opening five database connections and holding
