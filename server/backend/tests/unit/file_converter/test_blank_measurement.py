@@ -13,6 +13,10 @@ an empty array is NaN, not 0 - so the guard did not fire and ``np.max()`` raised
 ``ValueError: zero-size array to reduction operation maximum`` on a real file
 whose signal is flat. A file with no peaks is a blank measurement by
 definition, which is what it must now report.
+
+The measurement itself now lives in ``mascope_signal.noise.max_peak_snr``,
+shared with the ambient-spectrum detection that carried a second copy of it
+and the same hazard. These cases pin the classification this side of it.
 """
 
 from queue import Queue
@@ -126,3 +130,30 @@ def test_peak_far_above_the_noise_is_not_blank(blank_of):
     """
     heights = [1.0, 1.1, 1.0, 1.2, 1.0, 1.1, 10_000.0]
     assert blank_of(_signal_with_peaks(heights)) is False
+
+
+def test_blank_classification_reads_the_shared_noise_measure(blank_of, monkeypatch):
+    """Blank and ambient classification must not grow two answers again.
+
+    The signal-to-noise measure is ``mascope_signal.noise.max_peak_snr``,
+    shared with the ambient-spectrum detection in
+    ``mascope_signal.instrument_func.fit`` - which carried a second copy of it,
+    with the same empty-array hazard, until it was extracted.
+
+    This is a design guard rather than a regression test: it pins that the
+    classifier delegates to the shared measure and honours its answer, not any
+    behaviour that was ever wrong. The cases above cover the behaviour, and
+    ``libraries/signal/tests/test_noise.py`` covers the measure itself.
+    """
+    calls = []
+
+    def _spy(peak_heights, noise_threshold_factor):
+        calls.append(noise_threshold_factor)
+        return float(tof_processor.BLANK_SNR_THRESHOLD)
+
+    monkeypatch.setattr(tof_processor, "max_peak_snr", _spy)
+
+    # The measure's answer is what decides: exactly at the threshold is not
+    # below it, so this file is not blank.
+    assert blank_of(_signal_with_peaks([1.0, 5.0, 2.0])) is False
+    assert calls == [tof_processor.NOISE_THRESHOLD_FACTOR]
