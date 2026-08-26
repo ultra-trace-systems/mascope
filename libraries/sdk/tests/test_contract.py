@@ -124,6 +124,10 @@ class TestClientContract:
             peaks.columns
         )
         assert peaks["target_isotope_id"].notna().any(), "expected matched peaks"
+        assert "target_collection_names" in peaks.columns
+        matched = peaks[peaks["target_isotope_id"].notna()]
+        names = matched["target_collection_names"].explode().dropna()
+        assert not names.empty, "matched peaks should name their collections"
 
     def test_get_single_sample(self, mascope):
         sample_id = _first_sample_id(mascope)
