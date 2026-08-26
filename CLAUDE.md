@@ -115,9 +115,12 @@ It comes preloaded with the published demo dataset and login `demo@mascope.app` 
   `tooling/check-licenses.py`, including non-SPDX free text such as
   "SEE LICENSE IN LICENSE.md". It checks the whole lockfile, not the PR's diff,
   so a pre-existing violation stays red until it is dealt with. Run it locally
-  the way CI does: `python3 tooling/check-licenses.py`. If it fails on something
-  you added, read the actual licence - widening the allowlist to get green is
-  the one response that defeats the check.
+  with `uv run --no-project python tooling/check-licenses.py` - CI invokes it as
+  `python3 tooling/check-licenses.py`, but Windows has no `python3`. A nightly
+  audit re-runs it against develop and master, so a merge that skipped the gate
+  still surfaces. If it fails on something you added, read the actual licence -
+  widening the allowlist to get green is the one response that defeats the
+  check.
 - CI (`.github/workflows/tests.yaml`) runs the "Lint and format" (ruff) job plus
   backend pytest, library pytest, CLI pytest, frontend unit, the dependency
   licence check, and the demo-stack e2e suite on every PR; releases are gated on
