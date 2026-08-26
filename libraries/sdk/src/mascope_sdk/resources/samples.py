@@ -9,7 +9,6 @@ from loguru import logger
 
 from .._concurrent import run_concurrent
 from .._resolve import _match_names, _pattern_text, resolve_id
-from ..exceptions import MascopeAPIError
 from ._base import BaseResource, _coerce_datetime_columns
 from .ms2 import Ms2Resource
 
@@ -248,36 +247,6 @@ class SamplesResource(BaseResource):
         """
         return self._get(f"samples/{sample_id}")
 
-    def _target_collection_names(self) -> dict[str, str]:
-        """Map target collection IDs to names, cached on the client.
-
-        The peaks endpoint carries only ``target_collection_ids``; the names
-        live on the target collection listing, which is small and already
-        scoped to what the caller can see, so one cached request serves every
-        ``get_peaks`` call. Names are not unique - ``target_collection_id``
-        stays the join key.
-        """
-        cache_key = "target_collections"
-        collections = self._client._cache.get(cache_key)
-        if collections is None:
-            try:
-                data = self._get("target/collections")
-            except MascopeAPIError as e:
-                # A convenience column: never fail get_peaks over it, and do
-                # not cache the failure so a later call can retry.
-                logger.info(f"Failed to load target collections: {e}")
-                return {}
-            collections = pd.DataFrame(data or [])
-            self._client._cache[cache_key] = collections
-        if collections.empty:
-            return {}
-        return dict(
-            zip(
-                collections["target_collection_id"],
-                collections["target_collection_name"],
-            )
-        )
-
     def get_peaks(
         self,
         sample_id: str,
@@ -343,8 +312,9 @@ class SamplesResource(BaseResource):
                  ``target_collection_names`` is a list aligned
                  element-wise with ``target_collection_ids`` and is
                  display-only: names are not unique, so group by
-                 ``target_collection_id``. Unknown IDs resolve to
-                 ``None`` rather than to the raw ID.
+                 ``target_collection_id``. Servers older than the
+                 release that added the names send only the IDs, and
+                 the column is then ``None`` throughout.
 
                  Returns None if no peaks are found.
         :rtype: pd.DataFrame | None
@@ -410,6 +380,10 @@ class SamplesResource(BaseResource):
                 "target_compound_formula",
                 "ionization_mechanism_id",
                 "target_collection_ids",
+                # Older servers omit the names; `.get` below then leaves the
+                # column None rather than dropping it, so the frame's schema
+                # does not depend on the server version.
+                "target_collection_names",
             ]
 
             # Replace empty lists with [None] so unmatched peaks survive
@@ -474,24 +448,6 @@ class SamplesResource(BaseResource):
                     id_to_name
                 )
                 df = df.drop(columns=["ionization_mechanism_id"])
-
-            # Resolve target_collection_ids to human-readable names. The
-            # column is always added so the frame's schema does not depend
-            # on whether the sample happened to match anything.
-            collection_names = (
-                self._target_collection_names() if has_match.any() else {}
-            )
-            df.insert(
-                df.columns.get_loc("target_collection_ids") + 1,
-                "target_collection_names",
-                df["target_collection_ids"].apply(
-                    lambda ids: (
-                        [collection_names.get(i) for i in ids]
-                        if isinstance(ids, list)
-                        else None
-                    )
-                ),
-            )
 
         return df
 

@@ -57,6 +57,7 @@ async def query_peak_matches(
                 TargetCompound.target_compound_name,
                 TargetCompound.target_compound_formula,
                 TargetCollection.target_collection_id,
+                TargetCollection.target_collection_name,
                 label(
                     "instrument",
                     instrument,  # type: ignore
@@ -134,6 +135,22 @@ async def query_peak_matches(
             ),
         )
         .reset_index()
+    )
+
+    # Names for the collections behind each match, element-wise aligned with
+    # target_collection_ids. Resolved here, from the row the id came from,
+    # rather than left to the caller: the id is only resolvable through the
+    # target collection listing, which bearer-token clients (the SDK) cannot
+    # read. Names are not unique - target_collection_id stays the join key.
+    collection_names = dict(
+        zip(match_df["target_collection_id"], match_df["target_collection_name"])
+    )
+    agg.insert(
+        agg.columns.get_loc("target_collection_ids") + 1,
+        "target_collection_names",
+        agg["target_collection_ids"].apply(
+            lambda ids: [collection_names.get(i) for i in ids]
+        ),
     )
 
     # target_compound_name is nullable, so under pandas 3 the NULLs arrive as
