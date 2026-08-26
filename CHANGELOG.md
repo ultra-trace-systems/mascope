@@ -289,6 +289,16 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
   that the loader itself raises for a variable that is simply absent. zarr 3
   raises `GroupNotFoundError`, a subclass of `FileNotFoundError`, so one clause
   now covers both.
+- The upload size cap now applies to browser uploads too. Web uploads were
+  capped in the browser at 2.5 GB whatever `tus_max_upload_gb` said - below
+  even its 5 GB default - so raising the cap only ever helped the SDK and
+  the instrument agents. **Upgrading:** the setting moves from `[backend]` to
+  `[meta]` in the env config toml. A value left under `[backend]` keeps
+  working and is moved automatically with a warning, but move it, because
+  only the `[meta]` copy reaches the web app. The frontend reads it at build
+  time, so raising the browser cap on a deployment running a released image
+  needs a frontend rebuild; a backend restart alone lifts it for the SDK and
+  agent paths.
 
 - Running an m/z calibration no longer requires the global `admin` role. It now
   requires `admin` in the *instrument* workspace holding the raw file - the
@@ -414,6 +424,14 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
   workspace and the account exist, treats a membership that is already there
   as done rather than failing on the unique index the direct insert would
   have hit, and puts the granted role through the same role-ceiling check.
+- Resumable uploads are refused when the disk is nearly full. The per-upload
+  size cap bounds one transfer but not several at once, so enough legitimate
+  uploads could still fill the disk. A new upload that would leave less than
+  `tus_min_free_disk_gb` free (10 GB by default, `0` disables it) is now
+  refused before any bytes move, and clients retry it, so a squeeze that
+  clears on its own costs only a delay. Upload fragments abandoned by clients
+  are also cleared after 24 hours without progress; previously they survived
+  until the next restart.
 
 - A bulk upload run no longer makes the server stop answering. Every request
   from an agent, the file converter or the SDK is checked against its access
