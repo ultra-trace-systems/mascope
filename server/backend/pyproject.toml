@@ -45,7 +45,7 @@ dependencies = [
     "typer>=0.27.1,<0.28",
     "uvicorn>=0.34,<0.53",
     "websocket-client~=1.8",
-    "zarr==2.18.2", # TODO: Resolve dependency issue https://github.com/ultra-trace-systems/mascope/issues/479
+    "zarr==3.3.0", # TODO: Resolve dependency issue https://github.com/ultra-trace-systems/mascope/issues/479
     "numcodecs==0.15.1", # TODO: See issue above
     # Pinned. 4.2.0 fixes the upload-breaking file_dep bug (issue #1159)
     # and improves offset/resume handling. Newer versions are blocked:
