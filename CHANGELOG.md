@@ -353,6 +353,13 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
   minutes and pushed out every real notification. The retries are still
   visible in the browser console.
 
+- Batch sorting in the sample browser now sticks. The sort order was saved
+  only while it differed from the default, and switching back to the default
+  left the previously saved order in place - so the next visit restored the
+  order you had just changed away from. It looked as though sorting only
+  persisted after typing something into the batch search box, because a
+  search term was what kept the saved state from matching the default.
+
 - A bulk upload run no longer makes the server stop answering. Every request
   from an agent, the file converter or the SDK is checked against its access
   token, and that check was opening five database connections and holding
