@@ -397,7 +397,9 @@ A full disk is the classic way to take the whole stack down: Postgres cannot
 write and wedges. Everything that grows lands on the host - the Postgres data,
 the filestore (uploaded raw files) and dumps under `.runtime/`, and docker's
 image store under `/var/lib/docker` - usually sharing one filesystem. Three
-guards keep it from filling silently.
+guards keep it from filling silently, and a fourth - the
+[upload disk floor](#upload-disk-floor) - refuses new uploads once the spool's
+filesystem runs short.
 
 ### The monitor (early warning)
 
@@ -734,12 +736,48 @@ one may be. Instruments producing larger single files can raise it in the
 env's config toml:
 
 ```toml
-[backend]
+[meta]
 tus_max_upload_gb = 20
 ```
 
 Clients see the cap as the standard `Tus-Max-Size` header; an upload declared
 larger than the cap is refused up front with HTTP 413.
+
+The web uploader sizes its own client-side limit from the same setting, so
+raising the cap lifts it for browser uploads too - but the frontend bakes the
+value in at build time (like `peak_assignment`). A deployment running a
+*pulled* release image carries the default, so lifting the browser cap needs
+`mascope prod build`; the SDK and instrument-agent paths pick the new cap up on
+a backend restart alone.
+
+The setting used to live under `[backend]`. A config toml that still has it
+there keeps working - it is promoted to `[meta]` at startup with a warning -
+but move it, because only the `[meta]` copy reaches the web app.
+
+### Upload disk floor
+
+The per-upload cap bounds one transfer; it does not bound how much disk several
+concurrent uploads take together. A resumable upload is therefore also refused
+at creation, with HTTP 507, when admitting it would leave less than
+`tus_min_free_disk_gb` (10 GB by default, matching the disk monitor's own
+threshold) free on the filesystem holding the upload spool:
+
+```toml
+[backend]
+tus_min_free_disk_gb = 20
+```
+
+Set it to `0` to disable the check. The refusal happens before any bytes move,
+and clients retry it, so a squeeze that clears on its own costs nothing but a
+delay. If uploads are being refused, free space on `$MASCOPE_PATH` - see
+[Disk space](#disk-space) for what grows there.
+
+Upload spool entries left behind by clients that started an upload and never
+finished it are deleted once they have gone 24 hours without progress, checked
+whenever a new upload is admitted. Only untouched entries are swept, so a slow
+multi-hour transfer is never reaped.
+
+### Where a deployment's settings live
 
 | Path | What |
 |---|---|

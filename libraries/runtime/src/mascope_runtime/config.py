@@ -48,6 +48,17 @@ class MetaConfig(BaseModel):
     # reads it via `peak_assignment_enabled()` and the frontend via
     # `runtime.meta`, so one switch gates both sides.
     peak_assignment: bool = False
+    # Size cap (in gigabytes) for a single resumable (tus) upload, advertised
+    # to clients as Tus-Max-Size and enforced at upload creation. Applies per
+    # upload: it does not limit how many files a client may transfer, only how
+    # large each one may be. Lives here rather than in [backend] because both
+    # sides need it - the backend enforces it, and the web uploader sizes its
+    # own client-side restriction from it via `runtime.meta` (a cap only the
+    # backend knew about meant a browser refusing files the server would have
+    # accepted). Must be at least 1: a zero or negative cap rejects every
+    # upload. A value still under [backend] is promoted by
+    # `migrate_legacy_options()`.
+    tus_max_upload_gb: int = Field(default=5, ge=1)
 
 
 class DatabaseConfig(BaseModel):
@@ -300,11 +311,14 @@ class BackendConfig(ModuleConfig):
     filestreams: str = r"./filestreams"  # path to the file streams folder
     redis: RedisConfig = RedisConfig()
     workers: Literal["auto"] | int = "auto"  # uvicorn workers, auto -  half cpu cores
-    # Size cap (in gigabytes) for a single resumable (tus) upload, advertised
-    # to clients as Tus-Max-Size. Applies per upload: it does not limit how
-    # many files a client may upload, only how large each one may be. Must be
-    # at least 1: a zero or negative cap rejects every upload.
-    tus_max_upload_gb: int = Field(default=5, ge=1)
+    # Free space (in gigabytes) that must remain on the tus spool's filesystem
+    # once a resumable upload is admitted. `meta.tus_max_upload_gb` bounds one
+    # transfer; it does not bound N concurrent ones, so admission also refuses
+    # a creation that would eat into this reserve. Backend-only (the browser
+    # never needs it), and the default matches MIN_FREE_GB in
+    # tooling/disk-check.sh so uploads start being refused around the point the
+    # disk monitor already alerts. 0 disables the check.
+    tus_min_free_disk_gb: int = Field(default=10, ge=0)
     # Lowest role required to hold a second authentication factor, by name
     # ("guest" covers everyone, "admin" only admins and owners). Unset means no
     # account is required to enrol. Validated by the backend at startup, which
@@ -532,6 +546,44 @@ class RuntimeConfig(BaseModel):
     sdk_lib: SdkLibConfig | None = None
 
 
+def migrate_legacy_options(raw: dict, logger=None) -> dict:
+    """
+    Lift settings that moved between config sections in an earlier release.
+
+    An env toml written for an older Mascope keeps working: the value is moved
+    into its new home before validation, with a warning naming the move. The
+    models ignore unknown keys, so without this an operator's override would
+    silently revert to the default - a deployment that raised
+    `tus_max_upload_gb` for a large-file instrument would drop back to 5 GB on
+    upgrade without saying so.
+
+    :param raw: The merged but unvalidated config dictionary, modified in place
+    :type raw: dict
+    :param logger: Optional logger for the migration warnings
+    :return: The same dictionary, with legacy settings moved
+    :rtype: dict
+    """
+    backend = raw.get("backend")
+    if isinstance(backend, dict) and "tus_max_upload_gb" in backend:
+        legacy = backend.pop("tus_max_upload_gb")
+        meta = raw.setdefault("meta", {})
+        if "tus_max_upload_gb" in meta:
+            if logger:
+                logger.warning(
+                    "Ignoring [backend] tus_max_upload_gb: the setting moved to "
+                    "[meta], which already sets it. Remove the [backend] line."
+                )
+        else:
+            meta["tus_max_upload_gb"] = legacy
+            if logger:
+                logger.warning(
+                    "[backend] tus_max_upload_gb has moved to [meta]; using the "
+                    f"legacy value ({legacy}). Move it to the [meta] section of "
+                    "your env config toml - the web uploader reads it from there."
+                )
+    return raw
+
+
 class RuntimeConfigLoader:
     """
     Helper class to facilitate loading the configuration of
@@ -559,12 +611,15 @@ class RuntimeConfigLoader:
             - base.mascope.toml - Shared defaults for all modes
             - {mode}.mascope.toml (runtime lib) - Mode-specific defaults
             - {mode}.mascope.toml (env dir, optional) - Env-specific overrides
-        2. Resolve relative paths into absolute paths, using the
+        2. Move settings that changed section in an earlier release into
+           their new home, so an older env toml keeps working (see
+           `migrate_legacy_options`).
+        3. Resolve relative paths into absolute paths, using the
            runtime environment path (except for package paths,
            which resolve relative to the Mascope root path).
-        3. Resolve log level for each module, using CLI arguments,
+        4. Resolve log level for each module, using CLI arguments,
            toml settings and defaults.
-        4. Validate the resulting dictionary using the Pydantic
+        5. Validate the resulting dictionary using the Pydantic
             model for the configuration.
 
         :param runtime: The parent runtime
@@ -573,6 +628,7 @@ class RuntimeConfigLoader:
         self._runtime = runtime
 
         config = self._load_tomls()
+        config = migrate_legacy_options(config, self.runtime.logger)
         config = self._resolve_paths(config)
         config = self._resolve_loglevels(config)
         config = self._resolve_env_ports(config)

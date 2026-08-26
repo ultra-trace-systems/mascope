@@ -20,6 +20,13 @@ filestore = './filestore'
 # Ledger rows are reclaimed with the prune_peak_assignment_runs script
 # (docs/maintaining.md), which nothing schedules for you.
 peak_assignment = false
+# Uploads: size cap (GB) for a single resumable (tus) upload, enforced by the
+# backend and used by the web uploader to size its own client-side limit (see
+# docs/maintaining.md). It lives here rather than in [backend] because both
+# sides read it; the frontend bakes it in at build time, so after changing it
+# rebuild the frontend image (prod) or restart the dev server. A value still
+# under [backend] keeps working and is promoted with a warning.
+# tus_max_upload_gb = 5
 
 [cli]
 color = "blue"
@@ -33,8 +40,10 @@ log_path = './logs'
 color = "green"
 # paths
 filestreams = './filestreams'
-# uploads: size cap (GB) for a single resumable upload (see docs/maintaining.md)
-# tus_max_upload_gb = 5
+# Uploads: free space (GB) that must remain on the upload spool's filesystem
+# after a resumable upload is admitted, so N concurrent uploads cannot fill the
+# disk. 0 disables the check. The per-upload size cap is meta.tus_max_upload_gb.
+# tus_min_free_disk_gb = 10
 # Two-factor authentication: the lowest role required to hold a second factor.
 # Unset (the default) means nobody is required to enrol, though anyone may turn
 # it on for their own account. Set to "admin" to cover admins and owners, or

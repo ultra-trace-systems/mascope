@@ -9,12 +9,12 @@ import { useIonizationMode } from './data/modules/ionization'
 import { useUi } from './ui'
 
 import { api } from '@/api'
+import { maxUploadBytes } from '@/lib/features'
 import { runtime } from '@/lib/runtime.js'
 import { genId, instrumentType } from '@/lib/utils'
 
 // TODO_configuration Default sample file upload params
 const FILE_UPLOAD_EXTENSIONS = ['.h5', '.raw']
-const FILE_UPLOAD_SIZE_LIMIT = 2.5 * 1024 * 1024 * 1024 // 2.5 GB
 
 function validateFile(file) {
   const validInstrument = validateInstrument(file)
@@ -53,7 +53,9 @@ export const useUppy = defineStore('app.uppy', () => {
   const uppy = new Uppy({
     restrictions: {
       allowedFileTypes: FILE_UPLOAD_EXTENSIONS,
-      maxFileSize: FILE_UPLOAD_SIZE_LIMIT,
+      // The server's own per-upload cap, not a separate browser limit: a
+      // smaller one here refused files the backend would have accepted.
+      maxFileSize: maxUploadBytes,
       maxNumberOfFiles: 1000
     },
     onBeforeFileAdded: (currentFile) => {

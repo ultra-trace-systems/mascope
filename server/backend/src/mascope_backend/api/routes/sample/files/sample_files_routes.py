@@ -1,5 +1,6 @@
 import os
 import shutil
+import time
 from datetime import datetime, timedelta, timezone
 
 from fastapi import (
@@ -529,8 +530,70 @@ os.makedirs(_tus_files_dir, exist_ok=True)
 # is per upload - it does not bound how many files a client may transfer -
 # and exists so one runaway transfer cannot fill the disk. nginx only bounds
 # individual PATCH chunk bodies, so the accumulated upload size must be
-# enforced here.
-_tus_max_upload_bytes = runtime.config.tus_max_upload_gb * 1024**3
+# enforced here. It lives in [meta] rather than [backend] because the web
+# uploader sizes its own client-side restriction from the same value.
+_tus_max_upload_bytes = runtime.meta.tus_max_upload_gb * 1024**3
+
+# Free space that must remain on the spool's filesystem once an upload is
+# admitted. The cap above bounds one transfer; it does not bound N concurrent
+# ones, which is how a disk fills with entirely legitimate uploads. Same house
+# pattern as the update guard's MASCOPE_UPDATE_MIN_FREE_GB (the CLI's
+# auto_update) and MIN_FREE_GB in tooling/disk-check.sh - the default matches
+# the latter, so uploads start being refused around the point the disk monitor
+# already alerts.
+_tus_min_free_bytes = runtime.config.tus_min_free_disk_gb * 1024**3
+
+# How long a tus spool entry may go untouched before it is treated as
+# abandoned. Keyed on mtime, not on the creation-time expiry tuspyserver
+# writes into <uid>.info: a PATCH rewrites the data file, so a slow but live
+# multi-hour transfer can never be swept, while tuspyserver's own expiry is
+# fixed at creation and would reap it.
+_TUS_PARTIAL_MAX_AGE_S = 24 * 60 * 60
+
+
+def _free_disk_bytes() -> int | None:
+    """Free bytes on the tus spool's filesystem, or None if unmeasurable.
+
+    An unmeasurable disk must never block an upload - the same rule the CLI's
+    update guard applies before an update.
+    """
+    try:
+        return shutil.disk_usage(_tus_files_dir).free
+    except OSError as error:
+        runtime.logger.warning(
+            f"Could not measure free disk space at {_tus_files_dir}: {error}"
+        )
+        return None
+
+
+def _sweep_abandoned_partials() -> None:
+    """Delete spool entries untouched for `_TUS_PARTIAL_MAX_AGE_S`.
+
+    A client that starts an upload and never comes back leaves a partial (and
+    its .info sidecar) behind. tuspyserver ships a gc for them but nothing
+    calls it, and temp/ is otherwise cleared only by the startup reset, so on a
+    long-lived deployment partials accumulate until the free-space floor below
+    starts refusing everything. Swept at admission rather than on a timer: it
+    is the moment the space is about to be needed, it needs no scheduler, and
+    upload traffic throttles it naturally.
+    """
+    cutoff = time.time() - _TUS_PARTIAL_MAX_AGE_S
+    try:
+        entries = list(os.scandir(_tus_files_dir))
+    except OSError as error:
+        runtime.logger.warning(f"Could not sweep {_tus_files_dir}: {error}")
+        return
+    for entry in entries:
+        try:
+            if not entry.is_file() or entry.stat().st_mtime >= cutoff:
+                continue
+            os.remove(entry.path)
+        except FileNotFoundError:
+            continue  # another worker swept it first
+        except OSError as error:
+            runtime.logger.warning(f"Could not remove {entry.path}: {error}")
+        else:
+            runtime.logger.info(f"Removed abandoned tus partial: {entry.name}")
 
 
 def _reject_oversized_upload(metadata: dict, upload_info: dict) -> None:
@@ -560,18 +623,63 @@ def _reject_oversized_upload(metadata: dict, upload_info: dict) -> None:
         )
 
 
+def _reject_when_disk_is_low(upload_info: dict) -> None:
+    """Refuse a creation that cannot fit alongside the free-space floor.
+
+    Call after `_reject_oversized_upload`, which guarantees a declared size.
+    The floor is checked per admission, not held as a reservation: several
+    creations racing each other all see the same free space. That is
+    deliberate - a cross-worker reservation ledger would need Redis - and it
+    stays safe because the floor is comfortably larger than the per-upload cap
+    by default, and free space does fall as chunks land, so a sustained burst
+    starts being refused on its own.
+
+    The refusal is 507 rather than 413: the request is fine, the server has
+    nowhere to put it, and the condition clears when space is freed. Clients
+    treat 5xx as retryable, so an instrument agent keeps trying rather than
+    setting an irreplaceable raw file aside.
+    """
+    if _tus_min_free_bytes <= 0:
+        return
+    free = _free_disk_bytes()
+    if free is None:
+        return
+    size = upload_info.get("size") or 0
+    if free - size >= _tus_min_free_bytes:
+        return
+    runtime.logger.warning(
+        f"Refusing a {size / 1024**3:.1f} GB upload: only "
+        f"{free / 1024**3:.1f} GB free at {_tus_files_dir}, "
+        f"{_tus_min_free_bytes / 1024**3:.1f} GB must stay free"
+    )
+    raise HTTPException(
+        status_code=507,
+        detail=(
+            f"Not enough free disk space for this upload: "
+            f"{free / 1024**3:.1f} GB free, the upload needs "
+            f"{size / 1024**3:.1f} GB and "
+            f"{_tus_min_free_bytes / 1024**3:.1f} GB must remain free. "
+            "Retry once space has been freed."
+        ),
+    )
+
+
 async def _tus_pre_create_hook(metadata: dict, upload_info: dict) -> None:
     """Refuse a tus upload at creation, before any bytes are transferred.
 
     tuspyserver marks an upload complete once its final chunk is written and
     only then runs the completion hook, so a refusal at completion cannot
     un-accept the transfer: the client reads the recreated file's offset as done
-    and reports success while the bytes are stranded. Both admission checks
-    therefore run here, at creation - the per-upload size cap, and converter
-    availability, so an upload started while no converter is connected is turned
-    away up front instead of transferred in full and then dropped.
+    and reports success while the bytes are stranded. Every admission check
+    therefore runs here, at creation - the per-upload size cap, the free-space
+    floor (with a sweep of abandoned partials first, so reclaimed space counts
+    toward it), and converter availability, so an upload started while no
+    converter is connected is turned away up front instead of transferred in
+    full and then dropped.
     """
     _reject_oversized_upload(metadata, upload_info)
+    _sweep_abandoned_partials()
+    _reject_when_disk_is_low(upload_info)
     await ensure_converter_available()
 
 
