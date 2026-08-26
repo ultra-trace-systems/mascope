@@ -30,9 +30,15 @@ vi.mock('@/lib/runtime.js', () => ({
 
 function makeFakeSocket() {
   const handlers = new Map()
+  // The manager (`socket.io`) emits the reconnection events on its own bus.
+  const managerHandlers = new Map()
   const add = (event, fn) => {
     if (!handlers.has(event)) handlers.set(event, [])
     handlers.get(event).push(fn)
+  }
+  const addManager = (event, fn) => {
+    if (!managerHandlers.has(event)) managerHandlers.set(event, [])
+    managerHandlers.get(event).push(fn)
   }
   return {
     connected: true,
@@ -40,9 +46,12 @@ function makeFakeSocket() {
     once: add,
     onAny: () => {},
     emit: vi.fn(),
-    io: { on: () => {} },
+    io: { on: addManager },
     fire(event, ...args) {
       for (const fn of handlers.get(event) ?? []) fn(...args)
+    },
+    fireManager(event, ...args) {
+      for (const fn of managerHandlers.get(event) ?? []) fn(...args)
     }
   }
 }
@@ -98,5 +107,31 @@ describe('initSocket', () => {
     socket.fire('connect')
 
     expect(reloadSpy).toHaveBeenCalledTimes(1)
+  })
+
+  const reconnectNotices = () =>
+    pushSpy.mock.calls.filter(([n]) => n.type === 'connection' && n.status === 'info')
+
+  it('reports a disconnection once, not once per retry', () => {
+    // Socket.IO retries forever with backoff (every 5 s at the default cap), so
+    // a notification per attempt fills the log's 250-entry retention in about
+    // twenty minutes offline and evicts every real notification.
+    socket.fire('disconnect', 'transport close')
+    socket.fireManager('reconnect_attempt', 1)
+    socket.fireManager('reconnect_attempt', 2)
+    socket.fireManager('reconnect_attempt', 3)
+
+    expect(reconnectNotices()).toHaveLength(1)
+  })
+
+  it('reports the next disconnection again', () => {
+    socket.fire('disconnect', 'transport close')
+    socket.fireManager('reconnect_attempt', 1)
+    socket.fireManager('reconnect_attempt', 2)
+    socket.fire('connect')
+    socket.fire('disconnect', 'ping timeout')
+    socket.fireManager('reconnect_attempt', 1)
+
+    expect(reconnectNotices()).toHaveLength(2)
   })
 })
