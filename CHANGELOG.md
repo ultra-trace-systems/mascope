@@ -6,7 +6,8 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
 
 ### Added
 
-- The notifications tab has a **Clear** button. It empties the log only:
+- The notifications tab has a **Clear** button. It empties the log and the
+  unread badge with it, so no count is left standing for rows that are gone;
   running processes keep their progress bars, and nothing is deleted on the
   server.
 

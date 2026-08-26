@@ -134,6 +134,20 @@ describe('notification store', () => {
     expect(store.log[0].message).toBe('b')
   })
 
+  it('clears the unread badge along with the log', () => {
+    store.push({ type: 'x', status: 'warning', message: 'w' })
+    store.push({ type: 'x', status: 'error', message: 'e' })
+    expect(store.recentWarnings).toBe(1)
+    expect(store.recentErrors).toBe(1)
+
+    store.clearLog()
+
+    // The badge sits on the bell right above the feed the user just emptied,
+    // so it must not keep a count for rows that are gone.
+    expect(store.recentWarnings).toBe(0)
+    expect(store.recentErrors).toBe(0)
+  })
+
   it('keeps result payloads out of the log', () => {
     store.push({
       type: 'match_compositions_by_mz',
