@@ -1267,9 +1267,17 @@ watch(
                       </IconField>
                     </FloatLabel>
                   </div>
+                  <!--
+                    The branches in this panel share one fragment and Vue keys
+                    the ones it compiles itself by number (0 for the row above,
+                    2 for the manual-input div below). Keep this remount key
+                    non-numeric so it cannot collide with them - a bare
+                    `key.targets` starts at 0 and makes every source toggle warn
+                    about duplicate keys.
+                  -->
                   <DataTable
                     v-if="selected.source == 'collection'"
-                    :key="key.targets"
+                    :key="`targets-${key.targets}`"
                     dataKey="target_compound_id"
                     v-model:selection="compounds.selected"
                     :value="
