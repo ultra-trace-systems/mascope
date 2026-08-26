@@ -16,7 +16,6 @@ dependencies = [
     "scipy~=1.13",
     "xarray>=2026.7.0",
     "zarr",
-    "numcodecs==0.15.1", # TODO: See issue above 
 ]
 
 [build-system]
