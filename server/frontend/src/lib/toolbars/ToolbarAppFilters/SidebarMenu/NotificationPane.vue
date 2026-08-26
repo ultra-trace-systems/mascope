@@ -1,6 +1,7 @@
 <script setup>
 import { reactive, computed, watchEffect } from 'vue'
 
+import Button from 'primevue/button'
 import ScrollPanel from 'primevue/scrollpanel'
 import Message from 'primevue/message'
 import IconField from 'primevue/iconfield'
@@ -45,11 +46,24 @@ const vHelpLayer = app.ui.help.directive(layer)
         Notifications are shown as toasts in the bottom right corner in real time.
         Here you can view a log of past notifications.
       </p>
+      <p>Clearing the log only empties this list; nothing is deleted on the server.</p>
       `
     "
     style="min-height: calc(100vh - 300px)"
   >
-    <h2>Notifications</h2>
+    <div class="row" style="align-items: center">
+      <h2>Notifications</h2>
+      <Button
+        icon="pi pi-trash"
+        severity="secondary"
+        text
+        rounded
+        aria-label="Clear notifications"
+        v-tooltip.bottom="'Clear notifications'"
+        :disabled="app.ui.notification.log.length === 0"
+        @click="app.ui.notification.clearLog()"
+      />
+    </div>
     <IconField style="width: 100%">
       <InputIcon>
         <i class="pi pi-search" />
@@ -58,11 +72,11 @@ const vHelpLayer = app.ui.help.directive(layer)
     </IconField>
     <ScrollPanel>
       <Message
-        v-for="{ process_id, type, status, message, timestamp } in app.ui.notification.log.filter(
+        v-for="{ id, type, status, message, timestamp } in app.ui.notification.log.filter(
           ({ type, status, message }) =>
             `${beautifySnakeCase(type)} ${status} ${message}`.includes(log.query)
         )"
-        :key="process_id"
+        :key="id"
         :severity="
           {
             warning: 'warn'

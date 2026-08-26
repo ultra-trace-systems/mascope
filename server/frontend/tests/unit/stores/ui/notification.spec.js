@@ -114,6 +114,26 @@ describe('notification store', () => {
     expect(store.log[0].message).toBe('m259')
   })
 
+  it('clears the log without cancelling live processes', () => {
+    store.push({ type: 'mz_fit', status: 'pending', process_id: 'p1', progress: 10 })
+    store.push({ type: 'x', status: 'success', message: 'saved' })
+    expect(store.log).toHaveLength(1)
+
+    store.clearLog()
+
+    expect(store.log).toHaveLength(0)
+    expect(store.progress).toHaveLength(1)
+  })
+
+  it('keeps logging after a clear', () => {
+    store.push({ type: 'x', status: 'success', message: 'a' })
+    store.clearLog()
+    store.push({ type: 'x', status: 'success', message: 'b' })
+
+    expect(store.log).toHaveLength(1)
+    expect(store.log[0].message).toBe('b')
+  })
+
   it('keeps result payloads out of the log', () => {
     store.push({
       type: 'match_compositions_by_mz',
