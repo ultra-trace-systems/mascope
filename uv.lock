@@ -192,24 +192,6 @@ wheels = [
 ]
 
 [[package]]
-name = "austin-dist"
-version = "4.0.0"
-source = { registry = "https://pypi.org/simple" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/f1/60/3d7eb8841f2687c2874bb425fd6c0a1a08a6747fbf926f51e546c0151a25/austin_dist-4.0.0-py3-none-macosx_11_0_arm64.whl", hash = "sha256:534a0194ff0bc58486e883e80078be4a413a6616c98c3acd67c54eeebf48dc0c", size = 44550, upload-time = "2025-11-01T09:27:48.604Z" },
-    { url = "https://files.pythonhosted.org/packages/04/fa/e3b72415da6699f66c97a2f864abdbdf10111a537284bd1a742d4975c4af/austin_dist-4.0.0-py3-none-macosx_11_0_x86_64.whl", hash = "sha256:79337a658acb942a4ab4c6eab04a08b347c8f5a9c572abb47f1c73981fe7ac3e", size = 45331, upload-time = "2025-11-01T09:27:49.867Z" },
-    { url = "https://files.pythonhosted.org/packages/e8/cd/000b1cdfc16c65145a7e5762126ab328404870f17da16b7313a02f6aee90/austin_dist-4.0.0-py3-none-manylinux_2_12_x86_64.manylinux2010_x86_64.whl", hash = "sha256:d7b5c8025ccad164899829f493f8865ac6abeca3624be00efc06307a4f4ed098", size = 1054201, upload-time = "2025-11-01T09:29:19.918Z" },
-    { url = "https://files.pythonhosted.org/packages/c0/25/89c1b7f953ab2de491492f3c38692063e229f2bf1a8a15b1764293d80231/austin_dist-4.0.0-py3-none-manylinux_2_17_aarch64.manylinux2014_aarch64.whl", hash = "sha256:7f9d6df6237146a8914e0fcbedc7173bb6ec06d6bacd85eafb501a5cffc950b6", size = 845813, upload-time = "2025-11-02T14:45:21.174Z" },
-    { url = "https://files.pythonhosted.org/packages/43/e9/e42bee6467c46cccd01b9500438c768905d45f37a7158337335a28ba3403/austin_dist-4.0.0-py3-none-manylinux_2_17_armv7l.manylinux2014_armv7l.whl", hash = "sha256:e4f9d15f9610dbb794905a3d61fac9d3a77c342623d826f09bf6a3b3a75cb986", size = 617386, upload-time = "2025-11-02T14:45:38.606Z" },
-    { url = "https://files.pythonhosted.org/packages/e7/6d/fe22badf0483b01a03afdb171b41ac0ff83ec1b69e4a24be361dd6ac7c59/austin_dist-4.0.0-py3-none-manylinux_2_17_ppc64le.manylinux2014_ppc64le.whl", hash = "sha256:1fc064776a2968bf06218cfea0b150914f5dd5b194bc29bd974e3278b2e6d64c", size = 911069, upload-time = "2025-11-02T14:45:45.7Z" },
-    { url = "https://files.pythonhosted.org/packages/1c/7f/58c4cbbfddfedcf29ea74bcb3361b576cdfb9b40ebbf7bfd20f70cda8761/austin_dist-4.0.0-py3-none-musllinux_1_1_aarch64.whl", hash = "sha256:2681e592dcf6d430953f72a46795583fd25286fe101b8cfd716dcbb6675f032e", size = 44031, upload-time = "2025-11-02T14:45:23.233Z" },
-    { url = "https://files.pythonhosted.org/packages/e3/f2/81e6b35046aeff47c9c6db37fd46eb161e77d297e2278535b70737affd36/austin_dist-4.0.0-py3-none-musllinux_1_1_armv7l.whl", hash = "sha256:c9198f2450154f4c2c7d90e4420aacb9792f1e1b9d08568974f8813b38e1c02a", size = 46490, upload-time = "2025-11-02T14:45:40.116Z" },
-    { url = "https://files.pythonhosted.org/packages/95/56/f253d976015fa3f13d06b8ba9edb810153c85fe5c1030b9523745edd409e/austin_dist-4.0.0-py3-none-musllinux_1_1_ppc64le.whl", hash = "sha256:027c39acee72615badf028ec9b9659df2c8be72517e54a73e525ce77c047b5c0", size = 45470, upload-time = "2025-11-02T14:45:47.103Z" },
-    { url = "https://files.pythonhosted.org/packages/60/27/35b6526192e569b31dcec807acb99539ae5585e10ee67a79ee309a8f7887/austin_dist-4.0.0-py3-none-musllinux_1_1_x86_64.whl", hash = "sha256:d8a7bcded0020d0c66869b7cf6703da79434051f422458f6555fea9f4aff488b", size = 44133, upload-time = "2025-11-01T09:29:21.202Z" },
-    { url = "https://files.pythonhosted.org/packages/38/70/81d96e8c33f300f01935a9a87fa1ff124ca25eb1cb85dcf30ce06f7c5360/austin_dist-4.0.0-py3-none-win_amd64.whl", hash = "sha256:8a59d8b4d00eed828b2734e73661d437487906486de71a7e414e4445dde7ab63", size = 59324, upload-time = "2025-11-01T09:28:10.713Z" },
-]
-
-[[package]]
 name = "babel"
 version = "2.18.0"
 source = { registry = "https://pypi.org/simple" }
@@ -1461,7 +1443,6 @@ dependencies = [
 [package.dev-dependencies]
 dev = [
     { name = "aiosqlite" },
-    { name = "austin-dist" },
     { name = "deptry" },
     { name = "ipywidgets" },
     { name = "jupyterlab" },
@@ -1499,7 +1480,6 @@ requires-dist = [
 [package.metadata.requires-dev]
 dev = [
     { name = "aiosqlite", specifier = ">=0.20,<1" },
-    { name = "austin-dist", specifier = "~=4.0" },
     { name = "deptry", specifier = ">=0.25.1,<0.26" },
     { name = "ipywidgets", specifier = "~=8.1" },
     { name = "jupyterlab", specifier = ">=4.6.3,<5" },
@@ -2359,7 +2339,7 @@ name = "pexpect"
 version = "4.9.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "ptyprocess" },
+    { name = "ptyprocess", marker = "sys_platform != 'emscripten' and sys_platform != 'win32'" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/42/92/cc564bf6381ff43ce1f4d06852fc19a2f11d180f23dc32d9588bee2f149d/pexpect-4.9.0.tar.gz", hash = "sha256:ee7d41123f3c9911050ea2c2dac107568dc43b2d3b0c7557a33212c398ead30f", size = 166450, upload-time = "2023-11-25T09:07:26.339Z" }
 wheels = [
