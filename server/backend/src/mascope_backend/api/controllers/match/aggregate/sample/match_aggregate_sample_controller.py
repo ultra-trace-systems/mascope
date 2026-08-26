@@ -295,6 +295,12 @@ async def aggregate_sample_match_compound(
             target_compound_name=target_compound_name,
             target_compound_formula=normalized_formula,
         )
+        # The ions create_target_ions flushes below reference this compound's
+        # ID, and the foreign key on target_ion.target_compound_id rejects the
+        # flush unless the compound row is part of the same transaction.
+        # Transient like the ions: the block exits without commit, so the
+        # whole tree rolls back once the match has been computed.
+        session.add(target_compound)
 
         # Step 3: Generate and create target ions and isotopes.
         # Create target ions for the compound
