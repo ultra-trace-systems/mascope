@@ -249,9 +249,7 @@ async def register_user(
         ),
         "guest",
     )
-    async with async_session() as session:
-        await add_to_system_workspaces(session, created_user.id, role_name)
-        await session.commit()
+    await add_to_system_workspaces(created_user.id, role_name)
 
     # --- Validate and return the registered user's details ---
     user = (await get_user(user_id=created_user.id))["data"]
