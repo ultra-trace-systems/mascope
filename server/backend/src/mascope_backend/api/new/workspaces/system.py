@@ -83,7 +83,15 @@ async def mirror_system_workspaces(
 
 async def add_to_system_workspaces(user_id: int, workspace_role: str) -> int:
     """
-    Give an account membership in every system workspace.
+    Give an account membership in every system workspace, if its role earns one.
+
+    Only admins and owners are enrolled. That is the rule creating a system
+    workspace already follows (`_ROLE_MAP` in the acquisition dataset service)
+    and the one `docs/authorization.md` states: "Global guests and editors are
+    not automatically added - they must be invited." Registration used to
+    enrol every new account at its matching role instead, so a guest created
+    today reached every instrument on the deployment while a guest created
+    before those workspaces existed reached none. The two paths now agree.
 
     Goes through the workspace-member controller rather than inserting the
     rows here, so a membership created at registration is built exactly like
@@ -109,6 +117,11 @@ async def add_to_system_workspaces(user_id: int, workspace_role: str) -> int:
     :return: How many memberships were added.
     :rtype: int
     """
+    if ROLE_ACCESS_LEVELS[workspace_role] < ROLE_ACCESS_LEVELS["admin"]:
+        # A guest or an editor is invited to the instruments they work on,
+        # never enrolled in all of them by existing.
+        return 0
+
     # Imported here, not at module scope: mirror_system_workspaces above is
     # imported by the pairing path and stays deliberately ORM-only.
     from mascope_backend.api.lib.exceptions.api_exceptions import ApiException
