@@ -1,4 +1,4 @@
-"""Storage/zarr I/O infrastructure (locks, synchronizers, load/save arrays)"""
+"""Storage/zarr I/O infrastructure (locks, load/save arrays)"""
 
 import asyncio
 import fnmatch
@@ -6,8 +6,11 @@ import glob
 import json
 import os
 import threading
+from contextlib import contextmanager
 from shutil import rmtree
+from typing import Iterator
 
+import fasteners
 import numpy as np
 import xarray as xr
 import zarr
@@ -15,6 +18,12 @@ import zarr
 import mascope_file.name as m_name
 from mascope_file.runtime import runtime
 
+
+# Keep writing zarr v2 stores. The filestore is full of v2 data written by
+# zarr 2.x; zarr 3 reads and updates those in place, but would create any *new*
+# store as v3. Pinning the default keeps the filestore in one format and keeps
+# a downgrade to zarr 2 possible.
+zarr.config.set({"default_zarr_format": 2})
 
 CONCURRENT_WRITE_LIMIT = 2  # Max number of concurrent writes to prevent OutOfMemory
 # Global lock for zarr file writes - prevents concurrent modifications
@@ -34,18 +43,41 @@ def get_zarr_write_lock(zarr_path: str) -> threading.Lock:
         return _zarr_write_locks[zarr_path]
 
 
-def get_zarr_synchronizer(zarr_path: str) -> zarr.ProcessSynchronizer:
-    """Get zarr synchronizer for a given zarr file
+def get_zarr_process_lock(zarr_path: str) -> fasteners.InterProcessLock:
+    """Get a cross-process file lock guarding a specific zarr file.
+
+    The backend (several uvicorn workers) and the file converter run as separate
+    processes over a shared filestore, so a threading lock alone does not
+    serialize writes. zarr 2 covered this with ``zarr.ProcessSynchronizer``,
+    which zarr 3 removed; this is the same ``fasteners`` lock it used, applied
+    around whole read-modify-write operations rather than per chunk.
+
+    The lock file lives *beside* the store, not inside it, so that overwriting
+    a store does not delete the lock currently being held.
 
     :param zarr_path: Path to the zarr file
     :type zarr_path: str
-    :return: Zarr synchronizer
-    :rtype: zarr.ProcessSynchronizer
+    :return: Inter-process lock for this file
+    :rtype: fasteners.InterProcessLock
     """
     parent_dir = os.path.dirname(zarr_path)
-    sync_name = zarr_path.split(os.path.sep)[-1].replace(".zarr", ".sync")
-    sync_path = os.path.sep.join([parent_dir, sync_name])
-    return zarr.ProcessSynchronizer(sync_path)
+    lock_name = os.path.basename(zarr_path).replace(".zarr", "") + ".lock"
+    os.makedirs(parent_dir, exist_ok=True)
+    return fasteners.InterProcessLock(os.path.join(parent_dir, lock_name))
+
+
+@contextmanager
+def zarr_write_lock(zarr_path: str) -> Iterator[None]:
+    """Serialize writes to a zarr file across both threads and processes.
+
+    Always take the thread lock first, then the file lock, so the ordering is
+    the same everywhere and cannot deadlock.
+
+    :param zarr_path: Path to the zarr file
+    :type zarr_path: str
+    """
+    with get_zarr_write_lock(zarr_path), get_zarr_process_lock(zarr_path):
+        yield
 
 
 def get_file_data_vars(filepath):
@@ -90,17 +122,16 @@ def load_array(base_filename, var, prev_array=None):
 
     # Load data from file
     def is_multifile():
-        z = zarr.open(var_path, mode="r", synchronizer=sync)
+        z = zarr.open(var_path, mode="r")
         groups = list(z.group_keys())
         return bool(len(groups))
 
-    sync = get_zarr_synchronizer(var_path)
     if is_multifile():
         # Multi-file (grouped)
-        dataset = open_mfzarr(var_path, prev_array=prev_array, sync=sync)
+        dataset = open_mfzarr(var_path, prev_array=prev_array)
     else:
         # Single file
-        dataset = xr.open_zarr(var_path, synchronizer=sync)
+        dataset = xr.open_zarr(var_path)
 
     return dataset
 
@@ -125,8 +156,7 @@ def load_coord(base_filename, var, coord_name):
             runtime.logger.info("Use load_signal to access signal array")
         raise FileNotFoundError(var_path)
 
-    sync = get_zarr_synchronizer(var_path)
-    z = zarr.open(var_path, mode="r", synchronizer=sync)
+    z = zarr.open(var_path, mode="r")
     coord = z[coord_name]
     coord_array = coord[:]
     # Check if array is empty
@@ -257,13 +287,11 @@ def load_file(base_filename, vars=None, prev_dataset=None):
     return dataset
 
 
-def open_mfzarr(path, sync=None, mode="r", concat_dim="time", prev_array=None):
+def open_mfzarr(path, mode="r", concat_dim="time", prev_array=None):
     """Load data from a multi-file zarr into a xr.Dataset
 
     :param path: Full path to the multi-file zarr array
     :type path: str
-    :param sync: Zarr file synchronizer, defaults to None
-    :type sync: zarr.ProcessSynchronizer, optional
     :param mode: File mode, defaults to "r"
     :type mode: str, optional
     :param concat_dim: Dimension name along which to concatenate the files, defaults to "time"
@@ -274,7 +302,7 @@ def open_mfzarr(path, sync=None, mode="r", concat_dim="time", prev_array=None):
     :rtype: xr.Dataset
     """
 
-    z = zarr.open(path, mode=mode, synchronizer=sync)
+    z = zarr.open(path, mode=mode)
     groups = list(z.group_keys())
 
     if prev_array is not None:
@@ -287,7 +315,7 @@ def open_mfzarr(path, sync=None, mode="r", concat_dim="time", prev_array=None):
         return prev_array
     runtime.logger.debug(f"loading groups: {groups}")
     x = xr.concat(
-        [xr.open_zarr(path, g, consolidated=False, synchronizer=sync) for g in groups],
+        [xr.open_zarr(path, g, consolidated=False) for g in groups],
         concat_dim,
     )
     if prev_array is not None:
@@ -358,11 +386,11 @@ def update_zarr_array_coord(base_filename, var, dim, coord):
     :type coord: np.array
     """
     array_path = m_name.filename_to_zarr_path(base_filename, var)
-    sync = get_zarr_synchronizer(array_path)
-    zarr_array = zarr.open(array_path, mode="a", synchronizer=sync)
-    zarr_array[dim][:] = coord
-    for group_name, group in zarr_array.groups():
-        group[dim][:] = coord
+    with zarr_write_lock(array_path):
+        zarr_array = zarr.open(array_path, mode="a")
+        zarr_array[dim][:] = coord
+        for group_name, group in zarr_array.groups():
+            group[dim][:] = coord
 
 
 def get_dataset_vars(dataset: xr.Dataset) -> list:
@@ -434,33 +462,29 @@ async def write_peaks(
     :return: None
     """
     peak_timeseries_path = m_name.filename_to_zarr_path(filename, "peak_timeseries")
-    synchronizer = get_zarr_synchronizer(peak_timeseries_path)
 
     # --- Handle full overwrite scenario ---
     file_not_exists = not os.path.exists(peak_timeseries_path)
     if overwrite or file_not_exists:
-        await _full_overwrite_peaks(peak_timeseries, peak_timeseries_path, synchronizer)
+        await _full_overwrite_peaks(peak_timeseries, peak_timeseries_path)
         return
 
     # --- Handle partial update scenario ---
-    await _partial_update_peaks(peak_timeseries, peak_timeseries_path, synchronizer)
+    await _partial_update_peaks(peak_timeseries, peak_timeseries_path)
 
 
 async def _full_overwrite_peaks(
     peak_timeseries: xr.Dataset,
     peak_timeseries_path: str,
-    synchronizer: zarr.ProcessSynchronizer,
 ) -> None:
     """Perform a full overwrite of the peak timeseries zarr file.
 
     :param peak_timeseries: Dataset to write
     :param peak_timeseries_path: Path to the zarr file
-    :param synchronizer: Zarr synchronizer for process-safe access
     """
-    write_lock = get_zarr_write_lock(peak_timeseries_path)
 
     def _write():
-        with write_lock:
+        with zarr_write_lock(peak_timeseries_path):
             runtime.logger.debug(
                 f"Full overwrite of peak_timeseries at {peak_timeseries_path}"
             )
@@ -476,7 +500,6 @@ async def _full_overwrite_peaks(
             peak_timeseries.to_zarr(
                 peak_timeseries_path,
                 mode="w",
-                synchronizer=synchronizer,
                 encoding={"sparsity": {"_FillValue": 0.0}},
             )
 
@@ -493,7 +516,6 @@ async def _full_overwrite_peaks(
 async def _partial_update_peaks(
     peak_timeseries: xr.Dataset,
     peak_timeseries_path: str,
-    synchronizer: zarr.ProcessSynchronizer,
 ) -> None:
     """Update specific m/z values in an existing peak timeseries zarr file.
 
@@ -504,7 +526,6 @@ async def _partial_update_peaks(
 
     :param peak_timeseries: Dataset containing updates (must be fully loaded to memory)
     :param peak_timeseries_path: Path to the zarr file
-    :param synchronizer: Zarr synchronizer for process-safe access
     """
     runtime.logger.debug(f"Writing new peak timeseries into {peak_timeseries_path}...")
 
@@ -513,9 +534,7 @@ async def _partial_update_peaks(
         peak_timeseries = peak_timeseries.compute()
 
     # Extract metadata from existing file
-    chunk_info = _get_chunk_metadata(
-        peak_timeseries, peak_timeseries_path, synchronizer
-    )
+    chunk_info = _get_chunk_metadata(peak_timeseries, peak_timeseries_path)
 
     mz_update = peak_timeseries.coords["mz"].values
     runtime.logger.debug(
@@ -532,12 +551,9 @@ async def _partial_update_peaks(
         if hasattr(task["subset_data"], "compute"):
             task["subset_data"] = task["subset_data"].compute()
 
-    # Get the write lock for this zarr file
-    write_lock = get_zarr_write_lock(peak_timeseries_path)
-
     def _write_all_chunks():
         """Write all chunks one by one under a single lock."""
-        with write_lock:
+        with zarr_write_lock(peak_timeseries_path):
             for task in chunk_tasks:
                 _process_chunk_sync(
                     task["chunk_start"],
@@ -545,7 +561,6 @@ async def _partial_update_peaks(
                     peak_timeseries_path,
                     task["subset_data"],
                     task["relevant_indices"],
-                    synchronizer,
                     chunk_info["max_mz_idx"],
                 )
 
@@ -559,7 +574,6 @@ async def _partial_update_peaks(
 def _get_chunk_metadata(
     peak_timeseries: xr.Dataset,
     peak_timeseries_path: str,
-    synchronizer: zarr.ProcessSynchronizer,
 ) -> dict:
     """Extract chunk metadata from the existing zarr file.
 
@@ -568,10 +582,9 @@ def _get_chunk_metadata(
 
     :param peak_timeseries: Dataset with m/z values to update
     :param peak_timeseries_path: Path to the zarr file
-    :param synchronizer: Zarr synchronizer
     :return: Dictionary with indexer, chunk size, and other metadata
     """
-    z = zarr.open(peak_timeseries_path, mode="r", synchronizer=synchronizer)
+    z = zarr.open(peak_timeseries_path, mode="r")
 
     # Get dimensions
     max_mz_idx = z["mz"].shape[0]
@@ -669,7 +682,6 @@ def _process_chunk_sync(
     peak_timeseries_path: str,
     update_data: xr.Dataset,
     update_indices_in_chunk: np.ndarray,
-    synchronizer: zarr.ProcessSynchronizer,
     max_mz_idx: int,
 ) -> None:
     """Perform a read-modify-write operation on a single zarr chunk.
@@ -682,7 +694,6 @@ def _process_chunk_sync(
     :param peak_timeseries_path: Path to the zarr file
     :param update_data: Dataset containing new values for this chunk
     :param update_indices_in_chunk: Global indices that map to this chunk
-    :param synchronizer: Zarr synchronizer for process-safe access
     :param max_mz_idx: Maximum m/z index in the file (to handle last chunk)
     """
     # Handle last chunk boundary
@@ -691,7 +702,7 @@ def _process_chunk_sync(
     # Convert global indices to local chunk indices
     local_indices = update_indices_in_chunk - chunk_start
 
-    z = zarr.open(peak_timeseries_path, mode="r+", synchronizer=synchronizer)
+    z = zarr.open(peak_timeseries_path, mode="r+")
 
     # Update each variable
     for var_name in update_data.data_vars:
@@ -751,11 +762,14 @@ def ensure_sparsity_exists(base_filename: str) -> bool:
     if not os.path.exists(peak_timeseries_path):
         return False
 
-    synchronizer = get_zarr_synchronizer(peak_timeseries_path)
-    write_lock = get_zarr_write_lock(peak_timeseries_path)
-
-    # Quick check outside the lock to avoid locking in the common case
-    z = zarr.open(peak_timeseries_path, mode="r", synchronizer=synchronizer)
+    # Quick check outside the lock to avoid locking in the common case.
+    # use_consolidated=False is required, not incidental: zarr 3 answers
+    # membership from .zmetadata when it is present, where zarr 2 always listed
+    # the store. Reading the consolidated view here would report a sparsity
+    # array that exists on disk as missing whenever .zmetadata is stale --
+    # skipping the repair below and falling through to create it a second time,
+    # which fails with ContainsArrayError and leaves the store unreadable.
+    z = zarr.open(peak_timeseries_path, mode="r", use_consolidated=False)
     if "sparsity" in z:
         # Reconsolidate in case .zmetadata is stale (xr.open_zarr reads from it)
         zarr.consolidate_metadata(peak_timeseries_path)
@@ -794,10 +808,13 @@ def ensure_sparsity_exists(base_filename: str) -> bool:
             )
 
     # Write the new variable under the write lock with a re-check
-    with write_lock:
-        z = zarr.open(peak_timeseries_path, mode="r+", synchronizer=synchronizer)
+    with zarr_write_lock(peak_timeseries_path):
+        # use_consolidated=False for the same reason as the check above: this
+        # re-check has to see the real store, including an array a different
+        # process created since.
+        z = zarr.open(peak_timeseries_path, mode="r+", use_consolidated=False)
 
-        # Re-check inside the lock — another thread may have created it
+        # Re-check inside the lock — another process may have created it
         if "sparsity" in z:
             zarr.consolidate_metadata(peak_timeseries_path)
             return False
@@ -808,15 +825,16 @@ def ensure_sparsity_exists(base_filename: str) -> bool:
             if z["is_timeseries_computed"].chunks
             else mz_size
         )
-        z.create_dataset(
+        sparsity = z.create_array(
             "sparsity",
-            data=sparsity_values,
+            shape=sparsity_values.shape,
             chunks=(mz_chunk_size,),
             dtype=np.float64,
         )
+        sparsity[:] = sparsity_values
         # Write .zattrs for xarray compatibility (dimension metadata)
         sparsity_attrs = {"_ARRAY_DIMENSIONS": ["mz"]}
-        z["sparsity"].attrs.update(sparsity_attrs)
+        sparsity.attrs.update(sparsity_attrs)
 
         # Reconsolidate metadata so xr.open_zarr sees the new variable
         zarr.consolidate_metadata(peak_timeseries_path)
@@ -855,8 +873,7 @@ def load_batch_cache(
     var_path = os.path.join(batch_path, f"{zarr_filename}.zarr")
     if not os.path.exists(var_path):
         raise FileNotFoundError(f"Batch cache file not found: {var_path}")
-    synchronizer = get_zarr_synchronizer(var_path)
-    return xr.open_zarr(var_path, synchronizer=synchronizer)
+    return xr.open_zarr(var_path)
 
 
 def write_batch_cache(
@@ -875,8 +892,8 @@ def write_batch_cache(
     """
     batch_path = m_name.get_batch_cache_path(sample_batch_id)
     var_path = os.path.join(batch_path, f"{zarr_filename}.zarr")
-    synchronizer = get_zarr_synchronizer(var_path)
-    batch_peaks.to_zarr(var_path, mode="w", synchronizer=synchronizer)
+    with zarr_write_lock(var_path):
+        batch_peaks.to_zarr(var_path, mode="w")
 
 
 def delete_batch_cache(sample_batch_id: str) -> None:

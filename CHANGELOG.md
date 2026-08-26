@@ -216,6 +216,28 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
 
 ### Changed
 
+- Upgraded `zarr` from 2.18.2 to 3.3.0. Existing sample files are unaffected:
+  zarr 3 reads and updates the v2 stores already in the filestore in place, and
+  Mascope now pins the default on-disk format to v2 so newly written stores
+  match the ones beside them, keeping the filestore in a single format and a
+  downgrade to zarr 2 possible.
+  zarr 3 removed its synchronizers, which is how concurrent writes to a sample
+  file used to be serialized across processes. That protection is now explicit:
+  writes take a `fasteners` inter-process lock held for the whole
+  read-modify-write, so the backend workers and the file converter still cannot
+  interleave writes to the same store. The lock is coarser than the per-chunk
+  locking it replaces, and covers a case the old one did not - a read and its
+  matching write are now inside the same lock, where previously two processes
+  could interleave between them and lose an update. Note that zarr 3 still
+  accepts a `synchronizer=` argument and ignores it, so this had to be replaced
+  rather than merely removed.
+  One further behaviour change is handled explicitly: zarr 3 answers "is this
+  variable present" from a store's consolidated metadata when it exists, where
+  zarr 2 always listed the store. The sparsity backfill deliberately reads the
+  live store instead, so a `peak_timeseries.zarr` whose `sparsity` array exists
+  on disk but is missing from a stale `.zmetadata` is repaired on the next read
+  exactly as before, rather than being treated as absent.
+
 - Running an m/z calibration no longer requires the global `admin` role. It now
   requires `admin` in the *instrument* workspace holding the raw file - the
   right scope, because a calibration is written onto the file and every sample

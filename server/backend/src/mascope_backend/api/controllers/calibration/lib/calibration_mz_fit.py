@@ -30,7 +30,6 @@ from itertools import combinations
 
 import numpy as np
 import pandas as pd
-from zarr.errors import PathNotFoundError
 
 import mascope_file.io as m_io
 import mascope_file.name as m_name
@@ -748,7 +747,7 @@ class TofCalibrationHandler(BaseCalibrationHandler):
             m_io.update_zarr_array_coord(
                 self.filename, "peak_timeseries", "mz", new_peak_mz
             )
-        except PathNotFoundError:
+        except FileNotFoundError:
             runtime.logger.warning(
                 f"peak_timeseries not found in {self.filename}, "
                 "thus their m/z coordinates were not updated."
@@ -888,7 +887,7 @@ class OrbiCalibrationHandler(BaseCalibrationHandler):
             m_io.update_zarr_array_coord(
                 self.filename, "peak_timeseries", "mz", new_peak_mz
             )
-        except PathNotFoundError:
+        except FileNotFoundError:
             runtime.logger.warning(
                 f"Peak_areas/heights not found in {self.filename}, "
                 "thus their m/z coordinates were not updated."

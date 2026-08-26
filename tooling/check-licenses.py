@@ -132,6 +132,12 @@ PYTHON_REVIEWED = {
     ),
     # Declare nothing in their published metadata; each verified by hand.
     "clr-loader@0.3.1": "MIT - verbatim MIT text in the LICENSE file in its wheel",
+    "google-crc32c@1.8.0": (
+        "Apache-2.0 - verbatim Apache License 2.0 text in the LICENSE file in "
+        "its wheel, which its METADATA names in License-File while carrying no "
+        "License field and no classifier. A zarr 3 dependency, for its CRC32C "
+        "checksum codec"
+    ),
     "matplotlib-inline@0.2.1": (
         "BSD-3-Clause - verbatim BSD 3-Clause text in the LICENSE file in its wheel"
     ),
