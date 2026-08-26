@@ -390,6 +390,10 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
   spaces. The edit dialog also used to close as though a rename had succeeded
   when the server had refused it; it now stays open so the name can be
   corrected.
+- A workspace view now learns about members added when an account is
+  registered. Registration created those memberships with a direct database
+  write that skipped the event the members endpoint emits, so an open view
+  kept showing the old list until it was reloaded.
 
 - A bulk upload run no longer makes the server stop answering. Every request
   from an agent, the file converter or the SDK is checked against its access
