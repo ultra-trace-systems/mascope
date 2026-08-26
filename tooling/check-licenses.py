@@ -65,11 +65,22 @@ REVIEWED = {
     ),
 }
 
-# A licence string has to look like an SPDX expression before we read it as one.
-_EXPRESSION = re.compile(r"^[A-Za-z0-9.+()\s-]+$")
-_IDENTIFIER = re.compile(r"^[A-Za-z0-9.+-]+$")
-_SPLIT_TERMS = re.compile(r"\s+(?:AND|OR)\s+")
-_SPLIT_WITH = re.compile(r"\s+WITH\s+")
+# A licence string has to parse as an SPDX expression before we read it as one.
+# The grammar, from the SPDX specification, with AND binding tighter than OR:
+#
+#   expression := term (OR term)*
+#   term       := factor (AND factor)*
+#   factor     := identifier [WITH exception] | "(" expression ")"
+#
+# The two operators mean opposite things and the difference decides verdicts:
+# `A AND B` imposes both licences, so both have to be allowed, while `A OR B`
+# lets the licensee pick, so one allowed option is enough. Reading `(MIT OR
+# CC0-1.0)` as a conjunction fails a dependency that is perfectly usable under
+# MIT - and the only remedy this file offers would be to allowlist CC0-1.0
+# outright, which then silently passes a package licensed under CC0-1.0 alone.
+_TOKEN = re.compile(r"[A-Za-z0-9.+-]+|[()]")
+_OPERATORS = frozenset({"AND", "OR", "WITH"})
+_RESERVED = _OPERATORS | frozenset({"(", ")"})
 
 NOT_SPDX = "not an SPDX expression - read the actual licence text"
 
@@ -92,47 +103,145 @@ defeats the point of the check.
 """
 
 
-def parse_expression(text: str) -> list[tuple[str, str | None]] | None:
-    """Split an SPDX expression into ``(licence, exception)`` pairs.
+class _Malformed(Exception):
+    """The tokens are not a well-formed SPDX expression."""
+
+
+def _tokenize(text: str) -> list[str] | None:
+    """Split ``text`` into SPDX tokens, or ``None`` if it holds anything else."""
+    tokens: list[str] = []
+    pos = 0
+    while pos < len(text):
+        if text[pos].isspace():
+            pos += 1
+            continue
+        match = _TOKEN.match(text, pos)
+        if match is None:
+            return None  # a character no SPDX expression can contain, e.g. ":"
+        tokens.append(match.group())
+        pos = match.end()
+    return tokens
+
+
+def _identifier(tokens: list[str], pos: int) -> str:
+    """The token at ``pos``, which has to be an identifier rather than syntax."""
+    if pos >= len(tokens) or tokens[pos] in _RESERVED:
+        raise _Malformed
+    return tokens[pos]
+
+
+def _parse_factor(tokens: list[str], pos: int) -> tuple[tuple, int]:
+    if pos < len(tokens) and tokens[pos] == "(":
+        node, pos = _parse_expression(tokens, pos + 1)
+        if pos >= len(tokens) or tokens[pos] != ")":
+            raise _Malformed  # unbalanced: "(MIT" never closes
+        return node, pos + 1
+    name = _identifier(tokens, pos)
+    pos += 1
+    if pos < len(tokens) and tokens[pos] == "WITH":
+        return ("licence", name, _identifier(tokens, pos + 1)), pos + 2
+    return ("licence", name, None), pos
+
+
+def _parse_term(tokens: list[str], pos: int) -> tuple[tuple, int]:
+    node, pos = _parse_factor(tokens, pos)
+    operands = [node]
+    while pos < len(tokens) and tokens[pos] == "AND":
+        node, pos = _parse_factor(tokens, pos + 1)
+        operands.append(node)
+    return (operands[0] if len(operands) == 1 else ("and", tuple(operands))), pos
+
+
+def _parse_expression(tokens: list[str], pos: int) -> tuple[tuple, int]:
+    node, pos = _parse_term(tokens, pos)
+    options = [node]
+    while pos < len(tokens) and tokens[pos] == "OR":
+        node, pos = _parse_term(tokens, pos + 1)
+        options.append(node)
+    return (options[0] if len(options) == 1 else ("or", tuple(options))), pos
+
+
+def parse_expression(text: str) -> tuple | None:
+    """Parse an SPDX expression into a tree, or ``None`` if it is not one.
+
+    Nodes are plain tuples: ``("licence", name, exception_or_None)``,
+    ``("and", operands)`` and ``("or", options)``.
 
     Returns ``None`` when ``text`` is not a well-formed expression of SPDX
     identifiers. That is how free text - "SEE LICENSE IN LICENSE.md",
-    "UNLICENSED", "Custom: https://..." - gets caught: unparseable is treated
-    as suspicious, never as unknown-and-therefore-fine.
+    "UNLICENSED", "Custom: https://..." - gets caught, along with malformed
+    expressions such as "MIT (": unparseable is treated as suspicious, never
+    as unknown-and-therefore-fine.
     """
-    if not _EXPRESSION.match(text):
+    tokens = _tokenize(text)
+    if not tokens:
         return None
-    flat = text.replace("(", " ").replace(")", " ")
-    terms = [term.strip() for term in _SPLIT_TERMS.split(flat) if term.strip()]
-    if not terms:
+    try:
+        node, pos = _parse_expression(tokens, 0)
+    except _Malformed:
         return None
-    parsed: list[tuple[str, str | None]] = []
-    for term in terms:
-        parts = _SPLIT_WITH.split(term)
-        if len(parts) > 2:
-            return None
-        name = parts[0]
-        exception = parts[1] if len(parts) == 2 else None
-        if not _IDENTIFIER.match(name):
-            return None
-        if exception is not None and not _IDENTIFIER.match(exception):
-            return None
-        parsed.append((name, exception))
-    return parsed
+    if pos != len(tokens):
+        return None  # trailing junk, e.g. "MIT )" or "MIT MIT"
+    return node
+
+
+def _render(node: tuple) -> str:
+    """Render a parsed expression back to SPDX text, for failure messages."""
+    if node[0] == "licence":
+        _, name, exception = node
+        return f"{name} WITH {exception}" if exception else name
+    joiner = " AND " if node[0] == "and" else " OR "
+    return "(" + joiner.join(_render(operand) for operand in node[1]) + ")"
+
+
+def _unmet(node: tuple) -> list[tuple[str, str]]:
+    """Return what stops ``node`` being allowed, as ``(kind, detail)`` pairs.
+
+    An empty list means allowed. AND needs every operand, so its operands'
+    reasons accumulate. OR only needs one option, so it reports nothing as
+    soon as any option is allowed, and names the whole choice when none is -
+    which points at the failing subexpression rather than at identifiers the
+    reader might otherwise take for requirements.
+    """
+    if node[0] == "licence":
+        _, name, exception = node
+        reasons = []
+        if name not in ALLOWED:
+            reasons.append(("licence", name))
+        if exception is not None and exception not in ALLOWED_EXCEPTIONS:
+            reasons.append(("exception", exception))
+        return reasons
+    if node[0] == "and":
+        return [reason for operand in node[1] for reason in _unmet(operand)]
+    per_option = [_unmet(option) for option in node[1]]
+    if any(not reasons for reasons in per_option):
+        return []
+    return [("choice", _render(node))]
+
+
+def _describe(reasons: list[tuple[str, str]]) -> str:
+    """Turn ``_unmet`` output into one line, grouped by kind."""
+    parts = []
+    for kind, label in (
+        ("licence", "not on the allowlist"),
+        ("exception", "unreviewed exception"),
+        ("choice", "no allowed option in"),
+    ):
+        details = sorted({detail for found, detail in reasons if found == kind})
+        if details:
+            parts.append(f"{label}: {', '.join(details)}")
+    return "; ".join(parts)
 
 
 def judge(ident: str, declared: str) -> list[tuple[str, str, str]]:
     """Return findings for one package's declared licence string."""
-    terms = parse_expression(declared)
-    if terms is None:
+    node = parse_expression(declared)
+    if node is None:
         return [(ident, declared, NOT_SPDX)]
-    disallowed = sorted({name for name, _ in terms if name not in ALLOWED})
-    if disallowed:
-        return [(ident, declared, "not on the allowlist: " + ", ".join(disallowed))]
-    unread = sorted({exc for _, exc in terms if exc and exc not in ALLOWED_EXCEPTIONS})
-    if unread:
-        return [(ident, declared, "unreviewed exception: " + ", ".join(unread))]
-    return []
+    reasons = _unmet(node)
+    if not reasons:
+        return []
+    return [(ident, declared, _describe(reasons))]
 
 
 def check(lock_path: Path) -> list[tuple[str, str, str]]:
