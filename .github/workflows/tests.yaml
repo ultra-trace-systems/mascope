@@ -94,8 +94,23 @@ jobs:
       # Reads the licence field the lockfile already records - no install, no
       # network. Catches a dependency that relicenses to something we cannot
       # ship, which is how primeicons 8 slipped in as a routine major bump.
-      - name: Check dependency licences against the allowlist
-        run: python3 tooling/check-licenses.py
+      - name: Check npm dependency licences against the allowlist
+        run: python3 tooling/check-licenses.py npm
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+        with:
+          version: "0.11.2"
+
+      - name: Install every dependency group
+        # uv.lock records no licence metadata at all, so the Python half reads
+        # the installed distributions instead. --all-groups because the lockfile
+        # spans every group: anything it names that is not installed cannot be
+        # read, and comes back as a finding rather than a silent pass.
+        run: uv sync --all-groups
+
+      - name: Check Python dependency licences against the allowlist
+        run: uv run --no-sync python tooling/check-licenses.py python
 
   docs:
     name: Docs strict build
