@@ -1,0 +1,94 @@
+name: SDK compatibility
+run-name: Published mascope-sdk against develop
+
+# The per-PR contract tests (tests.yaml, e2e job) test the SDK and the server
+# from the SAME commit. Users do not run that combination: they install
+# mascope-sdk from PyPI once and keep using it while the server keeps
+# deploying. This nightly answers the question that gap leaves open - does
+# the current server still honour the contract the latest PUBLISHED SDK was
+# built against - by booting a demo stack from develop and running the
+# contract suite with mascope-sdk installed from PyPI instead of from the
+# workspace.
+#
+# Tests of surfaces newer than the published SDK skip themselves via the
+# feature probes in test_contract.py, so a red run means a real regression:
+# the server dropped or reshaped something an SDK in the field depends on.
+#
+# `schedule:` fires only from the default branch (master), and that run's own
+# checkout is master too - so the branch under test is named explicitly:
+# develop, where every merge lands first and a break would ship from.
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "23 3 * * *"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: sdk-compat
+  cancel-in-progress: true
+
+jobs:
+  contract:
+    name: Published SDK vs develop demo stack
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Checkout develop
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: develop
+          persist-credentials: false
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+        with:
+          version: "0.11.2"
+
+      - name: Build application images from develop
+        run: |
+          # Same path as the e2e job in tests.yaml: build via the CLI so the
+          # full compose env (including the MASCOPE_RUNTIME build arg the
+          # frontend bakes in at build time) is resolved exactly like a
+          # release build.
+          export MASCOPE_PATH=$GITHUB_WORKSPACE
+          uv run mascope prod build
+
+      - name: Start the demo stack
+        run: |
+          VERSION=$(docker images "ghcr.io/${{ github.repository }}/backend" --format '{{.Tag}}' | head -1)
+          echo "Built image tag: $VERSION"
+          MASCOPE_VERSION=$VERSION docker compose -f docker-compose.demo.yaml up -d
+
+      - name: Wait for the stack to come up
+        run: |
+          # demo_init downloads and restores the demo bundle on first start,
+          # so allow generous time before the frontend answers.
+          for i in $(seq 1 120); do
+            if curl -fsS -o /dev/null http://127.0.0.1:8080; then
+              echo "Stack is up."
+              exit 0
+            fi
+            sleep 10
+          done
+          echo "Stack did not come up in time." >&2
+          docker compose -f docker-compose.demo.yaml logs --tail 100
+          exit 1
+
+      - name: Run the contract tests with the published SDK
+        env:
+          MASCOPE_SDK_CONTRACT: "1"
+        run: |
+          # An isolated environment with mascope-sdk resolved from PyPI - the
+          # workspace project is deliberately NOT installed, so the tests
+          # import the published package. pytest and requests are the only
+          # extras the contract file needs beyond the SDK's own dependencies.
+          uv run --isolated --no-project --with mascope-sdk --with pytest --with requests \
+            python -c "import mascope_sdk; print('published mascope-sdk', mascope_sdk.__version__)"
+          uv run --isolated --no-project --with mascope-sdk --with pytest --with requests \
+            pytest libraries/sdk/tests/test_contract.py -v
+
+      - name: Dump stack logs on failure
+        if: failure()
+        run: docker compose -f docker-compose.demo.yaml logs --tail 200
