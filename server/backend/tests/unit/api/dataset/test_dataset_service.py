@@ -3,16 +3,19 @@ Unit tests for the dataset service functions.
 Tests the logic in the dataset controllers.
 """
 
-from datetime import datetime
+from datetime import datetime, timezone
 
 import pytest
+import pytest_asyncio
+from test_utils import gen_test_id
 
 import mascope_backend.api.controllers.dataset.dataset_controller as dataset_service
 from mascope_backend.api.lib.exceptions.api_exceptions import ApiException
 from mascope_backend.api.models.dataset.dataset_pydantic_model import (
+    DatasetCreate,
     DatasetUpdate,
 )
-from mascope_backend.db import Dataset
+from mascope_backend.db import Dataset, Workspace
 
 
 @pytest.mark.asyncio
@@ -517,3 +520,185 @@ async def test_delete_dataset(
             f"Dataset with ID '{dataset_id}' not found" in exc_info.value.user_message
         )
         assert exc_info.value.status_code == 404
+
+
+# ============= Duplicate name refusal =============
+#
+# These live at the end of the module on purpose: `test_get_datasets` and
+# `test_get_datasets_sorting` above assert a global dataset count, so any
+# test that adds rows has to run after them.
+
+
+@pytest_asyncio.fixture
+async def second_unit_test_workspace(async_session_factory):
+    """A second workspace, so per-workspace scoping can be exercised.
+
+    Function-scoped and randomly named: workspace names are themselves
+    case-insensitively unique (`ix_workspace_name_ci`).
+
+    :param async_session_factory: Factory for creating database sessions
+    :return: The created workspace
+    :rtype: Workspace
+    """
+    async with async_session_factory() as session:
+        workspace = Workspace(
+            workspace_id=gen_test_id(),
+            workspace_name=f"Second Unit Test Workspace {gen_test_id(8)}",
+            # Spelled out rather than left to the server default: move_dataset
+            # refuses a non-active or system target before it gets as far as
+            # the name check.
+            workspace_status="active",
+            is_system=False,
+            workspace_utc_created=datetime.now(timezone.utc),
+        )
+        session.add(workspace)
+        await session.commit()
+        await session.refresh(workspace)
+        return workspace
+
+
+@pytest.mark.asyncio
+async def test_create_dataset_rejects_duplicate_name(
+    mock_emit_dataset, unit_test_workspace
+):
+    """Creating a second dataset with a taken name raises a 409."""
+    name = f"dup-{gen_test_id(8)}"
+
+    await dataset_service.create_dataset(
+        workspace_id=unit_test_workspace.workspace_id,
+        dataset=DatasetCreate(dataset_name=name),
+        independent_transaction=True,
+    )
+
+    with pytest.raises(ApiException) as exc_info:
+        await dataset_service.create_dataset(
+            workspace_id=unit_test_workspace.workspace_id,
+            dataset=DatasetCreate(dataset_name=name),
+            independent_transaction=True,
+        )
+
+    assert exc_info.value.status_code == 409
+    assert "already exists" in exc_info.value.user_message
+    assert name in exc_info.value.user_message
+
+
+@pytest.mark.asyncio
+async def test_create_dataset_duplicate_name_is_case_insensitive(
+    mock_emit_dataset, unit_test_workspace
+):
+    """Two names differing only in case are the same name."""
+    name = f"dup-case-{gen_test_id(8)}"
+
+    await dataset_service.create_dataset(
+        workspace_id=unit_test_workspace.workspace_id,
+        dataset=DatasetCreate(dataset_name=name),
+        independent_transaction=True,
+    )
+
+    with pytest.raises(ApiException) as exc_info:
+        await dataset_service.create_dataset(
+            workspace_id=unit_test_workspace.workspace_id,
+            dataset=DatasetCreate(dataset_name=name.upper()),
+            independent_transaction=True,
+        )
+
+    assert exc_info.value.status_code == 409
+
+
+@pytest.mark.asyncio
+async def test_create_dataset_allows_same_name_in_another_workspace(
+    mock_emit_dataset, unit_test_workspace, second_unit_test_workspace
+):
+    """The name only has to be unique within one workspace."""
+    name = f"shared-{gen_test_id(8)}"
+
+    for workspace in (unit_test_workspace, second_unit_test_workspace):
+        result = await dataset_service.create_dataset(
+            workspace_id=workspace.workspace_id,
+            dataset=DatasetCreate(dataset_name=name),
+            independent_transaction=True,
+        )
+        assert result["data"]["dataset_name"] == name
+
+
+@pytest.mark.asyncio
+async def test_update_dataset_rejects_duplicate_name(
+    mock_emit_dataset, unit_test_workspace
+):
+    """Renaming a dataset onto a sibling's name raises a 409."""
+    taken_name = f"taken-{gen_test_id(8)}"
+    await dataset_service.create_dataset(
+        workspace_id=unit_test_workspace.workspace_id,
+        dataset=DatasetCreate(dataset_name=taken_name),
+        independent_transaction=True,
+    )
+    other = await dataset_service.create_dataset(
+        workspace_id=unit_test_workspace.workspace_id,
+        dataset=DatasetCreate(dataset_name=f"other-{gen_test_id(8)}"),
+        independent_transaction=True,
+    )
+
+    with pytest.raises(ApiException) as exc_info:
+        await dataset_service.update_dataset(
+            other["data"]["dataset_id"],
+            DatasetUpdate(dataset_name=taken_name),
+            independent_transaction=True,
+        )
+
+    assert exc_info.value.status_code == 409
+    assert "already exists" in exc_info.value.user_message
+
+
+@pytest.mark.asyncio
+async def test_update_dataset_accepts_its_own_name(
+    mock_emit_dataset, unit_test_workspace
+):
+    """Re-sending the dataset's own name is not a conflict."""
+    name = f"self-{gen_test_id(8)}"
+    created = await dataset_service.create_dataset(
+        workspace_id=unit_test_workspace.workspace_id,
+        dataset=DatasetCreate(dataset_name=name),
+        independent_transaction=True,
+    )
+
+    result = await dataset_service.update_dataset(
+        created["data"]["dataset_id"],
+        DatasetUpdate(dataset_name=name, dataset_description="Renamed to itself"),
+        independent_transaction=True,
+    )
+
+    assert result["data"]["dataset_name"] == name
+    assert result["data"]["dataset_description"] == "Renamed to itself"
+
+
+@pytest.mark.asyncio
+async def test_move_dataset_rejects_duplicate_name_in_target(
+    mock_emit_dataset, unit_test_workspace, second_unit_test_workspace
+):
+    """Moving into a workspace that already has the name raises a 409.
+
+    `independent_transaction=False` keeps the move off the socket layer:
+    `emit_record_reload` is not one of the functions `mock_emit_dataset`
+    patches.
+    """
+    name = f"move-{gen_test_id(8)}"
+    source = await dataset_service.create_dataset(
+        workspace_id=unit_test_workspace.workspace_id,
+        dataset=DatasetCreate(dataset_name=name),
+        independent_transaction=True,
+    )
+    await dataset_service.create_dataset(
+        workspace_id=second_unit_test_workspace.workspace_id,
+        dataset=DatasetCreate(dataset_name=name),
+        independent_transaction=True,
+    )
+
+    with pytest.raises(ApiException) as exc_info:
+        await dataset_service.move_dataset(
+            dataset_id=source["data"]["dataset_id"],
+            source_workspace_id=unit_test_workspace.workspace_id,
+            target_workspace_id=second_unit_test_workspace.workspace_id,
+        )
+
+    assert exc_info.value.status_code == 409
+    assert "already exists" in exc_info.value.user_message

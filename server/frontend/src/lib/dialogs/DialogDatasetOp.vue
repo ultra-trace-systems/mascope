@@ -63,39 +63,47 @@ const executeLabel = computed(() => {
 })
 
 async function execute() {
-  switch (action.value) {
-    /**
-     * Handles the creation of a new dataset.
-     * - After successfully creating the dataset, it sets up a one-time watcher.
-     * - The watcher focuses on the newly created dataset once it is added to the dataset list.
-     */
-    case 'create': {
-      const response = await app.data.dataset.create({
-        dataset_name: info.name,
-        dataset_description: info.desc
-      })
-      app.data.dataset.lazyFocus({
-        dataset_id: response.data.dataset_id
-      })
-      break
+  try {
+    switch (action.value) {
+      /**
+       * Handles the creation of a new dataset.
+       * - After successfully creating the dataset, it sets up a one-time watcher.
+       * - The watcher focuses on the newly created dataset once it is added to the dataset list.
+       */
+      case 'create': {
+        const response = await app.data.dataset.create({
+          dataset_name: info.name,
+          dataset_description: info.desc
+        })
+        app.data.dataset.lazyFocus({
+          dataset_id: response.data.dataset_id
+        })
+        break
+      }
+      case 'edit': {
+        await app.data.dataset.update({
+          dataset_id: original.value.dataset_id,
+          dataset_name: info.name,
+          dataset_description: info.desc
+        })
+        break
+      }
+      /**
+       * Handles the deletion of a dataset.
+       * - Determines the next dataset to focus on (previous in the list or next one).
+       * - Sets up a one-time watcher to focus on the new dataset after the current one is deleted.
+       */
+      case 'delete': {
+        app.data.dataset.delete(original.value)
+        break
+      }
     }
-    case 'edit': {
-      app.data.dataset.update({
-        dataset_id: original.value.dataset_id,
-        dataset_name: info.name,
-        dataset_description: info.desc
-      })
-      break
-    }
-    /**
-     * Handles the deletion of a dataset.
-     * - Determines the next dataset to focus on (previous in the list or next one).
-     * - Sets up a one-time watcher to focus on the new dataset after the current one is deleted.
-     */
-    case 'delete': {
-      app.data.dataset.delete(original.value)
-      break
-    }
+  } catch {
+    // The request layer has already shown the user what went wrong (a name
+    // the workspace already uses comes back as a 409 toast). Keep the dialog
+    // open on that so the name can be corrected - closing it would look like
+    // the save succeeded.
+    return
   }
   if (!info.message) {
     action.value = null
