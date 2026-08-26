@@ -141,11 +141,20 @@ PYTHON_REVIEWED = {
         "matches) carries MIT License text. No tag exists for this version, so "
         "the evidence is the LICENSE on the default branch"
     ),
-    # Locked for platforms this check does not run on, so their metadata is
-    # never installed here to be read. Verified against their PyPI metadata.
+    # Locked for one platform, so on any other there is no installed metadata
+    # to read. Verified against their PyPI metadata at these exact versions.
+    #
+    # Enumerate the full set from the lockfile rather than from whatever the
+    # machine you happen to be on could not install - a run on one platform
+    # only ever reveals that platform's gaps, which is how the two Windows-only
+    # entries below were missed by a Windows developer and found by Linux CI.
+    # A package is platform-conditional when every dependency edge naming it in
+    # uv.lock carries a `sys_platform` / `os_name` / `platform_system` marker.
     "appnope@0.1.4": "BSD-2-Clause - License-Expression in the project's PyPI metadata",
     "pexpect@4.9.0": "ISC - `License: ISC license` and the ISC classifier on PyPI",
     "ptyprocess@0.7.0": "ISC - ISC classifier on PyPI",
+    "pywinpty@3.0.3": "MIT - MIT classifier on PyPI for this version",
+    "win32-setctime@1.2.0": "MIT - `License: MIT license` and the MIT classifier on PyPI",
 }
 
 # A licence string has to parse as an SPDX expression before we read it as one.
