@@ -71,6 +71,22 @@ jobs:
       - name: Validate nginx configs with nginx -t
         run: bash tooling/validate-nginx-config.sh
 
+  licences:
+    name: Dependency licences
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # Reads the licence field the lockfile already records - no install, no
+      # network. Catches a dependency that relicenses to something we cannot
+      # ship, which is how primeicons 8 slipped in as a routine major bump.
+      - name: Check dependency licences against the allowlist
+        run: python3 tooling/check-licenses.py
+
   docs:
     name: Docs strict build
     runs-on: ubuntu-latest
