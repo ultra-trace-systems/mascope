@@ -1,0 +1,60 @@
+name: Dependency licence audit
+run-name: Licence audit of develop and master
+
+# The per-PR gate in tests.yaml answers "does this pull request add a
+# violation". This answers "is the tree still clean", which is the property the
+# gate is actually for - and the one a pull request cannot establish on its own.
+# A merge that bypassed the required check, or a rebase-merge whose result no
+# job ever ran, is otherwise never looked at again.
+#
+# Two things about `schedule:` are easy to get wrong and both are handled here:
+#
+#   * it only ever fires for the copy of this file on the DEFAULT branch, so
+#     this workflow stays dormant until it is promoted to master;
+#   * the run's own checkout is that default branch, so auditing develop means
+#     naming the ref explicitly. A nightly that silently only covered master
+#     would miss develop, where every merge lands first.
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "41 4 * * *"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: licence-audit
+  cancel-in-progress: true
+
+jobs:
+  audit:
+    # Deliberately not named "Dependency licences" - that is the per-PR check
+    # required by branch protection, and two jobs reporting the same check name
+    # would make it ambiguous which one satisfied it.
+    name: Licence audit (${{ matrix.ref }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    strategy:
+      # One dirty branch must not hide the state of the other.
+      fail-fast: false
+      matrix:
+        ref: [develop, master]
+    steps:
+      - name: Checkout ${{ matrix.ref }}
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ matrix.ref }}
+          persist-credentials: false
+
+      - name: Check dependency licences against the allowlist
+        run: |
+          # Runs the audited ref's own copy of the checker against its own
+          # lockfile. A ref from before the gate landed has neither; say so
+          # out loud rather than exiting 0 as though something had been
+          # checked - a check that did not run must not look like one that
+          # passed. This heals itself once the gate reaches that branch.
+          if [ ! -f tooling/check-licenses.py ]; then
+            echo "::warning::${{ matrix.ref }} predates the licence gate - nothing audited on this ref"
+            exit 0
+          fi
+          python3 tooling/check-licenses.py
