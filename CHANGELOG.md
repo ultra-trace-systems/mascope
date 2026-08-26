@@ -565,6 +565,17 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
   two overlapping tokens matching one filename used to refuse the file
   outright, and now leave the choice to the user, saying which case it is
   rather than blaming the filename for carrying no token.
+- `mascope test run` now runs the suite it is standing in, and reports whether
+  it passed. It ran pytest from `MASCOPE_PATH` - the shared runtime home,
+  which usually points at a different checkout - so from a git worktree it
+  collected the *other* tree's tests while importing this one's packages, and
+  aborted on an import mismatch. It also asked for doctests across the
+  libraries' test directories, where the per-library `conftest.py` files
+  collide under pytest's default import mode; that had been failing the whole
+  library run for as long as it had been there. Doctests are now a separate
+  pass over the source trees, where there is nothing to collide with. And a
+  failing suite now fails the command, which previously reported success
+  whatever pytest answered.
 
 - A bulk upload run no longer makes the server stop answering. Every request
   from an agent, the file converter or the SDK is checked against its access

@@ -19,6 +19,7 @@ import typer
 from typing_extensions import Annotated
 
 import mascope_cli.cmd.lib as lib
+from mascope_cli.checkout import source_checkout
 from mascope_cli.runtime import runtime
 
 
@@ -244,7 +245,54 @@ def run_backend_tests(
 
     # Run the command
     typer.echo(f"Running: {cmd_str}")
-    lib.run(cmd_str)
+    lib.run(cmd_str, cwd=_tests_cwd())
+
+
+_PYTEST_NO_TESTS_COLLECTED = 5
+
+
+def _tests_cwd() -> str | None:
+    """
+    Directory to run pytest from: the source checkout, not the runtime home.
+
+    `lib.run` defaults a subprocess to `MASCOPE_PATH`, which locates the
+    shared runtime home - database volumes, secrets, `.runtime` - and normally
+    points at an entirely different checkout from the one the CLI is running
+    from. Tests must follow the running source, for the same reason
+    `checkout.backend_path` gives for alembic: a worktree carries its own
+    code, and collecting the main checkout's tests while importing the
+    worktree's installed packages fails on import file mismatch, or worse,
+    silently tests the wrong tree.
+
+    :return: The checkout root, or None to leave the default in place.
+    :rtype: str | None
+    """
+    root = source_checkout()
+    return str(root) if root is not None else None
+
+
+def _library_doctest_paths(test_path: str) -> list[str]:
+    """
+    Source trees to collect doctests from, for a library test path.
+
+    :param test_path: The pytest path the test pass was given.
+    :type test_path: str
+    :return: Existing ``src`` directories under that path.
+    :rtype: list[str]
+    """
+    root = test_path.rstrip("/")
+    if not root or root.endswith(".py") or not os.path.isdir(root):
+        return []
+    candidates = (
+        [os.path.join(root, entry) for entry in sorted(os.listdir(root))]
+        if root == "libraries"
+        else [root]
+    )
+    return [
+        os.path.join(candidate, "src").replace("\\", "/")
+        for candidate in candidates
+        if os.path.isdir(os.path.join(candidate, "src"))
+    ]
 
 
 def run_library_tests(
@@ -316,15 +364,40 @@ def run_library_tests(
     if verbose:
         command.append("-v")
 
-    # Include doctests
-    command.append("--doctest-modules")
-
     # Join command parts
     cmd_str = " ".join(command)
 
     # Run the command
     typer.echo(f"Running: {cmd_str}")
-    lib.run(cmd_str)
+    failed = lib.run(cmd_str, cwd=_tests_cwd()).returncode != 0
+
+    # Doctests, as a second pass over the source trees.
+    #
+    # They used to ride along as --doctest-modules on the run above, which
+    # collects the tests directories too. Every library ships its own
+    # tests/conftest.py, and under pytest's default import mode the second one
+    # collected is an "import file mismatch" - so the whole run aborted with a
+    # collection error and no doctest had run for as long as that was true.
+    # Source trees carry no conftest.py, so collecting them alone has nothing
+    # to collide with, and running them separately leaves the test pass on the
+    # import mode its own tests rely on (several import their sibling conftest
+    # as a top-level module, which --import-mode=importlib forbids).
+    if not test_name:
+        doctest_paths = _library_doctest_paths(test_path)
+        if doctest_paths:
+            doctest_command = ["pytest", *doctest_paths, "--doctest-modules"]
+            if verbose:
+                doctest_command.append("-v")
+            doctest_cmd_str = " ".join(doctest_command)
+            typer.echo(f"Running doctests: {doctest_cmd_str}")
+            # 5 is pytest's "no tests collected". A library that carries no
+            # doctests is not a failure, so only a real one counts here.
+            doctest_code = lib.run(doctest_cmd_str, cwd=_tests_cwd()).returncode
+            failed = doctest_code not in (0, _PYTEST_NO_TESTS_COLLECTED) or failed
+
+    if failed:
+        # The command used to report success whatever pytest answered.
+        raise typer.Exit(1)
 
 
 @test_app.command()
