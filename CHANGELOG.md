@@ -10,6 +10,11 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
   unread badge with it, so no count is left standing for rows that are gone;
   running processes keep their progress bars, and nothing is deleted on the
   server.
+- The SDK's peak dataframe now carries `target_collection_names` beside
+  `target_collection_ids`, so grouping or plotting by collection no longer
+  means resolving the identifiers yourself. The names are for display -
+  they are not unique, and a peak can match several collections - so
+  `target_collection_id` remains the key to join on.
 
 - Pairing a machine again is now just starting the agent. On every start it
   asks the server whether this machine's credential is still accepted, and
