@@ -23,6 +23,13 @@ const load = () => {
   return useBatchTableConfig()
 }
 
+// Only 'restores the default sort order after sorting back to it' is a
+// regression test: it is the one case here that fails on the pre-fix store,
+// where writeConfig skipped the write for a default config without clearing the
+// stale entry an earlier non-default one had left behind (#1391). The other
+// three are baseline coverage for a store that had no tests at all - they pass
+// before and after the fix, and are here to pin behaviour the fix must not
+// disturb.
 describe('useBatchTableConfig persistence', () => {
   beforeEach(() => {
     localStorage.clear()
@@ -34,15 +41,22 @@ describe('useBatchTableConfig persistence', () => {
     pinia = null
   })
 
-  it('persists a non-default sort order across a reload', async () => {
+  // No search term is ever set here: an ascending sort is on its own already
+  // unequal to the default, so it is stored and restored without the filter
+  // value the issue's workaround relied on. That held before the fix too -
+  // this is the baseline the regression case below builds on.
+  it('persists a non-default sort order with no search term set', async () => {
     const table = load()
     table.config.sortOrder = 1
     await nextTick()
 
-    expect(load().config.sortOrder).toBe(1)
+    const reopened = load()
+    expect(reopened.config.sortOrder).toBe(1)
+    expect(reopened.config.filters.global.value).toBeNull()
   })
 
-  // Regression test for the batch sorting that would not stick (#1391).
+  // The #1391 regression test for batch sorting that would not stick - the only
+  // case in this file that fails without the fix.
   it('restores the default sort order after sorting back to it', async () => {
     const table = load()
     table.config.sortOrder = 1 // ascending - stored
@@ -57,9 +71,10 @@ describe('useBatchTableConfig persistence', () => {
     expect(load().config.sortOrder).toBe(-1)
   })
 
-  it('persists sorting without needing a search term first', async () => {
-    // The workaround from the issue: a search term kept the config away from
-    // the default, which is what made the write happen at all.
+  // A search term and a non-default sort travelling together - the shape the
+  // issue's workaround produced, since a filter value on its own already keeps
+  // the config unequal to the default.
+  it('persists a search term alongside a non-default sort order', async () => {
     const table = load()
     table.config.filters.global.value = 'blank'
     table.config.sortOrder = 1
