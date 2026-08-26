@@ -188,6 +188,18 @@ export const useNotification = defineStore('app.ui.notification', () => {
   }
 
   /**
+   * Empties the notification log.
+   *
+   * Only the log. `progress` tracks live processes whose removal timeouts are
+   * still pending, and `latest` drives the registered watchers -- emptying the
+   * feed is not a request to cancel either. Toasts already on screen keep
+   * their own dismissal timers and go on their own.
+   */
+  function clearLog() {
+    state.log = []
+  }
+
+  /**
    * Resets the recentWarnings and recentErrors counters to zero.
    * Typically called when the notification drawer is opened, indicating the user has seen the notifications.
    */
@@ -246,6 +258,7 @@ export const useNotification = defineStore('app.ui.notification', () => {
     on,
     push: handleNotification,
     clearLatest,
+    clearLog,
     clearRecentBadge,
     latest: computed(() => state.latest),
     log: computed(() => state.log),
