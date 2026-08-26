@@ -390,6 +390,17 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
   spaces. The edit dialog also used to close as though a rename had succeeded
   when the server had refused it; it now stays open so the name can be
   corrected.
+- Registering an account no longer adds it to every instrument workspace on
+  the deployment. Guests and editors were enrolled in all of them at their
+  matching role, so a guest created today could reach every instrument while
+  a guest created before those workspaces existed could reach none. Only
+  admins and owners are enrolled now, which is the rule creating an
+  instrument workspace already followed and the one the authorization
+  documentation already described. Guests and editors are invited to the
+  instruments they work on, as they were always meant to be. **Existing
+  memberships are left alone**, so anyone already enrolled keeps their
+  access; the change only affects accounts registered from now on.
+
 - A workspace view now learns about members added when an account is
   registered. Registration created those memberships with a direct database
   write that skipped the event the members endpoint emits, so an open view

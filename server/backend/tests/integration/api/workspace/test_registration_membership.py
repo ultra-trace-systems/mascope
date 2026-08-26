@@ -100,28 +100,47 @@ async def _membership_count(user_id: int) -> int:
 
 
 @pytest.mark.asyncio
-async def test_registration_enrols_the_account_in_every_system_workspace(
+async def test_registration_enrols_an_admin_in_every_system_workspace(
     owner_client, acquisitions_workspace
 ):
-    """A newly registered account is a member of the system workspace."""
-    user_id = await _register(owner_client, role_id=200)
+    """A newly registered admin is a member of the system workspace."""
+    user_id = await _register(owner_client, role_id=300)
 
-    assert await _membership_role(acquisitions_workspace, user_id) == "editor"
+    assert await _membership_role(acquisitions_workspace, user_id) == "admin"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("role_id", [100, 200])
+async def test_registration_does_not_enrol_a_guest_or_an_editor(
+    owner_client, acquisitions_workspace, role_id
+):
+    """Guests and editors are invited to instruments, never enrolled by default.
+
+    This is the rule creating a system workspace already follows and the one
+    docs/authorization.md states. Registration used to enrol every account at
+    its matching role, so a guest created today reached every instrument on
+    the deployment while a guest created before those workspaces existed
+    reached none.
+    """
+    user_id = await _register(owner_client, role_id=role_id)
+
+    assert await _membership_role(acquisitions_workspace, user_id) is None
+    assert await _membership_count(user_id) == 0
 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("role_id", "expected_role"),
-    [(100, "guest"), (300, "admin")],
+    [(300, "admin"), (400, "owner")],
 )
 async def test_registration_grants_the_workspace_role_matching_the_global_role(
     owner_client, acquisitions_workspace, role_id, expected_role
 ):
     """The workspace role mirrors the account's global role.
 
-    The admin case is the one that matters: the enrolment passes the granted
-    role as its own ceiling, so nothing is refused. A fixed low ceiling would
-    fail the whole registration with a 403 here.
+    The owner case is the one that matters: the enrolment passes the granted
+    role as its own ceiling, so nothing is refused. A fixed lower ceiling
+    would fail the whole registration with a 403 here.
     """
     user_id = await _register(owner_client, role_id=role_id)
 
@@ -133,7 +152,7 @@ async def test_registration_does_not_touch_non_system_workspaces(
     owner_client, acquisitions_workspace, ws_alpha
 ):
     """Ordinary workspaces are left alone - only ``is_system`` ones are seeded."""
-    user_id = await _register(owner_client, role_id=200)
+    user_id = await _register(owner_client, role_id=300)
 
     assert await _membership_role(ws_alpha["workspace_id"], user_id) is None
 
@@ -153,10 +172,10 @@ async def test_enrolling_an_already_enrolled_account_is_a_no_op(
     here, rather than failing a registration whose user row is already
     committed.
     """
-    user_id = await _register(owner_client, role_id=200)
+    user_id = await _register(owner_client, role_id=300)
     before = await _membership_count(user_id)
 
-    added = await add_to_system_workspaces(user_id, "editor")
+    added = await add_to_system_workspaces(user_id, "admin")
 
     assert added == 0
     assert await _membership_count(user_id) == before
@@ -178,7 +197,7 @@ async def test_registration_announces_the_new_membership(
     emit = AsyncMock()
     monkeypatch.setattr(workspaces_service, "emit_record_reload", emit)
 
-    user_id = await _register(owner_client, role_id=200)
+    user_id = await _register(owner_client, role_id=300)
 
     rooms = [
         call.kwargs.get("room")
