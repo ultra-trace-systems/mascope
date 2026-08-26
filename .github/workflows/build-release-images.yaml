@@ -146,9 +146,26 @@ jobs:
           #   releases/latest/download/Mascope-File-Agent-Setup.exe
           # The versioned copy keeps older installers distinguishable when
           # downloaded from the releases page.
+          #
+          # Both uploads are checked explicitly. This is a pwsh step, and
+          # $ErrorActionPreference - which the runner sets to 'stop' - does
+          # not apply to native commands: gh returning non-zero only sets
+          # $LASTEXITCODE, and the runner ends the step with `exit
+          # $LASTEXITCODE`. A failed first upload would therefore be erased
+          # by the second one succeeding, and the step would pass green with
+          # the release missing the fixed-name asset the app links to - a
+          # 404 on the download button that nothing else would report.
           gh release upload "$env:TAG" "agents/file/dist/Mascope-File-Agent-Setup.exe" --clobber
+          if ($LASTEXITCODE -ne 0) {
+            throw "Failed to upload the fixed-name installer asset to $env:TAG"
+          }
+
           Copy-Item "agents/file/dist/Mascope-File-Agent-Setup.exe" "agents/file/dist/Mascope-File-Agent-Setup-$env:TAG.exe"
+
           gh release upload "$env:TAG" "agents/file/dist/Mascope-File-Agent-Setup-$env:TAG.exe" --clobber
+          if ($LASTEXITCODE -ne 0) {
+            throw "Failed to upload the versioned installer asset to $env:TAG"
+          }
 
   verify-zenodo:
     # Zenodo's GitHub bridge fails silently when its credentials rot (lapsed
