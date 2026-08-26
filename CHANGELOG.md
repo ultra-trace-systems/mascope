@@ -15,6 +15,14 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
   means resolving the identifiers yourself. The names are for display -
   they are not unique, and a peak can match several collections - so
   `target_collection_id` remains the key to join on.
+- Peak matches now carry the name of the target collection they came from,
+  not just its identifier, so grouping or plotting by collection no longer
+  means resolving the identifiers yourself. It appears as
+  `target_collection_names` beside `target_collection_ids` in the SDK's peak
+  dataframe. The names are for display - they are not unique, and a peak can
+  match several collections - so `target_collection_id` remains the key to
+  join on. The names come from the server, so an SDK pointed at an older
+  deployment still sees the column, with no values in it.
 
 - Pairing a machine again is now just starting the agent. On every start it
   asks the server whether this machine's credential is still accepted, and
