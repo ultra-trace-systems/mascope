@@ -401,10 +401,19 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
   memberships are left alone**, so anyone already enrolled keeps their
   access; the change only affects accounts registered from now on.
 
-- A workspace view now learns about members added when an account is
-  registered. Registration created those memberships with a direct database
-  write that skipped the event the members endpoint emits, so an open view
-  kept showing the old list until it was reloaded.
+- The workspace members dialog now keeps up with memberships it did not make
+  itself. It loaded the roster when it opened and then kept showing that, so
+  a member added or re-roled elsewhere - by another administrator, or by
+  registering an account, which enrols the new account in the system
+  workspaces its role qualifies it for - only turned up once the dialog was
+  reopened. It now reloads when the member controller announces a change to
+  the workspace it is showing, and ignores announcements about any other
+  workspace. Registration went around that controller with a direct database
+  write, so it announced nothing and validated nothing; it now adds each
+  membership the way the members endpoint does, which checks that the
+  workspace and the account exist, treats a membership that is already there
+  as done rather than failing on the unique index the direct insert would
+  have hit, and puts the granted role through the same role-ceiling check.
 
 - A bulk upload run no longer makes the server stop answering. Every request
   from an agent, the file converter or the SDK is checked against its access
