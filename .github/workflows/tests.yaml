@@ -34,6 +34,16 @@ jobs:
       - name: Check the lockfile is in sync with pyproject.toml
         run: uv lock --check
 
+      - name: Check the agent lockfile is in sync with pyproject.toml
+        # Agents are deliberately their own uv projects rather than workspace
+        # members, so PyInstaller does not have to compile the whole workspace
+        # into each distributable (developer guide, "Agents"). That also puts
+        # them outside the workspace check above: editing a library's
+        # pyproject refreshes the root lock and silently leaves
+        # agents/file/uv.lock stale, because nothing resolves it. Add each new
+        # agent project here - `uv lock --check` only ever looks at one.
+        run: uv lock --check --directory agents/file
+
       - name: Install the lint group
         run: uv sync --only-group lint --no-install-project
 
