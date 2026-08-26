@@ -702,3 +702,83 @@ async def test_move_dataset_rejects_duplicate_name_in_target(
 
     assert exc_info.value.status_code == 409
     assert "already exists" in exc_info.value.user_message
+
+
+@pytest.mark.asyncio
+async def test_update_dataset_description_when_the_name_is_already_shared(
+    mock_emit_dataset, unit_test_workspace, async_session_factory
+):
+    """A description-only edit saves even where two datasets share a name.
+
+    Nothing has ever stopped a workspace from holding a duplicate pair -
+    there is no unique index, and ACQUISITION rows are inserted without the
+    check - so the pair is written straight to the database here. The edit
+    dialog always submits the name field, so an unchanged name has to skip
+    the check rather than refuse the edit over a field nobody touched.
+
+    :param mock_emit_dataset: Patches the controller's emit_record_* calls
+    :param unit_test_workspace: The workspace the pair is created in
+    :param async_session_factory: Factory for creating database sessions
+    """
+    name = f"twin-{gen_test_id(8)}"
+    dataset_ids = [gen_test_id(), gen_test_id()]
+    async with async_session_factory() as session:
+        for dataset_id in dataset_ids:
+            session.add(
+                Dataset(
+                    dataset_id=dataset_id,
+                    workspace_id=unit_test_workspace.workspace_id,
+                    dataset_name=name,
+                    dataset_type="ANALYSIS",
+                    dataset_utc_created=datetime.now(timezone.utc),
+                )
+            )
+        await session.commit()
+
+    result = await dataset_service.update_dataset(
+        dataset_ids[0],
+        DatasetUpdate(dataset_name=name, dataset_description="Only the description"),
+        independent_transaction=True,
+    )
+
+    assert result["data"]["dataset_name"] == name
+    assert result["data"]["dataset_description"] == "Only the description"
+
+
+@pytest.mark.asyncio
+async def test_create_dataset_rejects_a_name_a_padded_row_already_holds(
+    mock_emit_dataset, unit_test_workspace, async_session_factory
+):
+    """A stored name with surrounding padding still counts as taken.
+
+    Names are only stripped on the way in from this change onwards, so an
+    older row can keep its padding while `DatasetRead` renders it trimmed.
+    Accepting the trimmed name would put two entries in the workspace list
+    that read identically - the very thing the check exists to prevent.
+
+    :param mock_emit_dataset: Patches the controller's emit_record_* calls
+    :param unit_test_workspace: The workspace the padded row is created in
+    :param async_session_factory: Factory for creating database sessions
+    """
+    name = f"padded-{gen_test_id(8)}"
+    async with async_session_factory() as session:
+        session.add(
+            Dataset(
+                dataset_id=gen_test_id(),
+                workspace_id=unit_test_workspace.workspace_id,
+                dataset_name=f"  {name}  ",
+                dataset_type="ANALYSIS",
+                dataset_utc_created=datetime.now(timezone.utc),
+            )
+        )
+        await session.commit()
+
+    with pytest.raises(ApiException) as exc_info:
+        await dataset_service.create_dataset(
+            workspace_id=unit_test_workspace.workspace_id,
+            dataset=DatasetCreate(dataset_name=name),
+            independent_transaction=True,
+        )
+
+    assert exc_info.value.status_code == 409
+    assert "already exists" in exc_info.value.user_message
