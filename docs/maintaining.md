@@ -725,6 +725,55 @@ read records, so a dump the adapter cannot parse leaves the existing mirror
 serving rather than emptying it. Re-running the same source is how you update
 it; prior versions stay on disk until pruned.
 
+### Reference licence gating
+
+Every mirrored record carries the licence of the source it came from, and the
+sources do not all permit the same use: PubChem and CompTox are public domain,
+ChEBI and LIPID MAPS are CC-BY-4.0, COCONUT is CC0, and HMDB is free for
+academic use with commercial terms to be verified separately. **By default
+peak assignment matches against every active source, whatever its licence.**
+That is the behaviour every deployment has always had, and it is unchanged.
+
+A deployment that must not match against some of them restricts assignment to
+an allowlist of licences in the env's config toml:
+
+```toml
+[backend]
+reference_licenses = ["public-domain", "CC0", "CC-BY-4.0"]
+```
+
+Restart the backend to apply it (`mascope prod up`); no rebuild is needed -
+this is backend-only and never reaches the browser. The gate gets applied at
+the database stage of assignment: records whose licence is not listed are not
+matched, so they never produce an identity, an alternative, or a score.
+Annotation of a formula you look up by hand is *not* gated - that reads the
+mirror directly - so removing a source from the gate is not the same as not
+loading it. If you must not hold the data at all, do not ingest it.
+
+Only add the line when you mean to restrict something. Narrowing the gate makes
+assignment quietly find less, and nothing in the UI says why a peak went
+unidentified. Two places do say so:
+
+- `mascope reference status` (monorepo checkouts only, like the rest of
+  `mascope reference`) prints the effective set and, for each active source,
+  whether Stage A matches all, some, or none of its records. It reports the
+  **per-record** licences, which the `custom` adapter lets a hand-authored list
+  set per row, so a list can be partly matched.
+- Every assignment run records the set in force when it ran, as
+  `reference_licenses` in the run's `config` - served by
+  `GET /api/peak-assignments/sample/{id}/runs`, and by the SDK's
+  `mascope.peak_assignments.list_runs(sample_id)`. `null` means the run was
+  ungated. This is how you tell, months later, what a result was allowed to
+  match - and it is the way to check the gate on a server, where
+  `mascope reference` is not installed. The backend log names the set on each
+  expansion too.
+
+An empty list is refused at startup rather than honoured: `reference_licenses =
+[]` reads like "no restriction" but would block every record. Delete the line
+to allow every licence. The list is also not something an API client can set -
+it is deployment configuration, so a caller cannot widen the gate its own run
+is matched under.
+
 ### Upload size cap
 
 A single resumable (tus) upload is capped at 5 GB by default, so one runaway

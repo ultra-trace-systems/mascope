@@ -820,11 +820,35 @@ def _build_reference_isotopes_df(
     return pd.DataFrame(rows)
 
 
+def reference_license_gate() -> list[str] | None:
+    """The reference licences Stage A is allowed to match against, or None.
+
+    The reference mirror carries a per-record licence from ingest through to
+    results precisely so a deployment can decline to match against sources
+    whose terms it has not accepted (HMDB's adapter, for instance, asks that
+    commercial terms be verified first). Nothing wired that to a setting until
+    now: the call site passed nothing, so every active source was matched.
+
+    ``None`` - the default, and what an env toml that says nothing yields -
+    keeps exactly that behaviour. Gating is opt-in because narrowing it shrinks
+    what Stage A can find with no trace in the UI: an operator must choose it,
+    not inherit it.
+
+    Read per call rather than captured at import so a restart is enough to pick
+    up a change, and so tests can set it.
+
+    :return: The allowlist (sorted, non-empty) or None for no gating.
+    """
+    return getattr(runtime.config, "reference_licenses", None)
+
+
 # The expanded reference frame is identical for every run over the same
-# (reference state, mechanism set, resolution, abundance floor), so a Stage-A
-# batch of N samples should pay the IsoSpec expansion once, not N times. The
-# key's reference part comes from known_state_fingerprint, so a re-synced or
-# (de)activated source invalidates naturally. A handful of entries covers a
+# (reference state, licence gate, mechanism set, resolution, abundance floor),
+# so a Stage-A batch of N samples should pay the IsoSpec expansion once, not N
+# times. The key's reference part comes from known_state_fingerprint, so a
+# re-synced or (de)activated source invalidates naturally; the licence gate is
+# in the key too, because narrowing it must not be served the wider frame a run
+# from before the change left behind. A handful of entries covers a
 # deployment's realistic (instrument, polarity, threshold) combinations.
 _REFERENCE_ISOTOPE_CACHE_MAX = 8
 _reference_isotope_cache: OrderedDict[tuple, pd.DataFrame] = OrderedDict()
@@ -865,9 +889,11 @@ async def _fetch_reference_known_isotopes(
         # cache slot either.
         return pd.DataFrame()
 
+    licenses = reference_license_gate()
     resolution_type = "LOW" if get_instrument_type(sample.filename) == "tof" else "HIGH"
     cache_key = (
         fingerprint,
+        None if licenses is None else tuple(licenses),
         tuple(sorted(m.ionization_mechanism_id for m in mechanisms)),
         resolution_type,
         isotope_abundance_threshold,
@@ -883,7 +909,12 @@ async def _fetch_reference_known_isotopes(
             return cached.copy()
 
         async with async_session() as session:
-            known = await iter_known_compositions(session)
+            # licenses=None keeps every record, which is what an unconfigured
+            # deployment must get - the argument is only narrowing.
+            known = await iter_known_compositions(
+                session,
+                licenses=None if licenses is None else set(licenses),
+            )
         if not known:
             reference_isotopes_df = pd.DataFrame()
         else:
@@ -894,9 +925,11 @@ async def _fetch_reference_known_isotopes(
                 resolution_type,
                 isotope_abundance_threshold,
             )
+        gate = "" if licenses is None else f" (licences: {', '.join(licenses)})"
         runtime.logger.info(
             f"Built {len(reference_isotopes_df)} reference known isotopes from "
-            f"{len(known)} reference formulas for sample '{sample.sample_item_name}'"
+            f"{len(known)} reference formulas for sample "
+            f"'{sample.sample_item_name}'{gate}"
         )
         _reference_isotope_cache[cache_key] = reference_isotopes_df
         while len(_reference_isotope_cache) > _REFERENCE_ISOTOPE_CACHE_MAX:
@@ -983,6 +1016,31 @@ PENDING_RUN_STATUS = "pending"
 #: The state the engine holds a run in while it works.
 RUNNING_RUN_STATUS = "running"
 
+#: Key under which a run's stored config records the reference-licence gate
+#: that was in force when it ran. Deliberately not a field on
+#: :class:`PeakAssignmentConfig`: that model is the request body, so a field
+#: there would let an API caller widen the gate its own run is matched under.
+#: It is server state that a run *reports*, not configuration a client supplies.
+REFERENCE_LICENSES_KEY = "reference_licenses"
+
+
+def _stored_run_config(config: PeakAssignmentConfig) -> dict:
+    """The blob persisted on a run: the requested config plus server-side state.
+
+    A result should record what it was allowed to match, not only what it was
+    asked to do - a run whose reference gate excluded half the mirror is not
+    comparable with one that matched everything, and nothing else on the row
+    would ever say so. The key is always present, ``None`` meaning ungated, so
+    "everything was allowed" is distinguishable from a run written before this
+    was recorded at all.
+
+    :param config: The validated client-supplied run configuration.
+    :return: A JSON-serializable dict for ``PeakAssignmentRun.config``.
+    """
+    stored = config.model_dump()
+    stored[REFERENCE_LICENSES_KEY] = reference_license_gate()
+    return stored
+
 
 async def _create_run(
     sample_item_id: str,
@@ -998,7 +1056,7 @@ async def _create_run(
         engine=IN_APP_ENGINE,
         engine_version=PEAK_ASSIGNMENT_ENGINE_VERSION,
         status=status,
-        config=config.model_dump(),
+        config=_stored_run_config(config),
         # The same thresholds an import has to declare, recorded here too so a
         # tier means the same thing on either engine's run without reading into
         # the config blob.
