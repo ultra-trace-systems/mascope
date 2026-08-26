@@ -60,8 +60,7 @@ def get_scan_timestamps(
         case "tof_zarr" | "orbi_zarr":
             signal_path = m_name.filename_to_zarr_path(base_filename, "signal")
 
-            sync = m_io.get_zarr_synchronizer(signal_path)
-            z = zarr.open(signal_path, mode="r", synchronizer=sync)
+            z = zarr.open(signal_path, mode="r")
             time_array = z["time"][:]
             if not time_array.size:
                 # Perhaps the coordinate is hiding in groups
@@ -332,10 +331,7 @@ def _write_cached_sum_signal(
     # DEBUG: purely informational cache write, fires on every cache miss
     runtime.logger.debug(f"Saving computed sum signal to {filename_sum_signal}")
 
-    synchronizer = m_io.get_zarr_synchronizer(filename_sum_signal)
-    write_lock = m_io.get_zarr_write_lock(filename_sum_signal)
-
-    with write_lock:
+    with m_io.zarr_write_lock(filename_sum_signal):
         cached_sum_signal = _try_get_cached_sum_signal(base_filename, cached_name)
         if cached_sum_signal is not None:
             # Check cache -> it's there -> return it instead of writing
@@ -345,7 +341,7 @@ def _write_cached_sum_signal(
             return cached_sum_signal
 
         try:
-            sum_signal.to_zarr(filename_sum_signal, synchronizer=synchronizer)
+            sum_signal.to_zarr(filename_sum_signal)
         except zarr.errors.ContainsGroupError:
             # Someone else created it just before/during open_group
             runtime.logger.debug(
@@ -509,8 +505,7 @@ def get_tic_per_scan(
             )
         case "tof_zarr" | "orbi_zarr":
             zarr_path = m_name.filename_to_zarr_path(base_filename, "signal")
-            sync = m_io.get_zarr_synchronizer(zarr_path)
-            z = zarr.open(zarr_path, mode="r", synchronizer=sync)
+            z = zarr.open(zarr_path, mode="r")
 
             # Get sum of counts along mz coordinate for each time coordinate
             signal_array = da.from_zarr(z["signal"])
