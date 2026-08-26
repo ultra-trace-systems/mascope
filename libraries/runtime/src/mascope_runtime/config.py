@@ -332,6 +332,49 @@ class BackendConfig(ModuleConfig):
     # working until the deployment has (re-)paired every agent machine and
     # turns this on. Pairing binds new tokens to a device automatically.
     require_device_tokens: bool = False
+    # Allowlist of per-record reference licences the peak-assignment database
+    # stage (Stage A) may match against, e.g.
+    # ["public-domain", "CC0", "CC-BY-4.0"]. The reference mirror carries a
+    # licence per record from ingest through to results, and some sources
+    # (HMDB) permit academic use only - this is what stops a commercial
+    # deployment matching against them.
+    #
+    # UNSET IS THE DEFAULT AND MEANS NO GATING: every active source is matched,
+    # exactly as before this setting existed. That is deliberate. Narrowing the
+    # gate shrinks what Stage A can find without saying so anywhere in the UI,
+    # so it must be an operator's explicit decision, never a default they
+    # inherit on upgrade. `mascope reference status` reports the effective set,
+    # and every run records it on `PeakAssignmentRun.config`.
+    #
+    # Backend-only: it bounds a server-side query, and putting it in [meta]
+    # would ship it to the browser (where it is unused) and bake it into the
+    # frontend image at build time. It is deliberately NOT a field on the
+    # request's PeakAssignmentConfig either - a client must not be able to
+    # widen it.
+    reference_licenses: Optional[list[str]] = None
+
+    @field_validator("reference_licenses")
+    @classmethod
+    def _clean_reference_licenses(cls, value: list[str] | None) -> list[str] | None:
+        """Normalize the allowlist, and refuse an empty one.
+
+        Sorted and deduplicated so the set recorded on a run and folded into
+        the reference-isotope cache key does not depend on the order the
+        operator happened to type. An empty list is rejected rather than
+        honoured: `reference_licenses = []` reads as "no restriction" but would
+        gate out every record, silently emptying the known set - delete the
+        line to disable gating.
+        """
+        if value is None:
+            return None
+        cleaned = sorted({entry.strip() for entry in value if entry.strip()})
+        if not cleaned:
+            raise ValueError(
+                "backend.reference_licenses is empty, which would stop peak "
+                "assignment matching against any reference record. Remove the "
+                "line entirely to allow every licence."
+            )
+        return cleaned
 
     def get_worker_count(self) -> int:
         """

@@ -57,6 +57,15 @@ filestreams = './filestreams'
 # has been (re-)paired - pairing binds the token to a device automatically;
 # tokens issued before the device registry have no binding.
 # require_device_tokens = false
+# Reference chemistry: the per-record licences peak assignment's database stage
+# is allowed to match against. Unset (the default) means no gating - every
+# active reference source is matched, which is what every deployment did before
+# this setting existed. Set it only to decline sources whose terms you have not
+# accepted (HMDB, for one, asks that commercial terms be verified first);
+# narrowing it shrinks what assignment can find, and nothing in the UI says so.
+# `mascope reference status` reports the effective set, and every run records it.
+# An empty list is refused - delete the line to allow every licence.
+# reference_licenses = ["public-domain", "CC0", "CC-BY-4.0"]
 # scripts
 run = "uv run mascope-backend run api-server"
 

@@ -21,11 +21,24 @@ from sqlalchemy.pool import NullPool
 from mascope_cli.runtime import runtime
 from mascope_reference import available_sources, get_adapter, ingest
 from mascope_reference.ingest import DEFAULT_BATCH_SIZE, EmptyIngest
-from mascope_reference.schema import reference_source
+from mascope_reference.schema import reference_compound, reference_source
 
 
 reference_app = typer.Typer()
 console = Console()
+
+
+def _license_gate() -> list[str] | None:
+    """The deployment's Stage A reference-licence allowlist, or None if unset.
+
+    Backend configuration, not CLI configuration, so it is read off the full
+    config rather than ``runtime.config``. A checkout with no ``[backend]``
+    section at all yields None, same as an unset allowlist.
+
+    :return: The configured allowlist, or None for no gating.
+    """
+    backend = getattr(runtime.full_config, "backend", None)
+    return getattr(backend, "reference_licenses", None)
 
 
 def _sync_engine():
@@ -53,9 +66,23 @@ def main():
 @reference_app.command("sources")
 def sources() -> None:
     """List the reference sources with a registered ETL adapter."""
+    allowed = _license_gate()
     for name in available_sources():
         adapter = get_adapter(name)
-        console.print(f"[bold]{name}[/bold]  (license: {adapter.license})")
+        # Flagged here as well as in `status` so the gate is visible *before* a
+        # multi-hour ingest of a source peak assignment would then decline to
+        # match. Only the adapter's DEFAULT licence is known at this point, and
+        # the gate matches per record: a `custom` list whose rows carry their
+        # own licence is judged row by row, which `status` reports once it is
+        # loaded. Hence "records that keep it" rather than "this source".
+        blocked = allowed is not None and adapter.license not in allowed
+        gated = (
+            "  [red](outside this deployment's licence gate - peak assignment "
+            "would not match records that keep this licence)[/red]"
+            if blocked
+            else ""
+        )
+        console.print(f"[bold]{name}[/bold]  (license: {adapter.license}){gated}")
 
 
 @reference_app.command()
@@ -253,14 +280,115 @@ def activate(
     )
 
 
+def _record_licenses(conn, source_ids: list[int]) -> dict[int, list[str]]:
+    """The distinct per-record licences held by each of the given sources.
+
+    The gate matches ``reference_compound.license``, not the source's declared
+    licence, and the two can differ: the ``custom`` adapter honours a per-row
+    ``license`` column. Reporting the source licence alone would therefore claim
+    a source is matched when half its records are not.
+
+    Only called when a gate is configured, and only for the active sources: it
+    is an aggregate over the compound table, and a deployment that has not
+    opted into gating should not pay for a scan it has nothing to learn from.
+
+    :param conn: Open synchronous connection.
+    :param source_ids: Reference source ids to roll up.
+    :return: Source id -> sorted distinct record licences.
+    """
+    rows = conn.execute(
+        select(
+            reference_compound.c.reference_source_id,
+            reference_compound.c.license,
+        )
+        .where(reference_compound.c.reference_source_id.in_(source_ids))
+        .group_by(
+            reference_compound.c.reference_source_id,
+            reference_compound.c.license,
+        )
+    ).all()
+    grouped: dict[int, list[str]] = {}
+    for source_id, license_name in rows:
+        grouped.setdefault(source_id, []).append(license_name or "")
+    return {source_id: sorted(names) for source_id, names in grouped.items()}
+
+
+def _print_license_gate(
+    rows, record_licenses: dict[int, list[str]], allowed: list[str] | None
+) -> None:
+    """Report which active sources peak assignment is allowed to match.
+
+    The licence set is otherwise invisible: a narrowed gate shrinks what Stage A
+    can find with nothing in the UI to say so, which is exactly why it is
+    reported here (and recorded on every run's config).
+
+    :param rows: The source rows already fetched for the status table.
+    :param record_licenses: Source id -> distinct record licences, for the
+        active sources; empty when no gate is configured.
+    :param allowed: The configured allowlist, or None for no gating.
+    """
+    if allowed is None:
+        # The toml section name is escaped: Rich reads square brackets as
+        # console markup and would swallow '[backend]' entirely, leaving the
+        # operator an instruction that omits where the setting goes.
+        console.print(
+            "\n[bold]Stage A licence gate:[/bold] not configured - peak "
+            "assignment matches every active source.\n"
+            "Restrict it with \\[backend] reference_licenses in the env config "
+            "toml (see docs/maintaining.md)."
+        )
+        return
+
+    console.print(
+        Text.assemble(
+            ("\nStage A licence gate: ", "bold"),
+            Text(", ".join(allowed)),
+        )
+    )
+    active = [row for row in rows if row.is_active]
+    if not active:
+        console.print("No active sources to match against.")
+        return
+
+    permitted = set(allowed)
+    table = Table(title="Peak assignment (Stage A) reference matching")
+    table.add_column("Source")
+    table.add_column("Version")
+    table.add_column("Stage A")
+    table.add_column("Allowed record licences")
+    table.add_column("Blocked record licences")
+    for row in active:
+        found = record_licenses.get(row.reference_source_id, [])
+        ok = [name for name in found if name in permitted]
+        blocked = [name for name in found if name not in permitted]
+        if not found:
+            verdict = "[dim]no records[/dim]"
+        elif not blocked:
+            verdict = "[green]matched[/green]"
+        elif not ok:
+            verdict = "[red]NOT matched[/red]"
+        else:
+            verdict = "[yellow]partly matched[/yellow]"
+        table.add_row(
+            Text(row.name),
+            Text(row.version),
+            verdict,
+            Text(", ".join(ok)),
+            Text(", ".join(blocked)),
+        )
+    console.print(table)
+
+
 @reference_app.command()
 def status() -> None:
-    """Show ingested sources and their versions from the database."""
+    """Show ingested sources, their versions, and what Stage A may match."""
+    allowed = _license_gate()
     engine = _sync_engine()
     try:
         with engine.connect() as conn:
             rows = conn.execute(
                 select(
+                    reference_source.c.reference_source_id,
                     reference_source.c.name,
                     reference_source.c.version,
                     reference_source.c.license,
@@ -271,6 +399,12 @@ def status() -> None:
                     reference_source.c.name, reference_source.c.ingested_at.desc()
                 )
             ).all()
+            active_ids = [row.reference_source_id for row in rows if row.is_active]
+            record_licenses = (
+                _record_licenses(conn, active_ids)
+                if allowed is not None and active_ids
+                else {}
+            )
     finally:
         engine.dispose()
 
@@ -285,16 +419,17 @@ def status() -> None:
     table.add_column("Records", justify="right")
     table.add_column("Active")
     table.add_column("Ingested (UTC)")
-    for name, version, lic, count, is_active, ingested_at in rows:
+    for row in rows:
         # Wrapped in Text because these come from the database: Rich would parse
         # square brackets in them as console markup and swallow them, so a source
         # named with --name riva2019[hom] would be reported as 'riva2019'.
         table.add_row(
-            Text(name),
-            Text(version),
-            Text(lic or ""),
-            f"{count:,}",
-            "[green]yes[/green]" if is_active else "no",
-            Text(str(ingested_at)),
+            Text(row.name),
+            Text(row.version),
+            Text(row.license or ""),
+            f"{row.record_count:,}",
+            "[green]yes[/green]" if row.is_active else "no",
+            Text(str(row.ingested_at)),
         )
     console.print(table)
+    _print_license_gate(rows, record_licenses, allowed)
