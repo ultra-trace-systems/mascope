@@ -132,6 +132,47 @@ async def test_create_dataset_validation(test_workspace, editor_client):
     ).status_code == 422
 
 
+@pytest.mark.asyncio
+async def test_dataset_name_longer_than_the_column_is_a_client_error(
+    test_workspace, editor_client, dataset_create_data
+):
+    """A name too long for the column is refused as a 422, never a 500.
+
+    `Dataset.dataset_name` is String(256). Unbounded on the request model, an
+    over-long name reached Postgres and came back as StringDataRightTruncation
+    - a SQLAlchemyError, which `process_exception` reports as 500. That is the
+    wrong answer twice over: the caller made a mistake it can fix, and callers
+    that retry on 5xx (the file agent among them) retry something that can
+    never succeed.
+
+    Both edges are pinned, so a bound set to the wrong number fails here as
+    loudly as no bound at all. The rename is checked too - it writes the same
+    column through a different model, which would not inherit the fix.
+    """
+    at_limit = dataset_create_data["dataset_name"].ljust(256, "x")
+    assert len(at_limit) == 256
+    too_long = at_limit + "x"
+
+    accepted = await editor_client.post(
+        f"/api/workspaces/{test_workspace}/datasets",
+        json={**dataset_create_data, "dataset_name": at_limit},
+    )
+    assert accepted.status_code == 201
+    dataset_id = accepted.json()["data"]["dataset_id"]
+
+    refused = await editor_client.post(
+        f"/api/workspaces/{test_workspace}/datasets",
+        json={**dataset_create_data, "dataset_name": too_long},
+    )
+    assert refused.status_code == 422
+
+    renamed = await editor_client.patch(
+        f"/api/workspaces/{test_workspace}/datasets/{dataset_id}",
+        json={"dataset_name": too_long},
+    )
+    assert renamed.status_code == 422
+
+
 # ============= Read Operations =============
 
 

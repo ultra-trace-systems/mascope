@@ -513,8 +513,8 @@ class Dataset(Base):
         # year) by a read-then-write get-or-create that can race under
         # concurrent ingest; constrain the natural key so the race fails
         # loudly (and is recovered in get_acquisition_dataset) instead of
-        # inserting duplicates. Partial: user-created dataset types have no
-        # naming invariant.
+        # inserting duplicates. Partial: the other dataset types are keyed on
+        # (workspace, name) instead, by the complementary index below.
         Index(
             "uq_dataset_acquisition_natural_key",
             "workspace_id",
@@ -522,6 +522,37 @@ class Dataset(Base):
             "dataset_name",
             unique=True,
             postgresql_where=text("dataset_type = 'ACQUISITION'"),
+        ),
+        # A dataset name is unique within its workspace, compared under the
+        # canonical key `lower(btrim(dataset_name))` - two datasets differing
+        # only in case or in surrounding padding read as one entry in the
+        # workspace list, which is the bug. Backs the `_assert_name_available`
+        # check in the dataset controller, whose read-then-write cannot close
+        # the race on its own.
+        #
+        # That key is THE definition of "same name" and it is evaluated by
+        # Postgres in all three places that need it: here, in
+        # `_assert_name_available`, and in the migration that introduced the
+        # index. Python's `str.lower()` is not the same function as Postgres
+        # `lower()` (they disagree on 35 BMP codepoints, and Python alone
+        # applies the Greek final-sigma rule), so a Python-side key would let
+        # the check pass on a name the index then rejects - a 500 for input
+        # the user cannot see anything wrong with.
+        #
+        # Partial, and it has to stay partial. ACQUISITION datasets are named
+        # after the calendar year and auto-created per (workspace, instrument,
+        # year) by get_acquisition_dataset, which recovers from a duplicate-key
+        # insert only by re-finding an ACQUISITION row. Covering every type
+        # here would let a user-created dataset named e.g. "2027" in an
+        # instrument workspace turn that year's rollover into an
+        # IntegrityError nothing can recover from, stopping auto-processing
+        # for the instrument.
+        Index(
+            "uq_dataset_workspace_name_ci",
+            "workspace_id",
+            func.lower(func.btrim(dataset_name)),
+            unique=True,
+            postgresql_where=text("dataset_type <> 'ACQUISITION'"),
         ),
     )
 

@@ -7,6 +7,7 @@ from datetime import datetime, timezone
 
 import pytest
 import pytest_asyncio
+from sqlalchemy import text
 from test_utils import gen_test_id
 
 import mascope_backend.api.controllers.dataset.dataset_controller as dataset_service
@@ -710,11 +711,13 @@ async def test_update_dataset_description_when_the_name_is_already_shared(
 ):
     """A description-only edit saves even where two datasets share a name.
 
-    Nothing has ever stopped a workspace from holding a duplicate pair -
-    there is no unique index, and ACQUISITION rows are inserted without the
-    check - so the pair is written straight to the database here. The edit
-    dialog always submits the name field, so an unchanged name has to skip
-    the check rather than refuse the edit over a field nobody touched.
+    `uq_dataset_workspace_name_ci` skips ACQUISITION rows, so a workspace can
+    still hold a pair sharing one name - and rows predating that index survive
+    until its migration renames them. The pair is written straight to the
+    database here. The edit dialog always submits the name field, so an
+    unchanged name has to skip the check rather than refuse the edit over a
+    field nobody touched: `_assert_name_available` does not filter on
+    dataset_type, so the acquisition twin would otherwise refuse it.
 
     :param mock_emit_dataset: Patches the controller's emit_record_* calls
     :param unit_test_workspace: The workspace the pair is created in
@@ -723,13 +726,15 @@ async def test_update_dataset_description_when_the_name_is_already_shared(
     name = f"twin-{gen_test_id(8)}"
     dataset_ids = [gen_test_id(), gen_test_id()]
     async with async_session_factory() as session:
-        for dataset_id in dataset_ids:
+        # One of each: the index constrains non-ACQUISITION rows only, so this
+        # is the pair a workspace can still legitimately hold.
+        for dataset_id, dataset_type in zip(dataset_ids, ("ANALYSIS", "ACQUISITION")):
             session.add(
                 Dataset(
                     dataset_id=dataset_id,
                     workspace_id=unit_test_workspace.workspace_id,
                     dataset_name=name,
-                    dataset_type="ANALYSIS",
+                    dataset_type=dataset_type,
                     dataset_utc_created=datetime.now(timezone.utc),
                 )
             )
@@ -768,6 +773,296 @@ async def test_create_dataset_rejects_a_name_a_padded_row_already_holds(
                 workspace_id=unit_test_workspace.workspace_id,
                 dataset_name=f"  {name}  ",
                 dataset_type="ANALYSIS",
+                dataset_utc_created=datetime.now(timezone.utc),
+            )
+        )
+        await session.commit()
+
+    with pytest.raises(ApiException) as exc_info:
+        await dataset_service.create_dataset(
+            workspace_id=unit_test_workspace.workspace_id,
+            dataset=DatasetCreate(dataset_name=name),
+            independent_transaction=True,
+        )
+
+    assert exc_info.value.status_code == 409
+    assert "already exists" in exc_info.value.user_message
+
+
+# --- Losing the name race --------------------------------------------------
+#
+# Every write that puts a name into a workspace - create, rename, move - does
+# a read-then-write: `_assert_name_available` in one statement, the write in
+# the next. A concurrent writer can take the name in between, and then only
+# `uq_dataset_workspace_name_ci` stops the second row. Left alone its
+# IntegrityError is a SQLAlchemyError and the caller gets a 500 for a name
+# collision they could have been told about, so `_commit_or_conflict` has to
+# wrap all three commits, not just the first one.
+
+
+def _suppress_the_first_name_check(monkeypatch) -> list[tuple]:
+    """Stand in for a concurrent writer that wins the name race.
+
+    The first `_assert_name_available` call - the pre-write check - is turned
+    into a no-op, so the write goes ahead into a workspace where the name is
+    in fact taken and the database is left to catch it. Every later call is
+    the real function, so the re-check that classifies the IntegrityError is
+    not faked: it is what has to turn the fault into a conflict.
+
+    :param monkeypatch: pytest's monkeypatch fixture, which restores the
+                        module attribute at the end of the test.
+    :return: The record of calls made. Its length is the assertion that
+             matters: 2 means the pre-write check was skipped and the
+             re-check ran, so the 409 came out of the recovery path rather
+             than from the check that normally answers first.
+    :rtype: list[tuple]
+    """
+    real_check = dataset_service._assert_name_available
+    calls: list[tuple] = []
+
+    async def skip_the_first_check(*args, **kwargs):
+        calls.append(args)
+        if len(calls) == 1:
+            return
+        await real_check(*args, **kwargs)
+
+    monkeypatch.setattr(dataset_service, "_assert_name_available", skip_the_first_check)
+    return calls
+
+
+@pytest.mark.asyncio
+async def test_create_dataset_reports_a_lost_name_race_as_conflict(
+    mock_emit_dataset, unit_test_workspace, monkeypatch
+):
+    """A name taken between the check and the insert is a 409, not a 500.
+
+    The pre-write check cannot close that window - `uq_dataset_workspace_name_ci`
+    does, and the IntegrityError it raises has to come back out as the same
+    conflict the check itself reports. Suppressing the first check stands in for
+    the concurrent creator that wins the race: everything after it is the real
+    path, index included.
+    """
+    name = f"race-{gen_test_id(8)}"
+    await dataset_service.create_dataset(
+        workspace_id=unit_test_workspace.workspace_id,
+        dataset=DatasetCreate(dataset_name=name),
+        independent_transaction=True,
+    )
+
+    calls = _suppress_the_first_name_check(monkeypatch)
+
+    with pytest.raises(ApiException) as exc_info:
+        await dataset_service.create_dataset(
+            workspace_id=unit_test_workspace.workspace_id,
+            dataset=DatasetCreate(dataset_name=name),
+            independent_transaction=True,
+        )
+
+    # Two calls: the suppressed pre-write check, then the re-check that
+    # classified the IntegrityError - so the 409 came from the recovery path
+    # and not from the check that normally answers first.
+    assert len(calls) == 2
+    assert exc_info.value.status_code == 409
+    assert exc_info.value.user_message == (
+        f"Failed to create dataset. A dataset named '{name}' "
+        "already exists in this workspace."
+    )
+
+
+@pytest.mark.asyncio
+async def test_update_dataset_reports_a_lost_name_race_as_conflict(
+    mock_emit_dataset, unit_test_workspace, monkeypatch
+):
+    """A rename losing the same race is a 409 too.
+
+    The rename has the identical read-then-write shape as the create, so it
+    needs the identical recovery: with the commit left unwrapped the user
+    renaming onto a name a colleague took a moment earlier is told the server
+    failed, and the workspace list gives them no clue why.
+    """
+    taken_name = f"race-rename-{gen_test_id(8)}"
+    await dataset_service.create_dataset(
+        workspace_id=unit_test_workspace.workspace_id,
+        dataset=DatasetCreate(dataset_name=taken_name),
+        independent_transaction=True,
+    )
+    renamed = await dataset_service.create_dataset(
+        workspace_id=unit_test_workspace.workspace_id,
+        dataset=DatasetCreate(dataset_name=f"race-rename-from-{gen_test_id(8)}"),
+        independent_transaction=True,
+    )
+    original_name = renamed["data"]["dataset_name"]
+
+    calls = _suppress_the_first_name_check(monkeypatch)
+
+    with pytest.raises(ApiException) as exc_info:
+        await dataset_service.update_dataset(
+            renamed["data"]["dataset_id"],
+            DatasetUpdate(dataset_name=taken_name),
+            independent_transaction=True,
+        )
+
+    assert len(calls) == 2
+    assert exc_info.value.status_code == 409
+    assert exc_info.value.user_message == (
+        f"Failed to update dataset. A dataset named '{taken_name}' "
+        "already exists in this workspace."
+    )
+
+    # The refused rename left nothing behind: the commit that failed was
+    # rolled back, so the dataset still answers to the name it had.
+    still_there = await dataset_service.get_dataset(renamed["data"]["dataset_id"])
+    assert still_there["data"]["dataset_name"] == original_name
+
+
+@pytest.mark.asyncio
+async def test_move_dataset_reports_a_lost_name_race_as_conflict(
+    mock_emit_dataset, unit_test_workspace, second_unit_test_workspace, monkeypatch
+):
+    """A move losing the same race is a 409 too.
+
+    A move is a rename into the target workspace's namespace and races
+    exactly like one: a create in the target can take the name between the
+    check and the commit. `independent_transaction` is left at False so the
+    move stays off the socket layer, which `mock_emit_dataset` does not patch
+    for reloads.
+    """
+    name = f"race-move-{gen_test_id(8)}"
+    source = await dataset_service.create_dataset(
+        workspace_id=unit_test_workspace.workspace_id,
+        dataset=DatasetCreate(dataset_name=name),
+        independent_transaction=True,
+    )
+    await dataset_service.create_dataset(
+        workspace_id=second_unit_test_workspace.workspace_id,
+        dataset=DatasetCreate(dataset_name=name),
+        independent_transaction=True,
+    )
+
+    calls = _suppress_the_first_name_check(monkeypatch)
+
+    with pytest.raises(ApiException) as exc_info:
+        await dataset_service.move_dataset(
+            dataset_id=source["data"]["dataset_id"],
+            source_workspace_id=unit_test_workspace.workspace_id,
+            target_workspace_id=second_unit_test_workspace.workspace_id,
+        )
+
+    assert len(calls) == 2
+    assert exc_info.value.status_code == 409
+    assert exc_info.value.user_message == (
+        f"Failed to move dataset. A dataset named '{name}' "
+        "already exists in this workspace."
+    )
+
+    # The refused move was rolled back, so the dataset is still in the
+    # workspace it started in.
+    still_there = await dataset_service.get_dataset(source["data"]["dataset_id"])
+    assert still_there["data"]["workspace_id"] == unit_test_workspace.workspace_id
+
+
+@pytest.mark.asyncio
+async def test_create_dataset_does_not_mislabel_other_integrity_errors(
+    mock_emit_dataset,
+):
+    """A constraint failure that is not the name index stays a server error.
+
+    The recovery re-checks the name to decide what happened; a foreign-key
+    violation leaves that check satisfied, and the original error is re-raised
+    rather than reported as a duplicate name the user could act on.
+    """
+    with pytest.raises(ApiException) as exc_info:
+        await dataset_service.create_dataset(
+            workspace_id=gen_test_id(),  # no such workspace: FK violation
+            dataset=DatasetCreate(dataset_name=f"orphan-{gen_test_id(8)}"),
+            independent_transaction=True,
+        )
+
+    assert exc_info.value.status_code == 500
+    assert "already exists" not in exc_info.value.user_message
+
+
+# A name pair Postgres folds together but Python's `str.lower()` does not:
+# Postgres lowers the Greek capital sigma to the medial U+03C3, while Python
+# applies the final-sigma rule and produces U+03C2. Whether this server's
+# collation case-maps beyond ASCII at all is asked at run time rather than
+# assumed.
+_GREEK_UPPER = "\u0399\u03a3"  # capital iota + capital sigma
+_GREEK_LOWER = "\u03b9\u03c3"  # small iota + medial small sigma
+
+
+async def _postgres_folds(async_session_factory, left: str, right: str) -> bool:
+    """Ask the database whether two names share the canonical key."""
+    async with async_session_factory() as session:
+        result = await session.execute(
+            text(
+                "SELECT lower(btrim(CAST(:a AS text))) = lower(btrim(CAST(:b AS text)))"
+            ),
+            {"a": left, "b": right},
+        )
+    return bool(result.scalar())
+
+
+@pytest.mark.asyncio
+async def test_create_dataset_rejects_a_name_only_postgres_folds(
+    mock_emit_dataset, unit_test_workspace, async_session_factory
+):
+    """A duplicate only Postgres recognises is a 409, not a 500.
+
+    "Same name" is `lower(btrim(name))` as Postgres computes it, and the
+    check has to ask Postgres rather than reimplement it: with the name
+    lowered in Python the check passed, `uq_dataset_workspace_name_ci`
+    rejected the insert anyway, and the re-check that classifies the
+    IntegrityError - being the same Python comparison - found nothing to
+    report, so the user got a 500 for a name they could not see anything
+    wrong with.
+    """
+    prefix = f"greek-{gen_test_id(8)}-"
+    first, second = prefix + _GREEK_LOWER, prefix + _GREEK_UPPER
+    if not await _postgres_folds(async_session_factory, first, second):
+        pytest.skip(
+            "this server's collation case-maps no non-ASCII codepoint, so "
+            "Postgres and Python cannot disagree about one here"
+        )
+    # The premise: these two are one name to the database and two to Python.
+    assert first.strip().lower() != second.strip().lower()
+
+    await dataset_service.create_dataset(
+        workspace_id=unit_test_workspace.workspace_id,
+        dataset=DatasetCreate(dataset_name=first),
+        independent_transaction=True,
+    )
+
+    with pytest.raises(ApiException) as exc_info:
+        await dataset_service.create_dataset(
+            workspace_id=unit_test_workspace.workspace_id,
+            dataset=DatasetCreate(dataset_name=second),
+            independent_transaction=True,
+        )
+
+    assert exc_info.value.status_code == 409
+    assert "already exists" in exc_info.value.user_message
+
+
+@pytest.mark.asyncio
+async def test_create_dataset_rejects_a_padded_look_alike(
+    mock_emit_dataset, unit_test_workspace, async_session_factory
+):
+    """A name a stored row only differs from by padding is already taken.
+
+    New names are stripped by `DatasetCreate`, but rows written before that
+    validator existed can still carry padding, and two entries in the
+    workspace list that differ by a trailing space are exactly the pair a
+    user cannot tell apart. The canonical key btrims, so the older row's
+    padding no longer hides it from the check.
+    """
+    name = f"padded-{gen_test_id(8)}"
+    async with async_session_factory() as session:
+        session.add(
+            Dataset(
+                dataset_id=gen_test_id(),
+                workspace_id=unit_test_workspace.workspace_id,
+                dataset_name=f"{name} ",
                 dataset_utc_created=datetime.now(timezone.utc),
             )
         )

@@ -13,6 +13,22 @@ from mascope_backend.api.models.base_pydantic_model import QueryParamsModel
 from mascope_backend.api.models.dataset.config import dataset_config
 
 
+# The width of `Dataset.dataset_name` (String(256)). Bound here so a name too
+# long for the column is refused as a 422 by request validation; without it the
+# insert reaches Postgres and comes back as StringDataRightTruncation, which
+# `process_exception` reports as a 500 - a server fault for what is a
+# perfectly diagnosable client mistake. The migration that de-duplicates names
+# trims its " (n)" suffixes to the same width.
+#
+# Measured against the name as submitted: pydantic applies a field constraint
+# before an `after` validator, so `validate_dataset_name` has not stripped it
+# yet. The bound is therefore very slightly stricter than the column - a name
+# of 257 characters ending in a space would have fit once stripped - which is
+# the harmless direction, and keeping it a plain `max_length` is what puts it
+# in the OpenAPI schema for clients to see.
+DATASET_NAME_MAX_LENGTH = 256
+
+
 class DatasetIcon(BaseModel):
     """Icon configuration for dataset."""
 
@@ -37,9 +53,36 @@ class DatasetBaseValidator:
         """
         Validates that `dataset_name` is not an empty string or just whitespace.
 
-        The name is stripped, so surrounding padding cannot side-step the
-        per-workspace uniqueness check and stored names stay normalised
-        (workspace names are handled the same way).
+        The name is stripped so stored names stay normalised (workspace names
+        are handled the same way). Uniqueness is decided elsewhere, by the
+        canonical key `lower(btrim(dataset_name))` that Postgres evaluates in
+        `_assert_name_available` and in `uq_dataset_workspace_name_ci` alike -
+        so a name that only differs by leading or trailing spaces from a
+        stored one is refused, whether or not that stored row was ever seen by
+        this validator.
+
+        The two normalisations are not the same set, and the difference is
+        worth being precise about. `str.strip()` here removes every character
+        Python calls whitespace (tab, CR, LF, VT, FF, and the Unicode spaces
+        U+00A0, U+1680, U+2007, U+202F, U+3000 ...); Postgres `btrim()` with
+        its default trim set removes U+0020 only. So:
+
+        - A name arriving through the API is stripped of all of them here, and
+          therefore matches the key of any stored row it looks like.
+        - A row written before this validator existed can still carry, say, a
+          trailing tab. `btrim()` does not remove it, so that row keys
+          differently and a stripped look-alike is accepted beside it. The
+          index is not widened to fix this: changing the trim set would change
+          the index expression - and the migration behind it - for an exotic
+          case.
+        - U+200B and U+FEFF are not whitespace to `str.strip()` either, so a
+          name padded with one of those is stored as sent and keys as sent, in
+          both directions.
+
+        The gap only ever costs a look-alike pair, never a fault: this
+        normalisation is strictly more aggressive than `btrim()`, so a name
+        the pre-write check accepts is never one the index then rejects, and
+        no input can turn into a 500 this way.
 
         :param dataset_name: The name provided for the dataset.
         :raises ValueError: If the dataset_name is an empty string or only whitespace.
@@ -77,7 +120,11 @@ class DatasetValidator(DatasetBaseValidator):
 class DatasetBase(DatasetValidator, BaseModel):
     """Base model with common fields for Dataset."""
 
-    dataset_name: str = Field(..., description="Name of the dataset")
+    dataset_name: str = Field(
+        ...,
+        max_length=DATASET_NAME_MAX_LENGTH,
+        description="Name of the dataset",
+    )
     dataset_description: str | None = Field(
         None, description="Description of the dataset"
     )
@@ -131,7 +178,11 @@ class DatasetUpdate(DatasetBaseValidator, BaseModel):
     """Model used for dataset update requests - only user-editable fields.
     All fields optional."""
 
-    dataset_name: str | None = Field(None, description="Name of the dataset")
+    dataset_name: str | None = Field(
+        None,
+        max_length=DATASET_NAME_MAX_LENGTH,
+        description="Name of the dataset",
+    )
     dataset_description: str | None = Field(
         None, description="Description of the dataset"
     )

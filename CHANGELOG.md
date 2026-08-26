@@ -372,6 +372,17 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
   order you had just changed away from. It looked as though sorting only
   persisted after typing something into the batch search box, because a
   search term was what kept the saved state from matching the default.
+- Duplicate dataset names are now refused by the database, not only by the
+  application, so two requests racing each other can no longer both slip a name
+  through. **Upgrading:** the migration that adds the constraint renames any
+  duplicates a deployment already holds - within a workspace, the oldest keeps
+  its name and the others gain a numbered suffix, and every rename is printed
+  during the upgrade. Names are compared ignoring case and surrounding spaces,
+  so `Winter run`, `winter run` and `Winter run ` count as one name; datasets
+  in different workspaces are unaffected, as are the automatically created
+  acquisition datasets. The rename cannot be undone by downgrading, which only
+  removes the constraint.
+
 - Two datasets in the same workspace can no longer be given the same name.
   Creating, renaming or moving a dataset into a name the workspace already
   uses is refused with a message saying so, rather than producing a list with

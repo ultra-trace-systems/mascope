@@ -44,6 +44,7 @@ ALEMBIC_INI = BACKEND_PATH / "alembic.ini"
 
 STAIRWAY_DB_NAME = "mascope_test_migrations"
 DRIFT_DB_NAME = "mascope_test_migrations_drift"
+SEEDED_DB_NAME = "mascope_test_migrations_seeded"
 
 
 # --- URL builders (sync, psycopg2 — matches DatabaseConfig.get_postgres_url_sync) ---
@@ -138,6 +139,50 @@ def stairway_alembic_config(stairway_db_url: str) -> Config:
     cfg = Config(str(ALEMBIC_INI))
     cfg.set_main_option("sqlalchemy.url", stairway_db_url)
     return cfg
+
+
+# --- Seeded data-migration fixtures ---
+#
+# Stairway and drift both walk the chain against a database created empty, so
+# neither one ever executes a data migration's row-handling code. A migration
+# that rewrites customer data needs rows to act on: these fixtures give a test
+# its own database it can stop partway down the chain, seed, and then finish
+# upgrading. Module-scoped so one such test file pays for one walk of the
+# chain no matter how many assertions it makes; a second file gets a fresh
+# database because the fixtures are torn down between modules.
+
+
+@pytest.fixture(scope="module")
+def seeded_db_url() -> Iterator[str]:
+    """Module-scoped: drop+create `mascope_test_migrations_seeded`, drop after.
+
+    Separate from both the stairway and the drift databases so a seeded test
+    can leave the chain part-applied without disturbing either.
+    """
+    yield from _ephemeral_db(SEEDED_DB_NAME)
+
+
+@pytest.fixture(scope="module")
+def seeded_alembic_config(seeded_db_url: str) -> Config:
+    """Programmatic Alembic Config pointed at the seeded test database.
+
+    Same override mechanism as `stairway_alembic_config`: `alembic.ini` for
+    `script_location`, `sqlalchemy.url` replaced so the patched
+    `env.py._resolve_url()` targets this database instead of the active env's.
+    """
+    cfg = Config(str(ALEMBIC_INI))
+    cfg.set_main_option("sqlalchemy.url", seeded_db_url)
+    return cfg
+
+
+@pytest.fixture(scope="module")
+def seeded_engine(seeded_db_url: str) -> Iterator[Engine]:
+    """Sync engine on the seeded database, for inserting and reading rows."""
+    engine = create_engine(seeded_db_url, poolclass=NullPool)
+    try:
+        yield engine
+    finally:
+        engine.dispose()
 
 
 # --- Drift test fixtures (pytest-alembic) ---
