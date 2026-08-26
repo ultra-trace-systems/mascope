@@ -46,7 +46,7 @@ const vHelpLayer = app.ui.help.directive(layer)
         Notifications are shown as toasts in the bottom right corner in real time.
         Here you can view a log of past notifications.
       </p>
-      <p>Clearing the log only empties this list; nothing is deleted on the server.</p>
+      <p>Clearing empties this list and the unread badge; nothing is deleted on the server.</p>
       `
     "
     style="min-height: calc(100vh - 300px)"
