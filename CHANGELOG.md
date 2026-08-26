@@ -359,6 +359,13 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
   order you had just changed away from. It looked as though sorting only
   persisted after typing something into the batch search box, because a
   search term was what kept the saved state from matching the default.
+- Two datasets in the same workspace can no longer be given the same name.
+  Creating, renaming or moving a dataset into a name the workspace already
+  uses is refused with a message saying so, rather than producing a list with
+  indistinguishable entries. Names are compared ignoring case and surrounding
+  spaces. The edit dialog also used to close as though a rename had succeeded
+  when the server had refused it; it now stays open so the name can be
+  corrected.
 
 - A bulk upload run no longer makes the server stop answering. Every request
   from an agent, the file converter or the SDK is checked against its access
