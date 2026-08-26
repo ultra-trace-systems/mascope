@@ -299,6 +299,41 @@ If the target environment does not exist, you will be prompted to create it. Pas
 
 On transfer failure the staged dump is preserved in `.runtime/database/transfer/` for manual recovery. On success it is deleted and 7-day retention pruning runs automatically.
 
+#### Syncing only part of the filestore
+
+A full filestore can be far larger than the link between the two machines. `--from` and `--to` (both `YYYY-MM-DD`, both inclusive, either one optional) narrow the transfer to a window of acquisition dates:
+
+```bash
+# everything acquired since the start of the year
+mascope env sync user@192.168.1.100:bar prod baz prod --from 2026-01-01
+
+# one quarter, filestore only
+mascope env sync user@192.168.1.100:bar prod baz prod --from 2026-01-01 --to 2026-03-31 --skip-db
+```
+
+The filter is a path filter, not a database query: the filestore stores samples as `filestore/<instrument>/<YYYY.MM.DD>/<sample_name>/`, where the date directory comes from the acquisition timestamp in the sample filename. So the window selects on **acquisition date**, not on when a file was uploaded, reprocessed or last modified. The batch cache under `filestore/sample_batches/` has no date in its path and is always transferred; it is rebuildable, so dropping it would only cost recomputation.
+
+> [!IMPORTANT]
+> `--from` / `--to` filter the filestore only - **the database is never filtered**. A date-limited sync that also syncs the database leaves the target holding sample rows whose files were not transferred, and those samples fail to load. The command warns when you do this; add `--skip-db` to sync only the files.
+
+If no filestore data falls inside the window the sync fails rather than silently transferring nothing.
+
+#### Ownership and permissions after sync
+
+rsync is run without `-o`/`-g`, so ownership is not carried across: every file lands owned by whoever runs the **receiving** side - the SSH login user for a push, the invoking user for a pull or a local sync. Mascope's containers run as the deployment's own uid (1000 by default; see `MASCOPE_UID` in `server/backend/Dockerfile`), so if those two differ the app cannot read or write what was just synced.
+
+The sync detects this by comparing the receiving uid against the owner of the target env directory, and prints the exact command to fix it:
+
+```
+sudo chown -R 1000:1000 /srv/mascope/.runtime/env/default
+```
+
+Pass `--chown` to have the sync attempt that itself. It uses `sudo -n` (non-interactive) on the receiving machine and falls back to printing the command when passwordless sudo is not available - the sync is not failed either way.
+
+If the filestore is a symlink to a data volume (see [Maintaining a deployment](../maintaining.md) → "The filestore on a data volume"), chown its target too: `chown -R` does not follow symlinks. `--chown` resolves the link and covers both paths.
+
+File modes are forced to `755` for directories and `644` for files - the same bits the backend writes under the default umask, so a synced tree is indistinguishable from a natively written one. Note that this also applies on a **re-sync**: modes hand-tightened on an existing target filestore are reset to `755`/`644`.
+
 ### Windows (Cygwin)
 
 To use `env sync` on Windows, [Cygwin](https://www.cygwin.com/) must be installed into the default location `C:\cygwin64`. During installation, select the `rsync` and `openssh` packages.

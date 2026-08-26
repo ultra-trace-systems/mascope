@@ -17,18 +17,36 @@ Transfer dump lifecycle:
 - On success: the specific dump is deleted, then 7-day retention pruning runs.
 - On failure: the dump is kept for manual recovery.
 
+Filestore sync:
+- rsync transfers the whole env directory. A `from_date`/`to_date` window
+  narrows it to the matching acquisition-date directories inside the
+  filestore, via an rsync filter file built by `_filter.py`.
+- rsync carries neither modes nor ownership across on its own, so modes are
+  forced to `D755,F644` and the resulting ownership is checked afterwards by
+  `_ownership.py`.
+
 Windows note:
 - All SSH invocations wrap the remote command in single quotes to prevent
   PowerShell from splitting multi-word arguments before they reach remote bash.
 - rsync and scp use Cygwin binaries (C://cygwin64//bin//) on Windows.
 """
 
+import datetime
 import os
 import re
+import shlex
+import shutil
 import subprocess
+import tempfile
 from pathlib import Path, PurePosixPath
 
 from mascope_cli.cmd import lib
+from mascope_cli.cmd.env._filter import (
+    build_filter_rules,
+    select_date_dirs,
+    source_date_dir_names,
+)
+from mascope_cli.cmd.env._ownership import check_after_sync
 from mascope_cli.cmd.env._paths import (
     get_remote_mascope_path,
     parse_address,
@@ -70,6 +88,19 @@ def _scp(
 
 
 # --- Filestore sync ---
+
+
+def _on_windows() -> bool:
+    """
+    Whether the local machine is Windows.
+
+    Wrapped in a function so tests can drive both the Cygwin and the POSIX
+    branch of the rsync command construction.
+
+    :return: `True` on Windows.
+    :rtype: bool
+    """
+    return os.name == "nt"
 
 
 def _to_cygwin_path(path: str) -> str:
@@ -115,16 +146,77 @@ def _resolve_rsync_path(
     return runtime.path(".runtime", "env", f"{env_name}/")
 
 
+def _write_filter_file(
+    source_remote: str | None,
+    source_env: str,
+    from_date: datetime.date | None,
+    to_date: datetime.date | None,
+    control_args: list[str] | None = None,
+) -> Path:
+    """
+    Write the rsync filter rules for a date-filtered filestore transfer.
+
+    A merge file rather than repeated `--filter=` arguments: a multi-year
+    range produces hundreds of rules, and the joined command line is capped at
+    32767 characters on Windows. A merge file is O(1) in command-line length.
+
+    :param source_remote: Source remote identifier (`USER@HOST`) or `None`.
+    :type source_remote: str | None
+    :param source_env: Name of the source runtime environment.
+    :type source_env: str
+    :param from_date: Earliest acquisition date to sync, or `None`.
+    :type from_date: datetime.date | None
+    :param to_date: Latest acquisition date to sync, or `None`.
+    :type to_date: datetime.date | None
+    :param control_args: SSH multiplexing flags from `SshMux`.
+    :type control_args: list[str] | None
+    :return: Path to the rules file. Its parent directory is a temp directory
+             owned by the caller, who must remove it.
+    :rtype: Path
+    :raises RuntimeError: If no filestore data falls inside the range.
+    """
+    window = f"{from_date or 'beginning'} .. {to_date or 'end'}"
+    names = source_date_dir_names(source_remote, source_env, control_args)
+    selected = select_date_dirs(names, from_date, to_date)
+    runtime.logger.info(
+        f"Filestore date filter {window}: {len(selected)} of {len(names)} "
+        "source directories selected"
+    )
+    if not selected:
+        raise RuntimeError(
+            f"No filestore data matches the requested date range ({window}) — "
+            "nothing to sync."
+        )
+
+    filter_file = Path(tempfile.mkdtemp(prefix="mascope-sync-filter-")) / "rules.txt"
+    filter_file.write_text(
+        "\n".join(build_filter_rules(selected)) + "\n", encoding="utf-8"
+    )
+    return filter_file
+
+
 def sync_filestore(
     source: str,
     target: str,
     control_args: list[str] | None = None,
+    from_date: datetime.date | None = None,
+    to_date: datetime.date | None = None,
+    chown: bool = False,
 ) -> None:
     """
     Sync the filestore from source to target using rsync.
 
     Resolves both addresses to rsync paths, applies Cygwin path conversion
     on Windows, and runs the rsync command.
+
+    Modes are forced to `D755,F644` — the same bits the backend writes under
+    the default umask. Without `--perms` rsync masks new files by the
+    *receiving* login's umask and leaves existing files alone, so the result
+    would otherwise vary per host and per invocation.
+
+    Ownership is not carried across (no `-o`/`-g`); `check_after_sync`
+    reports, and optionally fixes, a receiving uid that does not match the
+    target env directory's owner.
 
     :param source: Source address (`ENV` or `USER@HOST:ENV`).
     :type source: str
@@ -136,7 +228,18 @@ def sync_filestore(
                          no additional password prompt. Pass `[]` or
                          `None` for a standalone connection.
     :type control_args: list[str] | None
-    :raises RuntimeError: If rsync exits non-zero.
+    :param from_date: Only sync filestore data acquired on or after this date.
+                      Filters on the `YYYY.MM.DD` acquisition-date directory,
+                      not on file modification time. `None` for no lower bound.
+    :type from_date: datetime.date | None
+    :param to_date: Only sync filestore data acquired on or before this date.
+                    `None` for no upper bound.
+    :type to_date: datetime.date | None
+    :param chown: Attempt to fix a target ownership mismatch via `sudo -n`
+                  instead of only reporting it.
+    :type chown: bool
+    :raises RuntimeError: If rsync exits non-zero, or if a date range was
+                          given that matches no filestore data.
     """
     source_remote, source_env = parse_address(source)
     target_remote, target_env = parse_address(target)
@@ -144,7 +247,7 @@ def sync_filestore(
     src = _resolve_rsync_path(source_remote, source_env, control_args)
     dest = _resolve_rsync_path(target_remote, target_env, control_args)
 
-    on_windows = os.name == "nt"
+    on_windows = _on_windows()
     ssh_bin = cygwin_bin("ssh") if on_windows else "ssh"
     rsync_bin = cygwin_bin("rsync") if on_windows else "rsync"
 
@@ -157,14 +260,37 @@ def sync_filestore(
     keepalive_opts = "-o ServerAliveInterval=30 -o ServerAliveCountMax=6"
     ssh_cmd = f"{ssh_bin} {identity_opts} {keepalive_opts} {mux_opts}".strip()
 
-    flags = "--progress --recursive --copy-links --keep-dirlinks --partial --timeout=60"
+    flags = (
+        "--progress --recursive --copy-links --keep-dirlinks --partial "
+        "--timeout=60 --perms --chmod=D755,F644"
+    )
+
+    filter_file = None
+    if from_date is not None or to_date is not None:
+        filter_file = _write_filter_file(
+            source_remote, source_env, from_date, to_date, control_args
+        )
+        filter_arg = (
+            _to_cygwin_path(str(filter_file)) if on_windows else str(filter_file)
+        )
+        # `lib.run` splits the command string with posix-mode shlex, which
+        # both requires the Cygwin forward-slash form and would eat the
+        # backslashes of a raw Windows path.
+        flags += " --filter " + shlex.quote(f"merge {filter_arg}")
+
     cmd = f"{rsync_bin} {flags} -e '{ssh_cmd}' {src} {dest}"
 
     runtime.logger.info(f"Syncing filestore: {src} → {dest}")
     runtime.logger.info(cmd)
-    result = lib.run(cmd)
+    try:
+        result = lib.run(cmd)
+    finally:
+        if filter_file is not None:
+            shutil.rmtree(filter_file.parent, ignore_errors=True)
     if result.returncode != 0:
         raise RuntimeError(f"Filestore sync failed (exit {result.returncode})")
+
+    check_after_sync(target_remote, target_env, control_args, chown=chown)
 
 
 # --- Remote SSH helpers ---
