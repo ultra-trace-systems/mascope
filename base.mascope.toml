@@ -48,15 +48,23 @@ filestreams = './filestreams'
 # has been (re-)paired - pairing binds the token to a device automatically;
 # tokens issued before the device registry have no binding.
 # require_device_tokens = false
-# Reference chemistry: the per-record licences peak assignment's database stage
-# is allowed to match against. Unset (the default) means no gating - every
-# active reference source is matched, which is what every deployment did before
-# this setting existed. Set it only to decline sources whose terms you have not
-# accepted (HMDB, for one, asks that commercial terms be verified first);
-# narrowing it shrinks what assignment can find, and nothing in the UI says so.
-# `mascope reference status` reports the effective set, and every run records it.
-# An empty list is refused - delete the line to allow every licence.
-# reference_licenses = ["public-domain", "CC0", "CC-BY-4.0"]
+# Reference chemistry: the per-record licence tags peak assignment's database
+# stage is allowed to match against. Unset (the default) means no gating -
+# every active reference source is matched, which is what every deployment did
+# before this setting existed. Set it only to decline sources whose terms you
+# have not accepted (HMDB, for one, asks that commercial terms be verified
+# first); narrowing it shrinks what assignment can find, and nothing in the UI
+# says so. The gate is an EXACT string match on the tag, so every tag left out
+# is dropped silently. All six: public-domain (comptox, pubchem), CC-BY-4.0
+# (chebi, lipidmaps), CC0 (coconut), open (norman), hmdb-attribution (hmdb),
+# custom (hand-authored rows with no licence of their own). `mascope reference
+# sources` / `status` print them too, on a monorepo checkout, and every run
+# records the set it ran under. An empty list is refused - delete the line to
+# allow every licence. The example below declines HMDB and keeps the other
+# five; write yours the same way round rather than allowlisting a few tags from
+# memory. A written-out list freezes the vocabulary, so re-check it after an
+# upgrade that adds a source - its tag will not be in your list.
+# reference_licenses = ["public-domain", "CC-BY-4.0", "CC0", "open", "custom"]
 # scripts
 run = "uv run mascope-backend run api-server"
 
