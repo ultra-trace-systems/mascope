@@ -173,7 +173,8 @@ def _write_filter_file(
     :return: Path to the rules file. Its parent directory is a temp directory
              owned by the caller, who must remove it.
     :rtype: Path
-    :raises RuntimeError: If no filestore data falls inside the range.
+    :raises RuntimeError: If the source filestore could not be listed, or if
+                          no filestore data falls inside the range.
     """
     window = f"{from_date or 'beginning'} .. {to_date or 'end'}"
     names = source_date_dir_names(source_remote, source_env, control_args)
@@ -238,8 +239,9 @@ def sync_filestore(
     :param chown: Attempt to fix a target ownership mismatch via `sudo -n`
                   instead of only reporting it.
     :type chown: bool
-    :raises RuntimeError: If rsync exits non-zero, or if a date range was
-                          given that matches no filestore data.
+    :raises RuntimeError: If rsync exits non-zero, if the source filestore
+                          could not be listed, or if a date range was given
+                          that matches no filestore data.
     """
     source_remote, source_env = parse_address(source)
     target_remote, target_env = parse_address(target)
