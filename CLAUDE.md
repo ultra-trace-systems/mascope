@@ -60,6 +60,17 @@ Run the suite that covers what you changed before finishing. Frontend unit tests
 the default place for new frontend tests; only reach for e2e when the behavior spans
 the real backend.
 
+**Concurrent backend runs from different checkouts are safe.** The suite's ephemeral
+databases are named `mascope_test_<env>_<category>`, where `<env>` is a label - `MASCOPE_ENV`
+if exported, else `wt_<checkout directory name>` - followed by a digest of the checkout's
+absolute path. The digest is what isolates: neither the directory name nor an exported
+`MASCOPE_ENV` is unique to a checkout on its own. Session teardown drops only what that run
+created. `MASCOPE_TEST_ENV` replaces the whole segment, digest included, so two runs can
+deliberately share one namespace - or a second run in the *same* checkout, which otherwise
+still collides, can be given its own. A long env is truncated with a digest to stay inside
+Postgres' 63-character limit, so read the real name off `psql -c "\l mascope_test_*"` rather
+than assembling it by hand.
+
 ### The e2e stack
 
 The hermetic e2e suite (`server/frontend/tests/e2e/`) targets the demo stack:

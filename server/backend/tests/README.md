@@ -191,9 +191,18 @@ libraries/
 
 ### Database testing
 
-- **Isolated PostgreSQL databases**: One ephemeral database per test category
-  - Created at session start: `mascope_test_unit_tests`, `mascope_test_integration_tests`
-  - Dropped at session end; schema is recreated fresh on every run via `Base.metadata.create_all`
+- **Isolated PostgreSQL databases**: One ephemeral database per test category, per checkout
+  - Created at session start: `mascope_test_<env>_unit_tests`, `mascope_test_<env>_integration_tests`
+  - `<env>` is a label - `MASCOPE_ENV` if exported, else `wt_<checkout directory name>` - plus a
+    digest of the checkout's absolute path, e.g. `wt_myworktree_a1b2c3`. The digest is what
+    isolates: an exported `MASCOPE_ENV` follows the shell rather than the checkout, and two
+    checkouts can share a directory name. `MASCOPE_TEST_ENV` replaces the whole segment, digest
+    included. See `scoped_db_name` in `test_utils.py`
+  - A long `<env>` is truncated and given a digest of its own, so the assembled name stays inside
+    Postgres' 63-character limit without two envs collapsing onto one database. Read the real
+    names off `psql -c "\l mascope_test_*"` rather than assembling them by hand
+  - Dropped at session end - only the ones that run created; schema is recreated fresh on every
+    run via `Base.metadata.create_all`
   - Requires the dev PostgreSQL container to be running locally (`mascope dev up`)
   - In CI, a `postgres:16-alpine` service container is started automatically by GitHub Actions
 - **Database patching**: `patch_db` fixture with `autouse=True` redirects `ASYNC_SESSION_MAKER`
@@ -232,10 +241,12 @@ libraries/
 
 - **Async factory-based database creation**: The root `conftest.py` provides a session-scoped
   `async_engine_factory` — an async fixture that yields an async callable. Each call creates an
-  ephemeral `mascope_test_{category}` PostgreSQL database (drop if exists → create → `create_all`),
-  tracked for teardown at session end. The factory must be awaited from an async session-scoped
-  fixture — using `asyncio.run()` would create a separate event loop, leaving asyncpg transports
-  bound to a dead loop and causing `InterfaceError` on first use.
+  ephemeral `mascope_test_{env}_{category}` PostgreSQL database (drop if exists → create →
+  `create_all`), tracked for teardown at session end. Teardown drops only the databases that run
+  created, so a concurrent run from another checkout is untouched. The factory must be awaited
+  from an async session-scoped fixture — using `asyncio.run()` would create a separate event
+  loop, leaving asyncpg transports bound to a dead loop and causing `InterfaceError` on first
+  use.
 - **Category-specific engines**: Unit and integration tests each call the factory with their
   category name (`"unit_tests"`, `"integration_tests"`) to get a fully isolated engine and database.
   System tests use real datasets and are not wired to the factory.
@@ -287,10 +298,14 @@ libraries/
 
 ### Migration test architecture
 
-- **Two ephemeral databases per session**: `mascope_test_migrations` (stairway)
-  and `mascope_test_migrations_drift` (drift). Both drop-create at session
-  start, drop on teardown. Independent so the two test files don't share
-  state and ordering between them is irrelevant.
+- **Three ephemeral databases**: `mascope_test_<env>_migrations` (stairway)
+  and `mascope_test_<env>_migrations_drift` (drift), both session-scoped, plus
+  the module-scoped `mascope_test_<env>_migrations_seeded` for data-migration
+  tests. Each drop-creates when its fixture is first used and drops on
+  teardown. Independent so the test files don't share state and ordering
+  between them is irrelevant. Named through the same `scoped_db_name` helper as
+  the async categories — these databases are dropped mid-chain by a concurrent
+  run otherwise.
 - **Sync engine, psycopg2 driver**: Alembic is a sync API.
   `tests/migrations/` does not consume `async_engine_factory` or `patch_db`;
   it builds its own sync engines. The driver matches
@@ -328,8 +343,40 @@ mascope dev up
 ```
 
 This starts the `mascope_dev_postgres` container at `localhost:5432`. The test factory creates
-and drops `mascope_test_unit_tests` and `mascope_test_integration_tests` databases against it.
-Password is read from `.runtime/secrets/postgres_password.txt` via `MASCOPE_PATH`.
+and drops `mascope_test_<env>_unit_tests` and `mascope_test_<env>_integration_tests` databases
+against it. Password is read from `.runtime/secrets/postgres_password.txt` via `MASCOPE_PATH`.
+
+Because the database names carry the checkout, running the backend suite from two checkouts at
+the same time against that one container is safe — each gets its own databases. Two runs in the
+*same* checkout still collide; give one of them `MASCOPE_TEST_ENV=<something>` if you need that.
+
+The **filesystem** is a separate matter: paths from `runtime.env.path(...)` — the filestore, the
+tus spool at `temp/tus` — resolve under the shared `MASCOPE_PATH`, not the checkout, so two
+concurrent runs see one directory. A test that writes a fixed-name file there will fight with
+the other run's teardown over it. Name such files per run (`gen_test_id()` from `test_utils`);
+`tests/integration/api/upload/test_tus_token_access.py` shows the pattern.
+
+#### Reaping orphaned test databases
+
+A run that is killed rather than finished (Ctrl-C, a timeout, `pkill`) leaves its databases
+behind. Because the names carry the checkout, only a later run *from that same checkout* drops
+them — once the worktree is gone, nothing does, and they accumulate on the shared server. They
+are inert, but list them occasionally:
+
+```bash
+psql -h localhost -U mascope_user -d postgres -c "\l mascope_test_*"
+```
+
+and drop the ones whose checkout no longer exists. **Do this with no suite running** — a live
+run's databases look identical, and dropping one reproduces exactly the failure this naming
+scheme exists to prevent:
+
+```bash
+psql -h localhost -U mascope_user -d postgres -c 'DROP DATABASE "mascope_test_wt_gone_a1b2c3_unit_tests"'
+```
+
+`mascope dev db drop --env` does not cover these: it targets `mascope_<env>` and validates the
+name against the env registry, which test envs are not in.
 
 ### Using pytest directly 🐍
 

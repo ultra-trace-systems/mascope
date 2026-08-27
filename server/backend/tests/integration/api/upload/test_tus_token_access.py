@@ -31,6 +31,7 @@ import pytest
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy import delete
+from test_utils import gen_test_id
 
 from mascope_backend.api.controllers.sample.files import sample_files_controller
 from mascope_backend.api.routes.sample.files import sample_files_routes
@@ -39,6 +40,30 @@ from mascope_backend.db import AccessToken
 
 
 TUS_URL = "/api/sample/files/upload/tus/"
+
+#: Distinguishes this run's scratch partials from a concurrent run's.
+_RUN_ID = gen_test_id(8)
+
+
+def _spool_path(name: str) -> str:
+    """Path to a scratch partial in the tus spool, unique to this run.
+
+    The spool is `runtime.env.path("temp", "tus")` - under the shared
+    `MASCOPE_PATH`, not the checkout - so two backend runs at once see one
+    directory. Under a fixed name the two sweep tests below fight over it: one
+    run's `finally` deletes the partial the other is still asserting on, and the
+    failure surfaces in whichever run got there second. The test databases are
+    scoped per checkout (see the naming note in `test_utils.py`); this is the
+    same problem one layer up, on the filesystem.
+
+    :param name: Role of the partial within a test (`stale`, `fresh`, `live`)
+    :type name: str
+    :return: Absolute path inside the tus spool
+    :rtype: str
+    """
+    return os.path.join(
+        sample_files_routes._tus_files_dir, f"sweep-test-{_RUN_ID}-{name}"
+    )
 
 
 @pytest.fixture(autouse=True)
@@ -318,10 +343,9 @@ async def test_abandoned_partials_are_swept_at_creation(file_agent_token):
     nothing else reaps temp/tus between restarts, so on a long-lived server
     they accumulate until the free-space floor refuses everything.
     """
-    spool = sample_files_routes._tus_files_dir
-    stale = os.path.join(spool, "sweep-test-stale")
+    stale = _spool_path("stale")
     stale_info = f"{stale}.info"
-    fresh = os.path.join(spool, "sweep-test-fresh")
+    fresh = _spool_path("fresh")
     try:
         for path in (stale, stale_info, fresh):
             with open(path, "wb") as file:
@@ -352,8 +376,7 @@ async def test_a_live_partial_is_not_swept(file_agent_token):
     tuspyserver records, either of which would reap a slow multi-hour upload
     out from under a live client.
     """
-    spool = sample_files_routes._tus_files_dir
-    live = os.path.join(spool, "sweep-test-live")
+    live = _spool_path("live")
     try:
         with open(live, "wb") as file:
             file.write(b"partial")

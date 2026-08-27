@@ -559,6 +559,24 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
   unchanged. Stored assignments are corrected the next time peak assignment
   runs.
 
+- Two backend test suites can now run at once on one machine without
+  sabotaging each other. The ephemeral test databases were named
+  `mascope_test_<category>` with nothing identifying the checkout, and each
+  suite starts by dropping the database it is about to create - so a second
+  run deleted the first one's schema mid-test, and the failures that surfaced
+  were unrelated-looking asyncpg errors rather than anything pointing at the
+  cause. The names now carry an env segment: a readable label - `MASCOPE_ENV`
+  if exported, else the checkout's own directory name - plus a digest of the
+  checkout's absolute path, which is what actually isolates, since neither the
+  label nor an exported variable identifies a checkout on its own. This matches
+  how `mascope dev run --instance` already namespaces databases, filestores and
+  ports. `MASCOPE_TEST_ENV` overrides the segment outright for two runs that
+  should share one namespace, or two in the same checkout that should not.
+  Session teardown drops only the databases that run created. Two upload tests
+  planted fixed-name scratch files in the tus spool, which lives under the
+  shared `MASCOPE_PATH` rather than the checkout, and so deleted each other's
+  fixtures across concurrent runs; they now name those files per run.
+
 - A raw file whose own m/z spacing is coarser than the peak fitter's window no
   longer fails to process. The instrument-function fit derives a minimum peak
   separation in samples from `dmz / median(diff(mz))`; on a coarse spectrum
