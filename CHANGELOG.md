@@ -525,8 +525,9 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
   preselect whichever matching mode came back first, which for half of them
   was the mode of the polarity the user had not chosen, and it now resolves
   against the chosen polarity and re-resolves when that choice changes; and
-  two overlapping tokens matching one filename now leave the choice to the
-  user instead of guessing.
+  two overlapping tokens matching one filename used to refuse the file
+  outright, and now leave the choice to the user, saying which case it is
+  rather than blaming the filename for carrying no token.
 
 - A bulk upload run no longer makes the server stop answering. Every request
   from an agent, the file converter or the SDK is checked against its access

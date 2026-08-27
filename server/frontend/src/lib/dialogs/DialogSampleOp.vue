@@ -223,6 +223,9 @@ const ionizationHint = computed(() => {
   if (!ionizationModeOptions.value.length) {
     return 'No ionization mode configured for this polarity'
   }
+  if (ionization.value.reason === 'ambiguous') {
+    return 'The filename matches two mode tokens - select one'
+  }
   if (!ionization.value.defaultId) return 'No mode token in the filename - select one'
   return null
 })
@@ -249,6 +252,13 @@ const ionizationTooltip = computed(() => {
     return (
       `No ionization mode is configured for ${polarity} polarity. Add one in ` +
       'the ionization settings before processing this file.'
+    )
+  }
+  if (ionization.value.reason === 'ambiguous') {
+    return (
+      'The filename carries the tokens of two configured ionization modes, ' +
+      'so neither can be preselected without guessing which one the file was ' +
+      'acquired in. Select it yourself.'
     )
   }
   return (

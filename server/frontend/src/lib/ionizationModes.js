@@ -10,6 +10,11 @@
  * costs the user a preselected default, not the ability to process the file.
  */
 
+//: Why no mode was preselected, indexed by the number of tokens that matched
+//: (two or more are all the same case). Only the count differs; the field ends
+//: up empty either way, but the two say opposite things about the filename.
+const RESOLUTION_REASONS = ['no-token', 'resolved', 'ambiguous']
+
 /**
  * Derive the ionization mode dropdown for a file being processed.
  *
@@ -19,9 +24,12 @@
  * @param {string} args.filename - Filename of the raw file being processed.
  * @param {string|null} args.polarity - Polarity chosen for the sample, `'+'` or
  *   `'-'`; a file whose polarity is still unknown has nothing to offer.
- * @returns {{options: Array<{label: string, value: string}>, defaultId: string|null}}
+ * @returns {{options: Array<{label: string, value: string}>, defaultId: string|null,
+ *   reason: 'resolved'|'no-token'|'ambiguous'}}
  *   Every mode in that polarity, sorted by name, plus the id to preselect -
- *   null when the filename matches no token, or more than one.
+ *   null when the filename matches no token, or more than one. `reason` says
+ *   which of those two it was, so the caller can explain the empty field
+ *   truthfully instead of blaming a filename that does carry a token.
  */
 export function ionizationModeChoices({ modes = [], filename = '', polarity = null } = {}) {
   const inPolarity = polarity
@@ -41,6 +49,7 @@ export function ionizationModeChoices({ modes = [], filename = '', polarity = nu
       })),
     // Overlapping tokens are the one case left to the user: either match would
     // be a guess, and guessing wrong silently mismatches the whole sample.
-    defaultId: matched.length === 1 ? matched[0].ionization_mode_id : null
+    defaultId: matched.length === 1 ? matched[0].ionization_mode_id : null,
+    reason: RESOLUTION_REASONS[Math.min(matched.length, 2)]
   }
 }

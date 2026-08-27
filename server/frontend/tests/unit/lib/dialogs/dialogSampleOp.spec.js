@@ -141,6 +141,16 @@ describe('DialogSampleOp ionization mode', () => {
     expect(wrapper.text()).toContain('No ionization mode configured for this polarity')
   })
 
+  it('blames the ambiguity, not the filename, when two tokens match', async () => {
+    const wrapper = await openDialog(acquisition({ filename: 'inst_NH4_PTR_001.raw' }))
+    const select = ionizationSelect(wrapper)
+    expect(select.props('modelValue')).toBeNull()
+    expect(saveButton(wrapper).props('disabled')).toBe(true)
+    // The filename carries both tokens, so the no-token wording would be a lie.
+    expect(select.props('placeholder')).toContain('matches two mode tokens')
+    expect(wrapper.text()).not.toContain('No mode token in the filename')
+  })
+
   it('re-resolves the mode when a mixed-polarity file switches sides', async () => {
     const wrapper = await openDialog(
       acquisition({ filename: 'inst_NH4_NO3_001.raw', polarity: '+-' })
