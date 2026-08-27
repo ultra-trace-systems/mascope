@@ -70,6 +70,44 @@ def _resolve_cookie_scoped(mode: RuntimeMode) -> bool:
     return mode != "prod"
 
 
+#: How long a per-env session cookie lives. See _resolve_cookie_max_age.
+_SCOPED_COOKIE_MAX_AGE_SECONDS = 24 * 60 * 60
+
+
+def _resolve_cookie_max_age(mode: RuntimeMode, jwt_lifetime: int) -> int:
+    """
+    How long the session cookie lives.
+
+    An unscoped cookie matches the JWT's lifetime, so the browser stops sending
+    it exactly when the token it carries dies. That is the prod case, and it is
+    right there: one deployment, one hostname, one cookie.
+
+    A scoped cookie is capped well below that, because scoping trades one
+    cookie per host for one per env. Nothing ever removes an entry - logout
+    deletes only the cookie of the instance you logged out of, and
+    ``mascope instance rm`` cannot reach a browser - and cookies are not
+    port-scoped in the sending direction either, so every dead env's cookie
+    still rides on every request to every instance on the host. Dev envs follow
+    worktrees and are typically short-lived, so at a week each their cookies
+    outlive them many times over. A day caps the pile at about a day's worth.
+
+    Keyed on whether the name is scoped rather than on the mode directly: the
+    accumulation is caused by the scoping, so forcing that either way with
+    ``MASCOPE_COOKIE_SCOPED`` should carry the lifetime with it.
+
+    Shorter than the JWT is the safe direction - the browser stops presenting a
+    token that is still valid, so the cost is signing in again. Longer would
+    mean presenting dead tokens and collecting 401s.
+
+    :param mode: The runtime mode ("dev" or "prod").
+    :param jwt_lifetime: ``JWT_EXPIRATION_SECONDS``, the unscoped lifetime.
+    :return: The cookie's ``Max-Age`` in seconds.
+    """
+    if not _resolve_cookie_scoped(mode):
+        return jwt_lifetime
+    return _SCOPED_COOKIE_MAX_AGE_SECONDS
+
+
 def _env_cookie_suffix(env: str | None) -> str:
     """
     A cookie-safe suffix that is unique to ``env``.
@@ -176,8 +214,12 @@ class AuthConfig(BaseModel):
     COOKIE_NAME: str = _resolve_cookie_name(
         "mascope_auth", runtime.mode, runtime.env.name
     )
-    # Lifetime of the cookie - 7 days in seconds (matches JWT expiration)
-    COOKIE_MAX_AGE_SECONDS: int = 7 * 24 * 60 * 60
+    # Lifetime of the cookie. Matches the JWT in prod; one day in dev, where
+    # scoping the name means one cookie per env rather than one per host (see
+    # _resolve_cookie_max_age).
+    COOKIE_MAX_AGE_SECONDS: int = _resolve_cookie_max_age(
+        runtime.mode, JWT_EXPIRATION_SECONDS
+    )
     COOKIE_SECURE: bool = (
         _resolve_cookie_secure()
     )  # send cookies only over HTTPS; prod default, override via MASCOPE_COOKIE_SECURE

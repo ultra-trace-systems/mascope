@@ -628,11 +628,12 @@ Notes:
   `mascope_auth_wt-my-feature` - so two instances open in one browser keep separate logins. Prod
   keeps the bare `mascope_auth`. The backend logs the name it resolved (`Session cookie: ...`)
   at startup, which is the quickest way to tell whether an instance is scoped.
-- That means one cookie per env, and cookies are not port-scoped in the sending direction
-  either: every env you have ever run leaves a cookie on `localhost` for the session lifetime
-  (7 days), and all of them ride along on every request to every instance. Removing an instance
-  cannot reach the browser, so after a long run of short-lived worktrees clear the site data for
-  `localhost` rather than letting the `Cookie` header grow toward the server's header limit.
+- That means one cookie per env rather than one per host, and cookies are not port-scoped in the
+  sending direction either, so every env's cookie rides along on every request to every instance.
+  Nothing removes a dead env's cookie - logging out clears only the instance you logged out of,
+  and `mascope instance rm` cannot reach a browser - so the dev cookie expires after a day
+  instead of the week a prod session gets. Envs follow worktrees and are short-lived; a day caps
+  the jar at about a day's worth of them. The cost is signing in again the next morning.
 - Mode is what decides the scoping, and it is read from the shared `.runtime/state.json`, which
   any `mascope prod ...` invocation rewrites. If an instance comes up unscoped, that is why -
   `MASCOPE_COOKIE_SCOPED=1` forces the env suffix on regardless of mode (and `=0` forces it off).
