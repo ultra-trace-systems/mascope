@@ -824,36 +824,34 @@ async def sample_item_export_peaks(
 
     await send_progress_user_notification(notification, 0.1)
 
-    try:
-        filename = sample.filename
-        instrument_type = get_instrument_type(filename)
+    # Nothing here is caught on the way out: an exception is logged with its
+    # traceback by the exception pipeline, and reported to the user by the
+    # background-task decorator, so there is nothing for this level to add.
+    filename = sample.filename
+    instrument_type = get_instrument_type(filename)
 
-        await send_progress_user_notification(notification, 0.1)
+    await send_progress_user_notification(notification, 0.1)
 
-        if instrument_type == "orbi":
-            peak_data_type = "peak_heights"
-        elif instrument_type == "tof":
-            peak_data_type = "peak_areas"
-        else:
-            # get_instrument_type returns None when it cannot resolve one, and
-            # two independent ifs left peak_data_type unbound for that - an
-            # UnboundLocalError in place of a message naming the file.
-            raise ValueError(f"Unknown instrument type: {instrument_type}")
+    if instrument_type == "orbi":
+        peak_data_type = "peak_heights"
+    elif instrument_type == "tof":
+        peak_data_type = "peak_areas"
+    else:
+        # get_instrument_type returns None when it cannot resolve one, and two
+        # independent ifs left peak_data_type unbound for that - an
+        # UnboundLocalError in place of a message naming the file.
+        raise ValueError(f"Unknown instrument type: {instrument_type}")
 
-        # dropna returns a lazy selection, so without the .compute() inside
-        # the thread the peak matrix would still be read on the loop - twice,
-        # once here and again at the .values below.
-        def _load_peak_data():
-            sample_file = m_io.load_peak_data(filename)
-            return sample_file[peak_data_type].dropna(dim="mz", how="all").compute()
+    # dropna returns a lazy selection, so without the .compute() inside the
+    # thread the peak matrix would still be read on the loop - twice, once
+    # here and again at the .values below.
+    def _load_peak_data():
+        sample_file = m_io.load_peak_data(filename)
+        return sample_file[peak_data_type].dropna(dim="mz", how="all").compute()
 
-        sample_peak_data = await asyncio.to_thread(_load_peak_data)
+    sample_peak_data = await asyncio.to_thread(_load_peak_data)
 
-        await send_progress_user_notification(notification, 0.8)
-    except Exception as e:
-        # No log here: the re-raised exception is logged with its traceback by
-        # the exception pipeline
-        raise e
+    await send_progress_user_notification(notification, 0.8)
 
     # File creation timestamp
     base_datetime = sample.datetime
