@@ -9,9 +9,10 @@ import { runtime } from '@/lib/runtime'
  * the peak ledger and composition search in the Sample tab, legacy match scores
  * in the search results, and no assignment views.
  *
- * Read at module load from the config baked into the bundle, so flipping the
- * flag needs a frontend rebuild (prod) or a dev-server restart, not just a
- * container restart.
+ * Read once at module load from `runtime`, which prefers the config the
+ * container published at start over the copy baked into the bundle (see
+ * `@/lib/runtime`). Flipping the flag is therefore a stack restart, and the
+ * value the UI gates on is the one the backend is actually enforcing.
  *
  * A missing key reads as OFF here, while the backend's own fallback is on. The
  * asymmetry is deliberate and effectively unreachable - `peak_assignment` is a
@@ -28,8 +29,8 @@ export const peakAssignmentEnabled = Boolean(runtime?.meta?.peak_assignment)
  * advertises it as `Tus-Max-Size`; the uploader sizes its own client-side
  * restriction from the same value so the browser never refuses a file the
  * server would take (it used to hard-cap at 2.5 GiB, below even the default).
- * The value is baked in at build time like `peak_assignment`, so raising the
- * cap on a deployment needs a frontend rebuild, not just a backend restart.
+ * Read from the same published runtime as `peak_assignment`, so raising the cap
+ * on a deployment takes a stack restart and both sides agree on the new value.
  * Falls back to the 5 GB default when no runtime is present.
  */
 export const maxUploadBytes = (Number(runtime?.meta?.tus_max_upload_gb) || 5) * 1024 ** 3

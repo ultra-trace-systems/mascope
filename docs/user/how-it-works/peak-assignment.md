@@ -9,14 +9,14 @@ Each peak gets exactly one assignment per run, together with a **fit score** and
 !!! note "Peak assignment is on by default"
 
     Targeted matching keeps working exactly as before either way — peak assignment is
-    an addition, not a replacement. With it on, a sample is assigned against the known
-    target library as it is processed, the assignment views appear, and the composition
-    search reports assignment confidence.
+    an addition, not a replacement. Target collections, ion tables, the batch overview
+    and the Match tab are all unaffected. With it on, a sample is assigned against the
+    known target library as it is processed, the assignment views appear, and the
+    composition search reports assignment confidence.
 
     A deployment that would rather not assign at ingest can switch it off: set
     `peak_assignment = false` under `[meta]` in the environment's config toml (or export
-    `MASCOPE_PEAK_ASSIGNMENT=0`) and restart the stack — on a production deployment the
-    frontend bakes the flag in at build time, so also rebuild the frontend image. With
+    `MASCOPE_PEAK_ASSIGNMENT=0`) and restart the stack — that is the whole procedure. With
     it off nothing is assigned when a sample is processed, the composition search
     reports the familiar match score, the Sample tab keeps its peak ledger, and the API
     refuses to launch assignment runs (the write routes return 403; reads stay open, so

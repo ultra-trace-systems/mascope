@@ -295,22 +295,37 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
   untargeted search stays something you launch deliberately), the assignment
   views are present, and the `/api/peak-assignments` write routes accept work
   instead of answering 403. Targeted matching is unchanged: assignment is an
-  addition, not a replacement, and the target collections, ion tables and batch
-  overview behave exactly as before.
+  addition, not a replacement. The target collections, ion tables and batch
+  overview behave exactly as before, and the *Match* tab stays where it is -
+  with the match-parameter drawer and *Rate Match* it carries, which the Sample
+  tab does not. The two views answer different questions and are meant to be
+  used together: Match reads one target ion across the batch, the Sample tab
+  reads every peak of one sample.
   **What an upgrade changes for you.** Processing a sample now also writes an
   assignment run and one row per detected peak, so it takes a little longer and
   uses more database space. A host provisioned with `tooling/ubuntu.sh` already
   runs the nightly retention timer that reclaims it (keeping the newest runs per
   sample); a deployment set up another way should schedule
-  `prune_peak_assignment_runs` itself - see `docs/maintaining.md`. Samples processed before the upgrade are not assigned
-  retroactively. The Sample tab's spectrum and peak inspector take over the
-  duties of the *Match* tab, which is not shown while assignment is on. To stop it,
+  `prune_peak_assignment_runs` itself - see `docs/maintaining.md`. Samples
+  processed before the upgrade are not assigned retroactively. To stop it,
   set `peak_assignment = false` under `[meta]` in the env config (or
-  `MASCOPE_PEAK_ASSIGNMENT=0`) and restart: that ends the ingest work and closes
-  the write routes again. The assignment *views* are baked into the frontend
-  image at build time, so on a deployment running published images they stay
-  visible until you run an image built with the flag off - see
-  `docs/maintaining.md`.
+  `MASCOPE_PEAK_ASSIGNMENT=0`) and restart: that ends the ingest work, closes the
+  write routes, and removes the assignment views. One restart is the whole
+  procedure now - see the entry below.
+
+- **The web app reads the config the server is running on, not the one its image
+  was built with.** `[meta]` reached the frontend only as a JSON blob compiled
+  into the bundle at image build time. That is the wrong moment. A deployment
+  provisioned with `mascope init` keeps its own config layers, which no update
+  rewrites, while its images come from the registry built against the
+  repository's - so the two could be different revisions of the same file, and
+  the UI would offer features the backend answered 403 for. The frontend
+  container is now handed the resolved runtime and publishes it to the browser
+  at start, so both halves of every `[meta]` flag always agree. Flipping
+  `peak_assignment` or raising `tus_max_upload_gb` is a stack restart; it no
+  longer needs a frontend rebuild, and nothing needs reconciling by hand after
+  the upgrade. A stack that passes no runtime (the demo compose) keeps using the
+  baked-in copy exactly as before.
 
 - Target compound formulas are now enforced by the database, not just by the
   API. `validate_compound_formula` already refused a bare numeric mass such as

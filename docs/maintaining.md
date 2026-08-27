@@ -625,30 +625,34 @@ place. Targeted matching is unaffected - assignment is an addition, not a
 replacement - and samples processed before the upgrade are not assigned
 retroactively; run assignment explicitly from the UI for those.
 
-To stop the work it does, switch the backend off - this is what removes the
-ingest cost, and it works on a deployment running published images. Set it in
-the env's config toml:
+To switch it off, set it in the env's config toml:
 
 ```toml
 [meta]
 peak_assignment = false
 ```
 
-and restart the stack, or set `MASCOPE_PEAK_ASSIGNMENT=0` in `/etc/environment`
-to flip the backend without editing the toml (remember host env vars apply at
-login - start the stack from a fresh shell). Either way samples stop being
-assigned at ingest and the write routes return 403 again.
+and restart the stack (`mascope prod up`), or set `MASCOPE_PEAK_ASSIGNMENT=0` in
+`/etc/environment` to flip the backend without editing the toml (remember host
+env vars apply at login - start the stack from a fresh shell). Samples stop
+being assigned at ingest, the write routes return 403 again, and the assignment
+views disappear from the UI.
 
-**The UI is a separate matter, and needs an image.** The frontend bakes the flag
-into its bundle at image build time - nothing injects it at container start - so
-a deployment running published images keeps showing the assignment views after
-the backend is switched off, and its *Assign peaks* button then fails with the
-403 rather than disappearing. Removing those views requires an image built with
-the flag off, which means building from a source checkout
-(`mascope prod up --build`, whose compose build context is the repository); the
-config layers written by `mascope init` alone are not enough to build from. If
-you only need the assignment work to stop, the backend switch above is the whole
-answer and the leftover views are cosmetic.
+!!! note "One switch, both halves - no image rebuild"
+
+    Both the backend and the web app read this value at **start**, from the same
+    place: `mascope prod up` hands the frontend container the runtime config it
+    resolved, and the container publishes it to the browser
+    (`/runtime-config.js`). A restart is therefore the whole procedure, on
+    published images as much as on a source build.
+
+    Older releases baked the flag into the frontend bundle at image build time.
+    That made switching it off a two-step affair - and worse, it meant a
+    deployment whose config layers are its own (`mascope init`, no source
+    checkout) could run an image built against *different* config than its
+    backend, showing assignment views whose *Assign peaks* button answered 403.
+    If you are on such a release, upgrading is what fixes it; there is nothing
+    to reconcile by hand afterwards.
 
 A server with it off is unaffected by the feature: samples process as they did
 before it landed, the UI is unchanged, and the `/api/peak-assignments` write
@@ -838,11 +842,11 @@ Clients see the cap as the standard `Tus-Max-Size` header; an upload declared
 larger than the cap is refused up front with HTTP 413.
 
 The web uploader sizes its own client-side limit from the same setting, so
-raising the cap lifts it for browser uploads too - but the frontend bakes the
-value in at build time (like `peak_assignment`). A deployment running a
-*pulled* release image carries the default, so lifting the browser cap needs
-`mascope prod build`; the SDK and instrument-agent paths pick the new cap up on
-a backend restart alone.
+raising the cap lifts it for browser uploads too, on a stack restart and
+nothing more - the frontend container publishes the runtime config it was
+started with, on a pulled release image as much as on a local build (like
+`peak_assignment`). The SDK and instrument-agent paths pick the new cap up on
+the same restart.
 
 The setting used to live under `[backend]`. A config toml that still has it
 there keeps working - it is promoted to `[meta]` at startup with a warning -

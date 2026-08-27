@@ -211,6 +211,12 @@ services:
         condition: service_healthy
     environment:
       - MASCOPE_TIMEZONE
+      # Also a build arg above, but passed at run time as well: the entrypoint
+      # publishes it as /runtime-config.js so the app reads the config THIS
+      # stack is running on, not whatever the image was built against. Without
+      # it a deployment whose config layers are its own would render a UI the
+      # backend refuses. See server/frontend/docker-entrypoint.sh.
+      - MASCOPE_RUNTIME
     secrets:
       - ssl_certificate
       - ssl_secret_key
