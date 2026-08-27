@@ -2,6 +2,7 @@
 Core authentication configuration including JWT, cookies, and access tokens settings.
 """
 
+import hashlib
 import os
 import re
 
@@ -18,7 +19,7 @@ from mascope_backend.runtime import runtime
 # files. The derivation lives in mascope_backend.service_token - a leaf module
 # the file-converter process can import without the backend app's import graph.
 from mascope_backend.service_token import derive_token_secret as _derive_token_secret
-from mascope_runtime import RuntimeMode
+from mascope_runtime import RuntimeMode, is_valid_env_name
 
 
 def _resolve_cookie_secure() -> bool:
@@ -39,7 +40,67 @@ def _resolve_cookie_secure() -> bool:
     return runtime.mode == "prod"
 
 
-def _resolve_cookie_name(base: str, mode: RuntimeMode, env: str) -> str:
+#: Suffix for a runtime whose env name is missing entirely. Anything is better
+#: than falling back to the bare name here: that is the prod name, and it is
+#: precisely the shared one every other unscoped stack - including a local demo
+#: stack, which runs in prod mode - already answers to.
+_UNKNOWN_ENV_SUFFIX = "unknown"
+
+
+def _resolve_cookie_scoped(mode: RuntimeMode) -> bool:
+    """
+    Whether cookie names carry the runtime env.
+
+    Defaults to ``True`` in dev and ``False`` in prod. Override with the
+    ``MASCOPE_COOKIE_SCOPED`` env var, which exists because ``mode`` is a
+    weaker signal than it looks: it is read from the shared
+    ``.runtime/state.json``, with no env var of its own, and every
+    ``mascope prod ...`` invocation writes ``mode.override`` there and never
+    clears it. A dev backend that starts after one of those reads "prod",
+    silently drops back to the shared cookie name, and the sessions start
+    clobbering each other again with nothing in the log to say why. The
+    override is the way out, and mirrors ``MASCOPE_COOKIE_SECURE`` above.
+
+    :param mode: The runtime mode ("dev" or "prod").
+    :return: ``True`` to append the env to the cookie names.
+    """
+    override = os.environ.get("MASCOPE_COOKIE_SCOPED")
+    if override is not None:
+        return override.strip().lower() in ("1", "true", "yes", "on")
+    return mode != "prod"
+
+
+def _env_cookie_suffix(env: str | None) -> str:
+    """
+    A cookie-safe suffix that is unique to ``env``.
+
+    A cookie name is an RFC 6265 token, which excludes separators such as "/"
+    and " ". Envs created through the CLI already match
+    ``mascope_runtime.ENV_NAME_PATTERN`` and are used verbatim, which is what
+    keeps the common name readable (``mascope_auth_wt-my-feature``).
+
+    ``MASCOPE_ENV`` is taken as given, though, so anything else has to be
+    encoded. Folding the offending characters onto "_" is not enough on its
+    own: it is not injective, so "wt a" and "wt_a" would land on one name and
+    re-create exactly the collision this scoping exists to remove - silently,
+    since nothing downstream can tell two envs apart once their cookies match.
+    The folded form is therefore disambiguated with a digest of the raw env.
+    ``blake2b`` rather than ``hash()``: this has to agree across processes and
+    restarts, and ``hash()`` is salted per process.
+
+    :param env: The active runtime env, e.g. "default" or "wt-my-feature".
+    :return: A non-empty RFC 6265 token unique to ``env``.
+    """
+    if is_valid_env_name(env):
+        return env
+    if not env:
+        return _UNKNOWN_ENV_SUFFIX
+    folded = re.sub(r"[^A-Za-z0-9_-]+", "_", env)
+    digest = hashlib.blake2b(env.encode("utf-8"), digest_size=4).hexdigest()
+    return f"{folded}-{digest}"
+
+
+def _resolve_cookie_name(base: str, mode: RuntimeMode, env: str | None) -> str:
     """
     Scope a cookie name to the runtime env, so dev instances on one hostname
     stop clobbering each other's sessions.
@@ -54,8 +115,8 @@ def _resolve_cookie_name(base: str, mode: RuntimeMode, env: str) -> str:
     the env name gives every instance a cookie of its own.
 
     Prod keeps the bare name: renaming it there would sign every user out on
-    upgrade, and a deployment owns its hostname anyway. Mode-dependent like
-    ``_resolve_cookie_secure`` above.
+    upgrade, and a deployment owns its hostname anyway. See
+    ``_resolve_cookie_scoped`` for how that is decided and how to override it.
 
     Note that this prevents the collision rather than tolerating it. Should two
     cookies of one name ever reach the server anyway, the last one in the header
@@ -70,15 +131,9 @@ def _resolve_cookie_name(base: str, mode: RuntimeMode, env: str) -> str:
     :param env: The active runtime env, e.g. "default" or "wt-my-feature".
     :return: The cookie name to set and read.
     """
-    if mode == "prod":
+    if not _resolve_cookie_scoped(mode):
         return base
-    # A cookie name is an RFC 6265 token, which excludes separators such as
-    # "/" and " ". Envs created through the CLI are already token-safe
-    # (``[A-Za-z0-9_-]+``), but MASCOPE_ENV is taken as given, so fold
-    # anything outside that set onto "_" rather than emitting a name a
-    # browser would reject.
-    suffix = re.sub(r"[^A-Za-z0-9_-]+", "_", env or "")
-    return f"{base}_{suffix}" if suffix else base
+    return f"{base}_{_env_cookie_suffix(env)}"
 
 
 # HS256 signs with the raw secret bytes; RFC 7518 requires a key at least as long
@@ -179,3 +234,12 @@ class AuthConfig(BaseModel):
 
 
 auth_settings = AuthConfig()
+
+
+# State the resolved name once at startup. Whether it is scoped depends on
+# runtime.mode, which comes from a state file any `mascope prod ...` invocation
+# rewrites (see _resolve_cookie_scoped), so an instance that fell back to the
+# shared name is otherwise invisible until two stacks begin signing each other
+# out - the failure this scoping exists to prevent, and one that looks like a
+# successful login followed by a 401 rather than like a configuration problem.
+runtime.logger.info(f"Session cookie: {auth_settings.COOKIE_NAME}")

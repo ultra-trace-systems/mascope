@@ -473,7 +473,9 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
   the runtime env in their names (`mascope_auth_wt-my-feature`), so each
   instance keeps its own session. Production is unchanged - the name stays
   exactly `mascope_auth`, so upgrading signs nobody out - and a dev browser
-  holding the old cookie just logs in once more.
+  holding the old cookie just logs in once more. The resolved name is logged at
+  startup, and `MASCOPE_COOKIE_SCOPED` forces the suffix on or off for a host
+  whose recorded runtime mode does not match how it is actually being used.
 
 - A raw file whose own m/z spacing is coarser than the peak fitter's window no
   longer fails to process. The instrument-function fit derives a minimum peak
