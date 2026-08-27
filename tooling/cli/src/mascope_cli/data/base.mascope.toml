@@ -16,9 +16,9 @@ filestore = './filestore'
 # either way - the two coexist. Set this to false to keep the pre-assignment
 # behaviour: ingest assigns nothing, the assignment views are hidden, and the
 # write routes return 403 (the read routes stay open, so ledgers written while
-# it was on remain inspectable). The frontend bakes this flag in at build
-# time: after changing it, rebuild the frontend image (prod) or restart the
-# dev server - a container restart alone does not flip the UI.
+# it was on remain inspectable). Both sides read this same value at start, so
+# changing it takes a stack restart and nothing more (prod restarts the
+# frontend container too; in dev, restart the dev server).
 # Ledger rows are reclaimed with the prune_peak_assignment_runs script; a host
 # provisioned with tooling/ubuntu.sh runs it nightly on a timer, and any other
 # deployment should schedule it itself (docs/maintaining.md).
@@ -26,9 +26,8 @@ peak_assignment = true
 # Uploads: size cap (GB) for a single resumable (tus) upload, enforced by the
 # backend and used by the web uploader to size its own client-side limit (see
 # docs/maintaining.md). It lives here rather than in [backend] because both
-# sides read it; the frontend bakes it in at build time, so after changing it
-# rebuild the frontend image (prod) or restart the dev server. A value still
-# under [backend] keeps working and is promoted with a warning.
+# sides read it, both at start, so changing it takes a stack restart. A value
+# still under [backend] keeps working and is promoted with a warning.
 # tus_max_upload_gb = 5
 
 [cli]

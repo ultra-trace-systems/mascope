@@ -678,12 +678,21 @@ The configuration includes:
 
 `[meta]` is also where cross-cutting feature flags live, because it is the one section
 serialized to **both** sides: the backend reads it from `runtime.meta`, and the frontend
-gets it in `MASCOPE_RUNTIME` at build time (`src/lib/runtime.js`). A flag added anywhere
+gets it in `MASCOPE_RUNTIME` (`src/lib/runtime.js`). A flag added anywhere
 else can only gate one half of a feature.
+
+Both sides read it at **start**, from the same resolved config. `MASCOPE_RUNTIME` is
+passed to the frontend container as an environment variable as well as a build arg;
+`docker-entrypoint.sh` publishes it as `/runtime-config.js`, and `runtime.js` prefers
+that over the copy compiled into the bundle. Baking alone was not enough: a deployment
+whose config layers are its own (`mascope init`, no source checkout) never rewrites
+them, while its images come from the registry built against the repo's - so bundle and
+backend could disagree, and the UI would offer what the API refused. Flipping a flag is
+now a stack restart, not an image rebuild.
 
 | Flag | Default | What it gates |
 |---|---|---|
-| `peak_assignment` | `true` | [Peak-centric assignment](peak_assignment_paradigm.md): assignment on sample ingest, the rescored composition search, the reworked Sample view, and the `/api/peak-assignments` write routes (403 while off; reads stay open). Env override: `MASCOPE_PEAK_ASSIGNMENT=0` to switch it off, `=1` to force it on. The frontend bakes the flag in at build time, so flipping it on a deployment requires a frontend rebuild. |
+| `peak_assignment` | `true` | [Peak-centric assignment](peak_assignment_paradigm.md): assignment on sample ingest, the rescored composition search, and the `/api/peak-assignments` write routes (403 while off; reads stay open). It **adds** the assignment views; the targeted workflow, the Match tab included, renders either way. Env override: `MASCOPE_PEAK_ASSIGNMENT=0` to switch it off, `=1` to force it on. |
 
 Read it via `peak_assignment_enabled()`
 (`api/new/peak_assignments/config.py`) on the backend and `peakAssignmentEnabled`
