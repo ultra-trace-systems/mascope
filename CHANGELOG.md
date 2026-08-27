@@ -292,11 +292,15 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
   objects, so each offload has to span the call *and* the materialization that
   follows it - wrapping only the call moves metadata into the thread and leaves
   every chunk read on the loop. And the two calibration `apply` bodies are
-  offloaded whole rather than per write: they contain no `await` today, so they
-  are atomic against the rest of the worker, and wrapping each write separately
-  would let a reader observe a file whose arrays sit on two different m/z axes -
-  or, on the Orbitrap path where the factor is cumulative, let a second apply
-  slip past the already-applied guard and double-apply it.
+  offloaded whole rather than per write, under a lock covering the whole
+  recalibration. Each body rewrites several m/z axes and then records the new
+  calibration, and a reader must not catch it half-done - nor a second apply
+  slip past the already-applied guard, which on the Orbitrap path would apply
+  the cumulative factor twice. Running on the event loop used to give that for
+  free, since neither body contains an `await`; moving them to a worker thread
+  gives it up, because two callers get two threads and run at the same time.
+  Hence the explicit lock, which is also the inter-process one, so it holds
+  against a sibling worker and the file converter as well.
 
 - A `delete-sync-dirs` filestore action reclaims the `.sync` directories that
   zarr 2's synchronizer left behind. They are inert after the zarr 3 upgrade -
