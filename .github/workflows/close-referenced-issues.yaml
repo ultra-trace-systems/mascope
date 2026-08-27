@@ -1,0 +1,92 @@
+name: Close referenced issues
+
+# GitHub closes a linked issue only when a pull request merges into the
+# repository's DEFAULT branch. Here that is `master`, the release branch, while
+# every pull request merges into `develop` - so `Closes #N` has never fired on
+# this repository. A backlog sweep found 19 issues declared closed by a merged
+# pull request, 8 of them still open.
+#
+# This closes them on a merge into `develop`. It deliberately does NOT run for
+# `master`: merges there reach the default branch, where GitHub's own handling
+# applies, and running both would race to close the same issue twice.
+
+on:
+  pull_request:
+    types: [closed]
+    branches: [develop]
+
+permissions:
+  contents: read
+  issues: write
+
+concurrency:
+  group: close-referenced-issues-${{ github.event.pull_request.number }}
+  cancel-in-progress: false
+
+jobs:
+  close:
+    name: Close issues the pull request declares
+    # Closing on merge only. A pull request can be closed without merging, and
+    # that says nothing about the issues it named.
+    if: github.event.pull_request.merged == true
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          sparse-checkout: tooling/close-referenced-issues.py
+          sparse-checkout-cone-mode: false
+
+      - name: Close each issue the body says it closes
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          PR_BODY: ${{ github.event.pull_request.body }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+
+          # The body arrives through the environment, never interpolated into
+          # this script: a pull request body is untrusted text and would
+          # otherwise be a shell injection.
+          numbers="$(printf '%s' "$PR_BODY" | python3 tooling/close-referenced-issues.py)"
+
+          if [ -z "$numbers" ]; then
+            echo "No closing references in the body of #${PR_NUMBER}."
+            exit 0
+          fi
+
+          echo "Closing: $(echo "$numbers" | tr '\n' ' ')"
+
+          failed=0
+          for number in $numbers; do
+            state="$(gh issue view "$number" --repo "$REPO" --json state -q .state 2>/dev/null || echo MISSING)"
+
+            case "$state" in
+              MISSING)
+                # A number that is not an issue in this repository - most often
+                # a pull request, since they share the numbering. Not a fault.
+                echo "  #${number}: no such issue here, skipping"
+                ;;
+              CLOSED)
+                echo "  #${number}: already closed"
+                ;;
+              *)
+                if gh issue close "$number" --repo "$REPO" \
+                     --comment "Closed by #${PR_NUMBER}, merged into \`develop\`."; then
+                  echo "  #${number}: closed"
+                else
+                  # Report every issue rather than stopping at the first
+                  # failure, so one bad number cannot strand the rest.
+                  echo "  #${number}: FAILED to close"
+                  failed=1
+                fi
+                ;;
+            esac
+          done
+
+          # The merge has already happened, so failing here cannot undo
+          # anything - it exists to make a silent non-close visible, which is
+          # the failure mode this whole workflow was written to end.
+          exit "$failed"
