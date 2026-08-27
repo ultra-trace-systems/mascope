@@ -514,6 +514,24 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
   samples to constrain a fit are dismissed the way the other quality filters
   dismiss theirs - if that leaves too few peaks, the file is treated as a blank
   measurement, which is a defined outcome rather than a hard failure.
+- Refreshing matches no longer fails on samples whose peak data was built by
+  an older version of Mascope. A file's peak data is stored against the scans
+  of the acquisition, and which scans a file yields is decided each time it is
+  read - so a file recorded before Mascope began discarding an abnormal first
+  scan holds one scan more than it now reads back, and every sample like that
+  failed to recompute. The recomputed values are now placed by their
+  timestamps, leaving the discarded scan marked as never measured rather than
+  as an intensity of zero, and the refresh repairs such samples on its own
+  with nothing to re-import. A sample whose stored scans cannot be matched to
+  the file at all is still refused, and says that peak detection has to be
+  re-run for it.
+
+- A batch refresh that failed is no longer announced as a success. Refreshing
+  a batch isolates a failing sample so one bad file cannot stop the rest, and
+  the outcome it reported was ignored when the notification was raised - so a
+  refresh whose own message read "rematch failed" arrived as a green success.
+  Such a run is now shown as a warning or an error, and it names the reasons
+  behind the failures instead of only counting them.
 
 - A tab that loses its connection now says so once, instead of once per
   retry. Socket.IO retries a lost connection indefinitely, and each attempt
