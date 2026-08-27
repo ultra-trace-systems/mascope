@@ -7,6 +7,7 @@ import InputText from 'primevue/inputtext'
 import ToggleSwitch from 'primevue/toggleswitch'
 
 import { api } from '@/api'
+import { useApp } from '@/stores'
 
 // The peak-assignment run configuration, shared by the per-sample launcher and
 // the batch launcher so both offer the same knobs and the same bounds.
@@ -35,6 +36,15 @@ const props = defineProps({
 })
 
 const config = props.config
+
+const app = useApp()
+
+// Help cards in this form live on the launcher dialogs' shared help layer:
+// both hosts call app.ui.help.set('dialog_peak_assign') while their dialog is
+// open, so the cards show only there and eclipse the dashboard's own cards.
+const layer = 'dialog_peak_assign'
+const vHelpLayer = app.ui.help.directive(layer)
+const stagesDoc = app.ui.help.docUrl('how-it-works/peak-assignment/#the-two-stages')
 
 // Generous fallbacks used only until /params answers; replaced on mount.
 const limits = ref({
@@ -69,14 +79,41 @@ onMounted(() => {
 
 <template>
   <div class="col config-form" style="gap: 1.25rem; align-items: stretch">
-    <div class="toggle-row">
+    <div
+      class="toggle-row"
+      v-help-layer.right="{
+        message: `
+          <h1>Untargeted Search</h1>
+          <p>
+          Assignment always matches peaks against the sample's known target
+          library first. This switch adds the untargeted stage: a bounded
+          composition search over the peaks the library leaves unexplained. It
+          finds unknowns, and it is the slowest part of a run.
+          </p>`,
+        doc: stagesDoc
+      }"
+    >
       <ToggleSwitch v-model="config.run_untargeted" inputId="run_untargeted" />
       <label for="run_untargeted">
         Untargeted search
         <small>Search compositions for peaks the library leaves unassigned.</small>
       </label>
     </div>
-    <FloatLabel>
+    <FloatLabel
+      :pt="
+        app.ui.help.right(
+          `
+          <h1>m/z Precision</h1>
+          <p>
+          The mass tolerance of the untargeted stage, in ppm: candidate formulas
+          must land within this window of the peak. Widening it finds more
+          candidates, but slower and more ambiguous ones. The library stage is
+          unaffected &mdash; it uses the sample's match parameters.
+          </p>`,
+          { layer, doc: stagesDoc }
+        )
+      "
+    >
       <InputNumber
         v-model="config.mz_precision_ppm"
         inputId="mz_precision_ppm"
@@ -87,7 +124,22 @@ onMounted(() => {
       />
       <label for="mz_precision_ppm">m/z precision (ppm)</label>
     </FloatLabel>
-    <FloatLabel>
+    <FloatLabel
+      :pt="
+        app.ui.help.right(
+          `
+          <h1>Formula Range</h1>
+          <p>
+          Element-count bounds for untargeted candidate formulas, as
+          space-separated ranges &mdash; e.g.
+          <code>C0-100 H0-100 O0-100 N0-100</code>, isotopes in brackets
+          (<code>[15N]0-1</code>). At most 12 element species; every added
+          element multiplies the search space.
+          </p>`,
+          { layer, doc: stagesDoc }
+        )
+      "
+    >
       <InputText
         v-model="config.formula_ranges"
         id="formula_ranges"
@@ -96,7 +148,20 @@ onMounted(() => {
       />
       <label for="formula_ranges">Formula range</label>
     </FloatLabel>
-    <FloatLabel>
+    <FloatLabel
+      :pt="
+        app.ui.help.right(
+          `
+          <h1>Max Untargeted Peaks</h1>
+          <p>
+          At most this many peaks enter the untargeted stage: the most intense
+          of the peaks the library left unexplained, after the intensity
+          threshold. Bounds the run time on dense spectra.
+          </p>`,
+          { layer, doc: stagesDoc }
+        )
+      "
+    >
       <InputNumber
         v-model="config.max_untargeted_peaks"
         inputId="max_untargeted_peaks"
@@ -107,7 +172,20 @@ onMounted(() => {
       />
       <label for="max_untargeted_peaks">Max untargeted peaks</label>
     </FloatLabel>
-    <FloatLabel>
+    <FloatLabel
+      :pt="
+        app.ui.help.right(
+          `
+          <h1>Peak Intensity Threshold</h1>
+          <p>
+          Only unexplained peaks at least this intense (in the sample's native
+          intensity units) enter the untargeted stage. Zero searches everything
+          the peak cap allows.
+          </p>`,
+          { layer, doc: stagesDoc }
+        )
+      "
+    >
       <InputNumber
         v-model="config.peak_intensity_threshold"
         inputId="peak_intensity_threshold"
@@ -117,7 +195,24 @@ onMounted(() => {
       />
       <label for="peak_intensity_threshold">Peak intensity threshold</label>
     </FloatLabel>
-    <FloatLabel>
+    <FloatLabel
+      :pt="
+        app.ui.help.right(
+          `
+          <h1>Max Alternatives Kept</h1>
+          <p>
+          How many runner-up candidates are stored per peak, from both stages.
+          They appear as the close alternatives in the peak inspector.
+          </p>`,
+          {
+            layer,
+            doc: app.ui.help.docUrl(
+              'how-it-works/peak-assignment/#arbitration-competing-the-candidates'
+            )
+          }
+        )
+      "
+    >
       <InputNumber
         v-model="config.max_alternatives"
         inputId="max_alternatives"

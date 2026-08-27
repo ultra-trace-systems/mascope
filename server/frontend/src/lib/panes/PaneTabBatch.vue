@@ -4,6 +4,9 @@ import SelectButton from 'primevue/selectbutton'
 
 import { peakAssignmentEnabled } from '@/lib/features'
 import { ChartBatchOverview, ChartBatchAssignments } from '@/lib/charts'
+import { useApp } from '@/stores'
+
+const app = useApp()
 
 // The batch overview coexists in two modes: the legacy target-ion view and the
 // peak-centric assignment view (batch peaks). See docs/dev/peak_assignment_batch.md.
@@ -19,7 +22,20 @@ const modes = [
 
 <template>
   <div class="batch-tab">
-    <div v-if="peakAssignmentEnabled" class="mode-toggle">
+    <div
+      v-if="peakAssignmentEnabled"
+      class="mode-toggle"
+      v-help.bottom_end="{
+        message: `
+          <h1>Batch Overview Mode</h1>
+          <p>
+          <b>Targets</b> plots the selected target collection's matched ions
+          across the batch. <b>Assignments</b> plots the batch peaks selected in
+          the ledger, with marker fill showing each species' consensus tier.
+          </p>`,
+        doc: app.ui.help.docUrl('how-it-works/peak-assignment/#batch-peaks')
+      }"
+    >
       <SelectButton
         v-model="mode"
         :options="modes"

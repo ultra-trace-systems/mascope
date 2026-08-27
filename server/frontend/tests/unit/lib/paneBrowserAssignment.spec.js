@@ -13,6 +13,19 @@ const SAMPLE = { sample_item_id: 'si-1', sample_item_name: 'Sample 1' }
 
 let focusedSampleId
 
+// Minimal help-mode facade: the pane registers help cards through these calls;
+// the tests only need them to resolve.
+const helpStub = {
+  set: vi.fn(),
+  docUrl: (path = '') => `/docs/${path}`,
+  directive: () => ({}),
+  right: () => ({}),
+  left: () => ({}),
+  top: () => ({}),
+  bottom: () => ({}),
+  bottom_end: () => ({})
+}
+
 function makeApp() {
   return {
     data: {
@@ -31,7 +44,7 @@ function makeApp() {
         verification: { forAssignment: () => null }
       }
     },
-    ui: { tab: { active: 'sample' } }
+    ui: { tab: { active: 'sample' }, help: helpStub }
   }
 }
 
@@ -62,9 +75,8 @@ function apiError(status, message) {
   return { response: { status, data: { error: message } } }
 }
 
-const { default: PaneBrowserAssignment } = await import(
-  '@/lib/panes/PaneBrowserMatch/PaneBrowserAssignment.vue'
-)
+const { default: PaneBrowserAssignment } =
+  await import('@/lib/panes/PaneBrowserMatch/PaneBrowserAssignment.vue')
 
 // Imported statically (vi.mock is hoisted above it, so the stubs still apply):
 // compiling this pane is the expensive part, and as a dynamic import inside the
@@ -73,7 +85,7 @@ async function mountPane() {
   const wrapper = mount(PaneBrowserAssignment, {
     global: {
       stubs: GLOBAL_STUBS,
-      directives: { tooltip: {} },
+      directives: { tooltip: {}, help: {} },
       provide: { 'match-table-height': ref(300) }
     }
   })
@@ -105,7 +117,10 @@ describe('PaneBrowserAssignment launcher', () => {
 
   it('closes the dialog and shows the reason when the sample is ineligible', async () => {
     assign.mockRejectedValue(
-      apiError(422, "Peak assignment is not possible for sample 'Sample 1': blank sample (no peaks).")
+      apiError(
+        422,
+        "Peak assignment is not possible for sample 'Sample 1': blank sample (no peaks)."
+      )
     )
     const wrapper = await mountPane()
     wrapper.vm.configVisible = true

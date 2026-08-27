@@ -35,6 +35,8 @@ independent evidence* and *arbitrating between candidates that all fit the mass*
  └──────────────┘
 ```
 
+--8<-- "_help/assignment-evidence.md"
+
 ## The two stages
 
 Every peak is assigned in a two-stage engine:
@@ -122,13 +124,14 @@ established approach for large-scale MS annotation ([Scheubert et al. 2017][sch1
 
 ## Calibrated confidence (probability of being correct)
 
-The evidence score ranks assignments, but a raw 0.85 is not "85% likely correct".
-**Calibration** turns the score into an actual **probability of being correct** using
-**Platt scaling** ([Platt 1999][platt]) — a logistic curve `P = sigmoid(a·evidence + b)` fit
-on assignments whose truth is known. So *of everything Mascope reports at 0.9, about 90%
-really are right*.
+--8<-- "_help/assignment-p-correct.md"
 
-Two things are important in practice:
+The evidence score ranks assignments, but a raw evidence of 0.85 is not "85% likely
+correct" — the calibration that closes that gap is **Platt scaling** ([Platt
+1999][platt]), a logistic curve `P = sigmoid(a·evidence + b)` fit on assignments
+whose truth is known.
+
+In practice:
 
 - **It is per instrument.** The same raw evidence means different things on an Orbitrap
   (sub-ppm, high resolution) than on a lower-resolution TOF, so each instrument class has
@@ -137,29 +140,19 @@ Two things are important in practice:
   [Schymanski et al. 2014][sch14]) — versus near-mass decoys. This is why calibration is
   tied to your **reference dataset**, and why you can, in principle, **calibrate your own
   instrument** by running known standards.
-- **When it isn't calibrated, it says so.** If no calibration exists for an instrument yet,
-  Mascope reports the assignment as *uncalibrated* and shows the raw evidence rather than a
-  made-up probability. Today one **provisional** Orbitrap curve ships (fit on a preliminary
-  reference set); it will be replaced by a curated fit, and TOF is uncalibrated until a TOF
-  reference set exists.
-- **Co-occurring adducts raise it.** A real compound rarely appears as a single ion — it also
-  shows up through other adducts (e.g. `[M+H]⁺` alongside `[M+NH₄]⁺`, or `[M−H]⁻` alongside
-  `[M+Br]⁻`). When the same compound is assigned via several adducts, that independent
-  corroboration **increases the probability**, by an amount *measured per adduct*: a chemically
-  distinctive adduct like bromide corroborates strongly, while a generic one (ammonium,
-  protonation) barely moves it. The lift is bounded, and — like the calibration curve — the
-  per-adduct weights are specific to your instrument's reagent chemistry.
+- **An uncalibrated assignment shows the raw evidence** in place of a probability. Today
+  one **provisional** Orbitrap curve ships (fit on a preliminary reference set); it will
+  be replaced by a curated fit, and TOF is uncalibrated until a TOF reference set exists.
+- **The adduct lift is measured, not assumed.** A real compound rarely appears as a single
+  ion — it also shows up through other adducts (e.g. `[M+H]⁺` alongside `[M+NH₄]⁺`, or
+  `[M−H]⁻` alongside `[M+Br]⁻`), and each adduct's corroborating worth is *measured*: a
+  chemically distinctive adduct like bromide corroborates strongly, while a generic one
+  (ammonium, protonation) barely moves it. The lift is bounded, and — like the calibration
+  curve — the per-adduct weights are specific to your instrument's reagent chemistry.
 
 ## Confidence tiers
 
-Each assignment is placed in a tier from its fit score:
-
-| tier | meaning |
-|---|---|
-| **identified** | strong, corroborated fit |
-| **candidate** | a plausible assignment with weaker support |
-| **below&nbsp;assignability** | a formula was found but the evidence is too weak to trust |
-| **unassigned** | no composition explained the peak |
+--8<-- "_help/assignment-tiers.md"
 
 The tiers are the product-facing summary of the confidence layer; the underlying score is
 the continuous fit quality. The long-term goal is to report a community-standard
@@ -171,6 +164,28 @@ communicates identification certainty.
 > spectral context and calibration are *layers on top* of it and are never folded back into
 > the score — this keeps the measurement reproducible while the confidence layers evolve.
 > The current tier thresholds are provisional and will be recalibrated per instrument.
+
+## Verifying assignments
+
+--8<-- "_help/assignment-verification.md"
+
+The evidence levels follow the field's identification-confidence ladder
+([Schymanski et al. 2014][sch14]): a reference standard is a Level-1 identification,
+and each weaker level is worth correspondingly less as a label. Verdicts deliberately
+capture the *evidence* behind a judgment rather than echoing the model's own score,
+so the labelled record stays informative for recalibration.
+
+## Batch peaks
+
+--8<-- "_help/batch-peaks.md"
+
+A whole batch can be assigned in one launch: the same engine runs over every eligible
+sample with one shared configuration (blank samples and samples whose m/z calibration
+is not verified are skipped, and the run continues in the background). The untargeted
+stage is off by default for batches — its cost multiplies by the number of samples.
+Every completed assignment run folds into the batch peaks automatically; a batch whose
+runs predate the batch overview can be backfilled from them without any new
+assignment work.
 
 ## References
 

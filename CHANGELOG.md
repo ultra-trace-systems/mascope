@@ -13,6 +13,17 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
   is skipped, one that is mid-processing is left alone - and a toast reports
   what was done. Keeping a large dataset current previously meant hunting down
   every flagged batch and clicking each one.
+- Help mode now covers the peak assignment feature end to end. Hovering the
+  peak inspector, the composition search, the Assignments and Batch peaks
+  ledgers, the assignment charts, the Targets/Assignments toggles and every
+  field of the run-configuration dialog shows a card explaining what the
+  element means - the confidence tiers, the four evidence numbers (fit,
+  plausibility, confidence, P(correct)), verification and batch peaks are
+  authored once as docs snippets shared by the popovers and the user guide,
+  which also gains "Verifying assignments" and "Batch peaks" sections, so
+  every card's Learn more link has a real landing place. The `v-help`
+  directive accepts the same docs-sourced card shape as the component hook,
+  so plain elements can reuse those snippets too.
 
 - The notifications tab has a **Clear** button. It empties the log and the
   unread badge with it, so no count is left standing for rows that are gone;

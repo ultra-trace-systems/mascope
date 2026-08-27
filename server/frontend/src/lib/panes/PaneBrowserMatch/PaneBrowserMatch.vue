@@ -20,9 +20,7 @@ const app = useApp()
 const MODE_KEY = 'mascope.browserMatch.mode'
 // With peak-centric assignment off there is only the targeted view, so the
 // toggle is hidden and the mode is pinned regardless of any stored preference.
-const mode = ref(
-  peakAssignmentEnabled ? localStorage.getItem(MODE_KEY) || 'targets' : 'targets'
-)
+const mode = ref(peakAssignmentEnabled ? localStorage.getItem(MODE_KEY) || 'targets' : 'targets')
 const modeOptions = [
   { label: 'Targets', value: 'targets' },
   { label: 'Assignments', value: 'assignments' }
@@ -114,7 +112,21 @@ provide('match-table-height', tableHeight)
 
 <template>
   <div class="browser-switch">
-    <div v-if="peakAssignmentEnabled" class="switch-bar">
+    <div
+      v-if="peakAssignmentEnabled"
+      class="switch-bar"
+      v-help.bottom="{
+        message: `
+          <h1>Targets / Assignments</h1>
+          <p>
+          <b>Targets</b> browses matches against your target collections &mdash;
+          the targeted workflow. <b>Assignments</b> browses the peak-centric
+          ledgers: the batch peaks of the whole batch, and every peak's
+          assignment once a sample is focused.
+          </p>`,
+        doc: app.ui.help.docUrl('how-it-works/peak-assignment/')
+      }"
+    >
       <SelectButton
         v-model="mode"
         :options="modeOptions"

@@ -61,7 +61,11 @@ const tabs = computed(() => [
         dragging instead. Chart tools are available at top-right. Double click to reset zoom.
       </p>  
 
-      ${peakAssignmentEnabled ? '' : '<p>Click on a data point to visualize the corresponding Match.</p>'}
+      ${
+        peakAssignmentEnabled
+          ? '<p>Switch between <b>Targets</b> and <b>Assignments</b> (top right) to plot target matches or assigned batch peaks.</p>'
+          : '<p>Click on a data point to visualize the corresponding Match.</p>'
+      }
 
       <p>
         Chart settings (top-left) allow you to select the x-axis dimension, y-axis scaling etc.
@@ -72,13 +76,19 @@ const tabs = computed(() => [
     label: 'Sample',
     icon: 'pi pi-chart-bar',
     disabled: !app.data.sample.focused,
-    doc: app.ui.help.docUrl('how-it-works/peak-detection/'),
+    doc: app.ui.help.docUrl(
+      peakAssignmentEnabled ? 'how-it-works/peak-assignment/' : 'how-it-works/peak-detection/'
+    ),
     help: `
       <h1>Sample View</h1>
 
       <p>Visualize the selected sample's spectrum and peaks.</p>
 
-      <p>Assign elemental composition to detected peaks and add them to a target collection.</p>
+      ${
+        peakAssignmentEnabled
+          ? "<p>Inspect each peak's committed assignment, verify it, and re-search compositions on demand.</p>"
+          : '<p>Assign elemental composition to detected peaks and add them to a target collection.</p>'
+      }
     `
   },
   // The Match tab exists only while peak-centric assignment is off. With the
