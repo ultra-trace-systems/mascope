@@ -240,6 +240,12 @@ async def handle_notifications(
         room_id: kwargs[key] → result[key] → result['data'][key] → result['_notification_data'][key]
         user_id: kwargs['user_id'] → result['_notification_data']['user_id']
 
+    When neither resolves there is nobody to send to. For an ordinary
+    notification that is an actionable fault - a message meant for a user was
+    lost - and is logged at WARNING. For a ``silent`` one it is not: that
+    packet only ends a progress bar in a browser, and with no audience there
+    is no bar, so it is dropped at DEBUG.
+
     :param rooms: List of room keys (e.g., ["sample_batch_id", "user_id"])
     :type rooms: list[str]
     :param notification: UserNotification instance to be emitted
@@ -276,7 +282,26 @@ async def handle_notifications(
         if room_key == "user_id" or not room_id:
             if user_id is not None:
                 await emit_user_notification(notification, user_id=user_id)
+            elif notification.silent:
+                # A silent packet carries nothing to read: it exists only to
+                # end the progress bar the process opened in a browser. With
+                # no room and no user there is no browser and no bar, so
+                # nothing is lost by not sending it - and nothing is wrong,
+                # which is why this is not a warning. A pipeline that runs
+                # without a user (tests, background reprocessing) suppresses
+                # one such packet per nested warning per retry - up to
+                # fourteen for a single sample that will not calibrate - and
+                # every WARNING record is exported to error monitoring
+                # (mascope_runtime.logging._SENTRY_LEVELS), which would turn
+                # a routine no-op into fourteen monitoring events.
+                runtime.logger.debug(
+                    f"Skipping silent notification with no audience: no room_id for "
+                    f"'{room_key}', no user_id available. "
+                    f"Notification type: {notification.type}, status: {notification.status}"
+                )
             else:
+                # Not silent: a message the user was meant to read was lost.
+                # That is an actionable operator signal and stays at WARNING.
                 runtime.logger.warning(
                     f"Cannot emit notification: no room_id for '{room_key}', no user_id available. "
                     f"Notification type: {notification.type}, status: {notification.status}"
