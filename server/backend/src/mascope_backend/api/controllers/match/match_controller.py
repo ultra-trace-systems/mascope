@@ -50,6 +50,7 @@ from mascope_backend.db import (
     MatchIsotope,
     MatchSample,
     Sample,
+    SampleBatch,
     async_session,
 )
 from mascope_backend.db.id import gen_id
@@ -552,6 +553,161 @@ async def match_compute_samples(
 # -------------------------------------------------------------------
 
 
+# How many batches the rematch summary names one by one before it reports the
+# rest as a count. The message is the only part of the outcome that reaches
+# the user - the notification pane renders type, status and message, and
+# nothing in the tree consumes the per-batch ids carried in the payload - so
+# it has to name them, without letting a large selection turn one notification
+# into a wall of text.
+MAX_LISTED_REMATCH_BATCHES = 10
+
+
+async def _fetch_sample_batch_names(sample_batch_ids: list[str]) -> dict[str, str]:
+    """
+    Display names for the given batches, resolved in a single query.
+
+    Called only once a run has something to report, so a clean run pays
+    nothing and a run with problems pays one query rather than one per batch.
+
+    Resolving a name is a courtesy to the summary and never a reason for it to
+    fail: a batch deleted mid-run simply has no row, and a database that
+    cannot answer at all yields an empty mapping. Callers fall back to the id.
+
+    :param sample_batch_ids: The batches to name.
+    :type sample_batch_ids: list[str]
+    :return: Mapping of sample batch id to name, missing whatever it could not
+        resolve.
+    :rtype: dict[str, str]
+    """
+    if not sample_batch_ids:
+        return {}
+    try:
+        async with async_session() as session:
+            rows = await session.execute(
+                select(
+                    SampleBatch.sample_batch_id, SampleBatch.sample_batch_name
+                ).where(SampleBatch.sample_batch_id.in_(sample_batch_ids))
+            )
+            return dict(rows.all())
+    except Exception:
+        runtime.logger.exception(
+            "Could not resolve sample batch names for the rematch summary"
+        )
+        return {}
+
+
+def _batch_display_name(sample_batch_id: str, batch_names: dict[str, str]) -> str:
+    """
+    Name a batch the way the UI does, degrading to its id.
+
+    :param sample_batch_id: The batch to name.
+    :type sample_batch_id: str
+    :param batch_names: Names resolved by :func:`_fetch_sample_batch_names`.
+    :type batch_names: dict[str, str]
+    :return: The batch name, or the id when no name is known.
+    :rtype: str
+    """
+    return batch_names.get(sample_batch_id) or sample_batch_id
+
+
+def _user_facing_reason(error: Exception) -> str:
+    """
+    The part of a failure that is safe to put in front of a user.
+
+    An ``ApiException`` carries a ``user_message`` written for a human - it is
+    what every other layer surfaces, and by the time a nested rematch reaches
+    the aggregate that is what its failures are, the background task decorator
+    having already put anything else through ``process_exception``.
+
+    That message is taken as it stands, and this adds no guarantee to it.
+    ``process_exception`` genericizes most internals behind a "ref:" id, but
+    not all of them - a ``ValueError`` is answered with its own ``str()``,
+    filesystem path and all - so a reason here says exactly what the same
+    batch rematched on its own would say, no more and no less.
+
+    What this does guarantee is that the aggregate leaks nothing extra: an
+    exception that reaches it unwrapped never went through that mapping, and
+    its ``str()`` is an internal detail (a filesystem path, an attribute name,
+    a driver message), so it is dropped; the caller logs the traceback.
+
+    :param error: The exception a single batch's rematch raised.
+    :type error: Exception
+    :return: A reason suitable for the aggregate's notification message.
+    :rtype: str
+    """
+    if isinstance(error, ApiException):
+        return error.user_message
+    return "Unexpected error."
+
+
+def _compose_rematch_problem_lines(
+    failure_reasons: list[tuple[str, str]],
+    locked_batch_ids: list[str],
+    batch_names: dict[str, str],
+) -> list[str]:
+    """
+    Say which batches did not rematch, and - for the failures - why.
+
+    Same shape as the batch calibration aggregate builds for its own partial
+    failures: a count, then one line per failure naming the batch and its
+    reason, truncated to ``MAX_LISTED_REMATCH_BATCHES`` entries.
+
+    The two buckets are reported differently because they are different
+    outcomes. A failure is an error whose cause the user cannot guess, so each
+    one gets its reason. A lock is the routine outcome of the batch already
+    being processed - one shared, self-explanatory cause - so those batches are
+    only named, on one line, with the remedy (wait and retry) stated once.
+
+    :param failure_reasons: ``(sample_batch_id, reason)`` per failed batch, in
+        the order the batches were processed.
+    :type failure_reasons: list[tuple[str, str]]
+    :param locked_batch_ids: Batches skipped because they were already being
+        processed.
+    :type locked_batch_ids: list[str]
+    :param batch_names: Names resolved by :func:`_fetch_sample_batch_names`.
+    :type batch_names: dict[str, str]
+    :return: Lines to append to the summary message (empty when nothing went
+        wrong).
+    :rtype: list[str]
+    """
+    lines = []
+
+    if failure_reasons:
+        listed = failure_reasons[:MAX_LISTED_REMATCH_BATCHES]
+        lines.append(f"Failed to rematch {len(failure_reasons)} batch(es):")
+        lines.extend(
+            f"{_batch_display_name(sample_batch_id, batch_names)}: {reason}"
+            for sample_batch_id, reason in listed
+        )
+        remaining = len(failure_reasons) - len(listed)
+        if remaining:
+            lines.append(f"...and {remaining} more.")
+
+    if locked_batch_ids:
+        listed_ids = locked_batch_ids[:MAX_LISTED_REMATCH_BATCHES]
+        names = [
+            _batch_display_name(sample_batch_id, batch_names)
+            for sample_batch_id in listed_ids
+        ]
+        remaining = len(locked_batch_ids) - len(listed_ids)
+        if remaining:
+            names.append(f"and {remaining} more")
+        # One locked batch is the common case - a user retrying the batch they
+        # just started - so the remedy is worth saying in the singular rather
+        # than telling them to try "these" again once "they" finish.
+        remedy = (
+            "try this one again once it finishes"
+            if len(locked_batch_ids) == 1
+            else "try these again once they finish"
+        )
+        lines.append(
+            f"Already being processed, so rematch was locked - {remedy}: "
+            f"{', '.join(names)}."
+        )
+
+    return lines
+
+
 @api_controller_background_task(
     success_notification_rooms=["user_id"],
     success_reload=[("match", "affected_sample_batch_ids")],
@@ -575,6 +731,11 @@ async def rematch_batches(
     - failed_batches: Batches that encountered critical failures (status: "failed")
     - partial_batches: Batches with mixed results (status: "partial")
     - skipped_batches: Batches with no changes needed (status: "skipped")
+    - locked_batches: Batches already being processed (status: "locked")
+
+    The summary message names every batch that failed (with its reason) or was
+    locked: the nested rematches are dependent tasks whose own warnings are
+    suppressed, so this is the only report the user gets of them.
 
     :param sample_batch_ids: A list of sample batch IDs to be rematched.
     :type sample_batch_ids: list[str]
@@ -607,6 +768,10 @@ async def rematch_batches(
         "failed_batches": [],
         "locked_batches": [],
     }
+    # Why each failed batch failed, paired with its id and in the same order
+    # as batch_collections["failed_batches"]. Kept beside that list rather than
+    # in it so the payload's shape is unchanged for anything reading the ids.
+    failure_reasons: list[tuple[str, str]] = []
 
     processed_samples = {
         "removed_match_isotopes_count": 0,
@@ -673,8 +838,13 @@ async def rematch_batches(
                 sample_batch_id
             )
 
-        except Exception:
+        except Exception as e:
             batch_collections["failed_batches"].append(sample_batch_id)
+            # The child's warning is suppressed (it is a dependent task, so
+            # this aggregate reports for it), which makes this the only place
+            # the reason can still reach the user - keep it. The full detail,
+            # traceback included, stays in the server log below either way.
+            failure_reasons.append((sample_batch_id, _user_facing_reason(e)))
             runtime.logger.exception(
                 f"Unexpected error rematching batch {sample_batch_id}"
             )
@@ -728,6 +898,21 @@ async def rematch_batches(
 
         message += f". Sample rematch processing: {', '.join(stats_parts)}"
 
+    # Name whatever did not rematch. The counts above say how much went wrong;
+    # only the names say what to go and look at, and the nested rematches no
+    # longer report for themselves - this aggregate reports for them.
+    problem_lines = []
+    problem_batch_ids = (
+        batch_collections["failed_batches"] + batch_collections["locked_batches"]
+    )
+    if problem_batch_ids:
+        problem_lines = _compose_rematch_problem_lines(
+            failure_reasons,
+            batch_collections["locked_batches"],
+            await _fetch_sample_batch_names(problem_batch_ids),
+        )
+        message = "\n".join([message] + problem_lines)
+
     runtime.logger.info(message)
 
     # Error handling based on results
@@ -747,9 +932,13 @@ async def rematch_batches(
         "_notification_data": {"affected_sample_batch_ids": sample_batch_ids},
     }
     if processed_batches_count == 0:
-        # Only failed/blocked batches - critical error
+        # Only failed/blocked batches - critical error. Nothing processed is
+        # the case where naming them matters most, so the detail travels with
+        # the error too, not only with the partial-success warning.
         raise ApiException(
-            f"All {total_batches_count} batches failed to process",
+            "\n".join(
+                [f"All {total_batches_count} batches failed to process"] + problem_lines
+            ),
             response_data,
             500,
         )

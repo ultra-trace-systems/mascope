@@ -87,7 +87,15 @@ const vHelpLayer = app.ui.help.directive(layer)
         <div class="col" style="gap: 0.5rem">
           <ScrollPanel style="width: 250px">
             <h4 style="margin: 0.5rem 0">{{ beautifySnakeCase(type) }} {{ status }}</h4>
-            <p style="margin: 0">
+            <!-- A batch operation composes its message as one line per item
+                 (the samples it could not calibrate, the batches it could not
+                 rematch). `pre-line` is what keeps those breaks: without it the
+                 entries render as one run-on paragraph with nothing between
+                 them, since the reasons carry no trailing punctuation. It still
+                 wraps on width, so a line longer than the pane reflows, and a
+                 one-line message is unchanged. The toast surface has the same
+                 rule already, from PrimeVue's own `.p-toast` stylesheet. -->
+            <p style="margin: 0; white-space: pre-line">
               {{ message }}
             </p>
           </ScrollPanel>

@@ -450,6 +450,23 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
   with its reason, and once there are more than ten it names the first ten and
   reports the rest as a count.
 
+- Rematching a set of batches now says which ones it could not rematch, and
+  why. The summary counted them - "2 failed" - discarded each batch's reason
+  where it was caught, and left the ids in a payload nothing renders, so a
+  user was told how much had gone wrong and nothing about what to go and look
+  at. Each failed batch is now named with its reason, batches skipped because
+  they were already being processed are named together with the one remedy
+  that applies to them, and a long selection is cut off after ten names so one
+  notification stays one notification. The names travel with the error raised
+  when nothing rematched at all, not only with the partial-success warning.
+
+- A notification that names things one per line now reads as lines in the
+  notification log. The log rendered the whole message as a single paragraph,
+  so the summaries above - and the one a file re-processing run writes - came
+  out as a run-on with nothing separating one entry from the next, the reasons
+  carrying no trailing punctuation to stand in for the break. Toasts already
+  showed these correctly.
+
 - A bulk upload run no longer makes the server stop answering. Every request
   from an agent, the file converter or the SDK is checked against its access
   token, and that check was opening five database connections and holding
