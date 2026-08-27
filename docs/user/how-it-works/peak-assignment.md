@@ -178,6 +178,21 @@ and each weaker level is worth correspondingly less as a label. Verdicts deliber
 capture the *evidence* behind a judgment rather than echoing the model's own score,
 so the labelled record stays informative for recalibration.
 
+## Assignment runs
+
+--8<-- "_help/assignment-runs.md"
+
+Publishing a run from another engine is what makes the two comparable on the same
+sample: both live in the same run history, so selecting one and then the other
+switches the ledger between them peak for peak. What an imported run may assert
+stops short of what Mascope presents as its own judgement &mdash; it declares the
+tier bands it used and every row is checked against them, it discloses what it
+calibrated against, and the calibrated P(correct) column stays empty on its rows.
+The in-app engine's name is reserved, so the chip cannot be forged. Verifications
+recorded against an imported run are kept and shown, but stay out of the
+instrument-wide confidence calibration, whose labels come only from runs this
+server computed.
+
 ## Batch peaks
 
 --8<-- "_help/batch-peaks.md"

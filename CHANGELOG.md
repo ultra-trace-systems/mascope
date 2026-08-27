@@ -6,6 +6,23 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
 
 ### Added
 
+- The run selector now says **which engine produced the assignment run** you
+  are reading, and at which version. A run computed here is chipped
+  *Mascope*; one published into the sample from outside carries that engine's
+  own name, so a ledger is never anonymous. This matters because the view
+  defaults to the newest completed run whatever produced it - without the chip,
+  a published run would be indistinguishable from one this server computed.
+  A published run also carries a **calibration** chip: it calibrates on its own
+  side rather than passing the m/z verification an in-app run must clear, so it
+  has to declare what it calibrated against, and hovering the chip shows that
+  declaration. Hovering the engine chip shows the fit-score bands the run tiered
+  with, since *identified* only means the same thing on two runs that used the
+  same thresholds. The in-app engine name is reserved, so the chip cannot be
+  forged. The same fields (`engine`, `engine_version`, `tier_bands`,
+  `calibration`) are on `list_runs()` and `df.attrs["run"]` in the Python SDK,
+  which is what lets two engines be compared on one sample: read each run by id
+  and join on `sample_peak_id`.
+
 - Matches can now be refreshed for a **whole dataset** in one action:
   right-click a dataset in the *Datasets* pane and choose *Process -> Refresh
   matches*. Its batches are refreshed one after another, newest first, with the

@@ -370,6 +370,37 @@ Key `get()` columns: `sample_peak_mz`, `sample_peak_intensity`, `role` (`M0` |
 `fit_score`, `mz_error_ppm`, `tier`, `p_correct`, and
 `target_compound_id`/`target_ion_id` for database-sourced assignments.
 
+### Which engine produced a run
+
+A run's ledger does not say who computed it — the run does. `list_runs` (and
+`df.attrs["run"]`) carries:
+
+| Column | Meaning |
+| --- | --- |
+| `engine` | `mascope` for a run this deployment computed, otherwise the external engine that published its ledger here. Never null, and `mascope` is reserved server-side so an import cannot claim it. |
+| `engine_version` | That engine's version string. |
+| `tier_bands` | The `identified` / `candidate` fit-score thresholds the run tiered with. |
+| `calibration` | What an external engine disclosed about its calibration at import. Null for `mascope` runs, whose calibration state is the sample's own. |
+
+This matters because reads default to the **latest completed run whatever its
+engine**, so a published run is what you get unless you ask for another. It is
+also what makes two engines comparable on one sample — read each run by id and
+join on `sample_peak_id`:
+
+```python
+runs = mascope.peak_assignments.list_runs(sample_id)
+runs[["engine", "engine_version", "tier_bands", "status"]]
+
+mine = mascope.peak_assignments.get(sample_id, run_id=<a mascope run id>)
+theirs = mascope.peak_assignments.get(sample_id, run_id=<an imported run id>)
+side_by_side = mine.merge(theirs, on="sample_peak_id", suffixes=("_mascope", "_ext"))
+```
+
+Compare tiers only against each run's own `tier_bands`: the same word means
+different confidence under different thresholds. An imported run's `p_correct`
+is always empty — that column is Mascope's own calibrated judgement and an
+import may not write it.
+
 For cross-sample analysis use the [`load_assignments`](#load_assignments-peak-assignments-across-batches)
 loader; for a guided walk-through see tutorial notebook `10_peak_assignment.ipynb`.
 

@@ -1298,7 +1298,14 @@ Each step is its own PR, and each leaves the system shippable:
    `PeakAssignmentRunRecord` and in the SDK's `list_runs` frame; the run
    selector showing engine, version and the calibration badge. Nothing in the
    trust model is observable to a user until this lands, so it precedes the
-   first import reaching a real deployment.
+   first import reaching a real deployment. **Shipped.** `BaseRunProvenance`
+   renders the engine chip (in-app runs included, so absence of a badge is
+   never the only signal) and, for an imported run, its calibration
+   disclosure; the run selector fills both its `#value` and `#option` slots
+   with it, so the engine is visible on the auto-selected run without opening
+   the list. The declared `tier_bands` ride on the engine chip's tooltip. The
+   SDK needed no plumbing - `list_runs` is a passthrough - only its documented
+   column list.
 5. **SDK triggering + verification + fit** - `assign` / `assign_batch` /
    `verify` / `list_verifications` / `fit_aggregate`, the polling helper,
    hermetic unit tests.
@@ -1330,9 +1337,9 @@ can be answered once real imported ledgers exist, not prerequisites.
   eligibility partition and derives its 409 from the admitted samples' run
   state, so both halves of its 202 now have machinery. The step includes the two
   frontend call sites, which stop treating a refusal as a success.
-- **Step 4 is safe to start now.** Its prerequisite - `calibration` beside
+- **Step 4 has shipped.** Its prerequisite - `calibration` beside
   `engine` on `PeakAssignmentRunRecord`, without which the calibration badge has
-  no data - is met: step 2 serves `engine`, `tier_bands` and `calibration` on
+  no data - was met: step 2 serves `engine`, `tier_bands` and `calibration` on
   the run listing. That is earlier than this plan put the API half of run
   provenance, and deliberately so. The *data* is what an import's trust model
   rests on - an import bypasses the m/z verification gate and discloses what it
