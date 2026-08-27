@@ -55,6 +55,9 @@ async def _notification_for(batch_ids, statuses):
         ),
         patch.object(match_controller, "send_progress_user_notification", AsyncMock()),
         patch.object(match_controller, "rematch_batch", _rematch_batch),
+        patch.object(
+            match_controller, "_fetch_sample_batch_names", AsyncMock(return_value={})
+        ),
         patch.object(api_features, "handle_notifications", _capture),
         patch.object(api_features, "handle_reloads", AsyncMock()),
     ):
@@ -93,15 +96,20 @@ async def test_an_all_failed_run_is_still_a_failure():
 
 
 @pytest.mark.asyncio
-async def test_a_locked_batch_beside_a_failed_one_is_a_warning():
-    """Not every batch failed, so the "all failed" message would be untrue."""
+async def test_a_locked_batch_beside_a_failed_one_is_still_an_error():
+    """A real failure keeps the run an error, however many batches were busy.
+
+    Only a run with nothing but locked batches is exempt: there the user has
+    nothing to fix and the work simply has not happened yet. One failure and
+    the run does need attention, so it stays where the aggregate already put
+    it - see test_the_error_for_a_wholly_failed_run_names_them_too.
+    """
     status, message = await _notification_for(
         ["b1", "b2"], {"b1": "locked", "b2": "failed"}
     )
 
-    assert status == "warning"
-    assert "1 locked" in message
-    assert "1 failed" in message
+    assert status == "error"
+    assert "failed to process" in message
 
 
 @pytest.mark.asyncio
