@@ -232,8 +232,10 @@ Peak-centric assignment becomes the substrate; targeted analysis becomes a
 filtered view (`target_compound_id IS NOT NULL`). Targeted alarms/collections
 keep working and are not rewritten up front.
 
-The whole feature is **off by default**, behind `peak_assignment` in the
-runtime `[meta]` config (env override `MASCOPE_PEAK_ASSIGNMENT`). Backend
+The whole feature sits behind `peak_assignment` in the
+runtime `[meta]` config — **on by default since it became generally
+available**, and set to false by a deployment that wants the pre-assignment
+behaviour (env override `MASCOPE_PEAK_ASSIGNMENT`). Backend
 reads it via `peak_assignment_enabled()`
 ([config.py](../../server/backend/src/mascope_backend/api/new/peak_assignments/config.py)),
 frontend via `runtime.meta`

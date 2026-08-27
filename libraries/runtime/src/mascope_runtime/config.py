@@ -43,11 +43,14 @@ class MetaConfig(BaseModel):
     description: str = "Mascope configuration"  # Description for `mascope env list`
     api_port: int = 8090  # API port
     filestore: str = r"./filestore"  # filestore path
-    # Peak-centric assignment (docs/dev/peak_assignment_paradigm.md). Off by
-    # default so the targeted workflow stays exactly as it was; the backend
-    # reads it via `peak_assignment_enabled()` and the frontend via
-    # `runtime.meta`, so one switch gates both sides.
-    peak_assignment: bool = False
+    # Peak-centric assignment (docs/dev/peak_assignment_paradigm.md). On by
+    # default: the feature is generally available, and targeted matching is
+    # unaffected either way - it coexists rather than being replaced. The
+    # backend reads it via `peak_assignment_enabled()` and the frontend via
+    # `runtime.meta`, so one switch gates both sides. Set it to false to keep
+    # a deployment on the pre-assignment behaviour: no assignment at sample
+    # ingest, no assignment views, and the API write routes answering 403.
+    peak_assignment: bool = True
     # Size cap (in gigabytes) for a single resumable (tus) upload, advertised
     # to clients as Tus-Max-Size and enforced at upload creation. Applies per
     # upload: it does not limit how many files a client may transfer, only how

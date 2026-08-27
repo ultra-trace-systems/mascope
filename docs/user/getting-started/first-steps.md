@@ -49,10 +49,11 @@ screen:
 - **Left panel** — the *sample browser*: drill from datasets into batches into
   samples. Below it, the *match browser* lists the focused batch's target
   collections and their matched ions.
-- **Right panel** — the working views, as tabs: **Raw files**, **Batch**,
-  **Sample**, and **Match**. Tabs enable as their subject exists — **Batch**
-  needs a batch with samples, **Sample** a selected sample, **Match** a
-  visualized ion match.
+- **Right panel** — the working views, as tabs: **Raw files**, **Batch** and
+  **Sample**. Tabs enable as their subject exists — **Batch** needs a batch with
+  samples, **Sample** a selected sample. (A deployment with peak assignment
+  switched off shows a fourth tab, **Match**, enabled by a visualized ion
+  match.)
 - **Bottom edge** — a thin progress strip; each running server task (upload,
   processing, matching) shows as a colored bar with a tooltip.
 
@@ -110,12 +111,17 @@ The *Samples* pane also has a **Back to batches** button.
 
 Once samples and matches exist, the remaining tabs come alive:
 
-- **Batch** — compare matches across all samples in the batch; click a data
-  point to jump to its match.
+- **Batch** — compare matches across all samples in the batch, and switch
+  between *Targets* and *Assignments* to plot assigned batch peaks.
 - **Sample** — the selected sample's sum spectrum and detected peaks, with
-  interactive peak assignment.
-- **Match** — one ion's match in detail: per-isotope spectra, the timeseries of
-  matched peaks, and the match parameters.
+  interactive peak assignment: the ledger of what each peak was assigned, the
+  peak inspector, and the assignment time series.
+
+A deployment with [peak assignment](../how-it-works/peak-assignment.md) switched
+off has one more tab instead, **Match** — one ion's match in detail: per-isotope
+spectra, the timeseries of matched peaks, and the match parameters. With
+assignment on (the default) the Sample tab covers that ground for every peak
+rather than only targeted ones.
 
 The [Concepts](../concepts/index.md) page explains the terms these views use;
 [How it works](../how-it-works/index.md) covers the processing behind them.

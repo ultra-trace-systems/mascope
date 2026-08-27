@@ -273,6 +273,28 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
 
 ### Changed
 
+- **Peak assignment is now on by default.** A composition is assigned to every
+  peak of a sample as it is processed (the fast database stage only - the
+  untargeted search stays something you launch deliberately), the assignment
+  views are present, and the `/api/peak-assignments` write routes accept work
+  instead of answering 403. Targeted matching is unchanged: assignment is an
+  addition, not a replacement, and the target collections, ion tables and batch
+  overview behave exactly as before.
+  **What an upgrade changes for you.** Processing a sample now also writes an
+  assignment run and one row per detected peak, so it takes a little longer and
+  uses more database space. A host provisioned with `tooling/ubuntu.sh` already
+  runs the nightly retention timer that reclaims it (keeping the newest runs per
+  sample); a deployment set up another way should schedule
+  `prune_peak_assignment_runs` itself - see `docs/maintaining.md`. Samples processed before the upgrade are not assigned
+  retroactively. The Sample tab's spectrum and peak inspector take over the
+  duties of the *Match* tab, which is not shown while assignment is on. To stop it,
+  set `peak_assignment = false` under `[meta]` in the env config (or
+  `MASCOPE_PEAK_ASSIGNMENT=0`) and restart: that ends the ingest work and closes
+  the write routes again. The assignment *views* are baked into the frontend
+  image at build time, so on a deployment running published images they stay
+  visible until you run an image built with the flag off - see
+  `docs/maintaining.md`.
+
 - Target compound formulas are now enforced by the database, not just by the
   API. `validate_compound_formula` already refused a bare numeric mass such as
   `"136.1252"` in place of a composition, but only on the Pydantic request

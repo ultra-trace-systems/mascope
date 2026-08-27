@@ -3,11 +3,21 @@ import { runtime } from '@/lib/runtime'
 /**
  * Peak-centric assignment (docs/user/how-it-works/peak-assignment.md).
  *
- * Off unless the deployment opts in via the `peak_assignment` flag in the
- * runtime `[meta]` config -- the same switch the backend reads. With it off the
- * targeted workflow renders exactly as it did before the feature landed: the
- * peak ledger and composition search in the Sample tab, legacy match scores in
- * the search results, and no assignment views.
+ * On unless the deployment switches it off via the `peak_assignment` flag in
+ * the runtime `[meta]` config -- the same switch the backend reads. With it off
+ * the targeted workflow renders exactly as it did before the feature landed:
+ * the peak ledger and composition search in the Sample tab, legacy match scores
+ * in the search results, and no assignment views.
+ *
+ * Read at module load from the config baked into the bundle, so flipping the
+ * flag needs a frontend rebuild (prod) or a dev-server restart, not just a
+ * container restart.
+ *
+ * A missing key reads as OFF here, while the backend's own fallback is on. The
+ * asymmetry is deliberate and effectively unreachable - `peak_assignment` is a
+ * MetaConfig field, so the serialized runtime always carries it - but if a
+ * runtime ever arrived without it, hiding the views is the safer half to be
+ * wrong on: the writes would still be gated server-side.
  */
 export const peakAssignmentEnabled = Boolean(runtime?.meta?.peak_assignment)
 

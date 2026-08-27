@@ -135,9 +135,9 @@ applies rather than a null overriding it.
 
 Ten endpoints, all under `/api/peak-assignments` (see
 [`routes.py`](../../server/backend/src/mascope_backend/api/new/peak_assignments/routes.py)). The
-write routes (assign / verify / recalibrate) are additionally gated on the opt-in flag —
+write routes (assign / verify / recalibrate / import) are additionally gated on the feature flag —
 `require_peak_assignment_enabled` returns 403 with the feature off; the reads stay open so ledgers
-from opted-in periods remain inspectable:
+written while it was on remain inspectable:
 
 | Method | Path | Returns | Notes |
 |---|---|---|---|

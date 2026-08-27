@@ -532,7 +532,8 @@ One field on `PeakAssignmentConfig`. This is small, self-contained, and closes
 2.3 on its own.
 
 **Sequencing recommendation:** do the foundation on `develop`. Both paradigms
-benefit, the epic is flagged off by default (`MASCOPE_PEAK_ASSIGNMENT`), and
+benefit, the epic was flagged off by default at the time (`MASCOPE_PEAK_ASSIGNMENT`;
+it is on by default now), and
 rebasing 21k lines of epic onto a changed ionization model is far easier than
 the reverse. Stitch 8.1-8.3 on the epic branch afterwards.
 

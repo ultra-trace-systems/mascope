@@ -178,7 +178,15 @@ async def test_detail_unknown_assignment_returns_404(guest_client, pa_test_data)
 
 
 @pytest.mark.asyncio
-async def test_assign_requires_editor_role(guest_client, pa_test_data):
+async def test_assign_requires_editor_role(guest_client, pa_test_data, monkeypatch):
+    """A guest is refused the launch by the role gate, not by the feature gate.
+
+    Both answer 403 and the feature gate runs first, so the flag is pinned on
+    here rather than left to its default: otherwise this passes for the wrong
+    reason on any deployment where the feature is off, and stops testing the
+    role it is named for.
+    """
+    monkeypatch.setenv("MASCOPE_PEAK_ASSIGNMENT", "1")
     response = await guest_client.post(
         f"/api/peak-assignments/sample/{pa_test_data['sample_item_id']}/assign"
     )

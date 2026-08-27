@@ -617,29 +617,43 @@ transactions are far more numerous than errors.
 ## Optional features
 
 **Peak assignment** (assign a chemical composition to every peak - see
-[the user docs](user/how-it-works/peak-assignment.md)) ships **off**. A server
-that leaves it off is unaffected by it: samples process exactly as before, the
-UI is unchanged, and the `/api/peak-assignments` write routes refuse to launch
-runs (403; the read routes stay open, so results from an earlier opted-in
-period remain visible). To enable it on a deployment, set it in the env's
-config toml:
+[the user docs](user/how-it-works/peak-assignment.md)) ships **on**. What that
+costs a server is one database-stage assignment run per newly processed sample:
+some extra processing time, and one database row per detected peak per run, so
+watch disk (see [Disk space](#disk-space)) and keep the reclaim timer below in
+place. Targeted matching is unaffected - assignment is an addition, not a
+replacement - and samples processed before the upgrade are not assigned
+retroactively; run assignment explicitly from the UI for those.
+
+To stop the work it does, switch the backend off - this is what removes the
+ingest cost, and it works on a deployment running published images. Set it in
+the env's config toml:
 
 ```toml
 [meta]
-peak_assignment = true
+peak_assignment = false
 ```
 
-then rebuild and restart the stack (`mascope prod up --build`). The rebuild
-matters: the frontend bakes the flag in at image build time, so a plain
-restart flips only the backend and leaves the UI on the old setting.
-`MASCOPE_PEAK_ASSIGNMENT=1` in `/etc/environment` flips the backend without
-editing the toml (remember host env vars apply at login - start the stack from
-a fresh shell), but the frontend still needs the toml value and a rebuild.
-Enabling it means every newly processed sample also gets a database-stage
-assignment run, which adds processing time and one database row per detected
-peak per run, so watch disk after turning it on (see
-[Disk space](#disk-space)). Existing samples are not assigned retroactively;
-run assignment explicitly from the UI for those.
+and restart the stack, or set `MASCOPE_PEAK_ASSIGNMENT=0` in `/etc/environment`
+to flip the backend without editing the toml (remember host env vars apply at
+login - start the stack from a fresh shell). Either way samples stop being
+assigned at ingest and the write routes return 403 again.
+
+**The UI is a separate matter, and needs an image.** The frontend bakes the flag
+into its bundle at image build time - nothing injects it at container start - so
+a deployment running published images keeps showing the assignment views after
+the backend is switched off, and its *Assign peaks* button then fails with the
+403 rather than disappearing. Removing those views requires an image built with
+the flag off, which means building from a source checkout
+(`mascope prod up --build`, whose compose build context is the repository); the
+config layers written by `mascope init` alone are not enough to build from. If
+you only need the assignment work to stop, the backend switch above is the whole
+answer and the leftover views are cosmetic.
+
+A server with it off is unaffected by the feature: samples process as they did
+before it landed, the UI is unchanged, and the `/api/peak-assignments` write
+routes refuse to launch runs (403; the read routes stay open, so ledgers
+written while it was on remain visible).
 
 ### Reclaiming assignment runs
 

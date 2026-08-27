@@ -82,11 +82,13 @@ class PeakAssignmentLimits(BaseModel):
 def peak_assignment_enabled() -> bool:
     """Whether the peak-centric assignment feature is switched on for this env.
 
-    Off by default: peak-centric assignment coexists with the targeted workflow
-    rather than replacing it, so a deployment that has not opted in must behave
-    exactly as it did before the feature landed. This gates the parts that would
-    otherwise change unasked - assignment on sample ingest, the rescored
-    composition search, and the reworked Sample view.
+    On by default: the feature is generally available. Peak-centric assignment
+    coexists with the targeted workflow rather than replacing it, so targeted
+    matching behaves the same either way; what this switch decides is whether
+    the parts that act on their own are active - assignment on sample ingest,
+    the rescored composition search, and the reworked Sample view. A deployment
+    that wants the pre-assignment behaviour sets the flag to false, which is
+    what an operator reaches for when ingest-time assignment is unwanted.
 
     Resolution order:
     - ``MASCOPE_PEAK_ASSIGNMENT`` env var (``1``/``true``/``yes``/``on``), which
@@ -98,21 +100,25 @@ def peak_assignment_enabled() -> bool:
     the ``/api/peak-assignments`` read endpoints stay open - ledgers written
     while the feature was on remain inspectable after opting out - but the
     write endpoints (launching runs, recording verdicts, refitting the
-    calibration) return 403 via ``require_peak_assignment_enabled`` in
-    ``routes.py``. That is what makes "nothing changes until you opt in" hold
-    for the API as well as for the UI and sample ingest: an opted-out
-    deployment cannot accumulate per-peak ledgers, deliberately or otherwise.
-    Tests exercise the writes by setting the env override. Ledger rows from
+    calibration, importing an externally computed run) return 403 via
+    ``require_peak_assignment_enabled`` in ``routes.py``. That is what makes
+    opting out hold for the API as well as for the UI and sample ingest: an
+    opted-out deployment cannot accumulate per-peak ledgers, deliberately or
+    otherwise. Tests pin the flag through the env override in both directions
+    rather than relying on the default. Ledger rows from
     opted-in periods are reclaimed by the ``prune_peak_assignment_runs``
-    maintenance script, which nothing schedules automatically whether the
-    flag is on or off - see ``docs/maintaining.md``.
+    maintenance script, which a host provisioned with ``tooling/ubuntu.sh``
+    runs nightly on a timer; a deployment set up another way schedules it
+    itself - see ``docs/maintaining.md``.
 
     :return: True when the feature is enabled for this environment.
     """
     override = os.environ.get("MASCOPE_PEAK_ASSIGNMENT")
     if override is not None:
         return override.strip().lower() in {"1", "true", "yes", "on"}
-    return bool(getattr(runtime.meta, "peak_assignment", False))
+    # The fallback matches MetaConfig's own default, so a runtime whose config
+    # model predates the field reads the same way as one that carries it.
+    return bool(getattr(runtime.meta, "peak_assignment", True))
 
 
 class PeakAssignmentConfig(BaseModel):

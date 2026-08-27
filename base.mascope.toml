@@ -10,16 +10,19 @@ description = "The default runtime env"
 api_port = 8090
 filestore = './filestore'
 # Peak-centric assignment (assign a composition to every peak) - see
-# docs/user/how-it-works/peak-assignment.md. Off by default: the targeted
-# workflow is unchanged until you opt in. Enabling it turns on assignment at
-# sample ingest, the assignment views in the UI, and the API write routes
-# (they return 403 while this is false; the read routes stay open so ledgers
-# from opted-in periods remain inspectable). The frontend bakes this flag in
-# at build time: after changing it, rebuild the frontend image (prod) or
-# restart the dev server - a container restart alone does not flip the UI.
-# Ledger rows are reclaimed with the prune_peak_assignment_runs script
-# (docs/maintaining.md), which nothing schedules for you.
-peak_assignment = false
+# docs/user/how-it-works/peak-assignment.md. On by default: it turns on
+# assignment at sample ingest (the fast database-only stage), the assignment
+# views in the UI, and the API write routes. Targeted matching is unchanged
+# either way - the two coexist. Set this to false to keep the pre-assignment
+# behaviour: ingest assigns nothing, the assignment views are hidden, and the
+# write routes return 403 (the read routes stay open, so ledgers written while
+# it was on remain inspectable). The frontend bakes this flag in at build
+# time: after changing it, rebuild the frontend image (prod) or restart the
+# dev server - a container restart alone does not flip the UI.
+# Ledger rows are reclaimed with the prune_peak_assignment_runs script; a host
+# provisioned with tooling/ubuntu.sh runs it nightly on a timer, and any other
+# deployment should schedule it itself (docs/maintaining.md).
+peak_assignment = true
 # Uploads: size cap (GB) for a single resumable (tus) upload, enforced by the
 # backend and used by the web uploader to size its own client-side limit (see
 # docs/maintaining.md). It lives here rather than in [backend] because both
