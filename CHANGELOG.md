@@ -480,6 +480,18 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
   removes a dead env's, the dev cookie now expires after a day rather than the
   week a production session keeps.
 
+- The peak inspector's *abu.* column now shows the correct theoretical
+  relative abundance for untargeted isotope satellites. The column recovers
+  the prediction from the stored abundance error, which untargeted assignment
+  saved without its sign - so a satellite observed *below* its prediction was
+  rendered as if it had been observed above it (a peak predicted at 10% of M0
+  but observed at 5% displayed as 3.3% instead of 10%). Untargeted assignments
+  now store the same signed error as targeted ones (positive = observed above
+  prediction), which also puts the theoretical envelope markers in the
+  spectrum chart at the right height. Stored assignments are corrected the
+  next time peak assignment runs; scores and tiers are unaffected, since
+  everything that scores the error already used its magnitude.
+
 - A raw file whose own m/z spacing is coarser than the peak fitter's window no
   longer fails to process. The instrument-function fit derives a minimum peak
   separation in samples from `dmz / median(diff(mz))`; on a coarse spectrum

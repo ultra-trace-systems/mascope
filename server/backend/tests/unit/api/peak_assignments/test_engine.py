@@ -893,6 +893,40 @@ class TestUntargetedMatches:
         assert assignments[0]["fit_score"] == pytest.approx(0.42)
         assert assignments[0]["tier"] == TIER_BELOW_ASSIGNABILITY
 
+    def test_signed_abundance_error_is_persisted_unchanged(self):
+        # The finder's intensity_error is the signed relative error
+        # (observed/predicted - 1), the same convention as the targeted
+        # matcher's match_abundance_error. The inspector recovers the
+        # predicted relative abundance as observed_rel / (1 + error), so the
+        # sign must survive persistence; only the score works on |error|.
+        matches_df = pd.DataFrame(
+            [
+                {
+                    "mz": 100.1,
+                    "formula": "C5H10O2",
+                    "ion": "C5H11O2+",
+                    "isotope_label": "M0",
+                    "ionization_mechanism": "+H+",
+                    "mz_error_ppm": 2.0,
+                    "intensity_error": -0.3,
+                    "other_candidates": "",
+                }
+            ]
+        )
+        assignments = untargeted_matches_to_peak_assignments(
+            matches_df,
+            self._one_peak_df("pA", 100.1, 5000.0),
+            "sample1",
+            "run1",
+            POSSIBLE,
+            PROBABLE,
+            mechanism_id_by_notation={"+H+": "mech1"},
+        )
+        assert len(assignments) == 1
+        assert assignments[0]["abundance_error"] == pytest.approx(-0.3)
+        # fallback score = (1 - |-0.3|) * (1 - 2.0/100)
+        assert assignments[0]["fit_score"] == pytest.approx(0.7 * 0.98)
+
     def test_isotope_child_is_attributed_to_its_formula_group_m0(self):
         assignments = untargeted_matches_to_peak_assignments(
             self._matches_df(),

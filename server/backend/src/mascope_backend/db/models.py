@@ -1535,6 +1535,10 @@ class PeakAssignment(Base):
     # is a measurement, not an identification confidence. See fit_score.md.
     fit_score: Mapped[Optional[float]] = mapped_column(Float)
     mz_error_ppm: Mapped[Optional[float]] = mapped_column(Float)
+    # Signed relative abundance error, observed/predicted - 1, in BOTH stages
+    # (targeted match_abundance_error and the untargeted finder's intensity
+    # error share this convention). Consumers recover the predicted relative
+    # abundance as observed_rel / (1 + abundance_error) - keep it signed.
     abundance_error: Mapped[Optional[float]] = mapped_column(Float)
     tier: Mapped[str] = mapped_column(String(24), server_default=text("'unassigned'"))
     target_compound_id: Mapped[Optional[str]] = mapped_column(
