@@ -579,9 +579,10 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
   previously reported success whatever pytest answered.
 - The SDK's `matching.match_compound()` works again. The endpoint behind it
   builds a throwaway target compound to match against and rolls everything
-  back afterwards, but since the schema-constraints migration the flush of
-  the compound's ions violated a foreign key - the throwaway compound row
-  itself was never written - so every call returned HTTP 500. The app was
+  back afterwards, but the throwaway compound row itself was never written,
+  so the flush of its ions violated the foreign key on
+  `target_ion.target_compound_id` - every call has returned HTTP 500 for as
+  long as the endpoint has existed, in every release ever cut. The app was
   unaffected (it uses the ion and multi-compound variants), which is why the
   break went unnoticed; the SDK's live contract tests now cover this surface,
   so it cannot break silently again.
