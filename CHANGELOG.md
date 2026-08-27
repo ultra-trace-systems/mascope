@@ -357,7 +357,9 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
   the `.sync` directories written by zarr 2 are left orphaned by the upgrade.
   They are inert - nothing reads or writes them - and any sweep that runs over
   a sample directory clears them, but a long-lived filestore can reclaim the
-  inodes early with the new `delete-sync-dirs` filestore action.
+  inodes early with the new `delete-sync-dirs` filestore action, run inside the
+  backend container as
+  `python -m mascope_backend.db.admin.filestore delete-sync-dirs`.
 
 - Applying an m/z calibration to a sample file that has no `peak_timeseries.zarr`
   now warns and completes instead of failing the whole calibration. The handlers
