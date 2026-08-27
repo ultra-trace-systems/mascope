@@ -105,6 +105,43 @@ class DuplicateException(HTTPException):
         super().__init__(status_code=status.HTTP_409_CONFLICT, detail=detail)
 
 
+def is_expected_client_error(e: Exception, status_code: int) -> bool:
+    """
+    Whether a failure is a routine client-class outcome rather than a fault.
+
+    This is the predicate that decides the level a failure is logged at, and
+    the level is what decides whether it becomes an error-monitoring event:
+    ``mascope_runtime.logging`` exports every record at WARNING or above, so
+    only INFO and below are free. A bad request, a lapsed session, an id that
+    names nothing, a duplicate, a partial-success warning - all of these are
+    normal operation and nothing an operator can act on, so they stay at
+    INFO. Anything mapped to a 5xx, and the 4xx-mapped exception types that
+    still signal a server-side fault (``SQLAlchemyError``, ``AttributeError``
+    and the unlisted default), are faults and log at ERROR with a traceback.
+
+    Split out of :func:`process_exception` so that a caller which handles a
+    failure itself - and therefore logs it itself - can classify it on
+    exactly these terms instead of growing a second, drifting taxonomy.
+
+    :param e: The exception being reported.
+    :type e: Exception
+    :param status_code: The HTTP status that exception maps to.
+    :type status_code: int
+    :return: True when the failure is routine and belongs at INFO.
+    :rtype: bool
+    """
+    return status_code < 500 and isinstance(
+        e,
+        (
+            ApiException,
+            HTTPException,
+            InvalidPasswordException,
+            RequestValidationError,
+            ValueError,
+        ),
+    )
+
+
 def process_exception(e: Exception, context_message: str) -> ApiException:
     error_message = f"{context_message}. {str(e)}."
     # Opaque reference for correlating a client-visible error with the
@@ -254,16 +291,7 @@ def process_exception(e: Exception, context_message: str) -> ApiException:
     # with its traceback. RequestValidationError is always INFO and its
     # message redacted: its str()/traceback render the offending request
     # "input" values, which can be credentials.
-    expected_client_error = status_code < 500 and isinstance(
-        e,
-        (
-            ApiException,
-            HTTPException,
-            InvalidPasswordException,
-            RequestValidationError,
-            ValueError,
-        ),
-    )
+    expected_client_error = is_expected_client_error(e, status_code)
     with runtime.logger.contextualize(status_code=status_code, error_id=error_id):
         if expected_client_error:
             runtime.logger.info(error_message)
