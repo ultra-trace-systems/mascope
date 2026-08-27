@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import argparse
 import asyncio
 import glob
 import os
@@ -144,3 +145,24 @@ def run_action(action_name: ActionTypes) -> None:
     """
     asyncio.run(init_db())
     asyncio.run(ACTIONS[action_name]())
+
+
+def main(argv: list[str] | None = None) -> None:
+    """Run one action by name, so the actions are reachable from a shell.
+
+    ``run_action`` had no caller: the actions were registered and tested but
+    could not actually be run, which made an upgrade note pointing at one
+    impossible to follow. Invoke as::
+
+        python -m mascope_backend.db.admin.filestore delete-sync-dirs
+    """
+    parser = argparse.ArgumentParser(
+        prog="python -m mascope_backend.db.admin.filestore",
+        description="Run a filestore maintenance action.",
+    )
+    parser.add_argument("action", choices=sorted(ACTIONS), help="Action to run.")
+    run_action(parser.parse_args(argv).action)
+
+
+if __name__ == "__main__":
+    main()

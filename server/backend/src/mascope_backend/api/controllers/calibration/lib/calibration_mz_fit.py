@@ -26,6 +26,7 @@ General calibration workflow:
 
 import asyncio
 import math
+import os
 from abc import abstractmethod
 from itertools import combinations
 
@@ -105,6 +106,41 @@ class BaseCalibrationHandler:
         self.stats = None
         self.error = None
         self.warning = None
+
+    def _calibration_lock_path(self) -> str:
+        """Path naming the lock that guards a whole ``apply`` for this sample.
+
+        Not a store - only the name a lock file is derived from. It sits beside
+        the sample's stores and is deliberately distinct from any of them, so
+        taking it does not collide with the per-array locks the writes inside
+        ``_apply_sync`` take for themselves.
+        """
+        return os.path.join(
+            m_name.parse_path_from_item_filename(self.filename), "mz_calibration"
+        )
+
+    def _guarded_apply(self, fit: dict):
+        """Run ``_apply_sync`` under a lock covering the whole recalibration.
+
+        ``_apply_sync`` reads the stored calibration, rewrites several m/z
+        axes, and only then records the new one - an unguarded
+        read-modify-write. It used to be serialised for free: the body ran on
+        the event loop with no await in it, so no other coroutine in the worker
+        could interleave. Offloading it to a thread gives that up, and gives it
+        up more completely than a yield point would, because two callers get
+        two pool threads and run at the same time. On the Orbitrap path the
+        factor is cumulative, so two applies admitted past
+        ``_is_calibration_already_applied`` scale the axis twice while the
+        properties record one application.
+
+        The per-array ``zarr_write_lock`` inside does not cover this: it is
+        released between arrays and keyed per store. This one is keyed on the
+        sample and held across the lot, and being the same inter-process lock
+        the writes use, it also excludes a sibling worker or the file
+        converter - which the event loop never did.
+        """
+        with m_io.zarr_write_lock(self._calibration_lock_path()):
+            return self._apply_sync(fit)
 
     async def _match_calibration_compounds(self) -> tuple[pd.DataFrame, pd.DataFrame]:
         """Match calibration compounds in the sample file."""
@@ -223,14 +259,17 @@ class BaseCalibrationHandler:
         :return: DataArray containing detected peaks with their m/z, intensity, and time information.
         :rtype: xarray.DataArray
         """
-        peak_data = await asyncio.to_thread(m_io.load_peak_data, self.filename)
-
-        candidate_mzs = self._filter_mzs_by_polarity_and_snr(peak_data)
-        candidate_mzs = self._filter_mzs_by_refine_window(
-            candidate_mzs,
-            np.asarray(target_mzs),
+        # Offloaded through the filters, not just the load. `load_peak_data`
+        # returns a dask-backed dataset, so the store reads happen where its
+        # variables are evaluated - `signal_to_noise.values` in the SNR filter
+        # and `sum_peak_heights.values` in the dominance filter, plus that
+        # filter's per-candidate searchsorted loop. Wrapping only the loader
+        # would move the metadata into the thread and leave every chunk read
+        # on the event loop.
+        candidate_mzs = await asyncio.to_thread(
+            self._sync_load_and_filter_peaks, np.asarray(target_mzs)
         )
-        candidate_mzs = self._filter_dominated_peaks(candidate_mzs, peak_data)
+        # Stays on the loop: it awaits the instrument config.
         candidate_mzs = await self._filter_overlapping_peaks(candidate_mzs)
 
         peak_timeseries = await self._load_peak_timeseries(candidate_mzs)
@@ -239,6 +278,18 @@ class BaseCalibrationHandler:
         )
 
         return self._extract_intensity(peak_timeseries)
+
+    def _sync_load_and_filter_peaks(self, target_mzs: np.ndarray) -> np.ndarray:
+        """Synchronous body of :meth:`_load_and_filter_peaks` up to the awaits.
+
+        One unit so the lazy dataset is both opened and evaluated in the worker
+        thread. See the call site for why the split matters.
+        """
+        peak_data = m_io.load_peak_data(self.filename)
+
+        candidate_mzs = self._filter_mzs_by_polarity_and_snr(peak_data)
+        candidate_mzs = self._filter_mzs_by_refine_window(candidate_mzs, target_mzs)
+        return self._filter_dominated_peaks(candidate_mzs, peak_data)
 
     def _filter_mzs_by_polarity_and_snr(self, peak_data) -> np.ndarray:
         """Filter m/z values based on polarity and signal-to-noise ratio (SNR) thresholds."""
@@ -724,13 +775,13 @@ class TofCalibrationHandler(BaseCalibrationHandler):
         """Applies the m/z calibration fit to the sample file.
         NOTE: fit is passed externally since fit() and apply() used in different controllers
         and the instance of TofCalibrationHandler is not passed between them."""
-        # Offloaded as one unit rather than per zarr call. The body recalibrates
-        # several arrays and contains no await today, so it is atomic with
-        # respect to every other coroutine in this worker; wrapping each write
-        # separately would insert yield points into the middle of it, letting a
-        # reader see signal.zarr on the new m/z axis while peak_timeseries.zarr
-        # is still on the old one.
-        return await asyncio.to_thread(self._apply_sync, fit)
+        # Offloaded as one unit rather than per zarr call: the body recalibrates
+        # several arrays, and a reader must not see signal.zarr on the new m/z
+        # axis while peak_timeseries.zarr is still on the old one. Running it in
+        # a thread is what makes that possible without blocking the loop, but a
+        # thread is not on its own exclusive - see _guarded_apply for the lock
+        # that keeps the recalibration one unit.
+        return await asyncio.to_thread(self._guarded_apply, fit)
 
     def _apply_sync(self, fit: dict):
         """Synchronous body of :meth:`apply`. See there for why it is one unit."""
@@ -881,10 +932,10 @@ class OrbiCalibrationHandler(BaseCalibrationHandler):
         signals to be generated later.
         """
         # Offloaded as one unit, for the same reason as the TOF handler - and
-        # more sharply here: this calibration is cumulative, so a yield point
-        # admitting a second apply past the _is_calibration_already_applied
-        # guard below would double-apply old_factor_scaling.
-        return await asyncio.to_thread(self._apply_sync, fit)
+        # the lock matters more here: this calibration is cumulative, so a
+        # second apply admitted past the _is_calibration_already_applied guard
+        # below would double-apply old_factor_scaling.
+        return await asyncio.to_thread(self._guarded_apply, fit)
 
     def _apply_sync(self, fit: dict):
         """Synchronous body of :meth:`apply`. See there for why it is one unit."""
