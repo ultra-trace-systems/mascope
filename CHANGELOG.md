@@ -528,6 +528,16 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
   refresh says which files it queued, and reports the samples as failed for
   that run rather than pretending otherwise.
 
+- Exporting a sample item's peak data now says what is wrong with those same
+  samples instead of failing obscurely. Every column of the export comes from
+  the stored peak data except the total ion current, which is read from the
+  sample file, so on such a sample the two disagreed and the export stopped
+  with "All arrays must be of the same length" without producing a file. It
+  now names the outdated peak data and says that re-running peak detection
+  rebuilds it. The export is refused rather than filled in, because the stored
+  totals every intensity in it is derived from were measured over the
+  discarded scan as well.
+
 - A batch refresh that failed is no longer announced as a success. Refreshing
   a batch isolates a failing sample so one bad file cannot stop the rest, and
   the outcome it reported was ignored when the notification was raised - so a
