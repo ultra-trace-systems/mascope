@@ -1021,17 +1021,17 @@ async def rematch_batches(
         },
         "_notification_data": {"affected_sample_batch_ids": sample_batch_ids},
     }
-    if len(batch_collections["failed_batches"]) == total_batches_count:
-        # Every batch genuinely failed - critical error, and the case where
-        # naming them matters most, so the detail travels with the error too
-        # and not only with the partial-success warning.
+    if processed_batches_count == 0 and batch_collections["failed_batches"]:
+        # Nothing processed and something actually failed - critical error, and
+        # the case where naming the batches matters most, so the detail travels
+        # with the error too and not only with the partial-success warning.
         #
-        # The test is on the failed count rather than on "nothing was
-        # processed", because a locked batch is not a failure: it is one that
-        # is mid-processing and was deliberately left alone. A dataset-wide
-        # refresh over a dataset that happens to be busy is entirely locked,
-        # and reporting that as "all N batches failed" contradicts what this
-        # operation promises.
+        # The extra test for a failure is what keeps a run of nothing but
+        # locked batches out of here. A locked batch is not a failure: it is
+        # one that is mid-processing and was deliberately left alone, which is
+        # what the dataset-wide refresh promises to do. Reporting a dataset
+        # that simply happens to be busy as "all N batches failed to process"
+        # contradicts that, and it is one click away from the Datasets pane.
         raise ApiException(
             "\n".join(
                 [f"All {total_batches_count} batches failed to process"] + problem_lines
