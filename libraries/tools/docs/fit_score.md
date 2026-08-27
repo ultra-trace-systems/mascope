@@ -70,7 +70,7 @@ One path used to escape that switch: the on-demand composition search
 (`api/new/cheminfo`) scored every candidate with `ion_score_v2` unconditionally, so an
 existing user-facing feature reported fit/tier/plausibility instead of the legacy match
 score regardless of `MASCOPE_MATCH_SCORE_VERSION`. It is now gated on the peak-assignment
-feature flag, which is off by default — see
+feature flag — see
 [`peak_assignment_paradigm.md`](../../../docs/dev/peak_assignment_paradigm.md) §5.1.
 
 ## 2. Scientific rationale

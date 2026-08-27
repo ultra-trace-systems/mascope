@@ -101,14 +101,22 @@ modified, matches may be out of date"*.
   collections the colouring is alarm-style — a confident detection shows
   **red**, not green.
 - Click a collection to open its **ion table**: every target ion with its
-  score, formula, compound, and ionization mechanism. Click an ion's expander
-  (*Visualize ion match*) to open the **Match** tab for it.
-- **Match tab** — one ion in detail: the matched isotopes with their *m/z* and
-  relative abundances, the spectrum around each isotope, and the timeseries of
-  matched peaks across the batch.
+  score, formula, compound, and ionization mechanism.
 - **Batch tab** — the batch-wide overview chart. It needs a collection
   selected (it says so until you click one); then it plots the matched
-  intensities per sample. Click any data point to jump to that sample's match.
+  intensities per sample.
+
+!!! note "The Match tab and peak assignment"
+
+    The rest of this section describes the **Match** tab, which shows one ion in
+    detail. That tab is only present when
+    [peak assignment](../how-it-works/peak-assignment.md) is switched **off** —
+    with it on (the default) the Sample tab's spectrum, peak inspector and
+    assignment time series carry the same duties for every peak, not just
+    targeted ones, and the ion table's *Visualize ion match* expander and the
+    batch chart's click-through are hidden accordingly. Targeted matching itself
+    is unchanged either way: the scores, the ion table and the batch overview
+    above work the same.
 
 ### Tune the match parameters
 

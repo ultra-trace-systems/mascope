@@ -51,6 +51,8 @@ stages; the confidence layers are the paradigm's **Phase 3** (tiers/arbitration)
   (`HeuristicFilterConfig.use_senior`): it replaced a no-op placeholder, so enabling it for
   every caller would silently narrow the pre-existing composition search. Stage B sets it.
 - **The whole feature is off by default**, behind `peak_assignment` in the runtime
+  *(historical: the flag stayed, but its default flipped to **on** when the
+  feature became generally available - see `peak_assignment_paradigm.md`)*
   `[meta]` config (env override `MASCOPE_PEAK_ASSIGNMENT`), read by backend
   (`peak_assignment_enabled()`) and frontend (`runtime.meta`) alike. "Coexist, don't
   replace" turned out to need enforcing: ingest-time assignment, the rescored composition
@@ -97,7 +99,8 @@ branch's shape, not a commit hash that goes stale within a day.*
   own revision (`c4f7a2e9b1d8`): independent subsystem, no foreign key either way.
   Equivalence was proved by diffing a schema dump built from the old chain against one
   built from the new (identical), and the stairway/single-head/model-drift tests pass.
-- **Opt-in:** the feature is **off by default** (§3). Work stacks on
+- **Opt-in:** the feature was **off by default** (§3) at the time of writing; it
+  is on by default now. Work stacked on
   `feat/peak-assignment-opt-in`.
 - **Tests:** the full suite is green — libraries, CLI, backend unit + integration +
   migrations, frontend unit, lint/format. One gotcha when running them from a worktree:

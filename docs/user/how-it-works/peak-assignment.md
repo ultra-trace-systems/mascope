@@ -6,18 +6,21 @@ observed peak, what is the most likely chemical composition, and how confident a
 Each peak gets exactly one assignment per run, together with a **fit score** and a
 **confidence tier**.
 
-!!! note "Peak assignment is opt-in"
+!!! note "Peak assignment is on by default"
 
-    It is switched **off** by default, and a deployment that has not enabled it behaves
-    exactly as before: no assignment runs when a sample is processed, the composition
-    search keeps reporting the familiar match score, the Sample tab keeps its peak
-    ledger, and the API refuses to launch assignment runs (the write routes return 403;
-    reads stay open so earlier results remain visible). To turn it on, set
-    `peak_assignment = true` under `[meta]` in the environment's config toml (or export
-    `MASCOPE_PEAK_ASSIGNMENT=1`) and restart the stack — on a production deployment the
-    frontend bakes the flag in at build time, so also rebuild the frontend image.
-    Targeted matching keeps working either way — peak assignment is an addition,
-    not a replacement.
+    Targeted matching keeps working exactly as before either way — peak assignment is
+    an addition, not a replacement. With it on, a sample is assigned against the known
+    target library as it is processed, the assignment views appear, and the composition
+    search reports assignment confidence.
+
+    A deployment that would rather not assign at ingest can switch it off: set
+    `peak_assignment = false` under `[meta]` in the environment's config toml (or export
+    `MASCOPE_PEAK_ASSIGNMENT=0`) and restart the stack — on a production deployment the
+    frontend bakes the flag in at build time, so also rebuild the frontend image. With
+    it off nothing is assigned when a sample is processed, the composition search
+    reports the familiar match score, the Sample tab keeps its peak ledger, and the API
+    refuses to launch assignment runs (the write routes return 403; reads stay open, so
+    results from a period when it was on remain visible).
 
 The design rests on a foundational result of the field: **accurate mass alone — even at
 sub-ppm — cannot uniquely determine an elemental composition**, and isotope-pattern

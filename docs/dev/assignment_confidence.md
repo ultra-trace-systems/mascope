@@ -32,7 +32,7 @@ peak-centric engine's scoring, per the epic's "coexist, don't replace" principle
 not a silent flip of the legacy default.
 
 Coexistence is enforced by a feature flag rather than left to discipline: the whole
-peak-centric feature is **off by default** (`peak_assignment` in the runtime `[meta]`
+peak-centric feature stays behind one switch, `peak_assignment` in the runtime `[meta]`
 config; see [`peak_assignment_paradigm.md`](peak_assignment_paradigm.md) §5.1 for what it
 gates and why). Two consequences for the confidence layers specifically:
 
