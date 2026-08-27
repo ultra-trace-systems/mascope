@@ -50,6 +50,15 @@ A user-defined $\text{ppm}$ search window isolates corresponding experimental fe
 Higher isotopic states are only evaluated if their corresponding monoisotopic base peak is successfully matched.
 If a matching peak's relative intensity deviation exceeds a defined intensity tolerance threshold, that specific isotope is excluded from matching.
 
+Both errors the matching step reports are **signed relative to the prediction** - the mass
+error as $(m/z_\text{obs} - m/z_\text{pred}) / m/z_\text{pred}$ and the intensity error as
+$I_\text{rel,obs} / I_\text{rel,pred} - 1$ - which is the convention the targeted matcher
+uses for `match_mz_error` and `match_abundance_error`. A consumer can therefore recover the
+prediction from an observation and its error, which is how Mascope's peak inspector and
+spectrum chart draw the theoretical envelope of an assignment. The tolerance gate, the
+candidate ranking, the duplicate resolution and the scores below all use the magnitude, so
+the sign carries evidence without ever acting as a penalty.
+
 A joint mathematical scoring routine assigns each candidate a **fit-quality score** bounded
 between 0.0 and 1.0. This score measures *how well the observed data fit the candidate's
 predicted spectrum* — it is a reproducible measurement, **not** a probability of correctness

@@ -492,6 +492,19 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
   next time peak assignment runs; scores and tiers are unaffected, since
   everything that scores the error already used its magnitude.
 
+- Untargeted peak assignments now record which side of its prediction a peak
+  was measured on. Their m/z error was stored as a distance rather than a
+  signed error, so the peak inspector showed every untargeted assignment as if
+  its peak were heavy, and the spectrum chart - which recovers the theoretical
+  m/z from the stored error - drew the theoretical marker mirrored onto the
+  wrong side of the measured peak. The untargeted composition and isotope m/z
+  errors are now signed the way the targeted stage's already were (positive =
+  measured above prediction) and are taken relative to the prediction, which
+  makes that recovery exact. Candidate ranking, deduplication and scoring all
+  work on the magnitude, so which composition wins a peak, and its score, are
+  unchanged. Stored assignments are corrected the next time peak assignment
+  runs.
+
 - A raw file whose own m/z spacing is coarser than the peak fitter's window no
   longer fails to process. The instrument-function fit derives a minimum peak
   separation in samples from `dmz / median(diff(mz))`; on a coarse spectrum

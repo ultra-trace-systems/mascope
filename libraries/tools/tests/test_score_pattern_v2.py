@@ -223,7 +223,7 @@ def test_calibration_is_probability_and_monotone():
 
 
 def test_v1_score_pattern_unchanged_perfect():
-    # guard that v1 still behaves (byte-identical formula): a clean match scores high
+    # guard that v1 still behaves (unchanged formula): a clean match scores high
     s = score_pattern(
         np.array([100.0, 101.0]),  # observed_masses
         np.array([0.2, 0.3]),  # mass errors ppm
