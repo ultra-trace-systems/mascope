@@ -288,6 +288,28 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
   composition instead. **Caret isotopes (`^N` = 15N) are unaffected** and stay
   valid: those name a labelled *reagent*, a genuinely different substance, and
   a natural-abundance pattern is still computed around them.
+- Blocking filestore work no longer runs on the API's event loop. Reading a
+  spectrum, peak list or timeseries, applying an m/z calibration, aggregating a
+  batch and exporting peaks all reach zarr synchronously, and since the zarr 3
+  migration those paths take a cross-process lock that another process - a
+  sibling API worker, or the file converter - can hold for the length of a whole
+  write. On the event loop that stalls every other request the worker is
+  serving, not just the one doing the work. Those calls now run in a worker
+  thread.
+  Two details decided the shape of the fix. The loaders return lazy dask
+  objects, so each offload has to span the call *and* the materialization that
+  follows it - wrapping only the call moves metadata into the thread and leaves
+  every chunk read on the loop. And the two calibration `apply` bodies are
+  offloaded whole rather than per write: they contain no `await` today, so they
+  are atomic against the rest of the worker, and wrapping each write separately
+  would let a reader observe a file whose arrays sit on two different m/z axes -
+  or, on the Orbitrap path where the factor is cumulative, let a second apply
+  slip past the already-applied guard and double-apply it.
+
+- A `delete-sync-dirs` filestore action reclaims the `.sync` directories that
+  zarr 2's synchronizer left behind. They are inert after the zarr 3 upgrade -
+  nothing reads or writes them - so this is a one-shot cleanup rather than a
+  migration, and it removes only `*.sync`, never a store or a live lock.
 
 - Dropped the exact `numcodecs` pin and relaxed `zarr` to a `>=3.3,<4` range,
   closing a long-standing TODO. `numcodecs` is not imported anywhere in Mascope;
@@ -335,7 +357,7 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
   the `.sync` directories written by zarr 2 are left orphaned by the upgrade.
   They are inert - nothing reads or writes them - and any sweep that runs over
   a sample directory clears them, but a long-lived filestore can reclaim the
-  inodes early with `find <filestore> -type d -name '*.sync' -prune -exec rm -rf {} +`.
+  inodes early with the new `delete-sync-dirs` filestore action.
 
 - Applying an m/z calibration to a sample file that has no `peak_timeseries.zarr`
   now warns and completes instead of failing the whole calibration. The handlers

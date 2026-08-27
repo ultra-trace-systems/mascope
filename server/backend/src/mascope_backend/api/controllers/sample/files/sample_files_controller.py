@@ -1,3 +1,4 @@
+import asyncio
 import math
 import os
 import shutil
@@ -419,7 +420,9 @@ async def delete_sample_file_from_filestore(filename: str) -> dict[str, str]:
 
     # Step 3: Remove the directory
     try:
-        shutil.rmtree(filestore_path)
+        # Deleting a sample directory means unlinking every zarr chunk in it,
+        # which is thousands of syscalls for a large file.
+        await asyncio.to_thread(shutil.rmtree, filestore_path)
         runtime.logger.info(f"Deleted filestore directory: {filestore_path}")
         return {
             "status": "success",
@@ -1032,6 +1035,101 @@ def finite_or_none(values: list) -> list:
     return [v if v is None or math.isfinite(v) else None for v in values]
 
 
+def _sync_load_sample_file_peaks(
+    filename: str, areas: bool, heights: bool, average: bool
+) -> dict:
+    """Load a sample file's peaks and materialize them into plain lists.
+
+    Kept as one synchronous unit so the caller can hand the whole thing to a
+    worker thread. Splitting it would not help: ``load_peak_data`` returns a
+    dask-backed dataset, so the store reads happen at the ``.tolist()`` calls
+    here rather than at the load.
+
+    :param filename: Sample file filename
+    :param areas: Include peak areas
+    :param heights: Include peak heights
+    :param average: Average over time instead of summing
+    :raises FileNotFoundError: No such sample file, or it is unprocessed
+    :return: Response payload with mz, and area/height/sparsity as requested
+    """
+    sample_file_data = load_peak_data(filename)
+    response_data = {}
+
+    if areas:
+        peak_areas = get_peaks(sample_file_data, "area")
+        peak_areas = (
+            peak_areas.mean(dim="time") if average else peak_areas.sum(dim="time")
+        )
+        response_data["mz"] = peak_areas.mz.values.tolist()
+        response_data["area"] = peak_areas.values.tolist()
+
+    if heights:
+        peak_heights = get_peaks(sample_file_data, "height")
+        peak_heights = (
+            peak_heights.mean(dim="time") if average else peak_heights.sum(dim="time")
+        )
+        # If 'mz' was not populated from areas, populate it from heights
+        if "mz" not in response_data:
+            response_data["mz"] = peak_heights.mz.values.tolist()
+        response_data["height"] = peak_heights.values.tolist()
+
+    # Include sparsity aligned to the same mz coordinate as the response
+    if "mz" not in response_data:
+        response_data["mz"] = sample_file_data.mz.values.tolist()
+        response_data["sparsity"] = sample_file_data.sparsity.values.tolist()
+    else:
+        filtered_mz = peak_areas.mz if areas else peak_heights.mz
+        response_data["sparsity"] = sample_file_data.sparsity.sel(
+            mz=filtered_mz
+        ).values.tolist()
+
+    return response_data
+
+
+def _sync_load_peak_timeseries(filename: str, peak_mz: float):
+    """Load one peak's timeseries and materialize it.
+
+    Same reasoning as :func:`_sync_load_sample_file_peaks`: the ``.compute()``
+    has to sit inside the offloaded unit, not after it.
+
+    :param filename: Sample file filename
+    :param peak_mz: m/z of the peak to select, nearest match
+    :raises FileNotFoundError: No such sample file, or it is unprocessed
+    :return: Computed peak timeseries for the nearest m/z
+    """
+    sample_file = load_peak_data(filename)
+    peaks = get_peaks(sample_file, "height")
+    return peaks.sel(mz=peak_mz, method="nearest").compute()
+
+
+def _sync_get_sum_spectrum(
+    filename: str,
+    t_min: float | None,
+    t_max: float | None,
+    mz_min: float | None,
+    mz_max: float | None,
+) -> tuple[list, list]:
+    """Compute the summed spectrum and materialize it into plain lists.
+
+    This is the path that takes the cross-process zarr write lock on a cache
+    miss (``mascope_signal.compute._write_cached_sum_signal``), so it is the
+    one that most needs to be off the event loop.
+
+    :param filename: Sample file filename
+    :param t_min: Start of the time window
+    :param t_max: End of the time window
+    :param mz_min: Start of the m/z window, or None for all
+    :param mz_max: End of the m/z window, or None for all
+    :return: (mz values, intensity values) as plain lists
+    """
+    spectrum = m_compute.get_sum_signal(
+        filename, t_min, t_max, average=True, reconstruct=True
+    )
+    if mz_min is not None and mz_max is not None:
+        spectrum = spectrum.sel(mz=slice(mz_min, mz_max)).compute()
+    return spectrum.mz.values.tolist(), spectrum.values.tolist()
+
+
 @api_controller()
 async def get_sample_file_peaks(
     sample_file_id: str, areas: bool, heights: bool, average: bool = True
@@ -1067,45 +1165,17 @@ async def get_sample_file_peaks(
     sample_file_data = await get_sample_file(sample_file_id)
     filename = sample_file_data.get("data").get("filename")
 
-    # Step 2: Load peak data
+    # Step 2-4: Load and format the peak data in one worker thread. The whole
+    # block has to be offloaded together, not just load_peak_data: the dataset
+    # is dask-backed, so the chunk reads happen at the .tolist() calls below.
     try:
-        sample_file_data = load_peak_data(filename)
+        response_data = await asyncio.to_thread(
+            _sync_load_sample_file_peaks, filename, areas, heights, average
+        )
     except FileNotFoundError as e:
         raise NotFoundException(
             f"Sample file with name '{filename}' was not found or has not been processed"
         ) from e
-
-    # Step 3: Prepare the data structure for response
-    response_data = {}
-
-    # Step 4: Extract and format the data
-    if areas:
-        peak_areas = get_peaks(sample_file_data, "area")
-        peak_areas = (
-            peak_areas.mean(dim="time") if average else peak_areas.sum(dim="time")
-        )
-        response_data["mz"] = peak_areas.mz.values.tolist()
-        response_data["area"] = peak_areas.values.tolist()
-
-    if heights:
-        peak_heights = get_peaks(sample_file_data, "height")
-        peak_heights = (
-            peak_heights.mean(dim="time") if average else peak_heights.sum(dim="time")
-        )
-        # If 'mz' was not populated from areas, populate it from heights
-        if "mz" not in response_data:
-            response_data["mz"] = peak_heights.mz.values.tolist()
-        response_data["height"] = peak_heights.values.tolist()
-
-    # Include sparsity aligned to the same mz coordinate as the response
-    if "mz" not in response_data:
-        response_data["mz"] = sample_file_data.mz.values.tolist()
-        response_data["sparsity"] = sample_file_data.sparsity.values.tolist()
-    else:
-        filtered_mz = peak_areas.mz if areas else peak_heights.mz
-        response_data["sparsity"] = sample_file_data.sparsity.sel(
-            mz=filtered_mz
-        ).values.tolist()
 
     # Step 5: Format the response for the case where no peaks were detected
     if not response_data["mz"]:
@@ -1270,15 +1340,14 @@ async def get_sample_file_peak_timeseries(
     # Step 1: Fetch the sample file details using the provided ID.
     sample_file_data = await get_sample_file(sample_file_id)
     filename = sample_file_data.get("data").get("filename")
-    # Step 2: Load the sample file
+    # Step 2-3: Load the sample file and select the nearest peak, in one
+    # worker thread - the dataset is lazy, so the read lands on .compute().
     try:
-        sample_file = load_peak_data(filename)
-        peaks = get_peaks(sample_file, "height")
+        peak_timeseries = await asyncio.to_thread(
+            _sync_load_peak_timeseries, filename, peak_mz
+        )
     except FileNotFoundError:
         raise NotFoundException(f"Sample file with name '{filename}' not found")
-
-    # Step 3: From sample file peaks, select nearest to requested peak m/z
-    peak_timeseries = peaks.sel(mz=peak_mz, method="nearest").compute()
     peak_mz_data = peak_timeseries.mz.item()
     # Calculate difference of the sample peak m/z to requested peak m/z
     mz_diff = peak_mz_data - peak_mz  # [Th]
@@ -1349,19 +1418,13 @@ async def get_sample_file_spectrum(
     filename = sample_file_data.get("data").get("filename")
     intensity_unit = "counts/s"
 
-    # Step 2: Compute averaged spectrum in the time range (reconstructed for
-    # display so it overlays the centroids).
-    spectrum = m_compute.get_sum_signal(
-        filename, t_min, t_max, average=True, reconstruct=True
+    # Step 2-4: Compute the averaged spectrum (reconstructed for display so it
+    # overlays the centroids), filter it and materialize it, all in one worker
+    # thread. This is the path that takes the cross-process zarr write lock on
+    # a cache miss.
+    mz_values, intensity_values = await asyncio.to_thread(
+        _sync_get_sum_spectrum, filename, t_min, t_max, mz_min, mz_max
     )
-
-    # Step 3: Filter by m/z range if provided
-    if mz_min is not None and mz_max is not None:
-        spectrum = spectrum.sel(mz=slice(mz_min, mz_max)).compute()
-
-    # Step 4: Extract m/z values and intensities
-    mz_values = spectrum.mz.values.tolist()
-    intensity_values = spectrum.values.tolist()
 
     # Step 5: Return the total count, optional spectrum count, and data
     message = f"Retrieved spectrum data with {len(mz_values)} m/z points from sample file '{filename}'."
@@ -1412,7 +1475,7 @@ async def get_sample_file_metadata(sample_file_id: str) -> dict:
         ) from e
 
     # Step 3: Convert metadata to dict
-    metadata_dict = metadata.to_dict()
+    metadata_dict = await asyncio.to_thread(metadata.to_dict)
 
     return {
         "message": f"Metadata for sample file '{filename}' retrieved successfully.",

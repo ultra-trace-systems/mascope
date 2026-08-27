@@ -1,3 +1,4 @@
+import asyncio
 from datetime import datetime, timezone
 
 import numpy as np
@@ -718,7 +719,8 @@ async def delete_sample_batch(
         await session.commit()
 
     # --- Cleanup batch cache ---
-    m_io.delete_batch_cache(sample_batch_id)
+    # After the async_session block above, so no DB work crosses the thread.
+    await asyncio.to_thread(m_io.delete_batch_cache, sample_batch_id)
 
     # --- Emit deletion event if independent transaction ---
     if independent_transaction:
@@ -1066,8 +1068,14 @@ async def sample_batch_export_peaks(
 
             await send_progress_user_notification(notification, 0.9)
 
-            sample_file = m_io.load_peak_data(filename)
-            peak_data_item = get_peaks(sample_file, unit).sum(dim="time").compute()
+            # One hop: the dataset is lazy, so the read lands on .compute().
+            peak_data_item = await asyncio.to_thread(
+                lambda: (
+                    get_peaks(m_io.load_peak_data(filename), unit)
+                    .sum(dim="time")
+                    .compute()
+                )
+            )
 
             await send_progress_user_notification(notification, 1)
         except Exception:
@@ -1168,7 +1176,9 @@ async def get_sample_batch_peaks(
 
     # --- Try to load batch peak cache --- #
     try:
-        batch_data_response = load_existing_batch_cache(sample_batch)
+        batch_data_response = await asyncio.to_thread(
+            load_existing_batch_cache, sample_batch
+        )
         runtime.logger.info("Loaded existing batch peaks.")
         return batch_data_response
     except FileNotFoundError:
@@ -1189,8 +1199,10 @@ async def get_sample_batch_peaks(
     for ion_mode, specs in spectra.items():
         peak_collection = Spectra(specs, timestamps=np.arange(len(specs)))
 
-        aligned_peak_sum, vlm_min_mz, vlm_max_mz = m_compute.sum_peak_collection(
-            peak_collection
+        # GIL-bound pure-Python clustering, so this yields the loop in slices
+        # rather than freeing it entirely - still worth taking off the loop.
+        aligned_peak_sum, vlm_min_mz, vlm_max_mz = await asyncio.to_thread(
+            m_compute.sum_peak_collection, peak_collection
         )
         peak_per_mode[ion_mode] = aligned_peak_sum
         vlm_min_mzs.add(vlm_min_mz)
@@ -1232,7 +1244,9 @@ async def get_sample_batch_peaks(
             "intensity_variable": intensity_variable,
         },
     )
-    m_io.write_batch_cache(sample_batch_id, "peaks", batch_peaks)
+    await asyncio.to_thread(
+        m_io.write_batch_cache, sample_batch_id, "peaks", batch_peaks
+    )
     runtime.logger.debug("Batch peaks cache saved.")
 
     # --- Return aggregated peak data --- #

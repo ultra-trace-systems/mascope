@@ -1,3 +1,4 @@
+import asyncio
 from datetime import datetime, timezone
 from typing import cast
 
@@ -257,7 +258,11 @@ async def create_sample_items(
             computed_tic = computed_t0 = computed_t1 = None
             if tic_computation_needed:
                 try:
-                    tic_time, tic_values = m_compute.get_tic_per_scan(
+                    # kwargs, not a lambda: sample_file is an attached ORM
+                    # instance inside a live session, so its attributes must
+                    # be read here on the loop, not in the worker thread.
+                    tic_time, tic_values = await asyncio.to_thread(
+                        m_compute.get_tic_per_scan,
                         base_filename=sample_file.filename,
                         polarity=sample_item.polarity,  # sample_item polarity (+ or -)
                     )
@@ -825,8 +830,14 @@ async def sample_item_export_peaks(
         if instrument_type == "tof":
             peak_data_type = "peak_areas"
 
-        sample_file = m_io.load_peak_data(filename)
-        sample_peak_data = sample_file[peak_data_type].dropna(dim="mz", how="all")
+        # dropna returns a lazy selection, so without the .compute() inside
+        # the thread the peak matrix would still be read on the loop - twice,
+        # once here and again at the .values below.
+        def _load_peak_data():
+            sample_file = m_io.load_peak_data(filename)
+            return sample_file[peak_data_type].dropna(dim="mz", how="all").compute()
+
+        sample_peak_data = await asyncio.to_thread(_load_peak_data)
 
         await send_progress_user_notification(notification, 0.8)
     except Exception as e:
@@ -846,7 +857,7 @@ async def sample_item_export_peaks(
     base_datetime_utc = sample.datetime_utc
     scan_timestamps_utc = sample_peak_timedelta + pd.Timestamp(base_datetime_utc)
     # Get ticks for each time scan
-    _, scan_tics = m_compute.get_tic_per_scan(filename)
+    _, scan_tics = await asyncio.to_thread(m_compute.get_tic_per_scan, filename)
 
     mz_values = sample_peak_data.mz.values
     intensities = sample_peak_data.values
