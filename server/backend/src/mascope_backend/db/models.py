@@ -960,9 +960,9 @@ class TargetCompound(Base):
     # Mass-based compounds (a bare number instead of a composition) were retired
     # with the molmass fork - ions and isotopes are computed from the formula, so
     # a mass alone can never yield an isotope pattern. The Pydantic models
-    # already refuse them, but four call sites build TargetCompound through the
-    # ORM directly and db scripts bypass validation entirely, so the rule lives
-    # here too. Mirrors _NUMERIC_MASS in the target-compound request model; note
+    # already refuse them, but only for requests arriving over HTTP: a db
+    # script, hand-written SQL or a restored dump bypasses them entirely, so
+    # the rule lives here too. Mirrors _NUMERIC_MASS in the request model; note
     # it is a regex and not a float() parse because "NaN" is sodium nitride, a
     # formula that must keep working. Added NOT VALID by migration
     # e2d4a91c7b06, so legacy rows survive an upgrade while no new one lands.

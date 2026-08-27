@@ -257,8 +257,11 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
 - Target compound formulas are now enforced by the database, not just by the
   API. `validate_compound_formula` already refused a bare numeric mass such as
   `"136.1252"` in place of a composition, but only on the Pydantic request
-  models: four call sites build `TargetCompound` through the ORM directly, and
-  a db script, an SDK caller or hand-written SQL was never checked at all. A
+  models - so the rule held for anything arriving over HTTP and for nothing
+  else. A db script, hand-written SQL, or a restored dump from an older server
+  could still put one in, and a sweep across deployments found rows that had:
+  two databases still held mass-based compounds, one of them with tens of
+  thousands of `match_ion` rows depending on them. A
   `CHECK` constraint on `target_compound` now refuses one on every INSERT and
   UPDATE. It is added `NOT VALID`, so a server still holding a legacy row
   upgrades cleanly instead of aborting; clean those rows up and run
