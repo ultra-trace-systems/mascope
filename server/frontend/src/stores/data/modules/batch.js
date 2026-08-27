@@ -88,12 +88,12 @@ export const useBatch = defineStore('app.data.batch', () => {
           type: 'rematch_batch'
         }
       ),
-    rematchBatches: async ({ sample_batch_ids }) =>
+    rematchBatches: async ({ sample_batch_ids, full_remove = false, force = false }) =>
       api.http.post(
         `/match/rematch/batches`,
         { sample_batch_ids },
-        {},
         {
+          params: { full_remove, force },
           use: 'process',
           type: 'rematch_batches'
         }
