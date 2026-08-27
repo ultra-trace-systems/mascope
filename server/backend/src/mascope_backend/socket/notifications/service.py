@@ -105,8 +105,8 @@ async def send_progress_user_notification(
         _room_ids: List of room IDs to emit to
         _total_samples: Total items for progress calculation
         _item_index: Current item index
-        _batch_weight: Weight for batch progress
-        _batch_index: Current batch index
+        _batch_weight: This batch's share of the progress bar
+        _batch_base: Share of the bar already filled by earlier batches
 
     :param notification: UserNotification with progress data
     :param increment: Progress increment value
@@ -120,7 +120,7 @@ async def send_progress_user_notification(
     total_samples = notification_copy.data.pop("_total_samples", None)
     item_index = notification_copy.data.pop("_item_index", None)
     batch_weight = notification_copy.data.pop("_batch_weight", None)
-    batch_index = notification_copy.data.pop("_batch_index", None)
+    batch_base = notification_copy.data.pop("_batch_base", None)
 
     # Clear any remaining internal keys (start with underscore)
     keys_to_remove = [
@@ -173,7 +173,10 @@ async def send_progress_user_notification(
             )
 
     if notification_copy.type == "rematch_batches":
-        notification_copy.progress = (batch_index - 1 + increment) * batch_weight * 100
+        # One bar across the whole run: the batches before this one have
+        # filled `batch_base` of it, and this batch fills its own share as it
+        # goes. Weighting per batch alone would restart the bar every time.
+        notification_copy.progress = (batch_base + increment * batch_weight) * 100
 
     if notification_copy.type == "sample_batch_export_peaks":
         if total_samples is not None and item_index is not None:

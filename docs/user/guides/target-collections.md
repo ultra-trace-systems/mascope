@@ -83,6 +83,11 @@ modified, matches may be out of date"*.
   and choose **Process → Refresh matches**. (**Process → Rematch** rebuilds
   all matches from scratch — use it if results look stale after parameter
   changes.)
+- To refresh a whole dataset at once, right-click it in the *Datasets* pane and
+  choose **Process → Refresh matches**. Its batches are refreshed one after
+  another, newest first; batches that are already up to date are skipped, and a
+  batch that is mid-processing is left alone. A toast reports what was done
+  when the run finishes.
 - While matching runs, the batch row shows a spinner, progress bars appear
   along the bottom edge of the app, and a toast reports completion. New files
   processed into a batch are matched automatically as part of processing.
