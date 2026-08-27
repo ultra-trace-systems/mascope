@@ -131,19 +131,25 @@ def run(
     # Set runtime environment for testing
     runtime.state.mode = "test"
 
+    # Every component runs even when an earlier one failed - a partial answer
+    # is worse than a slow one - and the command fails at the end if any did.
+    failed = False
     for component in components:
         if component == TestComponent.BACKEND:
-            run_backend_tests(module, test_name, verbose)
+            failed = run_backend_tests(module, test_name, verbose) or failed
         elif component == TestComponent.LIBRARIES:
-            run_library_tests(module, test_name, verbose)
+            failed = run_library_tests(module, test_name, verbose) or failed
         elif component == TestComponent.FRONTEND:
-            run_frontend_tests(module, test_name)
+            failed = run_frontend_tests(module, test_name) or failed
+
+    if failed:
+        raise typer.Exit(1)
 
 
 def run_frontend_tests(
     module: TestModule | None,
     test_name: str | None,
-):
+) -> bool:
     """Run frontend tests with the specified options
 
     Unit tests (Vitest) run by default; `-m system` runs the hermetic
@@ -168,18 +174,22 @@ def run_frontend_tests(
             f"Frontend tests support modules 'unit' (Vitest) and 'system' "
             f"(Playwright e2e); got '{module.value}'."
         )
-        return
+        return False
 
     typer.echo(f"Running: {command} (in {frontend_dir})")
-    lib.run(command, cwd=frontend_dir)
+    return lib.run(command, cwd=frontend_dir).returncode != 0
 
 
 def run_backend_tests(
     module: TestModule | None,
     test_name: str | None,
     verbose: bool,
-):
-    """Run backend tests with the specified options"""
+) -> bool:
+    """Run backend tests with the specified options.
+
+    :return: True when the suite failed, so the caller can fail the command.
+    :rtype: bool
+    """
     # Base command
     command = ["pytest"]
 
@@ -245,7 +255,7 @@ def run_backend_tests(
 
     # Run the command
     typer.echo(f"Running: {cmd_str}")
-    lib.run(cmd_str, cwd=_tests_cwd())
+    return lib.run(cmd_str, cwd=_tests_cwd()).returncode != 0
 
 
 _PYTEST_NO_TESTS_COLLECTED = 5
@@ -271,36 +281,76 @@ def _tests_cwd() -> str | None:
     return str(root) if root is not None else None
 
 
-def _library_doctest_paths(test_path: str) -> list[str]:
+# A module carries a doctest only if its source contains a PS1 prompt. Matching
+# the text is enough: a false positive costs one extra module import, while
+# selecting whole `src` trees costs every module in them (see below).
+_DOCTEST_PROMPT = ">>>"
+
+
+def _library_doctest_paths(test_path: str, cwd: str | None = None) -> list[str]:
     """
-    Source trees to collect doctests from, for a library test path.
+    Modules to collect doctests from, for a library test path.
+
+    Only the modules that actually carry one. Handing pytest the whole ``src``
+    tree makes ``--doctest-modules`` import every module in it, and three of
+    them import ``mascope_backend``, which reads the Postgres secret at import
+    time - so a library run would abort on a checkout with no secrets even
+    though the library suite itself passes there. Selecting by content keeps
+    the pass proportional to the handful of doctests that exist and needs no
+    ignore list to maintain.
 
     :param test_path: The pytest path the test pass was given.
     :type test_path: str
-    :return: Existing ``src`` directories under that path.
+    :param cwd: Directory the paths are relative to, defaults to the caller's.
+                The pytest subprocess runs from the source checkout, so
+                discovery has to look there too rather than at wherever the
+                CLI process happens to be standing.
+    :type cwd: str | None, optional
+    :return: Repo-relative paths of modules carrying a doctest, sorted.
     :rtype: list[str]
     """
     root = test_path.rstrip("/")
-    if not root or root.endswith(".py") or not os.path.isdir(root):
+    if not root or root.endswith(".py"):
+        return []
+    base = cwd or os.getcwd()
+    if not os.path.isdir(os.path.join(base, root)):
         return []
     candidates = (
-        [os.path.join(root, entry) for entry in sorted(os.listdir(root))]
+        [f"{root}/{entry}" for entry in sorted(os.listdir(os.path.join(base, root)))]
         if root == "libraries"
         else [root]
     )
-    return [
-        os.path.join(candidate, "src").replace("\\", "/")
-        for candidate in candidates
-        if os.path.isdir(os.path.join(candidate, "src"))
-    ]
+
+    found: list[str] = []
+    for candidate in candidates:
+        src = os.path.join(base, candidate, "src")
+        if not os.path.isdir(src):
+            continue
+        for directory, _, filenames in os.walk(src):
+            for filename in sorted(filenames):
+                if not filename.endswith(".py"):
+                    continue
+                path = os.path.join(directory, filename)
+                try:
+                    with open(path, encoding="utf-8") as handle:
+                        if _DOCTEST_PROMPT not in handle.read():
+                            continue
+                except OSError:
+                    continue
+                found.append(os.path.relpath(path, base).replace("\\", "/"))
+    return sorted(found)
 
 
 def run_library_tests(
     module: TestModule | None,
     test_name: str | None,
     verbose: bool,
-):
-    """Run library tests with the specified options"""
+) -> bool:
+    """Run library tests with the specified options.
+
+    :return: True when the suite or the doctest pass failed.
+    :rtype: bool
+    """
     # Base command
     command = ["pytest"]
 
@@ -354,7 +404,7 @@ def run_library_tests(
 
             if not found:
                 typer.echo(f"Warning: Test '{test_name}' not found. Exiting...")
-                return
+                return False
 
     # Ensure all path separators are forward slashes for pytest
     test_path = test_path.replace("\\", "/")
@@ -371,10 +421,10 @@ def run_library_tests(
     typer.echo(f"Running: {cmd_str}")
     failed = lib.run(cmd_str, cwd=_tests_cwd()).returncode != 0
 
-    # Doctests, as a second pass over the source trees.
+    # Doctests, as a second pass over the modules that carry one.
     #
     # They used to ride along as --doctest-modules on the run above, which
-    # collects the tests directories too. Every library ships its own
+    # collects the tests directories too. Six of the ten libraries ship a
     # tests/conftest.py, and under pytest's default import mode the second one
     # collected is an "import file mismatch" - so the whole run aborted with a
     # collection error and no doctest had run for as long as that was true.
@@ -383,7 +433,7 @@ def run_library_tests(
     # import mode its own tests rely on (several import their sibling conftest
     # as a top-level module, which --import-mode=importlib forbids).
     if not test_name:
-        doctest_paths = _library_doctest_paths(test_path)
+        doctest_paths = _library_doctest_paths(test_path, cwd=_tests_cwd())
         if doctest_paths:
             doctest_command = ["pytest", *doctest_paths, "--doctest-modules"]
             if verbose:
@@ -395,9 +445,10 @@ def run_library_tests(
             doctest_code = lib.run(doctest_cmd_str, cwd=_tests_cwd()).returncode
             failed = doctest_code not in (0, _PYTEST_NO_TESTS_COLLECTED) or failed
 
-    if failed:
-        # The command used to report success whatever pytest answered.
-        raise typer.Exit(1)
+    # Returned rather than raised: the caller runs the other components and
+    # fails once at the end. The command used to report success whatever
+    # pytest answered.
+    return failed
 
 
 @test_app.command()

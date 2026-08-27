@@ -573,9 +573,10 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
   libraries' test directories, where the per-library `conftest.py` files
   collide under pytest's default import mode; that had been failing the whole
   library run for as long as it had been there. Doctests are now a separate
-  pass over the source trees, where there is nothing to collide with. And a
-  failing suite now fails the command, which previously reported success
-  whatever pytest answered.
+  pass naming the modules that carry one, so nothing collides and the pass no
+  longer imports modules that need the runtime secrets to load. And a failing
+  suite now fails the command - backend, libraries or frontend - which
+  previously reported success whatever pytest answered.
 
 - A bulk upload run no longer makes the server stop answering. Every request
   from an agent, the file converter or the SDK is checked against its access
