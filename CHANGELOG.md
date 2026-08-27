@@ -507,6 +507,26 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
   spectra; both readings now come from one shared measurement, and asking
   for a fit on such a file reports too few quality peaks rather than a
   numerical error.
+- Processing a single raw file by hand no longer depends on its filename
+  carrying a recognized ionization mode token. "Process selected" asked the
+  server to resolve the mode from the filename, and a filename with no
+  configured token in it - a file named by an instrument nobody has set tokens
+  up for, an unusual acquisition, a renamed file - answered with an error
+  toast and left the Ionization Mode dropdown empty, with no way to fill it
+  and Save still enabled: the sample was created with no mode at all and
+  matched against nothing. The dropdown now always lists every mode configured
+  for the sample's polarity and preselects the one whose token the filename
+  carries, so recognized filenames behave exactly as before and unrecognized
+  ones are a choice the user makes rather than a dead end. Save is blocked
+  until a mode is on the field, and the field says why it is empty - no
+  polarity picked yet, no mode configured for that polarity, or no token in
+  the filename.
+  Two narrower cases are fixed with it: a file holding both polarities used to
+  preselect whichever matching mode came back first, which for half of them
+  was the mode of the polarity the user had not chosen, and it now resolves
+  against the chosen polarity and re-resolves when that choice changes; and
+  two overlapping tokens matching one filename now leave the choice to the
+  user instead of guessing.
 
 - A bulk upload run no longer makes the server stop answering. Every request
   from an agent, the file converter or the SDK is checked against its access
