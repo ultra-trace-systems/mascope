@@ -171,35 +171,62 @@ const onWorkspaceReload = ({ record_id } = {}) => {
 // The announcement only reaches rooms this tab has joined, and the workspace
 // store joins just the focused one. The dialog can be opened on another: the
 // workspace pane's context menu passes the right-clicked workspace, which need
-// not be the selected one. So join this workspace's room for as long as the
-// dialog needs it, and never touch the focused workspace's own subscription -
-// dropping that would take the store's live updates down with it.
-const ownsSubscription = ref(false)
+// not be the selected one. So the dialog joins its own workspace's room for as
+// long as it needs it.
+//
+// The tab holds one subscription per room and counts no references (the socket
+// keeps a Set, and the server does a plain leave_room), so the store and this
+// dialog can end up needing the same room. Focus can move onto the workspace
+// on screen while the dialog sits open, and the store re-joins only when focus
+// changes - so a leave here would take the store's live updates down with it
+// and the store would never learn. The invariant is therefore two-sided:
+//
+//   the dialog joins a room only when the store does not already hold it, and
+//   leaves a room only if it joined that room itself AND the store does not
+//   hold it by the time the dialog lets go.
+//
+// The mirror failure - hoarding rooms - cannot follow: a room kept back on
+// close is by definition the focused one, which the store now owns and drops
+// on its next focus change.
+const joinedRoom = ref(null)
 
-const subscribe = () => {
-  const id = props.workspace?.workspace_id
-  if (!id || id === app.data.workspace.focusedId) return
-  api.socket.addSubscription(id)
-  ownsSubscription.value = id
+const claimRoom = (room) => {
+  if (!room || room === app.data.workspace.focusedId) return
+  api.socket.addSubscription(room)
+  joinedRoom.value = room
 }
 
-const unsubscribe = () => {
-  if (!ownsSubscription.value) return
-  api.socket.removeSubscription(ownsSubscription.value)
-  ownsSubscription.value = false
+const releaseRoom = () => {
+  const room = joinedRoom.value
+  if (!room) return
+  joinedRoom.value = null
+  if (room === app.data.workspace.focusedId) return
+  api.socket.removeSubscription(room)
 }
+
+// The workspace this dialog is showing, and nothing once it closes. Driving
+// the room off this rather than off `visible` alone keeps the joined room and
+// the roster from drifting away from the workspace on screen, should the
+// dialog ever be rebound to another workspace without being closed first.
+const shownWorkspaceId = computed(() =>
+  visible.value ? (props.workspace?.workspace_id ?? null) : null
+)
+
+watch(shownWorkspaceId, (id) => {
+  releaseRoom()
+  claimRoom(id)
+  if (id) loadMembers()
+})
 
 const teardown = () => {
   api.socket.off('workspace_reload', onWorkspaceReload)
-  unsubscribe()
+  releaseRoom()
 }
 
 watch(visible, (v) => {
   reset()
   if (v) {
     api.socket.on('workspace_reload', onWorkspaceReload)
-    subscribe()
-    loadMembers()
   } else {
     teardown()
   }

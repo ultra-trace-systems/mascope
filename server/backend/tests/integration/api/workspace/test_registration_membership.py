@@ -200,14 +200,13 @@ async def test_registration_announces_the_new_membership(
 
     user_id = await _register(owner_client, role_id=300)
 
-    calls = [
-        call
+    # The rooms and the record_id are asserted as one pair, on one call: the
+    # dialog only reloads when a single broadcast both reaches a room the tab
+    # has joined and names the workspace on screen. Checked over the list of
+    # calls instead, an implementation splitting the two across separate emits
+    # would pass here and refresh nothing.
+    assert (acquisitions_workspace, [acquisitions_workspace, f"user-{user_id}"]) in [
+        (call.kwargs.get("record_id"), call.kwargs.get("room"))
         for call in emit.await_args_list
         if call.kwargs.get("record_type") == "workspace"
     ]
-    assert [acquisitions_workspace, f"user-{user_id}"] in [
-        call.kwargs.get("room") for call in calls
-    ]
-    # The members dialog only reloads for the workspace it is showing, so the
-    # broadcast has to name the workspace it is about.
-    assert acquisitions_workspace in [call.kwargs.get("record_id") for call in calls]
