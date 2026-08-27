@@ -93,6 +93,23 @@ async function computeBatchPeaks() {
     :loading="ledger.pending"
     :error="ledger.error"
     :onRetry="() => ledger.load('retry')"
+    :pt="
+      app.ui.help.right(
+        `
+        <h1>Batch Peak Ledger</h1>
+        <p>
+        Cross-sample m/z anchors for the batch: each row is a species seen
+        across samples, with its consensus formula and tier and the number of
+        samples it appears in.
+        </p>
+        <p>
+        The rows selected here are exactly what the Assignments chart plots
+        &mdash; Ctrl+A selects all filtered rows. Focus a sample to switch to
+        its per-sample assignment ledger.
+        </p>`,
+        { doc: app.ui.help.docUrl('how-it-works/peak-assignment/#batch-peaks') }
+      )
+    "
   >
     <template #menu>
       <Button
@@ -103,6 +120,17 @@ async function computeBatchPeaks() {
         :loading="computing"
         v-tooltip.left="'Build / refresh batch peaks from this batch\'s assignments'"
         @click="computeBatchPeaks"
+        :pt="
+          app.ui.help.left(`
+            <h1>Compute Batch Peaks</h1>
+            <p>
+            Builds or refreshes the batch peaks from the assignment runs this
+            batch's samples already have &mdash; no new assignment work. New
+            runs fold in automatically; use this to populate a batch assigned
+            before batch peaks existed, or to refresh after an import.
+            </p>
+          `)
+        "
       />
     </template>
 
@@ -123,6 +151,12 @@ async function computeBatchPeaks() {
       :virtualScrollerOptions="{ itemSize: 35.74 }"
       sortField="n_present"
       :sortOrder="-1"
+      :pt="
+        app.ui.help.top(
+          { title: 'Batch Peaks', helpKey: 'batch-peaks' },
+          { doc: app.ui.help.docUrl('how-it-works/peak-assignment/#batch-peaks') }
+        )
+      "
     >
       <template #empty>
         No batch peaks yet - run "Compute batch peaks" (or assign the batch) to populate.
@@ -151,11 +185,20 @@ async function computeBatchPeaks() {
 
       <Column
         field="consensus_tier"
-        header="Tier"
         sortable
         style="min-width: 8rem"
         :filterMatchModeOptions="[{ label: 'Equals', value: 'equals' }]"
       >
+        <template #header>
+          <span
+            v-help.top="{
+              title: 'Confidence Tiers',
+              helpKey: 'assignment-tiers',
+              doc: app.ui.help.docUrl('how-it-works/peak-assignment/#confidence-tiers')
+            }"
+            >Tier</span
+          >
+        </template>
         <template #body="{ data }">
           <BaseTierTag :tier="data.consensus_tier" :fit-score="data.best_fit_score" />
         </template>

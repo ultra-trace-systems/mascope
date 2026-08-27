@@ -213,7 +213,26 @@ onUnmounted(() => {
 </script>
 
 <template>
-  <figure style="height: calc(100vh - 200px); position: relative">
+  <figure
+    style="height: calc(100vh - 200px); position: relative"
+    v-help.top="{
+      message: `
+        <h1>Batch Assignments</h1>
+        <p>
+        Time series of the batch peaks selected in the Assignments ledger: one
+        trace per batch peak, one point per sample. Marker fill encodes the
+        consensus tier &mdash; filled squares identified, open squares
+        candidate, open diamonds below assignability, open circles unassigned
+        &mdash; and the neutral open-diamond trace is the total ion current
+        (TIC) reference.
+        </p>
+        <p>
+        Click a point to focus its sample, or drag with the select tool to
+        select samples.
+        </p>`,
+      doc: app.ui.help.docUrl('how-it-works/peak-assignment/#batch-peaks')
+    }"
+  >
     <div v-if="showSpinner" class="loading-indicator">
       <ProgressSpinner strokeWidth="3px" />
     </div>

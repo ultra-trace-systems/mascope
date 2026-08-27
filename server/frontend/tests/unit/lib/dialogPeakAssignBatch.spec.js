@@ -9,8 +9,24 @@ import { mount } from '@vue/test-utils'
 const assign = vi.fn()
 const push = vi.fn()
 
+// Minimal help-mode facade: the dialog and its config form register help cards
+// through these calls; the tests only need them to resolve.
+const helpStub = {
+  set: vi.fn(),
+  docUrl: (path = '') => `/docs/${path}`,
+  directive: () => ({}),
+  right: () => ({}),
+  left: () => ({}),
+  top: () => ({}),
+  bottom: () => ({}),
+  bottom_end: () => ({})
+}
+
 vi.mock('@/stores', () => ({
-  useApp: () => ({ data: { batch: { assign } }, ui: { notification: { push } } })
+  useApp: () => ({
+    data: { batch: { assign } },
+    ui: { notification: { push }, help: helpStub }
+  })
 }))
 
 /** Whether the launcher asked its parent to close the dialog. */
@@ -56,9 +72,7 @@ vi.mock('@/api', () => ({
 // Imported statically (vi.mock is hoisted above it, so the stubs still apply):
 // compiling the dialog and its config form is the expensive part, and as a
 // dynamic import inside the first test it lands on that one test's clock.
-const { default: DialogPeakAssignBatch } = await import(
-  '@/lib/dialogs/DialogPeakAssignBatch.vue'
-)
+const { default: DialogPeakAssignBatch } = await import('@/lib/dialogs/DialogPeakAssignBatch.vue')
 
 const BATCH = { sample_batch_id: 'sb-1', sample_batch_name: 'My Batch' }
 

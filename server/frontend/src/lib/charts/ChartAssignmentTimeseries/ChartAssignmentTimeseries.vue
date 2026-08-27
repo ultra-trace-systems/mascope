@@ -197,30 +197,54 @@ const layout = computed(() => ({
 </script>
 
 <template>
-  <BaseChartPlotly
-    id="ChartAssignmentTimeseries"
-    ref="plot"
-    title="Time series"
-    :data="traces"
-    :layout="layout"
-    :loading="loading"
+  <div
+    class="ts-wrap"
+    v-help.top="{
+      message: `
+        <h1>Assignment Time Series</h1>
+        <p>
+        Intensity over the acquisition for the focused peak. For an assigned
+        peak the whole isotopologue family is drawn &mdash; one line per
+        isotopologue, the main peak (M0) thickest, with a dotted grey
+        <b>Sum</b> of the family.
+        </p>
+        <p>
+        The y-axis is log-scaled by default; change it from the chart settings
+        (top left).
+        </p>`,
+      doc: app.ui.help.docUrl('how-it-works/peak-assignment/')
+    }"
   >
-    <template v-slot:settings>
-      <div class="row" style="align-items: center; gap: 0.5rem">
-        <ToggleSwitch v-model="log" />
-        <span>log scale</span>
+    <BaseChartPlotly
+      id="ChartAssignmentTimeseries"
+      ref="plot"
+      title="Time series"
+      :data="traces"
+      :layout="layout"
+      :loading="loading"
+    >
+      <template v-slot:settings>
+        <div class="row" style="align-items: center; gap: 0.5rem">
+          <ToggleSwitch v-model="log" />
+          <span>log scale</span>
+        </div>
+      </template>
+    </BaseChartPlotly>
+    <div v-if="!loading && !traces.length" class="ts-empty">
+      <div class="col" style="gap: 0.5rem; text-align: center; opacity: 0.6">
+        <span class="pi ph ph-wave-sine" style="font-size: 1.4rem" />
+        <i>Select a peak to see its time series.</i>
       </div>
-    </template>
-  </BaseChartPlotly>
-  <div v-if="!loading && !traces.length" class="ts-empty">
-    <div class="col" style="gap: 0.5rem; text-align: center; opacity: 0.6">
-      <span class="pi ph ph-wave-sine" style="font-size: 1.4rem" />
-      <i>Select a peak to see its time series.</i>
     </div>
   </div>
 </template>
 
 <style scoped>
+.ts-wrap {
+  position: relative;
+  height: 100%;
+  width: 100%;
+}
 .ts-empty {
   position: absolute;
   inset: 0;

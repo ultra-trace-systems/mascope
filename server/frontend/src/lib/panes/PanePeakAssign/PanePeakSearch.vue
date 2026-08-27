@@ -28,7 +28,7 @@ import { usePreview } from './preview.js'
 const app = useApp()
 const preview = usePreview()
 
-defineProps({
+const props = defineProps({
   height: {
     type: Number,
     required: true
@@ -43,6 +43,56 @@ defineProps({
 })
 
 const emit = defineEmits(['close'])
+
+// Root help card. The interaction wording differs between the legacy embedded
+// placement (a peak browser sits to the left) and the Re-search takeover of
+// the time-series pane; `embedded` never changes after mount.
+const rootHelp = {
+  message: `
+    <h1>Composition Search</h1>
+    <p>
+    Search candidate compositions for the selected peak from its m/z value, the
+    chosen ionization mechanisms and the allowed ranges of atom counts.
+    </p>
+    ${
+      props.embedded
+        ? `<p>
+          Select peaks by clicking rows in the peak browser to the left, or the
+          vertical peak lines in the spectrum chart.
+          </p>`
+        : `<p>
+          The search follows the focused peak: select peaks in the spectrum chart
+          or the Assignments ledger. Close the search to return to the time series.
+          </p>`
+    }`,
+  doc: app.ui.help.docUrl('how-it-works/peak-assignment/#the-two-stages')
+}
+
+// One card for the whole results table: the icon-only column headers and the
+// expandable isotope preview are the least guessable parts of the pane.
+const resultsHelp = {
+  message: `
+    <h1>Search Results</h1>
+    <p>
+    Candidate compositions whose ions land within the m/z window.
+    <b>DBE</b> is the degree of unsaturation.${
+      peakAssignmentEnabled
+        ? ` The seal column shows each
+    candidate's fit score and confidence tier, the atom column its chemical
+    plausibility, and a flask names a match in a public reference database.`
+        : ` The seal column shows each candidate's match score.`
+    }
+    A database icon marks formulas that already exist among your target compounds.
+    </p>
+    <p>
+    Expand a row to see the candidate's full theoretical isotope pattern, and
+    click an isotope row to preview it in the spectrum chart. The <b>+</b>
+    button adds a candidate to the open target collection.
+    </p>`,
+  doc: peakAssignmentEnabled
+    ? app.ui.help.docUrl('how-it-works/peak-assignment/#the-fit-score-a-pure-measurement')
+    : app.ui.help.docUrl('how-it-works/matching/')
+}
 
 const PARAMS_STORAGE_KEY = 'mascope.peakAssign.params'
 
@@ -277,22 +327,7 @@ const formatFit = (value) =>
        so the pane is absent rather than showing a "No peak selected" card.
        As a takeover of the time-series pane it always renders, otherwise
        "Re-search" would open onto nothing with no way back. -->
-  <div
-    class="search-pane"
-    v-if="!embedded || app.data.peak.list.length > 0"
-    v-help.top="{
-      message: `
-        <h1>Peak Assignment</h1>
-        <p>
-        Assign a composition to the currently selected peak based on the m/z value,
-        ionization mechanisms and allowed ranges of atom counts.
-        </p>
-        <p>
-        Select peaks by clicking rows in the peak browser to the left, or by clicking
-        the vertical grey peak lines in the spectrum chart.
-        </p>`
-    }"
-  >
+  <div class="search-pane" v-if="!embedded || app.data.peak.list.length > 0" v-help.top="rootHelp">
     <header class="search-head">
       <div class="search-title">
         <span class="pi ph ph-magnifying-glass" />
@@ -314,11 +349,36 @@ const formatFit = (value) =>
       />
     </header>
     <menu class="topbar">
-      <FloatLabel style="flex: 0 0 80px">
+      <FloatLabel
+        style="flex: 0 0 80px"
+        :pt="
+          app.ui.help.bottom(`
+            <h1>m/z Precision</h1>
+            <p>
+            The mass tolerance of the search, in ppm: a candidate is kept when a
+            theoretical isotope of its ion lands within this window of the peak's
+            m/z. Widening it finds more candidates, but more ambiguous ones.
+            </p>
+          `)
+        "
+      >
         <InputNumber v-model="params.mzPrecision" id="mzPrecision" :min="1" :max="100" fluid />
         <label for="mzPrecision">m/z precision</label>
       </FloatLabel>
-      <FloatLabel style="flex-grow: 1">
+      <FloatLabel
+        style="flex-grow: 1"
+        :pt="
+          app.ui.help.bottom(`
+            <h1>Formula Range</h1>
+            <p>
+            Allowed element counts for candidate formulas, as space-separated
+            ranges &mdash; e.g. <code>C0-100 H0-200 [15N]0-1</code>, isotopes in
+            brackets. Narrowing the ranges makes the search faster and keeps
+            chemically irrelevant candidates out.
+            </p>
+          `)
+        "
+      >
         <InputText
           v-model="formulaRangeModel"
           id="formulaRange"
@@ -333,7 +393,22 @@ const formatFit = (value) =>
         />
         <label for="formulaRange">formula range</label>
       </FloatLabel>
-      <FloatLabel style="min-width: 100px; max-width: 200px">
+      <FloatLabel
+        style="min-width: 100px; max-width: 200px"
+        :pt="
+          app.ui.help.bottom_end(
+            `
+            <h1>Ionization Mechanisms</h1>
+            <p>
+            Which charge-forming reactions (adducts) to consider when turning a
+            neutral formula into a detectable ion. Preselected from the sample's
+            ionization mode; narrow or widen the set to steer the search.
+            </p>
+          `,
+            { doc: app.ui.help.docUrl('concepts/#ionization-modes-and-mechanisms') }
+          )
+        "
+      >
         <MultiSelect
           id="ionmechs"
           v-model="ionMechs"
@@ -356,6 +431,7 @@ const formatFit = (value) =>
       size="small"
       v-model:expandedRows="expanded"
       :virtualScrollerOptions="{ itemSize: 35.5 }"
+      :pt="app.ui.help.top(resultsHelp)"
     >
       <Column expander />
       <Column field="target_compound_formula" header="Formula" sortable />
@@ -369,11 +445,7 @@ const formatFit = (value) =>
           {{ num.mz.format(data.cheminfo.target_isotope_mz) }}
         </template>
       </Column>
-      <Column
-        field="cheminfo.ionization_mechanism.ionization_mechanism"
-        header="Mech."
-        sortable
-      />
+      <Column field="cheminfo.ionization_mechanism.ionization_mechanism" header="Mech." sortable />
       <Column field="cheminfo.target_isotope_mz_error_ppm" header="Error (ppm)" sortable>
         <template #body="{ data }">
           {{ num.mzError.format(data.cheminfo.target_isotope_mz_error_ppm) }}
@@ -538,10 +610,7 @@ const formatFit = (value) =>
         </i>
       </div>
     </div>
-    <div
-      v-else-if="!loading && results.length === 0"
-      class="center search-placeholder"
-    >
+    <div v-else-if="!loading && results.length === 0" class="center search-placeholder">
       <div class="col" style="gap: 1rem; max-width: 45ch; text-align: center">
         <strong> <span class="pi ph ph-info" /> No results found </strong>
         <i style="opacity: 0.6"> Consider broadening the m/z precision or formula range. </i>

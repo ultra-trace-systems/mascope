@@ -47,9 +47,11 @@ function initialConfig() {
 const config = reactive(initialConfig())
 
 // Reset each time the dialog opens, so a previous batch's choices never leak
-// into the next one.
+// into the next one. Also scope help mode to the dialog's cards while it is
+// open (the config form registers its cards on this layer).
 watch(visible, (open) => {
   if (open) Object.assign(config, initialConfig())
+  app.ui.help.set(open ? 'dialog_peak_assign' : null)
 })
 
 const batchName = computed(() => props.batch?.sample_batch_name ?? 'this batch')
@@ -94,13 +96,36 @@ async function launch() {
     :style="{ width: '28rem' }"
   >
     <div class="col" style="gap: 1rem; align-items: stretch">
-      <Message severity="warn" :closable="false">
-        Runs over every eligible sample in the batch, in the background. Blank and
-        uncalibrated samples are skipped. It cannot be cancelled once started.
+      <Message
+        severity="warn"
+        :closable="false"
+        :pt="
+          app.ui.help.right(
+            `
+            <h1>Batch Assignment</h1>
+            <p>
+            Launches an assignment run for every eligible sample in the batch
+            with this one configuration, as a background task. Blank samples and
+            samples whose m/z calibration is not verified are skipped, and a
+            batch whose samples are already being assigned is refused.
+            </p>
+            <p>
+            The untargeted stage starts off here because its cost is multiplied
+            by the number of samples.
+            </p>`,
+            {
+              layer: 'dialog_peak_assign',
+              doc: app.ui.help.docUrl('how-it-works/peak-assignment/#batch-peaks')
+            }
+          )
+        "
+      >
+        Runs over every eligible sample in the batch, in the background. Blank samples and samples
+        whose m/z calibration is not verified are skipped. It cannot be cancelled once started.
       </Message>
       <Message v-if="config.run_untargeted" severity="warn" :closable="false">
-        The untargeted search runs per sample and is the slowest part of
-        assignment. Across a whole batch this can take a long time.
+        The untargeted search runs per sample and is the slowest part of assignment. Across a whole
+        batch this can take a long time.
       </Message>
       <PeakAssignConfigForm :config="config" :pinned="['run_untargeted']" />
     </div>

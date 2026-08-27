@@ -49,12 +49,15 @@ const verdictFilter = ref('all')
 
 // --- Run selector -----------------------------------------------------------
 
-// One dropdown option per run, labelled with its ordinal, status and age.
+// One dropdown option per run, labelled with its ordinal and status. The
+// ellipsis marks only runs still in flight - failed/cancelled runs are done,
+// just not completed (mirrors the backend's non-terminal statuses).
+const IN_FLIGHT_STATUSES = ['pending', 'running', 'importing']
 const runOptions = computed(() =>
   runs.value.list.map((run, index) => ({
     ...run,
     _label: `#${runs.value.list.length - index} · ${run.status}${
-      run.status === 'completed' ? '' : '…'
+      IN_FLIGHT_STATUSES.includes(run.status) ? '…' : ''
     }`
   }))
 )
@@ -101,12 +104,15 @@ watch(
 
 // Reset each time the dialog opens, the same way the batch launcher does: the
 // form only fills fields that are still unset, so without this a value typed
-// for one sample would silently carry into the next run.
+// for one sample would silently carry into the next run. Also scope help mode
+// to the dialog's cards while it is open (the config form registers its cards
+// on this layer).
 watch(configVisible, (open) => {
   if (open) {
     Object.assign(config, initialConfig())
     launchError.value = null
   }
+  app.ui.help.set(open ? 'dialog_peak_assign' : null)
 })
 
 async function launch() {
@@ -308,7 +314,27 @@ const isoCount = (row) => assignments.value.childrenOf(row.peak_assignment_id).l
 </script>
 
 <template>
-  <BaseTabbedPanel label="Assignments" icon="pi ph ph-list-magnifying-glass">
+  <BaseTabbedPanel
+    label="Assignments"
+    icon="pi ph ph-list-magnifying-glass"
+    :pt="
+      app.ui.help.right(
+        `
+        <h1>Assignments</h1>
+        <p>
+        Every peak in the selected sample with its committed assignment from the
+        selected run: formula, ionization, confidence tier and calibrated
+        P(correct).
+        </p>
+        <p>
+        Click a row to focus the peak in the spectrum and inspector. Use the
+        tier chips to filter by confidence, and <b>Assign peaks</b> to launch a
+        new run.
+        </p>`,
+        { doc: app.ui.help.docUrl('how-it-works/peak-assignment/') }
+      )
+    "
+  >
     <template #menu>
       <div class="menu-row">
         <Select
@@ -320,11 +346,32 @@ const isoCount = (row) => assignments.value.childrenOf(row.peak_assignment_id).l
           size="small"
           placeholder="Select run"
           style="min-width: 12rem"
+          :pt="
+            app.ui.help.bottom(`
+              <h1>Assignment Runs</h1>
+              <p>
+              Each <b>Assign peaks</b> launch creates a run &mdash; an immutable
+              snapshot of the sample's assignments, numbered in launch order and
+              listed newest first. The ledger shows the selected run; pick an
+              older one to revisit it. A run marked with &hellip; is still in
+              progress.
+              </p>
+            `)
+          "
         />
         <div
           v-if="runs.list.length"
           class="unfold-toggle"
           v-tooltip.top="'Show isotopologue peaks as indented rows under their compound'"
+          v-help.bottom="{
+            message: `
+              <h1>Isotopologue Rows</h1>
+              <p>
+              By default the ledger keeps one row per assigned formula, its
+              isotopologue satellite peaks folded into the <b>+N</b> marker.
+              Toggle to unfold them as indented rows under their main peak (M0).
+              </p>`
+          }"
         >
           <ToggleSwitch v-model="showIsotopologues" inputId="unfold-iso" />
           <label for="unfold-iso">Isotopologues</label>
@@ -338,6 +385,12 @@ const isoCount = (row) => assignments.value.childrenOf(row.peak_assignment_id).l
           size="small"
           style="min-width: 9rem"
           v-tooltip.top="'Filter by verification verdict'"
+          :pt="
+            app.ui.help.bottom(
+              { title: 'Verification', helpKey: 'assignment-verification' },
+              { doc: app.ui.help.docUrl('how-it-works/peak-assignment/#verifying-assignments') }
+            )
+          "
         />
         <Button
           label="Assign peaks"
@@ -345,6 +398,18 @@ const isoCount = (row) => assignments.value.childrenOf(row.peak_assignment_id).l
           size="small"
           :disabled="!app.data.sample.focused"
           @click="configVisible = true"
+          :pt="
+            app.ui.help.bottom(
+              `
+              <h1>Assign Peaks</h1>
+              <p>
+              Launches an assignment run for this sample: every peak is matched
+              against the known target library first, then optionally through the
+              untargeted composition search. Opens the run configuration.
+              </p>`,
+              { doc: app.ui.help.docUrl('how-it-works/peak-assignment/#the-two-stages') }
+            )
+          "
         />
       </div>
     </template>
@@ -391,7 +456,14 @@ const isoCount = (row) => assignments.value.childrenOf(row.peak_assignment_id).l
     </div>
 
     <div v-else class="col" style="gap: 0.6rem; align-items: stretch">
-      <div class="tier-strip">
+      <div
+        class="tier-strip"
+        v-help.top="{
+          title: 'Confidence Tiers',
+          helpKey: 'assignment-tiers',
+          doc: app.ui.help.docUrl('how-it-works/peak-assignment/#confidence-tiers')
+        }"
+      >
         <button
           v-for="t in [
             { key: 'identified', label: 'identified', count: tierCounts.identified },
@@ -505,6 +577,13 @@ const isoCount = (row) => assignments.value.childrenOf(row.peak_assignment_id).l
               v-tooltip.top="
                 'Calibrated probability the assignment is correct. Database-stage, calibrated instruments only; untargeted / uncalibrated show —.'
               "
+              v-help.top="{
+                title: 'P(correct)',
+                helpKey: 'assignment-p-correct',
+                doc: app.ui.help.docUrl(
+                  'how-it-works/peak-assignment/#calibrated-confidence-probability-of-being-correct'
+                )
+              }"
               >P(correct)</span
             >
           </template>
@@ -540,7 +619,15 @@ const isoCount = (row) => assignments.value.childrenOf(row.peak_assignment_id).l
         </Column>
         <Column style="min-width: 3rem">
           <template #header>
-            <span class="pi ph ph-seal-check" v-tooltip.top="'Verification verdict'" />
+            <span
+              class="pi ph ph-seal-check"
+              v-tooltip.top="'Verification verdict'"
+              v-help.top="{
+                title: 'Verification',
+                helpKey: 'assignment-verification',
+                doc: app.ui.help.docUrl('how-it-works/peak-assignment/#verifying-assignments')
+              }"
+            />
           </template>
           <template #body="{ data }">
             <BaseVerdictBadge :record="verdictFor(data)" compact />

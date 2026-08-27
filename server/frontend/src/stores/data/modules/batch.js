@@ -104,9 +104,10 @@ export const useBatch = defineStore('app.data.batch', () => {
     // via peak_assignment_reload.
     //
     // Resolves with the eligibility partition the batch will execute: the
-    // samples it will assign, and the blank or uncalibrated ones it will skip
-    // with their reasons. It rejects with the server's reason when a run is
-    // already in flight for one of those samples (409); `errors: 'inline'` keeps
+    // samples it will assign, and the ones it will skip with their reasons
+    // (blank, or m/z calibration not verified). It rejects with the server's
+    // reason when a run is already in flight for one of those samples (409);
+    // `errors: 'inline'` keeps
     // the generic failure toast off it so the launcher reports that reason.
     assign: async ({ sample_batch_id, config = null }) =>
       api.http.post(
