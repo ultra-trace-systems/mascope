@@ -20,9 +20,10 @@ Contains no Typer commands — implementation only.
 """
 
 import datetime
+import os
 import re
 import subprocess
-from pathlib import PurePosixPath
+from pathlib import Path, PurePosixPath
 
 from mascope_cli.cmd.env._paths import local_env_dir, remote_env_dir
 from mascope_cli.cmd.env._ssh import cygwin_bin, get_identity_args
@@ -152,6 +153,44 @@ def build_filter_rules(
     return rules
 
 
+def _local_date_dir_names(filestore: Path) -> set[str]:
+    """Date directory names two levels under a local filestore.
+
+    Walked with `os.scandir` rather than `Path.glob("*/*")` because glob
+    swallows `OSError`: an instrument directory the invoking user cannot read
+    would yield nothing and leave the filter file short, so rsync would omit
+    those dates and still report success. The remote branch refuses a
+    listing that did not complete; this is the same contract, locally.
+
+    :param filestore: The source env's filestore directory, known to exist.
+    :type filestore: Path
+    :return: Date directory names, de-duplicated across instruments.
+    :rtype: set[str]
+    :raises RuntimeError: If any directory could not be read.
+    """
+
+    def entries(directory: Path) -> list[os.DirEntry]:
+        try:
+            with os.scandir(directory) as it:
+                return list(it)
+        except OSError as exc:
+            raise RuntimeError(
+                f"Could not list {directory} while selecting the date range: "
+                f"{exc.strerror or exc}. Refusing to sync a partial filestore "
+                "listing - it would drop whole dates and still look like a "
+                "successful transfer."
+            ) from exc
+
+    names: set[str] = set()
+    for instrument in entries(filestore):
+        if not instrument.is_dir():
+            continue
+        for date_dir in entries(Path(instrument.path)):
+            if date_dir.is_dir():
+                names.add(date_dir.name)
+    return names
+
+
 def source_date_dir_names(
     remote: str | None,
     env_name: str,
@@ -177,19 +216,19 @@ def source_date_dir_names(
              filestore holds no directories, or, locally, when there is no
              filestore at all.
     :rtype: list[str]
-    :raises RuntimeError: If the remote listing did not complete - a missing
-                          source env, an unreadable instrument directory. A
-                          partial listing is never returned: it would silently
-                          narrow the transfer. Note `find -L` exits 0 and says
-                          nothing for a dangling symlink, so a filestore whose
-                          data volume is not mounted still reads as an empty
-                          window rather than as a failure.
+    :raises RuntimeError: If the listing did not complete - a missing source
+                          env, an unreadable instrument directory. A partial
+                          listing is never returned, locally or remotely: it
+                          would silently narrow the transfer. Note `find -L`
+                          exits 0 and says nothing for a dangling symlink, so a
+                          filestore whose data volume is not mounted still
+                          reads as an empty window rather than as a failure.
     """
     if remote is None:
         filestore = local_env_dir(env_name) / "filestore"
         if not filestore.is_dir():
             return []
-        return sorted({p.name for p in filestore.glob("*/*") if p.is_dir()})
+        return sorted(_local_date_dir_names(filestore))
 
     env_dir = remote_env_dir(remote, env_name, control_args)
     # -L so a filestore symlinked onto a data volume (docs/maintaining.md →

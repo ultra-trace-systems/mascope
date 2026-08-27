@@ -257,6 +257,31 @@ def test_source_date_dir_names_local(source_env):
     assert names == ["2026.03.01", "2026.03.05", "2026.04.02", "batch-1"]
 
 
+def test_source_date_dir_names_local_rejects_an_unreadable_directory(
+    source_env, monkeypatch
+):
+    # The local counterpart of the partial-find case. `Path.glob` swallows
+    # OSError, so an instrument directory the invoking user cannot read used to
+    # yield nothing and leave the date list short: rsync then omitted those
+    # dates and still reported success. Raising is what makes the shortfall
+    # visible.
+    blocked = str(source_env / "filestore" / "instrumentB")
+    real_scandir = os.scandir
+
+    def fake_scandir(path):
+        if str(path) == blocked:
+            raise PermissionError(13, "Permission denied")
+        return real_scandir(path)
+
+    monkeypatch.setattr(os, "scandir", fake_scandir)
+
+    with pytest.raises(RuntimeError) as excinfo:
+        _filter.source_date_dir_names(None, "sync-src")
+
+    assert "Could not list" in str(excinfo.value)
+    assert "instrumentB" in str(excinfo.value)
+
+
 def test_source_date_dir_names_local_missing_filestore(mascope_home):
     (mascope_home / ".runtime" / "env" / "no-filestore").mkdir(
         parents=True, exist_ok=True
