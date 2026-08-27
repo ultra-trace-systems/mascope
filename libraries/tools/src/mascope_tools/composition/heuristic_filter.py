@@ -659,12 +659,14 @@ def match_isotopic_pattern(
 
             predicted_rel_intensity = predicted_rel[i]
             observed_rel_intensity = matched_intensity / base_peak_intensity
+            # Signed relative error, observed/predicted - 1: the same convention as
+            # the targeted matcher's match_abundance_error, so a consumer can recover
+            # the predicted relative abundance as observed_rel / (1 + error).
             intensity_error = (
-                abs(predicted_rel_intensity - observed_rel_intensity)
-                / predicted_rel_intensity
-            )
+                observed_rel_intensity - predicted_rel_intensity
+            ) / predicted_rel_intensity
 
-            if intensity_error <= ISOTOPE_MATCHING_INTENSITY_TOLERANCE:
+            if abs(intensity_error) <= ISOTOPE_MATCHING_INTENSITY_TOLERANCE:
                 observed_intensities[i] = matched_intensity
                 observed_masses[i] = matched_mz
                 observed_mass_errors_ppm[i] = abs(matched_mz - p_mz) / p_mz * 1e6
@@ -897,8 +899,9 @@ def score_pattern(
         cosine_dist = cosine(predicted_rel, observed_rel_intensities)
         pattern_score = 1 - cosine_dist if not np.isnan(cosine_dist) else 0.0
 
-        # 2. Intensity scoring
-        total_intensity_error = np.sum(observed_intensity_error)
+        # 2. Intensity scoring. Intensity errors are signed (observed/predicted - 1),
+        # so score on magnitude - otherwise over- and under-shoots cancel out.
+        total_intensity_error = np.sum(np.abs(observed_intensity_error))
         avg_intensity_error = (
             total_intensity_error / matched_peaks_count
             if matched_peaks_count > 0
