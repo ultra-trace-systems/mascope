@@ -59,11 +59,45 @@ from mascope_backend.socket.notifications import (
 )
 
 
+# A failure reason is an exception message, which can run long; the summary it
+# ends up in is read in a toast.
+FAILURE_REASON_MAX_CHARS = 200
+FAILURE_REASONS_IN_SUMMARY = 2
+
+
 def _is_blank_sample(sample: Sample) -> bool:
     """Return whether the sample is blank (has no peaks)."""
     # Blank samples are created without an instrument config and should not be
     # blocked by m/z calibration verification.
     return sample.instrument_function_id is None
+
+
+def _summarize_sample_failures(failed_sample_items: list[dict]) -> str:
+    """Name the distinct reasons behind a batch's per-sample failures.
+
+    The per-sample reasons are logged one by one, but the notification the user
+    actually reads carries only the batch summary - so that summary has to say
+    why, not just how many. One bad file usually fails a whole batch the same
+    way, hence distinct reasons with their counts rather than a list per sample.
+
+    :param failed_sample_items: Failure records, each with a "reason"
+    :type failed_sample_items: list[dict]
+    :return: The distinct reasons with their sample counts, most common first
+    :rtype: str
+    """
+    counts: dict[str, int] = {}
+    for item in failed_sample_items:
+        reason = item["reason"]
+        counts[reason] = counts.get(reason, 0) + 1
+
+    ranked = sorted(counts.items(), key=lambda item: item[1], reverse=True)
+    named = ranked[:FAILURE_REASONS_IN_SUMMARY]
+    summary = "; ".join(f"{reason} [{count} sample(s)]" for reason, count in named)
+
+    unnamed = len(ranked) - len(named)
+    if unnamed:
+        summary += f"; and {unnamed} further reason(s)"
+    return summary
 
 
 async def _incomplete_aggregate_sample_ids(sample_batch_id: str) -> list[str]:
@@ -850,6 +884,8 @@ async def rematch_batches(
         "total_samples_count": 0,
     }
 
+    failed_sample_items = []
+
     # Sample counts only weight the progress bar, so they are counted in one
     # grouped query rather than by reading every batch's samples: rematching a
     # whole dataset would otherwise load every sample of every batch, with its
@@ -922,6 +958,7 @@ async def rematch_batches(
             for key in processed_samples:
                 if key != "total_samples_count":  # Skip total as it's pre-calculated
                     processed_samples[key] += batch_data.get(key, 0)
+            failed_sample_items.extend(batch_data.get("failed_samples", []))
 
             # Categorize batch rematch result
             batch_collections[f"{batch_result['status']}_batches"].append(
@@ -978,9 +1015,10 @@ async def rematch_batches(
                 f"{processed_samples['computed_samples_count']} samples computed"
             )
         if processed_samples["failed_samples_count"] > 0:
-            stats_parts.append(
-                f"{processed_samples['failed_samples_count']} sample failures"
-            )
+            failures = f"{processed_samples['failed_samples_count']} sample failures"
+            if failed_sample_items:
+                failures += f" ({_summarize_sample_failures(failed_sample_items)})"
+            stats_parts.append(failures)
         if processed_samples["skipped_samples_count"] > 0:
             stats_parts.append(
                 f"{processed_samples['skipped_samples_count']} samples skipped"
@@ -1201,9 +1239,15 @@ async def rematch_batch(
         removed = f"all {removed_count}" if full_remove else f"{removed_count} orphaned"
         remove_summary = f"{removed if removed_count else 'no'} match isotopes removed"
         compute_summary = f"{computed_count}/{total_samples} samples computed missing matches successfully"
+        failed_samples = compute_data.get("failed_samples", [])
+        failures_summary = compute_data.get("failed_samples_summary", "")
         failed_summary = (
             f"match computation failed for {failed_count}/{total_samples} samples"
         )
+        if failures_summary:
+            # Carry the reasons into the batch message: it is the one the user
+            # is shown, and a bare count leaves them nothing to act on.
+            failed_summary += f" ({failures_summary})"
         skipped_summary = f"{skipped_count}/{total_samples} samples skipped match computation due to missing calibration or no new target associations"
         match (remove_status, compute_status):
             case ("skipped", "skipped"):
@@ -1270,6 +1314,8 @@ async def rematch_batch(
                 "computed_samples_count": computed_count,
                 "failed_samples_count": failed_count,
                 "skipped_samples_count": skipped_count,
+                "failed_samples": failed_samples,
+                "failed_samples_summary": failures_summary,
             },
             "_notification_data": {"sample_batch_id": sample_batch_id},
         }
@@ -1433,6 +1479,7 @@ async def match_compute_batch(
     # Step 2: Process each sample for match computation
     computed_samples = []
     failed_samples = []
+    failed_sample_items = []
     skipped_samples = []
     for item_index, sample in enumerate(samples):
         progress_notification = UserNotification(
@@ -1509,11 +1556,20 @@ async def match_compute_batch(
             # the batch. CancelledError is a BaseException and is not caught.
             # INFO per sample; the batch summary below warns once for the
             # whole batch.
+            reason = str(e).strip()[:FAILURE_REASON_MAX_CHARS] or type(e).__name__
             runtime.logger.info(
                 f"Computing match isotopes for sample '{sample.sample_item_name}' "
                 f"failed: {e}"
             )
             failed_samples.append(sample.sample_item_id)
+            failed_sample_items.append(
+                {
+                    "sample_item_id": sample.sample_item_id,
+                    "sample_item_name": sample.sample_item_name,
+                    "filename": sample.filename,
+                    "reason": reason,
+                }
+            )
             continue
 
         await send_progress_user_notification(progress_notification, 1.0)
@@ -1624,7 +1680,11 @@ async def match_compute_batch(
         f"{failed_samples_count} failed, "
         f"{skipped_samples_count} skipped due to missing calibration or no new targets."
     )
+    # Summarized once, here, so every caller that reports this batch words the
+    # reasons the same way
+    failures_summary = _summarize_sample_failures(failed_sample_items)
     if failed_samples_count > 0:
+        message += f" Failures: {failures_summary}."
         # One aggregated warning per problem batch; the per-sample failures
         # above are logged at INFO.
         runtime.logger.warning(message)
@@ -1639,6 +1699,8 @@ async def match_compute_batch(
             "failed_samples_count": failed_samples_count,
             "skipped_samples_count": skipped_samples_count,
             "total_samples_count": total_samples_count,
+            "failed_samples": failed_sample_items,
+            "failed_samples_summary": failures_summary,
         },
         "_notification_data": {"sample_batch_id": sample_batch_id},
     }

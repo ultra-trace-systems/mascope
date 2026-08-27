@@ -208,6 +208,36 @@ def api_route(
     return decorator
 
 
+# A controller that isolates per-item failures reports the outcome in the
+# "status" of the dict it returns rather than by raising - the run did finish,
+# and the caller needs the per-item counts either way. The notification
+# vocabulary is the narrower one of UserNotification, so those outcomes are
+# translated here instead of forwarded: the schema's validator only runs at
+# construction, so an outcome assigned straight onto the notification would
+# reach the browser as an unknown severity without anything objecting.
+# An outcome that is absent, or one this map does not know, stays a success.
+RESULT_STATUS_NOTIFICATION = {
+    "success": "success",
+    "skipped": "success",  # nothing to do is not a problem
+    "partial": "warning",
+    "locked": "warning",  # another process holds the item; it was not touched
+    "failed": "error",
+}
+
+
+def notification_status(result: dict | None) -> str:
+    """Translate a controller's own outcome into a notification status.
+
+    :param result: The controller's return value, if any
+    :type result: dict | None
+    :return: One of the statuses UserNotification accepts
+    :rtype: str
+    """
+    if not isinstance(result, dict):
+        return "success"
+    return RESULT_STATUS_NOTIFICATION.get(result.get("status"), "success")
+
+
 def api_controller_background_task(
     success_notification_rooms: list[str] | None = None,
     success_reload: list[tuple[str, str]] | None = None,
@@ -226,7 +256,9 @@ def api_controller_background_task(
 
     The decorator supports two types of Socket.IO communications: (controlled by independent_transaction):
     1. Notifications: User-facing messages about task progress/status
-       - Success: Always sent
+       - Success: Always sent. A controller that reports its own outcome in the
+         returned "status" is announced with that outcome, not as a success -
+         see RESULT_STATUS_NOTIFICATION
        - Warnings: Reported unless the warning is re-raised to a parent
          handler (ApiException with status_code 200/207), which reports it
          instead; the re-raised case still emits the packet flagged `silent`,
@@ -291,12 +323,18 @@ def api_controller_background_task(
             )
             try:
                 result = await func(*args, **kwargs)
-                # Update notification on success
-                notification.status = "success"
+                # Update notification on return. The controller ran to
+                # completion, which is not the same as having succeeded: one
+                # that isolates per-item failures says so in its own status.
+                notification.status = notification_status(result)
                 notification.message = result.get("message") if result else None
                 notification.data = (
                     result.get("_notification_data", None) if result else None
                 )
+                if notification.status != "success":
+                    # Give the notification drawer the per-item counts behind
+                    # the message, as the ApiException branch below does.
+                    notification.error = {"detail": result.get("data")}
 
                 # Handle success user notifications
                 await handle_notifications(
