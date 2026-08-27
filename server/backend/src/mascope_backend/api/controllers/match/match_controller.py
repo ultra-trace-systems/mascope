@@ -40,6 +40,7 @@ from mascope_backend.api.lib.api_features import (
 )
 from mascope_backend.api.lib.exceptions.api_exceptions import (
     ApiException,
+    is_expected_client_error,
     raise_api_warning,
 )
 from mascope_backend.api.new.match.params import default_match_params
@@ -640,6 +641,55 @@ def _user_facing_reason(error: Exception) -> str:
     return "Unexpected error."
 
 
+def _log_batch_rematch_failure(sample_batch_id: str, error: Exception) -> None:
+    """
+    Record a batch that did not rematch, at the level that failure earns.
+
+    Must be called from inside the ``except`` block, so the traceback is still
+    the one being handled.
+
+    ``runtime.logger.exception`` writes an ERROR carrying the exception, and
+    every record at WARNING or above is exported to error monitoring
+    (``mascope_runtime.logging``), which files an event for whatever reaches
+    it. Most of what reaches this handler is not a fault. A nested rematch is
+    a dependent task, so its partial-success warning ("matching produced no
+    results for 3 of 12 samples") is re-raised to this aggregate as an
+    ``ApiException`` with status 200; a batch id that names nothing arrives as
+    a 404. Neither is actionable: the first is a result, the second is the
+    caller asking for something that is not there. ``process_exception``
+    already classifies both as routine and logs them at INFO - and by the time
+    they get here it has, because the background-task decorator put them
+    through it - so paging on the aggregate's second copy of the same incident
+    is the whole of the defect.
+
+    :func:`~mascope_backend.api.lib.exceptions.api_exceptions.is_expected_client_error`
+    is that same classification, so this picks the level on exactly the terms
+    the rest of the API uses. A routine outcome keeps its record, reason and
+    all, one level down where monitoring does not follow; a genuine fault is
+    untouched - same ERROR, same traceback, same message, still attributed to
+    ``rematch_batches`` rather than to this helper.
+
+    A failure with no status never went through that mapping, which means it
+    never came out of the nested rematch at all (the decorator wraps
+    everything that leaves it) but out of this loop's own body. That is an
+    internal fault and is treated as one.
+
+    :param sample_batch_id: The batch whose rematch raised.
+    :type sample_batch_id: str
+    :param error: The exception it raised.
+    :type error: Exception
+    :return: None
+    """
+    status_code = getattr(error, "status_code", None)
+    if isinstance(status_code, int) and is_expected_client_error(error, status_code):
+        with runtime.logger.contextualize(status_code=status_code):
+            runtime.logger.info(f"Batch {sample_batch_id} did not rematch: {error}")
+        return
+    runtime.logger.opt(depth=1).exception(
+        f"Unexpected error rematching batch {sample_batch_id}"
+    )
+
+
 def _compose_rematch_problem_lines(
     failure_reasons: list[tuple[str, str]],
     locked_batch_ids: list[str],
@@ -842,12 +892,11 @@ async def rematch_batches(
             batch_collections["failed_batches"].append(sample_batch_id)
             # The child's warning is suppressed (it is a dependent task, so
             # this aggregate reports for it), which makes this the only place
-            # the reason can still reach the user - keep it. The full detail,
-            # traceback included, stays in the server log below either way.
+            # the reason can still reach the user - keep it. The full detail
+            # stays in the server log below either way, with the traceback
+            # when the failure is one.
             failure_reasons.append((sample_batch_id, _user_facing_reason(e)))
-            runtime.logger.exception(
-                f"Unexpected error rematching batch {sample_batch_id}"
-            )
+            _log_batch_rematch_failure(sample_batch_id, e)
 
         # Update proress user notification
         notification.message = (
