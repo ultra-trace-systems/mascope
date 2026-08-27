@@ -640,6 +640,16 @@ Notes:
 - Migrations follow the worktree, not `MASCOPE_PATH`: a branch that adds a revision has it
   applied to that instance's database on startup. Leave `MASCOPE_PATH` at the shared home -
   it is deliberately not the source tree (see [Schema migrations](#schema-migrations)).
+- The backend test suite namespaces its databases the same way, so running it from two
+  checkouts at once against the shared Postgres is safe. Its ephemeral databases are named
+  `mascope_test_<env>_<category>`, where `<env>` is a label - `MASCOPE_ENV` if exported, else
+  `wt_<checkout directory name>` - plus a digest of the checkout's absolute path. The digest is
+  unconditional because, unlike `mascope instance`, there is no registry here to detect a clash
+  against: an exported `MASCOPE_ENV` follows the shell rather than the checkout, and two
+  checkouts can share a directory name. So a checkout that has never allocated an instance is
+  isolated too. Session teardown drops only the databases that run created. `MASCOPE_TEST_ENV`
+  replaces the segment outright, digest included - the escape hatch for two runs in the *same*
+  checkout, which still collide. See `server/backend/tests/README.md`.
 
 ### Runtime Config
 
