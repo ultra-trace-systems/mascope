@@ -1534,6 +1534,10 @@ class PeakAssignment(Base):
     # unassigned peak. Named `fit_score` (not match/probability) deliberately -- it
     # is a measurement, not an identification confidence. See fit_score.md.
     fit_score: Mapped[Optional[float]] = mapped_column(Float)
+    # Signed m/z error in ppm, (observed - predicted)/predicted * 1e6, in BOTH
+    # stages (targeted match_mz_error and the untargeted finder's composition /
+    # isotope m/z error share this convention). Consumers recover the predicted
+    # m/z as observed_mz / (1 + mz_error_ppm/1e6) - keep it signed.
     mz_error_ppm: Mapped[Optional[float]] = mapped_column(Float)
     # Signed relative abundance error, observed/predicted - 1, in BOTH stages
     # (targeted match_abundance_error and the untargeted finder's intensity

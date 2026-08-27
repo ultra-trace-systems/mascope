@@ -4,6 +4,7 @@ import pytest
 from mascope_tools.composition.exceptions import CompositionFinderException
 from mascope_tools.composition.finder import (
     assign_compositions,
+    find_compositions,
     replace_atom_with_isotope,
 )
 from mascope_tools.composition.models import CompositionSearchConfig
@@ -13,6 +14,11 @@ from mascope_tools.composition.utils import (
     parse_ionization,
     to_hill_order,
 )
+
+
+# Protonated glucose, C6H12O6 + H+ (approximate; the exact prediction comes back
+# on the search result, so nothing here depends on this literal's last digits).
+PROTONATED_GLUCOSE_MZ = 181.070664
 
 
 def test_replace_atom_with_isotope():
@@ -114,3 +120,58 @@ def test_combine_formula_and_ionization_accepts_isotope_formula():
     ionization_mechanism = parse_ionization("+")
     ion_formula = combine_formula_and_ionization("[15N]O3", ionization_mechanism)
     assert ion_formula == "[15N]O3+"
+
+
+def _protonated_glucose_search(shift_ppm: float):
+    """Search a peak sitting `shift_ppm` off protonated glucose's exact m/z."""
+    config = CompositionSearchConfig(
+        ionizations="+H+",
+        element_count_ranges="C0-10 H0-20 O0-10",
+        mass_range_ppm=5.0,
+    )
+    target_mz = PROTONATED_GLUCOSE_MZ * (1 + shift_ppm * 1e-6)
+    results = [
+        r for r in find_compositions(target_mz, config) if r["formula"] == "C6H12O6"
+    ]
+    assert len(results) == 1
+    predicted_mz = results[0]["neutral_mass"] + parse_ionization("+H+").mass
+    return target_mz, predicted_mz, results[0]
+
+
+def test_composition_error_ppm_is_signed_observed_minus_predicted():
+    # A peak 3 ppm BELOW the composition it matches must report -3 ppm. The
+    # engine persists this as PeakAssignment.mz_error_ppm whenever a row has no
+    # isotope-envelope error, next to the targeted stage's signed match_mz_error,
+    # and the UI both shows it and recovers the predicted m/z from it.
+    _, _, low = _protonated_glucose_search(-3.0)
+    assert low["composition_error_ppm"] == pytest.approx(-3.0, abs=1e-2)
+
+    _, _, high = _protonated_glucose_search(3.0)
+    assert high["composition_error_ppm"] == pytest.approx(3.0, abs=1e-2)
+
+
+def test_predicted_mz_is_recoverable_from_composition_error_ppm():
+    # The chart recovers theoretical_mz = observed_mz / (1 + mz_error_ppm/1e6);
+    # that is exact only because the ppm error is signed AND relative to the
+    # prediction rather than to the observation.
+    for shift_ppm in (-3.0, 3.0):
+        target_mz, predicted_mz, result = _protonated_glucose_search(shift_ppm)
+        recovered = target_mz / (1 + result["composition_error_ppm"] / 1e6)
+        assert recovered == pytest.approx(predicted_mz, rel=1e-12)
+
+
+def test_composition_results_are_ranked_by_error_magnitude():
+    # find_compositions returns best-first, and "best" is the smallest deviation
+    # in either direction - not the most negative one.
+    config = CompositionSearchConfig(
+        ionizations="+H+",
+        element_count_ranges="C0-40 H0-80 N0-10 O0-20",
+        mass_range_ppm=20.0,
+    )
+    results = find_compositions(PROTONATED_GLUCOSE_MZ, config)
+    magnitudes = [abs(r["composition_error_ppm"]) for r in results]
+    assert magnitudes == sorted(magnitudes)
+    assert any(r["composition_error_ppm"] < 0 for r in results), (
+        "expected at least one candidate below the observed m/z, so the ordering "
+        "is actually exercised on signed values"
+    )

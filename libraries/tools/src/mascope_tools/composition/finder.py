@@ -144,10 +144,16 @@ def assign_compositions(
 
     matches = pd.DataFrame(results_per_peak)
     # --- Format results --- #
-    sort_by = [c for c in ["mz", "mz_error_ppm"] if c in matches.columns]
+    # mz_error_ppm is signed, so rank on its magnitude: the duplicate kept below has
+    # to be the closest match, not the one furthest BELOW its prediction.
+    sort_by = [c for c in ["mz"] if c in matches.columns]
+    if "mz_error_ppm" in matches.columns:
+        matches = matches.assign(_mz_error_abs=matches["mz_error_ppm"].abs())
+        sort_by.append("_mz_error_abs")
     matches = matches.sort_values(by=sort_by)
-    # Drop duplicate m/z entries, keeping the one with the lowest mz_error_ppm
+    # Drop duplicate m/z entries, keeping the closest match
     matches = matches.drop_duplicates(subset=["mz"], keep="first")
+    matches = matches.drop(columns="_mz_error_abs", errors="ignore")
     matches = sort_matches_by_formula(matches)
     # Add isotope label to ion string
     matches = update_ion_with_isotope_label(matches)
@@ -202,7 +208,9 @@ def find_compositions(target_mz: float, config: CompositionSearchConfig) -> list
         if abs(required_neutral_mass) <= mz_tolerance_da:
             ion_charge = "+" if ionization_mechanism.charge > 0 else "-"
             ion_formula = ionization_mechanism.formula + ion_charge
-            compositions_error_ppm = abs(target_mz - ion_shift) / target_mz * 1e6
+            # Signed, relative to the prediction (see recursive_search); for an
+            # ionization peak the prediction is the adduct's own m/z, ion_shift.
+            compositions_error_ppm = (target_mz - ion_shift) / ion_shift * 1e6
             all_results.append(
                 Result(
                     formula="()",
@@ -234,7 +242,7 @@ def find_compositions(target_mz: float, config: CompositionSearchConfig) -> list
         for res in recursive_search(0, [], 0.0, target_mz, state, config):
             all_results.append(res)
 
-    all_results.sort(key=lambda r: r.composition_error_ppm)
+    all_results.sort(key=lambda r: abs(r.composition_error_ppm))
 
     return [r.to_dict() for r in all_results]
 
@@ -348,7 +356,11 @@ def recursive_search(
             ion_formula = utils.combine_formula_and_ionization(
                 formula, state.ionization_mechanism
             )
-            error_ppm = abs(ion_mz - target_mz) / target_mz * 1e6
+            # (observed - predicted)/predicted, signed: the targeted matcher's
+            # match_mz_error convention. Dividing by the PREDICTION (not by the
+            # observation) is what makes the consumers' recovery of the predicted
+            # m/z, observed / (1 + error/1e6), exact.
+            error_ppm = (target_mz - ion_mz) / ion_mz * 1e6
             yield Result(
                 formula=formula,
                 neutral_mass=current_mass,

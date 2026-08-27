@@ -565,7 +565,14 @@ def match_isotopic_pattern(
     :type candidates: list[dict[str, Any]]
     :param peaks: Sorted dataframe of peaks with 'mz' and 'intensity' columns.
     :type peaks: pl.DataFrame
-    :return: Tuple of filtered candidates, and a list of isotope data dicts (per candidate).
+    :return: Tuple of filtered candidates, and a list of isotope data dicts (per
+        candidate). An isotope dict has one entry per predicted isotopologue, zero
+        where nothing matched, and reports BOTH errors signed - `intensity_errors`
+        as observed/predicted - 1, `mass_errors_ppm` as
+        (observed - predicted)/predicted * 1e6. That is the targeted matcher's
+        convention (match_abundance_error / match_mz_error), so a consumer can
+        recover the prediction from the observation and the error. Ranking and
+        scoring take the magnitude; the sign is evidence, not a penalty.
     :rtype: tuple[list[dict[str, Any]], list[dict[str, np.ndarray | list[str]]]]
     """
     mzs = peaks["mz"].to_numpy()
@@ -579,7 +586,7 @@ def match_isotopic_pattern(
         return candidates_df.to_dicts(), []
 
     # Keep only the most promising candidates for heavy work
-    candidates_df = candidates_df.sort("composition_error_ppm").head(
+    candidates_df = candidates_df.sort(pl.col("composition_error_ppm").abs()).head(
         ISOTOPE_CANDIDATE_LIMIT
     )
 
@@ -649,7 +656,10 @@ def match_isotopic_pattern(
                 base_peak_intensity = matched_intensity
                 observed_intensities[0] = matched_intensity
                 observed_masses[0] = matched_mz
-                observed_mass_errors_ppm[0] = abs(matched_mz - p_mz) / p_mz * 1e6
+                # Signed, (observed - predicted)/predicted: the same convention as
+                # the targeted matcher's match_mz_error, so a consumer can recover the
+                # predicted m/z as observed / (1 + error/1e6).
+                observed_mass_errors_ppm[0] = (matched_mz - p_mz) / p_mz * 1e6
                 observed_intensity_error[0] = 0.0
                 continue  # move to next isotope
 
@@ -662,14 +672,12 @@ def match_isotopic_pattern(
             # Signed relative error, observed/predicted - 1: the same convention as
             # the targeted matcher's match_abundance_error, so a consumer can recover
             # the predicted relative abundance as observed_rel / (1 + error).
-            intensity_error = (
-                observed_rel_intensity - predicted_rel_intensity
-            ) / predicted_rel_intensity
+            intensity_error = observed_rel_intensity / predicted_rel_intensity - 1.0
 
             if abs(intensity_error) <= ISOTOPE_MATCHING_INTENSITY_TOLERANCE:
                 observed_intensities[i] = matched_intensity
                 observed_masses[i] = matched_mz
-                observed_mass_errors_ppm[i] = abs(matched_mz - p_mz) / p_mz * 1e6
+                observed_mass_errors_ppm[i] = (matched_mz - p_mz) / p_mz * 1e6
                 observed_intensity_error[i] = intensity_error
 
         scores[ind] = score_pattern(
@@ -911,8 +919,9 @@ def score_pattern(
             0, 1 - (avg_intensity_error / ISOTOPE_MATCHING_INTENSITY_TOLERANCE)
         )
 
-        # 3. Mass Accuracy Score
-        total_mass_error_ppm = np.sum(observed_mass_errors_ppm)
+        # 3. Mass Accuracy Score. Mass errors are signed as well, so this too has to
+        # score on magnitude.
+        total_mass_error_ppm = np.sum(np.abs(observed_mass_errors_ppm))
         avg_mass_error = (
             total_mass_error_ppm / matched_peaks_count
             if matched_peaks_count > 0
@@ -941,7 +950,9 @@ def score_pattern(
 # mass likelihood, and aggregates as a predicted-abundance-weighted geometric mean.
 # On the demo golden set vs v1: ROC-AUC 0.876->0.890, held-out calibrated ECE
 # 0.020->0.0069 (see tooling/score_eval/DESIGN.md -- untracked scratch, not in the
-# repo). v1 is retained byte-identical, and each caller calls the version it wants
+# repo). v1 is retained unchanged in behaviour -- its two error sums take the magnitude
+# of the now-signed error arrays, which is the arithmetic they always did back when those
+# arrays could not carry a sign -- and each caller calls the version it wants
 # directly (SCORE_VERSION records the newest shipped version; nothing branches on
 # it). Inputs use the same matched-array convention as
 # v1 (unmatched isotopologues carry 0), PLUS the matched peaks' signal_to_noise --

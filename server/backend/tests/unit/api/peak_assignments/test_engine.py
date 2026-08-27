@@ -927,6 +927,71 @@ class TestUntargetedMatches:
         # fallback score = (1 - |-0.3|) * (1 - 2.0/100)
         assert assignments[0]["fit_score"] == pytest.approx(0.7 * 0.98)
 
+    def test_signed_mz_error_is_persisted_unchanged(self):
+        # mz_error_ppm is signed too ((observed - predicted)/predicted * 1e6), the
+        # same convention as the targeted matcher's match_mz_error. A peak measured
+        # BELOW its prediction persists a negative ppm error: the spectrum chart
+        # recovers the theoretical m/z as observed / (1 + ppm/1e6) and the inspector
+        # shows the sign, while only the score works on |ppm|.
+        matches_df = pd.DataFrame(
+            [
+                {
+                    "mz": 100.1,
+                    "formula": "C5H10O2",
+                    "ion": "C5H11O2+",
+                    "isotope_label": "M0",
+                    "ionization_mechanism": "+H+",
+                    "mz_error_ppm": -2.0,
+                    "intensity_error": 0.1,
+                    "other_candidates": "",
+                }
+            ]
+        )
+        assignments = untargeted_matches_to_peak_assignments(
+            matches_df,
+            self._one_peak_df("pA", 100.1, 5000.0),
+            "sample1",
+            "run1",
+            POSSIBLE,
+            PROBABLE,
+            mechanism_id_by_notation={"+H+": "mech1"},
+        )
+        assert len(assignments) == 1
+        assert assignments[0]["mz_error_ppm"] == pytest.approx(-2.0)
+        # fallback score = (1 - 0.1) * (1 - |-2.0|/100)
+        assert assignments[0]["fit_score"] == pytest.approx(0.9 * 0.98)
+
+    def test_negative_composition_error_fallback_is_persisted_signed(self):
+        # The fallback source is signed as well, so a row with no isotope-envelope
+        # error still persists which side of its prediction the peak sits on.
+        matches_df = pd.DataFrame(
+            [
+                {
+                    "mz": 100.1,
+                    "formula": "C5H10O2",
+                    "ion": "C5H11O2+",
+                    "isotope_label": "M0",
+                    "ionization_mechanism": "+H+",
+                    "mz_error_ppm": float("nan"),
+                    "composition_error_ppm": -2.0,
+                    "intensity_error": 0.1,
+                    "other_candidates": "",
+                }
+            ]
+        )
+        assignments = untargeted_matches_to_peak_assignments(
+            matches_df,
+            self._one_peak_df("pA", 100.1, 5000.0),
+            "sample1",
+            "run1",
+            POSSIBLE,
+            PROBABLE,
+            mechanism_id_by_notation={"+H+": "mech1"},
+        )
+        assert len(assignments) == 1
+        assert assignments[0]["mz_error_ppm"] == pytest.approx(-2.0)
+        assert assignments[0]["fit_score"] == pytest.approx(0.9 * 0.98)
+
     def test_isotope_child_is_attributed_to_its_formula_group_m0(self):
         assignments = untargeted_matches_to_peak_assignments(
             self._matches_df(),
