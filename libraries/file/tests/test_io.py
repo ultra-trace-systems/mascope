@@ -2,12 +2,13 @@
 Tests for mascope_file.io module.
 """
 
+import json
 import os
 import shutil
 import subprocess
 import sys
+from contextlib import contextmanager
 
-import fasteners
 import numpy as np
 import pytest
 import xarray as xr
@@ -584,11 +585,16 @@ class TestZarrWriteLock:
         assert not lock_path.startswith(peak_timeseries_zarr_path + os.sep)
         assert os.path.dirname(lock_path) == os.path.dirname(peak_timeseries_zarr_path)
 
-    def test_lock_excludes_another_process(self, peak_timeseries_zarr_path):
-        """A second OS process must not hold the lock at the same time."""
-        lock_path = os.fsdecode(
-            m_io.get_zarr_process_lock(peak_timeseries_zarr_path).path
-        )
+    @staticmethod
+    def _probe_other_process(lock_path: str) -> str:
+        """Ask a separate OS process whether it can take the lock right now.
+
+        The probe has to be a real subprocess. A second lock object inside
+        *this* process proves nothing on POSIX: fcntl record locks are owned
+        per process, not per descriptor, so the same process can always
+        re-acquire a lock it already holds - and closing the second descriptor
+        would silently drop the original lock as well.
+        """
         probe = (
             "import sys, fasteners;"
             "lock = fasteners.InterProcessLock(sys.argv[1]);"
@@ -596,29 +602,34 @@ class TestZarrWriteLock:
             "print('ACQUIRED' if acquired else 'BLOCKED');"
             "lock.release() if acquired else None"
         )
+        return subprocess.run(
+            [sys.executable, "-c", probe, lock_path],
+            capture_output=True,
+            text=True,
+            check=True,
+        ).stdout.strip()
 
-        def probe_other_process() -> str:
-            return subprocess.run(
-                [sys.executable, "-c", probe, lock_path],
-                capture_output=True,
-                text=True,
-                check=True,
-            ).stdout.strip()
+    def test_lock_excludes_another_process(self, peak_timeseries_zarr_path):
+        """A second OS process must not hold the lock at the same time."""
+        lock_path = os.fsdecode(
+            m_io.get_zarr_process_lock(peak_timeseries_zarr_path).path
+        )
 
         with m_io.zarr_write_lock(peak_timeseries_zarr_path):
-            assert probe_other_process() == "BLOCKED"
+            assert self._probe_other_process(lock_path) == "BLOCKED"
 
         # Released again once the context manager exits
-        assert probe_other_process() == "ACQUIRED"
+        assert self._probe_other_process(lock_path) == "ACQUIRED"
 
     def test_lock_is_released_between_sequential_writes(
         self, peak_timeseries_zarr_path
     ):
         """The lock must be free again after each write, not just not deadlock.
 
-        Named for what it checks: the inter-process lock is not reentrant, so
-        the property worth pinning is that leaving the context manager really
-        releases the file lock rather than leaking it to the next writer.
+        The inter-process lock is not reentrant, so the property worth pinning
+        is that leaving the context manager really releases the file lock
+        rather than leaking it to the next writer. Checked from a subprocess,
+        because an in-process probe cannot observe this on POSIX at all.
         """
         lock_path = os.fsdecode(
             m_io.get_zarr_process_lock(peak_timeseries_zarr_path).path
@@ -626,10 +637,42 @@ class TestZarrWriteLock:
         for _ in range(3):
             with m_io.zarr_write_lock(peak_timeseries_zarr_path):
                 pass
-            # An independent lock object must be able to take it between writes
-            probe = fasteners.InterProcessLock(lock_path)
-            assert probe.acquire(blocking=False), "lock was not released"
-            probe.release()
+            assert self._probe_other_process(lock_path) == "ACQUIRED", (
+                "lock was not released"
+            )
+
+    def test_lock_times_out_instead_of_waiting_forever(self, peak_timeseries_zarr_path):
+        """A lock held by another process must not block a writer indefinitely.
+
+        fasteners waits forever by default, and these writes are entered from
+        async request handlers, so an unbounded wait pins a worker's event
+        loop behind an unrelated process.
+        """
+        lock_path = os.fsdecode(
+            m_io.get_zarr_process_lock(peak_timeseries_zarr_path).path
+        )
+        holder = subprocess.Popen(
+            [
+                sys.executable,
+                "-c",
+                "import sys, time, fasteners;"
+                "lock = fasteners.InterProcessLock(sys.argv[1]);"
+                "lock.acquire();"
+                "print('HELD', flush=True);"
+                "time.sleep(30)",
+                lock_path,
+            ],
+            stdout=subprocess.PIPE,
+            text=True,
+        )
+        try:
+            assert holder.stdout.readline().strip() == "HELD"
+            with pytest.raises(TimeoutError):
+                with m_io.zarr_write_lock(peak_timeseries_zarr_path, timeout=0.5):
+                    pass
+        finally:
+            holder.kill()
+            holder.wait()
 
 
 class TestStaleConsolidatedMetadata:
@@ -703,12 +746,256 @@ class TestStaleConsolidatedMetadata:
         shutil.rmtree(peak_timeseries_zarr_path)
 
 
+def _drop_from_consolidated_metadata(store_path: str, prefix: str) -> None:
+    """Rewrite .zmetadata so entries under ``prefix`` are no longer listed.
+
+    Reproduces the interrupted-backfill state: the array or group is on disk,
+    but the consolidated metadata written before it does not mention it.
+    """
+    zmetadata_path = os.path.join(store_path, ".zmetadata")
+    with open(zmetadata_path) as f:
+        meta = json.load(f)
+    meta["metadata"] = {
+        key: value
+        for key, value in meta["metadata"].items()
+        if not key.startswith(prefix)
+    }
+    with open(zmetadata_path, "w") as f:
+        json.dump(meta, f)
+
+
+class TestLiveStoreListing:
+    """Guards every membership test and store listing against a stale .zmetadata.
+
+    zarr 2 always listed the store to answer ``in`` / ``group_keys()`` /
+    ``groups()``; zarr 3 answers from .zmetadata when it is present. On the
+    write paths that difference is silent - a group or variable that exists on
+    disk but is missing from a stale .zmetadata simply does not get written,
+    with no exception and no log line. mascope_file.io.open_zarr_store exists
+    to keep every one of those call sites reading the live store.
+    """
+
+    def test_open_zarr_store_sees_an_unlisted_array(
+        self,
+        peak_timeseries_zarr_path,
+        create_peak_timeseries_dataset,
+    ):
+        """The helper itself must bypass .zmetadata."""
+        ds = create_peak_timeseries_dataset(fill_with_nan=True)
+        ds.to_zarr(peak_timeseries_zarr_path, mode="w")
+        _drop_from_consolidated_metadata(peak_timeseries_zarr_path, "sparsity/")
+
+        assert "sparsity" not in zarr.open(peak_timeseries_zarr_path, mode="r")
+        assert "sparsity" in m_io.open_zarr_store(peak_timeseries_zarr_path)
+
+        shutil.rmtree(peak_timeseries_zarr_path)
+
+    @pytest.mark.asyncio
+    async def test_partial_update_writes_a_variable_absent_from_zmetadata(
+        self,
+        existing_peak_timeseries_zarr,
+        create_update_dataset,
+    ):
+        """_process_chunk_sync must not silently drop a variable's write.
+
+        Its ``if var_name not in z: continue`` guard is answered from
+        .zmetadata under zarr 3, so a stale one turns a real update into a
+        no-op that no caller can detect.
+        """
+        existing = xr.open_zarr(existing_peak_timeseries_zarr)
+        base_mz = existing["mz"].values
+        time_vals = existing["time"].values
+        existing.close()
+
+        _drop_from_consolidated_metadata(existing_peak_timeseries_zarr, "peak_heights/")
+
+        update_ds = create_update_dataset(base_mz, time_vals, [2, 5])
+        await write_peaks(update_ds, TEST_FILENAME, overwrite=False)
+
+        zarr.consolidate_metadata(existing_peak_timeseries_zarr)
+        updated = xr.open_zarr(existing_peak_timeseries_zarr)
+        try:
+            written = updated["peak_heights"].isel(mz=2).values
+            expected = update_ds["peak_heights"].isel(mz=0).values
+            assert not np.isnan(written).all(), "peak_heights update was dropped"
+            np.testing.assert_allclose(written, expected)
+        finally:
+            updated.close()
+
+    def test_update_zarr_array_coord_reaches_a_group_absent_from_zmetadata(
+        self, sample_file_path
+    ):
+        """update_zarr_array_coord must recalibrate every group on disk.
+
+        Skipping one leaves a store whose groups sit on two different m/z
+        axes - silent corruption of the calibration, not a visible failure.
+        """
+        signal_path = m_name.filename_to_zarr_path(TEST_FILENAME, "signal")
+        old_mz = np.linspace(100.0, 110.0, 4)
+        for group in range(3):
+            xr.Dataset(
+                {"signal": (("time", "mz"), np.full((2, 4), float(group)))},
+                coords={"time": np.arange(2) + group * 2, "mz": old_mz},
+            ).to_zarr(signal_path, group=f"{group:04d}", mode="a")
+        # A multi-file store also carries the coordinate at the root, which is
+        # what load_coord reads before falling back to the groups.
+        root = zarr.open_group(signal_path, mode="a")
+        root_mz = root.create_array("mz", shape=old_mz.shape, dtype=old_mz.dtype)
+        root_mz[:] = old_mz
+        zarr.consolidate_metadata(signal_path)
+        _drop_from_consolidated_metadata(signal_path, "0002/")
+
+        new_mz = np.linspace(200.0, 210.0, 4)
+        m_io.update_zarr_array_coord(TEST_FILENAME, "signal", "mz", new_mz)
+
+        live = m_io.open_zarr_store(signal_path)
+        for group in ("0000", "0001", "0002"):
+            np.testing.assert_allclose(
+                live[group]["mz"][:],
+                new_mz,
+                err_msg=f"group {group} kept the old m/z axis",
+            )
+
+        shutil.rmtree(signal_path)
+
+
+class TestWritePathsTakeTheLock:
+    """Every store-mutating path must serialize through zarr_write_lock.
+
+    Pinning the lock in isolation is not enough: removing it from a write path
+    is invisible at runtime (zarr 3 accepts and ignores a ``synchronizer=``
+    argument, and nothing else complains), so the property worth asserting is
+    that each write path actually enters it, and with which store.
+    """
+
+    @pytest.fixture
+    def recorded_locks(self, monkeypatch):
+        """Record the paths zarr_write_lock is entered with."""
+        entered: list[str] = []
+        original = m_io.zarr_write_lock
+
+        @contextmanager
+        def recording(zarr_path, *args, **kwargs):
+            entered.append(zarr_path)
+            with original(zarr_path, *args, **kwargs):
+                yield
+
+        monkeypatch.setattr(m_io, "zarr_write_lock", recording)
+        return entered
+
+    @pytest.mark.asyncio
+    async def test_full_overwrite_takes_the_lock(
+        self,
+        recorded_locks,
+        create_peak_timeseries_dataset,
+        peak_timeseries_zarr_path,
+    ):
+        ds = create_peak_timeseries_dataset(fill_with_nan=True)
+        await write_peaks(ds, TEST_FILENAME, overwrite=True)
+        assert peak_timeseries_zarr_path in recorded_locks
+
+    @pytest.mark.asyncio
+    async def test_partial_update_takes_the_lock(
+        self,
+        recorded_locks,
+        existing_peak_timeseries_zarr,
+        create_update_dataset,
+    ):
+        existing = xr.open_zarr(existing_peak_timeseries_zarr)
+        base_mz = existing["mz"].values
+        time_vals = existing["time"].values
+        existing.close()
+
+        update_ds = create_update_dataset(base_mz, time_vals, [2, 5])
+        await write_peaks(update_ds, TEST_FILENAME, overwrite=False)
+        assert existing_peak_timeseries_zarr in recorded_locks
+
+    def test_sparsity_backfill_takes_the_lock(
+        self,
+        recorded_locks,
+        create_peak_timeseries_dataset,
+        peak_timeseries_zarr_path,
+    ):
+        ds = create_peak_timeseries_dataset(fill_with_nan=True).drop_vars("sparsity")
+        ds.to_zarr(peak_timeseries_zarr_path, mode="w")
+
+        assert ensure_sparsity_exists(TEST_FILENAME) is True
+        assert peak_timeseries_zarr_path in recorded_locks
+
+        shutil.rmtree(peak_timeseries_zarr_path)
+
+    def test_update_zarr_array_coord_takes_the_lock(
+        self, recorded_locks, create_peak_timeseries_dataset, peak_timeseries_zarr_path
+    ):
+        ds = create_peak_timeseries_dataset(fill_with_nan=True)
+        ds.to_zarr(peak_timeseries_zarr_path, mode="w")
+
+        m_io.update_zarr_array_coord(
+            TEST_FILENAME, "peak_timeseries", "mz", ds["mz"].values
+        )
+        assert peak_timeseries_zarr_path in recorded_locks
+
+        shutil.rmtree(peak_timeseries_zarr_path)
+
+    def test_write_batch_cache_takes_the_lock(self, recorded_locks):
+        batch_id = "test-batch-lock"
+        ds = xr.Dataset(
+            {"intensity": (("mz",), np.arange(4, dtype=np.float64))},
+            coords={"mz": np.linspace(100.0, 200.0, 4)},
+        )
+        m_io.write_batch_cache(batch_id, "batch_peaks", ds)
+
+        var_path = os.path.join(
+            m_name.get_batch_cache_path(batch_id), "batch_peaks.zarr"
+        )
+        assert var_path in recorded_locks
+
+        m_io.delete_batch_cache(batch_id)
+
+
+class TestSideCarCleanup:
+    """The lock is a file where zarr 2's synchronizer left a directory.
+
+    The glob-and-delete sweeps over a sample directory match a store's side-car
+    as well as the store, and rmtree raises NotADirectoryError on a plain file.
+    """
+
+    def test_delete_peaks_removes_store_and_lock(
+        self, sample_file_path, create_peak_timeseries_dataset
+    ):
+        peak_path = m_name.filename_to_zarr_path(TEST_FILENAME, "peak_timeseries")
+        create_peak_timeseries_dataset(fill_with_nan=True).to_zarr(peak_path, mode="w")
+        # Taking the lock once is what puts the side-car file on disk
+        with m_io.zarr_write_lock(peak_path):
+            pass
+        lock_path = os.fsdecode(m_io.get_zarr_process_lock(peak_path).path)
+        assert os.path.isfile(lock_path)
+
+        m_io.delete_peaks(TEST_FILENAME)
+
+        assert not os.path.exists(peak_path)
+        assert not os.path.exists(lock_path)
+
+    def test_remove_path_handles_both_kinds(self, sample_file_path):
+        a_dir = os.path.join(sample_file_path, "some.zarr")
+        a_file = os.path.join(sample_file_path, "some.lock")
+        os.makedirs(a_dir)
+        open(a_file, "w").close()
+
+        m_io.remove_path(a_dir)
+        m_io.remove_path(a_file)
+        m_io.remove_path(a_file)  # already gone - must not raise
+
+        assert not os.path.exists(a_dir)
+        assert not os.path.exists(a_file)
+
+
 class TestBatchCacheStore:
     """Covers write_batch_cache, the remaining store-creating path.
 
     It creates a store from scratch, so it is subject to the same zarr v3
-    default as write_peaks, and it takes the write lock that replaced the
-    synchronizer.
+    default as write_peaks. That it takes the write lock is asserted
+    separately, in TestWritePathsTakeTheLock.
     """
 
     @pytest.fixture
@@ -775,16 +1062,20 @@ class TestMissingStoreRaisesFileNotFound:
         with pytest.raises(FileNotFoundError):
             m_io.load_array(TEST_FILENAME, "peak_timeseries")
 
-    def test_zarr_missing_group_is_a_file_not_found(self, sample_file_path):
+    def test_empty_store_directory_is_a_file_not_found(self, sample_file_path):
         """A directory that exists but holds no zarr store raises the same kind.
 
         This is the case load_coord's own os.path.exists guard does not catch,
-        and the one that used to surface as PathNotFoundError.
+        and the one that used to surface as PathNotFoundError. Asserted through
+        mascope's own loaders rather than zarr.open directly, because it is
+        their contract the calibration handlers rely on.
         """
         not_a_store = os.path.join(sample_file_path, "peak_timeseries.zarr")
         os.makedirs(not_a_store, exist_ok=True)
         try:
             with pytest.raises(FileNotFoundError):
-                zarr.open(not_a_store, mode="r")
+                m_io.load_coord(TEST_FILENAME, "peak_timeseries", "mz")
+            with pytest.raises(FileNotFoundError):
+                m_io.load_array(TEST_FILENAME, "peak_timeseries")
         finally:
             shutil.rmtree(not_a_store, ignore_errors=True)

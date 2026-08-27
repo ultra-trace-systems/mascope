@@ -60,7 +60,7 @@ def get_scan_timestamps(
         case "tof_zarr" | "orbi_zarr":
             signal_path = m_name.filename_to_zarr_path(base_filename, "signal")
 
-            z = zarr.open(signal_path, mode="r")
+            z = m_io.open_zarr_store(signal_path)
             time_array = z["time"][:]
             if not time_array.size:
                 # Perhaps the coordinate is hiding in groups
@@ -505,7 +505,7 @@ def get_tic_per_scan(
             )
         case "tof_zarr" | "orbi_zarr":
             zarr_path = m_name.filename_to_zarr_path(base_filename, "signal")
-            z = zarr.open(zarr_path, mode="r")
+            z = m_io.open_zarr_store(zarr_path)
 
             # Get sum of counts along mz coordinate for each time coordinate
             signal_array = da.from_zarr(z["signal"])

@@ -3,7 +3,6 @@ from __future__ import annotations
 import asyncio
 import glob
 import os
-from shutil import rmtree
 from typing import Literal
 
 from mascope_backend.api.controllers.sample.lib.sample_file_fetch import (
@@ -14,6 +13,7 @@ from mascope_backend.api.new.instrument_configs.lib import (
 )
 from mascope_backend.db import init_db
 from mascope_backend.runtime import runtime
+from mascope_file.io import remove_path
 from mascope_file.name import parse_path_from_item_filename
 from mascope_signal.peak import (
     compute_peaks,
@@ -51,7 +51,9 @@ async def delete_sum_signal(cached_only=False):
             )
         )
         for zarr_dir in sum_signal_dirs:
-            rmtree(zarr_dir)
+            # The glob matches a store's side-car lock file as well as the
+            # store directory, and rmtree raises NotADirectoryError on a file.
+            remove_path(zarr_dir)
 
 
 async def refit_peaks():

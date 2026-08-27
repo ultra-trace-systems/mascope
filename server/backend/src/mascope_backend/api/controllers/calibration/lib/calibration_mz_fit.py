@@ -741,16 +741,21 @@ class TofCalibrationHandler(BaseCalibrationHandler):
                     self.filename, sum_signal_var, "mz", new_mz_axis
                 )
 
+        # Only the lookup may legitimately be absent - a sample file with no
+        # peaks yet. The write stays outside, so a genuine I/O failure there
+        # propagates instead of being reported as "no peak_timeseries" while
+        # the file is already flagged as calibrated.
         try:
             peak_tofs = m_io.load_coord(self.filename, "peak_timeseries", "tof")
-            new_peak_mz = tof_to_mass(peak_tofs, fit_mode, fit_parameters)
-            m_io.update_zarr_array_coord(
-                self.filename, "peak_timeseries", "mz", new_peak_mz
-            )
         except FileNotFoundError:
             runtime.logger.warning(
                 f"peak_timeseries not found in {self.filename}, "
                 "thus their m/z coordinates were not updated."
+            )
+        else:
+            new_peak_mz = tof_to_mass(peak_tofs, fit_mode, fit_parameters)
+            m_io.update_zarr_array_coord(
+                self.filename, "peak_timeseries", "mz", new_peak_mz
             )
         return new_mz_axis
 
@@ -879,18 +884,17 @@ class OrbiCalibrationHandler(BaseCalibrationHandler):
                 m_io.load_array(self.filename, "signal").mz.values * old_factor_scaling
             )
             m_io.update_zarr_array_coord(self.filename, "signal", "mz", new_signal_mz)
+        # Only the lookup may legitimately be absent; see the Tof handler.
         try:
-            new_peak_mz = (
-                m_io.load_coord(self.filename, "peak_timeseries", "mz")
-                * old_factor_scaling
-            )
-            m_io.update_zarr_array_coord(
-                self.filename, "peak_timeseries", "mz", new_peak_mz
-            )
+            peak_mz = m_io.load_coord(self.filename, "peak_timeseries", "mz")
         except FileNotFoundError:
             runtime.logger.warning(
                 f"Peak_areas/heights not found in {self.filename}, "
                 "thus their m/z coordinates were not updated."
+            )
+        else:
+            m_io.update_zarr_array_coord(
+                self.filename, "peak_timeseries", "mz", peak_mz * old_factor_scaling
             )
 
         # Remove excessive items
