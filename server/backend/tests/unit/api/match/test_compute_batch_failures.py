@@ -13,14 +13,26 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from mascope_backend.api.controllers.match.match_controller import (
+    AGGREGATION_FAILURE_REASON,
     FAILURE_REASON_MAX_CHARS,
     _summarize_sample_failures,
     match_compute_batch,
 )
+from mascope_backend.api.lib.exceptions.api_exceptions import ApiException
 
 
 _MOD = "mascope_backend.api.controllers.match.match_controller"
 _FEATURES = "mascope_backend.api.lib.api_features"
+
+
+def _wrapped(user_message):
+    """What the per-sample compute step actually raises.
+
+    It is an ``@api_controller``, so whatever went wrong inside it reaches the
+    batch already put through ``process_exception``: a message written for a
+    human, with the internals left behind in the log.
+    """
+    return ApiException(user_message, {"error_id": "deadbeef"}, 500)
 
 
 def _make_sample(sample_item_id):
@@ -57,8 +69,18 @@ def _target_isotopes(sample_count):
     return [df] * sample_count
 
 
-async def _compute(samples, compute_side_effect):
-    """Run match_compute_batch over ``samples`` with a stubbed per-sample step."""
+async def _compute(
+    samples,
+    compute_side_effect,
+    aggregate_side_effect=None,
+    incomplete_ids=(),
+):
+    """Run match_compute_batch over ``samples`` with a stubbed per-sample step.
+
+    ``incomplete_ids`` stands in for samples an interrupted earlier run left
+    with incomplete aggregates: they are what puts a batch in the aggregation
+    scope when no sample of its own computed.
+    """
     batch = MagicMock()
     batch.sample_batch_name = "Test Batch"
 
@@ -89,8 +111,11 @@ async def _compute(samples, compute_side_effect):
         session.return_value = _session_returning(samples)
         targets.side_effect = _target_isotopes(len(samples))
         compute.side_effect = compute_side_effect
-        incomplete.return_value = []
-        aggregate.return_value = {"status": "success", "data": {}}
+        incomplete.return_value = list(incomplete_ids)
+        if aggregate_side_effect is not None:
+            aggregate.side_effect = aggregate_side_effect
+        else:
+            aggregate.return_value = {"status": "success", "data": {}}
 
         result = await match_compute_batch(
             sample_batch_id="batch-1",
@@ -115,7 +140,11 @@ async def test_a_failing_sample_names_its_reason_in_the_batch_message():
 
     result, notification = await _compute(
         samples,
-        [_matched(), ValueError("conflicting sizes for dimension 'time'"), _matched()],
+        [
+            _matched(),
+            _wrapped("conflicting sizes for dimension 'time'"),
+            _matched(),
+        ],
     )
 
     assert result["status"] == "partial"
@@ -126,28 +155,47 @@ async def test_a_failing_sample_names_its_reason_in_the_batch_message():
 
 
 @pytest.mark.asyncio
-async def test_the_failure_records_name_the_samples_behind_the_count():
-    samples = [_make_sample("s1"), _make_sample("s2")]
+async def test_the_reasons_are_counted_rather_than_listed_per_sample():
+    """A count is what the summary needs and all a notification should carry.
 
-    result, _ = await _compute(samples, [_matched(), RuntimeError("unreadable file")])
+    The names behind it are in the server log, one INFO line per sample.
+    """
+    samples = [_make_sample("s1"), _make_sample("s2"), _make_sample("s3")]
 
-    assert result["data"]["failed_samples"] == [
-        {
-            "sample_item_id": "s2",
-            "sample_item_name": "sample s2",
-            "filename": "Instrument_s2",
-            "reason": "unreadable file",
-        }
-    ]
+    result, _ = await _compute(
+        samples,
+        [_matched(), _wrapped("unreadable file"), _wrapped("unreadable file")],
+    )
+
+    assert result["data"]["failed_sample_reasons"] == {"unreadable file": 2}
     # Summarized once here so every caller reporting this batch words it alike
-    assert result["data"]["failed_samples_summary"] == "unreadable file [1 sample(s)]"
+    assert result["data"]["failed_samples_summary"] == "unreadable file [2 sample(s)]"
+
+
+@pytest.mark.asyncio
+async def test_an_unwrapped_failure_does_not_put_its_internals_in_the_message():
+    """Only what came through the exception pipeline is safe to show.
+
+    Anything the decorated compute step did not wrap - an undecorated fetch,
+    the loop's own body - reaches here with a raw ``str()``: a filesystem
+    path, a driver message with the statement it failed on. That is dropped,
+    the same way the batch aggregate drops it.
+    """
+    samples = [_make_sample("s1")]
+    leaky = FileNotFoundError("/srv/mascope/filestore/InstrumentA/2026.01.01/data.raw")
+
+    result, notification = await _compute(samples, [leaky])
+
+    assert result["data"]["failed_sample_reasons"] == {"Unexpected error.": 1}
+    assert "filestore" not in result["message"]
+    assert "filestore" not in notification.message
 
 
 @pytest.mark.asyncio
 async def test_a_batch_that_only_failed_is_announced_as_an_error():
     samples = [_make_sample("s1")]
 
-    result, notification = await _compute(samples, [RuntimeError("unreadable file")])
+    result, notification = await _compute(samples, [_wrapped("unreadable file")])
 
     assert result["status"] == "failed"
     assert notification.status == "error"
@@ -161,7 +209,7 @@ async def test_a_batch_without_failures_says_nothing_about_reasons():
     result, notification = await _compute(samples, [_matched(), _matched()])
 
     assert result["status"] == "success"
-    assert result["data"]["failed_samples"] == []
+    assert result["data"]["failed_sample_reasons"] == {}
     assert "Failures:" not in result["message"]
     assert notification.status == "success"
 
@@ -170,39 +218,63 @@ async def test_a_batch_without_failures_says_nothing_about_reasons():
 async def test_an_overlong_reason_is_trimmed_before_it_reaches_the_message():
     samples = [_make_sample("s1")]
 
-    result, _ = await _compute(samples, [RuntimeError("x" * 5000)])
+    result, _ = await _compute(samples, [_wrapped("x" * 5000)])
 
-    reason = result["data"]["failed_samples"][0]["reason"]
+    (reason,) = result["data"]["failed_sample_reasons"]
     assert len(reason) == FAILURE_REASON_MAX_CHARS
 
 
 @pytest.mark.asyncio
-async def test_an_exception_with_no_message_is_named_by_its_type():
+async def test_an_exception_with_no_message_still_names_something():
     samples = [_make_sample("s1")]
 
-    result, _ = await _compute(samples, [TimeoutError()])
+    result, _ = await _compute(samples, [_wrapped("   ")])
 
-    assert result["data"]["failed_samples"][0]["reason"] == "TimeoutError"
+    assert result["data"]["failed_sample_reasons"] == {"Unexpected error.": 1}
+
+
+@pytest.mark.asyncio
+async def test_a_batch_that_only_failed_to_aggregate_says_so():
+    """The one failure that belongs to no sample must still have a reason.
+
+    Every sample is skipped and the aggregation then raises, so the batch
+    reports a failure with no failing sample behind it - which used to leave
+    the user a red notification whose message said nothing had failed.
+    """
+    sample = _make_sample("s1")
+    sample.mz_calibration = {"verified": False}  # skipped, so nothing computes
+
+    result, notification = await _compute(
+        [sample],
+        [_matched()],
+        aggregate_side_effect=RuntimeError("boom"),
+        incomplete_ids=["s1"],
+    )
+
+    assert result["status"] == "failed"
+    assert result["data"]["failed_samples_count"] == 0
+    assert AGGREGATION_FAILURE_REASON in result["message"]
+    assert notification.status == "error"
+    assert "boom" not in notification.message, "the raw exception stays in the log"
 
 
 class TestSummarizeSampleFailures:
     """One bad file usually fails a batch the same way, so reasons are grouped."""
 
-    @staticmethod
-    def _records(*reasons):
-        return [{"reason": reason} for reason in reasons]
-
     def test_one_shared_reason_is_stated_once_with_its_count(self):
-        summary = _summarize_sample_failures(self._records("bad axis", "bad axis"))
+        summary = _summarize_sample_failures({"bad axis": 2})
 
         assert summary == "bad axis [2 sample(s)]"
 
     def test_the_most_common_reasons_come_first(self):
-        summary = _summarize_sample_failures(self._records("rare", "common", "common"))
+        summary = _summarize_sample_failures({"rare": 1, "common": 2})
 
         assert summary == "common [2 sample(s)]; rare [1 sample(s)]"
 
     def test_a_long_tail_of_reasons_is_counted_rather_than_listed(self):
-        summary = _summarize_sample_failures(self._records("a", "b", "c", "d"))
+        summary = _summarize_sample_failures({"a": 4, "b": 3, "c": 2, "d": 1})
 
         assert summary.endswith("; and 2 further reason(s)")
+
+    def test_no_failures_summarize_to_nothing(self):
+        assert _summarize_sample_failures({}) == ""

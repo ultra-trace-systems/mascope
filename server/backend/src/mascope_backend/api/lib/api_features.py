@@ -215,18 +215,24 @@ def api_route(
 # translated here instead of forwarded: the schema's validator only runs at
 # construction, so an outcome assigned straight onto the notification would
 # reach the browser as an unknown severity without anything objecting.
-# An outcome that is absent, or one this map does not know, stays a success.
+# An outcome that is absent stays a success - most controllers report none.
 RESULT_STATUS_NOTIFICATION = {
     "success": "success",
     "skipped": "success",  # nothing to do is not a problem
     "partial": "warning",
     "locked": "warning",  # another process holds the item; it was not touched
     "failed": "error",
+    "error": "error",  # the same outcome under the name the API layer uses
 }
 
 
 def notification_status(result: dict | None) -> str:
     """Translate a controller's own outcome into a notification status.
+
+    An outcome this map does not know stays a success, as it did before the
+    map existed - but it is logged rather than swallowed, because a word
+    nobody translates is how a failed run gets announced green in the first
+    place.
 
     :param result: The controller's return value, if any
     :type result: dict | None
@@ -235,7 +241,20 @@ def notification_status(result: dict | None) -> str:
     """
     if not isinstance(result, dict):
         return "success"
-    return RESULT_STATUS_NOTIFICATION.get(result.get("status"), "success")
+    status = result.get("status")
+    if status is None:
+        return "success"
+    if status not in RESULT_STATUS_NOTIFICATION:
+        # WARNING: not a data condition but a gap in this map - a controller
+        # is reporting an outcome no notification severity stands for, and
+        # until it is added here that run is announced as a success.
+        runtime.logger.warning(
+            f"Controller reported status '{status}', which has no notification "
+            "severity; announcing it as a success. Add it to "
+            "RESULT_STATUS_NOTIFICATION."
+        )
+        return "success"
+    return RESULT_STATUS_NOTIFICATION[status]
 
 
 def api_controller_background_task(
@@ -258,12 +277,16 @@ def api_controller_background_task(
     1. Notifications: User-facing messages about task progress/status
        - Success: Always sent. A controller that reports its own outcome in the
          returned "status" is announced with that outcome, not as a success -
-         see RESULT_STATUS_NOTIFICATION
+         see RESULT_STATUS_NOTIFICATION. A non-success outcome from a
+         dependent task is flagged `silent` on the same terms as a re-raised
+         warning below: whoever owns the process reports for it
        - Warnings: Reported unless the warning is re-raised to a parent
          handler (ApiException with status_code 200/207), which reports it
          instead; the re-raised case still emits the packet flagged `silent`,
          which only ends the task's progress bar in the frontend
-       - Errors: Only sent for independent transactions
+       - Errors: Raised errors are only sent for independent transactions;
+         an error a controller returns rather than raises follows the
+         `silent` rule above
     2. Reloads: Data refresh signals for UI components
        - Success: Sent for independent transactions or rematch_batch
        - Warnings: Same as success
@@ -335,6 +358,15 @@ def api_controller_background_task(
                     # Give the notification drawer the per-item counts behind
                     # the message, as the ApiException branch below does.
                     notification.error = {"detail": result.get("data")}
+                    if not independent_transaction and parent_id:
+                        # Same rule, and the same reason, as the re-raised
+                        # warning below: a dependent task's outcome is
+                        # reported by whoever owns the process, so a second
+                        # copy of it here only counts the same failure again
+                        # on the notification badge and files a second row in
+                        # the drawer. The packet is flagged rather than
+                        # dropped so it still ends the child's progress bar.
+                        notification.silent = True
 
                 # Handle success user notifications
                 await handle_notifications(

@@ -152,10 +152,10 @@ class TestStoredScanPositions:
     """The placement itself, away from the zarr round-trip."""
 
     def test_identical_axes_need_no_placement(self):
-        assert m_compute._stored_scan_positions(SCAN_TIMES, SCAN_TIMES) is None
+        assert m_compute.stored_scan_positions(SCAN_TIMES, SCAN_TIMES) is None
 
     def test_a_dropped_leading_scan_shifts_every_later_one(self):
-        positions = m_compute._stored_scan_positions(SCAN_TIMES[1:], SCAN_TIMES)
+        positions = m_compute.stored_scan_positions(SCAN_TIMES[1:], SCAN_TIMES)
         np.testing.assert_array_equal(positions, [1, 2, 3, 4])
 
     def test_a_scan_too_far_from_any_stored_one_is_refused(self):
@@ -167,26 +167,64 @@ class TestStoredScanPositions:
         # The gaps are 2.6 s, so the bound is 1.3 s
         drifted = np.array([5.1, 7.7, 10.3, 12.9 + 1.4])
         with pytest.raises(ValueError, match="do not line up"):
-            m_compute._stored_scan_positions(drifted, SCAN_TIMES)
+            m_compute.stored_scan_positions(drifted, SCAN_TIMES)
 
     def test_a_scan_just_inside_the_bound_still_matches(self):
         nudged = np.array([5.1, 7.7, 10.3, 12.9 + 1.2])
-        positions = m_compute._stored_scan_positions(nudged, SCAN_TIMES)
+        positions = m_compute.stored_scan_positions(nudged, SCAN_TIMES)
         np.testing.assert_array_equal(positions, [1, 2, 3, 4])
 
     def test_float_noise_still_matches(self):
         nudged = SCAN_TIMES[1:] + 1e-9
-        positions = m_compute._stored_scan_positions(nudged, SCAN_TIMES)
+        positions = m_compute.stored_scan_positions(nudged, SCAN_TIMES)
         np.testing.assert_array_equal(positions, [1, 2, 3, 4])
 
     def test_two_scans_may_not_claim_one_stored_scan(self):
         crowded = np.array([5.1, 5.1, 7.7], dtype=float)
         with pytest.raises(ValueError, match="same stored scan"):
-            m_compute._stored_scan_positions(crowded, SCAN_TIMES)
+            m_compute.stored_scan_positions(crowded, SCAN_TIMES)
 
     def test_an_unordered_stored_axis_is_refused(self):
-        with pytest.raises(ValueError, match="out of order"):
-            m_compute._stored_scan_positions(SCAN_TIMES, SCAN_TIMES[::-1])
+        with pytest.raises(ValueError, match="not strictly increasing"):
+            m_compute.stored_scan_positions(SCAN_TIMES, SCAN_TIMES[::-1])
+
+    def test_a_repeated_stored_timestamp_is_refused(self):
+        """Two stored scans on one timestamp leave "nearest" undefined."""
+        repeated = np.array([2.5, 5.1, 5.1, 7.7])
+        with pytest.raises(ValueError, match="not strictly increasing"):
+            m_compute.stored_scan_positions(np.array([2.5, 5.1, 7.7]), repeated)
+
+    def test_an_axis_read_back_unchanged_is_never_called_a_mismatch(self):
+        """Same scans, different bits: nothing to place and nothing to report.
+
+        The store's axis is float64 on disk and the reader recomputes it, so
+        a stale store can differ in the last bit while covering exactly the
+        same scans. Answering with positions would have the caller log a
+        mismatch of zero scans and copy the whole array for nothing.
+        """
+        drifted = SCAN_TIMES + np.spacing(SCAN_TIMES)
+        assert m_compute.stored_scan_positions(drifted, SCAN_TIMES) is None
+
+    def test_a_reordered_read_is_still_placed(self):
+        """A permutation covers every stored scan but is not the identity."""
+        shuffled = SCAN_TIMES[[0, 2, 1, 3, 4]]
+        np.testing.assert_array_equal(
+            m_compute.stored_scan_positions(shuffled, SCAN_TIMES), [0, 2, 1, 3, 4]
+        )
+
+    def test_a_one_scan_store_tolerates_float_noise(self):
+        """No spacing to derive a bound from is not a reason to refuse.
+
+        The bound falls back to float noise, so a single scan that came back
+        from the store a few bits off still claims its own slot - answered as
+        "nothing to place", since claiming it covers the whole axis. A scan
+        from another acquisition is still refused.
+        """
+        single = np.array([1700000000.0])
+        nudged = single + np.spacing(single) * 4
+        assert m_compute.stored_scan_positions(nudged, single) is None
+        with pytest.raises(ValueError, match="do not line up"):
+            m_compute.stored_scan_positions(single + 1.0, single)
 
     def test_a_non_finite_scan_time_is_refused(self):
         """NaN passes every comparison, so it has to be refused up front.
@@ -196,29 +234,29 @@ class TestStoredScanPositions:
         """
         holed = np.array([2.5, np.nan, 7.7, 10.3, 12.9])
         with pytest.raises(ValueError, match="not finite"):
-            m_compute._stored_scan_positions(np.array([2.5, 7.7, 10.3, 12.9]), holed)
+            m_compute.stored_scan_positions(np.array([2.5, 7.7, 10.3, 12.9]), holed)
         with pytest.raises(ValueError, match="not finite"):
-            m_compute._stored_scan_positions(np.array([2.5, np.nan]), SCAN_TIMES)
+            m_compute.stored_scan_positions(np.array([2.5, np.nan]), SCAN_TIMES)
 
     def test_an_empty_scan_axis_is_refused(self):
         """A read that returned nothing must not mark the peaks computed."""
         with pytest.raises(ValueError, match="no scans"):
-            m_compute._stored_scan_positions(np.array([]), SCAN_TIMES)
+            m_compute.stored_scan_positions(np.array([]), SCAN_TIMES)
         with pytest.raises(ValueError, match="no scans"):
-            m_compute._stored_scan_positions(SCAN_TIMES, np.array([]))
+            m_compute.stored_scan_positions(SCAN_TIMES, np.array([]))
 
     def test_the_tightest_gap_sets_the_bound_on_an_uneven_axis(self):
         """Not the average gap, and not the widest one."""
         uneven = np.array([0.0, 1.0, 11.0, 21.0])  # gaps 1, 10, 10 -> bound 0.5
         np.testing.assert_array_equal(
-            m_compute._stored_scan_positions(np.array([1.0, 11.4, 21.0]), uneven),
+            m_compute.stored_scan_positions(np.array([1.0, 11.4, 21.0]), uneven),
             [1, 2, 3],
         )
         with pytest.raises(ValueError, match="do not line up"):
-            m_compute._stored_scan_positions(np.array([1.0, 11.6, 21.0]), uneven)
+            m_compute.stored_scan_positions(np.array([1.0, 11.6, 21.0]), uneven)
 
     def test_placement_leaves_uncovered_scans_empty(self):
         values = np.array([[1.0, 2.0], [3.0, 4.0]])
-        placed = m_compute._place_on_stored_scans(values, np.array([0, 2]), 3)
+        placed = m_compute.place_on_stored_scans(values, np.array([0, 2]), 3)
         np.testing.assert_array_equal(placed[:, [0, 2]], values)
         assert np.isnan(placed[:, 1]).all()

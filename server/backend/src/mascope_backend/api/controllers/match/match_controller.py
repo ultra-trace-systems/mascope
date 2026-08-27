@@ -5,6 +5,9 @@ This module contains all the functionalities and endpoints related to
 the matching/rematching processes and related operations.
 """
 
+from collections import Counter
+from collections.abc import Mapping
+
 from sqlalchemy import delete, func, select
 
 from mascope_backend.api.controllers.match.aggregate.match_aggregate_controller import (
@@ -63,6 +66,8 @@ from mascope_backend.socket.notifications import (
 # ends up in is read in a toast.
 FAILURE_REASON_MAX_CHARS = 200
 FAILURE_REASONS_IN_SUMMARY = 2
+# The one failure a batch can report that belongs to no sample.
+AGGREGATION_FAILURE_REASON = "higher-level match aggregation failed"
 
 
 def _is_blank_sample(sample: Sample) -> bool:
@@ -72,7 +77,7 @@ def _is_blank_sample(sample: Sample) -> bool:
     return sample.instrument_function_id is None
 
 
-def _summarize_sample_failures(failed_sample_items: list[dict]) -> str:
+def _summarize_sample_failures(reason_counts: Mapping[str, int]) -> str:
     """Name the distinct reasons behind a batch's per-sample failures.
 
     The per-sample reasons are logged one by one, but the notification the user
@@ -80,17 +85,16 @@ def _summarize_sample_failures(failed_sample_items: list[dict]) -> str:
     why, not just how many. One bad file usually fails a whole batch the same
     way, hence distinct reasons with their counts rather than a list per sample.
 
-    :param failed_sample_items: Failure records, each with a "reason"
-    :type failed_sample_items: list[dict]
+    Counts rather than per-sample records: a dataset-wide refresh aggregates
+    these across every batch it touches, and the names behind the count are
+    already in the server log, one INFO line per sample.
+
+    :param reason_counts: How many samples each distinct reason accounts for
+    :type reason_counts: Mapping[str, int]
     :return: The distinct reasons with their sample counts, most common first
     :rtype: str
     """
-    counts: dict[str, int] = {}
-    for item in failed_sample_items:
-        reason = item["reason"]
-        counts[reason] = counts.get(reason, 0) + 1
-
-    ranked = sorted(counts.items(), key=lambda item: item[1], reverse=True)
+    ranked = Counter(reason_counts).most_common()
     named = ranked[:FAILURE_REASONS_IN_SUMMARY]
     summary = "; ".join(f"{reason} [{count} sample(s)]" for reason, count in named)
 
@@ -649,26 +653,34 @@ def _user_facing_reason(error: Exception) -> str:
     An ``ApiException`` carries a ``user_message`` written for a human - it is
     what every other layer surfaces, and by the time a nested rematch reaches
     the aggregate that is what its failures are, the background task decorator
-    having already put anything else through ``process_exception``.
+    having already put anything else through ``process_exception``. The same
+    holds one level down, for a sample whose match computation raised: the
+    step that computes it is an ``@api_controller``, so whatever it could not
+    do arrives here already mapped.
 
     That message is taken as it stands, and this adds no guarantee to it.
     ``process_exception`` genericizes most internals behind a "ref:" id, but
     not all of them - a ``ValueError`` is answered with its own ``str()``,
     filesystem path and all - so a reason here says exactly what the same
-    batch rematched on its own would say, no more and no less.
+    batch or sample rematched on its own would say, no more and no less.
 
-    What this does guarantee is that the aggregate leaks nothing extra: an
-    exception that reaches it unwrapped never went through that mapping, and
-    its ``str()`` is an internal detail (a filesystem path, an attribute name,
-    a driver message), so it is dropped; the caller logs the traceback.
+    What this does guarantee is that the summary leaks nothing extra: an
+    exception that reaches it unwrapped never went through that mapping (an
+    undecorated fetch helper, or the loop body itself), and its ``str()`` is
+    an internal detail - a filesystem path, an attribute name, a driver
+    message carrying the statement it failed on - so it is dropped; the
+    caller logs it, traceback and all.
 
-    :param error: The exception a single batch's rematch raised.
+    Never empty: a reason is the whole of what the user is told, so an
+    exception that carries no message of its own still says that much.
+
+    :param error: The exception a single batch's or sample's work raised.
     :type error: Exception
-    :return: A reason suitable for the aggregate's notification message.
+    :return: A reason suitable for a user-facing notification message.
     :rtype: str
     """
-    if isinstance(error, ApiException):
-        return error.user_message
+    if isinstance(error, ApiException) and error.user_message.strip():
+        return error.user_message.strip()
     return "Unexpected error."
 
 
@@ -884,7 +896,10 @@ async def rematch_batches(
         "total_samples_count": 0,
     }
 
-    failed_sample_items = []
+    # Merged reason -> sample count across every batch. A count rather than a
+    # record per sample: a dataset-wide refresh can fail thousands of samples
+    # and this only ever names the distinct reasons behind them.
+    failure_reason_counts: Counter[str] = Counter()
 
     # Sample counts only weight the progress bar, so they are counted in one
     # grouped query rather than by reading every batch's samples: rematching a
@@ -958,7 +973,7 @@ async def rematch_batches(
             for key in processed_samples:
                 if key != "total_samples_count":  # Skip total as it's pre-calculated
                     processed_samples[key] += batch_data.get(key, 0)
-            failed_sample_items.extend(batch_data.get("failed_samples", []))
+            failure_reason_counts.update(batch_data.get("failed_sample_reasons", {}))
 
             # Categorize batch rematch result
             batch_collections[f"{batch_result['status']}_batches"].append(
@@ -1000,10 +1015,14 @@ async def rematch_batches(
 
     message = f"Rematch of sample batches completed: {processed_batches_count}/{total_batches_count} batches processed ({', '.join(message_parts)})"
 
-    # Add sample processing statistics if operations occurred
+    # Add sample processing statistics if anything happened to a sample.
+    # Failures count as something happening: a run where every sample failed
+    # computes nothing and removes nothing, and that is exactly the run whose
+    # reasons the user most needs to be told.
     if (
         processed_samples["computed_samples_count"] > 0
         or processed_samples["removed_match_isotopes_count"] > 0
+        or processed_samples["failed_samples_count"] > 0
     ):
         stats_parts = []
         if processed_samples["removed_match_isotopes_count"] > 0:
@@ -1016,8 +1035,8 @@ async def rematch_batches(
             )
         if processed_samples["failed_samples_count"] > 0:
             failures = f"{processed_samples['failed_samples_count']} sample failures"
-            if failed_sample_items:
-                failures += f" ({_summarize_sample_failures(failed_sample_items)})"
+            if failure_reason_counts:
+                failures += f" ({_summarize_sample_failures(failure_reason_counts)})"
             stats_parts.append(failures)
         if processed_samples["skipped_samples_count"] > 0:
             stats_parts.append(
@@ -1239,15 +1258,21 @@ async def rematch_batch(
         removed = f"all {removed_count}" if full_remove else f"{removed_count} orphaned"
         remove_summary = f"{removed if removed_count else 'no'} match isotopes removed"
         compute_summary = f"{computed_count}/{total_samples} samples computed missing matches successfully"
-        failed_samples = compute_data.get("failed_samples", [])
+        failed_sample_reasons = compute_data.get("failed_sample_reasons", {})
         failures_summary = compute_data.get("failed_samples_summary", "")
-        failed_summary = (
-            f"match computation failed for {failed_count}/{total_samples} samples"
-        )
-        if failures_summary:
-            # Carry the reasons into the batch message: it is the one the user
-            # is shown, and a bare count leaves them nothing to act on.
-            failed_summary += f" ({failures_summary})"
+        if failed_count:
+            failed_summary = (
+                f"match computation failed for {failed_count}/{total_samples} samples"
+            )
+            if failures_summary:
+                # Carry the reasons into the batch message: it is the one the
+                # user is shown, and a bare count leaves them nothing to act on.
+                failed_summary += f" ({failures_summary})"
+        else:
+            # No sample failed outright, yet the compute step still reports a
+            # failure - its own aggregation did not finish. Saying "failed for
+            # 0/12 samples" would contradict the status it is explaining.
+            failed_summary = failures_summary or "match computation failed"
         skipped_summary = f"{skipped_count}/{total_samples} samples skipped match computation due to missing calibration or no new target associations"
         match (remove_status, compute_status):
             case ("skipped", "skipped"):
@@ -1314,7 +1339,7 @@ async def rematch_batch(
                 "computed_samples_count": computed_count,
                 "failed_samples_count": failed_count,
                 "skipped_samples_count": skipped_count,
-                "failed_samples": failed_samples,
+                "failed_sample_reasons": failed_sample_reasons,
                 "failed_samples_summary": failures_summary,
             },
             "_notification_data": {"sample_batch_id": sample_batch_id},
@@ -1479,7 +1504,7 @@ async def match_compute_batch(
     # Step 2: Process each sample for match computation
     computed_samples = []
     failed_samples = []
-    failed_sample_items = []
+    failure_reason_counts: Counter[str] = Counter()
     skipped_samples = []
     for item_index, sample in enumerate(samples):
         progress_notification = UserNotification(
@@ -1556,20 +1581,18 @@ async def match_compute_batch(
             # the batch. CancelledError is a BaseException and is not caught.
             # INFO per sample; the batch summary below warns once for the
             # whole batch.
-            reason = str(e).strip()[:FAILURE_REASON_MAX_CHARS] or type(e).__name__
+            # The reason goes into a notification, so it is the sanitised one
+            # the same sample would report on its own - never a raw str(e),
+            # which for anything the decorated compute step did not wrap (an
+            # undecorated fetch, this loop's own body) is an internal detail.
+            # The log line below keeps the full message either way.
+            reason = _user_facing_reason(e)[:FAILURE_REASON_MAX_CHARS]
             runtime.logger.info(
                 f"Computing match isotopes for sample '{sample.sample_item_name}' "
-                f"failed: {e}"
+                f"(file '{sample.filename}') failed: {e}"
             )
             failed_samples.append(sample.sample_item_id)
-            failed_sample_items.append(
-                {
-                    "sample_item_id": sample.sample_item_id,
-                    "sample_item_name": sample.sample_item_name,
-                    "filename": sample.filename,
-                    "reason": reason,
-                }
-            )
+            failure_reason_counts[reason] += 1
             continue
 
         await send_progress_user_notification(progress_notification, 1.0)
@@ -1682,9 +1705,18 @@ async def match_compute_batch(
     )
     # Summarized once, here, so every caller that reports this batch words the
     # reasons the same way
-    failures_summary = _summarize_sample_failures(failed_sample_items)
-    if failed_samples_count > 0:
+    failures_summary = _summarize_sample_failures(failure_reason_counts)
+    if aggregation_failed:
+        # Named beside the per-sample reasons rather than counted among them:
+        # it is the batch's own step, not any one file's, and when it is the
+        # only thing that went wrong it is the only reason there is - without
+        # it the run reports a failure whose message says nothing failed.
+        failures_summary = "; ".join(
+            part for part in (failures_summary, AGGREGATION_FAILURE_REASON) if part
+        )
+    if failures_summary:
         message += f" Failures: {failures_summary}."
+    if failed_samples_count > 0 or aggregation_failed:
         # One aggregated warning per problem batch; the per-sample failures
         # above are logged at INFO.
         runtime.logger.warning(message)
@@ -1699,7 +1731,10 @@ async def match_compute_batch(
             "failed_samples_count": failed_samples_count,
             "skipped_samples_count": skipped_samples_count,
             "total_samples_count": total_samples_count,
-            "failed_samples": failed_sample_items,
+            # Reason -> sample count, not one record per sample: this travels
+            # into a notification payload and up into a dataset-wide summary,
+            # so it stays the size of the problem rather than of the batch.
+            "failed_sample_reasons": dict(failure_reason_counts),
             "failed_samples_summary": failures_summary,
         },
         "_notification_data": {"sample_batch_id": sample_batch_id},

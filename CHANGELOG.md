@@ -514,6 +514,7 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
   samples to constrain a fit are dismissed the way the other quality filters
   dismiss theirs - if that leaves too few peaks, the file is treated as a blank
   measurement, which is a defined outcome rather than a hard failure.
+
 - Refreshing matches no longer fails on samples whose peak data was built by
   an older version of Mascope. A file's peak data is stored against the scans
   of the acquisition, and which scans a file yields is decided each time it is
@@ -522,8 +523,12 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
   failed to recompute. The recomputed values are now placed by their
   timestamps, leaving the discarded scan marked as never measured rather than
   as an intensity of zero, and the refresh repairs such samples on its own
-  with nothing to re-import. A sample whose stored scans cannot be matched to
-  the file at all is still refused, and says that peak detection has to be
+  with nothing to re-import. A recomputed timeseries is still anchored to the
+  file's stored totals, which were measured over the discarded scan as well,
+  so that scan's share is spread over the ones that remain - the recomputed
+  intensities of such a file read slightly high, and the server log says so
+  for every file it happens to. A sample whose stored scans cannot be matched
+  to the file at all is still refused, and says that peak detection has to be
   re-run for it.
 
 - A batch refresh that failed is no longer announced as a success. Refreshing
