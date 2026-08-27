@@ -907,6 +907,23 @@ async def get_ms2_fragment_timeseries(
     }
 
 
+def _load_deduplicated_peak_data(base_filename: str, mzs_arr: np.ndarray) -> xr.Dataset:
+    """Load the peak dataset for the requested m/z values, without duplicates.
+
+    Synchronous and blocking (it opens the zarr store), so callers on the event
+    loop must hand it to a worker thread.
+
+    :param base_filename: Sample file filename
+    :param mzs_arr: Sorted unique target m/z values
+    :return: Peak dataset selected to the nearest m/z, duplicates dropped
+    """
+    peak_timeseries = m_io.load_peak_data(base_filename).sel(
+        mz=mzs_arr, method="nearest"
+    )
+    _, unique_idx = np.unique(peak_timeseries.mz.values, return_index=True)
+    return peak_timeseries.isel(mz=np.sort(unique_idx))
+
+
 async def load_peak_timeseries(
     base_filename: str,
     mzs: list[float],
@@ -923,18 +940,17 @@ async def load_peak_timeseries(
     """
     # --- Load existing peak timeseries from the sample file ---
     mzs_arr = np.unique(np.asarray(mzs))
-    peak_timeseries = m_io.load_peak_data(base_filename).sel(
-        mz=mzs_arr, method="nearest"
+    peak_timeseries = await asyncio.to_thread(
+        _load_deduplicated_peak_data, base_filename, mzs_arr
     )
-    # Remove duplicate m/z values if any
-    _, unique_idx = np.unique(peak_timeseries.mz.values, return_index=True)
-    peak_timeseries = peak_timeseries.isel(mz=np.sort(unique_idx))
 
     runtime.logger.debug(
         f"Loading peak timeseries for {peak_timeseries.mz.size} m/z values from {base_filename}"
     )
 
-    is_computed = peak_timeseries.is_timeseries_computed.values
+    is_computed = await asyncio.to_thread(
+        lambda: peak_timeseries.is_timeseries_computed.values
+    )
     to_compute_mask = np.invert(is_computed)
 
     if not np.any(to_compute_mask):
@@ -948,56 +964,62 @@ async def load_peak_timeseries(
     mzs_to_compute = mz_coords[to_compute_mask]
 
     # Load only the metadata we need (relatively small arrays)
-    sum_peak_heights = peak_timeseries.sum_peak_heights.sel(mz=mzs_to_compute).values
-    sum_peak_areas = peak_timeseries.sum_peak_areas.sel(mz=mzs_to_compute).values
-    time_coords = peak_timeseries.time.values
+    def _load_update_metadata():
+        return (
+            peak_timeseries.sum_peak_heights.sel(mz=mzs_to_compute).values,
+            peak_timeseries.sum_peak_areas.sel(mz=mzs_to_compute).values,
+            peak_timeseries.time.values,
+        )
+
+    sum_peak_heights, sum_peak_areas, time_coords = await asyncio.to_thread(
+        _load_update_metadata
+    )
 
     # Compute new timeseries (this is the heavy computation)
     new_peak_timeseries = await get_peak_timeseries(base_filename, mzs_to_compute)
 
-    # Normalize peak timeseries intensities to 1
-    timeseries_sum = new_peak_timeseries.sum(dim="time")
-    timeseries_sum = xr.where(timeseries_sum == 0, 1, timeseries_sum)
-    new_peak_timeseries_norm = (new_peak_timeseries / timeseries_sum).values
+    # Normalize, restore intensities and build the update dataset. Kept in one
+    # worker thread: new_peak_timeseries is dask-backed, so .values below is
+    # where the chunks are actually read.
+    def _build_update_dataset():
+        timeseries_sum = new_peak_timeseries.sum(dim="time")
+        timeseries_sum = xr.where(timeseries_sum == 0, 1, timeseries_sum)
+        new_peak_timeseries_norm = (new_peak_timeseries / timeseries_sum).values
 
-    # Restore peak timeseries intensities
-    new_peak_areas = new_peak_timeseries_norm * sum_peak_areas[:, np.newaxis]
-    new_peak_heights = new_peak_timeseries_norm * sum_peak_heights[:, np.newaxis]
+        # Restore peak timeseries intensities
+        new_peak_areas = new_peak_timeseries_norm * sum_peak_areas[:, np.newaxis]
+        new_peak_heights = new_peak_timeseries_norm * sum_peak_heights[:, np.newaxis]
 
-    # Determine sparsity: fraction of scans where peak_heights are not positive
-    # NaN values count as missing (sparse) because NaN > 0 is False
-    sparsity_values = (
-        np.sum(~(new_peak_heights > 0), axis=1) / new_peak_heights.shape[1]
-    )
+        # Determine sparsity: fraction of scans where peak_heights are not
+        # positive. NaN values count as missing (sparse) because NaN > 0 is False
+        sparsity_values = (
+            np.sum(~(new_peak_heights > 0), axis=1) / new_peak_heights.shape[1]
+        )
 
-    # --- Create a dataset for the update ---
-    # This contains only the changed values, fully in memory
-    update_dataset = xr.Dataset(
-        data_vars={
-            "peak_areas": (["mz", "time"], new_peak_areas),
-            "peak_heights": (["mz", "time"], new_peak_heights),
-            "is_timeseries_computed": (
-                ["mz"],
-                np.ones(len(mzs_to_compute), dtype=bool),
-            ),
-            "sparsity": (["mz"], sparsity_values),
-        },
-        coords={
-            "mz": mzs_to_compute,
-            "time": time_coords,
-        },
-    )
+        # This contains only the changed values, fully in memory
+        return xr.Dataset(
+            data_vars={
+                "peak_areas": (["mz", "time"], new_peak_areas),
+                "peak_heights": (["mz", "time"], new_peak_heights),
+                "is_timeseries_computed": (
+                    ["mz"],
+                    np.ones(len(mzs_to_compute), dtype=bool),
+                ),
+                "sparsity": (["mz"], sparsity_values),
+            },
+            coords={
+                "mz": mzs_to_compute,
+                "time": time_coords,
+            },
+        )
+
+    update_dataset = await asyncio.to_thread(_build_update_dataset)
 
     # --- Write the updates to disk ---
     await m_io.write_peaks(update_dataset, base_filename)
 
     # --- Return a clean lazy reference ---
-    peak_timeseries = m_io.load_peak_data(base_filename).sel(
-        mz=mzs_arr, method="nearest"
-    )
-    # Remove duplicate m/z values if any
-    _, unique_idx = np.unique(peak_timeseries.mz.values, return_index=True)
-    return peak_timeseries.isel(mz=np.sort(unique_idx))
+    return await asyncio.to_thread(_load_deduplicated_peak_data, base_filename, mzs_arr)
 
 
 async def get_peak_timeseries(

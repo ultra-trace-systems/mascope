@@ -10,6 +10,7 @@ Tasks:
 - Calibrate individual samples, sample sets, and full batches
 """
 
+import asyncio
 import time
 from typing import cast
 
@@ -572,7 +573,7 @@ async def calibration_mz_apply(
         filename=filename, calibration_params=None, notification=notification
     )
     await calibration_handler.apply(fit)
-    updated_mz_axis = get_sum_signal(filename).mz.values
+    updated_mz_axis = (await asyncio.to_thread(get_sum_signal, filename)).mz.values
     new_mz_range = [updated_mz_axis[0], updated_mz_axis[-1]]
 
     fit.update({"status": "ok", "verified": True})

@@ -56,6 +56,45 @@ async def delete_sum_signal(cached_only=False):
             remove_path(zarr_dir)
 
 
+async def delete_sync_dirs():
+    """Delete the ``<var>.sync`` directories left behind by zarr 2.
+
+    zarr 2 serialized concurrent writes with a ``ProcessSynchronizer``, which
+    kept a directory of per-chunk lock files beside each store. zarr 3 removed
+    synchronizers and Mascope replaced them with a single ``<var>.lock`` file,
+    so every ``.sync`` directory in an existing filestore is now inert: nothing
+    reads, writes or deletes them, and they keep consuming inodes.
+
+    They are harmless, so this is a one-shot reclaim rather than a migration.
+    Only ``*.sync`` directories are removed; stores and their locks are left
+    alone.
+    """
+    sample_files = await fetch_sample_files()
+
+    removed = 0
+    for i, sample_file in enumerate(sample_files):
+        sample_data_path = parse_path_from_item_filename(sample_file.filename)
+        sync_dirs = [
+            path
+            for path in glob.glob(os.path.join(sample_data_path, "*.sync"))
+            if os.path.isdir(path)
+        ]
+        if not sync_dirs:
+            continue
+        runtime.logger.info(
+            f"Removing {len(sync_dirs)} zarr 2 sync directories from "
+            f"{sample_file.filename}: {i + 1}/{len(sample_files)}"
+        )
+        for sync_dir in sync_dirs:
+            remove_path(sync_dir)
+            removed += 1
+
+    runtime.logger.info(
+        f"Removed {removed} zarr 2 sync directories across "
+        f"{len(sample_files)} sample files."
+    )
+
+
 async def refit_peaks():
     """Refit all peaks for all sample files in the database."""
     # Get all sample files
@@ -91,6 +130,7 @@ async def refit_peaks():
 
 ACTIONS = {
     "delete-sum-signal": delete_sum_signal,
+    "delete-sync-dirs": delete_sync_dirs,
     "refit-peaks": refit_peaks,
 }
 ActionTypes = Literal[tuple(ACTIONS.keys())]

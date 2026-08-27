@@ -24,6 +24,7 @@ General calibration workflow:
    rewriting relevant m/z coordinates in the sample file.
 """
 
+import asyncio
 import math
 from abc import abstractmethod
 from itertools import combinations
@@ -144,12 +145,15 @@ class BaseCalibrationHandler:
             matched_peak_idx=np.nan,
         )
 
-        averaged_peaks = peaks.mean(dim="time")
-        averaged_peaks_dict = {
-            "mz": averaged_peaks.mz.values,
-            "tof": averaged_peaks.tof.values,
-            "intensity": averaged_peaks.values,
-        }
+        def _averaged_peaks_dict():
+            averaged_peaks = peaks.mean(dim="time").compute()
+            return {
+                "mz": averaged_peaks.mz.values,
+                "tof": averaged_peaks.tof.values,
+                "intensity": averaged_peaks.values,
+            }
+
+        averaged_peaks_dict = await asyncio.to_thread(_averaged_peaks_dict)
         match_df = match_df.apply(
             self._match_max_in_range,
             args=(averaged_peaks_dict,),
@@ -219,7 +223,7 @@ class BaseCalibrationHandler:
         :return: DataArray containing detected peaks with their m/z, intensity, and time information.
         :rtype: xarray.DataArray
         """
-        peak_data = m_io.load_peak_data(self.filename)
+        peak_data = await asyncio.to_thread(m_io.load_peak_data, self.filename)
 
         candidate_mzs = self._filter_mzs_by_polarity_and_snr(peak_data)
         candidate_mzs = self._filter_mzs_by_refine_window(
@@ -230,7 +234,9 @@ class BaseCalibrationHandler:
         candidate_mzs = await self._filter_overlapping_peaks(candidate_mzs)
 
         peak_timeseries = await self._load_peak_timeseries(candidate_mzs)
-        peak_timeseries = self._drop_empty_peak_timeseries(peak_timeseries)
+        peak_timeseries = await asyncio.to_thread(
+            self._drop_empty_peak_timeseries, peak_timeseries
+        )
 
         return self._extract_intensity(peak_timeseries)
 
@@ -333,7 +339,8 @@ class BaseCalibrationHandler:
 
     async def _load_peak_timeseries(self, peak_mzs: np.ndarray):
         """Load peak timeseries for the given m/z values and filter to scan timestamps."""
-        scan_timestamps = m_compute.get_scan_timestamps(
+        scan_timestamps = await asyncio.to_thread(
+            m_compute.get_scan_timestamps,
             self.filename,
             polarity=self.params.polarity,
         )
@@ -627,13 +634,15 @@ class TofCalibrationHandler(BaseCalibrationHandler):
         """Fit the m/z calibration for a TOF instrument."""
         await self._send_progress(0.25)
 
-        if not self._has_peaks:
+        if not await asyncio.to_thread(lambda: self._has_peaks):
             self.fit_result = None
             self.stats = None
             self.warning = "The sample file has no peaks."
             return
 
-        _, tic_per_scan = m_compute.get_tic_per_scan(self.filename)
+        _, tic_per_scan = await asyncio.to_thread(
+            m_compute.get_tic_per_scan, self.filename
+        )
         tic = np.sum(tic_per_scan)
 
         await self._send_progress(0.35)
@@ -715,6 +724,16 @@ class TofCalibrationHandler(BaseCalibrationHandler):
         """Applies the m/z calibration fit to the sample file.
         NOTE: fit is passed externally since fit() and apply() used in different controllers
         and the instance of TofCalibrationHandler is not passed between them."""
+        # Offloaded as one unit rather than per zarr call. The body recalibrates
+        # several arrays and contains no await today, so it is atomic with
+        # respect to every other coroutine in this worker; wrapping each write
+        # separately would insert yield points into the middle of it, letting a
+        # reader see signal.zarr on the new m/z axis while peak_timeseries.zarr
+        # is still on the old one.
+        return await asyncio.to_thread(self._apply_sync, fit)
+
+    def _apply_sync(self, fit: dict):
+        """Synchronous body of :meth:`apply`. See there for why it is one unit."""
         fit_mode = fit["mode"]
         fit_parameters = fit["par"]
 
@@ -807,7 +826,7 @@ class OrbiCalibrationHandler(BaseCalibrationHandler):
         """Fit the m/z calibration for an Orbitrap instrument."""
         await self._send_progress(0.25)
 
-        if not self._has_peaks:
+        if not await asyncio.to_thread(lambda: self._has_peaks):
             self.fit_result = None
             self.stats = None
             self.warning = "The sample file has no peaks."
@@ -821,7 +840,9 @@ class OrbiCalibrationHandler(BaseCalibrationHandler):
             self.warning = "No calibration peaks found"
             return
 
-        _, tic_per_scan = m_compute.get_tic_per_scan(self.filename)
+        _, tic_per_scan = await asyncio.to_thread(
+            m_compute.get_tic_per_scan, self.filename
+        )
         tic = np.sum(tic_per_scan)
         calibrant_signal_intensity = good_matches_df["sample_peak_intensity"]
         calibrant_to_tic = calibrant_signal_intensity / tic
@@ -859,6 +880,14 @@ class OrbiCalibrationHandler(BaseCalibrationHandler):
         A new calibration factor is stored for new sum signals and
         signals to be generated later.
         """
+        # Offloaded as one unit, for the same reason as the TOF handler - and
+        # more sharply here: this calibration is cumulative, so a yield point
+        # admitting a second apply past the _is_calibration_already_applied
+        # guard below would double-apply old_factor_scaling.
+        return await asyncio.to_thread(self._apply_sync, fit)
+
+    def _apply_sync(self, fit: dict):
+        """Synchronous body of :meth:`apply`. See there for why it is one unit."""
         fit_parameters = fit["par"]
         old_factor_scaling = fit_parameters["old_factor_scaling"]
         if self._is_calibration_already_applied(fit):

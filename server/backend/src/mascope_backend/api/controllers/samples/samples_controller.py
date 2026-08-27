@@ -330,7 +330,8 @@ async def get_sample_peaks(
 
     sample = await fetch_sample(sample_item_id)
 
-    peak_data = extract_peaks(
+    peak_data = await asyncio.to_thread(
+        extract_peaks,
         filename=sample.filename,
         polarity=sample.polarity,  # type: ignore[attr-defined]
         sample_t0=sample.t0,  # type: ignore[attr-defined]
@@ -437,9 +438,16 @@ async def get_sample_peak_timeseries(
     # Step 1b: Resolve peak_id to m/z if provided
     resolved_peak_id = None
     if peak_id is not None:
+        filename = sample.filename
+
+        def _load_peak_coords():
+            return (
+                load_coord(filename, "peak_timeseries", "peak_id"),
+                load_coord(filename, "peak_timeseries", "mz"),
+            )
+
         try:
-            peak_ids = load_coord(sample.filename, "peak_timeseries", "peak_id")
-            mz_values = load_coord(sample.filename, "peak_timeseries", "mz")
+            peak_ids, mz_values = await asyncio.to_thread(_load_peak_coords)
         except FileNotFoundError as e:
             raise NotFoundException(
                 f"Sample file with name '{sample.filename}' was not found or has not been processed"
@@ -461,7 +469,8 @@ async def get_sample_peak_timeseries(
     )
 
     # Step 3: Get filtered scan timestamps using sample's polarity and time range (adjusted values)
-    time_array = m_compute.get_scan_timestamps(
+    time_array = await asyncio.to_thread(
+        m_compute.get_scan_timestamps,
         base_filename=sample.filename,
         t_min=t_min_eff,
         t_max=t_max_eff,
@@ -483,7 +492,7 @@ async def get_sample_peak_timeseries(
     # Step 4: Load sample file data
     try:
         sample_file = await m_compute.load_peak_timeseries(sample.filename, [peak_mz])
-        peaks = get_peaks(sample_file, "height")
+        peaks = await asyncio.to_thread(get_peaks, sample_file, "height")
     except FileNotFoundError:
         raise NotFoundException(f"Sample file '{sample.filename}' not found")
 
@@ -500,10 +509,12 @@ async def get_sample_peak_timeseries(
         }
     # Step 5: Filter sample file peaks to include times in filtered time_array and
     # select nearest to requested peak m/z
-    peak_timeseries = (
-        peaks.sel(time=time_array, method="nearest")
-        .sel(mz=peak_mz, method="nearest")
-        .compute()
+    peak_timeseries = await asyncio.to_thread(
+        lambda: (
+            peaks.sel(time=time_array, method="nearest")
+            .sel(mz=peak_mz, method="nearest")
+            .compute()
+        )
     )
 
     # Step 6: Validate m/z tolerance and return timeseries data
@@ -603,17 +614,33 @@ async def get_sample_spectrum(
 
     # Use specific time range with polarity filtering (reconstructed for display
     # so it overlays the centroids).
-    spectrum = m_compute.get_sum_signal(
-        sample.filename,
-        t_min_eff,
-        t_max_eff,
-        polarity=sample.polarity,
-        average=True,
-        reconstruct=True,
-    )
+    # One thread hop spans the call and the .tolist() materialization: the
+    # spectrum is a lazy dask array, so offloading only the call would leave
+    # every chunk read on the event loop.
+    filename = sample.filename
+    polarity = sample.polarity
+
+    def _spectrum_arrays():
+        spectrum = m_compute.get_sum_signal(
+            filename,
+            t_min_eff,
+            t_max_eff,
+            polarity=polarity,
+            average=True,
+            reconstruct=True,
+        )
+        if spectrum is None:
+            return None
+        if mz_min is not None and mz_max is not None:
+            spectrum = spectrum.sel(mz=slice(mz_min, mz_max)).compute()
+        # Filter out NaN values to ensure JSON serialization
+        spectrum = spectrum.dropna(dim="mz", how="any")
+        return spectrum.mz.values.tolist(), spectrum.values.tolist()
+
+    spectrum_arrays = await asyncio.to_thread(_spectrum_arrays)
 
     # Check if spectrum computation returned None (no data found)
-    if spectrum is None:
+    if spectrum_arrays is None:
         message = (
             f"No spectrum data found for sample '{sample.sample_item_name}' "
             f"with '{sample.polarity}' polarity in time range "
@@ -630,14 +657,7 @@ async def get_sample_spectrum(
             },
         }
 
-    # - Filter by m/z range if provided
-    if mz_min is not None and mz_max is not None:
-        spectrum = spectrum.sel(mz=slice(mz_min, mz_max)).compute()
-
-    # - Filter out NaN values to ensure JSON serialization, and convert to lists
-    spectrum = spectrum.dropna(dim="mz", how="any")
-    mz_values = spectrum.mz.values.tolist()
-    intensity_values = spectrum.values.tolist()
+    mz_values, intensity_values = spectrum_arrays
 
     # - Return the spectrum data with metadata
     message = f"Retrieved spectrum data with {len(mz_values)} m/z points from sample '{sample.sample_item_name}' with '{sample.polarity}' polarity."
@@ -699,27 +719,31 @@ async def get_samples_centroids(
     # Step 2: Extract centroids for each sample item
     centroids = dict()
     for sample in sample_items:
-        sample_item_centroids = m_compute.get_orbi_centroids_per_scan(
-            base_filename=sample.filename,
-            t_min=sample.t0,
-            t_max=sample.t1,
+        # Bind the ORM reads as defaults so they happen here on the loop, and
+        # so the closure does not capture the loop variable (ruff B023).
+        def _centroid_lists(
+            filename=sample.filename,
+            t0=sample.t0,
+            t1=sample.t1,
             polarity=sample.polarity,
-        )
-        mzs = [cen["masses"].tolist() for cen in sample_item_centroids]
-        intensities = [cen["intensities"].tolist() for cen in sample_item_centroids]
-        resolutions = [cen["resolutions"].tolist() for cen in sample_item_centroids]
-        signal_to_noise = [
-            cen["signal_to_noise"].tolist() for cen in sample_item_centroids
-        ]
-        timestamps = [cen["timestamp"] for cen in sample_item_centroids]
+        ):
+            per_scan = m_compute.get_orbi_centroids_per_scan(
+                base_filename=filename,
+                t_min=t0,
+                t_max=t1,
+                polarity=polarity,
+            )
+            return {
+                "masses": [cen["masses"].tolist() for cen in per_scan],
+                "intensities": [cen["intensities"].tolist() for cen in per_scan],
+                "resolutions": [cen["resolutions"].tolist() for cen in per_scan],
+                "signal_to_noise": [
+                    cen["signal_to_noise"].tolist() for cen in per_scan
+                ],
+                "timestamp": [cen["timestamp"] for cen in per_scan],
+            }
 
-        centroids[sample.sample_item_id] = {
-            "masses": mzs,
-            "intensities": intensities,
-            "resolutions": resolutions,
-            "signal_to_noise": signal_to_noise,
-            "timestamp": timestamps,
-        }
+        centroids[sample.sample_item_id] = await asyncio.to_thread(_centroid_lists)
 
     # Step 3: Return the extracted centroids
     return {
