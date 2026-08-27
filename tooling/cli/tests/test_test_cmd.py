@@ -69,13 +69,27 @@ def test_backend_module_scopes_the_path(cli_runner, recorded_runs):
 
 
 def test_library_module_routes_to_libraries(cli_runner, recorded_runs):
+    """A library with no doctests runs one pass, not two.
+
+    The doctest pass names the modules that carry a doctest, so a library
+    without any produces no second command at all - rather than a pass that
+    collects every module in its `src` tree to find nothing.
+    """
     result = cli_runner.invoke(app, ["test", "run", "-m", "sdk"])
 
     assert result.exit_code == 0
-    assert _commands(recorded_runs) == [
-        "pytest libraries/sdk/",
-        "pytest libraries/sdk/src --doctest-modules",
-    ]
+    assert _commands(recorded_runs) == ["pytest libraries/sdk/"]
+
+
+def test_library_module_with_doctests_gets_a_second_pass(cli_runner, recorded_runs):
+    """...and one that does carry them gets the pass, naming the modules."""
+    result = cli_runner.invoke(app, ["test", "run", "-m", "tools"])
+
+    assert result.exit_code == 0
+    commands = _commands(recorded_runs)
+    assert commands[0] == "pytest libraries/tools/"
+    assert commands[1].startswith("pytest libraries/tools/src/")
+    assert commands[1].endswith("--doctest-modules")
 
 
 def test_verbose_flag_is_forwarded(cli_runner, recorded_runs):
@@ -98,11 +112,16 @@ def test_frontend_runs_vitest_in_frontend_dir(cli_runner, recorded_runs):
 
 
 def test_library_doctests_run_over_src_not_the_tests_tree(cli_runner, recorded_runs):
-    """Doctests are a second pass over source trees only.
+    """Doctests are a second pass, over the modules that carry one.
 
     Collecting them alongside the tests directories used to abort the whole
-    run: every library ships its own tests/conftest.py, and the second one
+    run: several libraries ship a tests/conftest.py, and the second one
     collected is an import file mismatch under pytest's default import mode.
+
+    Naming modules rather than whole `src` trees keeps the pass off the
+    modules that import `mascope_backend`, which reads the Postgres secret at
+    import time - collecting those made the pass fail on any checkout without
+    secrets, even though the library suite itself passes there.
     """
     result = cli_runner.invoke(app, ["test", "run", "libraries"])
 
@@ -112,8 +131,17 @@ def test_library_doctests_run_over_src_not_the_tests_tree(cli_runner, recorded_r
     assert "--doctest-modules" not in commands[0]
     assert commands[1].startswith("pytest libraries/")
     assert commands[1].endswith("--doctest-modules")
-    assert "/src" in commands[1]
+    assert "/src/" in commands[1]
+    assert commands[1].count(".py") >= 1
     assert "libraries/tools/tests" not in commands[1]
+    # The three modules that import mascope_backend carry no doctest, so a
+    # secret-less checkout never imports them for this pass.
+    for excluded in (
+        "mascope_signal/peak.py",
+        "mascope_thermo/processor.py",
+        "mascope_tofwerk/processor.py",
+    ):
+        assert excluded not in commands[1]
 
 
 def test_tests_run_from_the_source_checkout(cli_runner, recorded_runs):
