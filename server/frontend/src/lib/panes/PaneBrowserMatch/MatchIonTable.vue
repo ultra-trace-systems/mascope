@@ -12,7 +12,6 @@ import { BaseTabbedPanel, BaseMatchTag, BaseCopyableField } from '@/lib/base'
 import { PopoverTargetCompoundAdd } from '@/lib/dialogs'
 import { num } from '@/lib/formatters'
 import { collectionTypeIcons } from '@/lib/constants'
-import { peakAssignmentEnabled } from '@/lib/features'
 import { prettyTrim } from '@/lib/utils'
 
 import { useApp } from '@/stores'
@@ -332,13 +331,10 @@ watch(
         Shows matched ions of the selected collection. Use column filters to search and filter results.
         </p>
         <p>
-        If a single sample is selected, shows match scores for each ion based on the sample data.${
-          peakAssignmentEnabled
-            ? ''
-            : ` Click on
+        If a single sample is selected, shows match scores for each ion based on the sample data.
+        Click on
         the match icon <span class='pi ph ph-seal-question'></span> on a row to visualize the match in Match View,
-        and see the individual isotope matches.`
-        }
+        and see the individual isotope matches.
         </p>
         <p>
         If multiple samples are selected, shows the top match score of all batch samples for each ion.
@@ -393,14 +389,14 @@ watch(
     >
       <template #empty>No match ions found.</template>
 
-      <!-- Expander Column. With peak-centric assignment on, the Match tab that
-           the per-sample "visualize ion match" button opened is retired
-           (docs/dev/peak_assignment_frontend.md, F6 / issue #1736), so only
-           the batch-level "select best sample" action renders here. -->
+      <!-- Expander Column. Two actions share it: with a sample focused it
+           visualizes that ion's match in the Match tab, without one it selects
+           the batch sample that matches best. Both render whatever the
+           peak_assignment flag says - the targeted workflow keeps its per-ion
+           view when assignment is on, since the two coexist. -->
       <Column expander style="width: 3rem">
         <template #body="{ data }">
           <Button
-            v-if="!peakAssignmentEnabled || !app.data.sample.focusedId"
             :icon="app.data.sample.focused ? 'pi ph ph-seal-question' : 'pi pi-tag'"
             size="small"
             text

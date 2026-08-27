@@ -55,9 +55,11 @@ describe('tab store: match-tab auto-switch', () => {
     expect(tab.active).toBe('batch')
   })
 
-  it('never auto-switches to the retired match tab with peak-centric assignment on', async () => {
-    // With the flag on the Dashboard does not render the Match tab (#1736), so
-    // the auto-switch into it stands down as well.
+  it('auto-switches to the match tab with peak-centric assignment on too', async () => {
+    // The Dashboard renders the Match tab either way - the two paradigms
+    // coexist - so visualizing an ion always has somewhere to go. Standing this
+    // watcher down under the flag once left the visualization set with no tab
+    // showing it.
     flags.peakAssignment = true
     const tab = useTab()
     tab.active = 'batch'
@@ -65,6 +67,19 @@ describe('tab store: match-tab auto-switch', () => {
     state.data.match.visualized.ion = { target_ion_id: 'i1' }
     await nextTick()
 
-    expect(tab.active).toBe('batch')
+    expect(tab.active).toBe('match')
+  })
+
+  it('leaves a user working in the sample tab where they are', async () => {
+    // The one case the auto-switch defers to: an assignment-first user with the
+    // Sample tab open is not yanked into Match by a stray visualization.
+    flags.peakAssignment = true
+    const tab = useTab()
+    tab.active = 'sample'
+
+    state.data.match.visualized.ion = { target_ion_id: 'i1' }
+    await nextTick()
+
+    expect(tab.active).toBe('sample')
   })
 })
