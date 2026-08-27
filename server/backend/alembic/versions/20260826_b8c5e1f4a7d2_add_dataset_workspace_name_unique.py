@@ -155,8 +155,10 @@ def _canonical_keys(connection: Connection, candidates: list[str]) -> list[str]:
     return [row.name_key for row in rows]
 
 
-def _free_name(connection: Connection, name: str, taken: set[str]) -> tuple[str, str]:
-    """Suffix *name* with the lowest number whose key is free in the workspace.
+def _free_name(
+    connection: Connection, name: str, taken: set[str], start: int = 2
+) -> tuple[str, str, int]:
+    """Suffix *name* with the lowest free number at or above *start*.
 
     Terminates, and the bound is checked rather than trusted. Distinct ``n``
     give distinct keys: the key ends in the ASCII run ``" (n)"``, which
@@ -177,21 +179,29 @@ def _free_name(connection: Connection, name: str, taken: set[str]) -> tuple[str,
     :param taken: Canonical keys already in use in this workspace, as returned
                   by Postgres.
     :type taken: set[str]
-    :return: A ``(new_name, canonical_key)`` pair no other dataset carries.
-    :rtype: tuple[str, str]
+    :param start: Lowest suffix to consider, defaults to 2. Every number below
+                  it has already been tested against this same base name and
+                  found taken, so resuming there skips nothing free - see
+                  `_plan_renames`, which carries the cursor.
+    :type start: int, optional
+    :return: A ``(new_name, canonical_key, n)`` triple no other dataset
+             carries, with the suffix that produced it.
+    :rtype: tuple[str, str, int]
     :raises RuntimeError: If no free suffix was found within the bound.
     """
-    highest = len(taken) + 2
-    n = 2
+    highest = start + len(taken)
+    n = start
     while n <= highest:
         stop = min(n + CANDIDATE_BATCH, highest + 1)
         candidates = [_suffixed(name, k) for k in range(n, stop)]
-        for candidate, key in zip(candidates, _canonical_keys(connection, candidates)):
+        for offset, (candidate, key) in enumerate(
+            zip(candidates, _canonical_keys(connection, candidates))
+        ):
             if key not in taken:
-                return candidate, key
+                return candidate, key, n + offset
         n = stop
     raise RuntimeError(
-        f"No free ' (n)' suffix for dataset name {name!r} below {highest}; "
+        f"No free ' (n)' suffix for dataset name {name!r} below {highest + 1}; "
         "the canonical keys of distinct suffixes are not distinct on this "
         "database, which should be impossible."
     )
@@ -216,6 +226,15 @@ def _plan_renames(connection: Connection) -> list[tuple[str, str, str, str]]:
     for row in rows:
         taken.setdefault(row.workspace_id, set()).add(row.name_key)
 
+    # Where to resume the suffix search per (workspace, base key). Every number
+    # below the last one handed out for a base name was tested and found taken,
+    # and nothing frees a key once reserved, so the next duplicate of that name
+    # can start above it instead of walking up from 2 again. Without this the
+    # planner is quadratic in round trips: the k-th duplicate of one name would
+    # re-canonicalise candidates 2..k, which is ~126,000 round trips for 2,000
+    # rows sharing a name, all inside the migration's single transaction.
+    cursors: dict[tuple[str, str], int] = {}
+
     # Rows arrive oldest-first within a workspace, so the first one seen for a
     # key is the keeper and every later one is a duplicate.
     keepers: set[tuple[str, str]] = set()
@@ -227,9 +246,13 @@ def _plan_renames(connection: Connection) -> list[tuple[str, str, str, str]]:
         if key not in keepers:
             keepers.add(key)
             continue
-        new_name, new_key = _free_name(
-            connection, row.dataset_name, taken[row.workspace_id]
+        new_name, new_key, n = _free_name(
+            connection,
+            row.dataset_name,
+            taken[row.workspace_id],
+            cursors.get(key, 2),
         )
+        cursors[key] = n + 1
         taken[row.workspace_id].add(new_key)
         renames.append((row.workspace_id, row.dataset_id, row.dataset_name, new_name))
     return renames
