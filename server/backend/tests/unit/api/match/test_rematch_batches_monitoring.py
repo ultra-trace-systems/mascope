@@ -31,6 +31,7 @@ Socket.IO server are involved.
 from unittest.mock import AsyncMock, patch
 
 import pytest
+from conftest import counting_session
 
 from mascope_backend.api.controllers.match.match_controller import rematch_batches
 from mascope_backend.api.lib.exceptions.api_exceptions import (
@@ -99,7 +100,7 @@ async def _rematch_logging(outcome: Exception) -> _Records:
 
     with (
         patch(f"{_CTRL}.rematch_batch", AsyncMock(side_effect=_one_batch)),
-        patch(f"{_CTRL}.get_samples", AsyncMock(return_value={"results": 1})),
+        patch(f"{_CTRL}.async_session", counting_session),
         patch(f"{_CTRL}.send_progress_user_notification", AsyncMock()),
         patch(f"{_CTRL}._fetch_sample_batch_names", AsyncMock(return_value={})),
         _Records() as records,

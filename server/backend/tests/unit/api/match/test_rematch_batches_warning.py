@@ -13,12 +13,12 @@ neither a database nor a Socket.IO server is involved. The two that cover the
 name lookup itself use the unit test database.
 """
 
-from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from unittest.mock import AsyncMock, patch
 
 import pytest
 import pytest_asyncio
+from conftest import counting_session
 from test_utils import gen_test_id
 
 from mascope_backend.api.controllers.match import match_controller
@@ -31,23 +31,6 @@ from mascope_backend.db import Dataset, SampleBatch, Workspace
 
 
 _CTRL = "mascope_backend.api.controllers.match.match_controller"
-
-
-@asynccontextmanager
-async def _counting_session():
-    """Stand in for the grouped COUNT that weights the progress bar.
-
-    ``rematch_batches`` used to call ``get_samples`` once per batch purely to
-    count rows; it now asks for one grouped count instead, so the seam these
-    tests stub moved with it. Reporting no rows is deliberate: the counts only
-    size each batch's share of the progress bar, and with none the aggregate
-    falls back to equal shares. Nothing here asserts on progress.
-    """
-    session = AsyncMock()
-    result = AsyncMock()
-    result.all = list
-    session.execute.return_value = result
-    yield session
 
 
 def _batch_name(sample_batch_id: str) -> str:
@@ -86,7 +69,7 @@ async def _rematch(
 
     with (
         patch(f"{_CTRL}.rematch_batch", AsyncMock(side_effect=_one_batch)),
-        patch(f"{_CTRL}.async_session", _counting_session),
+        patch(f"{_CTRL}.async_session", counting_session),
         patch(f"{_CTRL}.send_progress_user_notification", AsyncMock()),
         patch(
             f"{_CTRL}._fetch_sample_batch_names", AsyncMock(return_value=batch_names)
@@ -263,7 +246,7 @@ async def test_every_name_is_resolved_in_one_lookup():
 
     with (
         patch(f"{_CTRL}.rematch_batch", AsyncMock(side_effect=_one_batch)),
-        patch(f"{_CTRL}.async_session", _counting_session),
+        patch(f"{_CTRL}.async_session", counting_session),
         patch(f"{_CTRL}.send_progress_user_notification", AsyncMock()),
         patch(f"{_CTRL}._fetch_sample_batch_names", lookup),
         pytest.raises(ApiException),
