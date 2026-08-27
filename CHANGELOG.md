@@ -6,6 +6,14 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
 
 ### Added
 
+- Matches can now be refreshed for a **whole dataset** in one action:
+  right-click a dataset in the *Datasets* pane and choose *Process -> Refresh
+  matches*. Its batches are refreshed one after another, newest first, with the
+  same rules as refreshing each batch by hand - a batch that is already matched
+  is skipped, one that is mid-processing is left alone - and a toast reports
+  what was done. Keeping a large dataset current previously meant hunting down
+  every flagged batch and clicking each one.
+
 - The notifications tab has a **Clear** button. It empties the log and the
   unread badge with it, so no count is left standing for rows that are gone;
   running processes keep their progress bars, and nothing is deleted on the
