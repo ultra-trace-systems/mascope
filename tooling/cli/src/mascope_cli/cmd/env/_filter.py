@@ -178,9 +178,12 @@ def source_date_dir_names(
              filestore at all.
     :rtype: list[str]
     :raises RuntimeError: If the remote listing did not complete - a missing
-                          source env, an unreadable instrument directory, a
-                          dangling symlink. A partial listing is never
-                          returned: it would silently narrow the transfer.
+                          source env, an unreadable instrument directory. A
+                          partial listing is never returned: it would silently
+                          narrow the transfer. Note `find -L` exits 0 and says
+                          nothing for a dangling symlink, so a filestore whose
+                          data volume is not mounted still reads as an empty
+                          window rather than as a failure.
     """
     if remote is None:
         filestore = local_env_dir(env_name) / "filestore"

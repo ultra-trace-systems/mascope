@@ -338,9 +338,10 @@ def test_source_date_dir_names_remote_raises_when_the_find_fails(monkeypatch):
 
 def test_source_date_dir_names_remote_rejects_a_partial_find(monkeypatch):
     # The dangerous one: find prints what it could read and still exits
-    # non-zero (an unreadable instrument directory, or a dangling symlink
-    # under -L). Filtering against that list drops whole dates from the
-    # transfer while rsync goes on to report success.
+    # non-zero - an unreadable instrument directory. Filtering against that
+    # list drops whole dates from the transfer while rsync goes on to report
+    # success. (A dangling symlink is NOT this case: `find -L` skips it and
+    # exits 0, so it reads as an empty window instead.)
     _fake_find(
         monkeypatch,
         returncode=1,
