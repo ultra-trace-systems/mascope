@@ -254,6 +254,30 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
 
 ### Changed
 
+- Target compound formulas are now enforced by the database, not just by the
+  API. `validate_compound_formula` already refused a bare numeric mass such as
+  `"136.1252"` in place of a composition, but only on the Pydantic request
+  models: four call sites build `TargetCompound` through the ORM directly, and
+  a db script, an SDK caller or hand-written SQL was never checked at all. A
+  `CHECK` constraint on `target_compound` now refuses one on every INSERT and
+  UPDATE. It is added `NOT VALID`, so a server still holding a legacy row
+  upgrades cleanly instead of aborting; clean those rows up and run
+  `VALIDATE CONSTRAINT` separately where a hard guarantee is wanted. Note that
+  a legacy mass row cannot be edited in place afterwards - changing its formula
+  works (that path deletes and re-creates the row), but a partial update that
+  leaves the formula alone is refused.
+
+- Explicit **bracket isotope notation** in a target compound formula
+  (`[13C]C5H12O6`, `C[13]C5H12O6`) is no longer accepted, on the API and in the
+  database. Isotope patterns are always generated from the formula, so pinning
+  an isotope on the compound asks for a single monoisotopic species where a
+  full pattern gets computed regardless. This spelling was accepted until now,
+  so a stored compound that uses it can no longer be saved from the target
+  collection editor, even for an unrelated edit - give the unlabelled
+  composition instead. **Caret isotopes (`^N` = 15N) are unaffected** and stay
+  valid: those name a labelled *reagent*, a genuinely different substance, and
+  a natural-abundance pattern is still computed around them.
+
 - Dropped the exact `numcodecs` pin and relaxed `zarr` to a `>=3.3,<4` range,
   closing a long-standing TODO. `numcodecs` is not imported anywhere in Mascope;
   it arrives through `zarr`, which declares `numcodecs>=0.14` itself, so pinning
@@ -388,6 +412,16 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
   working unchanged.
 
 ### Fixed
+
+- A raw file whose own m/z spacing is coarser than the peak fitter's window no
+  longer fails to process. The instrument-function fit derives a minimum peak
+  separation in samples from `dmz / median(diff(mz))`; on a coarse spectrum
+  that ratio falls below 1, `int()` floors it to 0, and `find_peaks` rejects
+  it, so an otherwise perfectly readable file was quarantined. The separation
+  is now clamped to at least one sample, and peaks whose window holds too few
+  samples to constrain a fit are dismissed the way the other quality filters
+  dismiss theirs - if that leaves too few peaks, the file is treated as a blank
+  measurement, which is a defined outcome rather than a hard failure.
 
 - A tab that loses its connection now says so once, instead of once per
   retry. Socket.IO retries a lost connection indefinitely, and each attempt

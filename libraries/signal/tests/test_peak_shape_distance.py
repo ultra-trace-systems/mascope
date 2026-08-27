@@ -7,10 +7,13 @@
 fit of an otherwise readable file dies.
 
 Found on a real production acquisition (m/z 50-750 over only 8856 points,
-median spacing 0.01266 against the fitter's ``dmz`` of 0.01). The symptom is
-numpy-version dependent, which is why it is pinned here rather than by the
-error text: numpy 1.26 surfaced scipy's "`distance` must be greater or equal
-to 1", numpy 2.5 surfaces "cannot convert float NaN to integer".
+median spacing 0.01266 against the fitter's ``dmz`` of 0.01). ``int()`` floors
+0.79 to 0 on every numpy version, so that file always reached
+``find_peaks(spec, distance=0)`` and always raised scipy's "`distance` must be
+greater or equal to 1"; the "cannot convert float NaN to integer" spelling
+belongs to the degenerate-axis cases below, where ``median(diff(mz))`` is NaN
+rather than merely small. The tests pin behaviour rather than either error
+text, so neither spelling can drift out from under them.
 """
 
 import numpy as np
@@ -75,3 +78,31 @@ def test_fine_spacing_still_uses_a_real_distance(monkeypatch):
     mz, spec = _spectrum(spacing=0.001, n=2000)
     _process_peak_shapes(mz, spec, "orbi", 0.01, 0.98)
     assert seen["distance"] == 10
+
+
+def test_a_normal_spectrum_still_yields_peaks():
+    """The guards must not quietly dismiss everything.
+
+    Every other test here asserts only that the call does not raise, which a
+    version that dismissed every peak would satisfy just as well - and
+    dismissing every peak is exactly what the MIN_REGION_POINTS filter does if
+    its threshold is ever raised past what a normal window holds. Pin the
+    outcome, not just the absence of an exception.
+    """
+    mz, spec = _spectrum(spacing=0.001, n=2000)
+    _, p_ys, p_mzs, p_fwhms = _process_peak_shapes(mz, spec, "orbi", 0.01, 0.98)
+    assert len(p_mzs) == len(p_ys) == len(p_fwhms)
+    assert p_mzs, "a clean fine-spacing spectrum must still produce fitted peaks"
+
+
+def test_coarse_spectrum_degrades_to_no_peaks_rather_than_raising():
+    """The coarse case ends at the caller's blank-measurement path.
+
+    With spacing above dmz the +/-dmz window holds a single sample, so every
+    peak is dismissed and the fit yields nothing. That is the defined outcome -
+    `fit_instrument_functions` raises InsufficientPeaksError, which
+    `_process_file` handles as a blank measurement - and not a hard failure.
+    """
+    mz, spec = _spectrum(spacing=0.5)
+    _, _, p_mzs, _ = _process_peak_shapes(mz, spec, "orbi", 0.01, 0.98)
+    assert p_mzs == []
