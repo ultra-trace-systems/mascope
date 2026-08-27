@@ -21,9 +21,13 @@
 #   - Only bare `#N`, never `owner/repo#N`. Closing an issue in another
 #     repository from here would be a surprise, and the token would not carry
 #     the rights for it anyway.
-#   - Nothing inside a fenced code block. Pull request bodies in this
-#     repository quote log output and diffs freely, and a fence is the one
-#     place a `#N` is text rather than a reference.
+#   - Nothing inside code, fenced or inline. Pull request bodies in this
+#     repository quote log output, diffs and each other freely, and code is
+#     the one place a `#N` is text rather than a reference. GitHub does not
+#     linkify there either, so this matches it. The rule is not academic: the
+#     pull request that introduced this script described the behaviour of
+#     `Closes #1 and #2` in prose, and an earlier draft of the parser read its
+#     own documentation as three closing declarations.
 #
 # No dependencies and no network: it reads text and prints numbers, so the
 # workflow can pipe a body through it and the test suite can exercise the
@@ -61,17 +65,23 @@ _CLOSING = re.compile(
 # Fenced code blocks, ``` or ~~~, including an unterminated final fence.
 _FENCE = re.compile(r"^(?P<fence>```|~~~).*?(?:^(?P=fence).*?$|\Z)", re.M | re.S)
 
+# Inline code spans, with any number of backticks as the delimiter.
+_INLINE = re.compile(r"(?P<ticks>`+)(?:(?!(?P=ticks)).)*(?P=ticks)", re.S)
 
-def strip_code_fences(text: str) -> str:
+
+def strip_code(text: str) -> str:
     """
-    Remove fenced code blocks, so quoted output cannot close an issue.
+    Remove code, fenced and inline, so quoted text cannot close an issue.
+
+    Fences first: an inline-looking run of backticks inside a fenced block is
+    part of the block, not a span of its own.
 
     :param text: Markdown text, typically a pull request body.
     :type text: str
-    :return: The same text with every fenced block removed.
+    :return: The same text with every code block and span removed.
     :rtype: str
     """
-    return _FENCE.sub("", text)
+    return _INLINE.sub("", _FENCE.sub("", text))
 
 
 def closing_references(text: str) -> list[int]:
@@ -84,7 +94,7 @@ def closing_references(text: str) -> list[int]:
     :rtype: list[int]
     """
     seen: dict[int, None] = {}
-    for match in _CLOSING.finditer(strip_code_fences(text)):
+    for match in _CLOSING.finditer(strip_code(text)):
         seen.setdefault(int(match.group(1)), None)
     return list(seen)
 
