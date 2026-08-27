@@ -957,6 +957,32 @@ class TargetCompound(Base):
 
     __tablename__ = "target_compound"
 
+    # Mass-based compounds (a bare number instead of a composition) were retired
+    # with the molmass fork - ions and isotopes are computed from the formula, so
+    # a mass alone can never yield an isotope pattern. The Pydantic models
+    # already refuse them, but four call sites build TargetCompound through the
+    # ORM directly and db scripts bypass validation entirely, so the rule lives
+    # here too. Mirrors _NUMERIC_MASS in the target-compound request model; note
+    # it is a regex and not a float() parse because "NaN" is sodium nitride, a
+    # formula that must keep working. Added NOT VALID by migration
+    # e2d4a91c7b06, so legacy rows survive an upgrade while no new one lands.
+    # Bracket isotope notation is rejected alongside it: isotopes are always
+    # generated from the formula, so pinning one on the compound asks for a
+    # monoisotopic species where a full pattern gets computed anyway. Caret
+    # isotopes ('^N') stay allowed - those name a labelled reagent, a different
+    # substance, and are in active production use.
+    __table_args__ = (
+        CheckConstraint(
+            r"target_compound_formula !~ "
+            r"'^[+-]?([0-9]+\.?[0-9]*|\.[0-9]+)([eE][+-]?[0-9]+)?$'",
+            name="formula_not_a_mass",
+        ),
+        CheckConstraint(
+            r"target_compound_formula !~ '\[[0-9]+[A-Za-z]|[A-Za-z]\[[0-9]+\]'",
+            name="formula_no_bracket_isotope",
+        ),
+    )
+
     target_compound_id: Mapped[str] = mapped_column(String(16), primary_key=True)
     target_compound_name: Mapped[Optional[str]] = mapped_column(Text)
     target_compound_formula: Mapped[str] = mapped_column(String(256))
