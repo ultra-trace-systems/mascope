@@ -191,14 +191,17 @@ the copy flow above for routine work.
 2. In the **Raw files** tab, select the raw files to process. Select files of
    a single polarity, or pick a polarity from the dropdown if a file contains both.
 3. Click **Process selected**:
-   - **One file** opens a dialog to create a single sample from it.
+   - **One file** opens a dialog to create a single sample from it. Its
+     **Ionization Mode** is preselected from the token in the filename; when the
+     filename carries no configured token, choose the mode the file was acquired
+     in — the list offers every mode of the sample's polarity.
    - **Several files** opens the batch-import dialog, where you paste per-sample
      metadata (sample **name** and **type** are required; a **filter ID** and any
      extra attributes are optional) from a spreadsheet or autosampler report. The
-     dialog previews the samples and flags any issues before you confirm.
+     dialog previews the samples and flags any issues before you confirm. Here
+     every filename does need a recognised ionization token.
 4. Confirm. Mascope processes the files — you will see progress in the batch — and
-   the new samples appear in the batch, tagged with the ionization mode read from
-   each filename.
+   the new samples appear in the batch, tagged with their ionization mode.
 
 ## What happens next
 
@@ -220,6 +223,8 @@ batch has samples, you can go straight to analysis:
 - **The filename token isn't recognised.** Confirm an ionization mode with that
   exact token exists in **Edit ionizations → Ionization Modes**, and that the
   token field is filled in (a mode with no token cannot match a filename).
+  Processing a single file by hand does not depend on the token — pick the
+  ionization mode in the dialog instead — but upload and batch import do.
 - **"Paste samples" doesn't appear in the menu.** Copy samples first, then make
   sure your own batch is open — the paste goes into the batch whose *Samples*
   pane you right-click.

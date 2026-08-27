@@ -10,10 +10,10 @@ import Panel from 'primevue/panel'
 import Dialog from 'primevue/dialog'
 import Message from 'primevue/message'
 
-import { api } from '@/api'
 import { ToolbarTemplate } from '@/lib/toolbars'
 import { clone, strToSnakeCase, beautifySnakeCase, beautifyConstant, genId } from '@/lib/utils'
 import { useApp } from '@/stores'
+import { ionizationModeChoices } from '@/lib/ionizationModes'
 import {
   sampleTypesFilterIdRequired,
   sampleTypesFilterIdOptional,
@@ -165,35 +165,96 @@ const sampleTypeOptions = computed(() => {
   }
 })
 
-// Ionization mode options and fetching logic
-const ionizationModeOptions = ref([])
+// A mixed-polarity file arrives as '+-' and stays there until the user picks a
+// side; nothing downstream - ionization mode included - can be resolved before
+// that, since the two polarities are separate configurations.
+const polaritySelected = computed(() => ['+', '-'].includes(input.polarity))
 
-// Fetch ionization modes for create mode when filename changes
-watchEffect(async () => {
-  if (action.value === 'create' && input.filename) {
-    try {
-      const response = await api.http.get(`/ionization/modes/by_filename/${input.filename}`)
-      ionizationModeOptions.value = response.data.data.map((mode) => ({
-        label: mode.ionization_mode_name,
-        value: mode.ionization_mode_id
-      }))
-      input.ionization_mode_id = ionizationModeOptions.value[0]?.value ?? null
-    } catch {
-      ionizationModeOptions.value = []
-    }
-  } else if (action.value === 'update' && original.value?.ionization_mode_id) {
-    // For edit mode, show only the current ionization mode
-    ionizationModeOptions.value = [
-      {
-        label: app.data.ionization.mode.list.find(
-          (mode) => mode.ionization_mode_id === original.value.ionization_mode_id
-        )?.ionization_mode_name,
-        value: original.value.ionization_mode_id
-      }
-    ]
-  } else {
-    ionizationModeOptions.value = []
+// --- Ionization mode
+//
+// Create: offer every mode in the sample's polarity and preselect the one whose
+// token the filename carries. Filenames do not always carry a token the
+// configuration knows, and then the user picks the mode by hand - an empty
+// dropdown would leave the file unprocessable.
+// Update: the mode is fixed (changing it would invalidate the sample's
+// calibration and matches), so only the assigned one is listed, disabled.
+const ionization = computed(() => {
+  if (action.value === 'create') {
+    return ionizationModeChoices({
+      modes: app.data.ionization.mode.list,
+      filename: input.filename,
+      polarity: input.polarity
+    })
   }
+  const assigned = app.data.ionization.mode.list.find(
+    (mode) => mode.ionization_mode_id === original.value?.ionization_mode_id
+  )
+  return {
+    options: assigned
+      ? [{ label: assigned.ionization_mode_name, value: assigned.ionization_mode_id }]
+      : [],
+    defaultId: assigned?.ionization_mode_id ?? null
+  }
+})
+const ionizationModeOptions = computed(() => ionization.value.options)
+
+// Apply the preselection, and drop a selection that no longer fits: a
+// mixed-polarity file offers a different set of modes per polarity, so
+// switching polarity has to re-resolve rather than keep the stale mode.
+// Update only ever renders the mode the sample already has - leaving `input`
+// alone there keeps a still-loading mode list from nulling it out on save.
+watch(
+  ionization,
+  ({ options, defaultId }) => {
+    if (action.value !== 'create') return
+    if (!options.some(({ value }) => value === input.ionization_mode_id)) {
+      input.ionization_mode_id = defaultId
+    }
+  },
+  { immediate: true }
+)
+
+// Why the dropdown is empty, or why it opened without a selection. Doubles as
+// the placeholder, so it disappears the moment the user picks a mode.
+const ionizationHint = computed(() => {
+  if (action.value !== 'create') return null
+  if (input.polarity === '+-') return 'Select the polarity first'
+  if (!polaritySelected.value) return 'This file has no known polarity'
+  if (!ionizationModeOptions.value.length) {
+    return 'No ionization mode configured for this polarity'
+  }
+  if (!ionization.value.defaultId) return 'No mode token in the filename - select one'
+  return null
+})
+
+// The placeholder has no room for the reason; the tooltip carries it, and both
+// go quiet once a mode is on the field.
+const ionizationTooltip = computed(() => {
+  if (!ionizationHint.value || input.ionization_mode_id) return null
+  if (input.polarity === '+-') {
+    return (
+      'This file holds scans of both polarities, which are configured ' +
+      'separately. Pick a polarity to see the ionization modes it can be ' +
+      'processed in.'
+    )
+  }
+  if (!polaritySelected.value) {
+    return (
+      'This file records no polarity, so there is no set of ionization modes ' +
+      'to choose from. It cannot be processed as it stands.'
+    )
+  }
+  if (!ionizationModeOptions.value.length) {
+    const polarity = input.polarity === '+' ? 'positive' : 'negative'
+    return (
+      `No ionization mode is configured for ${polarity} polarity. Add one in ` +
+      'the ionization settings before processing this file.'
+    )
+  }
+  return (
+    'The filename carries no configured ionization mode token, so none could ' +
+    'be resolved for it. Select the mode this file was acquired in.'
+  )
 })
 
 async function save() {
@@ -249,17 +310,26 @@ const invalid = computed(() => {
     input.fields?.filter((f) => f?.required).length !=
     input.fields?.filter((f) => f?.required).filter((f) => f.value).length
   const invalidUpdate = action.value === 'update' && !changedInput.value // * see note below
-  const allowedPolarities = ['+', '-']
-  const polarityInvalid = !allowedPolarities.includes(input.polarity)
-  return !input.type || polarityInvalid || missingRequiredFields || invalidUpdate
+  // A sample created without a mode gets neither calibration targets nor
+  // ionization mechanisms, so it would match against nothing.
+  const missingIonizationMode = action.value === 'create' && !input.ionization_mode_id
+  return (
+    !input.type ||
+    !polaritySelected.value ||
+    missingIonizationMode ||
+    missingRequiredFields ||
+    invalidUpdate
+  )
 })
 
 const invalidMessage = computed(() => {
-  if (invalid.value && action.value !== 'update') {
-    return 'Please fill in all required fields'
-  } else {
-    return ''
+  if (!invalid.value || action.value === 'update') return ''
+  // "Fill in the fields" is a dead end when the blocker is the ionization mode:
+  // the fix is a polarity choice, or the ionization settings - not this form.
+  if (!input.ionization_mode_id && ionizationHint.value) {
+    return ionizationHint.value
   }
+  return 'Please fill in all required fields'
 })
 
 const polarityOptions = computed(() => {
@@ -355,6 +425,8 @@ const polarityOptions = computed(() => {
               optionValue="value"
               optionLabel="label"
               :disabled="action !== 'create'"
+              :placeholder="ionizationHint ?? 'Select ionization mode'"
+              v-tooltip.top="ionizationTooltip"
             />
             <label for="ionization-mode">Ionization Mode</label>
           </FloatLabel>
