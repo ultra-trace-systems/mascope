@@ -20,6 +20,7 @@ from mascope_backend.api.lib.exceptions.api_exceptions import NotFoundException
 from mascope_backend.api.lib.rate_limit import clear_login_rate_limit
 from mascope_backend.api.new.auth.access_token.service import regenerate_access_token
 from mascope_backend.api.new.auth.config import auth_settings
+from mascope_backend.api.new.auth.transports.cookie import session_token_from_response
 from mascope_backend.api.new.users import exceptions
 from mascope_backend.api.new.users.access_token.service import delete_user_access_tokens
 from mascope_backend.api.new.users.schemas import UserCreate, UserRead, UserUpdate
@@ -407,9 +408,18 @@ class UserManager(IntegerIDMixin, BaseUserManager[User, int]):
                     )
                     return
 
-                cookie = response.headers["set-cookie"]
-                prefix = f"{auth_settings.COOKIE_NAME}="
-                jwt_token = cookie.split(prefix)[1].split(";")[0]
+                jwt_token = session_token_from_response(response)
+                if not jwt_token:
+                    # The response set cookies but none of them the session:
+                    # nothing to authenticate the socket with, and saying so
+                    # beats an IndexError landing in the catch-all below as an
+                    # "unexpected error".
+                    runtime.logger.warning(
+                        f"Login response carried no '{auth_settings.COOKIE_NAME}' "
+                        f"cookie, so the socket was left unauthenticated "
+                        f"[Worker {worker_pid}]"
+                    )
+                    return
 
                 # Authenticate the socket connection
                 await authenticate_socket_connection(
