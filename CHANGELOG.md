@@ -226,17 +226,41 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
   writes take a `fasteners` inter-process lock held for the whole
   read-modify-write, so the backend workers and the file converter still cannot
   interleave writes to the same store. The lock is coarser than the per-chunk
-  locking it replaces, and covers a case the old one did not - a read and its
-  matching write are now inside the same lock, where previously two processes
-  could interleave between them and lose an update. Note that zarr 3 still
-  accepts a `synchronizer=` argument and ignores it, so this had to be replaced
-  rather than merely removed.
+  locking it replaces, and covers a case the old one did not - inside
+  `_process_chunk_sync` a chunk's read and its matching write are now in the
+  same lock, where previously two processes could interleave between them and
+  lose an update. It is taken with a timeout rather than `fasteners`' unbounded
+  default, because these writes are entered from async request handlers and a
+  holder in another process would otherwise pin a worker's event loop
+  indefinitely. Note that zarr 3 still accepts a `synchronizer=` argument and
+  ignores it, so this had to be replaced rather than merely removed.
   One further behaviour change is handled explicitly: zarr 3 answers "is this
-  variable present" from a store's consolidated metadata when it exists, where
-  zarr 2 always listed the store. The sparsity backfill deliberately reads the
-  live store instead, so a `peak_timeseries.zarr` whose `sparsity` array exists
-  on disk but is missing from a stale `.zmetadata` is repaired on the next read
-  exactly as before, rather than being treated as absent.
+  variable present", `group_keys()` and `groups()` from a store's consolidated
+  metadata when it exists, where zarr 2 always listed the store. Every
+  membership test and store listing therefore goes through
+  `mascope_file.io.open_zarr_store`, which reads the live store. This matters
+  most on the write paths, where the difference is silent rather than loud: a
+  recalibration would skip a group that a stale `.zmetadata` omits, leaving one
+  store's groups on two different m/z axes, and a partial peak update would
+  drop a variable's write entirely. A `peak_timeseries.zarr` whose `sparsity`
+  array exists on disk but is missing from a stale `.zmetadata` is likewise
+  repaired on the next read exactly as before, rather than being treated as
+  absent.
+  Two smaller consequences of the swap: the lock is a *file* where zarr 2's
+  synchronizer left a `.sync` *directory*, so the glob-and-delete sweeps over a
+  sample directory now remove either kind rather than failing on the file; and
+  the `.sync` directories written by zarr 2 are left orphaned by the upgrade.
+  They are inert - nothing reads or writes them - and any sweep that runs over
+  a sample directory clears them, but a long-lived filestore can reclaim the
+  inodes early with `find <filestore> -type d -name '*.sync' -prune -exec rm -rf {} +`.
+
+- Applying an m/z calibration to a sample file that has no `peak_timeseries.zarr`
+  now warns and completes instead of failing the whole calibration. The handlers
+  always meant to tolerate that case, but the exception they caught was zarr 2's
+  `PathNotFoundError`, a `ValueError`, which never covered the `FileNotFoundError`
+  that the loader itself raises for a variable that is simply absent. zarr 3
+  raises `GroupNotFoundError`, a subclass of `FileNotFoundError`, so one clause
+  now covers both.
 
 - Running an m/z calibration no longer requires the global `admin` role. It now
   requires `admin` in the *instrument* workspace holding the raw file - the

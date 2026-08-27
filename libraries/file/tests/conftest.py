@@ -169,8 +169,16 @@ def create_peak_timeseries_dataset():
 
 @pytest.fixture
 def peak_timeseries_zarr_path(sample_file_path):
-    """Return the path where peak_timeseries.zarr should be created."""
-    return os.path.join(sample_file_path, "peak_timeseries.zarr")
+    """Return the path where peak_timeseries.zarr should be created.
+
+    Removes the store afterwards whatever happens. Tests that assert before
+    their own cleanup would otherwise leak it into the next test, and the
+    tests that require the store to be *absent* then fail too - turning one
+    real regression into a handful of unrelated-looking failures.
+    """
+    path = os.path.join(sample_file_path, "peak_timeseries.zarr")
+    yield path
+    shutil.rmtree(path, ignore_errors=True)
 
 
 @pytest.fixture

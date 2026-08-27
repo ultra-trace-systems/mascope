@@ -26,9 +26,46 @@ from mascope_file.runtime import runtime
 zarr.config.set({"default_zarr_format": 2})
 
 CONCURRENT_WRITE_LIMIT = 2  # Max number of concurrent writes to prevent OutOfMemory
+# Longest a writer waits for another process to finish its write before giving
+# up. Generous enough for a full peak_timeseries rewrite over a slow filestore,
+# bounded so that a wedged or killed holder surfaces as an error instead of
+# blocking a uvicorn worker forever - fasteners' own default is to wait
+# indefinitely.
+ZARR_PROCESS_LOCK_TIMEOUT = 300.0
 # Global lock for zarr file writes - prevents concurrent modifications
 _zarr_write_locks: dict[str, threading.Lock] = {}
 _zarr_write_locks_lock = threading.Lock()
+
+
+def open_zarr_store(zarr_path: str, mode: str = "r") -> zarr.Group:
+    """Open a zarr store for listing or membership tests, bypassing .zmetadata.
+
+    zarr 3 answers ``x in group``, ``group_keys()`` and ``groups()`` from a
+    store's consolidated metadata when it is present, where zarr 2 always
+    listed the store. So a store whose ``.zmetadata`` is stale - the window
+    between creating an array or group and reconsolidating, reachable via an
+    OOM kill, a container restart or a deploy mid-backfill - reports arrays and
+    groups that exist on disk as absent.
+
+    On the write paths that is silent rather than loud: the loop over
+    ``groups()`` in :func:`update_zarr_array_coord` skips a group and the
+    ``not in z`` guard in :func:`_process_chunk_sync` skips a variable, with no
+    exception and no log line. Measured on identical on-disk state, zarr 2.18.2
+    lists all groups and zarr 3.3.0 lists only the consolidated subset.
+
+    Every membership test and store listing therefore goes through here so that
+    it reads the live store. Bulk data reads through ``xr.open_zarr`` are left
+    on the consolidated fast path deliberately - they are not membership tests,
+    and the sparsity backfill repairs ``.zmetadata`` before they run.
+
+    :param zarr_path: Path to the zarr store
+    :type zarr_path: str
+    :param mode: File mode, defaults to "r"
+    :type mode: str, optional
+    :return: Opened zarr group that lists the live store
+    :rtype: zarr.Group
+    """
+    return zarr.open(zarr_path, mode=mode, use_consolidated=False)
 
 
 def get_zarr_write_lock(zarr_path: str) -> threading.Lock:
@@ -67,17 +104,57 @@ def get_zarr_process_lock(zarr_path: str) -> fasteners.InterProcessLock:
 
 
 @contextmanager
-def zarr_write_lock(zarr_path: str) -> Iterator[None]:
+def zarr_write_lock(
+    zarr_path: str, timeout: float | None = ZARR_PROCESS_LOCK_TIMEOUT
+) -> Iterator[None]:
     """Serialize writes to a zarr file across both threads and processes.
 
     Always take the thread lock first, then the file lock, so the ordering is
     the same everywhere and cannot deadlock.
 
+    The file lock is taken with a bounded wait. ``fasteners`` waits forever by
+    default, and these writes are entered synchronously from async request
+    handlers, so an unbounded wait on a holder in *another* process (a sibling
+    uvicorn worker, or the file converter) can pin a worker's event loop
+    indefinitely. A timeout turns that into a visible error instead.
+
     :param zarr_path: Path to the zarr file
     :type zarr_path: str
+    :param timeout: Seconds to wait for the cross-process lock, None to wait
+        forever, defaults to :data:`ZARR_PROCESS_LOCK_TIMEOUT`
+    :type timeout: float | None, optional
+    :raises TimeoutError: Another process held the lock for longer than
+        ``timeout``
     """
-    with get_zarr_write_lock(zarr_path), get_zarr_process_lock(zarr_path):
-        yield
+    with get_zarr_write_lock(zarr_path):
+        process_lock = get_zarr_process_lock(zarr_path)
+        if not process_lock.acquire(timeout=timeout):
+            raise TimeoutError(
+                f"Timed out after {timeout}s waiting for another process to "
+                f"finish writing {zarr_path}"
+            )
+        try:
+            yield
+        finally:
+            process_lock.release()
+
+
+def remove_path(path: str) -> None:
+    """Delete a store directory or a side-car file left beside one.
+
+    The glob-and-delete sweeps over a sample directory match a store's
+    side-car as well as the store itself. Under zarr 2 that side-car was the
+    ``<var>.sync`` *directory*, which ``rmtree`` removed happily; the lock that
+    replaced it is a plain *file*, and ``rmtree`` raises ``NotADirectoryError``
+    on those. Handle both so the sweeps stay total.
+
+    :param path: Path to remove
+    :type path: str
+    """
+    if os.path.isdir(path):
+        rmtree(path)
+    elif os.path.exists(path):
+        os.remove(path)
 
 
 def get_file_data_vars(filepath):
@@ -122,7 +199,7 @@ def load_array(base_filename, var, prev_array=None):
 
     # Load data from file
     def is_multifile():
-        z = zarr.open(var_path, mode="r")
+        z = open_zarr_store(var_path)
         groups = list(z.group_keys())
         return bool(len(groups))
 
@@ -156,7 +233,7 @@ def load_coord(base_filename, var, coord_name):
             runtime.logger.info("Use load_signal to access signal array")
         raise FileNotFoundError(var_path)
 
-    z = zarr.open(var_path, mode="r")
+    z = open_zarr_store(var_path)
     coord = z[coord_name]
     coord_array = coord[:]
     # Check if array is empty
@@ -302,7 +379,7 @@ def open_mfzarr(path, mode="r", concat_dim="time", prev_array=None):
     :rtype: xr.Dataset
     """
 
-    z = zarr.open(path, mode=mode)
+    z = open_zarr_store(path, mode=mode)
     groups = list(z.group_keys())
 
     if prev_array is not None:
@@ -387,7 +464,11 @@ def update_zarr_array_coord(base_filename, var, dim, coord):
     """
     array_path = m_name.filename_to_zarr_path(base_filename, var)
     with zarr_write_lock(array_path):
-        zarr_array = zarr.open(array_path, mode="a")
+        # Live listing, not the consolidated one: a group present on disk but
+        # missing from a stale .zmetadata would otherwise be skipped silently,
+        # leaving a recalibrated store whose groups sit on two different m/z
+        # axes. See open_zarr_store.
+        zarr_array = open_zarr_store(array_path, mode="a")
         zarr_array[dim][:] = coord
         for group_name, group in zarr_array.groups():
             group[dim][:] = coord
@@ -584,7 +665,7 @@ def _get_chunk_metadata(
     :param peak_timeseries_path: Path to the zarr file
     :return: Dictionary with indexer, chunk size, and other metadata
     """
-    z = zarr.open(peak_timeseries_path, mode="r")
+    z = open_zarr_store(peak_timeseries_path)
 
     # Get dimensions
     max_mz_idx = z["mz"].shape[0]
@@ -702,11 +783,18 @@ def _process_chunk_sync(
     # Convert global indices to local chunk indices
     local_indices = update_indices_in_chunk - chunk_start
 
-    z = zarr.open(peak_timeseries_path, mode="r+")
+    # Live listing, not the consolidated one: a variable present on disk but
+    # missing from a stale .zmetadata would otherwise fail the guard below and
+    # have its write dropped silently. See open_zarr_store.
+    z = open_zarr_store(peak_timeseries_path, mode="r+")
 
     # Update each variable
     for var_name in update_data.data_vars:
         if var_name not in z:
+            runtime.logger.warning(
+                f"Variable {var_name} is absent from {peak_timeseries_path}, "
+                "so its update was skipped."
+            )
             continue
 
         _update_zarr_variable(
@@ -763,13 +851,14 @@ def ensure_sparsity_exists(base_filename: str) -> bool:
         return False
 
     # Quick check outside the lock to avoid locking in the common case.
-    # use_consolidated=False is required, not incidental: zarr 3 answers
-    # membership from .zmetadata when it is present, where zarr 2 always listed
-    # the store. Reading the consolidated view here would report a sparsity
-    # array that exists on disk as missing whenever .zmetadata is stale --
-    # skipping the repair below and falling through to create it a second time,
-    # which fails with ContainsArrayError and leaves the store unreadable.
-    z = zarr.open(peak_timeseries_path, mode="r", use_consolidated=False)
+    # The live listing is required here, not incidental (see open_zarr_store):
+    # reading the consolidated view would report a sparsity array that exists
+    # on disk as missing whenever .zmetadata is stale, skipping the repair
+    # below and falling through to create it a second time. That second create
+    # raises ContainsArrayError without touching the store - nothing on disk is
+    # damaged - but the migration never completes, so every load_peak_data for
+    # this file keeps failing until .zmetadata is reconsolidated.
+    z = open_zarr_store(peak_timeseries_path)
     if "sparsity" in z:
         # Reconsolidate in case .zmetadata is stale (xr.open_zarr reads from it)
         zarr.consolidate_metadata(peak_timeseries_path)
@@ -809,10 +898,10 @@ def ensure_sparsity_exists(base_filename: str) -> bool:
 
     # Write the new variable under the write lock with a re-check
     with zarr_write_lock(peak_timeseries_path):
-        # use_consolidated=False for the same reason as the check above: this
-        # re-check has to see the real store, including an array a different
-        # process created since.
-        z = zarr.open(peak_timeseries_path, mode="r+", use_consolidated=False)
+        # Live listing for the same reason as the check above: this re-check
+        # has to see the real store, including an array a different process
+        # created since.
+        z = open_zarr_store(peak_timeseries_path, mode="r+")
 
         # Re-check inside the lock — another process may have created it
         if "sparsity" in z:
@@ -852,7 +941,7 @@ def delete_peaks(base_filename: str) -> None:
     sample_data_path = m_name.parse_path_from_item_filename(base_filename)
     peak_dirs = glob.glob(os.path.join(sample_data_path, "peak_*"))
     for dir in peak_dirs:
-        rmtree(dir)
+        remove_path(dir)
 
 
 def load_batch_cache(

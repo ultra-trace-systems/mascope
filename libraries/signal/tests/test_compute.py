@@ -41,6 +41,9 @@ class TestGetSumSignalCaching:
         cache_path = m_name.filename_to_zarr_path(SIGNAL_TEST_FILENAME, cached_name)
         assert cache_path.startswith(sample_file_path)
         assert os.path.exists(cache_path)
+        # The sum-signal cache is the most frequently created store in the
+        # filestore, so it has to honour the zarr v2 pin like every other one.
+        assert zarr.open(cache_path, mode="r").metadata.zarr_format == 2
 
     def test_get_sum_signal_recovers_from_contains_group_error(
         self,
