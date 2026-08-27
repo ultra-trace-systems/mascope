@@ -178,4 +178,43 @@ describe('DialogWorkspaceMembership live roster refresh', () => {
 
     expect(rooms.size).toBe(0)
   })
+
+  // Whether the store needs a room is decided at open and never revisited, so
+  // the sidebar selection moving onto the workspace on screen used to leave
+  // the dialog holding a subscription the store had come to depend on -- and
+  // closing the dialog dropped it for the whole tab. The store re-joins only
+  // on a focus change, so it never found out.
+  it('keeps a room the store took over while the dialog was open', async () => {
+    const wrapper = mountDialog()
+    await openDialog(wrapper)
+    expect(rooms.has(WORKSPACE.workspace_id)).toBe(true)
+
+    // Focus moves onto the workspace the dialog is showing. The store joins
+    // that same room for its own live updates; the tab counts no references,
+    // so both owners now share the one subscription.
+    focusedId = WORKSPACE.workspace_id
+    rooms.add(WORKSPACE.workspace_id)
+
+    await wrapper.setProps({ visible: false })
+    await flushPromises()
+
+    expect(rooms.has(WORKSPACE.workspace_id)).toBe(true)
+  })
+
+  // Both halves used to hang off `visible` alone, so a dialog rebound to
+  // another workspace without closing first kept the first workspace's room
+  // and roster.
+  it('follows the workspace it is rebound to while open', async () => {
+    const wrapper = mountDialog()
+    await openDialog(wrapper)
+    expect(rooms.has(WORKSPACE.workspace_id)).toBe(true)
+
+    const other = { workspace_id: 'ws-rebound', workspace_name: 'Calibrations' }
+    await wrapper.setProps({ workspace: other })
+    await flushPromises()
+
+    expect(rooms.has(WORKSPACE.workspace_id)).toBe(false)
+    expect(rooms.has(other.workspace_id)).toBe(true)
+    expect(getMembers).toHaveBeenCalledWith(other.workspace_id)
+  })
 })
