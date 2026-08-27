@@ -97,10 +97,25 @@ class PeakAssignmentsResource(BaseResource):
         :return: A DataFrame with one row per run, containing:
 
                  - ``peak_assignment_run_id``: Run identifier
+                 - ``engine``: Which engine produced the run - ``mascope`` for
+                   a run this deployment computed, otherwise the name of the
+                   external engine that published it (see
+                   :meth:`~mascope_sdk.MascopeClient.peak_assignments`). Never
+                   null: rows predating the column were backfilled to
+                   ``mascope``, and the name is reserved server-side so an
+                   import cannot claim it.
                  - ``engine_version``: Assignment engine version
                  - ``status``: ``pending`` -> ``running`` -> ``completed`` |
-                   ``failed``
+                   ``failed`` | ``cancelled``; ``importing`` while an external
+                   run is still being uploaded (its rows are not servable yet)
                  - ``config``: Run configuration (dict)
+                 - ``tier_bands``: The ``identified`` / ``candidate``
+                   fit-score thresholds this run tiered with (dict). A tier is
+                   only comparable across engines under the bands that
+                   produced it. Null for runs predating the column.
+                 - ``calibration``: What an external engine disclosed about
+                   its calibration at import (dict). Null for ``mascope``
+                   runs, whose calibration state is the sample's own.
                  - ``error``: Failure reason, if any
                  - ``peak_assignment_run_utc_created`` /
                    ``peak_assignment_run_utc_completed``: Timestamps (UTC)
@@ -135,8 +150,9 @@ class PeakAssignmentsResource(BaseResource):
         Reads the requested run (or the latest completed run) in full: the
         endpoint is paginated, and this method pages internally until it has
         every matching row, so the caller never sees a page boundary. The run
-        metadata (engine version, status, config, timestamps) is attached on
-        ``df.attrs["run"]`` as a dict.
+        metadata (engine, engine version, status, config, tier bands,
+        calibration disclosure, timestamps - the full run record listed under
+        :meth:`list_runs`) is attached on ``df.attrs["run"]`` as a dict.
 
         Rows are the slim ledger projection: per-peak scalars plus the
         flattened calibration scalars (``p_correct``,

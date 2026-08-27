@@ -133,7 +133,7 @@ applies rather than a null overriding it.
 
 ## 1. The backend contract (what we consume)
 
-Ten endpoints, all under `/api/peak-assignments` (see
+Twelve endpoints, all under `/api/peak-assignments` (see
 [`routes.py`](../../server/backend/src/mascope_backend/api/new/peak_assignments/routes.py)). The
 write routes (assign / verify / recalibrate / import) are additionally gated on the feature flag —
 `require_peak_assignment_enabled` returns 403 with the feature off; the reads stay open so ledgers
@@ -149,6 +149,8 @@ written while it was on remain inspectable:
 | `POST` | `/calibration/{instrument}/recalibrate` | `{ recalibrated, ... }` | Refit the confidence calibration from labels. Superuser + flag. |
 | `POST` | `/sample/{sample_item_id}/assign` | `202 { message, process_id }` | Body `{ config?: PeakAssignmentConfig }`. Requires `editor` + flag. |
 | `POST` | `/batch/{sample_batch_id}/assign` | `202 { message, process_id }` | One run per eligible sample; Stage A only by default. Requires `editor` + flag. |
+| `POST` | `/sample/{sample_item_id}/runs/import` | `{ data: [ImportState] }` | Publish an externally computed run, assembled over one or more chunks. `data[0]` carries `peak_assignment_run_id`, `rows`, `max_rows_per_request`, `run_status`. Requires `editor` + flag. |
+| `DELETE` | `/sample/{sample_item_id}/runs/{run_id}` | `200` | Abandon an `importing` run and its staged rows, releasing the sample. Requires `editor` + flag. |
 | `POST` | `/sample/{sample_item_id}/fit/aggregate` | `{ match_ions, match_isotopes }` | B2a: non-persisting composition fit (isotope table). |
 | `POST` | `/sample/{sample_item_id}/fit/visualize` | `202` | B2b: composition Fit visualization over the socket. |
 

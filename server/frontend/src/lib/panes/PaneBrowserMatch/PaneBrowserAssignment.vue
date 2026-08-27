@@ -11,7 +11,13 @@ import ProgressSpinner from 'primevue/progressspinner'
 import ToggleSwitch from 'primevue/toggleswitch'
 
 import { getApiErrorMessage, isRefusedRequest } from '@/api/utils'
-import { BaseLoadError, BaseTabbedPanel, BaseTierTag, BaseVerdictBadge } from '@/lib/base'
+import {
+  BaseLoadError,
+  BaseRunProvenance,
+  BaseTabbedPanel,
+  BaseTierTag,
+  BaseVerdictBadge
+} from '@/lib/base'
 import { PeakAssignConfigForm } from '@/lib/dialogs'
 import { num } from '@/lib/formatters'
 import { formatIsotopeFormula } from '@/lib/chem'
@@ -53,14 +59,20 @@ const verdictFilter = ref('all')
 // ellipsis marks only runs still in flight - failed/cancelled runs are done,
 // just not completed (mirrors the backend's non-terminal statuses).
 const IN_FLIGHT_STATUSES = ['pending', 'running', 'importing']
-const runOptions = computed(() =>
-  runs.value.list.map((run, index) => ({
-    ...run,
-    _label: `#${runs.value.list.length - index} · ${run.status}${
-      IN_FLIGHT_STATUSES.includes(run.status) ? '…' : ''
-    }`
-  }))
-)
+
+// Label a run from the run itself rather than from a property carried on the
+// option copy. The `#value` slot is handed the raw v-model value - the record
+// straight off the run store - not the matched option, so a label that lived
+// only on the option would render blank in the closed selector.
+function runLabel(run) {
+  if (!run) return ''
+  const list = runs.value.list
+  const index = list.findIndex((r) => r.peak_assignment_run_id === run.peak_assignment_run_id)
+  const ordinal = index === -1 ? '' : `#${list.length - index} · `
+  return `${ordinal}${run.status}${IN_FLIGHT_STATUSES.includes(run.status) ? '…' : ''}`
+}
+
+const runOptions = computed(() => runs.value.list.map((run) => ({ ...run, _label: runLabel(run) })))
 
 const selectedRun = computed({
   get: () => runs.value.focused,
@@ -345,20 +357,33 @@ const isoCount = (row) => assignments.value.childrenOf(row.peak_assignment_id).l
           dataKey="peak_assignment_run_id"
           size="small"
           placeholder="Select run"
-          style="min-width: 12rem"
+          style="min-width: 15rem"
           :pt="
-            app.ui.help.bottom(`
-              <h1>Assignment Runs</h1>
-              <p>
-              Each <b>Assign peaks</b> launch creates a run &mdash; an immutable
-              snapshot of the sample's assignments, numbered in launch order and
-              listed newest first. The ledger shows the selected run; pick an
-              older one to revisit it. A run marked with &hellip; is still in
-              progress.
-              </p>
-            `)
+            app.ui.help.bottom(
+              { title: 'Assignment Runs', helpKey: 'assignment-runs' },
+              { doc: app.ui.help.docUrl('how-it-works/peak-assignment/#assignment-runs') }
+            )
           "
-        />
+        >
+          <!-- Which engine produced the run travels with the run itself, in
+               both the closed selector and the open list: a published run is
+               first-class and the ledger defaults to the newest completed run
+               whatever produced it, so the engine has to be visible wherever a
+               run is named rather than only after opening a menu. -->
+          <template #value="{ value, placeholder }">
+            <span v-if="value" class="run-option">
+              <span class="run-name">{{ runLabel(value) }}</span>
+              <BaseRunProvenance :run="value" compact />
+            </span>
+            <span v-else>{{ placeholder }}</span>
+          </template>
+          <template #option="{ option }">
+            <span class="run-option">
+              <span class="run-name">{{ option._label }}</span>
+              <BaseRunProvenance :run="option" />
+            </span>
+          </template>
+        </Select>
         <div
           v-if="runs.list.length"
           class="unfold-toggle"
@@ -751,6 +776,19 @@ const isoCount = (row) => assignments.value.childrenOf(row.peak_assignment_id).l
   display: flex;
   align-items: center;
   gap: 0.75rem;
+}
+
+/* Run label + its provenance chips, in the closed selector and the open list. */
+.run-option {
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+  min-width: 0;
+}
+.run-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .unfold-toggle {
   display: flex;

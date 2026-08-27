@@ -12,6 +12,7 @@ const assign = vi.fn()
 const SAMPLE = { sample_item_id: 'si-1', sample_item_name: 'Sample 1' }
 
 let focusedSampleId
+let runList
 
 // Minimal help-mode facade: the pane registers help cards through these calls;
 // the tests only need them to resolve.
@@ -33,7 +34,13 @@ function makeApp() {
       peak: { list: [], focused: null, focus: vi.fn() },
       ionization: { mechanism: { list: [] } },
       peakAssignment: {
-        run: { list: [], focused: null, focus: vi.fn(), unfocus: vi.fn(), assign },
+        run: {
+          list: runList,
+          focused: runList[0] ?? null,
+          focus: vi.fn(),
+          unfocus: vi.fn(),
+          assign
+        },
         peak: {
           list: [],
           pending: false,
@@ -50,11 +57,14 @@ function makeApp() {
 
 vi.mock('@/stores', () => ({ useApp: () => makeApp() }))
 
-vi.mock('@/lib/base', () => ({
+vi.mock('@/lib/base', async () => ({
   BaseTabbedPanel: { template: '<div><slot name="menu" /><slot /></div>' },
   BaseLoadError: true,
   BaseTierTag: true,
-  BaseVerdictBadge: true
+  BaseVerdictBadge: true,
+  // Real: the point of the run-provenance test below is that the pane hands
+  // this component each run, which a stub could not tell us.
+  BaseRunProvenance: (await vi.importActual('@/lib/base/BaseRunProvenance.vue')).default
 }))
 
 vi.mock('@/lib/dialogs', () => ({ PeakAssignConfigForm: true }))
@@ -63,7 +73,17 @@ const GLOBAL_STUBS = {
   Dialog: { template: '<div><slot /><slot name="footer" /></div>' },
   Message: { template: '<div class="pane-message"><slot /></div>' },
   Button: { template: '<button><slot /></button>' },
-  Select: true,
+  // Renders both slots the run selector fills, so what a user sees closed and
+  // what they see in the open list are both under test.
+  Select: {
+    props: ['options', 'modelValue'],
+    template:
+      '<div class="select">' +
+      '<span class="select-value"><slot name="value" :value="modelValue" placeholder="Select run" /></span>' +
+      '<span v-for="o in options" :key="o.peak_assignment_run_id" class="select-option">' +
+      '<slot name="option" :option="o" /></span>' +
+      '</div>'
+  },
   DataTable: true,
   Column: true,
   ProgressSpinner: true,
@@ -96,6 +116,7 @@ async function mountPane() {
 describe('PaneBrowserAssignment launcher', () => {
   beforeEach(() => {
     focusedSampleId = ref('si-1')
+    runList = []
     assign.mockReset()
     assign.mockResolvedValue({ data: [{ peak_assignment_run_id: 'run-1' }] })
   })
@@ -178,5 +199,80 @@ describe('PaneBrowserAssignment launcher', () => {
     await wrapper.vm.launch()
 
     expect(assign).not.toHaveBeenCalled()
+  })
+})
+
+// The run selector is where a reader learns which engine produced the ledger
+// they are looking at. It matters here rather than only in the badge's own test
+// because the pane auto-shows the newest completed run whatever produced it: an
+// imported run is what a user sees by default, without ever opening the list.
+describe('PaneBrowserAssignment run provenance', () => {
+  beforeEach(() => {
+    focusedSampleId = ref('si-1')
+    assign.mockReset()
+    assign.mockResolvedValue({ data: [{ peak_assignment_run_id: 'run-1' }] })
+  })
+  afterEach(() => vi.clearAllMocks())
+
+  const IMPORTED = {
+    peak_assignment_run_id: 'run-2',
+    engine: 'peaky',
+    engine_version: '0.6.0',
+    status: 'completed',
+    tier_bands: { identified: 0.6, candidate: 0.3 },
+    calibration: { method: 'offset-aware' }
+  }
+  const IN_APP = {
+    peak_assignment_run_id: 'run-1',
+    engine: 'mascope',
+    engine_version: '0.2.0',
+    status: 'completed',
+    tier_bands: { identified: 0.8, candidate: 0.5 },
+    calibration: null
+  }
+
+  // The menu holds two Selects (runs, then the verdict filter) and the stub is
+  // generic, so scope every query to the first one.
+  const runSelect = (wrapper) => wrapper.findAll('.select')[0]
+
+  it('names the producing engine on the selected run, not only in the open list', async () => {
+    runList = [IMPORTED, IN_APP]
+    const wrapper = await mountPane()
+
+    expect(runSelect(wrapper).find('.select-value').text()).toContain('peaky')
+  })
+
+  it('keeps the run label in the closed selector', async () => {
+    // The #value slot is handed the raw v-model value - the record off the run
+    // store - not the matched option, so a label carried only on the option
+    // copy renders blank here while every other assertion still passes.
+    runList = [IMPORTED, IN_APP]
+    const wrapper = await mountPane()
+    const closed = runSelect(wrapper).find('.select-value').text()
+
+    expect(closed).toContain('#2')
+    expect(closed).toContain('completed')
+  })
+
+  it('carries each run its own provenance in the list', async () => {
+    runList = [IMPORTED, IN_APP]
+    const wrapper = await mountPane()
+    const options = runSelect(wrapper).findAll('.select-option')
+
+    expect(options).toHaveLength(2)
+    // Newest first, so the import is #2 and the in-app run is #1.
+    expect(options[0].text()).toContain('#2')
+    expect(options[0].text()).toContain('peaky 0.6.0')
+    expect(options[0].text()).toContain('calibration')
+    expect(options[1].text()).toContain('Mascope 0.2.0')
+    // An in-app run has no disclosure to make: its calibration is the sample's.
+    expect(options[1].text()).not.toContain('calibration')
+  })
+
+  it('still marks an in-flight import as in progress', async () => {
+    runList = [{ ...IMPORTED, status: 'importing' }]
+    const wrapper = await mountPane()
+
+    expect(runSelect(wrapper).find('.select-option').text()).toContain('importing…')
   })
 })
