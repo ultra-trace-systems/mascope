@@ -1,10 +1,15 @@
-"""Placing freshly read scans on a peak store's own time axis.
+"""Refusing a peak store whose scan axis the sample file has outgrown.
 
 A peak store's scan axis is fixed when peak detection allocates it, while the
 scans a reader selects are decided anew on every read. The two drift apart on
 files where the reader's first-scan-outlier exclusion applies but did not yet
-exist when the store was written, and the recomputed timeseries then has to be
-placed by timestamp rather than by position.
+exist when the store was written.
+
+Such a store cannot be recomputed into: its per-peak sums were measured over
+the discarded scan too, so distributing a recomputed timeseries over the scans
+that remain would smear the very artifact the exclusion exists to drop across
+the good scans. It is refused instead, with an error its caller can recognise
+and answer by asking for peak detection.
 """
 
 import numpy as np
@@ -26,7 +31,7 @@ def _shares(scan_count):
     """Per-scan shares of a peak's intensity, summing to 1 and all distinct.
 
     Distinct per scan on purpose: a flat series would read back the same
-    whether the scans were placed in order, reversed, or rotated.
+    whether the scans were written in order, reversed, or rotated.
     """
     weights = np.arange(1.0, scan_count + 1.0)
     return weights / weights.sum()
@@ -48,8 +53,8 @@ def _stub_reader(monkeypatch, scan_times):
 
 
 @pytest.mark.asyncio
-async def test_scans_the_reader_still_covers_are_written_positionally(
-    monkeypatch, write_peak_store, compute_logger
+async def test_a_store_the_file_still_matches_is_computed_as_before(
+    monkeypatch, write_peak_store
 ):
     """The axes agreeing is the ordinary case, and must stay a plain write."""
     write_peak_store(SCAN_TIMES, MZ_VALUES, SUM_AREAS, SUM_HEIGHTS)
@@ -57,206 +62,139 @@ async def test_scans_the_reader_still_covers_are_written_positionally(
 
     result = await m_compute.load_peak_timeseries(SIGNAL_TEST_FILENAME, MZ_VALUES)
 
-    expected = np.outer(SUM_AREAS, _shares(5))
-    np.testing.assert_allclose(result.peak_areas.sel(mz=MZ_VALUES).values, expected)
+    np.testing.assert_allclose(
+        result.peak_areas.sel(mz=MZ_VALUES).values, np.outer(SUM_AREAS, _shares(5))
+    )
     np.testing.assert_allclose(
         result.peak_heights.sel(mz=MZ_VALUES).values,
         np.outer(SUM_HEIGHTS, _shares(5)),
     )
-    assert compute_logger.info.call_count == 0
 
 
 @pytest.mark.asyncio
-async def test_a_scan_the_reader_dropped_is_stored_as_no_data(
-    monkeypatch, write_peak_store, compute_logger
+async def test_a_store_written_before_the_exclusion_is_refused(
+    monkeypatch, write_peak_store
 ):
     """The production case: the store predates the outlier exclusion.
 
     The store holds every scan of the acquisition; the reader now drops the
-    first one. The recomputed values belong to the scans that remain, and the
-    dropped one has to read back as "not measured" rather than as a zero.
+    first one. Its sums were measured over that scan as well, so nothing here
+    can recompute the file - the store has to be rebuilt.
     """
     write_peak_store(SCAN_TIMES, MZ_VALUES, SUM_AREAS, SUM_HEIGHTS)
     _stub_reader(monkeypatch, SCAN_TIMES[1:])
 
-    result = await m_compute.load_peak_timeseries(SIGNAL_TEST_FILENAME, MZ_VALUES)
+    with pytest.raises(m_compute.StalePeakStoreError, match="Re-run peak detection"):
+        await m_compute.load_peak_timeseries(SIGNAL_TEST_FILENAME, MZ_VALUES)
 
-    areas = result.peak_areas.sel(mz=MZ_VALUES).values
-    heights = result.peak_heights.sel(mz=MZ_VALUES).values
-    assert areas.shape == (3, 5), "the store's own scan axis is left untouched"
-    assert np.isnan(areas[:, 0]).all(), "the dropped scan holds no measurement"
-    assert np.isnan(heights[:, 0]).all()
-    # The four scans that were read keep their own shares, in their own order
-    np.testing.assert_allclose(areas[:, 1:], np.outer(SUM_AREAS, _shares(4)))
-    np.testing.assert_allclose(heights[:, 1:], np.outer(SUM_HEIGHTS, _shares(4)))
-    assert compute_logger.info.call_count == 1
-    logged = compute_logger.info.call_args.args[0]
-    assert "5 scans" in logged and "4" in logged and "1 stored scan(s)" in logged
-
-
-@pytest.mark.asyncio
-async def test_sparsity_counts_only_the_scans_that_were_read(
-    monkeypatch, write_peak_store
-):
-    """A scan nobody measured is not evidence that the peak is sparse."""
-    write_peak_store(SCAN_TIMES, MZ_VALUES, SUM_AREAS, SUM_HEIGHTS)
-    _stub_reader(monkeypatch, SCAN_TIMES[1:])
-
-    result = await m_compute.load_peak_timeseries(SIGNAL_TEST_FILENAME, MZ_VALUES)
-
-    # Every scan the reader returned carries signal, so nothing is sparse
-    np.testing.assert_allclose(result.sparsity.sel(mz=MZ_VALUES).values, 0.0)
+    stored = m_io.load_peak_data(SIGNAL_TEST_FILENAME)
+    assert not stored.is_timeseries_computed.values.any(), "nothing was written"
+    assert np.isnan(stored.peak_areas.values).all(), "no partial recompute was left"
 
 
 @pytest.mark.asyncio
 async def test_a_store_from_another_acquisition_is_refused(
     monkeypatch, write_peak_store
 ):
-    """Scan times that do not line up mean the store describes another file.
-
-    Placing them anyway would blank rows that readers then average over, so
-    this is the one case that has to stop rather than repair itself.
-    """
+    """Scan times that do not line up mean the store describes another file."""
     write_peak_store(SCAN_TIMES, MZ_VALUES, SUM_AREAS, SUM_HEIGHTS)
     _stub_reader(monkeypatch, SCAN_TIMES + 1000.0)
 
-    with pytest.raises(ValueError, match="do not line up"):
+    with pytest.raises(m_compute.StalePeakStoreError, match="do not line up"):
         await m_compute.load_peak_timeseries(SIGNAL_TEST_FILENAME, MZ_VALUES)
-
-    stored = m_io.load_peak_data(SIGNAL_TEST_FILENAME)
-    assert not stored.is_timeseries_computed.values.any(), "nothing was written"
 
 
 @pytest.mark.asyncio
-async def test_a_repaired_store_stays_repaired(monkeypatch, write_peak_store):
-    """Recovery has to hold: the next read is served from disk, unchanged."""
+async def test_a_computed_store_is_served_without_reading_the_file(
+    monkeypatch, write_peak_store
+):
+    """A store with nothing left to compute never reaches the check."""
     write_peak_store(SCAN_TIMES, MZ_VALUES, SUM_AREAS, SUM_HEIGHTS)
-    _stub_reader(monkeypatch, SCAN_TIMES[1:])
-
-    repaired = await m_compute.load_peak_timeseries(SIGNAL_TEST_FILENAME, MZ_VALUES)
-    repaired_areas = repaired.peak_areas.sel(mz=MZ_VALUES).values.copy()
+    _stub_reader(monkeypatch, SCAN_TIMES)
+    await m_compute.load_peak_timeseries(SIGNAL_TEST_FILENAME, MZ_VALUES)
 
     async def refuse(*args, **kwargs):
-        raise AssertionError("a repaired sample was recomputed")
+        raise AssertionError("a computed sample was recomputed")
 
     monkeypatch.setattr(m_compute, "get_peak_timeseries", refuse)
     result = await m_compute.load_peak_timeseries(SIGNAL_TEST_FILENAME, MZ_VALUES)
 
     assert result.is_timeseries_computed.values.all()
-    np.testing.assert_array_equal(
-        result.peak_areas.sel(mz=MZ_VALUES).values, repaired_areas
-    )
 
 
-class TestStoredScanPositions:
-    """The placement itself, away from the zarr round-trip."""
+class TestCheckStoredScanAxis:
+    """The check itself, away from the zarr round-trip."""
 
-    def test_identical_axes_need_no_placement(self):
-        assert m_compute.stored_scan_positions(SCAN_TIMES, SCAN_TIMES) is None
+    def test_identical_axes_pass(self):
+        assert m_compute.check_stored_scan_axis(SCAN_TIMES, SCAN_TIMES) is None
 
-    def test_a_dropped_leading_scan_shifts_every_later_one(self):
-        positions = m_compute.stored_scan_positions(SCAN_TIMES[1:], SCAN_TIMES)
-        np.testing.assert_array_equal(positions, [1, 2, 3, 4])
+    def test_a_dropped_scan_is_refused(self):
+        with pytest.raises(m_compute.StalePeakStoreError, match="scan counts differ"):
+            m_compute.check_stored_scan_axis(SCAN_TIMES[1:], SCAN_TIMES)
 
-    def test_a_scan_too_far_from_any_stored_one_is_refused(self):
-        """Half the tightest spacing is the widest a scan may be off by.
+    def test_an_extra_scan_is_refused(self):
+        extra = np.append(SCAN_TIMES, 15.5)
+        with pytest.raises(m_compute.StalePeakStoreError, match="scan counts differ"):
+            m_compute.check_stored_scan_axis(extra, SCAN_TIMES)
 
-        Wider than that and the nearest stored scan is no longer unambiguous,
-        which is the point at which placing the values guesses.
+    def test_an_axis_read_back_a_few_bits_off_still_passes(self):
+        """Float noise must not be mistaken for a stale store.
+
+        The store's axis is float64 on disk and the reader recomputes it, so a
+        healthy store can come back differing in the last bits. Calling that
+        stale would queue peak detection for the file on every single read.
         """
+        drifted = SCAN_TIMES + np.spacing(SCAN_TIMES) * 4
+        assert m_compute.check_stored_scan_axis(drifted, SCAN_TIMES) is None
+
+    def test_a_shifted_scan_is_refused(self):
+        """Half the tightest spacing is the widest a scan may be off by."""
         # The gaps are 2.6 s, so the bound is 1.3 s
-        drifted = np.array([5.1, 7.7, 10.3, 12.9 + 1.4])
-        with pytest.raises(ValueError, match="do not line up"):
-            m_compute.stored_scan_positions(drifted, SCAN_TIMES)
+        shifted = SCAN_TIMES.copy()
+        shifted[-1] += 1.4
+        with pytest.raises(m_compute.StalePeakStoreError, match="do not line up"):
+            m_compute.check_stored_scan_axis(shifted, SCAN_TIMES)
 
-    def test_a_scan_just_inside_the_bound_still_matches(self):
-        nudged = np.array([5.1, 7.7, 10.3, 12.9 + 1.2])
-        positions = m_compute.stored_scan_positions(nudged, SCAN_TIMES)
-        np.testing.assert_array_equal(positions, [1, 2, 3, 4])
-
-    def test_float_noise_still_matches(self):
-        nudged = SCAN_TIMES[1:] + 1e-9
-        positions = m_compute.stored_scan_positions(nudged, SCAN_TIMES)
-        np.testing.assert_array_equal(positions, [1, 2, 3, 4])
-
-    def test_two_scans_may_not_claim_one_stored_scan(self):
-        crowded = np.array([5.1, 5.1, 7.7], dtype=float)
-        with pytest.raises(ValueError, match="same stored scan"):
-            m_compute.stored_scan_positions(crowded, SCAN_TIMES)
-
-    def test_an_unordered_stored_axis_is_refused(self):
-        with pytest.raises(ValueError, match="not strictly increasing"):
-            m_compute.stored_scan_positions(SCAN_TIMES, SCAN_TIMES[::-1])
-
-    def test_a_repeated_stored_timestamp_is_refused(self):
-        """Two stored scans on one timestamp leave "nearest" undefined."""
-        repeated = np.array([2.5, 5.1, 5.1, 7.7])
-        with pytest.raises(ValueError, match="not strictly increasing"):
-            m_compute.stored_scan_positions(np.array([2.5, 5.1, 7.7]), repeated)
-
-    def test_an_axis_read_back_unchanged_is_never_called_a_mismatch(self):
-        """Same scans, different bits: nothing to place and nothing to report.
-
-        The store's axis is float64 on disk and the reader recomputes it, so
-        a stale store can differ in the last bit while covering exactly the
-        same scans. Answering with positions would have the caller log a
-        mismatch of zero scans and copy the whole array for nothing.
-        """
-        drifted = SCAN_TIMES + np.spacing(SCAN_TIMES)
-        assert m_compute.stored_scan_positions(drifted, SCAN_TIMES) is None
-
-    def test_a_reordered_read_is_still_placed(self):
-        """A permutation covers every stored scan but is not the identity."""
-        shuffled = SCAN_TIMES[[0, 2, 1, 3, 4]]
-        np.testing.assert_array_equal(
-            m_compute.stored_scan_positions(shuffled, SCAN_TIMES), [0, 2, 1, 3, 4]
-        )
-
-    def test_a_one_scan_store_tolerates_float_noise(self):
-        """No spacing to derive a bound from is not a reason to refuse.
-
-        The bound falls back to float noise, so a single scan that came back
-        from the store a few bits off still claims its own slot - answered as
-        "nothing to place", since claiming it covers the whole axis. A scan
-        from another acquisition is still refused.
-        """
-        single = np.array([1700000000.0])
-        nudged = single + np.spacing(single) * 4
-        assert m_compute.stored_scan_positions(nudged, single) is None
-        with pytest.raises(ValueError, match="do not line up"):
-            m_compute.stored_scan_positions(single + 1.0, single)
-
-    def test_a_non_finite_scan_time_is_refused(self):
-        """NaN passes every comparison, so it has to be refused up front.
-
-        A stored axis holding one leaves the ordering check vacuous and the
-        tolerance NaN, which would place the values on a guess.
-        """
-        holed = np.array([2.5, np.nan, 7.7, 10.3, 12.9])
-        with pytest.raises(ValueError, match="not finite"):
-            m_compute.stored_scan_positions(np.array([2.5, 7.7, 10.3, 12.9]), holed)
-        with pytest.raises(ValueError, match="not finite"):
-            m_compute.stored_scan_positions(np.array([2.5, np.nan]), SCAN_TIMES)
-
-    def test_an_empty_scan_axis_is_refused(self):
-        """A read that returned nothing must not mark the peaks computed."""
-        with pytest.raises(ValueError, match="no scans"):
-            m_compute.stored_scan_positions(np.array([]), SCAN_TIMES)
-        with pytest.raises(ValueError, match="no scans"):
-            m_compute.stored_scan_positions(SCAN_TIMES, np.array([]))
+    def test_a_scan_just_inside_the_bound_still_passes(self):
+        nudged = SCAN_TIMES.copy()
+        nudged[-1] += 1.2
+        assert m_compute.check_stored_scan_axis(nudged, SCAN_TIMES) is None
 
     def test_the_tightest_gap_sets_the_bound_on_an_uneven_axis(self):
         """Not the average gap, and not the widest one."""
         uneven = np.array([0.0, 1.0, 11.0, 21.0])  # gaps 1, 10, 10 -> bound 0.5
-        np.testing.assert_array_equal(
-            m_compute.stored_scan_positions(np.array([1.0, 11.4, 21.0]), uneven),
-            [1, 2, 3],
+        assert (
+            m_compute.check_stored_scan_axis(np.array([0.0, 1.0, 11.4, 21.0]), uneven)
+            is None
         )
-        with pytest.raises(ValueError, match="do not line up"):
-            m_compute.stored_scan_positions(np.array([1.0, 11.6, 21.0]), uneven)
+        with pytest.raises(m_compute.StalePeakStoreError, match="do not line up"):
+            m_compute.check_stored_scan_axis(np.array([0.0, 1.0, 11.6, 21.0]), uneven)
 
-    def test_placement_leaves_uncovered_scans_empty(self):
-        values = np.array([[1.0, 2.0], [3.0, 4.0]])
-        placed = m_compute.place_on_stored_scans(values, np.array([0, 2]), 3)
-        np.testing.assert_array_equal(placed[:, [0, 2]], values)
-        assert np.isnan(placed[:, 1]).all()
+    def test_a_one_scan_store_tolerates_float_noise(self):
+        """No spacing to halve is not a reason to call a store stale."""
+        single = np.array([1700000000.0])
+        assert (
+            m_compute.check_stored_scan_axis(single + np.spacing(single) * 4, single)
+            is None
+        )
+        with pytest.raises(m_compute.StalePeakStoreError, match="do not line up"):
+            m_compute.check_stored_scan_axis(single + 1.0, single)
+
+    def test_a_non_finite_scan_time_is_refused(self):
+        """NaN passes every comparison, so it has to be refused up front."""
+        holed = np.array([2.5, np.nan, 7.7, 10.3, 12.9])
+        with pytest.raises(m_compute.StalePeakStoreError, match="not finite"):
+            m_compute.check_stored_scan_axis(SCAN_TIMES, holed)
+        with pytest.raises(m_compute.StalePeakStoreError, match="not finite"):
+            m_compute.check_stored_scan_axis(holed, SCAN_TIMES)
+
+    def test_an_empty_scan_axis_is_refused(self):
+        """A read that returned nothing must not mark the peaks computed."""
+        with pytest.raises(m_compute.StalePeakStoreError, match="no scans"):
+            m_compute.check_stored_scan_axis(np.array([]), SCAN_TIMES)
+        with pytest.raises(m_compute.StalePeakStoreError, match="no scans"):
+            m_compute.check_stored_scan_axis(SCAN_TIMES, np.array([]))
+
+    def test_it_is_a_value_error(self):
+        """The API layer maps a ValueError to a client-class failure."""
+        assert issubclass(m_compute.StalePeakStoreError, ValueError)

@@ -20,6 +20,10 @@ from mascope_backend.api.controllers.match.lib.match_remove import remove_matche
 from mascope_backend.api.controllers.sample.batches.status.service import (
     update_sample_batch_status,
 )
+from mascope_backend.api.controllers.sample.files.sample_files_controller import (
+    ensure_converter_available,
+    request_peak_detection,
+)
 from mascope_backend.api.controllers.sample.lib.fetch_affected_sample_data import (
     fetch_affected_sample_data,
 )
@@ -43,6 +47,7 @@ from mascope_backend.api.lib.exceptions.api_exceptions import (
     is_expected_client_error,
     raise_api_warning,
 )
+from mascope_backend.api.new.auth.access_token.service import get_access_token
 from mascope_backend.api.new.match.params import default_match_params
 from mascope_backend.db import (
     MatchCollection,
@@ -52,6 +57,7 @@ from mascope_backend.db import (
     MatchSample,
     Sample,
     SampleBatch,
+    User,
     async_session,
 )
 from mascope_backend.db.id import gen_id
@@ -60,6 +66,7 @@ from mascope_backend.socket.notifications import (
     UserNotification,
     send_progress_user_notification,
 )
+from mascope_signal.compute import StalePeakStoreError
 
 
 # A failure reason is an exception message, which can run long; the summary it
@@ -68,6 +75,12 @@ FAILURE_REASON_MAX_CHARS = 200
 FAILURE_REASONS_IN_SUMMARY = 2
 # The one failure a batch can report that belongs to no sample.
 AGGREGATION_FAILURE_REASON = "higher-level match aggregation failed"
+# A sample whose peak data an older version of Mascope built. Stated as one
+# reason rather than the underlying message so every such sample groups under
+# it, and worded for someone who has to decide whether to wait.
+STALE_PEAK_STORE_REASON = (
+    "peak data was built by an older version of Mascope and has to be rebuilt"
+)
 
 
 def _is_blank_sample(sample: Sample) -> bool:
@@ -684,6 +697,113 @@ def _user_facing_reason(error: Exception) -> str:
     return "Unexpected error."
 
 
+def _is_stale_peak_store(error: Exception) -> bool:
+    """
+    Whether a sample failed because its peak data predates how the file reads.
+
+    The failure is raised deep in the signal library and reaches this module
+    already wrapped by the ``@api_controller`` around the compute step, so the
+    class is looked for along the chain rather than on the exception itself.
+
+    :param error: The exception a single sample's match computation raised.
+    :type error: Exception
+    :return: ``True`` when re-running peak detection is what repairs it.
+    :rtype: bool
+    """
+    seen: set[int] = set()
+    current: BaseException | None = error
+    # Both links: `raise X from e` sets __cause__, a bare `raise X` inside an
+    # except block sets only __context__. `seen` guards a cycle, which a
+    # hand-built chain can have.
+    while current is not None and id(current) not in seen:
+        if isinstance(current, StalePeakStoreError):
+            return True
+        seen.add(id(current))
+        current = current.__cause__ or current.__context__
+    return False
+
+
+async def _request_stale_peak_store_rebuilds(
+    stale_peak_store_files: dict[str, str],
+    user: User | None,
+    process_id: str | None,
+) -> int:
+    """
+    Ask the file converter to rebuild the peak data of files that need it.
+
+    A store written before the reader began discarding an abnormal first scan
+    describes one scan more than the file now yields, and nothing short of
+    peak detection repairs it: the store's per-peak sums were measured over
+    that scan too. Re-running detection is a per-file operation the user would
+    otherwise have to trigger by hand, hundreds of times, so a refresh that
+    finds such files asks for them itself.
+
+    Queued, never awaited. The converter runs the detection on its own worker
+    pool and rematches each file's samples when it finishes, so those samples
+    come back matched without the user doing anything further.
+
+    Nothing here is allowed to fail the refresh that called it: the batch has
+    already done its own work and reports its own result, and a rebuild that
+    could not be queued is a smaller problem than losing that.
+
+    :param stale_peak_store_files: Sample file id to filename, deduplicated -
+        several samples of one batch commonly share a file.
+    :type stale_peak_store_files: dict[str, str]
+    :param user: The user the rebuild is done on behalf of. Absent when the
+        caller is a service rather than a person, and then nothing is queued.
+    :type user: User | None
+    :param process_id: Process identifier the rebuilds report progress under.
+    :type process_id: str | None
+    :return: How many files were queued.
+    :rtype: int
+    """
+    if not stale_peak_store_files:
+        return 0
+    if user is None:
+        # A service-driven refresh (the converter's own rematch callback among
+        # them) has nobody to act for - and queueing detection from the very
+        # path detection triggers is how a rebuild loop would start.
+        runtime.logger.info(
+            f"{len(stale_peak_store_files)} sample file(s) need their peak data "
+            "rebuilt, but this refresh has no user to request it for."
+        )
+        return 0
+
+    try:
+        await ensure_converter_available()
+        access_token = await get_access_token(user=user, service_name="file-converter")
+    except Exception:
+        runtime.logger.exception(
+            f"Could not request peak detection for {len(stale_peak_store_files)} "
+            "sample file(s) with outdated peak data"
+        )
+        return 0
+
+    queued = 0
+    for sample_file_id, filename in stale_peak_store_files.items():
+        try:
+            await request_peak_detection(
+                sample_file_id=sample_file_id,
+                filename=filename,
+                user=user,
+                access_token=access_token,
+                process_id=gen_id(8),
+            )
+            queued += 1
+        except Exception:
+            # One file that could not be queued must not cost the others theirs
+            runtime.logger.exception(
+                f"Could not request peak detection for sample file '{filename}'"
+            )
+
+    if queued:
+        runtime.logger.info(
+            f"Requested peak detection for {queued} sample file(s) whose peak "
+            f"data predates the current scan selection (process {process_id})."
+        )
+    return queued
+
+
 def _log_batch_rematch_failure(sample_batch_id: str, error: Exception) -> None:
     """
     Record a batch that did not rematch, at the level that failure earns.
@@ -815,6 +935,7 @@ async def rematch_batches(
     user_id: int | None = None,
     process_id: str | None = None,
     parent_id: str | None = None,
+    user: User | None = None,
 ) -> dict:
     """
     Performs rematch operation on multiple sample batches with status tracking.
@@ -844,6 +965,10 @@ async def rematch_batches(
     :type process_id: str | None
     :param parent_id: Parent process identifier
     :type parent_id: str | None
+    :param user: The user the run acts for. Given one, a sample whose peak data
+        an older version of Mascope built has its rebuild requested rather than
+        only reported; without one nothing is queued
+    :type user: User | None
     :raises NotFoundException: When batch not found
     :raises ApiException: When batch is already processing or rematch fails
     :return: Rematch results with batch categorization and aggregate statistics
@@ -900,6 +1025,8 @@ async def rematch_batches(
     # record per sample: a dataset-wide refresh can fail thousands of samples
     # and this only ever names the distinct reasons behind them.
     failure_reason_counts: Counter[str] = Counter()
+    # Sample files the batches asked to have rebuilt, summed across the run
+    peak_rebuilds_queued = 0
 
     # Sample counts only weight the progress bar, so they are counted in one
     # grouped query rather than by reading every batch's samples: rematching a
@@ -966,6 +1093,7 @@ async def rematch_batches(
                 user_id=user_id,
                 process_id=gen_id(8),
                 parent_id=process_id,
+                user=user,
             )
 
             # Aggregate sample metrics
@@ -974,6 +1102,7 @@ async def rematch_batches(
                 if key != "total_samples_count":  # Skip total as it's pre-calculated
                     processed_samples[key] += batch_data.get(key, 0)
             failure_reason_counts.update(batch_data.get("failed_sample_reasons", {}))
+            peak_rebuilds_queued += batch_data.get("peak_rebuilds_queued", 0)
 
             # Categorize batch rematch result
             batch_collections[f"{batch_result['status']}_batches"].append(
@@ -1045,6 +1174,13 @@ async def rematch_batches(
 
         message += f". Sample rematch processing: {', '.join(stats_parts)}"
 
+    if peak_rebuilds_queued:
+        message += (
+            f". Peak detection has been queued for {peak_rebuilds_queued} sample "
+            "file(s) whose peak data predates the current scan selection; their "
+            "samples will rematch on their own once it finishes"
+        )
+
     # Name whatever did not rematch. The counts above say how much went wrong;
     # only the names say what to go and look at, and the nested rematches no
     # longer report for themselves - this aggregate reports for them.
@@ -1075,6 +1211,7 @@ async def rematch_batches(
                 **batch_collections,
             },
             "processed_samples": processed_samples,
+            "peak_rebuilds_queued": peak_rebuilds_queued,
         },
         "_notification_data": {"affected_sample_batch_ids": sample_batch_ids},
     }
@@ -1120,6 +1257,7 @@ async def rematch_batch(
     user_id: int | None = None,
     process_id: str | None = None,
     parent_id: str | None = None,
+    user: User | None = None,
 ) -> dict:
     """
     Performs rematch operation on sample batch by removing and recomputing matches.
@@ -1148,6 +1286,10 @@ async def rematch_batch(
     :type process_id: str | None
     :param parent_id: Parent process identifier
     :type parent_id: str | None
+    :param user: The user the run acts for. Given one, a sample whose peak data
+        an older version of Mascope built has its rebuild requested rather than
+        only reported; without one nothing is queued
+    :type user: User | None
     :raises NotFoundException: When batch not found
     :raises ApiException: When batch is already processing or rematch fails
     :return: Batch data with rematch results, status, and aggregated statistics
@@ -1241,6 +1383,7 @@ async def rematch_batch(
             removed_sample_item_ids=remove_result.get("data", {}).get(
                 "orphaned_sample_item_ids", []
             ),
+            user=user,
         )
 
         # Step 5: Determine final status and message
@@ -1260,6 +1403,7 @@ async def rematch_batch(
         compute_summary = f"{computed_count}/{total_samples} samples computed missing matches successfully"
         failed_sample_reasons = compute_data.get("failed_sample_reasons", {})
         failures_summary = compute_data.get("failed_samples_summary", "")
+        rebuilds_queued = compute_data.get("peak_rebuilds_queued", 0)
         if failed_count:
             failed_summary = (
                 f"match computation failed for {failed_count}/{total_samples} samples"
@@ -1319,6 +1463,15 @@ async def rematch_batch(
                     f"Unexpected rematch_batch status combination: remove={remove_status}, compute={compute_status}"
                 )
 
+        if rebuilds_queued:
+            # The compute step asked for these; say so wherever its outcome is
+            # reported, because "will fix itself" is the part a user acts on.
+            message += (
+                f" Peak detection has been queued for {rebuilds_queued} sample "
+                "file(s) whose peak data predates the current scan selection; "
+                "their samples will rematch on their own once it finishes."
+            )
+
         # Update batch status
         await update_sample_batch_status(
             sample_batch_ids=[sample_batch_id],
@@ -1341,6 +1494,7 @@ async def rematch_batch(
                 "skipped_samples_count": skipped_count,
                 "failed_sample_reasons": failed_sample_reasons,
                 "failed_samples_summary": failures_summary,
+                "peak_rebuilds_queued": rebuilds_queued,
             },
             "_notification_data": {"sample_batch_id": sample_batch_id},
         }
@@ -1440,6 +1594,7 @@ async def match_compute_batch(
     process_id: str | None = None,
     parent_id: str | None = None,
     removed_sample_item_ids: list[str] | None = None,
+    user: User | None = None,
 ) -> dict:
     """
     Computes new matches for all samples within a batch, processing each sample:
@@ -1460,6 +1615,10 @@ async def match_compute_batch(
     :param removed_sample_item_ids: Samples whose match rows the preceding
         removal step touched (rematch flow); they join the aggregation scope
     :type removed_sample_item_ids: list[str] | None
+    :param user: The user the run acts for. Given one, a sample whose peak
+        data an older version of Mascope built has its rebuild requested
+        rather than only reported; without one nothing is queued
+    :type user: User | None
     :raises NotFoundException: When batch not found
     :raises ApiException: When batch has no samples or critical failures occur
     :return: Batch data with computation results and status message
@@ -1505,6 +1664,9 @@ async def match_compute_batch(
     computed_samples = []
     failed_samples = []
     failure_reason_counts: Counter[str] = Counter()
+    # Sample file id -> filename, deduplicated: several samples of one batch
+    # commonly come from one file, and it is rebuilt once for all of them
+    stale_peak_store_files: dict[str, str] = {}
     skipped_samples = []
     for item_index, sample in enumerate(samples):
         progress_notification = UserNotification(
@@ -1586,7 +1748,14 @@ async def match_compute_batch(
             # which for anything the decorated compute step did not wrap (an
             # undecorated fetch, this loop's own body) is an internal detail.
             # The log line below keeps the full message either way.
-            reason = _user_facing_reason(e)[:FAILURE_REASON_MAX_CHARS]
+            if _is_stale_peak_store(e):
+                # Named as one reason rather than by the underlying message,
+                # so every sample with this problem groups under it, and
+                # recorded so its file can be queued for rebuilding below.
+                reason = STALE_PEAK_STORE_REASON
+                stale_peak_store_files[sample.sample_file_id] = sample.filename
+            else:
+                reason = _user_facing_reason(e)[:FAILURE_REASON_MAX_CHARS]
             runtime.logger.info(
                 f"Computing match isotopes for sample '{sample.sample_item_name}' "
                 f"(file '{sample.filename}') failed: {e}"
@@ -1703,6 +1872,13 @@ async def match_compute_batch(
         f"{failed_samples_count} failed, "
         f"{skipped_samples_count} skipped due to missing calibration or no new targets."
     )
+    # Asked for after the batch has finished its own work, so a converter that
+    # is slow to answer cannot hold up the result, and once per file however
+    # many of its samples tripped over it.
+    rebuilds_queued = await _request_stale_peak_store_rebuilds(
+        stale_peak_store_files, user, process_id
+    )
+
     # Summarized once, here, so every caller that reports this batch words the
     # reasons the same way
     failures_summary = _summarize_sample_failures(failure_reason_counts)
@@ -1716,6 +1892,12 @@ async def match_compute_batch(
         )
     if failures_summary:
         message += f" Failures: {failures_summary}."
+    if rebuilds_queued:
+        message += (
+            f" Peak detection has been queued for {rebuilds_queued} sample "
+            "file(s); the samples using them will rematch on their own once "
+            "it finishes."
+        )
     if failed_samples_count > 0 or aggregation_failed:
         # One aggregated warning per problem batch; the per-sample failures
         # above are logged at INFO.
@@ -1736,6 +1918,7 @@ async def match_compute_batch(
             # so it stays the size of the problem rather than of the batch.
             "failed_sample_reasons": dict(failure_reason_counts),
             "failed_samples_summary": failures_summary,
+            "peak_rebuilds_queued": rebuilds_queued,
         },
         "_notification_data": {"sample_batch_id": sample_batch_id},
     }

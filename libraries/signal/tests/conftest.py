@@ -7,8 +7,6 @@ import numpy as np
 import pytest
 import xarray as xr
 
-import mascope_signal.compute as m_compute
-
 
 SIGNAL_TEST_FILENAME = "OrbiTest_1001.01.01_12h00m00s_TestFile"
 
@@ -35,9 +33,7 @@ def mock_runtime(temp_filestore):
         mock_name_runtime.filestore = mock_filestore
         mock_io_runtime.filestore = mock_filestore
         mock_io_runtime.logger = mock_logger
-        # Its own logger, not the shared one: a test that counts what compute
-        # logged must not also be counting what the file library logged
-        mock_compute_runtime.logger = MagicMock()
+        mock_compute_runtime.logger = mock_logger
 
         yield mock_name_runtime
 
@@ -61,16 +57,6 @@ def sample_file_path(temp_filestore):
     yield sample_path
 
     shutil.rmtree(sample_path, ignore_errors=True)
-
-
-@pytest.fixture
-def compute_logger(mock_runtime):
-    """The logger `mascope_signal.compute` writes through.
-
-    `mock_runtime` patches the module's whole runtime, so the library never
-    reaches the real sink and `caplog` sees nothing - assert on this instead.
-    """
-    return m_compute.runtime.logger
 
 
 @pytest.fixture

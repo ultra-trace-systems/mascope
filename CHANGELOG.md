@@ -515,21 +515,18 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
   dismiss theirs - if that leaves too few peaks, the file is treated as a blank
   measurement, which is a defined outcome rather than a hard failure.
 
-- Refreshing matches no longer fails on samples whose peak data was built by
-  an older version of Mascope. A file's peak data is stored against the scans
-  of the acquisition, and which scans a file yields is decided each time it is
-  read - so a file recorded before Mascope began discarding an abnormal first
-  scan holds one scan more than it now reads back, and every sample like that
-  failed to recompute. The recomputed values are now placed by their
-  timestamps, leaving the discarded scan marked as never measured rather than
-  as an intensity of zero, and the refresh repairs such samples on its own
-  with nothing to re-import. A recomputed timeseries is still anchored to the
-  file's stored totals, which were measured over the discarded scan as well,
-  so that scan's share is spread over the ones that remain - the recomputed
-  intensities of such a file read slightly high, and the server log says so
-  for every file it happens to. A sample whose stored scans cannot be matched
-  to the file at all is still refused, and says that peak detection has to be
-  re-run for it.
+- Refreshing matches now repairs samples whose peak data was built by an older
+  version of Mascope, instead of failing on them every time. A file's peak
+  data is stored against the scans of the acquisition, and which scans a file
+  yields is decided each time it is read - so a file recorded before Mascope
+  began discarding an abnormal first scan holds one scan more than it now
+  reads back, and every sample like that failed to recompute. Such a file's
+  stored peak totals were measured over the discarded scan too, so the only
+  thing that puts it right is re-running peak detection: a refresh that meets
+  one now asks for that itself, once per file however many of its samples are
+  affected, and those samples rematch on their own when it finishes. The
+  refresh says which files it queued, and reports the samples as failed for
+  that run rather than pretending otherwise.
 
 - A batch refresh that failed is no longer announced as a success. Refreshing
   a batch isolates a failing sample so one bad file cannot stop the rest, and

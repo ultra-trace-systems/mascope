@@ -82,6 +82,74 @@ async def ensure_converter_available() -> None:
         )
 
 
+async def request_peak_detection(
+    sample_file_id: str,
+    filename: str,
+    user: User,
+    access_token: str,
+    process_id: str | None = None,
+) -> None:
+    """Ask the file converter to rebuild a sample file's peak data.
+
+    The request is queued, not performed: the converter's socket handler
+    enqueues it (rejecting a duplicate for a file already in flight), a pool of
+    worker threads runs the detection, and on completion the worker rematches
+    every sample item of the file. So a caller asks and must not wait - the
+    samples repair themselves and come back matched on their own.
+
+    Callers gate on :func:`ensure_converter_available` first; with no converter
+    connected the request would be stranded.
+
+    :param sample_file_id: The sample file whose peaks are to be rebuilt.
+    :type sample_file_id: str
+    :param filename: That file's filename, as the converter addresses it.
+    :type filename: str
+    :param user: The user the work is done on behalf of; the converter calls
+        back into this API as them.
+    :type user: User
+    :param access_token: That user's file-converter access token.
+    :type access_token: str
+    :param process_id: Process identifier the progress is reported under.
+    :type process_id: str | None
+    :return: None
+    """
+    (
+        affected_sample_item_ids,
+        _,
+        *_,
+    ) = await fetch_affected_sample_data(sample_file_ids=[sample_file_id])
+
+    # --- Emit peak detection request to file converter service via Socket.IO event ---
+    await event_emitter.emit(
+        "file-converter.peak_detection_request",
+        {
+            "filename": filename,
+            "sample_file_id": sample_file_id,
+            "affected_sample_item_ids": affected_sample_item_ids,
+            "process_id": process_id,
+            "user_id": user.id,
+            "username": user.username,
+            "role_id": user.role_id,
+            "access_token": access_token,
+        },
+    )
+
+    # Send an immediate "pending" notification so the UI shows a progress
+    # bar as soon as the request is accepted.
+    pending_notification = UserNotification(
+        process_id=process_id,
+        type="compute_sample_file_peaks",
+        status="pending",
+        message=f"Peak detection queued for '{filename}'...",
+        data={
+            "filename": filename,
+            "sample_file_id": sample_file_id,
+        },
+        progress=5,  # Start with 5% to indicate it's in progress
+    )
+    await emit_user_notification(notification=pending_notification, user_id=user.id)
+
+
 # TODO_configuration Default sample file upload params
 FILE_UPLOAD_CHUNK_SIZE = 2 * 1024 * 1024  # 2 MB
 
@@ -1259,41 +1327,13 @@ async def compute_sample_file_peaks(
     # --- Check if File Converter service is connected ---
     await ensure_converter_available()
 
-    (
-        affected_sample_item_ids,
-        _,
-        *_,
-    ) = await fetch_affected_sample_data(sample_file_ids=[sample_file_id])
-
-    # --- Emit peak detection request to file converter service via Socket.IO event ---
-    await event_emitter.emit(
-        "file-converter.peak_detection_request",
-        {
-            "filename": filename,
-            "sample_file_id": sample_file_id,
-            "affected_sample_item_ids": affected_sample_item_ids,
-            "process_id": process_id,
-            "user_id": user.id,
-            "username": user.username,
-            "role_id": user.role_id,
-            "access_token": access_token,
-        },
-    )
-
-    # Send an immediate "pending" notification so the UI shows a progress
-    # bar as soon as the request is accepted.
-    pending_notification = UserNotification(
+    await request_peak_detection(
+        sample_file_id=sample_file_id,
+        filename=filename,
+        user=user,
+        access_token=access_token,
         process_id=process_id,
-        type="compute_sample_file_peaks",
-        status="pending",
-        message=f"Peak detection queued for '{filename}'...",
-        data={
-            "filename": filename,
-            "sample_file_id": sample_file_id,
-        },
-        progress=5,  # Start with 5% to indicate it's in progress
     )
-    await emit_user_notification(notification=pending_notification, user_id=user.id)
 
     return {
         "message": f"Peak detection requested for sample file '{filename}'",
