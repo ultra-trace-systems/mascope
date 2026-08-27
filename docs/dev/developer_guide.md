@@ -622,6 +622,11 @@ Notes:
 - The same ports are exposed manually via `MASCOPE_API_PORT` / `MASCOPE_FRONTEND_PORT` (and the
   env via `MASCOPE_ENV`), so `eval "$(mascope instance show --export)"` in a shell activates an
   instance for tools other than `mascope dev run`.
+- Browser sessions are per instance. Cookies are not scoped by port, so every instance served
+  from one hostname would otherwise share a single `mascope_auth` cookie and sign the others out
+  (each signs its JWTs with its own secret). In dev the auth cookie is named for the env -
+  `mascope_auth_wt-my-feature` - so two instances open in one browser keep separate logins. Prod
+  keeps the bare `mascope_auth`.
 - Migrations follow the worktree, not `MASCOPE_PATH`: a branch that adds a revision has it
   applied to that instance's database on startup. Leave `MASCOPE_PATH` at the shared home -
   it is deliberately not the source tree (see [Schema migrations](#schema-migrations)).

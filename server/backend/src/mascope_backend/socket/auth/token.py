@@ -3,6 +3,7 @@
 import re
 
 from mascope_backend.api.new.auth.backend import auth_backend_jwt
+from mascope_backend.api.new.auth.config import auth_settings
 from mascope_backend.runtime import runtime
 from mascope_backend.socket.auth.exceptions import SocketUnauthenticatedError
 
@@ -28,7 +29,7 @@ async def get_jwt_from_cookies(cookies: str) -> str:
     except Exception as e:
         raise SocketUnauthenticatedError("Invalid cookie format") from e
 
-    jwt_token = cookie_dict.get("mascope_auth")
+    jwt_token = cookie_dict.get(auth_settings.COOKIE_NAME)
     if not jwt_token:
         raise SocketUnauthenticatedError("Authentication cookie not found")
 
