@@ -832,8 +832,13 @@ async def sample_item_export_peaks(
 
         if instrument_type == "orbi":
             peak_data_type = "peak_heights"
-        if instrument_type == "tof":
+        elif instrument_type == "tof":
             peak_data_type = "peak_areas"
+        else:
+            # get_instrument_type returns None when it cannot resolve one, and
+            # two independent ifs left peak_data_type unbound for that - an
+            # UnboundLocalError in place of a message naming the file.
+            raise ValueError(f"Unknown instrument type: {instrument_type}")
 
         # dropna returns a lazy selection, so without the .compute() inside
         # the thread the peak matrix would still be read on the loop - twice,
