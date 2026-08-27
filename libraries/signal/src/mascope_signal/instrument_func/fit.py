@@ -27,6 +27,12 @@ class InsufficientPeaksError(ValueError):
 SIGMA_MULTIPLIER = 2 * np.sqrt(2 * np.log(2))
 # Minimum number of peaks required to evaluate instrument functions
 MIN_NUM_PEAKS = 3
+
+#: Minimum samples inside the +/-dmz window for a peak to be fittable. The
+#: skewed-Gaussian model has three free parameters for an Orbitrap (amplitude,
+#: centre, sigma), so anything under this cannot constrain a fit - and a
+#: single-sample window makes lmfit raise on min == max bounds.
+MIN_REGION_POINTS = 5
 NOISE_THRESHOLD_FACTOR = 5
 AMBIENT_SNR_THRESHOLD = 100
 AMBIENT_R_SQ_THRESHOLD = 0.85
@@ -194,7 +200,18 @@ def _process_peak_shapes(
     :return: Tuple containing p_x, p_ys, p_mzs, and p_fwhms
     :rtype: tuple
     """
-    distance = int(dmz / np.median(np.diff(mz)))
+    # `distance` is the minimum peak separation in SAMPLES, so it must be at
+    # least 1. On a spectrum whose own m/z spacing is coarser than dmz the
+    # ratio is below 1 and int() floors it to 0, which find_peaks rejects. A
+    # spacing that is NaN (an all-NaN or single-point m/z axis) floors to
+    # nothing at all and int() raises. Both are the same condition - dmz is
+    # finer than the data - and both mean "no separation to enforce", so clamp
+    # to 1 rather than failing the whole instrument-function fit.
+    median_spacing = np.median(np.diff(mz)) if mz.size > 1 else np.nan
+    if not np.isfinite(median_spacing) or median_spacing <= 0:
+        distance = 1
+    else:
+        distance = max(1, int(dmz / median_spacing))
     peak_indices = _choose_peaks(spec, distance=distance, n_peaks=n_peaks)
 
     p_x = np.linspace(-10, 10, 101)
@@ -207,6 +224,16 @@ def _process_peak_shapes(
         region_mask = np.where((mz > p_mz_center - dmz) & (mz < p_mz_center + dmz))
         p_spec = spec[region_mask]
         p_mz = mz[region_mask]
+
+        if p_mz.size < MIN_REGION_POINTS:
+            # The +/-dmz window holds too few samples to fit a peak shape. This
+            # happens when the spectrum's own m/z spacing is coarser than dmz:
+            # a single-sample window collapses the p_center bounds to
+            # min == max and lmfit refuses the fit outright. Dismissing the
+            # peak keeps that a data condition - too few quality peaks, handled
+            # by the caller as a blank measurement - rather than a hard failure
+            # of an otherwise readable file.
+            continue
 
         p_height = spec[p]
         if np.max(p_spec) > p_height:
