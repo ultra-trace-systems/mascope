@@ -924,7 +924,7 @@ def _load_deduplicated_peak_data(base_filename: str, mzs_arr: np.ndarray) -> xr.
     return peak_timeseries.isel(mz=np.sort(unique_idx))
 
 
-def _stored_scan_positions(
+def stored_scan_positions(
     live_time: np.ndarray,
     stored_time: np.ndarray,
 ) -> np.ndarray | None:
@@ -936,6 +936,11 @@ def _stored_scan_positions(
     Where the two disagree, the freshly read scans have to be placed by
     timestamp rather than by position.
 
+    Public because that disagreement is a property of the file, not of one
+    caller: anything that pairs a store's stored scan axis with values from a
+    fresh read (the per-scan peak export among them) has to reconcile the two
+    the same way, and a second implementation would drift from this one.
+
     :param live_time: Scan timestamps [s] just read from the sample file
     :type live_time: np.ndarray
     :param stored_time: Scan timestamps [s] the peak store was allocated with
@@ -944,12 +949,16 @@ def _stored_scan_positions(
         or two of them claim the same one - the store describes a different
         acquisition and only re-running peak detection can repair it
     :return: Index of each live scan within the stored axis, or None when the
-        two axes are identical and no placement is needed
+        scans line up one-for-one and no placement is needed
     :rtype: np.ndarray | None
     """
     live = np.asarray(live_time, dtype=float)
     stored = np.asarray(stored_time, dtype=float)
 
+    # The ordinary case, and the only one held to no further standard: the
+    # store is being read back exactly as it was written, so an axis that is
+    # degenerate by the rules below (a repeated timestamp, say) still reads
+    # the way it always has.
     if live.shape == stored.shape and np.array_equal(live, stored):
         return None
 
@@ -967,27 +976,46 @@ def _stored_scan_positions(
         raise _mismatch("one of them holds no scans")
     if not (np.isfinite(live).all() and np.isfinite(stored).all()):
         raise _mismatch("some of the scan times are not finite")
-    if np.any(np.diff(stored) < 0):
-        raise _mismatch("the stored scan times are out of order")
+    if np.any(np.diff(stored) <= 0):
+        # Strictly increasing, not merely non-decreasing: two stored scans on
+        # one timestamp leave "the nearest stored scan" undefined, and it is
+        # also what indexing by proximity below requires.
+        raise _mismatch("the stored scan times are not strictly increasing")
 
     # Nearest stored scan for each live scan, within half of the tightest
     # stored spacing so a scan can never be claimed by its neighbour's slot.
+    # A one-scan store has no spacing to derive that from, so it falls back to
+    # a float-noise bound - enough to survive a round trip through the store,
+    # far too little to accept a scan from another acquisition.
     gaps = np.diff(stored)
-    tolerance = 0.5 * gaps.min() if gaps.size else 0.0
-    right = np.searchsorted(stored, live).clip(0, stored.size - 1)
-    left = (right - 1).clip(0, stored.size - 1)
-    take_left = np.abs(stored[left] - live) <= np.abs(stored[right] - live)
-    positions = np.where(take_left, left, right)
+    noise = 8 * np.finfo(float).eps * max(np.abs(stored).max(), np.abs(live).max(), 1.0)
+    tolerance = max(0.5 * gaps.min(), noise) if gaps.size else noise
 
-    if np.any(np.abs(stored[positions] - live) > tolerance):
+    # Same nearest-within-tolerance alignment the TIC series gets in
+    # get_ms2_fragment_timeseries above, which is where -1 comes from: a live
+    # scan with no stored scan close enough to claim.
+    positions = pd.Index(stored).get_indexer(
+        live, method="nearest", tolerance=tolerance
+    )
+    if np.any(positions < 0):
         raise _mismatch("their scan times do not line up")
     if np.unique(positions).size != positions.size:
         raise _mismatch("several of them fall on the same stored scan")
 
+    if positions.size == stored.size and np.array_equal(
+        positions, np.arange(stored.size)
+    ):
+        # Every stored scan matched, in its own order: the two axes describe
+        # the same selection and differ only in the bits. Answered here rather
+        # than by the equality check above so such a file neither pays for a
+        # placement that would move nothing nor reports a mismatch it does not
+        # have.
+        return None
+
     return positions
 
 
-def _place_on_stored_scans(
+def place_on_stored_scans(
     values: np.ndarray,
     positions: np.ndarray,
     scan_count: int,
@@ -997,6 +1025,9 @@ def _place_on_stored_scans(
     Stored scans the current selection no longer covers keep the store's own
     "no data for this scan" value, NaN, so the readers that average over time
     skip them instead of averaging in a measurement that was never made.
+
+    Public for the same reason as :func:`stored_scan_positions`, whose return
+    value is this function's ``positions``.
 
     :param values: Per-scan values on the live time axis, shaped (mz, live)
     :type values: np.ndarray
@@ -1074,7 +1105,15 @@ async def load_peak_timeseries(
         timeseries_sum = xr.where(timeseries_sum == 0, 1, timeseries_sum)
         new_peak_timeseries_norm = (new_peak_timeseries / timeseries_sum).values
 
-        # Restore peak timeseries intensities
+        # Restore peak timeseries intensities. The shares sum to one over the
+        # scans that were read, while the store's sums were measured over the
+        # scans it was allocated with - so where the reader now covers fewer,
+        # the share that belonged to a dropped scan is spread over the rest.
+        # The stored sums are the only absolute anchor a recompute has (the
+        # dropped scan cannot be read back to subtract it), and keeping
+        # peak_areas summing to sum_peak_areas is what the readers that divide
+        # by a scan count assume, so the overstatement is accepted and
+        # reported by the log below rather than silently absorbed.
         new_peak_areas = new_peak_timeseries_norm * sum_peak_areas[:, np.newaxis]
         new_peak_heights = new_peak_timeseries_norm * sum_peak_heights[:, np.newaxis]
 
@@ -1089,24 +1128,27 @@ async def load_peak_timeseries(
 
         # The store is written scan-by-scan into a fixed-width axis, so the
         # values have to span exactly the scans it was allocated with.
-        scan_positions = _stored_scan_positions(
+        scan_positions = stored_scan_positions(
             new_peak_timeseries.time.values, time_coords
         )
         if scan_positions is not None:
             # INFO: a data quirk of the file, hit on every read of it (as with
             # the first-scan-outlier exclusion in mascope_thermo that usually
-            # causes it)
+            # causes it). Says what it costs as well as what it does: the
+            # dropped scan's share of the stored sums lands on the scans that
+            # remain, so their intensities read high by that share.
             runtime.logger.info(
                 f"The peak store of '{base_filename}' was allocated with "
                 f"{time_coords.size} scans and the file now reads as "
                 f"{new_peak_timeseries.time.size}; "
                 f"{time_coords.size - scan_positions.size} stored scan(s) are "
-                "left as no-data."
+                "left as no-data, and their share of the stored sums is "
+                "spread over the scans that were read."
             )
-            new_peak_areas = _place_on_stored_scans(
+            new_peak_areas = place_on_stored_scans(
                 new_peak_areas, scan_positions, time_coords.size
             )
-            new_peak_heights = _place_on_stored_scans(
+            new_peak_heights = place_on_stored_scans(
                 new_peak_heights, scan_positions, time_coords.size
             )
 
