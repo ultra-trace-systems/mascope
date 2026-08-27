@@ -71,21 +71,32 @@ describe('ionizationModeChoices', () => {
   it('offers nothing until a mixed-polarity file has a polarity picked', () => {
     expect(
       ionizationModeChoices({ modes: MODES, filename: 'inst_NH4_NO3_001.raw', polarity: '+-' })
-    ).toEqual({ options: [], defaultId: null })
+    ).toEqual({ options: [], defaultId: null, reason: 'no-token' })
     expect(
       ionizationModeChoices({ modes: MODES, filename: 'inst_NH4_NO3_001.raw', polarity: null })
-    ).toEqual({ options: [], defaultId: null })
+    ).toEqual({ options: [], defaultId: null, reason: 'no-token' })
   })
 
   it('survives an unloaded mode list and a missing filename', () => {
-    expect(ionizationModeChoices()).toEqual({ options: [], defaultId: null })
+    expect(ionizationModeChoices()).toEqual({ options: [], defaultId: null, reason: 'no-token' })
     expect(ionizationModeChoices({ modes: MODES, filename: null, polarity: '+' })).toEqual({
       options: [
         { label: 'Ammonium', value: 'm1' },
         { label: 'Proton transfer', value: 'm3' },
         { label: 'Untokenized', value: 'm4' }
       ],
-      defaultId: null
+      defaultId: null,
+      reason: 'no-token'
     })
+  })
+
+  it('says why no mode was preselected, so the two empty cases read apart', () => {
+    const reasonFor = (filename) =>
+      ionizationModeChoices({ modes: MODES, filename, polarity: '+' }).reason
+    expect(reasonFor('inst_NH4_001.raw')).toBe('resolved')
+    expect(reasonFor('inst_20240101_001.raw')).toBe('no-token')
+    // Both tokens are really in the filename, so telling the user it carries
+    // none would be false - the ambiguity is the reason, not their naming.
+    expect(reasonFor('inst_NH4_PTR_001.raw')).toBe('ambiguous')
   })
 })
