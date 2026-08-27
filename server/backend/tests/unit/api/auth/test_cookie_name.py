@@ -25,6 +25,7 @@ from starlette.responses import Response
 
 from mascope_backend.api.new.auth import backend as auth_backend
 from mascope_backend.api.new.auth.config import (
+    _resolve_cookie_max_age,
     _resolve_cookie_name,
     _resolve_cookie_scoped,
     auth_settings,
@@ -168,6 +169,45 @@ def test_a_sanitized_name_is_stable_across_processes():
     # The browser has to find the cookie again after a restart, so the
     # disambiguator cannot be hash()-based (salted per process).
     assert dev(AUTH, "wt my feature") == dev(AUTH, "wt my feature")
+
+
+# --- Lifetime: scoping trades one cookie per host for one per env ---
+
+
+WEEK = 7 * 24 * 60 * 60
+DAY = 24 * 60 * 60
+
+
+def test_an_unscoped_cookie_lives_as_long_as_the_token_it_carries():
+    # One deployment, one hostname, one cookie: it should stop being sent
+    # exactly when the JWT inside it dies.
+    assert _resolve_cookie_max_age("prod", WEEK) == WEEK
+
+
+def test_a_scoped_cookie_is_capped_well_below_that():
+    # Nothing removes a dead env's cookie - logout only clears the instance you
+    # logged out of - and every one of them is still sent to every instance on
+    # the host. Dev envs follow worktrees and are short-lived, so a week each
+    # lets them pile up.
+    assert _resolve_cookie_max_age("dev", WEEK) == DAY
+
+
+def test_the_cookie_never_outlives_the_token():
+    # The safe direction. Shorter means signing in again; longer would mean
+    # presenting dead tokens and collecting 401s.
+    for mode in ("dev", "prod"):
+        assert _resolve_cookie_max_age(mode, WEEK) <= WEEK
+    assert auth_settings.COOKIE_MAX_AGE_SECONDS <= auth_settings.JWT_EXPIRATION_SECONDS
+
+
+def test_the_lifetime_follows_the_scoping_not_the_mode(monkeypatch):
+    # The accumulation is caused by the scoping, so overriding that has to
+    # carry the lifetime with it or the two disagree about which world we are in.
+    monkeypatch.setenv("MASCOPE_COOKIE_SCOPED", "0")
+    assert _resolve_cookie_max_age("dev", WEEK) == WEEK
+
+    monkeypatch.setenv("MASCOPE_COOKIE_SCOPED", "1")
+    assert _resolve_cookie_max_age("prod", WEEK) == DAY
 
 
 # --- What the running app actually uses ---
