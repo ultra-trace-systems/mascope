@@ -100,6 +100,16 @@ It comes preloaded with the published demo dataset and login `demo@mascope.app` 
   already made, `git reset --hard <pre-merge-commit>` and rebase instead;
   comparing `git rev-parse HEAD^{tree}` against the merge's tree confirms the
   conflict resolution survived unchanged.
+- **CHANGELOG.md merges by union, so it does not conflict** - every PR appends
+  an entry to the same Unreleased section, so any two PRs in flight collided
+  there even when they touched nothing else. `.gitattributes` marks the file
+  `merge=union`, which keeps both sides instead of raising a conflict. That is
+  right for entries, which are whole blank-line-separated blocks and only ever
+  appended. It does mean no conflict is raised for you to review, so if you
+  **edit** an existing entry rather than adding one, read the merged result:
+  a concurrent edit to the same entry is kept twice rather than flagged.
+  Ordering within a section is not guaranteed either, so put an entry where it
+  reads best rather than assuming its position survives.
 - **Anonymize commit messages and PR descriptions** - this repository is public,
   so text pushed to GitHub must never contain real instrument names or IDs,
   customer names, internal or customer server hostnames, tailnet/LAN addresses,
