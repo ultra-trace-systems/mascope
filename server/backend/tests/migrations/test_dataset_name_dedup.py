@@ -63,6 +63,7 @@ _WORKSPACES = [
     ("ws-acq", "Dedup Acquisition"),
     ("ws-pad", "Dedup Padding"),
     ("ws-clean", "Dedup Clean"),
+    ("ws-run", "Dedup Run"),
     ("ws-uni", "Dedup Unicode"),
 ]
 
@@ -96,6 +97,14 @@ _DATASETS = [
     # even read by the migration.
     ("ds-cln-a", "ws-clean", "Alpha", "ANALYSIS", None, _utc(2020)),
     ("ds-cln-b", "ws-clean", "Beta", "ANALYSIS", None, _utc(2021)),
+    # One name three times over - the shape an automation script produces, and
+    # the only shape that renames twice inside one workspace. Each rename has
+    # to see the suffix the previous one took: hand out " (2)" twice and
+    # CREATE UNIQUE INDEX aborts the upgrade.
+    ("ds-run-1", "ws-run", "Untitled", "ANALYSIS", None, _utc(2020)),
+    ("ds-run-2", "ws-run", "untitled", "ANALYSIS", None, _utc(2021)),
+    ("ds-run-3", "ws-run", "UNTITLED", "ANALYSIS", None, _utc(2022)),
+    ("ds-run-4", "ws-run", "Untitled ", "ANALYSIS", None, _utc(2023)),
 ]
 
 # Pairs Postgres folds together but Python's `str.lower()` keeps apart. First:
@@ -269,9 +278,15 @@ def test_acquisition_names_still_reserve_a_suffix(
     """A name only an ACQUISITION row holds is still not free to hand out.
 
     The index would allow "Batch (2)" here, but the controller's check does
-    not ignore ACQUISITION rows, so a rename onto that name would produce a
-    dataset the user could not then rename to anything else. The duplicate
-    skips past it to " (3)".
+    not ignore ACQUISITION rows, so the migration would be handing out a name
+    `create_dataset` itself refuses - and the workspace list would go on
+    showing two entries a user cannot tell apart, which is the whole point of
+    the rename. The duplicate skips past it to " (3)".
+
+    (The row would not be stuck: `update_dataset` skips the check when the
+    submitted name is the row's own, and any other free name is accepted, so
+    it stays renameable. The reservation is about not creating the confusing
+    state in the first place.)
     """
     assert migrated_names["ds-acq-keep"] == "Batch"
     assert migrated_names["ds-acq-dup"] == "batch (3)"
@@ -429,3 +444,32 @@ def test_rename_report_keeps_what_it_escapes() -> None:
 
     # A clean database renames nothing and must print nothing at all.
     assert MIGRATION._rename_report([]) == []
+
+
+def test_a_name_repeated_many_times_gets_distinct_suffixes(
+    migrated_names: dict[str, str],
+) -> None:
+    """Every duplicate of one name gets its own suffix, in age order.
+
+    This is the shape that breaks if a rename cannot see what the previous
+    one took: four rows sharing the canonical key `untitled`, so three of
+    them are renamed within a single workspace. Handing " (2)" out twice
+    would satisfy every other case in this module and still abort
+    `CREATE UNIQUE INDEX` at the end of the upgrade.
+
+    Case and padding do not separate them - `lower(btrim(...))` folds all
+    four together - so the suffixes have to come from the reservation set,
+    not from the spelling.
+
+    :param migrated_names: dataset_id -> name after the upgrade
+    """
+    assert migrated_names["ds-run-1"] == "Untitled"
+    assert migrated_names["ds-run-2"] == "untitled (2)"
+    assert migrated_names["ds-run-3"] == "UNTITLED (3)"
+    # The stem is rstripped before the suffix, so the padded row loses its
+    # trailing space rather than carrying it into the middle of the new name.
+    assert migrated_names["ds-run-4"] == "Untitled (4)"
+
+    renamed = [migrated_names[f"ds-run-{i}"] for i in range(1, 5)]
+    keys = {name.strip().lower() for name in renamed}
+    assert len(keys) == 4, f"suffixes collide: {renamed}"

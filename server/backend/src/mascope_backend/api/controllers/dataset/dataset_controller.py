@@ -215,7 +215,18 @@ async def get_datasets(
 
         # Step 1: Filter by provided parameters
         if dataset_name:
-            stmt = stmt.filter(Dataset.dataset_name == dataset_name)
+            # Matched on the same canonical key as the uniqueness check and
+            # `uq_dataset_workspace_name_ci`. An exact comparison would miss
+            # rows written before names were stripped on the way in, and those
+            # are exactly the rows a client cannot reach any other way: the
+            # validator strips this filter's value, and `DatasetRead` strips
+            # the name it renders, so the padded stored form is not something
+            # a caller can send back. Two names that read alike in the
+            # workspace list are one name here too.
+            stmt = stmt.filter(
+                func.lower(func.btrim(Dataset.dataset_name))
+                == func.lower(func.btrim(dataset_name))
+            )
 
         if dataset_type:
             stmt = stmt.filter(Dataset.dataset_type.in_(dataset_type))

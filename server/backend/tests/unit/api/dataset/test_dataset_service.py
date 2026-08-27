@@ -1077,3 +1077,43 @@ async def test_create_dataset_rejects_a_padded_look_alike(
 
     assert exc_info.value.status_code == 409
     assert "already exists" in exc_info.value.user_message
+
+
+@pytest.mark.asyncio
+async def test_name_filter_finds_a_row_stored_with_padding(
+    mock_emit_dataset, unit_test_workspace, async_session_factory
+):
+    """The listing filter matches on the same key as the uniqueness check.
+
+    Names are only stripped on the way in from this change onwards, so an
+    older row can carry padding. `DatasetRead` renders it stripped and the
+    query validator strips the filter value, so an exact comparison would
+    leave that row addressable by no value of `dataset_name` at all - a
+    client reading a name out of the list and feeding it back would get
+    nothing. Matching on `lower(btrim(...))` keeps the round trip working,
+    and folds case for the same reason the uniqueness check does.
+
+    :param mock_emit_dataset: Patches the controller's emit_record_* calls
+    :param unit_test_workspace: The workspace the padded row is created in
+    :param async_session_factory: Factory for creating database sessions
+    """
+    name = f"filter-{gen_test_id(8)}"
+    dataset_id = gen_test_id()
+    async with async_session_factory() as session:
+        session.add(
+            Dataset(
+                dataset_id=dataset_id,
+                workspace_id=unit_test_workspace.workspace_id,
+                dataset_name=f"  {name}  ",
+                dataset_utc_created=datetime.now(timezone.utc),
+            )
+        )
+        await session.commit()
+
+    for probe in (name, name.upper()):
+        result = await dataset_service.get_datasets(
+            workspace_id=unit_test_workspace.workspace_id,
+            dataset_name=probe,
+        )
+        found = [row["dataset_id"] for row in result["data"]]
+        assert dataset_id in found, f"{probe!r} did not find the padded row"
