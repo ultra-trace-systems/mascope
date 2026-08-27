@@ -4,10 +4,13 @@ Mass-based compounds - a bare number such as ``"136.1252"`` in
 ``target_compound_formula`` instead of a composition - were retired with the
 molmass fork: ions and isotopes are now computed from the formula, so a mass
 alone can never produce an isotope pattern. ``validate_compound_formula``
-already refuses them, but only on the Pydantic request models. Four call sites
-construct ``TargetCompound`` directly through the ORM, and nothing at all
-guards a db script, an SDK caller or hand-written SQL, so the rule was
-advisory rather than enforced.
+already refuses them, but only on the Pydantic request models, so the rule
+holds for anything arriving over HTTP and for nothing else. A db script,
+hand-written SQL or a restored dump from an older server was never checked,
+which left the rule advisory rather than enforced. (The four call sites that
+build ``TargetCompound`` through the ORM are not the hole: three build
+transient objects that are never persisted, and the one that does persist sits
+behind ``TargetCompoundBase``, which carries the validator.)
 
 A fleet sweep found the deprecation had not actually taken effect anywhere it
 mattered: two production databases still held such rows, one of them with
