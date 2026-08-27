@@ -408,7 +408,8 @@ class UserManager(IntegerIDMixin, BaseUserManager[User, int]):
                     return
 
                 cookie = response.headers["set-cookie"]
-                jwt_token = cookie.split("mascope_auth=")[1].split(";")[0]
+                prefix = f"{auth_settings.COOKIE_NAME}="
+                jwt_token = cookie.split(prefix)[1].split(";")[0]
 
                 # Authenticate the socket connection
                 await authenticate_socket_connection(

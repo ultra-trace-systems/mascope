@@ -463,6 +463,18 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
 
 ### Fixed
 
+- Several dev instances on one hostname no longer sign each other out. Cookies
+  are not scoped by port, so every stack served from `localhost` - each
+  worktree's `mascope dev run --instance`, and a local demo stack beside them -
+  wrote and read one `mascope_auth` cookie, while each signs its sessions with
+  its own secret. Logging into one therefore invalidated the session in the
+  others: the app reported a successful login and the next request answered
+  401. In dev the session cookie and the half-finished-login cookie now carry
+  the runtime env in their names (`mascope_auth_wt-my-feature`), so each
+  instance keeps its own session. Production is unchanged - the name stays
+  exactly `mascope_auth`, so upgrading signs nobody out - and a dev browser
+  holding the old cookie just logs in once more.
+
 - A raw file whose own m/z spacing is coarser than the peak fitter's window no
   longer fails to process. The instrument-function fit derives a minimum peak
   separation in samples from `dmz / median(diff(mz))`; on a coarse spectrum

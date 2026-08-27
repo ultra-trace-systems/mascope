@@ -52,8 +52,9 @@ async def get_enabled_backends(request: Request) -> list[AuthenticationBackend]:
     Determines the appropriate authentication backend to use based on the request's credentials.
 
     Authentication options:
-    - Cookie-based JWT: Used for the Mascope web application. If the `mascope_auth` cookie is present, this backend is selected.
-    - Access token-based authentication: Intended for Jupyter server or external API access. Enabled if an 'Authorization' header with a Bearer token is found, but the 'mascope_auth' cookie is absent.
+    - Cookie-based JWT: Used for the Mascope web application. If the auth cookie
+      (`auth_settings.COOKIE_NAME`) is present, this backend is selected.
+    - Access token-based authentication: Intended for Jupyter server or external API access. Enabled if an 'Authorization' header with a Bearer token is found, but the auth cookie is absent.
 
     If neither of these conditions is met:
     - Logs an error and defaults to the cookie-based JWT backend.
@@ -67,7 +68,7 @@ async def get_enabled_backends(request: Request) -> list[AuthenticationBackend]:
     runtime.logger.trace(f"Request scope:\n{pretty_repr(request.scope)}")
     runtime.logger.trace(f"Request headers:\n{pretty_repr(dict(request.headers))}")
 
-    cookie_auth = request.cookies.get("mascope_auth")
+    cookie_auth = request.cookies.get(auth_settings.COOKIE_NAME)
     auth_header = request.headers.get("authorization")
     request_service_name = request.headers.get("x-service-name")
 
