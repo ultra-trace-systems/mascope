@@ -924,6 +924,94 @@ def _load_deduplicated_peak_data(base_filename: str, mzs_arr: np.ndarray) -> xr.
     return peak_timeseries.isel(mz=np.sort(unique_idx))
 
 
+def _stored_scan_positions(
+    live_time: np.ndarray,
+    stored_time: np.ndarray,
+) -> np.ndarray | None:
+    """Locate each freshly read scan on the peak store's own time axis.
+
+    The store's time axis is fixed when peak detection allocates it, while the
+    scans a reader selects are decided anew on every read - a file whose first
+    scan reads as a TIC outlier loses it, and that rule has not always existed.
+    Where the two disagree, the freshly read scans have to be placed by
+    timestamp rather than by position.
+
+    :param live_time: Scan timestamps [s] just read from the sample file
+    :type live_time: np.ndarray
+    :param stored_time: Scan timestamps [s] the peak store was allocated with
+    :type stored_time: np.ndarray
+    :raises ValueError: If a freshly read scan has no counterpart in the store,
+        or two of them claim the same one - the store describes a different
+        acquisition and only re-running peak detection can repair it
+    :return: Index of each live scan within the stored axis, or None when the
+        two axes are identical and no placement is needed
+    :rtype: np.ndarray | None
+    """
+    live = np.asarray(live_time, dtype=float)
+    stored = np.asarray(stored_time, dtype=float)
+
+    if live.shape == stored.shape and np.array_equal(live, stored):
+        return None
+
+    def _mismatch(reason: str) -> ValueError:
+        return ValueError(
+            f"The peak store's {stored.size} scans cannot be matched to the "
+            f"{live.size} scans read from the sample file ({reason}). Re-run "
+            "peak detection for this sample file to rebuild the store."
+        )
+
+    # Every comparison below is against a timestamp, and a comparison with NaN
+    # is False - so a single non-finite scan time would pass each check rather
+    # than fail it, and the values would be placed on a guess.
+    if not (live.size and stored.size):
+        raise _mismatch("one of them holds no scans")
+    if not (np.isfinite(live).all() and np.isfinite(stored).all()):
+        raise _mismatch("some of the scan times are not finite")
+    if np.any(np.diff(stored) < 0):
+        raise _mismatch("the stored scan times are out of order")
+
+    # Nearest stored scan for each live scan, within half of the tightest
+    # stored spacing so a scan can never be claimed by its neighbour's slot.
+    gaps = np.diff(stored)
+    tolerance = 0.5 * gaps.min() if gaps.size else 0.0
+    right = np.searchsorted(stored, live).clip(0, stored.size - 1)
+    left = (right - 1).clip(0, stored.size - 1)
+    take_left = np.abs(stored[left] - live) <= np.abs(stored[right] - live)
+    positions = np.where(take_left, left, right)
+
+    if np.any(np.abs(stored[positions] - live) > tolerance):
+        raise _mismatch("their scan times do not line up")
+    if np.unique(positions).size != positions.size:
+        raise _mismatch("several of them fall on the same stored scan")
+
+    return positions
+
+
+def _place_on_stored_scans(
+    values: np.ndarray,
+    positions: np.ndarray,
+    scan_count: int,
+) -> np.ndarray:
+    """Spread per-scan values across the store's full time axis.
+
+    Stored scans the current selection no longer covers keep the store's own
+    "no data for this scan" value, NaN, so the readers that average over time
+    skip them instead of averaging in a measurement that was never made.
+
+    :param values: Per-scan values on the live time axis, shaped (mz, live)
+    :type values: np.ndarray
+    :param positions: Index of each live scan within the stored axis
+    :type positions: np.ndarray
+    :param scan_count: Number of scans on the stored time axis
+    :type scan_count: int
+    :return: Values shaped (mz, scan_count)
+    :rtype: np.ndarray
+    """
+    placed = np.full((values.shape[0], scan_count), np.nan, dtype=np.float64)
+    placed[:, positions] = values
+    return placed
+
+
 async def load_peak_timeseries(
     base_filename: str,
     mzs: list[float],
@@ -991,10 +1079,36 @@ async def load_peak_timeseries(
         new_peak_heights = new_peak_timeseries_norm * sum_peak_heights[:, np.newaxis]
 
         # Determine sparsity: fraction of scans where peak_heights are not
-        # positive. NaN values count as missing (sparse) because NaN > 0 is False
+        # positive. NaN values count as missing (sparse) because NaN > 0 is
+        # False. Measured over the scans that were read, before any are spread
+        # onto the stored axis below, so a scan the store holds but the reader
+        # no longer selects does not count against every peak in the file.
         sparsity_values = (
             np.sum(~(new_peak_heights > 0), axis=1) / new_peak_heights.shape[1]
         )
+
+        # The store is written scan-by-scan into a fixed-width axis, so the
+        # values have to span exactly the scans it was allocated with.
+        scan_positions = _stored_scan_positions(
+            new_peak_timeseries.time.values, time_coords
+        )
+        if scan_positions is not None:
+            # INFO: a data quirk of the file, hit on every read of it (as with
+            # the first-scan-outlier exclusion in mascope_thermo that usually
+            # causes it)
+            runtime.logger.info(
+                f"The peak store of '{base_filename}' was allocated with "
+                f"{time_coords.size} scans and the file now reads as "
+                f"{new_peak_timeseries.time.size}; "
+                f"{time_coords.size - scan_positions.size} stored scan(s) are "
+                "left as no-data."
+            )
+            new_peak_areas = _place_on_stored_scans(
+                new_peak_areas, scan_positions, time_coords.size
+            )
+            new_peak_heights = _place_on_stored_scans(
+                new_peak_heights, scan_positions, time_coords.size
+            )
 
         # This contains only the changed values, fully in memory
         return xr.Dataset(

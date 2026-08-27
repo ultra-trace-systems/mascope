@@ -7,6 +7,8 @@ import numpy as np
 import pytest
 import xarray as xr
 
+import mascope_signal.compute as m_compute
+
 
 SIGNAL_TEST_FILENAME = "OrbiTest_1001.01.01_12h00m00s_TestFile"
 
@@ -33,7 +35,9 @@ def mock_runtime(temp_filestore):
         mock_name_runtime.filestore = mock_filestore
         mock_io_runtime.filestore = mock_filestore
         mock_io_runtime.logger = mock_logger
-        mock_compute_runtime.logger = mock_logger
+        # Its own logger, not the shared one: a test that counts what compute
+        # logged must not also be counting what the file library logged
+        mock_compute_runtime.logger = MagicMock()
 
         yield mock_name_runtime
 
@@ -57,6 +61,67 @@ def sample_file_path(temp_filestore):
     yield sample_path
 
     shutil.rmtree(sample_path, ignore_errors=True)
+
+
+@pytest.fixture
+def compute_logger(mock_runtime):
+    """The logger `mascope_signal.compute` writes through.
+
+    `mock_runtime` patches the module's whole runtime, so the library never
+    reaches the real sink and `caplog` sees nothing - assert on this instead.
+    """
+    return m_compute.runtime.logger
+
+
+@pytest.fixture
+def write_peak_store(sample_file_path):
+    """Factory writing a peak_timeseries.zarr for the test sample file.
+
+    Mirrors what peak detection allocates: a store carrying the scan axis of
+    the acquisition, per-peak summed intensities, and every timeseries still
+    uncomputed - the state `load_peak_timeseries` is asked to fill in.
+    """
+
+    def _write(
+        scan_times: np.ndarray,
+        mz_values: np.ndarray,
+        sum_peak_areas: np.ndarray,
+        sum_peak_heights: np.ndarray,
+    ) -> str:
+        n_mz = len(mz_values)
+        n_time = len(scan_times)
+        store = xr.Dataset(
+            data_vars={
+                "is_satellite": (["mz"], np.zeros(n_mz, dtype=bool)),
+                "is_weak": (["mz"], np.zeros(n_mz, dtype=bool)),
+                "is_timeseries_computed": (["mz"], np.zeros(n_mz, dtype=bool)),
+                "sparsity": (["mz"], np.zeros(n_mz, dtype=np.float64)),
+                "peak_areas": (["mz", "time"], np.full((n_mz, n_time), np.nan)),
+                "peak_heights": (["mz", "time"], np.full((n_mz, n_time), np.nan)),
+                "sum_peak_areas": (["mz"], np.asarray(sum_peak_areas, dtype=float)),
+                "sum_peak_heights": (["mz"], np.asarray(sum_peak_heights, dtype=float)),
+                "signal_to_noise": (["mz"], np.full(n_mz, 50.0)),
+                "polarity": (["mz"], np.array(["-"] * n_mz, dtype="<U1")),
+            },
+            coords={
+                "mz": np.asarray(mz_values, dtype=float),
+                "time": np.asarray(scan_times, dtype=float),
+                "tof": (["mz"], np.linspace(10.0, 50.0, n_mz)),
+                "peak_id": (["mz"], [f"peak_{i:04d}" for i in range(n_mz)]),
+            },
+        )
+        path = os.path.join(sample_file_path, "peak_timeseries.zarr")
+        store.to_zarr(
+            path,
+            mode="w",
+            encoding={
+                "peak_areas": {"chunks": (n_mz, n_time)},
+                "peak_heights": {"chunks": (n_mz, n_time)},
+            },
+        )
+        return path
+
+    return _write
 
 
 @pytest.fixture
