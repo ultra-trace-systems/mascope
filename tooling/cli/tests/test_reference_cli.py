@@ -12,13 +12,25 @@ things: the default (unconfigured = everything matched, and no extra query
 paid for), what a configured allowlist reports per active source, and that the
 full licence-tag vocabulary is printed either way - the gate is an exact string
 match, so a tag the operator never saw is a tag they drop without noticing.
+
+The last three tests leave the CLI and read the documentation instead. The
+vocabulary is enumerated by hand in four places, and an exact-match gate turns
+a tag missing from any of them into a source dropped in silence. Each place is
+checked on its own enumeration and never on the copy-paste example, which
+already spells out five of the six tags and would otherwise answer for prose
+that has gone stale; the example is then checked separately, against the
+registry.
 """
+
+import re
+from pathlib import Path
 
 import pytest
 from sqlalchemy import create_engine
 from typer.testing import CliRunner
 
 import mascope_cli.cmd.reference.main as reference_main
+import mascope_reference.sources as reference_sources
 from mascope_cli.cmd.reference.main import reference_app
 from mascope_cli.runtime import runtime
 
@@ -289,31 +301,166 @@ def test_status_names_the_tags_a_gate_leaves_out(mirror, gate):
     assert "custom custom NOT matched" in flat
 
 
-def test_the_documented_tag_vocabulary_covers_every_adapter():
-    """The docs and both toml comments list the tags by hand, so they can go
-    stale the moment an adapter is added - the exact silent-shrink this section
-    exists to prevent, one release later. This fails the suite instead.
+# The copy-paste allowlist example, in every place that carries one. Written as
+# an assignment everywhere, so one marker finds it and so that what an operator
+# pastes carries the key name too.
+_EXAMPLE = 'reference_licenses = ["'
+# Any written-out list of quoted tags: the example above, and the narrower
+# counter-example docs/maintaining.md argues against.
+_TAG_LIST = re.compile(r'\[\s*"')
 
-    Both toml copies are checked, since they ship separately and have to say
-    the same thing: the repo root one and the copy `mascope init` writes.
+_ROOT = Path(__file__).parents[3]
+# Both toml copies wrap their enumeration in the same two sentences.
+_TOML_BOUNDS = ("is dropped silently.", "). `mascope")
+
+# Every hand-written place that has to name the whole vocabulary, as
+# label -> (file, the markers its enumeration sits between).
+#
+# The bounds pick out the enumeration itself rather than the section around it,
+# and that matters twice over. The copy-paste example spells out five of the
+# six tags, so a region reaching it is satisfied by the example alone and
+# cannot see the enumeration lose a tag - the example is checked separately,
+# against the registry. And docs/maintaining.md says `custom` four more times
+# in the prose around its table, enough to stand in for a deleted row.
+#
+# Off this test's own location, not the installed package's: the repo root
+# copies only exist in a monorepo checkout. Both toml copies are here because
+# they ship separately and have to say the same thing - the repo root one and
+# the copy `mascope init` writes.
+_PLACES: dict[str, tuple[Path, str, str]] = {
+    "base.mascope.toml": (_ROOT / "base.mascope.toml", *_TOML_BOUNDS),
+    "tooling/cli/.../data/base.mascope.toml": (
+        Path(reference_main.__file__).parents[2] / "data" / "base.mascope.toml",
+        *_TOML_BOUNDS,
+    ),
+    "docs/maintaining.md": (
+        _ROOT / "docs" / "maintaining.md",
+        "| Licence tag | Default for | Note |",
+        "\n\n",
+    ),
+    "libraries/runtime/.../config.py field comment": (
+        _ROOT / "libraries" / "runtime" / "src" / "mascope_runtime" / "config.py",
+        "a result to say why.",
+        "). Write the allowlist",
+    ),
+}
+
+# The labels a vocabulary failure can name, spelled out so that a place dropped
+# from _PLACES cannot quietly stop being checked.
+_DOCUMENTED_PLACES = [
+    "base.mascope.toml",
+    "docs/maintaining.md",
+    "libraries/runtime/.../config.py field comment",
+    "tooling/cli/.../data/base.mascope.toml",
+]
+
+
+class _UnlistedAdapter:
+    """A source registered without its tag being documented anywhere.
+
+    Adding a source is a one-line registration in ``mascope_reference.sources``
+    and nothing else in the pipeline changes - which is why the hand-written
+    vocabulary can rot behind it unnoticed.
     """
-    from pathlib import Path
 
-    copies = {
-        "tooling/cli/.../data/base.mascope.toml": (
-            Path(reference_main.__file__).parents[2] / "data" / "base.mascope.toml"
-        ),
-        # Off this test's own location, not the installed package's: the repo
-        # root copy only exists in a monorepo checkout.
-        "base.mascope.toml": Path(__file__).parents[3] / "base.mascope.toml",
-    }
-    tags = list(reference_main._registered_licenses())
+    name = "fake-source"
+    license = "unlisted-licence"
 
-    for label, path in copies.items():
-        block = path.read_text(encoding="utf-8")
-        block = block.split("# Reference chemistry:")[1].split("# scripts")[0]
-        missing = [tag for tag in tags if tag not in block]
-        assert not missing, (
-            f"licence tags missing from {label}: {missing}. Add them there, in "
-            "docs/maintaining.md and in the config.py field comment."
+
+def _documented_regions() -> dict[str, str]:
+    """Label -> the hand-written enumeration that has to name every tag."""
+    regions = {}
+    for label, (path, start, end) in _PLACES.items():
+        text = path.read_text(encoding="utf-8")
+        assert start in text, f"{label} no longer contains {start!r}"
+        body = text.split(start, 1)[1]
+        assert end in body, f"{label} no longer contains {end!r} after {start!r}"
+        region = body.split(end, 1)[0]
+        assert not _TAG_LIST.search(region), (
+            f"the {label} region now reaches a written-out tag list. Narrow it "
+            "back to the enumeration: a region holding the copy-paste example "
+            "passes on the example's tags and stops guarding anything."
         )
+        regions[label] = region
+    return regions
+
+
+def _tags_undocumented(tags: list[str]) -> dict[str, list[str]]:
+    """Which of ``tags`` each place fails to name in its enumeration.
+
+    :param tags: Licence tags every place is expected to enumerate.
+    :return: Label -> the tags missing from it; places naming them all are
+        omitted.
+    """
+    missing = {}
+    for label, region in _documented_regions().items():
+        absent = [tag for tag in tags if tag not in region]
+        if absent:
+            missing[label] = absent
+    return missing
+
+
+def test_the_documented_tag_vocabulary_covers_every_adapter():
+    """Four places list the tags by hand, so they can go stale the moment an
+    adapter is added - the exact silent-shrink this section exists to prevent,
+    one release later. This fails the suite instead.
+    """
+    tags = list(reference_main._registered_licenses())
+    missing = _tags_undocumented(tags)
+    assert not missing, (
+        f"licence tags missing from the hand-written vocabulary: {missing}. "
+        "Enumerate each one where its place lists them: the 'All six' sentence "
+        "in both base.mascope.toml copies, the tag table in "
+        "docs/maintaining.md, and the reference_licenses field comment in "
+        "config.py. Adding it to a copy-paste example does not count."
+    )
+
+
+def test_the_vocabulary_guard_fails_on_an_undocumented_adapter(monkeypatch):
+    """The guard's own coverage, since what it reads is prose rather than code
+    it runs: a source registered with a tag nothing documents has to fail it,
+    in every one of the four places, or the guard is decoration.
+    """
+    monkeypatch.setitem(
+        reference_sources._ADAPTERS, _UnlistedAdapter.name, _UnlistedAdapter()
+    )
+    tags = list(reference_main._registered_licenses())
+    assert _UnlistedAdapter.license in tags
+
+    missing = _tags_undocumented(tags)
+    assert sorted(missing) == _DOCUMENTED_PLACES, missing
+    for label, absent in missing.items():
+        assert absent == [_UnlistedAdapter.license], label
+
+
+def test_the_allowlist_example_names_every_tag_it_does_not_decline():
+    """The example is a written-out list, so it freezes the vocabulary the same
+    way an operator's own list does - and it is the list they paste. A source
+    added later brings a tag the example does not name, and pasting it drops
+    that source silently. It declines one tag on purpose; it has to name every
+    other, and the four copies of it have to agree.
+    """
+    tags = set(reference_main._registered_licenses())
+    examples = {}
+
+    for label, (path, _start, _end) in _PLACES.items():
+        lines = [
+            line
+            for line in path.read_text(encoding="utf-8").splitlines()
+            if _EXAMPLE in line
+        ]
+        assert len(lines) == 1, f"expected one allowlist example in {label}: {lines}"
+        listed = re.findall(r'"([^"]+)"', lines[0])
+        examples[label] = listed
+
+        unknown = sorted(set(listed) - tags)
+        assert not unknown, f"{label} example names tags no adapter carries: {unknown}"
+        declined = sorted(tags - set(listed))
+        assert len(declined) == 1, (
+            f"the {label} example leaves out {declined}; it is meant to decline "
+            "exactly one tag and name every other. A source added since? Add "
+            "its tag - an operator who pastes this drops that source silently."
+        )
+
+    agreed = {tuple(listed) for listed in examples.values()}
+    assert len(agreed) == 1, f"the allowlist example has drifted apart: {examples}"
