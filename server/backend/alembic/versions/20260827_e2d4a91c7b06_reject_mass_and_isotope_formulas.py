@@ -35,7 +35,7 @@ such compounds are in active production use, against a single bracket one
 fleet-wide, itself an unused duplicate of a caret compound.
 
 Revision ID: e2d4a91c7b06
-Revises: a7f3c2e9b514
+Revises: b8c5e1f4a7d2
 Create Date: 2026-08-27 09:00:00.000000
 
 """
@@ -48,7 +48,7 @@ from sqlalchemy import text
 
 # revision identifiers, used by Alembic.
 revision: str = "e2d4a91c7b06"
-down_revision: Union[str, Sequence[str], None] = "a7f3c2e9b514"
+down_revision: Union[str, Sequence[str], None] = "b8c5e1f4a7d2"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
