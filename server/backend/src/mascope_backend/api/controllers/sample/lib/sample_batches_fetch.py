@@ -47,6 +47,14 @@ async def fetch_dataset_sample_batch_ids(dataset_id: str) -> list[str]:
         result = await session.execute(
             select(SampleBatch.sample_batch_id)
             .where(SampleBatch.dataset_id == dataset_id)
-            .order_by(desc(SampleBatch.sample_batch_utc_created))
+            # NULLS LAST because the column is nullable and Postgres sorts
+            # DESC as NULLS FIRST: a legacy row with no creation time would
+            # otherwise be handled first, which is the opposite of "newest
+            # first". The id breaks ties so batches created in the same second
+            # keep a stable order between runs.
+            .order_by(
+                desc(SampleBatch.sample_batch_utc_created).nulls_last(),
+                SampleBatch.sample_batch_id,
+            )
         )
         return list(result.scalars().all())
