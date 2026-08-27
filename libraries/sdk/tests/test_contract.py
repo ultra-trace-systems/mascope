@@ -163,8 +163,19 @@ class TestClientContract:
             peaks.columns
         )
         assert peaks["target_isotope_id"].notna().any(), "expected matched peaks"
-        assert "target_collection_names" in peaks.columns
         matched = peaks[peaks["target_isotope_id"].notna()]
+
+        # `target_collection_names` is derived client-side, from the SDK's own
+        # `match_keys` list - so an SDK older than the column produces peaks
+        # without it against a perfectly healthy server. The nightly runs this
+        # file against the *published* SDK, so this has to be a probe like the
+        # other post-dating surfaces, not an assertion. The ids come from the
+        # server and are asserted either way.
+        assert "target_collection_ids" in peaks.columns
+        ids = matched["target_collection_ids"].explode().dropna()
+        assert not ids.empty, "matched peaks should carry their collection ids"
+
+        _skip_unless_column(peaks, "target_collection_names")
         names = matched["target_collection_names"].explode().dropna()
         assert not names.empty, "matched peaks should name their collections"
 
@@ -550,6 +561,18 @@ def _skip_unless_attr(obj, name: str) -> None:
     """Skip when the installed SDK predates attribute *name* on *obj*."""
     if not hasattr(obj, name):
         pytest.skip(f"installed mascope_sdk predates .{name}")
+
+
+def _skip_unless_column(frame, name: str) -> None:
+    """Skip when the installed SDK predates a client-derived column.
+
+    The frame comes back from a healthy server either way: columns the SDK
+    assembles itself (see `resources/samples.py`'s `match_keys`) are absent
+    only because the installed SDK is older than they are, which is exactly
+    what the nightly published-SDK run must not report as a regression.
+    """
+    if name not in frame.columns:
+        pytest.skip(f"installed mascope_sdk predates the {name} column")
 
 
 def _skip_unless_param(func, name: str) -> None:
