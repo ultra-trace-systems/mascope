@@ -92,6 +92,9 @@ async def rematch_dataset_route(
         independent_transaction=True,
         user_id=user.id,
         process_id=process_id,
+        # Lets a refresh that meets peak data from an older version of
+        # Mascope ask the file converter to rebuild it for this user
+        user=user,
     )
 
     total_batches = len(sample_batch_ids)
@@ -145,6 +148,9 @@ async def rematch_batches_route(
         independent_transaction=True,
         user_id=user.id,
         process_id=process_id,
+        # Lets a refresh that meets peak data from an older version of
+        # Mascope ask the file converter to rebuild it for this user
+        user=user,
     )
 
     total_batches = len(body.sample_batch_ids)
@@ -224,6 +230,9 @@ async def rematch_batch_route(
         independent_transaction=True,
         user_id=user.id,
         process_id=process_id,
+        # Lets a refresh that meets peak data from an older version of
+        # Mascope ask the file converter to rebuild it for this user
+        user=user,
     )
     return {
         "message": f"Rematching sample batch '{sample_batch.sample_batch_name}'...",
@@ -260,6 +269,9 @@ async def match_compute_batch_route(
         independent_transaction=True,
         user_id=user.id,
         process_id=process_id,
+        # Lets a refresh that meets peak data from an older version of
+        # Mascope ask the file converter to rebuild it for this user
+        user=user,
     )
     return {
         "message": (
