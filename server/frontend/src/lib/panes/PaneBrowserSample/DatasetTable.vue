@@ -65,8 +65,9 @@ const tableHeight = computed(() => ((height.value - padding) * app.ui.split.top)
 
         <p>Click on a dataset to open it and see the batches within.</p>
 
-        <p>Right click on a dataset to cut, edit or delete it. Right click
-        on empty space to paste a cut dataset into this workspace.</p>
+        <p>Right click on a dataset to cut, edit or delete it, or to refresh
+        the matches of every batch it holds. Right click on empty space to
+        paste a cut dataset into this workspace.</p>
       `,
         { doc: app.ui.help.docUrl('concepts/#the-data-hierarchy') }
       )

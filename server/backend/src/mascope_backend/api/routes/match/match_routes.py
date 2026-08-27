@@ -3,6 +3,7 @@ from typing import Annotated
 from fastapi import APIRouter, BackgroundTasks, Depends
 from fastapi.params import Query
 
+from mascope_backend.api.controllers.dataset.dataset_controller import get_dataset
 from mascope_backend.api.controllers.match.match_controller import (
     match_compute_batch,
     match_compute_sample,
@@ -14,6 +15,7 @@ from mascope_backend.api.controllers.match.match_controller import (
     rematch_sample,
 )
 from mascope_backend.api.controllers.sample.lib.sample_batches_fetch import (
+    fetch_dataset_sample_batch_ids,
     fetch_sample_batch,
 )
 from mascope_backend.api.controllers.samples.lib.samples_fetch import fetch_sample
@@ -24,6 +26,7 @@ from mascope_backend.api.new.auth.dependencies import admin_user, current_active
 from mascope_backend.api.new.workspaces.dependencies import (
     check_batch_access_bulk,
     require_batch_role,
+    require_dataset_role,
     require_sample_role,
 )
 from mascope_backend.db import User
@@ -31,6 +34,75 @@ from mascope_backend.db.id import gen_id
 
 
 match_router = APIRouter(prefix="/api/match", tags=["Match Management"])
+
+
+@match_router.post("/rematch/dataset/{dataset_id}")
+@api_route(status_code=202)
+async def rematch_dataset_route(
+    dataset_id: str,
+    background_tasks: BackgroundTasks,
+    full_remove: Annotated[
+        bool,
+        Query(
+            description="If True, removes all existing matches before recomputing. "
+            "If False, removes only orphaned matches.",
+        ),
+    ] = False,
+    force: Annotated[
+        bool,
+        Query(
+            description="If True, bypasses status checks and forces rematch",
+        ),
+    ] = False,
+    user: User = Depends(current_active_user),
+    membership=Depends(require_dataset_role("editor")),
+):
+    """
+    Rematch every sample batch in a dataset, one batch after another.
+
+    The same operation as rematching each batch by hand, applied to the whole
+    dataset: batches are processed newest first - the recent end of a dataset
+    is the end someone is usually waiting on - and each one decides for itself
+    whether it has anything to do, so batches that are already matched are
+    skipped and a batch that is mid-processing is reported as locked rather
+    than interrupted.
+
+    :param dataset_id: The unique identifier of the dataset.
+    :type dataset_id: str
+    :param user: The current authenticated user. Requires workspace editor role.
+    :type user: User
+    :param membership: Workspace membership with editor role on the dataset.
+    :type membership: WorkspaceMember
+    """
+    # Verify the existence of the dataset (a superuser passes the ACL check
+    # above whether or not the dataset is real, so this is what raises 404)
+    dataset = await get_dataset(dataset_id)
+    dataset_name = dataset["data"]["dataset_name"]
+
+    sample_batch_ids = await fetch_dataset_sample_batch_ids(dataset_id)
+
+    # Get data for notifications
+    process_id = gen_id(8)
+
+    background_tasks.add_task(
+        rematch_batches,
+        sample_batch_ids=sample_batch_ids,
+        full_remove=full_remove,
+        force=force,
+        independent_transaction=True,
+        user_id=user.id,
+        process_id=process_id,
+    )
+
+    total_batches = len(sample_batch_ids)
+    return {
+        "message": (
+            f"Rematching {total_batches} sample "
+            f"batch{'es' if total_batches != 1 else ''} "
+            f"in dataset '{dataset_name}'..."
+        ),
+        "process_id": process_id,
+    }
 
 
 @match_router.post("/rematch/batches")

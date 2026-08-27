@@ -27,9 +27,6 @@ from mascope_backend.api.controllers.sample.lib.sample_modified_timestamps_manag
     update_sample_modified_timestamps,
 )
 from mascope_backend.api.controllers.samples.lib.samples_fetch import fetch_sample
-from mascope_backend.api.controllers.samples.samples_controller import (
-    get_samples,
-)
 from mascope_backend.api.controllers.target.lib.fetch.target_isotopes_fetch import (
     fetch_existing_main_isotope_references,
     fetch_sample_unmatched_target_isotopes,
@@ -807,6 +804,28 @@ async def rematch_batches(
     :rtype: dict
     """
     total_batches_count = len(sample_batch_ids)
+    if not total_batches_count:
+        # Nothing to iterate over - a dataset-wide refresh of a dataset that
+        # holds no batches lands here. Reported as a plain result rather than
+        # falling through to the "all batches failed" branch below, which
+        # would call an empty run a failure.
+        message = "No sample batches to rematch."
+        runtime.logger.info(message)
+        return {
+            "message": message,
+            "data": {
+                "processed_batches": {"total_batches_count": 0},
+                "processed_samples": {
+                    "removed_match_isotopes_count": 0,
+                    "computed_samples_count": 0,
+                    "failed_samples_count": 0,
+                    "skipped_samples_count": 0,
+                    "total_samples_count": 0,
+                },
+            },
+            "_notification_data": {"affected_sample_batch_ids": []},
+        }
+
     runtime.logger.info(
         f"Starting {'full' if full_remove else 'partial'} rematch for {total_batches_count} batches"
     )
@@ -831,21 +850,39 @@ async def rematch_batches(
         "total_samples_count": 0,
     }
 
-    total_samples_count = 0
-    samples_per_batch = []
-    for sample_batch_id in sample_batch_ids:
-        sample_items_info = await get_samples(sample_batch_id=sample_batch_id)
-        batch_samples = sample_items_info["results"]
-        total_samples_count += batch_samples
-        samples_per_batch.append(batch_samples)
+    # Sample counts only weight the progress bar, so they are counted in one
+    # grouped query rather than by reading every batch's samples: rematching a
+    # whole dataset would otherwise load every sample of every batch, with its
+    # nested match data, before starting any actual work.
+    async with async_session() as session:
+        batch_sample_counts = dict(
+            (
+                await session.execute(
+                    select(Sample.sample_batch_id, func.count())
+                    .where(Sample.sample_batch_id.in_(sample_batch_ids))
+                    .group_by(Sample.sample_batch_id)
+                )
+            ).all()
+        )
+    samples_per_batch = [
+        batch_sample_counts.get(sample_batch_id, 0)
+        for sample_batch_id in sample_batch_ids
+    ]
+    total_samples_count = sum(samples_per_batch)
 
     processed_samples["total_samples_count"] = total_samples_count
+    # Each batch's share of the progress bar. Batches with no samples still
+    # take a turn, so a run over empty batches falls back to equal shares
+    # rather than to a bar that never moves.
     batch_weights = [
-        samples / total_samples_count if total_samples_count else 0
+        samples / total_samples_count
+        if total_samples_count
+        else 1 / total_batches_count
         for samples in samples_per_batch
     ]
 
     # Step 2: Process each batch
+    completed_weight = 0.0
     for batch_index, (sample_batch_id, batch_weight) in enumerate(
         zip(sample_batch_ids, batch_weights), start=1
     ):
@@ -858,7 +895,10 @@ async def rematch_batches(
                 "sample_batch_id": sample_batch_id,
                 "_user_id": user_id,
                 "_batch_weight": batch_weight,
-                "_batch_index": batch_index,
+                # How much of the run is already behind this batch: the bar
+                # advances through its own share from there, so it climbs
+                # once across the whole run instead of restarting per batch.
+                "_batch_base": completed_weight,
             },
         )
         await send_progress_user_notification(notification, 0.2)
@@ -903,6 +943,7 @@ async def rematch_batches(
             f"Finished rematching sample batch {batch_index}/{total_batches_count}."
         )
         await send_progress_user_notification(notification, 0.8)
+        completed_weight += batch_weight
 
     # Calculate summary metrics
     processed_batches_count = (

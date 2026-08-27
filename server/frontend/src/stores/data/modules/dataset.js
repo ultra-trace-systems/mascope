@@ -58,6 +58,21 @@ export const useDataset = defineStore('app.data.dataset', () => {
         `/workspaces/${source_workspace_id}/datasets/${dataset_id}/move`,
         { target_workspace_id },
         { use: 'update', type: 'move_dataset' }
+      ),
+    // Refresh the matches of every batch in the dataset, one batch at a time.
+    // The batches decide for themselves whether they have anything to do, so
+    // this is the per-batch "Refresh matches" applied across the dataset -
+    // already-matched batches are skipped rather than recomputed. Progress and
+    // the outcome arrive over the socket, as with the batch-level rematch.
+    rematch: ({ dataset_id, full_remove = false, force = false }) =>
+      api.http.post(
+        `/match/rematch/dataset/${dataset_id}`,
+        {},
+        {
+          params: { full_remove, force },
+          use: 'process',
+          type: 'rematch_dataset'
+        }
       )
   }
 })
