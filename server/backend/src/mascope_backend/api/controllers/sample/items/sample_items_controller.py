@@ -789,6 +789,11 @@ async def sample_item_export_peaks(
     - sample_item_id: The ID of the sample item.
     - instrument: The type of the instrument used for the sample file.
 
+    Raises StalePeakStoreError for a sample file whose peak store was
+    allocated against scans it no longer reads back: every column above but
+    the TIC comes from that store, so an export built on it would be wrong
+    throughout.
+
     :param sample_item_id: ID of the sample item.
     :type sample_item_id: str
     :param independent_transaction: Flag to indicate if the operation should be treated as an independent transaction, defaults to False.
@@ -856,8 +861,17 @@ async def sample_item_export_peaks(
     # Get scan timestamps UTC
     base_datetime_utc = sample.datetime_utc
     scan_timestamps_utc = sample_peak_timedelta + pd.Timestamp(base_datetime_utc)
-    # Get ticks for each time scan
-    _, scan_tics = await asyncio.to_thread(m_compute.get_tic_per_scan, filename)
+
+    # Get ticks for each time scan. Every other column of the frame comes from
+    # the peak store, and this one is read from the sample file - so the two
+    # are only pairable by position once the store's scan axis is known to be
+    # the one the file still reads back.
+    def _read_tic():
+        tic_time, tic_per_scan = m_compute.get_tic_per_scan(filename)
+        m_compute.check_stored_scan_axis(tic_time, sample_peak_time)
+        return tic_per_scan
+
+    scan_tics = await asyncio.to_thread(_read_tic)
 
     mz_values = sample_peak_data.mz.values
     intensities = sample_peak_data.values
