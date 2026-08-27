@@ -226,13 +226,17 @@ def _process_peak_shapes(
         p_mz = mz[region_mask]
 
         if p_mz.size < MIN_REGION_POINTS:
-            # The +/-dmz window holds too few samples to fit a peak shape. This
-            # happens when the spectrum's own m/z spacing is coarser than dmz:
-            # a single-sample window collapses the p_center bounds to
-            # min == max and lmfit refuses the fit outright. Dismissing the
-            # peak keeps that a data condition - too few quality peaks, handled
-            # by the caller as a blank measurement - rather than a hard failure
-            # of an otherwise readable file.
+            # The +/-dmz window holds too few samples to fit a peak shape. The
+            # window is 2*dmz wide, so it holds roughly 2*dmz/spacing samples
+            # and drops under MIN_REGION_POINTS once the spacing exceeds
+            # 0.4*dmz - well before it exceeds dmz itself. At the coarse end of
+            # that band a single-sample window collapses the p_center bounds to
+            # min == max and lmfit refuses the fit outright; just inside it the
+            # fit is exactly determined and reports rsquared == 1.0, which the
+            # quality filter below cannot catch. Dismissing the peak keeps both
+            # a data condition - too few quality peaks, handled by the caller as
+            # a blank measurement - rather than a hard failure or a false pass
+            # on an otherwise readable file.
             continue
 
         p_height = spec[p]
