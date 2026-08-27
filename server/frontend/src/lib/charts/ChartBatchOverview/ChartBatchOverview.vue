@@ -7,7 +7,6 @@ import FloatLabel from 'primevue/floatlabel'
 import ProgressSpinner from 'primevue/progressspinner'
 
 import { useApp } from '@/stores'
-import { peakAssignmentEnabled } from '@/lib/features'
 import { ToolbarIntensityScale } from '@/lib/toolbars'
 
 import BaseChartPlotly from '../BaseChartPlotly.vue'
@@ -155,11 +154,6 @@ async function onClick({ pointIndex, curveNumber }) {
   } else {
     app.data.sample.unfocus()
   }
-
-  // With peak-centric assignment on the Match tab is retired
-  // (docs/dev/peak_assignment_frontend.md, F6 / issue #1736): the click still
-  // focuses the sample above, but no longer opens the ion-match visualization.
-  if (peakAssignmentEnabled) return
 
   // Focus on the corresponding ion using the trace index
   const trace = data.traces[curveNumber]

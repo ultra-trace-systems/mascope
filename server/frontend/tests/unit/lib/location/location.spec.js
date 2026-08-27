@@ -10,8 +10,9 @@ vi.mock('@/stores', () => ({ useApp: () => app.current }))
 // The store registers a shared-link import hook on login; stub auth so the
 // real auth store (and its api/runtime imports) stay out of this unit test.
 vi.mock('@/stores/auth', () => ({ useAuth: () => ({ onLogin: vi.fn() }) }))
-// The feature flag gates the visualization restore (the Match tab is retired
-// with peak-centric assignment on); a getter keeps it settable per test.
+// The visualization restore is deliberately NOT gated on the feature flag - the
+// Match tab coexists with assignment. A getter keeps the flag settable per test
+// so the restore can be exercised with it on as well as off.
 vi.mock('@/lib/features', () => ({
   get peakAssignmentEnabled() {
     return flags.peakAssignment
@@ -158,9 +159,11 @@ describe('useLocation.apply', () => {
     })
   })
 
-  it('skips the visualization restore when peak-centric assignment is on', () => {
-    // The Match tab is retired with the flag on (#1736): a shared link minted
-    // on a flag-off deployment degrades gracefully to the chain focus.
+  it('restores the visualization with peak-centric assignment on too', () => {
+    // The two paradigms coexist, so the Match tab is rendered either way and a
+    // shared link carrying a visualized ion opens it either way. Gating this on
+    // the flag once made every such link degrade to a bare chain focus on an
+    // assignment deployment, which is what this pins against.
     flags.peakAssignment = true
     try {
       app.current = makeApp()
@@ -177,7 +180,12 @@ describe('useLocation.apply', () => {
         isotope: 'iso1'
       })
 
-      expect(data.match.visualized.set).not.toHaveBeenCalled()
+      expect(data.match.visualized.set).toHaveBeenCalledWith({
+        sampleId: 's1',
+        collectionId: 'c1',
+        ionId: 'i2',
+        isotopeId: 'iso1'
+      })
     } finally {
       flags.peakAssignment = false
     }

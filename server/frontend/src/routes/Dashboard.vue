@@ -91,30 +91,29 @@ const tabs = computed(() => [
       }
     `
   },
-  // The Match tab exists only while peak-centric assignment is off. With the
-  // feature on, the Sample view owns assignment plus the spectrum-envelope and
-  // time-series duties this tab used to carry, so the tab is retired there
-  // (docs/dev/peak_assignment_frontend.md, F6 / issue #1736). Every navigation
-  // into it (ion table, batch chart, shared links, the tab store's auto-switch)
-  // is gated on the same flag.
-  ...(peakAssignmentEnabled
-    ? []
-    : [
-        {
-          label: 'Match',
-          // Internal tab value stays 'match' to match the TabPanel value and
-          // the existing app.ui.tab.active === 'match' callers.
-          value: 'match',
-          icon: 'pi pi-verified',
-          disabled: !app.data.match.visualized.ion,
-          // Card body comes from the shared docs snippet
-          // (docs/user/_help/matching.md) rather than inline prose -- the docs
-          // are the single source of truth.
-          title: 'Match view',
-          helpKey: 'matching',
-          doc: app.ui.help.docUrl('how-it-works/matching/')
-        }
-      ])
+  // The Match tab renders whatever the peak_assignment flag says: the two
+  // paradigms coexist rather than one replacing the other, so turning
+  // assignment on must not take the targeted workflow's per-ion view away with
+  // it. It is the only home of the match-parameter drawer and the Rate Match
+  // action, which the Sample view does not carry - retiring it would have
+  // removed both from every deployment (it previously did; see
+  // docs/dev/peak_assignment_frontend.md, F6 / issue #1736). The tab stays
+  // enabled only once an ion is visualized, so it costs an assignment-first
+  // user nothing.
+  {
+    label: 'Match',
+    // Internal tab value stays 'match' to match the TabPanel value and
+    // the existing app.ui.tab.active === 'match' callers.
+    value: 'match',
+    icon: 'pi pi-verified',
+    disabled: !app.data.match.visualized.ion,
+    // Card body comes from the shared docs snippet
+    // (docs/user/_help/matching.md) rather than inline prose -- the docs
+    // are the single source of truth.
+    title: 'Match view',
+    helpKey: 'matching',
+    doc: app.ui.help.docUrl('how-it-works/matching/')
+  }
 ])
 </script>
 
@@ -184,11 +183,7 @@ const tabs = computed(() => [
               <TabPanel value="sample" :pt="{ content: { style: { padding: 0 } } }">
                 <PaneTabSample />
               </TabPanel>
-              <TabPanel
-                v-if="!peakAssignmentEnabled"
-                value="match"
-                :pt="{ content: { style: { padding: 0 } } }"
-              >
+              <TabPanel value="match" :pt="{ content: { style: { padding: 0 } } }">
                 <PaneTabMatch />
               </TabPanel>
             </TabPanels>

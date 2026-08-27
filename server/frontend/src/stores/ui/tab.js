@@ -1,8 +1,6 @@
 import { ref, watch } from 'vue'
 import { defineStore } from 'pinia'
 
-import { peakAssignmentEnabled } from '@/lib/features'
-
 import { useData } from '../data'
 
 const DEFAULT_TAB = 'raw files'
@@ -24,12 +22,12 @@ export const useTab = defineStore('app.ui.tab', () => {
   const data = useData()
 
   // When visualized ion unfocused, return to 'batch' if batch exists, else default.
-  // With peak-centric assignment on the Match tab is retired (Dashboard does not
-  // render it), so the auto-switch into it stands down there as well.
+  // Runs whatever the peak_assignment flag says: the Match tab is always
+  // rendered, so visualizing an ion always has somewhere to go.
   watch(
     () => data.match.visualized.ion,
     (visualized) => {
-      if (hydrating.value || peakAssignmentEnabled) return
+      if (hydrating.value) return
       if (!visualized && active.value === 'match') {
         active.value = data.batch.focused ? 'batch' : DEFAULT_TAB
       } else if (visualized && active.value !== 'sample') {

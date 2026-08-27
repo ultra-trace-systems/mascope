@@ -19,8 +19,7 @@ socket/notification, join keys — and keeps net-new UI deliberately small.*
 > ([paradigm doc §5.1](peak_assignment_paradigm.md)). **With the flag off the UI is the
 > pre-feature app:** the Sample tab is spectrum-over-(peak ledger | composition search),
 > `PaneBrowserPeak` is mounted again, the spectrum keeps its single grey peak trace, the
-> Targets/Assignments toggle is hidden, the Match tab is rendered with its targeted
-> visualization (with the flag on it is retired — see below), and the search reports
+> Targets/Assignments toggle is hidden, and the search reports
 > the legacy match score (the backend omits fit/tier/plausibility when the feature is off).
 > The two layouts keep **separate saved splitter positions** — the legacy layout stays on the
 > original `sample-tab-split` key so an existing user's stored layout survives; the assignment
@@ -89,12 +88,18 @@ carry `plausibility` too; alternatives carry `plausibility` (database ones also 
 inspector (adduct list on hover) and a compact link-icon + count beside `P(correct)` in the ledger, shown
 only when `n_adducts > 1`. (The demo dataset has no multi-adduct co-occurrence, so it stays hidden there.)
 
-**The Fit view is retired with the flag on (settled, #1736).** The legacy Match tab (briefly
-renamed "Fit" under the flag) is not rendered at all when peak-centric assignment is on — its
-spectrum-envelope and time-series duties live in the Sample view — and every navigation into it
-is gated on the same flag: the ion table's "visualize ion match" expander, the batch-overview
-click-through, the shared-link visualization restore, and the tab store's auto-switch. The
-never-wired composition-fit UI entry point (`useMatchVisualized.verifyAssignment`) is removed.
+**The Match tab is NOT gated on the flag (reversed; was #1736).** It was retired under the flag
+for one release cycle, on the reading that the Sample view's spectrum-envelope and time-series
+duties covered it. They do not: the tab is the only home of the match-parameter drawer
+(`SidebarMatchParams`, which persists per-ion/instrument parameters) and of *Rate Match*
+(`ToolbarMatchRating`), so retiring it removed both from every deployment the flag reached —
+which contradicts the "coexist, don't replace" principle the flag exists to enforce. The tab and
+every navigation into it are therefore unconditional again: the ion table's "visualize ion match"
+expander, the peak table's matched-isotope buttons, the batch-overview click-through, the
+shared-link visualization restore, and the tab store's auto-switch. The tab stays `disabled`
+until an ion is visualized, so it costs an assignment-first user nothing. Two frontend unit tests
+pin the coexistence (`tab.spec.js`, `location.spec.js`). The
+never-wired composition-fit UI entry point (`useMatchVisualized.verifyAssignment`) stays removed.
 The B2 endpoints (`POST …/fit/aggregate`, `…/fit/visualize`) are **kept**: they work, and they
 are API/SDK surface without in-app UI — the designed entry point for SDK-side assignment
 verification (see [`sdk_peak_assignment.md`](sdk_peak_assignment.md), deferred `fit_aggregate`).
@@ -487,7 +492,7 @@ below records the original plan items plus the consolidation that followed.
 | **F3** peak inspector | ✅ done, since trimmed | `PanePeakAssign` is a compact card (no header, no Verify-fit); Re-search is a bottom-pane takeover. |
 | **F4** annotated spectrum | ✅ done | Per-tier traces + theoretical envelope; instrument-aware focus zoom. |
 | **F5** assignments browser + config dialog | ✅ done | + auto-select latest run, P(correct) column, unfold-isotopologues toggle. The config form was later extracted to `dialogs/PeakAssignConfigForm.vue` and shared with the batch launcher (below). |
-| **F6** Fit-view rename + composition wiring | ✅ done, then **retired** (#1736) | Renamed + wired to B2, but the Fit view was redundant post-consolidation: with the flag on the tab is no longer rendered and `verifyAssignment` is removed; with the flag off the legacy Match tab is untouched. |
+| **F6** Fit-view rename + composition wiring | ✅ done, retired (#1736), then **un-retired** | Renamed + wired to B2. The composition-fit entry point (`verifyAssignment`) was redundant post-consolidation and is gone for good. Retiring the whole Match **tab** under the flag went too far - it took the match-parameter drawer and *Rate Match* with it - so the tab is unconditional again (see Current state). |
 | **B1** `peak_assignment_reload` event | ✅ done | `success_reload=[("peak_assignment","sample_batch_id")]`. |
 | **B2** composition Fit visualization | ✅ done | `visualization.py`: `aggregate_composition_fit` + `visualize_composition_focus`; kept as API/SDK surface without in-app UI (#1736). |
 | **Consolidation** onto the Sample view | ✅ done | Time series via REST, 3-pane layout, Re-search takeover, inspector trim, ledger unfold, sample-switch race fix. |

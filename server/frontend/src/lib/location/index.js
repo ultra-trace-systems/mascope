@@ -1,7 +1,6 @@
 import { watch } from 'vue'
 import { defineStore } from 'pinia'
 
-import { peakAssignmentEnabled } from '@/lib/features'
 import { makeLogger } from '@/lib/logging'
 import { useApp } from '@/stores'
 import { useAuth } from '@/stores/auth'
@@ -104,10 +103,6 @@ const applyLevel = (store, level, loc) => {
  * single-sample context is restorable (the visualization query is per sample).
  */
 const restoreVisualization = (data, loc) => {
-  // With peak-centric assignment on the Match tab is retired, so a shared link
-  // carrying a visualized ion (e.g. minted on a flag-off deployment) degrades
-  // gracefully to the chain focus instead of loading an unreachable view.
-  if (peakAssignmentEnabled) return
   if (!loc.collection || !loc.visualizedIon || loc.samples.length !== 1) return
 
   const sampleId = loc.samples[0]

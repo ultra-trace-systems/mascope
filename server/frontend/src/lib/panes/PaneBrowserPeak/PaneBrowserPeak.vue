@@ -181,13 +181,10 @@ onBeforeUnmount(() => {
           {{ num.peakIntensity.format(data.area) }}
         </template>
       </Column>
-      <Column
-        v-if="!peakAssignmentEnabled"
-        field="match"
-        header="formula"
-        sortable
-        style="height: 20px"
-      >
+      <!-- The matched isotope buttons are a peak's route into the Match tab,
+           so this column follows that tab rather than the flag: it was hidden
+           while the tab was retired, and comes back with it. -->
+      <Column field="match" header="formula" sortable style="height: 20px">
         <template #body="{ data }">
           <div class="formula-buttons">
             <Button
