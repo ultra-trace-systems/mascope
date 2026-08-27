@@ -119,6 +119,27 @@ def test_a_word_ending_in_a_keyword_does_not_close():
     assert closer.closing_references("It unfixes #12") == []
 
 
+def test_inline_code_cannot_close_anything():
+    """The case that caught this parser out, on the pull request adding it.
+
+    That body documented the behaviour of a closing keyword in prose, and an
+    earlier draft read its own documentation as three real declarations -
+    including one against issue #1. GitHub does not linkify inside a code
+    span either, so ignoring them matches it.
+    """
+    assert closer.closing_references("`Closes #1 and #2` links only the first") == []
+    assert closer.closing_references("Their bodies say `Closes #1793 and #1794`.") == []
+
+
+def test_inline_code_with_doubled_backticks_counts_too():
+    assert closer.closing_references("``Closes #999``") == []
+
+
+def test_a_real_reference_beside_a_quoted_one_still_closes():
+    body = "Unlike `Closes #999`, this one really does it.\n\nCloses #12"
+    assert closer.closing_references(body) == [12]
+
+
 def test_a_fenced_block_cannot_close_anything():
     """Bodies here quote logs and diffs freely; a fence is text, not a reference."""
     body = "Log output:\n\n```\nCloses #999 was printed by the tool\n```\n\nCloses #12"
