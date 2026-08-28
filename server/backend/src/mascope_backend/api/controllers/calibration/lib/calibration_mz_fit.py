@@ -91,9 +91,13 @@ ORBI_DOMINANCE_RATIO = 10.0
 EMPTY_CALIBRATION_COLLECTION_WARNING = (
     "Calibration collection is empty - nothing to calibrate against."
 )
+#: Both causes belong in the text: the isotopes are selected by the mode's
+#: mechanisms *and* by the resolution the instrument dictates, so a collection
+#: that only carries HIGH-resolution isotopes fails on a TOF sample for a
+#: reason that has nothing to do with the ionization mode.
 NO_CALIBRATION_ISOTOPES_WARNING = (
-    "Calibration collection has no isotopes for this ionization mode - "
-    "nothing to calibrate against."
+    "Calibration collection has no isotopes for this ionization mode at the "
+    "instrument's resolution - nothing to calibrate against."
 )
 
 

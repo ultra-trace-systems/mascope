@@ -591,9 +591,10 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
   the dialog shows the warning with *Save* disabled, and an automatic run
   records its usual failure marker. A collection whose compounds have no
   isotope for the mode's mechanisms at the instrument's resolution is reported
-  the same way, where it previously returned a 500. The isotope query itself
-  now distinguishes "no compound filter" from "a filter no compound satisfies",
-  so an empty list can no longer widen a query anywhere.
+  the same way, where it previously returned a 500. The isotope query's
+  compound filter now distinguishes "no compound filter" from "a filter no
+  compound satisfies", so an empty compound list can no longer widen the query
+  for any caller.
 
 - Several dev instances on one hostname no longer sign each other out. Cookies
   are not scoped by port, so every stack served from `localhost` - each
