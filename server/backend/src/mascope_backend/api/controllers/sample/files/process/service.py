@@ -1238,6 +1238,10 @@ async def calibrate_with_retry(
     mz_calibration_params = calibration_params_factory(sample["filename"])
     for i in range(1, CALIBRATION_ITERATIONS + 1):
         try:
+            # No ``manual``: this is the automatic pipeline, which has no
+            # opinion on whether the file's previous calibration was right, so
+            # an acquisition-drift marker already on the record is carried
+            # forward (see ``carry_acquisition_drift``).
             await calibration_mz_calibrate_sample(
                 sample_item_id=sample["sample_item_id"],
                 mz_calibration_params=mz_calibration_params,

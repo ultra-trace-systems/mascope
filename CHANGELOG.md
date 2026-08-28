@@ -543,6 +543,30 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
   account over. Callers of the registration API that supply a password keep
   working unchanged.
 
+- **Recalibrating a sample by hand now clears its acquisition-drift badge.**
+  The amber "acquisition drift" badge is deliberately sticky: a recalibration
+  runs on the axis the previous fit already corrected, so its own pre-fit error
+  is near zero and clearing the marker on that basis would erase a real
+  finding. But the badge quotes the pre-fit error of the calibration that
+  raised it, and that fit is not always right - a mis-calibration inflates the
+  number, and the file then carried a drift warning that described the bad fit
+  rather than the instrument, with no way to retract it short of resetting the
+  calibration entirely. Applying a calibration from the calibration dialog is
+  now read as what it is (an operator stating that the previous one was wrong)
+  and drops the carried marker, leaving the badge green. It leaves the badge
+  green even when the bad fit had shifted the m/z axis, which is the usual
+  shape of a mis-calibration: the recalibration's own pre-calibration error is
+  then the displacement that fit left behind, so blaming the instrument for it
+  would re-raise the badge on the very calibration meant to retract it. An
+  instrument that really is drifting is still flagged whenever the fit runs on
+  the axis the file was acquired with - a first calibration, or any
+  calibration after the m/z calibration has been reset - and automatic
+  pipeline recalibrations carry the marker forward exactly as before. Clearing
+  is recorded on the calibration record (`drift_cleared_at`,
+  `drift_cleared_by`), and it also retires the once-a-day suppression the
+  stale warning had opened, so a genuine drift on that instrument is reported
+  again instead of waiting out the window.
+
 ### Fixed
 
 - Help cards no longer run off the edge of the screen. The popover asked
