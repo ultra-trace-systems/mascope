@@ -311,10 +311,20 @@ async def _recompute_consensus(
         bp.batch_peak_utc_modified = now
 
 
-async def backfill_sample_batch_peaks(sample_batch_id: str) -> int:
+async def backfill_sample_batch_peaks(sample_batch_id: str) -> tuple[int, int]:
     """Fold every sample of a batch (that has a completed run) into the batch
     peaks, in acquisition-time order. Used to seed batch peaks for batches assigned
-    before this feature. Returns the number of samples folded.
+    before this feature.
+
+    Returns the number of samples folded and the number whose fold raised. The
+    two are counted apart because they mean opposite things to whoever asked:
+    nothing folded because nothing was assigned is the batch's state, while
+    nothing folded because every fold raised is a fault - and the count alone
+    cannot tell them apart.
+
+    :param sample_batch_id: The batch to fold.
+    :return: ``(folded, failed)`` sample counts.
+    :rtype: tuple[int, int]
     """
     async with async_session() as session:
         sample_ids = (
@@ -330,15 +340,86 @@ async def backfill_sample_batch_peaks(sample_batch_id: str) -> int:
         )
 
     folded = 0
+    failed = 0
     for sample_item_id in sample_ids:
         try:
             if await fold_sample_into_batch_peaks(sample_item_id) is not None:
                 folded += 1
         except Exception as exc:  # noqa: BLE001 - one bad sample must not abort backfill
+            failed += 1
             runtime.logger.warning(
                 f"Batch-peak backfill failed for sample '{sample_item_id}': {exc}"
             )
-    return folded
+    return folded, failed
+
+
+def backfill_outcome(folded: int, failed: int, sample_batch_id: str) -> dict:
+    """Report a backfill outcome, distinguishing "folded nothing" from success.
+
+    Folding zero samples is what a batch with no completed assignment runs looks
+    like, and it is the outcome the person who clicked most needs to hear: the
+    request was accepted and did nothing. Announced green as "Computed batch
+    peaks from 0 assigned sample(s)" it reads as done, which is how a user
+    arrives back at an empty ledger with no idea why.
+
+    Which of the four things happened is not a count's to say, so the failures
+    are carried separately. Nothing folded and nothing raised is the batch's
+    state and the message names it; nothing folded because every fold raised is
+    a fault, and telling that user to "assign the batch first" would be advice
+    that cannot help. A run that folded some and dropped others is neither, and
+    saying only how many succeeded hides a sample missing from the ledger.
+
+    ``partial`` is the outcome the notification layer maps to a warning
+    severity. The word is a stretch for "none of it" -- but the run did finish,
+    which rules out ``failed``, and the point of the status is the severity a
+    reader sees.
+
+    :param folded: How many of the batch's samples were folded in.
+    :param failed: How many raised while folding and were skipped.
+    :param sample_batch_id: The batch the backfill ran for.
+    :return: The controller result the background-task decorator reports from.
+    :rtype: dict
+    """
+    counts = {"samples_folded": folded, "samples_failed": failed}
+    notification_data = {"sample_batch_id": sample_batch_id}
+
+    if folded == 0 and failed == 0:
+        return {
+            "status": "partial",
+            "message": (
+                "No batch peaks were computed: none of this batch's samples "
+                "has a completed assignment run yet. Assign the batch first."
+            ),
+            "data": counts,
+            "_notification_data": notification_data,
+        }
+    if folded == 0:
+        return {
+            "status": "failed",
+            "message": (
+                f"No batch peaks were computed: all {failed} sample(s) failed "
+                "to fold. See the server log for the reason."
+            ),
+            "data": counts,
+            "_notification_data": notification_data,
+        }
+    if failed:
+        return {
+            "status": "partial",
+            "message": (
+                f"Computed batch peaks from {folded} assigned sample(s); "
+                f"{failed} sample(s) failed to fold and are missing from the "
+                "result. See the server log for the reason."
+            ),
+            "data": counts,
+            "_notification_data": notification_data,
+        }
+    return {
+        "status": "success",
+        "message": f"Computed batch peaks from {folded} assigned sample(s).",
+        "data": counts,
+        "_notification_data": notification_data,
+    }
 
 
 @api_controller_background_task(
@@ -358,13 +439,9 @@ async def compute_batch_peaks(
 
     This is how a batch assigned before batch peaks existed (or after a bulk
     import) gets populated into the batch overview. Idempotent -- re-running
-    re-folds each sample. Emits ``peak_assignment_reload`` on success so the
-    Assignments chart refreshes.
+    re-folds each sample. Emits ``peak_assignment_reload`` so the Assignments
+    chart refreshes, including when nothing was folded: the ledger is then
+    correct in being empty, and the notification says why.
     """
-    folded = await backfill_sample_batch_peaks(sample_batch_id)
-    return {
-        "status": "success",
-        "message": f"Computed batch peaks from {folded} assigned sample(s).",
-        "data": {"samples_folded": folded},
-        "_notification_data": {"sample_batch_id": sample_batch_id},
-    }
+    folded, failed = await backfill_sample_batch_peaks(sample_batch_id)
+    return backfill_outcome(folded, failed, sample_batch_id)
