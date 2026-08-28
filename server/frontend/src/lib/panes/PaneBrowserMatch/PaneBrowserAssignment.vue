@@ -12,6 +12,7 @@ import ToggleSwitch from 'primevue/toggleswitch'
 
 import { getApiErrorMessage, isRefusedRequest } from '@/api/utils'
 import {
+  BaseCopyableField,
   BaseLoadError,
   BaseRunProvenance,
   BaseTabbedPanel,
@@ -21,6 +22,8 @@ import {
 import { PeakAssignConfigForm } from '@/lib/dialogs'
 import { num } from '@/lib/formatters'
 import { formatIsotopeFormula } from '@/lib/chem'
+import { isTier, tierRank } from '@/lib/tiers'
+import { prettyTrim } from '@/lib/utils'
 import { useApp } from '@/stores'
 
 const app = useApp()
@@ -168,21 +171,12 @@ function focusPeak(assignment) {
 
 // --- Tier ordering & filtering ----------------------------------------------
 
-// Confidence order: identified first, unassigned last. Drives the default sort
-// and makes the sortable tier column order by confidence rather than
-// alphabetically (which otherwise put "unassigned" above "identified").
-const TIER_RANK = {
-  identified: 0,
-  candidate: 1,
-  below_assignability: 2,
-  unassigned: 3
-}
-
 // Histogram bucket for a row: reagent/artifact roles are their own bucket,
-// matching the counts strip and the spectrum coloring.
+// matching the counts strip and the spectrum coloring. Tier ranking itself
+// lives in @/lib/tiers so this ledger and the batch-peak ledger cannot drift.
 function bucketOf(row) {
   if (row.role === 'reagent' || row.role === 'artifact') return 'reagent'
-  return row.tier in TIER_RANK ? row.tier : 'unassigned'
+  return isTier(row.tier) ? row.tier : 'unassigned'
 }
 
 // Active tier filters (empty = show all); clicking a histogram chip toggles it.
@@ -197,12 +191,62 @@ function toggleTier(key) {
 // compatible with virtual scrolling. Toggle to unfold (see below).
 const showIsotopologues = ref(false)
 
+// --- Sorting ----------------------------------------------------------------
+
+// The sort is the pane's, not the table's. PrimeVue sorts the flat row array it
+// is handed, which tears every isotopologue satellite away from the parent it
+// belongs under the moment the user sorts by anything but the default - sorting
+// by intensity drops a child hundreds of rows below its "+N" parent, where an
+// indented "iso" label means nothing. `lazy` hands sorting back to us so `rows`
+// can order the parents and re-attach each family underneath.
+//
+// `lazy` also switches off DataTable's own filtering and paging: neither is in
+// use here (the tier chips and the verdict filter are applied in `rows`, and
+// the table virtual-scrolls rather than paginates), so nothing else changes.
+// The header still renders its sort indicator and still emits the field it was
+// clicked with; `removableSort` gives a third click that clears the column and
+// returns the ledger to its confidence-ordered default.
+const sortField = ref('tierRank')
+const sortOrder = ref(1)
+
+// Numeric collation, so the formula column reads as a chemist expects: C2H6
+// before C10H22, not after it. This is the comparer PrimeVue sorted with -
+// @primeuix/utils' localeComparator() is
+// `new Intl.Collator(undefined, { numeric: true }).compare` - and taking the
+// sort over must not quietly change the order it used to produce.
+const collator = new Intl.Collator(undefined, { numeric: true })
+
+// Compare two rows on one column. Missing values sort last in both directions -
+// a peak with no formula is unknown, not "smallest" - counting the empty string
+// as missing, which is what PrimeVue's isEmpty() did.
+const isBlank = (value) => value == null || value === ''
+
+function compareBy(field, order) {
+  const dir = order === -1 ? -1 : 1
+  return (a, b) => {
+    const av = a[field]
+    const bv = b[field]
+    if (isBlank(av) && isBlank(bv)) return 0
+    if (isBlank(av)) return 1
+    if (isBlank(bv)) return -1
+    if (typeof av === 'string' && typeof bv === 'string') return collator.compare(av, bv) * dir
+    if (av < bv) return -dir
+    if (av > bv) return dir
+    return 0
+  }
+}
+
+// The ledger's resting order: most confident first, best fit first within a
+// tier. Also the tie-breaker under every other column, and what an unsorted
+// table (third click on a sorted header) falls back to.
+const byConfidence = (a, b) => a.tierRank - b.tierRank || (b.fit_score ?? -1) - (a.fit_score ?? -1)
+
 // Table rows. Parents (M0 + unassigned/reagent) are filtered by the active
-// chips, then ordered by confidence (identified first) and fit descending;
-// tierRank lets the tier column sort by confidence too. When unfolded, each
-// parent's iso_child satellites are inserted right after it (ordered by m/z)
-// and inherit the parent's tierRank, so the table's stable tier sort keeps
-// families together instead of scattering children across tiers.
+// chips, then ordered by the sorted column with confidence breaking ties. When
+// unfolded, each parent's iso_child satellites are inserted right after it,
+// ordered by m/z among themselves - a family is one block wherever its parent
+// lands, which is the only arrangement in which the indented child rows can be
+// read at all.
 const rows = computed(() => {
   const parents = assignments.value.list
     .filter((row) => row.role !== 'iso_child')
@@ -214,7 +258,7 @@ const rows = computed(() => {
     )
     .map((row) => ({
       ...row,
-      tierRank: TIER_RANK[row.tier] ?? 3,
+      tierRank: tierRank(row.tier),
       // The calibrated probability for the sortable P(correct) column; null for
       // untargeted / uncalibrated (rendered as "-", never 0%). The ledger rows
       // carry it flattened (`p_correct`); the `provenance` fallback covers rows
@@ -225,7 +269,8 @@ const rows = computed(() => {
       mech: mechById.value.get(row.ionization_mechanism_id) ?? null,
       isChild: false
     }))
-  parents.sort((a, b) => a.tierRank - b.tierRank || (b.fit_score ?? -1) - (a.fit_score ?? -1))
+  const byColumn = sortField.value ? compareBy(sortField.value, sortOrder.value) : null
+  parents.sort(byColumn ? (a, b) => byColumn(a, b) || byConfidence(a, b) : byConfidence)
   if (!showIsotopologues.value) return parents
 
   const result = []
@@ -256,45 +301,6 @@ const rows = computed(() => {
 const childLabel = (row) =>
   row.isotope_formula ? formatIsotopeFormula(row.isotope_formula) : row.isotope_label || 'iso'
 
-// Custom sort that keeps isotopologue families together under ANY column.
-// PrimeVue's default sorts the flat row array, which decouples children from
-// their parent when sorting by e.g. intensity. Instead: sort the PARENT rows by
-// the chosen field, then re-attach each parent's children (sorted among
-// themselves by the same field) right after it. Folded (no children) it is a
-// plain parent sort, identical to the default.
-function groupedSort({ data, field, order }) {
-  if (!field) return data
-  const dir = order === -1 ? -1 : 1
-  const cmp = (a, b) => {
-    const av = a[field]
-    const bv = b[field]
-    // Missing values sort last regardless of direction.
-    if (av == null && bv == null) return 0
-    if (av == null) return 1
-    if (bv == null) return -1
-    if (av < bv) return -dir
-    if (av > bv) return dir
-    return 0
-  }
-  const parents = data.filter((row) => !row.isChild)
-  const childrenByOwner = new Map()
-  for (const row of data) {
-    if (!row.isChild) continue
-    const siblings = childrenByOwner.get(row.owner_peak_assignment_id) ?? []
-    siblings.push(row)
-    childrenByOwner.set(row.owner_peak_assignment_id, siblings)
-  }
-  parents.sort(cmp)
-  if (childrenByOwner.size === 0) return parents
-  const result = []
-  for (const parent of parents) {
-    result.push(parent)
-    const kids = childrenByOwner.get(parent.peak_assignment_id)
-    if (kids) result.push(...kids.sort(cmp))
-  }
-  return result
-}
-
 // Calibrated probability formatter for the P(correct) column.
 const pctFmt = new Intl.NumberFormat('en-US', { style: 'percent', maximumFractionDigits: 0 })
 
@@ -317,18 +323,70 @@ const selectedRow = computed({
       : null
   },
   set: (row) => {
+    // Clicking the selected row again de-selects it, and PrimeVue says so by
+    // emitting null. Dropping that left the peak focused with nothing selected:
+    // the spectrum highlight, the inspector and the timeseries all stayed on a
+    // peak the ledger no longer showed as chosen. Selection lives in the peak
+    // store, so unfocusing there clears every one of them.
     if (row) focusPeak(row)
+    else app.data.peak.unfocus()
   }
 })
 
 // Isotopologue satellites folded under a formula's M0.
 const isoCount = (row) => assignments.value.childrenOf(row.peak_assignment_id).length
+
+// --- Header ------------------------------------------------------------------
+
+// Which sample's ledger this is, and the way back out of it. A pane headed only
+// "Assignments" names neither the sample nor its batch, and until now the sole
+// ways to unfocus the sample were a meta-click on its row in the sample browser
+// or the filter chip in the far corner - both a long way from the table being
+// read. The leading caret drops the sample, which returns the browser to the
+// batch-peak ledger (PaneBrowserMatch switches on sample.focused) and clears the
+// sample everywhere else.
+const breadcrumb = computed(() => {
+  const sample = app.data.sample.focused
+  if (!sample) return null
+  const batch = app.data.batch.focused
+  return {
+    items: [
+      {
+        icon: 'pi ph ph-caret-left',
+        tooltip: 'Back to the batch peaks',
+        action: () => app.data.sample.unfocus()
+      },
+      ...(batch
+        ? [
+            {
+              icon: 'pi pi-hashtag',
+              label: prettyTrim(batch.sample_batch_name, 25),
+              disabled: true,
+              tooltip: `Batch: ${batch.sample_batch_name}`
+            }
+          ]
+        : []),
+      {
+        icon: 'pi pi-tag',
+        label: prettyTrim(sample.sample_item_name, 25),
+        disabled: true,
+        tooltip: `Peak assignments for sample:\n ${sample.sample_item_name}`
+      },
+      {
+        icon: 'pi ph ph-atom',
+        label: `${assignments.value.list.length} peaks`,
+        disabled: true
+      }
+    ]
+  }
+})
 </script>
 
 <template>
   <BaseTabbedPanel
     label="Assignments"
     icon="pi ph ph-list-magnifying-glass"
+    :breadcrumb="breadcrumb"
     :pt="
       app.ui.help.right(
         `
@@ -417,7 +475,13 @@ const isoCount = (row) => assignments.value.childrenOf(row.peak_assignment_id).l
             )
           "
         />
+        <!-- Only when the empty state below is not carrying the call to action
+             itself: two identical buttons a few centimetres apart read as two
+             different things. The error state has no button of its own, so the
+             toolbar keeps one there - a failed run list must not also cost the
+             user the way to start a run. -->
         <Button
+          v-if="runs.list.length || runs.error"
           label="Assign peaks"
           icon="pi ph ph-magic-wand"
           size="small"
@@ -536,9 +600,10 @@ const isoCount = (row) => assignments.value.childrenOf(row.peak_assignment_id).l
         scrollable
         :scrollHeight="`${tableHeight - 60}px`"
         :virtualScrollerOptions="{ itemSize: 35.5 }"
-        sortField="tierRank"
-        :sortOrder="1"
-        :sortFunction="groupedSort"
+        lazy
+        removableSort
+        v-model:sortField="sortField"
+        v-model:sortOrder="sortOrder"
         selectionMode="single"
         :metaKeySelection="false"
         v-model:selection="selectedRow"
@@ -565,8 +630,15 @@ const isoCount = (row) => assignments.value.childrenOf(row.peak_assignment_id).l
                 >{{ childLabel(data) }}</span
               >
             </span>
-            <span v-else>
-              <span class="formula">{{ data.assigned_formula || '—' }}</span>
+            <!-- The formula is the one cell in the ledger a reader wants out of
+                 the app - into a search, a note, a target list - so it carries
+                 the same hover-to-copy affordance as the batch ledger's. The
+                 satellite count rides in the slot, outside what gets copied. -->
+            <BaseCopyableField
+              v-else-if="data.assigned_formula"
+              class="formula"
+              :field="data.assigned_formula"
+            >
               <span
                 v-if="isoCount(data)"
                 class="iso-count"
@@ -575,7 +647,8 @@ const isoCount = (row) => assignments.value.childrenOf(row.peak_assignment_id).l
                 "
                 >+{{ isoCount(data) }}</span
               >
-            </span>
+            </BaseCopyableField>
+            <span v-else class="formula">&mdash;</span>
           </template>
         </Column>
         <Column field="mech" sortable style="min-width: 5rem">
@@ -746,6 +819,16 @@ const isoCount = (row) => assignments.value.childrenOf(row.peak_assignment_id).l
   font-size: 0.62rem;
   opacity: 0.55;
   vertical-align: super;
+  /* Its parent is BaseCopyableField's flex row, where vertical-align does
+     nothing; align to the top edge to keep the superscript reading. */
+  align-self: flex-start;
+}
+/* The copy button sits between the formula and the marker in source order, and
+   it reserves its space even while hidden - which would strand the "+N" a
+   button's width away from the formula it counts for. Ordering it last in the
+   flex row puts the marker back against the formula. */
+.formula :deep(button) {
+  order: 1;
 }
 
 .pcorrect {
