@@ -85,6 +85,17 @@ LARGE_SAMPLE_SIZE_THRESHOLD = 5
 ORBI_DOMINANCE_WINDOW_PPM = 100.0
 ORBI_DOMINANCE_RATIO = 10.0
 
+#: Warnings for a calibration that has nothing to calibrate against. Reported
+#: the same way as "The sample file has no peaks.": no fit, no stats, nothing
+#: written, and the controller turns the warning into an API warning.
+EMPTY_CALIBRATION_COLLECTION_WARNING = (
+    "Calibration collection is empty - nothing to calibrate against."
+)
+NO_CALIBRATION_ISOTOPES_WARNING = (
+    "Calibration collection has no isotopes for this ionization mode - "
+    "nothing to calibrate against."
+)
+
 
 class BaseCalibrationHandler:
     #: Local-dominance guard (see ORBI_DOMINANCE_WINDOW_PPM). Disabled here
@@ -142,14 +153,43 @@ class BaseCalibrationHandler:
         with m_io.zarr_write_lock(self._calibration_lock_path()):
             return self._apply_sync(fit)
 
-    async def _match_calibration_compounds(self) -> tuple[pd.DataFrame, pd.DataFrame]:
-        """Match calibration compounds in the sample file."""
+    def _nothing_to_calibrate_against(self, warning: str) -> None:
+        """Record a calibration that never got as far as matching.
+
+        Leaves the handler in the same state as the no-peaks path: no fit and
+        no stats, so nothing is applied and nothing is written, while
+        ``calibration_mz_fit`` turns the warning into an API warning for the
+        caller (dialog message for a manual run, failure marker for the
+        automatic pipeline).
+        """
+        self.fit_result = None
+        self.stats = None
+        self.warning = warning
+
+    async def _resolve_calibration_isotopes(self) -> pd.DataFrame | None:
+        """Target isotopes of the configured calibration collection.
+
+        Returns ``None`` - having recorded the matching warning - when there is
+        nothing to calibrate against, either because the collection holds no
+        compounds or because none of them has an isotope for this ionization
+        mode and instrument resolution. Both cases must stop here: an empty
+        compound list used to be dropped from the isotope query as falsy, which
+        fitted the sample against *every* target isotope in the database,
+        across all collections and workspaces; an empty isotope result then
+        built a column-less DataFrame and crashed the request.
+
+        :return: Isotopes to calibrate against, or None when there are none.
+        :rtype: pd.DataFrame | None
+        """
         target_compounds_result = await get_target_compound_in_target_collection(
             target_collection_id=self.params.calibration_collection_id,
         )
         target_compound_ids = [
             item["target_compound_id"] for item in target_compounds_result["data"]
         ]
+        if not target_compound_ids:
+            self._nothing_to_calibrate_against(EMPTY_CALIBRATION_COLLECTION_WARNING)
+            return None
 
         instrument_type = m_name.get_instrument_type(self.filename)
         match instrument_type:
@@ -164,7 +204,21 @@ class BaseCalibrationHandler:
             resolution=isotope_resolution,
         )
         target_isotopes_df = pd.DataFrame(target_isotopes_result["data"])
+        if target_isotopes_df.empty:
+            self._nothing_to_calibrate_against(NO_CALIBRATION_ISOTOPES_WARNING)
+            return None
+        return target_isotopes_df
 
+    async def _match_calibration_compounds(
+        self,
+        target_isotopes_df: pd.DataFrame,
+    ) -> tuple[pd.DataFrame, pd.DataFrame]:
+        """Match calibration compounds in the sample file.
+
+        :param target_isotopes_df: Non-empty isotopes of the calibration
+            collection, as resolved by :meth:`_resolve_calibration_isotopes`.
+        :type target_isotopes_df: pd.DataFrame
+        """
         peaks = await self._load_and_filter_peaks(
             target_mzs=target_isotopes_df.mz,
         )
@@ -691,6 +745,10 @@ class TofCalibrationHandler(BaseCalibrationHandler):
             self.warning = "The sample file has no peaks."
             return
 
+        target_isotopes_df = await self._resolve_calibration_isotopes()
+        if target_isotopes_df is None:
+            return
+
         _, tic_per_scan = await asyncio.to_thread(
             m_compute.get_tic_per_scan, self.filename
         )
@@ -698,7 +756,9 @@ class TofCalibrationHandler(BaseCalibrationHandler):
 
         await self._send_progress(0.35)
 
-        match_isotope_df, good_matches_df = await self._match_calibration_compounds()
+        match_isotope_df, good_matches_df = await self._match_calibration_compounds(
+            target_isotopes_df
+        )
 
         n_relevant_isotopes = len(
             match_isotope_df[
@@ -883,7 +943,13 @@ class OrbiCalibrationHandler(BaseCalibrationHandler):
             self.warning = "The sample file has no peaks."
             return
 
-        match_isotope_df, good_matches_df = await self._match_calibration_compounds()
+        target_isotopes_df = await self._resolve_calibration_isotopes()
+        if target_isotopes_df is None:
+            return
+
+        match_isotope_df, good_matches_df = await self._match_calibration_compounds(
+            target_isotopes_df
+        )
 
         await self._send_progress(0.75)
 

@@ -69,6 +69,7 @@ async def get_target_isotopes(
     :param resolution: Required isotope resolution ('LOW' or 'HIGH').
     :type resolution: str | None
     :param target_compound_ids: List of target compound IDs to filter isotopes.
+        None applies no compound filter; an empty list matches no isotopes.
     :type target_compound_ids: list[str] | None
     :param ionization_mechanism_ids: List of ionization mechanism IDs to filter isotopes.
     :type ionization_mechanism_ids: list[str] | None
@@ -121,7 +122,11 @@ async def get_target_isotopes(
             stmt = stmt.filter(
                 TargetIsotope.relative_abundance <= max_relative_abundance
             )
-        if target_compound_ids:
+        # An explicitly empty list means "match nothing", not "no filter":
+        # skipping the filter here returned every isotope in the database,
+        # across all collections and workspaces, to a caller that had asked
+        # for the isotopes of an empty compound set. Only None is no filter.
+        if target_compound_ids is not None:
             stmt = stmt.where(TargetIon.target_compound_id.in_(target_compound_ids))
 
         if ionization_mechanism_ids:
