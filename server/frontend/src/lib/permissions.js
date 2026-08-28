@@ -47,6 +47,27 @@ export const instrumentWorkspace = (workspaces, instrument) => {
 export const myLevel = (workspace) => roleLevel(workspace?.my_role)
 
 /**
+ * Whether `user` may write to the contents of `workspace`.
+ *
+ * The bar for anything that changes a dataset, batch or sample is the editor
+ * role in the workspace holding it. Superusers are allowed because that is the
+ * only bypass the backend's workspace ACL has - deliberately narrower than the
+ * instrument helpers below, whose backend checks also let a global admin
+ * through. A global admin who is not a member of this workspace is refused
+ * there, so offering them the control here would only earn a 403.
+ *
+ * Returns `true` while the account or the workspace is still loading, for the
+ * reason at the top of this file: a control that is briefly offered and then
+ * refused is recoverable, one that never appears is not.
+ */
+export const canEditWorkspace = (workspace, user) => {
+  if (!user) return true
+  if (user.is_superuser) return true
+  if (!workspace) return true
+  return myLevel(workspace) >= ROLES.editor
+}
+
+/**
  * Whether `user` may write an m/z calibration onto files from `instrument`.
  *
  * A calibration is written onto the raw file, so every workspace referencing

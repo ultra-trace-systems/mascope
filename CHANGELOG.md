@@ -595,6 +595,36 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
   compound filter now distinguishes "no compound filter" from "a filter no
   compound satisfies", so an empty compound list can no longer widen the query
   for any caller.
+- The **Batch peaks** ledger no longer offers an action that cannot work, and
+  no longer reports one as finished before it is. *Compute batch peaks* is now
+  disabled with the reason in its tooltip when there is no batch in view, when
+  the batch has no samples, or when you are not an editor of its workspace -
+  the last of which used to be a button that looked ready and answered 403. It
+  also stays in its loading state until the background task actually reports
+  back, rather than stopping the moment the server acknowledged the request:
+  the spinner used to stop while the work was still running, which invited a
+  second click. A launch that is refused or fails puts the server's own reason
+  in the pane and gives the button back. And a run that folds nothing - every
+  sample in the batch still unassigned - is now announced as a warning saying
+  so, instead of a green *Computed batch peaks from 0 assigned sample(s)* that
+  reads as done. A run whose folds actually failed says that instead, rather
+  than sending you off to assign a batch that already is; one that folded some
+  and dropped others now says how many it dropped, which the old message hid
+  along with the samples missing from the ledger.
+
+- The **Batch peaks** ledger gains the tier strip the sample ledger has: one
+  chip per confidence tier with its count, click to filter the table to it.
+  The counts were already being computed and shown nowhere. The chips and the
+  tier column's own filter menu are the same filter, so the two cannot
+  disagree about what the table is showing.
+
+- Sorting the **Batch peaks** table by tier now orders by confidence rather
+  than alphabetically. Ascending used to put *below_assignability* first and
+  *identified* third, which is the opposite of what the column is for; it now
+  reads identified, candidate, below, unassigned, with equal tiers ordered by
+  the fit percentage shown in the chip. The tier order, ranks and chip labels
+  are defined once and shared with the sample ledger, so the two ledgers can
+  no longer rank the same four tiers differently.
 
 - Several dev instances on one hostname no longer sign each other out. Cookies
   are not scoped by port, so every stack served from `localhost` - each

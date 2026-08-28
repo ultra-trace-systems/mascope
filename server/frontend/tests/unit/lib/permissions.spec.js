@@ -4,6 +4,7 @@ import {
   batchInstruments,
   canCalibrateInstrument,
   canCalibrateInstruments,
+  canEditWorkspace,
   instrumentWorkspace,
   myLevel
 } from '@/lib/permissions'
@@ -73,6 +74,37 @@ describe('myLevel', () => {
   it('is zero when not a member or the workspace is missing', () => {
     expect(myLevel({ my_role: null })).toBe(0)
     expect(myLevel(undefined)).toBe(0)
+  })
+})
+
+describe('canEditWorkspace', () => {
+  const ws = (my_role) => ({ workspace_id: 'ws-1', workspace_name: 'Project', my_role })
+
+  it('allows an editor and above', () => {
+    expect(canEditWorkspace(ws('editor'), guest)).toBe(true)
+    expect(canEditWorkspace(ws('admin'), guest)).toBe(true)
+    expect(canEditWorkspace(ws('owner'), guest)).toBe(true)
+  })
+
+  it('refuses a guest, and a non-member', () => {
+    expect(canEditWorkspace(ws('guest'), admin)).toBe(false)
+    expect(canEditWorkspace(ws(null), admin)).toBe(false)
+  })
+
+  it('refuses a global admin who is not a member, as the backend does', () => {
+    // Deliberately unlike the instrument helpers: the workspace ACL bypasses
+    // for superusers only, so offering an admin the control here would earn a
+    // 403 rather than the action.
+    expect(canEditWorkspace(ws('guest'), { role_id: 300 })).toBe(false)
+  })
+
+  it('allows a superuser with no membership at all', () => {
+    expect(canEditWorkspace(ws(null), { role_id: 400, is_superuser: true })).toBe(true)
+  })
+
+  it('stays enabled while the account or the workspace is still loading', () => {
+    expect(canEditWorkspace(ws('guest'), undefined)).toBe(true)
+    expect(canEditWorkspace(null, guest)).toBe(true)
   })
 })
 
