@@ -224,9 +224,7 @@ article {
   gap: 0.25rem;
 }
 #charts {
-  grid-area: charts;
   border: none;
-  height: calc(100% -10rem);
 }
 
 #charts :deep(.p-panel-header) {
