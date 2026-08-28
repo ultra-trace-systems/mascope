@@ -579,6 +579,21 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
   no runs yet the toolbar collapsed to a lone copy of the button sitting just
   above the identical one in the empty state; the toolbar copy now appears only
   once there is a run to sit beside.
+- Calibrating a sample against an **empty calibration collection** now reports
+  a warning instead of quietly calibrating against the whole database. An
+  ionization mode only had to *name* a collection for m/z fitting to proceed;
+  with no compounds in it, the empty compound list was dropped from the isotope
+  query as falsy, so the fit ran against every target isotope on the server -
+  other collections and other workspaces included - and any of them that landed
+  in the refine window could anchor a fit that was then applied to the sample.
+  Fitting now stops before the query with "Calibration collection is empty",
+  the same way it stops for a sample file with no peaks: nothing is written,
+  the dialog shows the warning with *Save* disabled, and an automatic run
+  records its usual failure marker. A collection whose compounds have no
+  isotope for the mode's mechanisms at the instrument's resolution is reported
+  the same way, where it previously returned a 500. The isotope query itself
+  now distinguishes "no compound filter" from "a filter no compound satisfies",
+  so an empty list can no longer widen a query anywhere.
 
 - Several dev instances on one hostname no longer sign each other out. Cookies
   are not scoped by port, so every stack served from `localhost` - each
