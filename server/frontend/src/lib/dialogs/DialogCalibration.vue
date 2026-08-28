@@ -17,6 +17,7 @@ import { useApp } from '@/stores'
 import { useMzFit } from '@/lib/mzFit'
 import { PaneSettingsCalibration } from '@/lib/panes'
 import { canCalibrateInstruments } from '@/lib/permissions'
+import { canSkipCalibration } from '@/lib/calibrationStatus'
 
 const mzFit = useMzFit()
 const confirm = useConfirm()
@@ -97,7 +98,14 @@ const skipState = reactive({
 
 // Only for a single sample: the marker is written per file, and a batch-wide
 // skip would need its own confirmation over every file the batch draws on.
-const skippable = computed(() => !batch.value && !!original.value?.filename)
+// `canSkipCalibration` mirrors the endpoint's own rule, so the action is
+// offered only where it would be accepted - a file already carrying an applied
+// fit is refused with a 409, and rendering the button there would send the
+// operator through a dialog to a toast.
+const skippable = computed(
+  () =>
+    !batch.value && !!original.value?.filename && canSkipCalibration(original.value?.mz_calibration)
+)
 
 const skipped = computed(() => original.value?.mz_calibration?.status === 'skipped')
 

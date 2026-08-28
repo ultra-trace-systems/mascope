@@ -240,10 +240,21 @@ async def reset_mz_calibration(sample_file) -> bool:
     TOF fits are absolute (the m/z axis is recomputed from the invariant TOF
     axis on every apply), so there is nothing to reset for them.
 
+    A skip marker is left alone. It is an operator's attributed statement that
+    the file is deliberately uncalibrated, not a fit, and re-processing has
+    nothing to say about it - clearing it here would silently return the badge
+    to the ambiguous blank the marker exists to remove, and would do so only
+    for Orbitrap files, since this function returns early for every other
+    instrument class. There is no axis to restore underneath one either:
+    :func:`calibration_mz_skip` refuses to write over an applied fit, so a file
+    carrying a skip has none.
+
     :param sample_file: Sample file ORM/DTO object with ``sample_file_id``,
         ``filename`` and ``mz_calibration``.
     :return: True when a reset was performed.
     """
+    if is_calibration_skipped(sample_file.mz_calibration):
+        return False
     if m_name.get_instrument_type(sample_file.filename) != "orbi":
         return False
     stored = m_io.read_props(sample_file.filename).get("mz_calibration")
@@ -674,13 +685,41 @@ def is_calibration_skipped(mz_calibration: dict | None) -> bool:
 #: Statuses of an *existing* record a skip may replace. ``failed`` is the marker
 #: the automatic pipeline leaves behind and ``skipped`` is a re-labelling; both
 #: are states an operator resolves by declaring the file deliberately
-#: uncalibrated. No record at all - "never attempted" - is skippable too, and is
-#: tested for separately: a record that exists but carries no ``status`` is a
-#: pre-discriminator applied fit, not a missing one. Anything outside this set
-#: describes a fit that was actually written onto the file's m/z axis, where
-#: claiming a skip would be false - the axis stays calibrated either way, so the
-#: record would be the only thing that changed.
+#: uncalibrated. Any other status describes a fit that was actually written onto
+#: the file's m/z axis, where claiming a skip would be false - the axis stays
+#: calibrated either way, so the record would be the only thing that changed.
 _SKIPPABLE_STATUSES = ("failed", "skipped")
+
+
+def _is_applied_fit(mz_calibration: dict | None) -> bool:
+    """
+    Whether a record describes a fit written onto the file's own m/z axis.
+
+    Records without a ``status`` are not all alike, and getting that wrong
+    locks a whole instrument class out of the feature:
+
+    - Tofwerk h5 files carry the *instrument's* acquisition mass calibration,
+      ``{"mode": <int>, "par": [floats]}``. The processor exposes it, the file
+      converter copies it onto the sample file at conversion, and nothing ever
+      touches it again - so every converted TOF file, blanks included, holds a
+      statusless record from the moment it lands. Mascope has calibrated
+      nothing here, and these files are exactly the ones an operator wants to
+      mark skipped.
+    - Applied fits written before the ``status`` discriminator existed carry
+      ``verified`` but no ``status``. Those *are* fits and must be refused.
+
+    ``verified`` is the key that separates them: every fit Mascope applies is
+    stamped with it, and the acquisition record has neither field.
+
+    :param mz_calibration: A ``SampleFile.mz_calibration`` record, or None.
+    :return: True when the record stands for a calibration Mascope applied.
+    """
+    if not mz_calibration:
+        return False
+    status = mz_calibration.get("status")
+    if status is not None:
+        return status not in _SKIPPABLE_STATUSES
+    return "verified" in mz_calibration
 
 
 async def _skipped_by_username(user_id: int | None) -> str | None:
@@ -753,7 +792,12 @@ async def calibration_mz_skip(
     Reversible in two ways: calibrating the file overwrites the record (the
     never-overwrite guard that protects an applied fit from a later failed
     attempt lives in the automatic pipeline and does not apply here), and
-    :func:`calibration_mz_unskip` clears it outright.
+    :func:`calibration_mz_unskip` clears it outright. Nothing else removes it -
+    in particular :func:`reset_mz_calibration`, which re-processing runs,
+    leaves a skip standing.
+
+    Refused only for a file carrying a fit Mascope applied; see
+    :func:`_is_applied_fit` for why "has no ``status``" does not mean that.
 
     :param filename: Name of the sample file to mark.
     :param reason: Operator-supplied label explaining the skip.
@@ -764,11 +808,13 @@ async def calibration_mz_skip(
     """
     sample_file = await fetch_sample_file(filename=filename)
 
-    previous = sample_file.mz_calibration
-    if previous is not None and previous.get("status") not in _SKIPPABLE_STATUSES:
+    if _is_applied_fit(sample_file.mz_calibration):
         raise ApiException(
-            f"Sample file '{filename}' carries an applied m/z calibration. "
-            "Re-process or re-calibrate it before marking calibration skipped.",
+            f"Sample file '{filename}' carries an applied m/z calibration, so "
+            "it cannot be marked as deliberately uncalibrated: the fit is on "
+            "the file's m/z axis whatever the record says. Re-processing an "
+            "Orbitrap file restores its acquisition axis and clears the "
+            "record; a calibrated TOF file stays calibrated.",
             {"filename": filename},
             409,
         )

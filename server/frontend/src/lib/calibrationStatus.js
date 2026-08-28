@@ -27,6 +27,29 @@ const day = (value) => {
 }
 
 /**
+ * Whether `POST /calibration/mz_skip` would accept this record.
+ *
+ * Mirrors `_is_applied_fit` in `calibration_controller.py`, so the UI offers
+ * the action exactly where the backend takes it. A file whose m/z axis carries
+ * a fit Mascope applied cannot be called uncalibrated; anything else can:
+ * no record at all, a given-up automatic attempt, an existing marker being
+ * relabelled, and - the case a status check alone gets wrong - the
+ * instrument's own acquisition calibration, which every converted Tofwerk h5
+ * file carries as a statusless `{mode, par}` record from the moment it lands.
+ * Applied fits predating the `status` discriminator carry `verified`, which is
+ * what tells those two statusless shapes apart.
+ *
+ * @param {object|null|undefined} mzCalibration - `sample.mz_calibration` record
+ * @returns {boolean} True when the file may be marked calibration-skipped.
+ */
+export function canSkipCalibration(mzCalibration) {
+  if (!mzCalibration) return true
+  const status = mzCalibration.status
+  if (status !== undefined && status !== null) return status === 'failed' || status === 'skipped'
+  return !('verified' in mzCalibration)
+}
+
+/**
  * Derive the calibration badge for a sample row.
  *
  * @param {object|null|undefined} mzCalibration - `sample.mz_calibration` record
@@ -40,11 +63,16 @@ export function calibrationStatus(mzCalibration) {
       state: 'none',
       icon: 'ph ph-scales',
       severity: 'secondary',
-      clickable: false,
+      // Clickable since the dialog gained the skip action: a never-attempted
+      // file is its archetypal target, so this badge is the entry point the
+      // tooltip points at. Without it the only route in is the sample context
+      // menu, which names neither calibration skipping nor this state.
+      clickable: true,
       tooltip:
         'Not calibrated: calibration was never attempted - the ionization ' +
-        'mode has no calibration collection, or the file is a blank. If that ' +
-        'is deliberate, record it from the calibration dialog.'
+        'mode has no calibration collection, or the file is a blank. Click to ' +
+        'calibrate, or to record that the file is deliberately left ' +
+        'uncalibrated.'
     }
   }
 

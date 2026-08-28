@@ -14,11 +14,16 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
   the instrument's workspace can now open the calibration dialog, choose *Skip
   calibration...* and give a short label; the badge switches to a neutral
   marker whose tooltip carries the reason, who recorded it and when. The state
-  survives reloads, applies to every sample referencing that file, and is
-  undone either by calibrating the file or by clearing the marker from the same
-  dialog. Skipping deliberately changes nothing about the analysis: matching
-  runs exactly as it did for an uncalibrated sample, which it already did
-  silently - the marker only makes the silence explicit and attributable.
+  survives reloads and re-processing, applies to every sample referencing that
+  file, and is undone either by calibrating the file or by clearing the marker
+  from the same dialog. A file that already carries an applied calibration
+  cannot be marked skipped - the fit is on its m/z axis whatever the record
+  says - and the dialog offers the action only where it is accepted. The badge
+  for a never-calibrated file is now clickable, since that is the state the
+  marker most often replaces. Skipping deliberately changes nothing about the
+  analysis: matching runs exactly as it did for an uncalibrated sample, which
+  it already did silently - the marker only makes the silence explicit and
+  attributable.
 
 - The run selector now says **which engine produced the assignment run** you
   are reading, and at which version. A run computed here is chipped

@@ -1,17 +1,26 @@
 import { describe, it, expect } from 'vitest'
 
-import { calibrationStatus } from '@/lib/calibrationStatus'
+import { calibrationStatus, canSkipCalibration } from '@/lib/calibrationStatus'
 
 describe('calibrationStatus', () => {
   it('shows an explicit not-calibrated badge when calibration was never attempted', () => {
     for (const value of [null, undefined]) {
       const status = calibrationStatus(value)
       expect(status.state).toBe('none')
-      expect(status.clickable).toBe(false)
       expect(status.tooltip).toContain('Not calibrated')
       expect(status.tooltip).toContain('no calibration collection')
-      expect(status.tooltip).not.toContain('Click')
     }
+  })
+
+  it('opens the dialog from the never-attempted badge', () => {
+    // This is the archetypal skip target, so the badge has to reach the dialog
+    // the tooltip sends the reader to - otherwise the only route in is the
+    // sample context menu, which names neither skipping nor this state.
+    const status = calibrationStatus(null)
+
+    expect(status.clickable).toBe(true)
+    expect(status.tooltip).toContain('Click')
+    expect(status.tooltip).toContain('deliberately left')
   })
 
   it('separates a deliberate skip from an ambiguous blank', () => {
@@ -148,5 +157,34 @@ describe('calibrationStatus', () => {
     })
 
     expect(status.state).toBe('ok')
+  })
+})
+
+describe('canSkipCalibration', () => {
+  // Mirrors `_is_applied_fit` in calibration_controller.py: the dialog must
+  // offer "Skip calibration..." exactly where POST /calibration/mz_skip takes
+  // it, or the operator is walked through a nested dialog to a 409 toast.
+  it('allows a skip wherever no fit has been applied', () => {
+    expect(canSkipCalibration(null)).toBe(true)
+    expect(canSkipCalibration(undefined)).toBe(true)
+    expect(canSkipCalibration({ status: 'failed', verified: false })).toBe(true)
+    expect(canSkipCalibration({ status: 'skipped', verified: true, reason: 'blank' })).toBe(true)
+  })
+
+  it('allows a skip on the instrument acquisition calibration a TOF file arrives with', () => {
+    // Every converted Tofwerk h5 file carries this statusless record from the
+    // moment it lands. Reading it as "already calibrated" would put the whole
+    // instrument class - blanks included - out of reach of the feature.
+    expect(canSkipCalibration({ mode: 2, par: [1234.5, 0.5, -0.0001] })).toBe(true)
+  })
+
+  it('refuses a skip over a fit that is on the file m/z axis', () => {
+    expect(canSkipCalibration({ status: 'ok', verified: true })).toBe(false)
+    expect(canSkipCalibration({ status: 'ok', verified: true, acquisition_drift: true })).toBe(
+      false
+    )
+    // Applied fits written before the status discriminator: `verified` is what
+    // separates them from the acquisition record above.
+    expect(canSkipCalibration({ verified: true, mode: 'one-point' })).toBe(false)
   })
 })

@@ -19,6 +19,7 @@ import pytest
 from mascope_backend.api.controllers.calibration.calibration_controller import (
     calibration_mz_skip,
     calibration_mz_unskip,
+    reset_mz_calibration,
 )
 from mascope_backend.api.lib.exceptions.api_exceptions import ApiException
 
@@ -33,6 +34,10 @@ _APPLIED = {
 }
 _FAILED = {"status": "failed", "verified": False, "error": "no calibration peaks"}
 _SKIPPED = {"status": "skipped", "verified": True, "reason": "blank file"}
+#: What every converted Tofwerk h5 file carries from the moment it lands: the
+#: instrument's own acquisition mass calibration, copied onto the sample file
+#: by the file converter. No status, no ``verified`` - and no fit of Mascope's.
+_TOF_ACQUISITION = {"mode": 2, "par": [1234.5, 0.5, -0.0001]}
 
 
 def _sample_file(mz_calibration=None, filename="orbitrap_sample"):
@@ -180,6 +185,38 @@ async def test_skip_keeps_an_unknown_account_out_of_the_label():
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
+    "existing,filename",
+    [
+        (_TOF_ACQUISITION, "tof_sample"),
+        (_TOF_ACQUISITION, "tof_blank"),
+    ],
+    ids=["tof-sample", "tof-blank"],
+)
+async def test_skip_accepts_the_instruments_acquisition_calibration(existing, filename):
+    """A statusless record is not automatically a fit Mascope applied.
+
+    Tofwerk h5 files arrive carrying the instrument's own mass calibration, so
+    a guard that reads "record present, no status" as "already calibrated"
+    refuses every TOF file on the deployment - blanks included, which are the
+    archetypal skip target - and the feature is unreachable for the whole
+    instrument class.
+    """
+    run = await _run(
+        calibration_mz_skip,
+        _sample_file(mz_calibration=dict(existing), filename=filename),
+        filename=filename,
+        reason="blank file",
+        user_id=7,
+    )
+
+    assert run.record["status"] == "skipped"
+    assert run.record["reason"] == "blank file"
+    # The acquisition record is replaced, not merged into.
+    assert "mode" not in run.record
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
     "existing",
     [_APPLIED, {"verified": True, "mode": "one-point"}],
     ids=["applied", "legacy-without-status"],
@@ -236,6 +273,56 @@ async def test_skip_of_an_unreferenced_file_is_not_broadcast():
     )
 
     run.emit.assert_not_awaited()
+
+
+# ============= Surviving a re-process =============
+
+
+@pytest.mark.asyncio
+async def test_reprocessing_keeps_a_skip_marker():
+    """Re-processing restores the acquisition axis; it does not un-declare a skip.
+
+    ``reset_mz_calibration`` runs per file at the top of a re-process. Left to
+    its usual path it would clear the whole record for an Orbitrap file - the
+    attributed marker gone with no notification, the badge back to the
+    ambiguous blank the feature exists to remove - while a TOF file kept it,
+    because the instrument-type check returns first.
+    """
+    sample_file = _sample_file(mz_calibration=dict(_SKIPPED))
+    update = AsyncMock()
+
+    with (
+        patch(f"{_CTRL}.m_name") as m_name,
+        patch(f"{_CTRL}.m_io") as m_io,
+        patch(f"{_CTRL}.update_sample_file", update),
+    ):
+        m_name.get_instrument_type.return_value = "orbi"
+        reset = await reset_mz_calibration(sample_file)
+
+    assert reset is False
+    assert sample_file.mz_calibration == _SKIPPED
+    update.assert_not_awaited()
+    m_io.update_props.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_reprocessing_still_clears_an_applied_fit():
+    """The guard above is about skips only - a real fit must still be reset."""
+    sample_file = _sample_file(mz_calibration=dict(_APPLIED))
+    update = AsyncMock()
+
+    with (
+        patch(f"{_CTRL}.m_name") as m_name,
+        patch(f"{_CTRL}.m_io") as m_io,
+        patch(f"{_CTRL}.SampleFileUpdate", MagicMock(side_effect=lambda **kw: kw)),
+        patch(f"{_CTRL}.update_sample_file", update),
+    ):
+        m_name.get_instrument_type.return_value = "orbi"
+        m_io.read_props.return_value = {"mz_calibration": {"par": {}}}
+        reset = await reset_mz_calibration(sample_file)
+
+    assert reset is True
+    assert sample_file.mz_calibration is None
 
 
 # ============= Clearing the marker =============

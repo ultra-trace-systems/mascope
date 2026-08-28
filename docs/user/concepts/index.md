@@ -176,7 +176,14 @@ round to it". An instrument-workspace admin can mark such a file **skipped**
 from the calibration dialog, with a short reason; the badge then shows that
 reason and who recorded it. Skipping changes nothing about the analysis —
 matching runs exactly as it does for any uncalibrated sample — and it can be
-undone by calibrating the file or by clearing the marker.
+undone by calibrating the file or by clearing the marker. Re-processing the
+file leaves the marker standing.
+
+A file that has already been calibrated cannot be marked skipped: the fit is
+written onto the file's m/z axis, so the marker would be claiming something
+untrue. Re-processing an Orbitrap file restores its acquisition axis and clears
+the calibration, after which it can be marked; a calibrated TOF file stays
+calibrated.
 
 See [How it works → Calibration](../how-it-works/calibration.md) for the method.
 
