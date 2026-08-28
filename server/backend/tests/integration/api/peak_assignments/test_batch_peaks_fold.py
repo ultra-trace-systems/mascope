@@ -279,8 +279,10 @@ async def test_series_sample_slice_ignores_occupancy(async_session_factory, seed
 async def test_backfill_folds_every_sample_of_the_batch(async_session_factory, seeded):
     batch, samples = seeded
     # Backfill from the samples' existing completed runs (no re-assignment).
-    folded = await backfill_sample_batch_peaks(batch)
-    assert folded == 2
+    # The failure count is what tells "nothing was assigned" apart from "every
+    # fold raised", which are the same zero to the caller otherwise.
+    folded, failed = await backfill_sample_batch_peaks(batch)
+    assert (folded, failed) == (2, 0)
 
     peaks = await _batch_peaks(async_session_factory, batch)
     assert len(peaks) == 4  # same as folding A and B one by one
