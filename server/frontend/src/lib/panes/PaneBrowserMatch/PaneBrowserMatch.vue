@@ -1,7 +1,5 @@
 <script setup>
-import { watch, computed, provide } from 'vue'
-
-import { useWindowSize } from '@vueuse/core'
+import { watch } from 'vue'
 
 import SelectButton from 'primevue/selectbutton'
 
@@ -93,15 +91,6 @@ watch(
     }
   }
 )
-
-// Calculate table height for virtual scrolling
-const { height } = useWindowSize()
-const PADDING = 100
-const BOTTOM_OFFSET = 50
-const tableHeight = computed(
-  () => ((height.value - PADDING) * app.ui.split.bottom) / 100 - BOTTOM_OFFSET
-)
-provide('match-table-height', tableHeight)
 </script>
 
 <template>
@@ -147,6 +136,9 @@ provide('match-table-height', tableHeight)
 </template>
 
 <style scoped>
+/* The panes below size themselves from this column, not from the window: the
+   switch bar takes its natural height and whatever is left is the pane's, so
+   the bar cannot push a table past the bottom of the splitter panel. */
 .browser-switch {
   display: flex;
   flex-direction: column;

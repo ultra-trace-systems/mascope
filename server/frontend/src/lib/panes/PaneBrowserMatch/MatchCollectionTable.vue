@@ -1,5 +1,5 @@
 <script setup>
-import { inject, computed } from 'vue'
+import { computed } from 'vue'
 
 import Button from 'primevue/button'
 import DataTable from 'primevue/datatable'
@@ -16,8 +16,6 @@ import MatchCollectionContextMenu from './MatchCollectionContextMenu.vue'
 
 const app = useApp()
 const contextMenu = useCollectionContextMenu()
-
-const tableHeight = inject('match-table-height')
 
 // Breadcrumb configuration - simple single level
 const breadcrumb = computed(() => {
@@ -126,7 +124,7 @@ const breadcrumb = computed(() => {
       resizableColumns
       size="small"
       scrollable
-      :scrollHeight="`${tableHeight}px`"
+      scrollHeight="flex"
       :virtualScrollerOptions="{ itemSize: 35.74 }"
       sortField="match.match_score"
       :sortOrder="-1"

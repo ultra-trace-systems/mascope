@@ -128,6 +128,10 @@
     }
   }
 
+  /* This top/bottom box is what gives a browser pane a definite height: the
+     tables inside it are scrollHeight="flex" and resolve against it. The 2rem
+     inset is applied at both levels on purpose - the panel header is taller
+     than one of them, so a single inset would put the body under it. */
   .browser .p-panel-content-container,
   .browser .p-panel-content {
     position: absolute;

@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { mount } from '@vue/test-utils'
-import { reactive, ref } from 'vue'
+import { reactive } from 'vue'
 
 // The batch-peak ledger's menu button launches a background task, so the two
 // things it must get right are both about time: it may not offer an action that
@@ -135,8 +135,7 @@ async function mountPane(options = {}) {
   const wrapper = mount(PaneBrowserBatchPeaks, {
     global: {
       stubs: GLOBAL_STUBS,
-      directives: { tooltip: {}, help: {} },
-      provide: { 'match-table-height': ref(options.tableHeight ?? 300) }
+      directives: { tooltip: {}, help: {} }
     }
   })
   await wrapper.vm.$nextTick()
@@ -396,19 +395,6 @@ describe('PaneBrowserBatchPeaks tier strip', () => {
 
     expect(wrapper.vm.activeTier).toBeNull()
     expect(wrapper.vm.filters.consensus_tier.constraints[0].value).toBeNull()
-  })
-
-  it('takes its own height off the table, and never past zero', async () => {
-    // The pane's height is a share of the window, so the splitter at its
-    // minimum on a short screen leaves less than the strip's own height. A
-    // negative length is not one: the browser drops the declaration and the
-    // virtual scroller then sizes itself off a height nothing set.
-    wrapper = await mountPane({ tableHeight: 300 })
-    expect(wrapper.vm.tableScrollHeight).toBe(240)
-
-    wrapper.unmount()
-    wrapper = await mountPane({ tableHeight: 48 })
-    expect(wrapper.vm.tableScrollHeight).toBe(0)
   })
 
   it('marks the active chip and dims the rest', async () => {

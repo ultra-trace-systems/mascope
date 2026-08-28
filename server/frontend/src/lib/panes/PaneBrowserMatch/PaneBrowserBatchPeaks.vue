@@ -1,5 +1,5 @@
 <script setup>
-import { ref, inject, computed, watch, onScopeDispose } from 'vue'
+import { ref, computed, watch, onScopeDispose } from 'vue'
 
 import Button from 'primevue/button'
 import DataTable from 'primevue/datatable'
@@ -26,17 +26,7 @@ import { useApp } from '@/stores'
  */
 const app = useApp()
 const table = ref(null)
-const tableHeight = inject('match-table-height', ref(300))
 const computing = ref(false)
-
-// What the tier strip above the table costs it, and the table's own height with
-// that taken off. Floored at zero: the pane's height is a share of the window,
-// so dragging the splitter to its minimum on a short screen leaves less than
-// the strip's own height - and a negative one is not a length, so the browser
-// drops the declaration and the virtual scroller sizes itself off a height the
-// layout never set.
-const TIER_STRIP_HEIGHT = 60
-const tableScrollHeight = computed(() => Math.max(0, tableHeight.value - TIER_STRIP_HEIGHT))
 
 const ledger = computed(() => app.data.batchPeak)
 
@@ -297,7 +287,7 @@ onScopeDispose(() => clearTimeout(computeTimer))
       </span>
     </template>
 
-    <div class="col" style="gap: 0.6rem; align-items: stretch">
+    <div class="col ledger" style="gap: 0.6rem; align-items: stretch">
       <!-- A launch that was refused or failed reports itself here rather than in
            a toast that has scrolled away by the time the user looks up. -->
       <Message
@@ -348,7 +338,7 @@ onScopeDispose(() => clearTimeout(computeTimer))
         resizableColumns
         size="small"
         scrollable
-        :scrollHeight="`${tableScrollHeight}px`"
+        scrollHeight="flex"
         :virtualScrollerOptions="{ itemSize: 35.74 }"
         sortField="n_present"
         :sortOrder="-1"
@@ -504,5 +494,30 @@ onScopeDispose(() => clearTimeout(computeTimer))
 .tier-stat.below_assignability b,
 .tier-stat.unassigned b {
   color: var(--p-surface-500, #6f7889);
+}
+
+/* The panel body is a column: the launch-error banner and the tier strip take
+   their natural height and the ledger takes the rest, so whatever is shown
+   above the table shortens it instead of pushing it past the pane (same
+   pattern as PaneBrowserAssignment.vue). */
+:deep(.p-panel-content) {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+.ledger {
+  flex: 1;
+  min-height: 0;
+  /* .col centres on space-between, which would drop the strip and the table
+     apart now that this column can have room to spare. */
+  justify-content: flex-start;
+}
+.ledger > :deep(.p-datatable) {
+  flex: 1;
+  min-height: 0;
+}
+.ledger > :deep(.p-datatable > .p-datatable-table-container) {
+  flex: 1;
+  min-height: 0;
 }
 </style>
