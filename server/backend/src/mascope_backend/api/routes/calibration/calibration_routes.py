@@ -5,6 +5,8 @@ from mascope_backend.api.controllers.calibration.calibration_controller import (
     calibration_mz_calibrate_batch,
     calibration_mz_calibrate_sample,
     calibration_mz_fit,
+    calibration_mz_skip,
+    calibration_mz_unskip,
     get_default_calibration_params,
     get_mz_calibration,
 )
@@ -24,6 +26,7 @@ from mascope_backend.api.lib.exceptions.api_exceptions import (
 )
 from mascope_backend.api.models.calibration.calibration_pydantic_model import (
     CalibrationMzApplyBody,
+    CalibrationSkipBody,
     GetMzCalibrationQueryParams,
     MzCalibrationParams,
 )
@@ -209,6 +212,71 @@ async def calibration_mz_apply_route(
         "message": f"Started to apply m/z fit for sample file '{filename}', please wait.",
         "process_id": process_id,
     }
+
+
+@calibration_router.post("/mz_skip")
+@api_route()
+async def calibration_mz_skip_route(
+    body: CalibrationSkipBody,
+    filename: str = Query(
+        ..., description="The sample file to mark as deliberately not calibrated"
+    ),
+    user=Depends(current_active_user),
+):
+    """Mark a sample file's m/z calibration as deliberately skipped.
+
+    Writes the marker onto the file, so every sample item referencing it - in
+    any workspace - shows it. That is the same reach ``/mz_apply`` has, and it
+    takes the same bar: admin in the file's instrument workspace, in its strict
+    form (membership of a workspace holding an item that references the file
+    does not stand in for the instrument role).
+
+    Admin rather than workspace editor is the deliberate default: the marker is
+    an attributed statement about the raw file that every workspace reads, and
+    the role that may write a calibration is the role that may declare there
+    will not be one. It can be loosened later if it proves obstructive.
+
+    Unlike ``/mz_apply`` nothing is written to the raw file itself and no
+    matches are removed, so this answers synchronously rather than scheduling
+    a background job.
+
+    :param body: The skip body carrying the required reason label.
+    :type body: CalibrationSkipBody
+    :param filename: The sample file to mark.
+    :type filename: str
+    :param user: The current authenticated user, defaults to Depends(current_active_user).
+    :type user: User, optional
+    :return: The written calibration record.
+    :rtype: dict
+    """
+    await check_filename_file_instrument_access(filename, user, "admin")
+
+    return await calibration_mz_skip(
+        filename=filename, reason=body.reason, user_id=user.id
+    )
+
+
+@calibration_router.delete("/mz_skip")
+@api_route()
+async def calibration_mz_unskip_route(
+    filename: str = Query(..., description="The sample file to clear the marker from"),
+    user=Depends(current_active_user),
+):
+    """Clear a skip marker, returning the file to "not calibrated".
+
+    Same gating and the same file-scoped reach as writing the marker. Only a
+    skip record is cleared; a calibrated or failed file is refused with 409.
+
+    :param filename: The sample file to clear.
+    :type filename: str
+    :param user: The current authenticated user, defaults to Depends(current_active_user).
+    :type user: User, optional
+    :return: Confirmation message.
+    :rtype: dict
+    """
+    await check_filename_file_instrument_access(filename, user, "admin")
+
+    return await calibration_mz_unskip(filename=filename, user_id=user.id)
 
 
 @calibration_router.post("/mz_calibrate/sample/{sample_item_id}")

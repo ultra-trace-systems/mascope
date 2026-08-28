@@ -169,6 +169,15 @@ Calibration runs automatically when a file is processed into samples — as a
 user you never trigger it. Re-calibration only becomes necessary when a mode's
 calibrant collection changes, and that is an administrative operation.
 
+Some files will never be calibrated — a blank, or a file measured in an
+ionization mode with no calibrant collection. Their calibration badge would
+otherwise stay on an ambiguous blank that reads the same as "nobody has got
+round to it". An instrument-workspace admin can mark such a file **skipped**
+from the calibration dialog, with a short reason; the badge then shows that
+reason and who recorded it. Skipping changes nothing about the analysis —
+matching runs exactly as it does for any uncalibrated sample — and it can be
+undone by calibrating the file or by clearing the marker.
+
 See [How it works → Calibration](../how-it-works/calibration.md) for the method.
 
 ## Where to go next

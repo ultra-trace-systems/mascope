@@ -102,6 +102,32 @@ export const useMzFit = () => {
     )
   }
 
+  // Skipping is file-scoped like `apply`, and needs no fit: it records that
+  // this file is deliberately left uncalibrated, with a reason. Both calls
+  // answer synchronously (nothing is written to the raw file), so unlike
+  // `compute`/`apply` there is no progress notification to wait for.
+  async function skip(sample, reason) {
+    const { filename } = sample ?? active.value
+    await api.http.post(
+      `/calibration/mz_skip`,
+      { reason },
+      {
+        params: { filename },
+        use: 'update',
+        type: 'skip_mz_calibration'
+      }
+    )
+  }
+
+  async function unskip(sample) {
+    const { filename } = sample ?? active.value
+    await api.http.delete(`/calibration/mz_skip`, {
+      params: { filename },
+      use: 'delete',
+      type: 'clear_mz_calibration_skip'
+    })
+  }
+
   app.ui.notification.on('calibration_mz_fit', (payload) => {
     status.value = payload?.status
     if (payload?.status === 'success') {
@@ -142,6 +168,8 @@ export const useMzFit = () => {
     loadInstrumentDefaults,
     unload,
     compute,
-    apply
+    apply,
+    skip,
+    unskip
   })
 }

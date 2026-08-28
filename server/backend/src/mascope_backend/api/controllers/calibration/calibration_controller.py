@@ -12,6 +12,7 @@ Tasks:
 
 import asyncio
 import time
+from datetime import datetime, timezone
 from typing import cast
 
 from sqlalchemy import and_, func, select
@@ -57,13 +58,14 @@ from mascope_backend.api.models.calibration.config import calibration_config
 from mascope_backend.api.models.sample.files.sample_file_pydantic_model import (
     SampleFileUpdate,
 )
-from mascope_backend.db import IonizationMode, Sample, SampleBatch, async_session
+from mascope_backend.db import IonizationMode, Sample, SampleBatch, User, async_session
 from mascope_backend.db.id import gen_id
 from mascope_backend.runtime import runtime
 from mascope_backend.socket.notifications import (
     UserNotification,
     send_progress_user_notification,
 )
+from mascope_backend.socket.records import emit_record_reload
 from mascope_signal.compute import get_sum_signal
 
 
@@ -656,6 +658,180 @@ async def calibration_mz_apply(
             "filename": filename,
             "sample_file_id": sample_file.sample_file_id,
         },
+    }
+
+
+def is_calibration_skipped(mz_calibration: dict | None) -> bool:
+    """
+    Whether a persisted record is a deliberate "not calibrating this" marker.
+
+    :param mz_calibration: A ``SampleFile.mz_calibration`` record, or None.
+    :return: True for a skip record.
+    """
+    return (mz_calibration or {}).get("status") == "skipped"
+
+
+#: Records a skip may replace. None is "never attempted" and ``failed`` is the
+#: marker the automatic pipeline leaves behind - both are states an operator
+#: resolves by declaring the file deliberately uncalibrated. Anything else
+#: describes a fit that was actually written onto the file's m/z axis, and
+#: claiming it was skipped would be false: the axis stays calibrated either
+#: way, so the record would be the only thing that changed. Legacy records
+#: carry no ``status`` at all and land here too, which is the right side.
+_SKIPPABLE_STATUSES = (None, "failed", "skipped")
+
+
+async def _skipped_by_username(user_id: int | None) -> str | None:
+    """
+    Display name to attribute a skip to.
+
+    The record keeps the numeric id as well, but the badge tooltip reads the
+    JSON column directly with no join available, so the name has to be
+    denormalised into it. A later rename therefore leaves the old spelling on
+    the record; the id is what identifies the account.
+
+    :param user_id: The account performing the skip, if known.
+    :return: The account's username, or None when there is no such account.
+    """
+    if user_id is None:
+        return None
+    async with async_session() as session:
+        user = await session.get(User, user_id)
+    return user.username if user else None
+
+
+async def _persist_calibration_record(sample_file, record: dict | None) -> None:
+    """
+    Write a calibration record onto the file and refresh the sample browser.
+
+    :param sample_file: Sample file ORM object to write to.
+    :param record: The new ``mz_calibration`` value (None clears it).
+    """
+    sample_file.mz_calibration = record
+    await update_sample_file(
+        sample_file.sample_file_id, SampleFileUpdate(**sample_file.to_dict())
+    )
+    affected = await fetch_affected_sample_data(
+        sample_file_ids=[sample_file.sample_file_id]
+    )
+    # The sample store reloads on ``match_reload``; it is the event that
+    # repaints the calibration badge. Emitted per batch rather than with
+    # room=None, which would broadcast this file's change to every client.
+    if affected.affected_sample_batch_ids:
+        await emit_record_reload(
+            record_type="match", room=affected.affected_sample_batch_ids
+        )
+
+
+@api_controller()
+async def calibration_mz_skip(
+    filename: str,
+    reason: str,
+    user_id: int | None = None,
+) -> dict:
+    """
+    Mark a sample file as deliberately not calibrated.
+
+    Writes ``{"status": "skipped", "verified": True, ...}`` into the same
+    ``SampleFile.mz_calibration`` column an applied fit uses, so the sample
+    browser's badge reads it through the discriminator it already switches on.
+    A NULL record is ambiguous - blank file, ionization mode without a
+    calibration collection, or simply never attempted - and this replaces that
+    ambiguity with an attributed statement carrying the operator's reason.
+
+    ``verified`` is True on purpose: skipping is not a failure and must not
+    gate matching. The match computation reads this flag and already treats a
+    missing record as verified, so a skipped sample keeps matching exactly as
+    an uncalibrated one did - the marker changes what is displayed and who
+    answers for it, not what is computed.
+
+    Like every other write to this column the change is file-scoped: every
+    sample item referencing the file, in any workspace, shows the marker.
+
+    Reversible in two ways: calibrating the file overwrites the record (the
+    never-overwrite guard that protects an applied fit from a later failed
+    attempt lives in the automatic pipeline and does not apply here), and
+    :func:`calibration_mz_unskip` clears it outright.
+
+    :param filename: Name of the sample file to mark.
+    :param reason: Operator-supplied label explaining the skip.
+    :param user_id: Account the marker is attributed to.
+    :raises NotFoundException: If the sample file does not exist.
+    :raises ApiException: 409 if the file already carries an applied fit.
+    :return: Dict with the written record and a message.
+    """
+    sample_file = await fetch_sample_file(filename=filename)
+
+    previous = sample_file.mz_calibration
+    if (previous or {}).get("status") not in _SKIPPABLE_STATUSES:
+        raise ApiException(
+            f"Sample file '{filename}' carries an applied m/z calibration. "
+            "Re-process or re-calibrate it before marking calibration skipped.",
+            {"filename": filename},
+            409,
+        )
+
+    record = {
+        "status": "skipped",
+        "verified": True,
+        "reason": reason,
+        "skipped_by": await _skipped_by_username(user_id),
+        "skipped_by_user_id": user_id,
+        "skipped_utc": datetime.now(timezone.utc).isoformat(),
+    }
+    await _persist_calibration_record(sample_file, record)
+
+    message = f"Marked m/z calibration skipped for '{filename}': {reason}"
+    runtime.logger.info(message)
+    # The response deliberately carries no batch or sample IDs: the instrument
+    # role authorises this write and says nothing about the workspaces holding
+    # items that reference the file, the same reason the calibration routes
+    # withhold the names of objects the caller could not have read.
+    return {
+        "message": message,
+        "data": {"filename": filename, "mz_calibration": record},
+    }
+
+
+@api_controller()
+async def calibration_mz_unskip(
+    filename: str,
+    user_id: int | None = None,
+) -> dict:
+    """
+    Clear a skip marker, returning the file to "not calibrated".
+
+    Only a skip record is cleared. A file that is calibrated, that failed, or
+    that was never attempted is left untouched: this exists to undo the marker
+    :func:`calibration_mz_skip` wrote, and clearing anything else here would
+    quietly discard a fit or a failure the badge is meant to keep showing.
+    (Restoring the acquisition m/z axis is a different operation -
+    :func:`reset_mz_calibration`, which re-processing runs.)
+
+    :param filename: Name of the sample file to clear.
+    :param user_id: Account performing the change, for the log line.
+    :raises NotFoundException: If the sample file does not exist.
+    :raises ApiException: 409 if the file is not marked as skipped.
+    :return: Dict with a message and the affected batches.
+    """
+    sample_file = await fetch_sample_file(filename=filename)
+
+    if not is_calibration_skipped(sample_file.mz_calibration):
+        raise ApiException(
+            f"m/z calibration is not marked as skipped for '{filename}', "
+            "so there is nothing to clear.",
+            {"filename": filename},
+            409,
+        )
+
+    cleared_by = await _skipped_by_username(user_id)
+    await _persist_calibration_record(sample_file, None)
+
+    message = f"Cleared the m/z calibration skip marker for '{filename}'."
+    runtime.logger.info(f"{message} Cleared by '{cleared_by or 'unknown'}'.")
+    return {
+        "message": message,
+        "data": {"filename": filename, "mz_calibration": None},
     }
 
 

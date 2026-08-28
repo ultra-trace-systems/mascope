@@ -5,6 +5,7 @@ import DataTable from 'primevue/datatable'
 import Column from 'primevue/column'
 import Button from 'primevue/button'
 import Dialog from 'primevue/dialog'
+import InputText from 'primevue/inputtext'
 import Listbox from 'primevue/listbox'
 import { useConfirm } from 'primevue/useconfirm'
 import { num } from '@/lib/formatters'
@@ -77,6 +78,66 @@ const canCalibrate = computed(() => {
 const state = reactive({
   previous: null
 })
+
+// --- Skipping calibration -------------------------------------------------
+// A file that will never be calibrated (a blank, or an ionization mode with no
+// calibrant collection) otherwise leaves the badge on an ambiguous blank. The
+// marker replaces it with an explicit, attributed statement; it is file-scoped
+// and admin-gated exactly like applying a fit, so it rides on `canCalibrate`.
+
+// Mirrors CALIBRATION_SKIP_REASON_MAX_LENGTH on the backend, which rejects a
+// longer label - stopping the input here means the request is never sent.
+const SKIP_REASON_MAX_LENGTH = 200
+
+const skipState = reactive({
+  open: false,
+  reason: '',
+  busy: false
+})
+
+// Only for a single sample: the marker is written per file, and a batch-wide
+// skip would need its own confirmation over every file the batch draws on.
+const skippable = computed(() => !batch.value && !!original.value?.filename)
+
+const skipped = computed(() => original.value?.mz_calibration?.status === 'skipped')
+
+const skippedSummary = computed(() => {
+  const record = original.value?.mz_calibration
+  if (!record) return ''
+  const by = record.skipped_by ? ` by ${record.skipped_by}` : ''
+  return `Calibration skipped${record.reason ? `: ${record.reason}` : ''}.${by ? ` Marked${by}.` : ''}`
+})
+
+watch(visible, (active) => {
+  if (!active) {
+    skipState.open = false
+    skipState.reason = ''
+  }
+})
+
+async function confirmSkip() {
+  const reason = skipState.reason.trim()
+  if (!reason || skipState.busy) return
+  skipState.busy = true
+  try {
+    await mzFit.skip(original.value, reason)
+    skipState.open = false
+    visible.value = false
+  } finally {
+    skipState.busy = false
+  }
+}
+
+async function clearSkip() {
+  if (skipState.busy) return
+  skipState.busy = true
+  try {
+    await mzFit.unskip(original.value)
+    visible.value = false
+  } finally {
+    skipState.busy = false
+  }
+}
 
 const title = computed(() =>
   batch.value
@@ -319,6 +380,25 @@ const formatter = new Intl.NumberFormat('en-US', {
         Applying a calibration rewrites the raw file, so it needs the admin role in the instrument's
         workspace. You can review the fit here but not save it.
       </Message>
+      <div v-else-if="skippable" class="skip-actions">
+        <span v-if="skipped" class="skip-summary">{{ skippedSummary }}</span>
+        <Button
+          v-if="skipped"
+          label="Clear skip"
+          severity="secondary"
+          outlined
+          :disabled="skipState.busy"
+          @click="clearSkip"
+        />
+        <Button
+          v-else
+          label="Skip calibration..."
+          severity="secondary"
+          outlined
+          :disabled="skipState.busy"
+          @click="skipState.open = true"
+        />
+      </div>
       <Button label="Cancel" @click="() => (visible = false)" severity="secondary" />
       <Button
         label="Save"
@@ -326,6 +406,38 @@ const formatter = new Intl.NumberFormat('en-US', {
         @click="save"
       />
     </menu>
+  </Dialog>
+
+  <Dialog
+    header="Skip m/z calibration"
+    v-model:visible="skipState.open"
+    modal
+    :style="{ width: '480px' }"
+  >
+    <p class="skip-explanation">
+      This records that "{{ original?.filename }}" is deliberately left uncalibrated. It applies to
+      every sample referencing that file, in every workspace, and does not stop matching - it
+      replaces an ambiguous blank badge with a reason someone answers for. Calibrating the file
+      later, or clearing the marker, undoes it.
+    </p>
+    <label class="skip-label" for="calibration-skip-reason">Reason</label>
+    <InputText
+      id="calibration-skip-reason"
+      v-model="skipState.reason"
+      :maxlength="SKIP_REASON_MAX_LENGTH"
+      placeholder="e.g. blank file, no calibrant collection for this mode"
+      fluid
+      autofocus
+      @keyup.enter="confirmSkip"
+    />
+    <template #footer>
+      <Button label="Cancel" severity="secondary" @click="skipState.open = false" />
+      <Button
+        label="Mark skipped"
+        :disabled="!skipState.reason.trim() || skipState.busy"
+        @click="confirmSkip"
+      />
+    </template>
   </Dialog>
 </template>
 
@@ -414,5 +526,29 @@ const formatter = new Intl.NumberFormat('en-US', {
   justify-content: center;
   align-items: center;
   margin-bottom: 0.3rem;
+}
+
+.skip-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  margin-inline-end: auto;
+}
+
+.skip-summary {
+  color: var(--p-text-muted-color);
+  max-inline-size: 48ch;
+  overflow-wrap: anywhere;
+}
+
+.skip-explanation {
+  margin-top: 0;
+  color: var(--p-text-muted-color);
+}
+
+.skip-label {
+  display: block;
+  margin-bottom: 0.35rem;
+  font-weight: 600;
 }
 </style>

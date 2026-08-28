@@ -14,6 +14,45 @@ describe('calibrationStatus', () => {
     }
   })
 
+  it('separates a deliberate skip from an ambiguous blank', () => {
+    const status = calibrationStatus({
+      status: 'skipped',
+      verified: true,
+      reason: 'Blank file, nothing to calibrate against',
+      skipped_by: 'operator_a',
+      skipped_utc: '2026-06-15T09:30:00+00:00'
+    })
+
+    expect(status.state).toBe('skipped')
+    expect(status.clickable).toBe(true)
+    // Neutral, and not the scale icon every other state shares - grey alone
+    // would read as "unverified".
+    expect(status.severity).toBe('secondary')
+    expect(status.icon).not.toBe('ph ph-scales')
+    expect(status.tooltip).toContain('Blank file, nothing to calibrate against')
+    expect(status.tooltip).toContain('operator_a')
+    expect(status.tooltip).toContain('2026')
+    // The blank-file / no-collection wording belongs to the "never attempted"
+    // badge; conflating the two is what this state exists to end.
+    expect(status.tooltip).not.toContain('no calibration collection')
+  })
+
+  it('says matching is unaffected by a skip', () => {
+    const status = calibrationStatus({ status: 'skipped', verified: true, reason: 'not needed' })
+
+    expect(status.tooltip).toContain('Matching is unaffected')
+    expect(status.tooltip).not.toContain('Marked')
+  })
+
+  it('renders a skip that lost its attribution', () => {
+    // Attribution is denormalised into the record, so a marker written for a
+    // since-deleted account carries none. The badge must still explain itself.
+    const status = calibrationStatus({ status: 'skipped', verified: true, reason: 'blank' })
+
+    expect(status.state).toBe('skipped')
+    expect(status.tooltip).toContain('Calibration skipped: blank.')
+  })
+
   it('flags a failed calibration with attempts and error in the tooltip', () => {
     const status = calibrationStatus({
       status: 'failed',

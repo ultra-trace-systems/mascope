@@ -1,4 +1,4 @@
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 from mascope_backend.api.models.base_pydantic_model import QueryParamsModel
 from mascope_backend.api.models.calibration.config import calibration_config
@@ -127,3 +127,35 @@ class CalibrationFitParams(MzCalibrationParams):
 
 class CalibrationMzApplyBody(BaseModel):
     fit: dict = Field(..., description="Fit parameters")
+
+
+#: Longest skip reason accepted. The label is rendered inside a badge tooltip,
+#: so a reason long enough to need scrolling would not be read anyway; the cap
+#: also keeps the JSON column from collecting pasted log dumps.
+CALIBRATION_SKIP_REASON_MAX_LENGTH = 200
+
+
+class CalibrationSkipBody(BaseModel):
+    reason: str = Field(
+        ...,
+        min_length=1,
+        max_length=CALIBRATION_SKIP_REASON_MAX_LENGTH,
+        description=(
+            "Why calibration is not being applied to this file. Required: the "
+            "point of the marker is that it is attributable and explained, so "
+            "an empty label would leave exactly the ambiguity it replaces."
+        ),
+    )
+
+    @field_validator("reason")
+    @classmethod
+    def strip_reason(cls, value: str) -> str:
+        """Trim the label and refuse one that is only whitespace.
+
+        ``min_length`` runs against the submitted string, so a reason of spaces
+        alone passes it and would be stored as an empty label.
+        """
+        stripped = value.strip()
+        if not stripped:
+            raise ValueError("Provide a reason for skipping the m/z calibration.")
+        return stripped

@@ -7,12 +7,24 @@
  *   badge so the column reads as an explicit state, not a missing value.
  * - `{status: "failed", ...}` - the automatic pipeline gave up; the sample is
  *   uncalibrated and its matches are skipped until it is recalibrated.
+ * - `{status: "skipped", verified: true, reason, skipped_by, skipped_utc}` - an
+ *   operator declared the file deliberately uncalibrated. Distinct from `null`
+ *   in every way that matters: it is explicit, attributed and explained, and
+ *   `verified: true` keeps matching running exactly as it does for a file with
+ *   no record at all.
  * - `{status: "ok"/verified: true, ...}` - an applied fit, optionally with a
  *   `quality` block (calibration point count, pre/post mean |m/z error| in
  *   ppm) recorded at fit time.
  */
 
 const ppm = (value) => (value === null || value === undefined ? null : `${value.toFixed(2)} ppm`)
+
+/** The local date of an ISO timestamp, or null when it is missing or unparsable. */
+const day = (value) => {
+  if (!value) return null
+  const parsed = new Date(value)
+  return Number.isNaN(parsed.getTime()) ? null : parsed.toLocaleDateString()
+}
 
 /**
  * Derive the calibration badge for a sample row.
@@ -30,8 +42,27 @@ export function calibrationStatus(mzCalibration) {
       severity: 'secondary',
       clickable: false,
       tooltip:
-        'Not calibrated: the ionization mode has no calibration collection, ' +
-        'or the file is a blank.'
+        'Not calibrated: calibration was never attempted - the ionization ' +
+        'mode has no calibration collection, or the file is a blank. If that ' +
+        'is deliberate, record it from the calibration dialog.'
+    }
+  }
+
+  if (mzCalibration.status === 'skipped') {
+    const reason = mzCalibration.reason ? `: ${mzCalibration.reason}` : ''
+    const by = mzCalibration.skipped_by ? ` by ${mzCalibration.skipped_by}` : ''
+    const on = day(mzCalibration.skipped_utc)
+    const attribution = by || on ? `Marked${by}${on ? ` on ${on}` : ''}. ` : ''
+    return {
+      state: 'skipped',
+      // The one state that does not read as a scale: neutral grey alone would
+      // be indistinguishable from "unverified" in the column.
+      icon: 'ph ph-prohibit',
+      severity: 'secondary',
+      clickable: true,
+      tooltip:
+        `Calibration skipped${reason}. ${attribution}` +
+        'Matching is unaffected. Click to calibrate or clear the marker.'
     }
   }
 

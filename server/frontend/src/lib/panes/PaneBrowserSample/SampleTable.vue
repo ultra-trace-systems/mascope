@@ -241,8 +241,9 @@ const openCalibration = (sample) => {
         <template #body="{ data }">
           <span
             v-if="calibrationStatus(data.mz_calibration)"
-            class="pi ph ph-scales"
+            class="pi"
             :class="[
+              calibrationStatus(data.mz_calibration).icon,
               `calibration-${calibrationStatus(data.mz_calibration).state}`,
               { 'calibration-badge': calibrationStatus(data.mz_calibration).clickable }
             ]"

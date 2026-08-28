@@ -115,6 +115,7 @@ Access to sample files (the raw measurement data uploaded from instruments) is c
 - **Uploading files**: requires at least **editor** in the instrument workspace (or the upload creates the workspace and the user becomes owner).
 - **Deleting / reprocessing files**: requires at least **admin** in the instrument workspace, *or* admin in a workspace holding a sample item that references the file.
 - **Running an m/z calibration**: requires at least **admin** in the instrument workspace, for the same reason as reprocessing — a calibration is written onto the file, so every sample item referencing it, in any workspace, sees the change.
+- **Marking a calibration skipped** (`POST /api/calibration/mz_skip`, and `DELETE` to clear it): the same **admin** in the instrument workspace. The marker is written into the same field an applied calibration is, has the same reach, and is an attributed statement about the raw file — so the role that may write a calibration is the role that may declare there will not be one.
 
 The instrument role authorises the write and says nothing about the workspace the addressed batch or sample sits in, so a calibration can reach an object the caller could not have listed. The confirmation the route returns therefore names that batch or sample only when a guest-level read would have returned the name; otherwise it is left out. Note that the progress notifications the background job emits to the caller are not filtered this way.
 

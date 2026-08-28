@@ -174,7 +174,7 @@
 
   /* Badge semantics: red = calibration failed (needs action), orange =
      calibrated but the file arrived with acquisition drift (instrument needs
-     retuning), green = calibrated, grey = unverified. */
+     retuning), green = calibrated, grey = unverified or deliberately skipped. */
   .browser .calibration-failed {
     color: var(--p-red-500, #ef4444);
   }
@@ -190,6 +190,13 @@
   .browser .calibration-none {
     color: var(--p-text-muted-color);
     opacity: 0.45;
+  }
+
+  /* Deliberately not calibrated: neutral, and at full strength rather than the
+     dimmed "none" - this is a decision someone recorded, not a missing value.
+     Its own icon carries the distinction from the other grey states. */
+  .browser .calibration-skipped {
+    color: var(--p-text-muted-color);
   }
 
   .browser .calibration-ok {

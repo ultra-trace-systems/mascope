@@ -6,6 +6,20 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
 
 ### Added
 
+- A sample file can now be marked **"calibration skipped"**, with a reason. The
+  calibration badge used to show a dim, unclickable icon whose tooltip lumped
+  three different situations together - a blank file, an ionization mode with
+  no calibrant collection, and simply nobody having run one - so an operator
+  who knew a file would never be calibrated had no way to say so. An admin of
+  the instrument's workspace can now open the calibration dialog, choose *Skip
+  calibration...* and give a short label; the badge switches to a neutral
+  marker whose tooltip carries the reason, who recorded it and when. The state
+  survives reloads, applies to every sample referencing that file, and is
+  undone either by calibrating the file or by clearing the marker from the same
+  dialog. Skipping deliberately changes nothing about the analysis: matching
+  runs exactly as it did for an uncalibrated sample, which it already did
+  silently - the marker only makes the silence explicit and attributable.
+
 - The run selector now says **which engine produced the assignment run** you
   are reading, and at which version. A run computed here is chipped
   *Mascope*; one published into the sample from outside carries that engine's
