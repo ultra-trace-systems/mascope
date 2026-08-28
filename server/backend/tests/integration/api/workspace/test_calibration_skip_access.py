@@ -42,7 +42,11 @@ async def skip_file(async_session_factory, acquisitions_workspace):
                 datetime=_NOW_NAIVE,
                 datetime_utc=_NOW,
                 length=60.0,
-                range={"min": 0, "max": 500},
+                # A list, not the ``{"min": ..., "max": ...}`` shape the
+                # session-scoped ``sample_file`` fixture uses: these tests write
+                # the row back through ``SampleFileUpdate``, whose schema (like
+                # the real converter output) types this column as a list.
+                range=[0.0, 500.0],
                 polarity="+",
             )
         )

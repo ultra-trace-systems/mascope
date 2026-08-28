@@ -671,14 +671,16 @@ def is_calibration_skipped(mz_calibration: dict | None) -> bool:
     return (mz_calibration or {}).get("status") == "skipped"
 
 
-#: Records a skip may replace. None is "never attempted" and ``failed`` is the
-#: marker the automatic pipeline leaves behind - both are states an operator
-#: resolves by declaring the file deliberately uncalibrated. Anything else
-#: describes a fit that was actually written onto the file's m/z axis, and
-#: claiming it was skipped would be false: the axis stays calibrated either
-#: way, so the record would be the only thing that changed. Legacy records
-#: carry no ``status`` at all and land here too, which is the right side.
-_SKIPPABLE_STATUSES = (None, "failed", "skipped")
+#: Statuses of an *existing* record a skip may replace. ``failed`` is the marker
+#: the automatic pipeline leaves behind and ``skipped`` is a re-labelling; both
+#: are states an operator resolves by declaring the file deliberately
+#: uncalibrated. No record at all - "never attempted" - is skippable too, and is
+#: tested for separately: a record that exists but carries no ``status`` is a
+#: pre-discriminator applied fit, not a missing one. Anything outside this set
+#: describes a fit that was actually written onto the file's m/z axis, where
+#: claiming a skip would be false - the axis stays calibrated either way, so the
+#: record would be the only thing that changed.
+_SKIPPABLE_STATUSES = ("failed", "skipped")
 
 
 async def _skipped_by_username(user_id: int | None) -> str | None:
@@ -763,7 +765,7 @@ async def calibration_mz_skip(
     sample_file = await fetch_sample_file(filename=filename)
 
     previous = sample_file.mz_calibration
-    if (previous or {}).get("status") not in _SKIPPABLE_STATUSES:
+    if previous is not None and previous.get("status") not in _SKIPPABLE_STATUSES:
         raise ApiException(
             f"Sample file '{filename}' carries an applied m/z calibration. "
             "Re-process or re-calibrate it before marking calibration skipped.",
