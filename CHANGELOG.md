@@ -517,6 +517,22 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
 
 ### Fixed
 
+- Help cards no longer run off the edge of the screen. The popover asked
+  Floating UI only to offset itself from the element it points at, with nothing
+  to say what should happen when the result did not fit, and its body had a
+  maximum width but no maximum height - so a long card opened near an edge was
+  simply cut off, with no way to reach the rest of it. The two worst were the
+  *Assignment Runs* card, by some way the longest of the help snippets and
+  pinned below its selector, and the peak inspector's card, which points up out
+  of a panel that already starts near the top of the window. A card that does
+  not fit now moves: to the other side of what it points at, or, when its target
+  is a whole pane and neither side has the room, beside it instead. It slides
+  along that edge to stay clear of the frame, and if it still does not fit it is
+  capped at the room actually available and scrolls inside itself. Its arrow
+  and the invisible bridge that keeps it reachable for the *Learn more* link
+  both follow the side the card ended up on rather than the side it asked for,
+  so neither is left pointing at nothing after a flip.
+
 - Several dev instances on one hostname no longer sign each other out. Cookies
   are not scoped by port, so every stack served from `localhost` - each
   worktree's `mascope dev run --instance`, and a local demo stack beside them -
