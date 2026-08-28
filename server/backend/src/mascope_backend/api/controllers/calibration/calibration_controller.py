@@ -12,6 +12,7 @@ Tasks:
 
 import asyncio
 import time
+from datetime import datetime, timezone
 from typing import cast
 
 from sqlalchemy import and_, func, select
@@ -97,6 +98,33 @@ def _drift_warning_due(key: tuple[str, float], now: float) -> bool:
     return True
 
 
+def clear_drift_suppression(instrument: str | None) -> None:
+    """
+    Forget every suppression window recorded for one instrument.
+
+    Called when a manual recalibration discards a carried drift marker (see
+    :func:`carry_acquisition_drift`): the warning that opened the window
+    described the fit the operator has just overruled, so leaving the entry in
+    place would let a genuine drift on the same instrument go unreported for
+    the rest of the day. Every threshold recorded for the instrument is
+    dropped, because the class limit a stale entry was keyed under is not
+    necessarily the one the next observation will use.
+
+    Per-process like the window itself, so it clears the entry in the worker
+    that handled the recalibration and not in its siblings. That is the same
+    approximation :func:`_drift_warning_due` already makes, and it errs
+    towards reporting: the worst outcome is that a sibling stays quiet until
+    its own window elapses.
+
+    :param instrument: Instrument the recalibrated file was acquired on.
+        A missing name is never recorded as a window, so nothing to clear.
+    """
+    if not instrument:
+        return
+    for key in [key for key in _drift_warned_at if key[0] == instrument]:
+        del _drift_warned_at[key]
+
+
 def acquisition_drift_limit_ppm(filename: str) -> float:
     """
     Drift-warning threshold for the file's instrument class.
@@ -144,6 +172,11 @@ def warn_on_acquisition_drift(
     (The persisted record carries the ``acquisition_drift`` flag for the
     sample browser's badge - see ``calibration_mz_apply``.)
 
+    Whether the error belongs to the instrument rather than to the fit being
+    replaced is not decided here: :func:`carry_acquisition_drift` decides it
+    once, for the badge and this warning alike, and the caller passes on the
+    fits it declined to attribute.
+
     The warning text names the instrument but not the observed magnitude:
     monitoring groups events by message, and the magnitude of ongoing drift
     wanders file-to-file, so embedding it would split one drift episode into
@@ -190,39 +223,139 @@ def warn_on_acquisition_drift(
     )
 
 
-def carry_acquisition_drift(fit: dict, previous: dict | None, filename: str) -> None:
+def previous_fit_moved_the_axis(previous: dict | None) -> bool:
+    """
+    Whether the calibration already on the file rescaled its stored m/z axis.
+
+    An applied fit is persisted with ``status: "ok"`` (see
+    :func:`calibration_mz_apply`); a calibration the pipeline gave up on
+    leaves a marker record instead (``status: "failed"``, ``verified: False``)
+    and never touches the axis, so the file still sits on the axis it was
+    acquired with. A record that says neither is treated as applied: the cost
+    of being wrong that way is one drift observation not raised, against a
+    badge that blames the instrument for a fit which displaced the axis.
+
+    :param previous: The record being replaced, if any.
+    :return: True when the stored m/z axis reflects the previous fit.
+    """
+    if not previous:
+        return False
+    return previous.get("status") != "failed" and previous.get("verified") is not False
+
+
+def _clear_carried_marker(
+    fit: dict, previous: dict | None, cleared_by: int | None
+) -> bool:
+    """
+    Drop the previous record's drift marker on an operator's authority.
+
+    ``drift_cleared_at``/``drift_cleared_by`` go on the new record, so a
+    marker that vanished can still be traced to the operator and the moment it
+    was overruled rather than looking like it was never there. A record with
+    no marker to drop is left alone - there is nothing to account for.
+
+    :param fit: Fit dict about to be persisted (mutated in place).
+    :param previous: The record being replaced, if any.
+    :param cleared_by: User id recorded on the clear, when known.
+    :return: True when a marker was actually dropped.
+    """
+    if not (previous or {}).get("acquisition_drift"):
+        return False
+    fit.update(
+        {
+            "drift_cleared_at": datetime.now(timezone.utc).isoformat(),
+            "drift_cleared_by": cleared_by,
+        }
+    )
+    return True
+
+
+def carry_acquisition_drift(
+    fit: dict,
+    previous: dict | None,
+    filename: str,
+    manual: bool = False,
+    cleared_by: int | None = None,
+) -> bool:
     """
     Stamp the acquisition-drift marker on a fit about to be persisted.
 
-    Drift is a property of how the file was acquired, not of the last fit: a
-    re-calibration runs on the already-corrected axis and sees a near-zero
-    pre-fit error, which must not clear the marker. A fresh drift observation
-    sets the flag with its magnitude; otherwise the previous record's marker
-    is carried forward. The marker clears when :func:`reset_mz_calibration`
-    (which restores the acquisition axis) clears the whole record, or when
-    the carried magnitude no longer exceeds the class threshold - so records
-    flagged under a since-loosened threshold shed the marker on their next
-    recalibration.
+    The marker is decided here and nowhere else: any marker or audit field the
+    incoming fit arrived with is dropped first, because ``/mz_apply`` takes
+    its fit dict straight off the request body and persists unknown keys
+    verbatim.
+
+    A pre-fit error is an acquisition-side observation only while the stored
+    axis is still the acquisition axis. Once a fit has been applied, every
+    later fit measures its residual against the axis *that* fit set. Which of
+    the two the fit at hand is deciding for depends on who asked for it:
+
+    - **Automatic pipeline recalibration** (the default). Drift is a property
+      of how the file was acquired, not of the last fit: a re-calibration runs
+      on the already-corrected axis and sees a near-zero pre-fit error, which
+      must not clear the marker, so the previous record's marker is carried
+      forward. The marker still clears when :func:`reset_mz_calibration`
+      (which restores the acquisition axis) clears the whole record, or when
+      the carried magnitude no longer exceeds the class threshold - so records
+      flagged under a since-loosened threshold shed the marker on their next
+      recalibration.
+    - **Manual recalibration** (``manual=True``: an operator applying a fit
+      from the calibration dialog) **of a file a fit has already been applied
+      to**. The carry rests on the assumption that the fit which raised the
+      flag was correct, and a human recalibrating is an assertion that it was
+      not - so the carried marker is dropped. No new marker is raised from
+      this fit either: its pre-fit error is the overruled fit's residual, the
+      very error the operator is here to correct. That distinction is what the
+      reported case turns on. A mis-calibration displaces the axis by roughly
+      the bogus correction it applied, so the recalibration meant to retract
+      the marker measures that displacement as its own pre-fit error and would
+      re-raise the flag - quoting the operator's own bad correction as the
+      instrument's drift, and leaving the badge amber until a *second*
+      recalibration finally runs on a correct axis.
+    - **Manual calibration of a file still on its acquisition axis** (no
+      previous fit, or only a failure marker - and every calibration after
+      :func:`reset_mz_calibration` restores the axis). The pre-fit error means
+      what it says, so a drifting instrument is flagged exactly as the
+      automatic pipeline flags it. This is also how a marker cleared by
+      mistake is recovered: reset the calibration and let it be observed
+      again.
 
     :param fit: Fit dict about to be persisted (mutated in place).
     :param previous: The record being replaced, if any.
     :param filename: Sample filename, selects the class drift threshold.
+    :param manual: Whether an operator requested this calibration.
+    :param cleared_by: User id recorded on a manual clear, when known.
+    :return: True when a carried marker was dropped by a manual
+        recalibration - the caller uses it to retire the stale warning
+        suppression that marker's episode left behind.
     """
+    for key in (
+        "acquisition_drift",
+        "acquisition_drift_ppm",
+        "drift_cleared_at",
+        "drift_cleared_by",
+    ):
+        fit.pop(key, None)
+    if manual and previous_fit_moved_the_axis(previous):
+        return _clear_carried_marker(fit, previous, cleared_by)
     limit = acquisition_drift_limit_ppm(filename)
     drift = acquisition_drift_ppm(fit, limit)
     if drift is not None:
         fit.update({"acquisition_drift": True, "acquisition_drift_ppm": drift})
-        return
+        return False
     if not (previous or {}).get("acquisition_drift"):
-        return
+        return False
+    if manual:
+        return _clear_carried_marker(fit, previous, cleared_by)
     carried = (previous or {}).get("acquisition_drift_ppm")
     if carried is None:
         # Records written before the magnitude field: the previous fit's
         # own pre-fit error is the observation that raised the flag.
         carried = ((previous or {}).get("quality") or {}).get("pre_fit_mz_error_ppm")
     if carried is not None and abs(carried) <= limit:
-        return
+        return False
     fit.update({"acquisition_drift": True, "acquisition_drift_ppm": carried})
+    return False
 
 
 async def reset_mz_calibration(sample_file) -> bool:
@@ -491,6 +624,7 @@ async def calibration_mz_fit(
 async def calibration_mz_apply(
     fit: dict,
     filename: str,
+    manual: bool = False,
     independent_transaction: bool = False,
     user_id: int | None = None,
     process_id=None,
@@ -511,6 +645,9 @@ async def calibration_mz_apply(
 
     :param fit: Fit dictionary.
     :param filename: Name of the sample file.
+    :param manual: Whether an operator asked for this calibration rather than
+        the automatic pipeline. Governs the acquisition-drift marker only -
+        see :func:`carry_acquisition_drift`.
     :param independent_transaction: Whether to run as independent transaction
     :param user_id: Current user triggered operation (for user notifications)
     :param process_id: Process ID for tracking
@@ -577,7 +714,14 @@ async def calibration_mz_apply(
     new_mz_range = [updated_mz_axis[0], updated_mz_axis[-1]]
 
     fit.update({"status": "ok", "verified": True})
-    carry_acquisition_drift(fit, sample_file.mz_calibration, filename)
+    if carry_acquisition_drift(
+        fit,
+        sample_file.mz_calibration,
+        filename,
+        manual=manual,
+        cleared_by=user_id,
+    ):
+        clear_drift_suppression(sample_file.instrument)
 
     await send_progress_user_notification(notification, 0.3)
 
@@ -668,6 +812,7 @@ async def calibration_mz_apply(
 async def calibration_mz_calibrate_sample(
     sample_item_id: str,
     mz_calibration_params: MzCalibrationParams,
+    manual: bool = False,
     independent_transaction: bool = False,
     user_id: int | None = None,
     process_id: str | None = None,
@@ -686,6 +831,9 @@ async def calibration_mz_calibrate_sample(
     :type sample_item_id: str
     :param mz_calibration_params: The calibration parameters to be used
     :type mz_calibration_params: MzCalibrationParams
+    :param manual: Whether an operator asked for this calibration rather than
+        the automatic pipeline; forwarded to :func:`calibration_mz_apply`.
+    :type manual: bool
     :param independent_transaction: Whether to run as independent transaction
     :type independent_transaction: bool
     :param user_id: Current user triggered operation (for user notifications)
@@ -741,12 +889,20 @@ async def calibration_mz_calibrate_sample(
     await calibration_mz_apply(
         fit=fit,
         filename=sample.filename,
+        manual=manual,
         independent_transaction=False,
         user_id=user_id,
         process_id=gen_id(8),
         parent_id=process_id,
     )
-    warn_on_acquisition_drift(fit, sample.instrument, sample.filename)
+    # Whether this fit's pre-calibration error can be attributed to the
+    # acquisition axis at all is decided in ``carry_acquisition_drift``, which
+    # records the verdict on ``fit``. A manual recalibration measures its error
+    # on the axis the fit it overrules already moved, so telling the operator
+    # to retune the instrument over it - and burning the once-a-day warning
+    # slot on it - would blame the instrument for the previous fit.
+    if fit and fit.get("acquisition_drift"):
+        warn_on_acquisition_drift(fit, sample.instrument, sample.filename)
     await send_progress_user_notification(notification, 0.95)
 
     return {
@@ -806,6 +962,7 @@ def _compose_calibration_failure_message(failed_sample_items: list[dict]) -> str
 async def calibration_mz_calibrate_samples(
     sample_item_ids: list[str],
     mz_calibration_params: MzCalibrationParams,
+    manual: bool = False,
     independent_transaction: bool = False,
     user_id: int | None = None,
     process_id: str | None = None,
@@ -826,6 +983,9 @@ async def calibration_mz_calibrate_samples(
     :type sample_item_ids: Iterable[str]
     :param mz_calibration_params: Calibration parameters to be used.
     :type mz_calibration_params: MzCalibrationParams
+    :param manual: Whether an operator asked for this calibration rather than
+        the automatic pipeline; forwarded per sample.
+    :type manual: bool
     :param independent_transaction: Whether to run as independent transaction.
     :type independent_transaction: bool
     :param user_id: Current user triggered operation (for user notifications)
@@ -866,6 +1026,7 @@ async def calibration_mz_calibrate_samples(
             calibration_result = await calibration_mz_calibrate_sample(
                 sample_item_id=sample_item_id,
                 mz_calibration_params=mz_calibration_params,
+                manual=manual,
                 independent_transaction=False,
                 user_id=user_id,
                 process_id=gen_id(8),
@@ -947,6 +1108,7 @@ async def calibration_mz_calibrate_samples(
 async def calibration_mz_calibrate_batch(
     sample_batch_id: str,
     mz_calibration_params: MzCalibrationParams,
+    manual: bool = False,
     independent_transaction: bool = False,
     user_id: int | None = None,
     process_id: str | None = None,
@@ -969,6 +1131,9 @@ async def calibration_mz_calibrate_batch(
     :type sample_batch_id: str
     :param mz_calibration_params: Calibration parameters to be used.
     :type mz_calibration_params: MzCalibrationParams
+    :param manual: Whether an operator asked for this calibration rather than
+        the automatic pipeline; forwarded per sample.
+    :type manual: bool
     :param independent_transaction: Whether to run as independent transaction.
     :type independent_transaction: bool
     :param user_id: Current user triggered operation (for user notifications)
@@ -1023,6 +1188,7 @@ async def calibration_mz_calibrate_batch(
         calibration_result = await calibration_mz_calibrate_samples(
             sample_item_ids=[sample.sample_item_id for sample in samples],
             mz_calibration_params=mz_calibration_params,
+            manual=manual,
             independent_transaction=False,
             user_id=user_id,
             process_id=gen_id(8),

@@ -197,10 +197,15 @@ async def calibration_mz_apply_route(
     # Get data for notifications
     process_id = gen_id(8)
 
+    # ``manual``: this route exists for the calibration dialog, so reaching it
+    # is an operator overruling the calibration already on the file. It is not
+    # taken from the request body - a client cannot ask to be treated as the
+    # automatic pipeline. See ``carry_acquisition_drift``.
     background_tasks.add_task(
         calibration_mz_apply,
         filename=filename,
         fit=body.fit,
+        manual=True,
         independent_transaction=True,
         user_id=user.id,
         process_id=process_id,
@@ -252,6 +257,7 @@ async def calibration_mz_calibrate_sample_route(
         calibration_mz_calibrate_sample,
         sample_item_id=sample_item_id,
         mz_calibration_params=mz_calibration_params,
+        manual=True,
         independent_transaction=True,
         user_id=user.id,
         process_id=process_id,
@@ -317,6 +323,7 @@ async def calibration_mz_calibrate_batch_route(
         calibration_mz_calibrate_batch,
         sample_batch_id=sample_batch_id,
         mz_calibration_params=mz_calibration_params,
+        manual=True,
         independent_transaction=True,
         user_id=user.id,
         process_id=process_id,
