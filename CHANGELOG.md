@@ -274,6 +274,18 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
   `owner` everywhere, matching what the workspace checks grant them regardless
   of membership.
 
+- The assignment ledger now says whose peaks it is showing. Its header is a
+  breadcrumb - batch, sample, and the number of peaks assigned - instead of the
+  word *Assignments*, and the caret at its head drops the sample and returns you
+  to the batch's peak ledger. Leaving a sample previously meant a meta-click on
+  its row in the sample browser or clearing the filter chip in the far corner of
+  the window, neither of them anywhere near the table being read.
+
+- Formulas in the assignment ledger can be copied. Hovering one reveals the same
+  copy button the batch-peak ledger has; it copies the bare formula, without the
+  superscript count of folded isotopologue peaks beside it, and clicking it does
+  not change which row is selected.
+
 ### Removed
 
 - SDK: the `09_composition_assignment.ipynb` tutorial is retired. It rolled
@@ -548,6 +560,25 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
   and the invisible bridge that keeps it reachable for the *Learn more* link
   both follow the side the card ended up on rather than the side it asked for,
   so neither is left pointing at nothing after a flip.
+- Unfolded isotopologue rows in the assignment ledger no longer scatter when you
+  sort by a column. Each satellite stays directly under the parent whose formula
+  names it, in every column and in both directions, because the ledger now
+  orders its own rows: it sorts the parents and re-attaches each family
+  underneath. Sorting by intensity was the worst of it - a satellite is a few
+  percent of its main peak, so every child sank hundreds of rows below its
+  parent and arrived as a bare indented arrow with nothing to say what it was a
+  satellite of. A third click on a sorted header now clears the column and
+  returns the ledger to its confidence order, which previously took a reload.
+
+- Clicking the selected row in the assignment ledger deselects it again. The
+  table said so all along, but the pane discarded the message, so the peak
+  stayed focused with no row highlighted and the spectrum, inspector and
+  timeseries stayed on it.
+
+- The assignment ledger no longer offers two *Assign peaks* buttons at once. With
+  no runs yet the toolbar collapsed to a lone copy of the button sitting just
+  above the identical one in the empty state; the toolbar copy now appears only
+  once there is a run to sit beside.
 
 - Several dev instances on one hostname no longer sign each other out. Cookies
   are not scoped by port, so every stack served from `localhost` - each

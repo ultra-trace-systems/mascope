@@ -8,11 +8,19 @@ import { ref } from 'vue'
 // uncaught promise behind a dialog that never closes.
 
 const assign = vi.fn()
+// Module-level so assertions see the same mock the component called: makeApp()
+// runs afresh on every useApp() and would otherwise hand out new spies.
+const sampleUnfocus = vi.fn()
+const peakUnfocus = vi.fn()
 
 const SAMPLE = { sample_item_id: 'si-1', sample_item_name: 'Sample 1' }
+const BATCH = { sample_batch_id: 'sb-1', sample_batch_name: 'Batch 1' }
 
 let focusedSampleId
 let runList
+let runError
+let assignmentList
+let childrenByOwner
 
 // Minimal help-mode facade: the pane registers help cards through these calls;
 // the tests only need them to resolve.
@@ -30,22 +38,28 @@ const helpStub = {
 function makeApp() {
   return {
     data: {
-      sample: { focused: SAMPLE, focusedId: focusedSampleId.value },
-      peak: { list: [], focused: null, focus: vi.fn() },
+      sample: {
+        focused: focusedSampleId.value ? SAMPLE : null,
+        focusedId: focusedSampleId.value,
+        unfocus: sampleUnfocus
+      },
+      batch: { focused: BATCH },
+      peak: { list: [], focused: null, focus: vi.fn(), unfocus: peakUnfocus },
       ionization: { mechanism: { list: [] } },
       peakAssignment: {
         run: {
           list: runList,
+          error: runError,
           focused: runList[0] ?? null,
           focus: vi.fn(),
           unfocus: vi.fn(),
           assign
         },
         peak: {
-          list: [],
+          list: assignmentList,
           pending: false,
           tierCounts: {},
-          childrenOf: () => [],
+          childrenOf: (id) => childrenByOwner.get(id) ?? [],
           forPeak: () => null
         },
         verification: { forAssignment: () => null }
@@ -59,6 +73,7 @@ vi.mock('@/stores', () => ({ useApp: () => makeApp() }))
 
 vi.mock('@/lib/base', async () => ({
   BaseTabbedPanel: { template: '<div><slot name="menu" /><slot /></div>' },
+  BaseCopyableField: true,
   BaseLoadError: true,
   BaseTierTag: true,
   BaseVerdictBadge: true,
@@ -84,7 +99,22 @@ const GLOBAL_STUBS = {
       '<slot name="option" :option="o" /></span>' +
       '</div>'
   },
-  DataTable: true,
+  // Declares the sort-related props so a test can assert the table is handed
+  // the rows to render verbatim rather than to re-sort.
+  DataTable: {
+    name: 'DataTableStub',
+    // Typed, so the bare `lazy` / `removableSort` attributes cast to true the
+    // way they do on the real component instead of arriving as ''.
+    props: {
+      value: Array,
+      lazy: Boolean,
+      removableSort: Boolean,
+      sortField: String,
+      sortOrder: Number
+    },
+    inheritAttrs: false,
+    template: '<div class="datatable"><slot /></div>'
+  },
   Column: true,
   ProgressSpinner: true,
   ToggleSwitch: true
@@ -112,6 +142,102 @@ async function mountPane() {
   await wrapper.vm.$nextTick()
   return wrapper
 }
+
+/** An M0 assignment with its isotopologue satellites, as the ledger sees them. */
+function family({ id, mz, intensity, formula, tier = 'identified', fit = 0.9, children = [] }) {
+  const parent = {
+    peak_assignment_id: id,
+    sample_peak_id: `p-${id}`,
+    sample_peak_mz: mz,
+    sample_peak_intensity: intensity,
+    assigned_formula: formula,
+    tier,
+    fit_score: fit,
+    role: 'target'
+  }
+  const kids = children.map((child, index) => ({
+    peak_assignment_id: `${id}-c${index}`,
+    sample_peak_id: `p-${id}-c${index}`,
+    owner_peak_assignment_id: id,
+    role: 'iso_child',
+    tier,
+    isotope_label: `M+${index + 1}`,
+    ...child
+  }))
+  return { parent, kids }
+}
+
+/** Put families into the mocked assignment store (parents and children flat, as
+ *  the API returns them, plus the childrenOf index the pane folds them with). */
+function seed(...families) {
+  assignmentList = families.flatMap(({ parent, kids }) => [parent, ...kids])
+  childrenByOwner = new Map(families.map(({ parent, kids }) => [parent.peak_assignment_id, kids]))
+}
+
+// Two families whose satellites are nowhere near their parent on any axis: A's
+// parent is the most intense peak in the sample while its children are the two
+// weakest, and B's brightest child outshines both parents. A flat sort by
+// intensity therefore interleaves them completely, which is exactly the bug.
+const FAMILY_A = family({
+  id: 'a',
+  mz: 200.1,
+  intensity: 1000,
+  formula: 'C10H12',
+  tier: 'candidate',
+  fit: 0.7,
+  children: [
+    { sample_peak_mz: 201.1, sample_peak_intensity: 5 },
+    { sample_peak_mz: 202.1, sample_peak_intensity: 6 }
+  ]
+})
+const FAMILY_B = family({
+  id: 'b',
+  mz: 100.05,
+  intensity: 500,
+  formula: 'C2H6',
+  tier: 'identified',
+  fit: 0.95,
+  children: [
+    { sample_peak_mz: 101.05, sample_peak_intensity: 800 },
+    { sample_peak_mz: 102.05, sample_peak_intensity: 4 }
+  ]
+})
+
+const ids = (wrapper) => wrapper.vm.rows.map((row) => row.peak_assignment_id)
+
+/** Null when every family is one contiguous block led by its parent, with the
+ *  satellites in m/z order; otherwise the reason it is not. */
+function familyBreak(rows) {
+  const seen = new Set()
+  let owner = null
+  let previousChildMz = -Infinity
+  for (const row of rows) {
+    if (row.isChild) {
+      if (row.owner_peak_assignment_id !== owner) {
+        return `${row.peak_assignment_id} is under ${owner ?? 'nothing'}, not its parent`
+      }
+      if (row.sample_peak_mz < previousChildMz) {
+        return `satellites of ${owner} are not in m/z order`
+      }
+      previousChildMz = row.sample_peak_mz
+    } else {
+      if (seen.has(row.peak_assignment_id)) return `${row.peak_assignment_id} appears twice`
+      seen.add(row.peak_assignment_id)
+      owner = row.peak_assignment_id
+      previousChildMz = -Infinity
+    }
+  }
+  return null
+}
+
+// Reset before every test in the file, including the describes below that only
+// override part of it.
+beforeEach(() => {
+  focusedSampleId = ref('si-1')
+  runList = []
+  runError = null
+  seed()
+})
 
 describe('PaneBrowserAssignment launcher', () => {
   beforeEach(() => {
@@ -274,5 +400,206 @@ describe('PaneBrowserAssignment run provenance', () => {
     const wrapper = await mountPane()
 
     expect(runSelect(wrapper).find('.select-option').text()).toContain('importing…')
+  })
+})
+
+// Sorting is the pane's job, not DataTable's: PrimeVue sorts the flat array it
+// is handed and would scatter every isotopologue satellite away from the parent
+// whose formula names it. These assert on `rows`, which with `lazy` set is
+// exactly the order the table renders.
+describe('PaneBrowserAssignment isotopologue grouping', () => {
+  const SORTABLE_COLUMNS = [
+    'sample_peak_mz',
+    'sample_peak_intensity',
+    'assigned_formula',
+    'mech',
+    'tierRank',
+    'pCorrect'
+  ]
+
+  beforeEach(() => {
+    runList = [{ peak_assignment_run_id: 'run-1', status: 'completed' }]
+    seed(FAMILY_A, FAMILY_B)
+  })
+  afterEach(() => vi.clearAllMocks())
+
+  async function unfolded() {
+    const wrapper = await mountPane()
+    wrapper.vm.showIsotopologues = true
+    await wrapper.vm.$nextTick()
+    return wrapper
+  }
+
+  it('keeps each satellite under its own parent when sorting by intensity', async () => {
+    const wrapper = await unfolded()
+
+    wrapper.vm.sortField = 'sample_peak_intensity'
+    wrapper.vm.sortOrder = -1
+    await wrapper.vm.$nextTick()
+    // Loudest parent first, each family whole. Flat sorting would have put B's
+    // 800-intensity child second, above its own parent.
+    expect(ids(wrapper)).toEqual(['a', 'a-c0', 'a-c1', 'b', 'b-c0', 'b-c1'])
+
+    wrapper.vm.sortOrder = 1
+    await wrapper.vm.$nextTick()
+    expect(ids(wrapper)).toEqual(['b', 'b-c0', 'b-c1', 'a', 'a-c0', 'a-c1'])
+  })
+
+  it('keeps families whole under every sortable column, both directions', async () => {
+    const wrapper = await unfolded()
+
+    for (const field of SORTABLE_COLUMNS) {
+      for (const order of [1, -1]) {
+        wrapper.vm.sortField = field
+        wrapper.vm.sortOrder = order
+        await wrapper.vm.$nextTick()
+
+        expect(ids(wrapper)).toHaveLength(6)
+        expect(familyBreak(wrapper.vm.rows), `sorting by ${field} (${order})`).toBeNull()
+      }
+    }
+  })
+
+  it('returns to the confidence order when the sort is removed', async () => {
+    const wrapper = await unfolded()
+
+    wrapper.vm.sortField = 'sample_peak_intensity'
+    wrapper.vm.sortOrder = -1
+    await wrapper.vm.$nextTick()
+    expect(ids(wrapper)[0]).toBe('a')
+
+    // A third header click clears the field; the ledger falls back to
+    // identified-first, which puts B on top despite its weaker peak.
+    wrapper.vm.sortField = null
+    wrapper.vm.sortOrder = null
+    await wrapper.vm.$nextTick()
+    expect(ids(wrapper)).toEqual(['b', 'b-c0', 'b-c1', 'a', 'a-c0', 'a-c1'])
+  })
+
+  // Without this the grouping above is computed and then thrown away: PrimeVue
+  // re-sorts the flat array it is given, which is what scattered the satellites
+  // in the first place. `lazy` is the only thing that stops it, so it is worth
+  // an assertion of its own - every ordering test above would pass without it.
+  it('hands the table its rows to render, not to re-sort', async () => {
+    const wrapper = await mountPane()
+    const table = wrapper.findComponent({ name: 'DataTableStub' })
+
+    expect(table.props('lazy')).toBe(true)
+    expect(table.props('value')).toStrictEqual(wrapper.vm.rows)
+    // A third click on a sorted header clears the column rather than cycling.
+    expect(table.props('removableSort')).toBe(true)
+  })
+
+  it('leaves the folded default alone', async () => {
+    const wrapper = await mountPane()
+
+    expect(ids(wrapper)).toEqual(['b', 'a'])
+  })
+
+  it('sorts unassigned peaks last rather than treating a missing formula as smallest', async () => {
+    seed(FAMILY_A, FAMILY_B, family({ id: 'c', mz: 50.1, intensity: 90, formula: null }))
+    const wrapper = await mountPane()
+
+    wrapper.vm.sortField = 'assigned_formula'
+    wrapper.vm.sortOrder = 1
+    await wrapper.vm.$nextTick()
+    // C2H6 before C10H12 (see the collation test below), and the peak with no
+    // formula last in BOTH directions.
+    expect(ids(wrapper)).toEqual(['b', 'a', 'c'])
+
+    wrapper.vm.sortOrder = -1
+    await wrapper.vm.$nextTick()
+    expect(ids(wrapper)).toEqual(['a', 'b', 'c'])
+  })
+
+  it('treats an empty formula as missing, not as the smallest string', async () => {
+    seed(FAMILY_B, family({ id: 'e', mz: 60.1, intensity: 70, formula: '' }))
+    const wrapper = await mountPane()
+
+    wrapper.vm.sortField = 'assigned_formula'
+    wrapper.vm.sortOrder = 1
+    await wrapper.vm.$nextTick()
+    expect(ids(wrapper)).toEqual(['b', 'e'])
+  })
+
+  // The ledger took the sort over from PrimeVue, whose comparer collated
+  // numerically. Losing that silently shreds a homologous series - the one
+  // ordering a formula column exists to show - so it is pinned here.
+  it('orders formulas by carbon count, not by digit position', async () => {
+    seed(
+      family({ id: 'c12', mz: 170.2, intensity: 10, formula: 'C12H26' }),
+      family({ id: 'c2', mz: 30.1, intensity: 20, formula: 'C2H6' }),
+      family({ id: 'c10', mz: 142.2, intensity: 30, formula: 'C10H22' }),
+      family({ id: 'c3', mz: 44.1, intensity: 40, formula: 'C3H8' }),
+      family({ id: 'c9', mz: 128.2, intensity: 50, formula: 'C9H20' })
+    )
+    const wrapper = await mountPane()
+
+    wrapper.vm.sortField = 'assigned_formula'
+    wrapper.vm.sortOrder = 1
+    await wrapper.vm.$nextTick()
+
+    expect(ids(wrapper)).toEqual(['c2', 'c3', 'c9', 'c10', 'c12'])
+  })
+})
+
+describe('PaneBrowserAssignment header and controls', () => {
+  beforeEach(() => {
+    runList = [{ peak_assignment_run_id: 'run-1', status: 'completed' }]
+    seed(FAMILY_A, FAMILY_B)
+  })
+  afterEach(() => vi.clearAllMocks())
+
+  it('names the batch and the sample, and counts the peaks', async () => {
+    const wrapper = await mountPane()
+
+    expect(wrapper.vm.breadcrumb.items.map((item) => item.label)).toEqual([
+      undefined,
+      'Batch 1',
+      'Sample 1',
+      '6 peaks'
+    ])
+  })
+
+  it('offers a way back out of the sample', async () => {
+    const wrapper = await mountPane()
+
+    wrapper.vm.breadcrumb.items[0].action()
+
+    expect(sampleUnfocus).toHaveBeenCalledTimes(1)
+  })
+
+  it('falls back to the plain label with no sample in view', async () => {
+    focusedSampleId = ref(null)
+    const wrapper = await mountPane()
+
+    expect(wrapper.vm.breadcrumb).toBeNull()
+  })
+
+  it('clears the peak focus when the selected row is clicked again', async () => {
+    const wrapper = await mountPane()
+
+    // PrimeVue emits null through v-model:selection on de-selection.
+    wrapper.vm.selectedRow = null
+
+    expect(peakUnfocus).toHaveBeenCalledTimes(1)
+  })
+
+  it('shows exactly one "Assign peaks" control in every state', async () => {
+    const withRuns = await mountPane()
+    expect(withRuns.findAll('[label="Assign peaks"]')).toHaveLength(1)
+
+    // No runs: the empty state carries the only call to action.
+    runList = []
+    const withoutRuns = await mountPane()
+    expect(withoutRuns.findAll('[label="Assign peaks"]')).toHaveLength(1)
+
+    // The run list failed to load. There is no empty state to carry it here, so
+    // the toolbar has to - a failed load must not also remove the way to start
+    // a run.
+    runList = []
+    runError = new Error('nope')
+    const withError = await mountPane()
+    expect(withError.findAll('[label="Assign peaks"]')).toHaveLength(1)
   })
 })
