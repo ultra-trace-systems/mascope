@@ -99,18 +99,22 @@ const GLOBAL_STUBS = {
       '<slot name="option" :option="o" /></span>' +
       '</div>'
   },
-  // Declares the sort-related props so a test can assert the table is handed
-  // the rows to render verbatim rather than to re-sort.
+  // Declared rather than auto-stubbed so the sizing tests can read what the
+  // pane asked the table for and the sort tests can assert the rows are handed
+  // over verbatim; the types match PrimeVue's, so bare attributes
+  // (`scrollable`, `lazy`, `removableSort`) cast to true the way they do on
+  // the real component instead of arriving as ''.
   DataTable: {
-    name: 'DataTableStub',
-    // Typed, so the bare `lazy` / `removableSort` attributes cast to true the
-    // way they do on the real component instead of arriving as ''.
+    name: 'DataTable',
     props: {
-      value: Array,
-      lazy: Boolean,
-      removableSort: Boolean,
-      sortField: String,
-      sortOrder: Number
+      value: { type: Array, default: () => [] },
+      scrollable: { type: Boolean, default: false },
+      scrollHeight: { type: String, default: null },
+      virtualScrollerOptions: { type: Object, default: null },
+      lazy: { type: Boolean, default: false },
+      removableSort: { type: Boolean, default: false },
+      sortField: { type: String, default: null },
+      sortOrder: { type: Number, default: null }
     },
     inheritAttrs: false,
     template: '<div class="datatable"><slot /></div>'
@@ -135,8 +139,7 @@ async function mountPane() {
   const wrapper = mount(PaneBrowserAssignment, {
     global: {
       stubs: GLOBAL_STUBS,
-      directives: { tooltip: {}, help: {} },
-      provide: { 'match-table-height': ref(300) }
+      directives: { tooltip: {}, help: {} }
     }
   })
   await wrapper.vm.$nextTick()
@@ -403,6 +406,45 @@ describe('PaneBrowserAssignment run provenance', () => {
   })
 })
 
+// The ledger used to be sized as the window height minus a constant 60, which
+// was meant to stand in for the switch bar and the tier strip and covered
+// neither the launch-error banner nor a wrapped strip. It now takes whatever
+// the column leaves it.
+describe('PaneBrowserAssignment ledger sizing', () => {
+  beforeEach(() => {
+    focusedSampleId = ref('si-1')
+    runList = [{ peak_assignment_run_id: 'run-1', engine: 'mascope', status: 'completed' }]
+    assign.mockReset()
+    assign.mockRejectedValue(apiError(409, 'already running'))
+  })
+  afterEach(() => vi.clearAllMocks())
+
+  it('sizes the ledger from its pane rather than the window', async () => {
+    const wrapper = await mountPane()
+    const table = wrapper.findComponent({ name: 'DataTable' })
+
+    expect(table.props('scrollHeight')).toBe('flex')
+    // Both are preconditions, not decoration: PrimeVue only applies the flex
+    // scroll layout when the table is scrollable, and without virtual scroller
+    // options it would set an invalid `max-height: flex` instead.
+    expect(table.props('scrollable')).toBe(true)
+    expect(table.props('virtualScrollerOptions')).toBeTruthy()
+  })
+
+  it('keeps the ledger beside a launch error instead of behind it', async () => {
+    const wrapper = await mountPane()
+
+    await wrapper.vm.launch()
+    await wrapper.vm.$nextTick()
+
+    expect(wrapper.find('.pane-message').text()).toContain('already running')
+    // The banner is a sibling row of the ledger column, so it shortens the
+    // table by its own height rather than pushing it out of the pane.
+    expect(wrapper.find('.ledger').exists()).toBe(true)
+    expect(wrapper.findComponent({ name: 'DataTable' }).props('scrollHeight')).toBe('flex')
+  })
+})
+
 // Sorting is the pane's job, not DataTable's: PrimeVue sorts the flat array it
 // is handed and would scatter every isotopologue satellite away from the parent
 // whose formula names it. These assert on `rows`, which with `lazy` set is
@@ -482,7 +524,7 @@ describe('PaneBrowserAssignment isotopologue grouping', () => {
   // an assertion of its own - every ordering test above would pass without it.
   it('hands the table its rows to render, not to re-sort', async () => {
     const wrapper = await mountPane()
-    const table = wrapper.findComponent({ name: 'DataTableStub' })
+    const table = wrapper.findComponent({ name: 'DataTable' })
 
     expect(table.props('lazy')).toBe(true)
     expect(table.props('value')).toStrictEqual(wrapper.vm.rows)

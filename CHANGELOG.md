@@ -661,6 +661,18 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
   the fit percentage shown in the chip. The tier order, ranks and chip labels
   are defined once and shared with the sample ledger, so the two ledgers can
   no longer rank the same four tiers differently.
+- The match browser's tables **fit their pane again**. Targets, Assignments and
+  Batch peaks were all sized from the browser window, by a formula whose
+  constants predated the Targets/Assignments switch bar that now sits above
+  them - so every table ran roughly a bar's height too long, and the last row
+  and the horizontal scrollbar were cut off. Nothing revealed the loss: the
+  panel body has no scrollbar of its own, so the overflow was simply clipped.
+  The tables now take their height from the pane itself, which also means the
+  switch bar, the confidence-tier strip and an assignment-launch error each
+  shorten the table by exactly their own height instead of by a guess, and
+  resizing the splitter re-fits the table at any position. The Assignments
+  ledger in particular had a fixed 60-pixel allowance that had to cover two of
+  those and never covered the error banner at all.
 
 - Several dev instances on one hostname no longer sign each other out. Cookies
   are not scoped by port, so every stack served from `localhost` - each

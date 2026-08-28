@@ -1,5 +1,5 @@
 <script setup>
-import { ref, inject, computed, watch, onBeforeUnmount } from 'vue'
+import { ref, computed, watch, onBeforeUnmount } from 'vue'
 
 import Button from 'primevue/button'
 import DataTable from 'primevue/datatable'
@@ -209,8 +209,7 @@ const onKeyDown = (event) => {
   }
 }
 
-// --- Injection & Watchers ---
-const tableHeight = inject('match-table-height')
+// --- Watchers ---
 
 // Watch for table ref to become available and bind to scroller
 watch(
@@ -379,7 +378,7 @@ watch(
       resizableColumns
       size="small"
       scrollable
-      :scrollHeight="`${tableHeight}px`"
+      scrollHeight="flex"
       :virtualScrollerOptions="{ itemSize: 35.74 }"
       sortField="match.match_score"
       :sortOrder="-1"

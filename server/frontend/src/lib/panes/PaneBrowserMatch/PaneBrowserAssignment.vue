@@ -1,5 +1,5 @@
 <script setup>
-import { ref, reactive, computed, inject, watch } from 'vue'
+import { ref, reactive, computed, watch } from 'vue'
 
 import Button from 'primevue/button'
 import Select from 'primevue/select'
@@ -27,7 +27,6 @@ import { prettyTrim } from '@/lib/utils'
 import { useApp } from '@/stores'
 
 const app = useApp()
-const tableHeight = inject('match-table-height', ref(300))
 
 const runs = computed(() => app.data.peakAssignment.run)
 const assignments = computed(() => app.data.peakAssignment.peak)
@@ -549,7 +548,7 @@ const breadcrumb = computed(() => {
       </div>
     </div>
 
-    <div v-else class="col" style="gap: 0.6rem; align-items: stretch">
+    <div v-else class="col ledger" style="gap: 0.6rem; align-items: stretch">
       <div
         class="tier-strip"
         v-help.top="{
@@ -603,7 +602,7 @@ const breadcrumb = computed(() => {
         dataKey="sample_peak_id"
         size="small"
         scrollable
-        :scrollHeight="`${tableHeight - 60}px`"
+        scrollHeight="flex"
         :virtualScrollerOptions="{ itemSize: 35.5 }"
         lazy
         removableSort
@@ -750,6 +749,33 @@ const breadcrumb = computed(() => {
 </template>
 
 <style scoped>
+/* The panel body is a column: the launch-error banner and the tier strip take
+   their natural height and the ledger takes the rest, so whatever is shown
+   above the table shortens it instead of pushing it past the pane. */
+:deep(.p-panel-content) {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+:deep(.p-message) {
+  flex: 0 0 auto;
+}
+.ledger {
+  flex: 1;
+  min-height: 0;
+  /* .col centres on space-between, which would drop the spinner and the load
+     error to the bottom of the pane now that this column has room to spare. */
+  justify-content: flex-start;
+}
+.ledger > :deep(.p-datatable) {
+  flex: 1;
+  min-height: 0;
+}
+.ledger > :deep(.p-datatable > .p-datatable-table-container) {
+  flex: 1;
+  min-height: 0;
+}
+
 .empty {
   width: 100%;
   height: 220px;
@@ -764,6 +790,7 @@ const breadcrumb = computed(() => {
   flex-flow: row wrap;
   gap: 0.3rem;
   padding: 0 0.4rem;
+  flex: 0 0 auto;
 }
 .tier-stat {
   font-size: 0.72rem;
