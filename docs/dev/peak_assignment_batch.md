@@ -273,8 +273,11 @@ these during bulk `re_process` so a 5,000-sample import does not emit 5,000 even
 [`ChartBatchOverview/data.js`](../../server/frontend/src/lib/charts/ChartBatchOverview/data.js):
 rename `target_ion_id`→`batch_peak_id`, `match_series`→`peak_series`, keep the `shallowRef` +
 splice-stale + push + `triggerRef` merge and the `handleNewSample` append **verbatim**; tier
-drives the marker. It **coexists** with the Targets overview via a mode toggle in
-[`PaneTabBatch.vue`](../../server/frontend/src/lib/panes/PaneTabBatch.vue). The x-axis machinery,
+drives the marker. It **coexists** with the Targets overview via the app's single
+Targets/Assignments switch, in the browser shell's switch bar
+([`PaneBrowserMatch.vue`](../../server/frontend/src/lib/panes/PaneBrowserMatch/PaneBrowserMatch.vue));
+[`PaneTabBatch.vue`](../../server/frontend/src/lib/panes/PaneTabBatch.vue) carries no toggle of its
+own and only picks the chart from the shared `app.ui.matchMode`. The x-axis machinery,
 TIC trace, sum/avg + log/lin scale, and click-to-focus are reused unchanged. Species are chosen
 from a **batch Assignments browser** (the merged-ledger table: species · support · consensus
 tier · agreement/QC), the batch analog of the sample-view Assignments tab.
@@ -331,8 +334,9 @@ Each phase is intended to land independently.
    consensus materialization for touched bins.
 2. **Read + event.** The `.../records/series` endpoint; the `sample_batch_peak_created` event
    (room wiring + bulk coalescing); the occupancy filter.
-3. **Chart.** `chart.batch.assignments` store (clone), mode toggle in `PaneTabBatch`,
-   tier-marker, `handleNewSample` append.
+3. **Chart.** `chart.batch.assignments` store (clone), mode read from the single
+   Targets/Assignments switch (it shipped as a second toggle in `PaneTabBatch` and was later
+   folded into that one switch), tier-marker, `handleNewSample` append.
 4. **Merged-ledger browser + confidence.** The batch Assignments table (species · support ·
    agreement/QC); ambiguity/blend surfacing; the distribution roll-up.
 5. **Stage-B enrichment + hardening.** User-triggered batch Stage-B re-consensus; per-mode

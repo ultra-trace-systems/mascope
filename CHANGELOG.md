@@ -32,7 +32,7 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
   every flagged batch and clicking each one.
 - Help mode now covers the peak assignment feature end to end. Hovering the
   peak inspector, the composition search, the Assignments and Batch peaks
-  ledgers, the assignment charts, the Targets/Assignments toggles and every
+  ledgers, the assignment charts, the Targets/Assignments switch and every
   field of the run-configuration dialog shows a card explaining what the
   element means - the confidence tiers, the four evidence numbers (fit,
   plausibility, confidence, P(correct)), verification and batch peaks are
@@ -319,6 +319,18 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
   are deliberately their own - the amber for calibration drift, an unsure
   verdict, or a provisional assignment - do not follow this accent and are
   unchanged, so they now stand out a little more against it. A composition is assigned to every
+- **One *Targets* / *Assignments* switch.** The switch above the browser is the
+  only one, and it decides both what the browser lists and what the *Batch*
+  overview plots, so the two can never sit on different sides. That pairing
+  matters: the *Assignments* chart plots exactly the batch peaks selected in the
+  ledger, and that ledger is only on screen in *Assignments*, so a chart left on
+  the other setting was being driven by a ledger you could not see. The choice
+  is remembered across reloads. During development the *Batch* tab carried a
+  second switch of its own, unsaved and independent of the first; it never
+  reached a release. With peak assignment switched off the switch is hidden and
+  everything stays on the targeted view, as before.
+
+- **Peak assignment is now on by default.** A composition is assigned to every
   peak of a sample as it is processed (the fast database stage only - the
   untargeted search stays something you launch deliberately), the assignment
   views are present, and the `/api/peak-assignments` write routes accept work

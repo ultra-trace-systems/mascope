@@ -110,8 +110,9 @@ The *Samples* pane also has a **Back to batches** button.
 
 Once samples and matches exist, the remaining tabs come alive:
 
-- **Batch** — compare matches across all samples in the batch, and switch
-  between *Targets* and *Assignments* to plot assigned batch peaks.
+- **Batch** — compare matches across all samples in the batch; the
+  *Targets* / *Assignments* switch above the browser decides whether it plots
+  target matches or the batch peaks you select.
 - **Sample** — the selected sample's sum spectrum and detected peaks, with
   interactive peak assignment: the ledger of what each peak was assigned, the
   peak inspector, and the assignment time series.
