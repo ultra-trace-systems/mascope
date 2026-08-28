@@ -22,7 +22,7 @@ import {
 import { PeakAssignConfigForm } from '@/lib/dialogs'
 import { num } from '@/lib/formatters'
 import { formatIsotopeFormula } from '@/lib/chem'
-import { isTier, tierRank } from '@/lib/tiers'
+import { tierBucket, tierRank } from '@/lib/tiers'
 import { prettyTrim } from '@/lib/utils'
 import { useApp } from '@/stores'
 
@@ -171,12 +171,17 @@ function focusPeak(assignment) {
 
 // --- Tier ordering & filtering ----------------------------------------------
 
+// Confidence order (identified first, unassigned last) comes from the shared
+// tier module: it drives the default sort here and the same one in the
+// batch-peaks pane, which is the point of sharing it - two ledgers side by side
+// that ranked tiers differently would be worse than either being wrong alone.
+
 // Histogram bucket for a row: reagent/artifact roles are their own bucket,
 // matching the counts strip and the spectrum coloring. Tier ranking itself
 // lives in @/lib/tiers so this ledger and the batch-peak ledger cannot drift.
 function bucketOf(row) {
   if (row.role === 'reagent' || row.role === 'artifact') return 'reagent'
-  return isTier(row.tier) ? row.tier : 'unassigned'
+  return tierBucket(row.tier)
 }
 
 // Active tier filters (empty = show all); clicking a histogram chip toggles it.
