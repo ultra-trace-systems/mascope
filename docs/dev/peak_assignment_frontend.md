@@ -19,7 +19,8 @@ socket/notification, join keys — and keeps net-new UI deliberately small.*
 > ([paradigm doc §5.1](peak_assignment_paradigm.md)). **With the flag off the UI is the
 > pre-feature app:** the Sample tab is spectrum-over-(peak ledger | composition search),
 > `PaneBrowserPeak` is mounted again, the spectrum keeps its single grey peak trace, the
-> Targets/Assignments toggle is hidden, and the search reports
+> single Targets/Assignments switch is hidden (the browser stays on targets and the Batch
+> overview stays on the target-ion chart), and the search reports
 > the legacy match score (the backend omits fit/tier/plausibility when the feature is off).
 > The two layouts keep **separate saved splitter positions** — the legacy layout stays on the
 > original `sample-tab-split` key so an existing user's stored layout survives; the assignment
@@ -61,6 +62,19 @@ fixed-height so virtual scrolling holds). Row↔peak selection is two-way. The o
 [`PaneBrowserPeak.vue`](../../server/frontend/src/lib/panes/PaneBrowserPeak/PaneBrowserPeak.vue) ledger
 is not mounted **while the flag is on** — but it is still the Sample tab's ledger with the flag
 off, so it is live code, not dead. Retiring it depends on the feature becoming the default.
+
+**The switch.** One control picks the paradigm, app-wide: the centered switch bar above the
+browser ([`PaneBrowserMatch.vue`](../../server/frontend/src/lib/panes/PaneBrowserMatch/PaneBrowserMatch.vue)).
+Its value is [`app.ui.matchMode`](../../server/frontend/src/stores/ui/matchMode.js) — a small
+persisted UI store (`localStorage` key `mascope.browserMatch.mode`, pinned to `targets` and not
+written while the flag is off) — and both the browser's panes and the **Batch** overview chart
+([`PaneTabBatch.vue`](../../server/frontend/src/lib/panes/PaneTabBatch.vue)) read it. They used to
+own a toggle each, and the batch tab's was unpersisted — it came back on Targets on every page
+load while the browser came back where it was left, and either could be flipped without the other
+moving, so the browser could sit in Assignments while the chart plotted Targets. Since the assignments chart
+plots exactly what the batch-peaks ledger has selected, the ledger drove a chart that was not on
+screen. An unrecognised stored value falls back to `targets` rather than being carried, so the two
+consumers (which branch on opposite comparisons) cannot land on opposite sides.
 
 **Stores** ([`peakAssignment/`](../../server/frontend/src/stores/data/modules/peakAssignment/)):
 `run` (auto-focus latest completed via a list-membership watcher in the store itself;

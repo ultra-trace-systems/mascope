@@ -1,5 +1,5 @@
 <script setup>
-import { ref, watch, computed, provide } from 'vue'
+import { watch, computed, provide } from 'vue'
 
 import { useWindowSize } from '@vueuse/core'
 
@@ -15,17 +15,11 @@ import PaneBrowserBatchPeaks from './PaneBrowserBatchPeaks.vue'
 
 const app = useApp()
 
-// Coexistence toggle: the legacy targeted view vs. the peak-centric assignment
+// Coexistence switch: the legacy targeted view vs. the peak-centric assignment
 // ledger. Targeted is on a retire path (docs/dev/peak_assignment_frontend.md).
-const MODE_KEY = 'mascope.browserMatch.mode'
-// With peak-centric assignment off there is only the targeted view, so the
-// toggle is hidden and the mode is pinned regardless of any stored preference.
-const mode = ref(peakAssignmentEnabled ? localStorage.getItem(MODE_KEY) || 'targets' : 'targets')
-const modeOptions = [
-  { label: 'Targets', value: 'targets' },
-  { label: 'Assignments', value: 'assignments' }
-]
-watch(mode, (value) => localStorage.setItem(MODE_KEY, value))
+// This bar is the app's only Targets/Assignments control -- the choice lives in
+// `app.ui.matchMode` (persisted, and pinned to targets with the flag off), so
+// the batch overview chart plots the same paradigm the browser is showing.
 
 /**
  * Utility function to allow scrolling to matches in the watchers below
@@ -123,20 +117,26 @@ provide('match-table-height', tableHeight)
           the targeted workflow. <b>Assignments</b> browses the peak-centric
           ledgers: the batch peaks of the whole batch, and every peak's
           assignment once a sample is focused.
+          </p>
+          <p>
+          This is the only switch: it also sets what the <b>Batch</b> overview
+          plots &mdash; the selected collection's matched ions across the batch,
+          or the batch peaks you select here.
           </p>`,
         doc: app.ui.help.docUrl('how-it-works/peak-assignment/')
       }"
     >
       <SelectButton
-        v-model="mode"
-        :options="modeOptions"
+        v-model="app.ui.matchMode.mode"
+        :options="app.ui.matchMode.options"
         optionLabel="label"
         optionValue="value"
         :allowEmpty="false"
         size="small"
+        aria-label="Targets or assignments"
       />
     </div>
-    <template v-if="mode === 'assignments'">
+    <template v-if="app.ui.matchMode.mode === 'assignments'">
       <!-- Batch-level batch-peak ledger (selects what the Assignments chart plots)
            at batch level; the per-sample assignments ledger once a sample is
            focused - mirroring how targets swap collection -> ion by focus. -->

@@ -63,7 +63,7 @@ const tabs = computed(() => [
 
       ${
         peakAssignmentEnabled
-          ? '<p>Switch between <b>Targets</b> and <b>Assignments</b> (top right) to plot target matches or assigned batch peaks.</p>'
+          ? '<p>The <b>Targets</b> / <b>Assignments</b> switch above the browser decides what this chart plots: target matches, or the batch peaks you select in the ledger.</p>'
           : '<p>Click on a data point to visualize the corresponding Match.</p>'
       }
 
