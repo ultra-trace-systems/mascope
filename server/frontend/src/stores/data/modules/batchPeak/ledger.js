@@ -3,6 +3,7 @@ import { defineStore } from 'pinia'
 
 import { api } from '@/api'
 import { useData } from '@/lib/store'
+import { countTiers } from '@/lib/tiers'
 
 import { useBatch } from '../batch'
 
@@ -40,18 +41,12 @@ export const useBatchPeakLedger = defineStore('app.data.batchPeak', () => {
   )
 
   // Tier histogram for the ledger's filter strip (one row per batch peak).
-  const tierCounts = computed(() => {
-    const counts = {
-      identified: 0,
-      candidate: 0,
-      below_assignability: 0,
-      unassigned: 0
-    }
-    for (const bp of data.list.value) {
-      counts[bp.consensus_tier] = (counts[bp.consensus_tier] ?? 0) + 1
-    }
-    return counts
-  })
+  //
+  // Four buckets, not the sample ledger's five: `reagent` there is a role
+  // rather than a tier, and a batch peak is a consensus across samples that
+  // carries no role at all - a bucket that can only ever read zero is a
+  // question the user is invited to click and get nothing back from.
+  const tierCounts = computed(() => countTiers(data.list.value, (bp) => bp.consensus_tier))
 
   return { ...data, tierCounts }
 })

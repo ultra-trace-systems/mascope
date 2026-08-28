@@ -3,6 +3,8 @@ import { computed } from 'vue'
 
 import Tag from 'primevue/tag'
 
+import { tierMeta } from '@/lib/tiers'
+
 // Confidence-tier chip for a peak assignment. Replaces BaseMatchTag's 0/1/2
 // match_category with the four peak-centric tiers, optionally showing the fit
 // score and a role marker (reagent/artifact/iso_child are orthogonal to tier).
@@ -34,15 +36,10 @@ const props = defineProps({
   }
 })
 
-// tier -> label, PrimeVue Tag severity, phosphor icon
-const TIER_META = {
-  identified: { label: 'identified', severity: 'success', icon: 'ph ph-seal-check' },
-  candidate: { label: 'candidate', severity: 'warn', icon: 'ph ph-circle-half' },
-  below_assignability: { label: 'below', severity: 'secondary', icon: 'ph ph-minus-circle' },
-  unassigned: { label: 'unassigned', severity: 'secondary', icon: 'ph ph-circle-dashed' }
-}
-
-const meta = computed(() => TIER_META[props.tier] ?? TIER_META.unassigned)
+// Label, severity and icon come from the shared tier module, which also fixes
+// the confidence order the ledgers sort by - the chip and the sort must name
+// the same four tiers or a "below" chip can outrank an "identified" one.
+const meta = computed(() => tierMeta(props.tier))
 
 const fitFormatter = new Intl.NumberFormat('en-US', {
   style: 'percent',

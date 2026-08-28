@@ -1,34 +1,116 @@
+// The confidence tiers a peak assignment can land in, declared once.
+//
+// The same four values were four facts kept in step by hand: the chip's label
+// and severity (BaseTierTag), the rank the tier column sorts by (the sample
+// ledger), the option list a tier filter offers, and the buckets a tier
+// histogram counts into. Each copy could drift from the others, and one did -
+// the batch-peaks table sorted the raw tier string, which put the worst tier
+// first and read as nonsense next to the sample ledger's ranked column.
+//
+// Order here is meaning, not presentation: the list is written most confident
+// (identified) to least (unassigned), and a tier's rank is its position in it.
+// Sorting a tier column ascending therefore reads as "best first", which is
+// what alphabetical order got wrong.
+
+// The tier a row falls back to when it carries none, or one this list does not
+// know. An assignment always has an outcome, so an unreadable tier is the
+// absence of one rather than a fifth kind - counting it as its own bucket is
+// how a histogram stops summing to the number of rows.
+export const FALLBACK_TIER = 'unassigned'
+
+const TIER_DEFINITIONS = [
+  {
+    key: 'identified',
+    label: 'identified',
+    severity: 'success',
+    icon: 'ph ph-seal-check'
+  },
+  {
+    key: 'candidate',
+    label: 'candidate',
+    severity: 'warn',
+    icon: 'ph ph-circle-half'
+  },
+  {
+    // Labelled short because it sits in a chip beside a percentage; the full
+    // value is what the tooltip and the filter menu say.
+    key: 'below_assignability',
+    label: 'below',
+    severity: 'secondary',
+    icon: 'ph ph-minus-circle'
+  },
+  {
+    key: FALLBACK_TIER,
+    label: 'unassigned',
+    severity: 'secondary',
+    icon: 'ph ph-circle-dashed'
+  }
+]
+
+/** Every tier, in confidence order. */
+export const TIERS = TIER_DEFINITIONS.map(({ key }) => key)
+
+/** Tier -> sort rank; ascending rank is descending confidence. */
+export const TIER_RANK = Object.fromEntries(TIER_DEFINITIONS.map(({ key }, index) => [key, index]))
+
+/** Tier -> chip label, PrimeVue Tag severity, phosphor icon. */
+export const TIER_META = Object.fromEntries(TIER_DEFINITIONS.map((tier) => [tier.key, tier]))
+
 /**
- * Confidence tiers of a peak assignment, defined once.
+ * Whether a value is one of the tiers.
  *
- * The same four values are ranked, ordered and labelled by several surfaces -
- * the per-sample assignment ledger, the batch-peak ledger, BaseTierTag - and
- * every copy of the order has to agree, or the tier column sorts by confidence
- * in one table and alphabetically in the next. Keeping the fact here also makes
- * renaming a tier one edit rather than a grep.
+ * Membership is tested against the list, not with `in` against the rank map:
+ * `in` walks the prototype chain, so a record whose tier read "constructor"
+ * would be accepted as a tier and ranked by a function.
  *
- * `reagent` and `artifact` are *roles*, not tiers: a reagent peak still carries
- * one of these four tiers. A surface that shows a reagent bucket (the sample
- * ledger's histogram strip) derives it from `row.role`, so it is deliberately
- * absent here.
+ * @param {string} tier the tier as stored on the record
+ * @returns {boolean} true when this build knows the tier
  */
+export const isTier = (tier) => TIERS.includes(tier)
 
-// Confidence order: identified first, unassigned last.
-export const TIER_ORDER = ['identified', 'candidate', 'below_assignability', 'unassigned']
-
-// tier -> rank, so a sortable tier column orders by confidence rather than
-// alphabetically (which otherwise puts "unassigned" above "identified").
-export const TIER_RANK = Object.fromEntries(TIER_ORDER.map((tier, index) => [tier, index]))
-
-// An unknown or missing tier ranks last, alongside the unassigned peaks.
-export const UNRANKED = TIER_ORDER.length - 1
-
-/** Whether a value is one of the four tiers.
+/**
+ * The tier a row belongs to, with anything unrecognized folded into
+ * `FALLBACK_TIER`.
  *
- *  Own properties only: a plain `tier in TIER_RANK` also answers yes to
- *  `toString` and every other name on Object.prototype, and `TIER_RANK[tier]`
- *  would then hand back a function rather than a rank. */
-export const isTier = (tier) => Object.hasOwn(TIER_RANK, tier)
+ * @param {string} tier the tier as stored on the record
+ * @returns {string} one of `TIERS`
+ */
+export const tierBucket = (tier) => (isTier(tier) ? tier : FALLBACK_TIER)
 
-/** Rank of a tier value, tolerant of nulls and values this build does not know. */
-export const tierRank = (tier) => (isTier(tier) ? TIER_RANK[tier] : UNRANKED)
+/**
+ * Sort rank for a tier, so an unknown one sorts last rather than first.
+ *
+ * @param {string} tier the tier as stored on the record
+ * @returns {number} its index in `TIERS`
+ */
+export const tierRank = (tier) => TIER_RANK[tierBucket(tier)]
+
+/**
+ * Chip presentation for a tier.
+ *
+ * @param {string} tier the tier as stored on the record
+ * @returns {{key: string, label: string, severity: string, icon: string}}
+ */
+export const tierMeta = (tier) => TIER_META[tierBucket(tier)]
+
+/**
+ * Histogram of tiers over `records`, one bucket per tier and always all of
+ * them.
+ *
+ * Every record lands in exactly one bucket, so the counts sum to
+ * `records.length` and a strip built from them can be read as a breakdown of
+ * the table below it. Zero-count tiers are kept: a chip that vanishes when its
+ * count reaches zero moves the ones beside it, and "none of these" is an answer
+ * worth showing.
+ *
+ * @param {Array<Object>} records the rows to count
+ * @param {Function} of reads the tier off one record
+ * @returns {Object<string, number>} counts keyed by tier, in confidence order
+ */
+export function countTiers(records, of = (record) => record?.tier) {
+  const counts = Object.fromEntries(TIERS.map((tier) => [tier, 0]))
+  for (const record of records ?? []) {
+    counts[tierBucket(of(record))] += 1
+  }
+  return counts
+}
