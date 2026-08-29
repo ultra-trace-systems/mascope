@@ -95,6 +95,27 @@ gets no boost). **Display idea:** show `p_correct` as the single number (it alre
 corroboration), and optionally a small "corroborated by N adducts" badge from
 `provenance.corroboration` — don't add the boost yourself, it's already in `p_correct`.
 
+Winner-only means **M0-only**: an `iso_child` row's `corroboration_adducts` is always null, because a
+satellite is the same ion measured at another isotope rather than a second sighting of the compound.
+The evidence is about the formula the whole family shares, though, so the frontend resolves a
+satellite's badge from its family's M0 and renders it *inherited*, labelled as such on its face ("via M0"
+in the inspector, a parenthesised count in the ledger). Only the count crosses over: `adducts` lives in
+the M0's `provenance`, and detail is fetched for the focused assignment alone.
+
+**The boost does not cross over at all.** `_fold_adduct_corroboration` rewrites `p_correct` for the M0
+winners it collects and nothing else, so a satellite's `p_correct` is whatever `apply_calibration` gave
+it — uncorroborated. An inherited badge therefore says the boost is in the *M0's* P(correct), not in the
+row it sits beside; reusing the M0's "already folded into P(correct)" wording there would be false, and
+false about the exact number rendered next to it. See
+[`peak_assignment_frontend.md`](peak_assignment_frontend.md) → "Confidence".
+
+One asymmetry to know before reading `n_adducts` as "how many adducts is this compound seen via": the
+engine's tier gate filters which channels *contribute* to the co-occurrence set, not which rows
+*receive* a boost. A confident winner's own channel is in the set, so its `n_adducts` counts itself
+plus its corroborators; a `below_assignability` winner's is not, so its `n_adducts` counts only the
+corroborators and can legitimately be 1. Both badges gate on `n_adducts > 1`, which hides that case -
+keep the gate if you add a third surface.
+
 ## TL;DR for the implementer
 
 - The probability exists and is **wired in**: `provenance.p_correct` shows in the inspector and the
@@ -103,4 +124,5 @@ corroboration), and optionally a small "corroborated by N adducts" badge from
   ranking.
 - Corroboration is **already baked into `p_correct`**; `provenance.corroboration` (when present) drives
   the **"Supported by N adducts" badge** (inspector pill + ledger marker, shown when `n_adducts > 1`) —
-  never add its `boost` on top.
+  never add its `boost` on top. Isotopologue children carry none of their own and inherit the
+  family M0's count, labelled "via M0" — the count crosses over, the boost does not.

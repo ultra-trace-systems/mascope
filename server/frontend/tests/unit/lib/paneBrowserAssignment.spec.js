@@ -603,6 +603,215 @@ describe('PaneBrowserAssignment isotopologue grouping', () => {
   })
 })
 
+// The engine writes adduct corroboration onto the M0 winner alone: a satellite
+// is the same ion measured at another isotope, not a second sighting of the
+// compound, so the backend leaves its count null by construction. The marker
+// still belongs on the satellite rows - the evidence is about the formula the
+// whole family shares - it just has to say the count is the family's.
+describe('PaneBrowserAssignment adduct corroboration', () => {
+  beforeEach(() => {
+    runList = [{ peak_assignment_run_id: 'run-1', status: 'completed' }]
+  })
+  afterEach(() => vi.clearAllMocks())
+
+  /** A family whose M0 was corroborated by `n` adducts (null for none). Its
+   *  satellites carry whatever the backend put on them, which is nothing. */
+  function corroborated(n, children = [{}, {}]) {
+    const fam = family({
+      id: 'a',
+      mz: 200.1,
+      intensity: 1000,
+      formula: 'C10H12',
+      children: children.map((child, index) => ({
+        sample_peak_mz: 201.1 + index,
+        sample_peak_intensity: 50 - index,
+        corroboration_adducts: null,
+        ...child
+      }))
+    })
+    fam.parent.corroboration_adducts = n
+    return fam
+  }
+
+  async function unfolded(...families) {
+    seed(...families)
+    const wrapper = await mountPane()
+    wrapper.vm.showIsotopologues = true
+    await wrapper.vm.$nextTick()
+    return wrapper
+  }
+
+  const rowsById = (wrapper) => new Map(wrapper.vm.rows.map((row) => [row.peak_assignment_id, row]))
+
+  it('carries the family count onto satellite rows, marked inherited', async () => {
+    const wrapper = await unfolded(corroborated(3))
+    const rows = rowsById(wrapper)
+
+    // Every satellite shows the count, and says it is not its own.
+    for (const id of ['a-c0', 'a-c1']) {
+      expect(rows.get(id).corrobAdducts, id).toBe(3)
+      expect(rows.get(id).corrobInherited, id).toBe(true)
+    }
+    // The M0's own count is unchanged and not flagged as borrowed.
+    expect(rows.get('a').corrobAdducts).toBe(3)
+    expect(rows.get('a').corrobInherited).toBe(false)
+  })
+
+  // The engine folds the boost into the record that carries the corroboration -
+  // the M0's p_correct - and never into a satellite's. So the satellite's
+  // tooltip must not claim the number it sits beside already accounts for it,
+  // which is exactly what the M0's own wording says.
+  it('says whose evidence it is, and whose P(correct) has the boost', async () => {
+    const wrapper = await unfolded(corroborated(3))
+    const rows = rowsById(wrapper)
+
+    expect(wrapper.vm.corrobTooltip(rows.get('a-c0'))).toBe(
+      'Supported by 3 adducts, via the M0 of this isotopologue family ' +
+        "(folded into the M0's P(correct), not into this row's)"
+    )
+    // The M0's own tooltip is the one it always had.
+    expect(wrapper.vm.corrobTooltip(rows.get('a'))).toBe(
+      'Supported by 3 adducts (already folded into P(correct))'
+    )
+  })
+
+  // The count itself is the same number the M0 shows, so the marker parenthesises
+  // a borrowed one rather than dimming it - dimming would borrow the "no value
+  // here" idiom the uncalibrated P(correct) state already owns in this column.
+  it('parenthesises a borrowed count and leaves an owned one bare', async () => {
+    const wrapper = await unfolded(corroborated(3))
+    const rows = rowsById(wrapper)
+
+    expect(wrapper.vm.corrobLabel(rows.get('a-c0'))).toBe('(3)')
+    expect(wrapper.vm.corrobLabel(rows.get('a'))).toBe('3')
+  })
+
+  // The marker is gated on `corrobAdducts > 1`, so an uncorroborated family has
+  // to stay at 0 rather than inherit a 1 or a null that reads as "supported".
+  it('leaves a family whose M0 was not corroborated unmarked', async () => {
+    const wrapper = await unfolded(corroborated(null))
+    const rows = rowsById(wrapper)
+
+    for (const id of ['a', 'a-c0', 'a-c1']) {
+      expect(rows.get(id).corrobAdducts, id).toBe(0)
+      // Nothing was borrowed: there was no count to borrow.
+      expect(rows.get(id).corrobInherited, id).toBe(false)
+    }
+  })
+
+  // A lone adduct corroborates nothing, so the marker's `> 1` gate hides it. The
+  // count still travels to the satellites, and the row says so - `corrobInherited`
+  // tracks where the number came from, not whether it happens to render.
+  it('keeps a single-adduct count below the marker threshold', async () => {
+    const wrapper = await unfolded(corroborated(1))
+    const rows = rowsById(wrapper)
+
+    for (const id of ['a-c0', 'a-c1']) {
+      expect(rows.get(id).corrobAdducts, id).toBe(1)
+      expect(rows.get(id).corrobInherited, id).toBe(true)
+    }
+    expect(rows.get('a').corrobInherited).toBe(false)
+  })
+
+  // An imported ledger is not bound by the in-app engine's winner-only rule, so
+  // a satellite that does carry its own count keeps it rather than the family's.
+  it('prefers a satellite own count over the family one', async () => {
+    const wrapper = await unfolded(corroborated(3, [{ corroboration_adducts: 2 }, {}]))
+    const rows = rowsById(wrapper)
+
+    expect(rows.get('a-c0').corrobAdducts).toBe(2)
+    expect(rows.get('a-c0').corrobInherited).toBe(false)
+    expect(rows.get('a-c1').corrobAdducts).toBe(3)
+    expect(rows.get('a-c1').corrobInherited).toBe(true)
+  })
+
+  // Each satellite inherits from ITS OWN parent, not from whichever family the
+  // loop happened to reach first. With one family on screen the two are
+  // indistinguishable, so this is the case that pins the per-parent scope.
+  it('inherits from each satellite own parent, not across families', async () => {
+    const corroboratedFamily = corroborated(3)
+    const bare = family({
+      id: 'b',
+      mz: 100.05,
+      intensity: 500,
+      formula: 'C2H6',
+      children: [{ sample_peak_mz: 101.05, sample_peak_intensity: 40 }]
+    })
+    bare.parent.corroboration_adducts = null
+    const wrapper = await unfolded(corroboratedFamily, bare)
+    const rows = rowsById(wrapper)
+
+    expect(rows.get('a-c0').corrobAdducts).toBe(3)
+    expect(rows.get('a-c0').corrobInherited).toBe(true)
+    // The uncorroborated family's satellite has no claim on the other's count.
+    expect(rows.get('b-c0').corrobAdducts).toBe(0)
+    expect(rows.get('b-c0').corrobInherited).toBe(false)
+  })
+
+  // Everything above asserts on `rows`, which the shared stubs never render:
+  // PrimeVue's DataTable is what feeds each row to a Column's #body slot, and
+  // `DataTable` is a bare div here while `Column` is auto-stubbed. So the markup
+  // this change actually ships - the marker's gate and its parenthesised label -
+  // is invisible to those tests, and renaming the binding would leave them all
+  // green. This pair passes the rows down so the rendered cell can be read.
+  async function rendered(...families) {
+    // A ref, not a captured array: the rows change when the family is unfolded
+    // below, and the Column stub has to re-render with them.
+    const tableRows = ref([])
+    seed(...families)
+    const wrapper = mount(PaneBrowserAssignment, {
+      global: {
+        directives: { tooltip: {}, help: {} },
+        stubs: {
+          ...GLOBAL_STUBS,
+          // Keeps the shared stub's prop declarations, so `scrollHeight` and
+          // friends stay props rather than falling through onto the div.
+          DataTable: {
+            ...GLOBAL_STUBS.DataTable,
+            watch: {
+              value: { handler: (value) => (tableRows.value = value), immediate: true }
+            }
+          },
+          Column: {
+            setup: () => ({ rows: tableRows }),
+            template:
+              '<div class="col"><template v-for="(row, i) in rows" :key="i">' +
+              '<slot name="body" :data="row" /></template></div>'
+          }
+        }
+      }
+    })
+    wrapper.vm.showIsotopologues = true
+    await wrapper.vm.$nextTick()
+    return wrapper
+  }
+
+  it('renders a parenthesised marker on satellites and a bare one on the M0', async () => {
+    const wrapper = await rendered(corroborated(3))
+    const marks = wrapper.findAll('.corrob-mark').map((m) => m.text())
+
+    // One per row of the family, M0 first: its own count bare, the two borrowed
+    // ones parenthesised.
+    expect(marks).toEqual(['3', '(3)', '(3)'])
+  })
+
+  it('renders no marker for a family whose M0 was not corroborated', async () => {
+    const wrapper = await rendered(corroborated(null))
+
+    expect(wrapper.findAll('.corrob-mark')).toHaveLength(0)
+  })
+
+  // Folded is the default view, and the parent row is the only one on screen.
+  it('leaves the folded M0 row alone', async () => {
+    seed(corroborated(3))
+    const wrapper = await mountPane()
+
+    expect(wrapper.vm.rows).toHaveLength(1)
+    expect(wrapper.vm.rows[0].corrobAdducts).toBe(3)
+    expect(wrapper.vm.rows[0].corrobInherited).toBe(false)
+  })
+})
+
 describe('PaneBrowserAssignment header and controls', () => {
   beforeEach(() => {
     runList = [{ peak_assignment_run_id: 'run-1', status: 'completed' }]

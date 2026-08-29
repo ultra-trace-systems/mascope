@@ -653,6 +653,26 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
   now reads "No calibration collection defined for the ionization mode, or no
   matching peaks found."
 
+- The **"Supported by N adducts"** badge now appears on isotopologue rows too.
+  When a compound is seen through several adducts, that co-occurrence is
+  independent evidence for the formula, and the badge says so - but it was
+  showing only on the main isotopologue. Selecting an M+1 or M+2 peak, or
+  unfolding the satellites in the ledger, dropped the badge entirely, which read
+  as *this peak has no corroboration* when what was true is that corroboration
+  is not a property of a single isotopologue at all. The engine records it on
+  the main isotopologue by design: a satellite is the same ion measured at
+  another isotope, not a second sighting of the compound. The evidence belongs
+  to the formula the whole family shares, so the satellites now show their
+  family's count, and say on their face that it is borrowed - "via M0" in the
+  inspector, a parenthesised count in the ledger. The tooltip is careful about
+  one thing in particular: the confidence boost from that corroboration is in
+  the main isotopologue's P(correct), *not* in the satellite's, which stays
+  calibrated on its own evidence - so a satellite never claims the probability
+  shown next to it already accounts for the other adducts. Rows whose family was
+  never corroborated are unchanged, and a family corroborated by a single adduct
+  still shows nothing. In the peak inspector the badge now also appears
+  immediately, instead of a moment after the peak's full record arrives.
+
 - Help cards no longer run off the edge of the screen. The popover asked
   Floating UI only to offset itself from the element it points at, with nothing
   to say what should happen when the result did not fit, and its body had a

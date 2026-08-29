@@ -101,6 +101,19 @@ carry `plausibility` too; alternatives carry `plausibility` (database ones also 
 `p_correct` by the backend) and is surfaced as a **"Supported by N adducts" badge** — a teal pill in the
 inspector (adduct list on hover) and a compact link-icon + count beside `P(correct)` in the ledger, shown
 only when `n_adducts > 1`. (The demo dataset has no multi-adduct co-occurrence, so it stays hidden there.)
+The backend writes it onto **M0 winners only, by construction** — a satellite is the same ion measured at
+another isotope, not a second sighting of the compound — so an `iso_child` row's own count is always null.
+The evidence is about the formula the family shares, so the frontend resolves a satellite's badge from its
+M0 (`owner_peak_assignment_id`; in the ledger the parent row is already in hand, in the inspector via
+`familyOf`) and renders it **inherited**, saying so on its face — "Supported by N adducts **via M0**" in the
+inspector (dashed pill), a **parenthesised** count in the ledger. It is deliberately not merely dimmed:
+this column already spends opacity on "no calibrated value here", and a borrowed count is the opposite of
+absent. Only the count carries across — the corroborating adducts are named in the M0's `provenance`, and
+detail is fetched for the focused assignment alone. The inherited tooltip is also careful that the **boost
+lives in the M0's `p_correct`, never in the satellite's**: `_fold_adduct_corroboration` rewrites M0 winners
+only, so a satellite must not claim the probability beside it already accounts for the other adducts. The
+M0's own badge now also resolves from the flattened `corroboration_adducts` before its detail arrives, so
+it no longer pops in a moment late.
 
 **The Match tab is NOT gated on the flag (reversed; was #1736).** It was retired under the flag
 for one release cycle, on the reading that the Sample view's spectrum-envelope and time-series

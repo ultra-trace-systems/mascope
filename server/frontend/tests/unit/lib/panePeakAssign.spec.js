@@ -14,6 +14,10 @@ const PEAK = { peak_id: 'p-1', mz: 200.12345, height: 12345, area: 999 }
 let focusedPeak
 let focusedAssignment
 let verdictRecord
+// The isotopologue family of the focused row, when a test needs one, and the
+// one detail record the inspector fetches (for the focused assignment only).
+let familyRows
+let detailRecord
 
 const helpStub = {
   set: vi.fn(),
@@ -32,8 +36,12 @@ function makeApp() {
       peakAssignment: {
         peak: {
           forPeak: () => focusedAssignment,
-          detailOf: () => null,
-          familyOf: () => (focusedAssignment ? [focusedAssignment] : []),
+          // Keyed by id rather than answering every caller: the inspector loads
+          // detail for the focused assignment alone, so anything it reads off
+          // another family member has to come from that member's slim row.
+          detailOf: (id) =>
+            id != null && id === focusedAssignment?.peak_assignment_id ? detailRecord : null,
+          familyOf: () => familyRows ?? (focusedAssignment ? [focusedAssignment] : []),
           loadDetail: () => Promise.resolve()
         },
         verification: { forAssignment: () => verdictRecord, verify: vi.fn() }
@@ -96,6 +104,8 @@ beforeEach(() => {
   focusedPeak = PEAK
   focusedAssignment = null
   verdictRecord = null
+  familyRows = null
+  detailRecord = null
 })
 afterEach(() => vi.clearAllMocks())
 
@@ -178,5 +188,147 @@ describe('PanePeakAssign verification gating', () => {
     const wrapper = await mountPane()
 
     expect(wrapper.find('.verdict-badge').exists()).toBe(true)
+  })
+})
+
+// Adduct corroboration is written onto the M0 winner alone: a satellite is the
+// same ion measured at another isotope, not a second sighting of the compound,
+// so the backend leaves its provenance without one by construction. The badge
+// still belongs on a focused satellite - the evidence is about the formula the
+// whole family shares - it just has to say the count is the family's. The
+// corroborating adducts are named only in the M0's provenance, and the
+// inspector fetches detail for the focused assignment alone, so an inherited
+// badge has the count and nothing else.
+describe('PanePeakAssign adduct corroboration', () => {
+  const M0 = {
+    peak_assignment_id: 'pa-m0',
+    sample_peak_id: 'p-m0',
+    sample_peak_mz: 200.12345,
+    sample_peak_intensity: 12345,
+    assigned_formula: 'C10H12',
+    tier: 'assigned',
+    role: 'M0',
+    fit_score: 0.9
+  }
+  const SATELLITE = {
+    peak_assignment_id: 'pa-c1',
+    sample_peak_id: 'p-1',
+    owner_peak_assignment_id: 'pa-m0',
+    sample_peak_mz: 201.12678,
+    sample_peak_intensity: 1200,
+    assigned_formula: 'C10H12',
+    tier: 'assigned',
+    role: 'iso_child',
+    isotope_label: 'M+1',
+    // What the backend actually sends for a satellite.
+    corroboration_adducts: null,
+    fit_score: 0.9
+  }
+
+  /** Focus the satellite of a family whose M0 carries `n` corroborating adducts. */
+  function focusSatellite(n) {
+    focusedAssignment = SATELLITE
+    familyRows = [{ ...M0, corroboration_adducts: n }, SATELLITE]
+  }
+
+  const badge = (wrapper) => wrapper.find('.corroboration')
+
+  it('shows the family corroboration on a focused satellite, marked inherited', async () => {
+    focusSatellite(3)
+    const wrapper = await mountPane()
+
+    expect(badge(wrapper).exists()).toBe(true)
+    expect(badge(wrapper).classes()).toContain('inherited')
+    // The qualifier is on the badge's face, not only in the tooltip: the count is
+    // the same number the M0 shows, and unqualified it would read as this peak
+    // having been seen through three adducts itself.
+    expect(badge(wrapper).text()).toContain('Supported by 3 adducts via M0')
+  })
+
+  // The engine folds the boost into the record carrying the corroboration - the
+  // M0's p_correct - and never into a satellite's, which stays calibrated on its
+  // own evidence. The inspector renders that satellite's own P(correct) directly
+  // above this badge, so claiming the boost is in it would be false.
+  it('does not claim the boost is in the satellite own P(correct)', async () => {
+    focusSatellite(3)
+    const wrapper = await mountPane()
+
+    expect(wrapper.vm.corroborationTooltip).toBe(
+      'The M0 of this isotopologue family was seen via 3 adducts. ' +
+        "Independent corroborating evidence for the formula, folded into the M0's " +
+        "P(correct) - not into this satellite's, which is calibrated on its own."
+    )
+  })
+
+  // An imported ledger is not bound by the in-app engine's winner-only rule, so a
+  // satellite that carries its own count keeps it - and it is not "via M0".
+  it('prefers a satellite own count over the family one', async () => {
+    focusedAssignment = { ...SATELLITE, corroboration_adducts: 2 }
+    familyRows = [{ ...M0, corroboration_adducts: 5 }, focusedAssignment]
+    const wrapper = await mountPane()
+
+    expect(badge(wrapper).text()).toContain('Supported by 2 adducts')
+    expect(badge(wrapper).text()).not.toContain('via M0')
+    expect(badge(wrapper).classes()).not.toContain('inherited')
+  })
+
+  // The ledger resolves a parent's count as `corroboration_adducts ?? provenance
+  // .corroboration.n_adducts`; the inspector's M0 lookup has to do the same, or
+  // the two panes disagree about a family whose rows carry provenance inline.
+  it('reads the family count off M0 provenance when the flat field is absent', async () => {
+    focusedAssignment = SATELLITE
+    familyRows = [{ ...M0, provenance: { corroboration: { n_adducts: 4 } } }, SATELLITE]
+    const wrapper = await mountPane()
+
+    expect(badge(wrapper).text()).toContain('Supported by 4 adducts via M0')
+    expect(badge(wrapper).classes()).toContain('inherited')
+  })
+
+  it('says nothing when the family M0 was not corroborated', async () => {
+    focusSatellite(null)
+    const wrapper = await mountPane()
+
+    expect(badge(wrapper).exists()).toBe(false)
+  })
+
+  // The badge is gated on more than one adduct: a lone sighting corroborates
+  // nothing, and must not become "Supported by 1 adducts" on the satellites.
+  it('does not spread a single-adduct M0 onto its satellites', async () => {
+    focusSatellite(1)
+    const wrapper = await mountPane()
+
+    expect(badge(wrapper).exists()).toBe(false)
+  })
+
+  it('names the adducts on the M0 itself, and does not mark it inherited', async () => {
+    focusedAssignment = { ...M0, corroboration_adducts: 2 }
+    familyRows = [focusedAssignment, SATELLITE]
+    detailRecord = {
+      provenance: { corroboration: { n_adducts: 2, adducts: ['+H+', '+Na+'], boost: 0.4 } }
+    }
+    const wrapper = await mountPane()
+
+    expect(badge(wrapper).text()).toContain('Supported by 2 adducts')
+    expect(badge(wrapper).classes()).not.toContain('inherited')
+    expect(wrapper.vm.corroborationTooltip).toContain('Seen via 2 adducts (+H+, +Na+)')
+  })
+
+  // The count is flattened onto every ledger row, so the M0's own badge is there
+  // as soon as the row is, rather than popping in when the detail fetch lands.
+  it('shows the M0 badge from the slim row before its detail arrives', async () => {
+    focusedAssignment = { ...M0, corroboration_adducts: 2 }
+    const wrapper = await mountPane()
+
+    expect(badge(wrapper).text()).toContain('Supported by 2 adducts')
+    expect(badge(wrapper).classes()).not.toContain('inherited')
+    // No adduct names to give yet, so the tooltip promises none.
+    expect(wrapper.vm.corroborationTooltip).toContain('Seen via 2 adducts.')
+  })
+
+  it('leaves a peak with no family and no corroboration alone', async () => {
+    focusedAssignment = assignment({ formula: 'C10H12', tier: 'assigned' })
+    const wrapper = await mountPane()
+
+    expect(badge(wrapper).exists()).toBe(false)
   })
 })
