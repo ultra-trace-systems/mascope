@@ -31,7 +31,8 @@ export const useChartAssignmentsData = defineStore('chart.batch.assignments', ()
    * Per-batch-peak series records from the API.
    * Shape: { batch_peak_id, mz, consensus_formula, consensus_tier, n_present,
    *   support_fraction, is_ambiguous,
-   *   peak_series: { sample_item_ids: [], intensities: [], tiers: [] } }
+   *   peak_series: { sample_item_ids: [], sample_peak_ids: [], intensities: [],
+   *     tiers: [] } }
    * Held in a shallowRef: the arrays are large and never need deep reactivity.
    */
   const records = shallowRef([])
@@ -160,10 +161,15 @@ export const useChartAssignmentsData = defineStore('chart.batch.assignments', ()
     const peakTraces = records.value.map((record, index) => {
       const series = record.peak_series
       const yValues = new Array(samples.value.length).fill(null)
+      // The sample peak each point was folded from, on the same sample axis as
+      // y: it is what a click on that point follows back into the sample view.
+      // Null wherever the batch peak is absent, exactly like y.
+      const samplePeakIds = new Array(samples.value.length).fill(null)
       for (let i = 0; i < series.sample_item_ids.length; i++) {
         const sampleIndex = sampleIndexById.get(series.sample_item_ids[i])
         if (sampleIndex === undefined) continue // sample not in current list
         yValues[sampleIndex] = series.intensities[i]
+        samplePeakIds[sampleIndex] = series.sample_peak_ids?.[i] ?? null
       }
 
       const mz = Number(record.mz).toFixed(4)
@@ -182,7 +188,10 @@ export const useChartAssignmentsData = defineStore('chart.batch.assignments', ()
           symbol: TIER_SYMBOL[record.consensus_tier] ?? 'circle-open'
         },
         // Click metadata for focusing
-        assignmentData: { batch_peak_id: record.batch_peak_id },
+        assignmentData: {
+          batch_peak_id: record.batch_peak_id,
+          sample_peak_ids: samplePeakIds
+        },
         customdata,
         text,
         hovertemplate: `
@@ -231,5 +240,14 @@ export const useChartAssignmentsData = defineStore('chart.batch.assignments', ()
     return peakTraces
   })
 
-  return { samples, traces, xFields, xField, resetChart, pending }
+  /**
+   * The sample peak behind a clicked point, from plotly's (curveNumber,
+   * pointIndex). Null for the TIC reference trace, which is not a batch peak,
+   * and for a sample where the batch peak was never observed -- both cases the
+   * caller degrades to focusing the sample alone.
+   */
+  const samplePeakIdAt = (curveNumber, pointIndex) =>
+    traces.value[curveNumber]?.assignmentData?.sample_peak_ids?.[pointIndex] ?? null
+
+  return { samples, traces, xFields, xField, resetChart, pending, samplePeakIdAt }
 })

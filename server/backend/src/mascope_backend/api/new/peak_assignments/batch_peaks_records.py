@@ -15,7 +15,12 @@ from mascope_backend.db import BatchPeak, BatchPeakOccurrence, async_session
 
 
 def _empty_series() -> dict:
-    return {"sample_item_ids": [], "intensities": [], "tiers": []}
+    return {
+        "sample_item_ids": [],
+        "sample_peak_ids": [],
+        "intensities": [],
+        "tiers": [],
+    }
 
 
 def _batch_peak_meta(bp) -> dict:
@@ -47,9 +52,11 @@ async def get_batch_peak_series(
     """Retrieve per-sample batch-peak data in a compact columnar form.
 
     Returns one record per batch peak carrying the consensus metadata once, plus a
-    ``peak_series`` object of parallel arrays (``sample_item_ids``, ``intensities``,
-    ``tiers``) holding the per-sample values -- the batch-overview trace for that
-    peak.
+    ``peak_series`` object of parallel arrays (``sample_item_ids``,
+    ``sample_peak_ids``, ``intensities``, ``tiers``) holding the per-sample values
+    -- the batch-overview trace for that peak. ``sample_peak_ids`` is the member's
+    own peak in that sample, so a chart point can be followed back to the sample
+    peak it was folded from.
 
     Batch peaks are scoped by ``sample_batch_id`` (the full-batch load) or by an
     explicit ``sample_item_ids`` list (a single-sample slice, for incremental
@@ -96,6 +103,7 @@ async def get_batch_peak_series(
             occ_query = select(
                 BatchPeakOccurrence.batch_peak_id,
                 BatchPeakOccurrence.sample_item_id,
+                BatchPeakOccurrence.sample_peak_id,
                 BatchPeakOccurrence.intensity,
                 BatchPeakOccurrence.tier,
             ).where(BatchPeakOccurrence.batch_peak_id.in_(requested_ids))
@@ -103,11 +111,16 @@ async def get_batch_peak_series(
                 occ_query = occ_query.where(
                     BatchPeakOccurrence.sample_item_id.in_(sample_item_ids)
                 )
-            for batch_peak_id, sample_item_id, intensity, occ_tier in (
-                await session.execute(occ_query)
-            ).all():
+            for (
+                batch_peak_id,
+                sample_item_id,
+                sample_peak_id,
+                intensity,
+                occ_tier,
+            ) in (await session.execute(occ_query)).all():
                 series = series_by_peak.setdefault(batch_peak_id, _empty_series())
                 series["sample_item_ids"].append(sample_item_id)
+                series["sample_peak_ids"].append(sample_peak_id)
                 series["intensities"].append(intensity)
                 series["tiers"].append(occ_tier)
 

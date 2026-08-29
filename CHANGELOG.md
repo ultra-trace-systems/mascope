@@ -31,6 +31,23 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
 
 ### Added
 
+- Clicking a point on the **batch assignments chart** now opens the peak behind
+  it, not just its sample. Each trace is one batch peak drawn across the batch,
+  and the series it is drawn from now carries the sample peak every point was
+  measured from - so a click focuses that sample, focuses that peak in its
+  ledger and spectrum, and brings the Sample tab forward, the way clicking the
+  batch overview lands on the matched ion. Spotting a trend and then asking what
+  one of its points actually was previously meant switching to the sample view
+  and hunting the m/z by hand. A point on a sample where the batch peak was
+  never observed still just focuses the sample.
+
+- The **draw style** setting - Markers / Lines / Both - is now on the batch
+  assignments chart too, not only the batch overview. Both charts mount the same
+  control, so the two sides of the Targets/Assignments switch no longer offer
+  different chart settings depending on which one you are looking at. Line modes
+  keep each trace's own color rather than falling back to the default colorway,
+  and the marker shape keeps encoding the confidence tier.
+
 - The run selector now says **which engine produced the assignment run** you
   are reading, and at which version. A run computed here is chipped
   *Mascope*; one published into the sample from outside carries that engine's

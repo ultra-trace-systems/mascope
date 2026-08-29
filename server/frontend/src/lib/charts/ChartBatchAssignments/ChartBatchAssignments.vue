@@ -1,12 +1,13 @@
 <script setup>
 import { ref, computed, watch, toRaw, nextTick, onUnmounted } from 'vue'
+import { until } from '@vueuse/core'
 
 import Select from 'primevue/select'
 import FloatLabel from 'primevue/floatlabel'
 import ProgressSpinner from 'primevue/progressspinner'
 
 import { useApp } from '@/stores'
-import { ToolbarIntensityScale } from '@/lib/toolbars'
+import { ToolbarDrawMode, ToolbarIntensityScale } from '@/lib/toolbars'
 
 import BaseChartPlotly from '../BaseChartPlotly.vue'
 import { useSampleScroller } from '@/lib/panes/PaneBrowserSample/stores'
@@ -24,6 +25,8 @@ const scale = ref({
   max: null,
   log: true
 })
+
+const drawMode = ref('markers')
 
 const chartTitle = computed(() => {
   const batchName = app.data.batch?.focused?.sample_batch_name || null
@@ -55,6 +58,11 @@ const traces = computed(() => {
 
   return data.traces.map((trace) => ({
     ...toRaw(trace),
+    mode: drawMode.value,
+    // The store colors traces via marker.color only; without an explicit line
+    // color plotly would pick unrelated colorway colors for the line segments.
+    // Tier lives on marker.symbol, so lines+markers keeps the tier encoding.
+    ...(drawMode.value !== 'markers' ? { line: { color: trace.marker.color, width: 1 } } : {}),
     customdata,
     y: average
       ? trace.y
@@ -112,16 +120,62 @@ const layout = computed(() => {
   }
 })
 
-/** Click a point -> focus its sample (and scroll to it in the table). */
-async function onClick({ pointIndex }) {
+/**
+ * Resolve once the peak store holds the focused sample's peaks.
+ *
+ * The store reloads on a sample switch through a plain dependency watcher, so
+ * at the moment of the switch `pending` is still false and `list` still holds
+ * the PREVIOUS sample's peaks -- joining right away would always miss. One tick
+ * lets the reload be queued; then we wait for it to finish. The timeout is a
+ * backstop: a load that never settles degrades the click to sample-focus only
+ * rather than leaving the promise (and its watcher) alive for good. It resolves
+ * rather than throws, so there is no rejection to handle.
+ */
+async function peakStoreSettled() {
+  await nextTick()
+  if (!app.data.peak.pending) return
+  await until(() => app.data.peak.pending).toBe(false, { timeout: 30_000 })
+}
+
+/**
+ * Click a point -> focus its sample, then the sample peak the point was folded
+ * from, and bring the Sample tab (spectrum + inspector) forward -- the same
+ * click-through the ledger offers (PaneBrowserAssignment) and the overview
+ * chart offers for a matched ion. A click on the TIC trace, or on a sample
+ * where this batch peak was never observed, focuses the sample and stops there.
+ */
+async function onClick({ pointIndex, curveNumber }) {
   if (pointIndex == null) return
   const sample = app.data.sample.list[pointIndex]
-  if (sample) {
-    app.data.sample.focus(sample)
-    scroller.scrollToSample(app.data.sample.focusedId)
-  } else {
+  if (!sample) {
     app.data.sample.unfocus()
+    return
   }
+
+  app.data.sample.focus(sample)
+  scroller.scrollToSample(app.data.sample.focusedId)
+
+  const samplePeakId = data.samplePeakIdAt(curveNumber, pointIndex)
+  if (samplePeakId == null) return
+
+  // Unconditionally, not just when this click switched the sample: the reload
+  // we have to outlast is not always one we started. The sample table focusing
+  // a sample a moment ago, or an earlier click still waiting here, leaves the
+  // store just as stale. Waiting also gives overlapping clicks one wake-up
+  // point, so the last one focuses last instead of being dropped.
+  await peakStoreSettled()
+
+  // A click that landed while we waited has moved on to another sample; its own
+  // handler owns the focus now.
+  if (app.data.sample.focusedId !== sample.sample_item_id) return
+
+  // Ids are compared as strings: the sample-peaks feed and the batch-peak
+  // series do not agree on the type (see docs/dev/peak_assignment_frontend.md).
+  const peak = app.data.peak.list.find((p) => String(p.peak_id) === String(samplePeakId))
+  if (!peak) return
+
+  app.data.peak.focus(peak)
+  app.ui.tab.active = 'sample'
 }
 
 /** Box/lasso select -> update sample selection. */
@@ -227,8 +281,9 @@ onUnmounted(() => {
         (TIC) reference.
         </p>
         <p>
-        Click a point to focus its sample, or drag with the select tool to
-        select samples.
+        Click a point to open it in the Sample tab: its sample is focused and
+        so is the peak the point was measured from. Drag with the select tool
+        to select samples instead.
         </p>`,
       doc: app.ui.help.docUrl('how-it-works/peak-assignment/#batch-peaks')
     }"
@@ -260,6 +315,8 @@ onUnmounted(() => {
     >
       <template v-slot:settings>
         <ToolbarIntensityScale v-model="scale" />
+        <div style="height: 0.5rem" />
+        <ToolbarDrawMode v-model="drawMode" />
         <div style="height: 0.5rem" />
         <FloatLabel>
           <Select
