@@ -8,8 +8,9 @@ Design rationale + guardrails: [`verification_calibration_loop.md`](verification
 > **Status: capture UI shipped.** All three surfaces below are implemented — the inspector control +
 > verdict badge (`PanePeakAssign.vue` / `BaseVerdictBadge.vue`), the ledger badge column + filter
 > (`PaneBrowserAssignment.vue`), and the `peakAssignment/verification` store (current verdict by
-> stable identity). Shared vocab in `src/lib/verification.js`. Verified against the live API (422
-> confirm-without-evidence guard, 201 capture, snapshot record). Acceptance criteria (§7) all met.
+> stable identity, resolved to the isotopologue family's M0 — §4). Shared vocab in
+> `src/lib/verification.js`. Verified against the live API (422 confirm-without-evidence guard, 201
+> capture, snapshot record). Acceptance criteria (§7) all met.
 
 **Scope is deliberately small: capture honest labels.** Build the three surfaces in §2. Do **not**
 build a structured isotope checklist, an active-learning queue, or any "recalibrate" action — those
@@ -66,7 +67,8 @@ Strongest → weakest:
 
 ### 2a. Capture control — inspector
 [`PanePeakAssign.vue`](../../server/frontend/src/lib/panes/PanePeakAssign/PanePeakAssign.vue), on the
-committed-assignment card (only for a real assignment — hide for `unassigned` / empty peaks).
+committed-assignment card (only for a real assignment — hide for `unassigned` / empty peaks). With an
+isotopologue satellite focused the control judges the family's M0 instead, and says so (§4).
 
 - Three buttons: **Confirm · Reject · Unsure**. Confirm and Reject get **equal visual weight**
   (Reject is a first-class negative label, not a destructive-styled afterthought).
@@ -111,7 +113,7 @@ Add a `peakAssignment/verification` Pinia module alongside `run` / `peak`:
   (`use: 'read'`), keyed by `assignment_verification_id`. Refetch on sample switch.
 - **createVerification(body)**: `POST …/verify`; on success, push the returned record into the list
   (optimistic or refetch) so the badge updates without a full reload.
-- expose a **`currentByAssignment`** getter (see §4).
+- expose a **`currentByIdentity`** map + a **`forAssignment(row)`** reader (see §4).
 
 The peak store already exposes assignments by peak; join verdicts to them via §4.
 
@@ -128,8 +130,49 @@ key = `${sample_peak_id}|${assigned_formula}|${ionization_mechanism_id}`
 
 Use that identity — **not `peak_assignment_id`**, which is regenerated on every assignment run, so a
 label made against last run must still light up this run's matching assignment. Group the list by
-that key, take the max `verified_utc` per group → `currentByAssignment`. Badge + ledger filter read
+that key, take the max `verified_utc` per group → `currentByIdentity`. Badge + ledger filter read
 from it.
+
+### One verdict per isotopologue family
+
+**A verdict covers the M0 and every `iso_child` in its family, within the sample.** Not batch-wide,
+not across adducts — an M+1 peak is not a second finding to judge, it is the same compound seen
+through one heavy atom, and a chemist does not confirm the carbon-12 form while leaving the
+carbon-13 form open.
+
+The engine copies the M0's `assigned_formula` and `ionization_mechanism_id` onto each satellite, so
+**`sample_peak_id` is the only one of the three identity fields that differs across a family** — two
+thirds already match, and the lookup still misses. That single divergence is what used to give a
+focused M+1 an empty verify form beside a confirmed M0, and blank verdict cells on unfolded child
+rows sitting under a badge that said "Confirmed".
+
+The rule is therefore **resolve to the M0 first, then take the identity** — on read and on write
+alike, and inside the store rather than at each call site:
+
+| | where | what it does |
+|---|---|---|
+| resolution | `familyM0(row, byId)` / `m0Of(row)` in [`peakAssignment/assignment.js`](../../server/frontend/src/stores/data/modules/peakAssignment/assignment.js) | a row that is not an `iso_child` is its own anchor; one that is resolves through `owner_peak_assignment_id` |
+| read | `forAssignment(row)` in [`peakAssignment/verification.js`](../../server/frontend/src/stores/data/modules/peakAssignment/verification.js) | looks up `identityOf(m0Of(row))`, so every family member reports the family's verdict |
+| write | `verify(body)`, same file | rewrites `body.peak_assignment_id` to the family's M0 before POSTing |
+
+Consequences worth knowing:
+
+- **`AssignmentVerification` is unchanged** — no migration. `sample_peak_id` stays NOT NULL and now
+  always holds an *M0's* peak id. A formula-scoped key would have needed nullable identity halves and
+  would have collided with the per-peak score snapshot and the `(sample_item_id, sample_peak_id)`
+  index; this needs none of that.
+- **Resolution is strict, not a preference order.** A satellite reads its M0's verdict even when an
+  older build left a record against the satellite itself. Those historical records stay in the
+  append-only history for audit and are simply not surfaced — preferring a satellite's own record is
+  how a family would come to disagree with itself row by row.
+- **An orphan resolves to itself.** A satellite whose owner is not in the loaded run (which should
+  not happen — a run stores the owner alongside its children) is its own anchor, so it keeps a badge
+  and stays verifiable rather than being treated as no row at all.
+- **The recalibration flow is untouched.** Labels still snapshot the M0's scores, so
+  `recalibrate_instrument` gets one label per family per judgment instead of N correlated ones.
+- **The ledger filter was already family-scoped** and stays that way: it runs over parents only
+  (satellites are re-attached under whichever parent survived), so a family has always been one unit
+  there. What changed is that the badge column now agrees with it.
 
 ---
 
@@ -168,6 +211,8 @@ Guests (no editor role) see the **badge only**, no capture control.
 - [x] Confirm is blocked until an evidence level is chosen; the five levels are labelled.
 - [x] Reject and Unsure work without an evidence level.
 - [x] The badge shows the **current** verdict derived by stable identity (survives a re-assign run).
+- [x] One verdict covers the isotopologue family: every member shows it, and verifying from a
+      satellite writes a single label against the M0 (§4).
 - [x] Ledger filter narrows to verified / rejected / unverified.
 - [x] Guests see the badge but no capture control (a 403 hides the control behind an "editor access
       required" note, consistent with the app's existing backend-enforced editor actions).
@@ -180,5 +225,6 @@ Guests (no editor role) see the **badge only**, no capture control.
 Build a confirm/reject/unsure + evidence-dropdown + note control in the inspector, a verdict badge,
 and a verified/rejected ledger filter. `POST /sample/{id}/verify` (editor; confirm needs evidence),
 `GET /sample/{id}/verifications`; current verdict = latest by `verified_utc` per
-`sample_peak_id`+formula+adduct. Don't lead with `p_correct`; make Reject equal to Confirm. Nothing
-else — no checklist, no recalibration.
+`sample_peak_id`+formula+adduct, taken on the **family's M0** so one verdict covers an M0 and all its
+isotopologues (§4). Don't lead with `p_correct`; make Reject equal to Confirm. Nothing else — no
+checklist, no recalibration.

@@ -18,7 +18,14 @@ const assign = vi.fn()
 const sampleUnfocus = vi.fn()
 const peakUnfocus = vi.fn()
 // Reads `verdictRecord` at call time, so a test can set it after mounting.
-const forAssignment = vi.fn(() => verdictRecord)
+// `verdictPeakId`, when a test sets one, additionally models the real store's
+// identity lookup: a record is found only for the peak it was recorded against.
+// Records only ever carry an M0's `sample_peak_id`, so that is what makes the
+// family-resolution tests below non-vacuous - without it every row would answer
+// with the same verdict whether it was resolved to its M0 or not.
+const forAssignment = vi.fn((row) =>
+  verdictPeakId && row?.sample_peak_id !== verdictPeakId ? null : verdictRecord
+)
 
 const SAMPLE = { sample_item_id: 'si-1', sample_item_name: 'Sample 1' }
 const BATCH = { sample_batch_id: 'sb-1', sample_batch_name: 'Batch 1' }
@@ -28,7 +35,9 @@ let runList
 let runError
 let assignmentList
 let childrenByOwner
+let byId
 let verdictRecord
+let verdictPeakId
 
 // Minimal help-mode facade: the pane registers help cards through these calls;
 // the tests only need them to resolve.
@@ -68,6 +77,11 @@ function makeApp() {
           pending: false,
           tierCounts: {},
           childrenOf: (id) => childrenByOwner.get(id) ?? [],
+          // Stands in for the store's family resolution; the rule itself is
+          // pinned against the real implementation in
+          // stores/data/modules/peakAssignment/assignment.spec.js.
+          m0Of: (row) =>
+            row?.role === 'iso_child' ? (byId.get(row.owner_peak_assignment_id) ?? row) : row,
           forPeak: () => null
         },
         verification: { forAssignment }
@@ -181,6 +195,12 @@ function family({
     owner_peak_assignment_id: id,
     role: 'iso_child',
     tier,
+    // The engine copies the M0's formula and mechanism onto every satellite, so
+    // `sample_peak_id` is the only identity field that differs across a family.
+    // Leaving them off here would let the ledger's formula guard stand in for
+    // the family resolution and hide whether the resolution happens at all.
+    assigned_formula: formula,
+    ionization_mechanism_id: 'mech-1',
     isotope_label: `M+${index + 1}`,
     ...child
   }))
@@ -192,6 +212,7 @@ function family({
 function seed(...families) {
   assignmentList = families.flatMap(({ parent, kids }) => [parent, ...kids])
   childrenByOwner = new Map(families.map(({ parent, kids }) => [parent.peak_assignment_id, kids]))
+  byId = new Map(assignmentList.map((row) => [row.peak_assignment_id, row]))
 }
 
 // Two families whose satellites are nowhere near their parent on any axis: A's
@@ -257,6 +278,7 @@ beforeEach(() => {
   runList = []
   runError = null
   verdictRecord = null
+  verdictPeakId = null
   seed()
 })
 
@@ -906,6 +928,93 @@ describe('PaneBrowserAssignment header and controls', () => {
     wrapper.vm.verdictFilter = 'unverified'
     await wrapper.vm.$nextTick()
     expect(ids(wrapper)).toEqual(['u'])
+  })
+
+  // One verdict covers the isotopologue family. An unfolded satellite used to
+  // show a blank verdict cell because its own identity was looked up and the
+  // record had been stored against its M0's peak - so under the `confirmed`
+  // filter a family arrived on screen with a confirmed badge on the parent and
+  // blanks on every child beneath it, contradicting the filter that admitted it.
+  describe('family-scoped verdicts', () => {
+    const VERDICT = { verdict: 'confirmed', evidence_level: 'msms' }
+
+    /** Unfold FAMILY_B with its verdict recorded against the M0's peak. */
+    async function unfoldedWithVerdict() {
+      verdictRecord = VERDICT
+      verdictPeakId = 'p-b'
+      seed(FAMILY_B)
+      const wrapper = await mountPane()
+      wrapper.vm.showIsotopologues = true
+      await wrapper.vm.$nextTick()
+      return wrapper
+    }
+
+    const rowsById = (wrapper) => new Map(wrapper.vm.rows.map((r) => [r.peak_assignment_id, r]))
+
+    it('shows the compound its verdict on every satellite', async () => {
+      const wrapper = await unfoldedWithVerdict()
+      const rows = rowsById(wrapper)
+
+      expect(wrapper.vm.verdictFor(rows.get('b'))).toEqual(VERDICT)
+      expect(wrapper.vm.verdictFor(rows.get('b-c0'))).toEqual(VERDICT)
+      expect(wrapper.vm.verdictFor(rows.get('b-c1'))).toEqual(VERDICT)
+    })
+
+    it('looks the satellite up by its M0 rather than by itself', async () => {
+      const wrapper = await unfoldedWithVerdict()
+      const rows = rowsById(wrapper)
+
+      wrapper.vm.verdictFor(rows.get('b-c0'))
+
+      // The row handed to the store is the M0 off the assignment list, which is
+      // where the record was written; the satellite's own identity is not asked
+      // about at all.
+      expect(forAssignment).toHaveBeenLastCalledWith(byId.get('b'))
+    })
+
+    it('keeps a family one unit in the verdict filter', async () => {
+      const wrapper = await unfoldedWithVerdict()
+
+      expect(ids(wrapper)).toEqual(['b', 'b-c0', 'b-c1'])
+
+      wrapper.vm.verdictFilter = 'confirmed'
+      await wrapper.vm.$nextTick()
+      expect(ids(wrapper)).toEqual(['b', 'b-c0', 'b-c1'])
+
+      // Its M0 is confirmed, so no member of the family is unverified.
+      wrapper.vm.verdictFilter = 'unverified'
+      await wrapper.vm.$nextTick()
+      expect(ids(wrapper)).toEqual([])
+    })
+
+    it('leaves an unverified family unverified all the way down', async () => {
+      verdictRecord = VERDICT
+      verdictPeakId = 'p-nothing'
+      seed(FAMILY_B)
+      const wrapper = await mountPane()
+      wrapper.vm.showIsotopologues = true
+      await wrapper.vm.$nextTick()
+
+      expect(wrapper.vm.verdictFor(rowsById(wrapper).get('b-c0'))).toBeNull()
+
+      wrapper.vm.verdictFilter = 'unverified'
+      await wrapper.vm.$nextTick()
+      expect(ids(wrapper)).toEqual(['b', 'b-c0', 'b-c1'])
+    })
+
+    // A satellite whose owner is not in the loaded run resolves to itself, so
+    // the column falls back to its own identity rather than blanking the row.
+    it('falls back to the satellite itself when its owner is not loaded', async () => {
+      verdictRecord = VERDICT
+      verdictPeakId = 'p-b-c0'
+      seed(FAMILY_B)
+      byId.delete('b')
+      const wrapper = await mountPane()
+      wrapper.vm.showIsotopologues = true
+      await wrapper.vm.$nextTick()
+
+      expect(wrapper.vm.verdictFor(rowsById(wrapper).get('b-c0'))).toEqual(VERDICT)
+    })
   })
 
   it('shows exactly one "Assign peaks" control in every state', async () => {

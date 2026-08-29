@@ -63,13 +63,24 @@ const verification = computed(() =>
   app.data.peakAssignment.verification.forAssignment(focusedAssignment.value)
 )
 
+// What a verdict captured here is about: the compound, which is the family's M0
+// even when the focused peak is one of its satellites. Judging an M+1 apart from
+// its M0 is not a thing a chemist does - it is the same compound - so the form
+// reads and writes through the M0 whichever family member is in view.
+const verifyTarget = computed(() => app.data.peakAssignment.peak.m0Of(focusedAssignment.value))
+
+// Whether the focused peak is a satellite rather than the compound's own peak,
+// which is the one case where the card is judging something other than the row
+// it is showing. Worth saying out loud (see the template).
+const verifyingFamily = computed(() => focusedAssignment.value?.role === 'iso_child')
+
 // Only a real assignment can be judged. A formula-less row is a placeholder for
 // a peak nothing explained, so a verdict on it is an opinion about nothing: it
 // is stored and listed as a hand label, but carries no evidence for the
 // confidence calibration to learn from, and its stable identity
 // (`sample_peak_id|assigned_formula|ionization_mechanism_id`) is degenerate
-// without a formula.
-const verifiable = computed(() => Boolean(focusedAssignment.value?.assigned_formula))
+// without a formula. Read off the M0, since that is the row being judged.
+const verifiable = computed(() => Boolean(verifyTarget.value?.assigned_formula))
 
 const editing = ref(false) // form open despite an existing verdict (re-verify)
 const evidenceLevel = ref(null)
@@ -96,7 +107,7 @@ async function submitVerdict(verdict) {
   pendingVerdict.value = verdict
   try {
     await app.data.peakAssignment.verification.verify({
-      peak_assignment_id: focusedAssignment.value.peak_assignment_id,
+      peak_assignment_id: verifyTarget.value.peak_assignment_id,
       verdict,
       evidence_level: evidenceLevel.value || null,
       note: note.value?.trim() || null
@@ -505,6 +516,11 @@ const altTooltip = (alt) => {
         }"
       >
         <div class="alts-label">Verification</div>
+        <div v-if="verifyingFamily" class="verify-family">
+          <span class="pi ph ph-arrow-bend-up-left" />
+          One verdict per compound: this applies to
+          {{ verifyTarget.assigned_formula }} and all its isotopologues.
+        </div>
         <div v-if="verification && !editing" class="verify-current">
           <BaseVerdictBadge :record="verification" />
           <Button
@@ -736,6 +752,15 @@ const altTooltip = (alt) => {
 .verify-denied {
   display: inline-flex;
   align-items: center;
+  gap: 0.35rem;
+  font-size: 0.78rem;
+  opacity: 0.7;
+}
+/* Says which row a verdict captured from a satellite is really about. Quiet:
+   it explains the control rather than competing with it. */
+.verify-family {
+  display: flex;
+  align-items: baseline;
   gap: 0.35rem;
   font-size: 0.78rem;
   opacity: 0.7;

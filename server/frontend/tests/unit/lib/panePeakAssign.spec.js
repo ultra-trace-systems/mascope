@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { mount } from '@vue/test-utils'
+import { ref } from 'vue'
 
 import { num } from '@/lib/formatters'
 
@@ -11,8 +12,13 @@ import { num } from '@/lib/formatters'
 
 const PEAK = { peak_id: 'p-1', mz: 200.12345, height: 12345, area: 999 }
 
+// Module-level so assertions see the same spy the component called: makeApp()
+// runs afresh on every useApp() and would otherwise hand out a new one.
+const verify = vi.fn(() => Promise.resolve(null))
+
 let focusedPeak
 let focusedAssignment
+let ledger
 let verdictRecord
 // The isotopologue family of the focused row, when a test needs one, and the
 // one detail record the inspector fetches (for the focused assignment only).
@@ -32,7 +38,16 @@ function makeApp() {
   return {
     data: {
       sample: { focusedId: 'si-1' },
-      peak: { list: [PEAK], focused: focusedPeak, focus: vi.fn() },
+      // `focused` is a getter over a ref so the pane's computeds actually
+      // re-evaluate when a test moves the focus after mounting; a plain value
+      // would be snapshotted at setup and no watcher would ever fire.
+      peak: {
+        list: [PEAK],
+        get focused() {
+          return focusedPeak.value
+        },
+        focus: vi.fn()
+      },
       peakAssignment: {
         peak: {
           forPeak: () => focusedAssignment,
@@ -42,9 +57,15 @@ function makeApp() {
           detailOf: (id) =>
             id != null && id === focusedAssignment?.peak_assignment_id ? detailRecord : null,
           familyOf: () => familyRows ?? (focusedAssignment ? [focusedAssignment] : []),
+          // Stands in for the store's family resolution over whatever `ledger`
+          // holds. The rule itself is pinned against the real implementation in
+          // stores/data/modules/peakAssignment/assignment.spec.js; what matters
+          // here is that the inspector asks for it and uses the answer.
+          m0Of: (row) =>
+            row?.role === 'iso_child' ? (ledger.get(row.owner_peak_assignment_id) ?? row) : row,
           loadDetail: () => Promise.resolve()
         },
-        verification: { forAssignment: () => verdictRecord, verify: vi.fn() }
+        verification: { forAssignment: () => verdictRecord, verify }
       }
     },
     ui: { help: helpStub }
@@ -90,6 +111,25 @@ function assignment({ formula = null, tier = 'unassigned', mz = 200.12345, inten
   }
 }
 
+/**
+ * An isotopologue satellite of `parent`, as the engine writes one: it carries
+ * the M0's formula, tier and mechanism verbatim and differs only in which peak
+ * it sits on. Registers the parent in `ledger` so `m0Of` can resolve it.
+ */
+function satellite(parent) {
+  ledger.set(parent.peak_assignment_id, parent)
+  return {
+    ...parent,
+    peak_assignment_id: 'pa-1-c0',
+    sample_peak_id: 'p-2',
+    sample_peak_mz: parent.sample_peak_mz + 1.00336,
+    sample_peak_intensity: 60,
+    role: 'iso_child',
+    owner_peak_assignment_id: parent.peak_assignment_id,
+    isotope_label: 'M+1'
+  }
+}
+
 const VERDICT = {
   verdict: 'confirmed',
   evidence_level: 'msms',
@@ -101,8 +141,9 @@ const mz = (value) => `m/z ${num.mz.format(value)}`
 const intensity = (value) => `intensity ${num.peakIntensity.format(value)}`
 
 beforeEach(() => {
-  focusedPeak = PEAK
+  focusedPeak = ref(PEAK)
   focusedAssignment = null
+  ledger = new Map()
   verdictRecord = null
   familyRows = null
   detailRecord = null
@@ -138,7 +179,7 @@ describe('PanePeakAssign unassigned card', () => {
   })
 
   it('shows what it has when the peak carries no intensity', async () => {
-    focusedPeak = { peak_id: 'p-1', mz: 200.12345, height: null }
+    focusedPeak.value = { peak_id: 'p-1', mz: 200.12345, height: null }
     const wrapper = await mountPane()
 
     expect(wrapper.find('.insp-sub').text()).toBe(mz(200.12345))
@@ -330,5 +371,123 @@ describe('PanePeakAssign adduct corroboration', () => {
     const wrapper = await mountPane()
 
     expect(badge(wrapper).exists()).toBe(false)
+  })
+})
+
+// An M+1 is not a second finding to judge - it is the same compound seen through
+// one heavy atom. Focusing one used to open an empty verify form beside a
+// confirmed M0, and confirming there wrote a second label against the satellite
+// peak. The card now reads and writes through the compound whichever family
+// member is in view.
+describe('PanePeakAssign verification on an isotopologue satellite', () => {
+  const M0 = assignment({ formula: 'C10H12', tier: 'assigned' })
+
+  it('verifies the compound rather than refusing the satellite', async () => {
+    focusedAssignment = satellite(M0)
+    const wrapper = await mountPane()
+
+    expect(wrapper.find('.verify').exists()).toBe(true)
+    expect(wrapper.vm.verifyTarget).toBe(M0)
+  })
+
+  it('says which row the verdict is really about', async () => {
+    focusedAssignment = satellite(M0)
+    const wrapper = await mountPane()
+    const note = wrapper.find('.verify-family')
+
+    expect(note.exists()).toBe(true)
+    expect(note.text()).toContain('C10H12')
+
+    // Nothing to explain when the compound's own peak is in view.
+    focusedAssignment = M0
+    const onM0 = await mountPane()
+    expect(onM0.find('.verify-family').exists()).toBe(false)
+  })
+
+  it('records the verdict against the compound, not the satellite peak', async () => {
+    focusedAssignment = satellite(M0)
+    const wrapper = await mountPane()
+
+    await wrapper.vm.submitVerdict('rejected')
+
+    expect(verify).toHaveBeenCalledTimes(1)
+    expect(verify.mock.calls[0][0]).toMatchObject({
+      peak_assignment_id: M0.peak_assignment_id,
+      verdict: 'rejected'
+    })
+  })
+
+  // The satellite carries the M0's formula verbatim, so the formula gate never
+  // had anything to say here. A satellite with no owner in the ledger stands for
+  // itself and is judged on its own formula rather than becoming unverifiable.
+  // The engine produces these routinely - `owner_peak_assignment_id` stays null
+  // when the ion's M0 peak was won by another ion in that run - so this is an
+  // ordinary row, not a corrupt one.
+  it('still verifies a satellite that has no owner in the ledger', async () => {
+    const orphan = { ...satellite(M0), owner_peak_assignment_id: null }
+    focusedAssignment = orphan
+    const wrapper = await mountPane()
+
+    expect(wrapper.vm.verifyTarget).toBe(orphan)
+    await wrapper.vm.submitVerdict('unsure')
+    expect(verify.mock.calls[0][0].peak_assignment_id).toBe(orphan.peak_assignment_id)
+  })
+
+  // ...and it must not claim a scope it does not have. Such a verdict covers
+  // that peak alone: there is no M0 to hang it on and no sibling to share it
+  // with, so the family note would be a promise the write does not keep.
+  it('claims no family for a satellite that stands for itself', async () => {
+    focusedAssignment = { ...satellite(M0), owner_peak_assignment_id: null }
+    const wrapper = await mountPane()
+
+    expect(wrapper.vm.verifyingFamily).toBe(false)
+    expect(wrapper.find('.verify-family').exists()).toBe(false)
+  })
+
+  // The form judges the compound, so stepping between members of one family is
+  // still the same judgment. Keyed on the focused peak, the reset watcher threw
+  // a half-written verdict away on a click inside the family table this very
+  // card renders.
+  it('keeps a half-written verdict while focus moves within the family', async () => {
+    const child = satellite(M0)
+    focusedAssignment = child
+    focusedPeak.value = { ...PEAK, peak_id: child.sample_peak_id }
+    const wrapper = await mountPane()
+
+    wrapper.vm.evidenceLevel = 'msms'
+    wrapper.vm.note = 'matches the standard'
+    await wrapper.vm.$nextTick()
+
+    // Step to the compound's own peak - a different peak, but the same compound
+    // and so the same judgment. This is one click in the family table the card
+    // itself renders.
+    focusedAssignment = M0
+    focusedPeak.value = { ...PEAK, peak_id: M0.sample_peak_id }
+    await wrapper.vm.$nextTick()
+
+    expect(wrapper.vm.verifyTarget).toBe(M0)
+    expect(wrapper.vm.evidenceLevel).toBe('msms')
+    expect(wrapper.vm.note).toBe('matches the standard')
+  })
+
+  it('starts a fresh form on a different compound', async () => {
+    focusedAssignment = M0
+    const wrapper = await mountPane()
+
+    wrapper.vm.evidenceLevel = 'msms'
+    wrapper.vm.note = 'matches the standard'
+    await wrapper.vm.$nextTick()
+
+    focusedAssignment = {
+      ...M0,
+      peak_assignment_id: 'pa-2',
+      sample_peak_id: 'p-9',
+      assigned_formula: 'C6H6'
+    }
+    focusedPeak.value = { ...PEAK, peak_id: 'p-9' }
+    await wrapper.vm.$nextTick()
+
+    expect(wrapper.vm.evidenceLevel).toBeNull()
+    expect(wrapper.vm.note).toBe('')
   })
 })
