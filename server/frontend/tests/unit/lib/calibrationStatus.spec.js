@@ -8,9 +8,11 @@ describe('calibrationStatus', () => {
       const status = calibrationStatus(value)
       expect(status.state).toBe('none')
       expect(status.clickable).toBe(false)
-      expect(status.tooltip).toContain('Not calibrated')
-      expect(status.tooltip).toContain('no calibration collection')
-      expect(status.tooltip).not.toContain('Click')
+      // Fixed product copy, pinned exactly.
+      expect(status.tooltip).toBe(
+        'No calibration collection defined for the ionization mode, ' +
+          'or no matching peaks found.'
+      )
     }
   })
 
