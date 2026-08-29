@@ -1817,11 +1817,22 @@ class TestRecalibrationExcludesImports:
 
     @pytest_asyncio.fixture
     async def verified_runs(self, async_session_factory, import_sample):
-        """One in-app and one imported run, each with a confirmed verdict."""
+        """One in-app and one imported run, each with a confirmed verdict.
+
+        The two verdicts sit on different peaks. A verdict's identity spans
+        runs by design - the peak, formula and adduct, with no run in it - so
+        putting both on one peak would make them two *current* verdicts on a
+        single finding, which the partial unique index now refuses. Nothing
+        here is about the identity: what is under test is that the engine
+        behind a verdict decides whether it votes.
+        """
         now = datetime.now(timezone.utc)
         created = {}
         async with async_session_factory() as session:
-            for engine, evidence in (("mascope", 0.9), ("peaky", 0.1)):
+            for engine, evidence, peak_id in (
+                ("mascope", 0.9, "peak-0"),
+                ("peaky", 0.1, "peak-1"),
+            ):
                 run_id = gen_id()
                 assignment_id = gen_id(32)
                 session.add(
@@ -1840,7 +1851,7 @@ class TestRecalibrationExcludesImports:
                         peak_assignment_id=assignment_id,
                         peak_assignment_run_id=run_id,
                         sample_item_id=import_sample,
-                        sample_peak_id="peak-0",
+                        sample_peak_id=peak_id,
                         sample_peak_mz=181.0707,
                         sample_peak_intensity=5000.0,
                         role="M0",
@@ -1857,7 +1868,7 @@ class TestRecalibrationExcludesImports:
                         sample_item_id=import_sample,
                         peak_assignment_id=assignment_id,
                         peak_assignment_run_id=run_id,
-                        sample_peak_id="peak-0",
+                        sample_peak_id=peak_id,
                         assigned_formula="C6H12O6",
                         verdict="confirmed",
                         evidence_level="msms",
