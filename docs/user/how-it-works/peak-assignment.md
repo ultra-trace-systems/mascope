@@ -209,8 +209,8 @@ The rows you tick in the *Batch peaks* ledger are what the batch chart draws, on
 trace per batch peak. The ledger lists every anchor in the batch, which on a large
 batch is far more than a chart can usefully show, so a selection is capped at 300 —
 select all on a bigger ledger takes the first 300 rows and tells you so. Which 300 is
-up to you: filter the ledger first, with the tier chips or the formula box, and then
-select.
+up to you: filter the ledger first, with the tier chips or the Formula column's
+filter, and then select.
 
 ## References
 

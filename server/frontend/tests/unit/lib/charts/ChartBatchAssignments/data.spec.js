@@ -238,6 +238,9 @@ describe('chart.batch.assignments data store (bounded selection)', () => {
     setActivePinia(createPinia())
     vi.clearAllMocks()
     mockApp.data.batchPeak.selectedIds = []
+    // Restored explicitly: one case below switches batch, and the mockApp is
+    // shared with the describe above.
+    mockApp.data.batch.focusedId = 'batch-1'
     store = useChartAssignmentsData()
   })
 
@@ -325,21 +328,89 @@ describe('chart.batch.assignments data store (bounded selection)', () => {
     expect(store.traces[0].assignmentData.batch_peak_id).toBe('bp-new')
   })
 
-  it('orders traces by the selection rather than by which request answered first', async () => {
-    const gates = gateRequests()
+  it('orders traces by the selection, not by what was already held', async () => {
+    // Select-all, Ctrl+A and a shift-click range all REPLACE the selection with
+    // rows in display order, so a newly-fetched peak can belong ABOVE one
+    // already plotted. Appending what arrives to what is held would put it
+    // after, which reshuffles the colours of everything below it.
+    respondWithRequested()
+    mockApp.data.batchPeak.selectedIds = ['bp-b']
+    await flushAsync()
 
-    mockApp.data.batchPeak.selectedIds = ids(250) // three requests
-    await nextTick()
-    expect(gates).toHaveLength(3)
-
-    // Answer them backwards.
-    gates[2].resolve(requestedBy(2).map((id) => peakRecord(id, SERIES)))
-    gates[1].resolve(requestedBy(1).map((id) => peakRecord(id, SERIES)))
-    gates[0].resolve(requestedBy(0).map((id) => peakRecord(id, SERIES)))
+    mockApp.data.batchPeak.selectedIds = ['bp-a', 'bp-b', 'bp-c']
     await flushAsync()
 
     const plotted = store.traces.slice(0, -1).map((trace) => trace.assignmentData.batch_peak_id)
-    expect(plotted).toEqual(ids(250))
+    expect(plotted).toEqual(['bp-a', 'bp-b', 'bp-c'])
+  })
+
+  it('does not report the abort that superseding a selection causes', async () => {
+    const gates = gateRequests()
+
+    mockApp.data.batchPeak.selectedIds = ['bp-old']
+    await nextTick()
+    mockApp.data.batchPeak.selectedIds = ['bp-new']
+    await nextTick()
+
+    // Aborting is what fails the abandoned request, and axios rejects it with a
+    // response-less error indistinguishable from a network failure. Reporting
+    // that would put a failure notice on a chart that is loading normally.
+    gates[0].reject(Object.assign(new Error('canceled'), { code: 'ERR_CANCELED' }))
+    gates[1].resolve([peakRecord('bp-new', SERIES)])
+    await flushAsync()
+
+    expect(store.error).toBeNull()
+    expect(store.traces).toHaveLength(2) // bp-new + TIC
+  })
+
+  it('still re-reads after a fold-in whose refetch was superseded mid-flight', async () => {
+    respondWithRequested()
+    mockApp.data.batchPeak.selectedIds = ['bp1']
+    await flushAsync()
+    expect(store.traces[0].name).toContain('C6H12O6')
+
+    const [, reload] = api.socket.on.mock.calls.find(
+      ([event]) => event === 'peak_assignment_reload'
+    )
+    // The fold-in changed this batch peak's consensus.
+    api.http.post.mockReset()
+    api.http.post.mockImplementation((url, body) =>
+      Promise.resolve(
+        body.batch_peak_ids.map((id) => peakRecord(id, SERIES, { consensus_formula: 'C9H12N2' }))
+      )
+    )
+
+    // The fold-in event and the ledger's own reload of that same event arrive
+    // together, and the ledger republishes an equal selection - which supersedes
+    // the re-read. A run that only diffs ids finds every wanted peak already
+    // held, returns early, and leaves the pre-fold-in consensus plotted for good.
+    reload()
+    mockApp.data.batchPeak.selectedIds = ['bp1']
+    await flushAsync()
+
+    expect(store.traces[0].name).toContain('C9H12N2')
+  })
+
+  it('abandons a batch that was switched away from while its series were in flight', async () => {
+    const gates = gateRequests()
+    mockApp.data.batchPeak.selectedIds = ['bp-old']
+    await nextTick()
+    const { signal } = api.http.post.mock.calls[0][2]
+
+    mockApp.data.batch.focusedId = 'batch-2'
+    await nextTick()
+
+    expect(signal.aborted).toBe(true)
+    expect(store.pending).toBe(false)
+    expect(store.traces).toHaveLength(1) // TIC only; the old batch's plot is gone
+
+    // The abandoned response cannot repopulate the new batch's chart.
+    gates[0].resolve([peakRecord('bp-old', SERIES)])
+    await flushAsync()
+    expect(store.traces).toHaveLength(1)
+
+    mockApp.data.batch.focusedId = 'batch-1'
+    await nextTick()
   })
 
   it('refetches on peak_assignment_reload under the cap, without blanking the plot', async () => {
@@ -362,6 +433,27 @@ describe('chart.batch.assignments data store (bounded selection)', () => {
 
     expect(api.http.post).toHaveBeenCalledTimes(Math.ceil(MAX_SELECTED_BATCH_PEAKS / 100))
     expect(store.traces).toHaveLength(plotted)
+  })
+
+  it('keeps the last good series up when a fold-in refresh fails', async () => {
+    respondWithRequested()
+    mockApp.data.batchPeak.selectedIds = ['bp1']
+    await flushAsync()
+    expect(store.traces).toHaveLength(2) // bp1 + TIC
+
+    const [, reload] = api.socket.on.mock.calls.find(
+      ([event]) => event === 'peak_assignment_reload'
+    )
+    api.http.post.mockReset()
+    api.http.post.mockRejectedValue({ response: { data: { error: 'series unavailable' } } })
+    reload()
+    await flushAsync()
+
+    // Emptying the chart because a REFRESH failed throws away series that are
+    // merely out of date, which is worse than showing them beside the message
+    // saying the refresh did not happen.
+    expect(store.error).toBe('series unavailable')
+    expect(store.traces).toHaveLength(2)
   })
 
   it('surfaces a failed series load instead of leaving the chart silently empty', async () => {

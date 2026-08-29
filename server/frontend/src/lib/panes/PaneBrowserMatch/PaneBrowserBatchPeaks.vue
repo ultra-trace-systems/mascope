@@ -80,11 +80,18 @@ const rows = computed(() =>
 
 // --- Selection --------------------------------------------------------------
 
-// How many rows the last write wanted, when that was more than the cap allows;
-// 0 when the selection fits. This is what the notice below counts, and it is
-// what tells "select all matched more than we can plot" apart from "you have
-// selected a lot of rows one at a time".
+// How many rows the last bulk write wanted, when that was more than the cap
+// allows; 0 when it fit. Counting the rows rather than raising a flag is what
+// lets the notice say how much of the ledger was left out.
 const overflowFrom = ref(0)
+
+// Set instead when a single row was refused because the selection was already
+// full. The two are worth telling apart: a row click hands over the selection
+// with the clicked row appended, so it arrives exactly one over the cap and the
+// slice drops the very row that was clicked. That is a refusal, not a select-all
+// whose tail was cut off, and reporting it as "300 of the 301 matching rows"
+// would name a number that is not the size of anything the user can see.
+const selectionAtCapacity = ref(false)
 
 // The rows the table would select on "all": filtered and sorted as displayed.
 // The fallback is for a table that has not mounted its own view of the rows.
@@ -103,21 +110,61 @@ const selectableRows = () => table.value?.processedData ?? rows.value
  * live `processedData`, which must not be truncated in place.
  */
 const applySelection = (selection) => {
-  const capped = selection.slice(0, MAX_SELECTED_BATCH_PEAKS)
-  overflowFrom.value = selection.length > capped.length ? selection.length : 0
+  // Shift+Space hands over a bare row rather than an array of one when the
+  // range it would select collapses onto the row already focused.
+  const wanted = Array.isArray(selection) ? selection : [selection]
+  const capped = wanted.slice(0, MAX_SELECTED_BATCH_PEAKS)
+  const dropped = wanted.length - capped.length
+  // One row over a selection that was already full is a click the cap refused;
+  // more than that is a bulk gesture whose tail did not fit.
+  const refused = dropped === 1 && ledger.value.selected.length >= MAX_SELECTED_BATCH_PEAKS
+  selectionAtCapacity.value = refused
+  overflowFrom.value = dropped && !refused ? wanted.length : 0
   ledger.value.selected = capped
 }
 
-// Whether the header checkbox reads as checked. Taking it over from the table
-// is what keeps the checkbox usable at the cap: left to itself it compares the
-// selection against every filtered row, never sees them all selected, and so
-// offers only to re-select the same rows - with no way back to an empty
-// selection. Derived rather than remembered, so unchecking a row by hand turns
-// it back into an offer to select.
+/**
+ * Whether the header checkbox reads as checked.
+ *
+ * Taking it over from the table is what keeps the checkbox usable at the cap:
+ * left to itself it looks for every filtered row in the selection, never finds
+ * them all, and so offers only to re-select the same rows - leaving no gesture
+ * that empties the selection.
+ *
+ * It has to be the same membership test, though, over the rows "select all"
+ * would actually write. A count would read as checked whenever the selection
+ * happened to be as large as the filtered set, even with no row in common -
+ * so narrowing the filter after a large selection would tick a box over rows
+ * that are all unselected, and clicking it would clear the selection rather
+ * than fill it. Bounded by the cap, so the test stays cheap on a large ledger.
+ */
 const allSelected = computed(() => {
   const selectable = selectableRows()
   if (!selectable.length) return false
-  return ledger.value.selected.length >= Math.min(selectable.length, MAX_SELECTED_BATCH_PEAKS)
+  const held = new Set(ledger.value.selected.map((row) => row.batch_peak_id))
+  return selectable
+    .slice(0, MAX_SELECTED_BATCH_PEAKS)
+    .every((row) => held.has(row.batch_peak_id))
+})
+
+/**
+ * What to tell the user about the size of their selection, or null.
+ */
+const selectionNotice = computed(() => {
+  if (overflowFrom.value) {
+    return (
+      `At most ${MAX_SELECTED_BATCH_PEAKS} batch peaks are plotted at once, so ` +
+      `${MAX_SELECTED_BATCH_PEAKS} of the ${overflowFrom.value.toLocaleString('en-US')} ` +
+      `matching rows are selected. Narrow the ledger - by tier or formula - to choose which.`
+    )
+  }
+  if (selectionAtCapacity.value) {
+    return (
+      `The selection is full at ${MAX_SELECTED_BATCH_PEAKS} batch peaks, as many as the chart ` +
+      `plots at once. Deselect a row to make room for another.`
+    )
+  }
+  return null
 })
 
 const onSelectAllChange = (event) => applySelection(event.checked ? selectableRows() : [])
@@ -271,6 +318,7 @@ watch(
     endComputing()
     launchError.value = null
     overflowFrom.value = 0
+    selectionAtCapacity.value = false
   }
 )
 
@@ -351,10 +399,8 @@ onScopeDispose(() => clearTimeout(computeTimer))
            to infer from a chart that draws fewer traces than the ledger shows
            ticked. Informational rather than a warning: nothing went wrong, the
            selection just has a size. -->
-      <Message v-if="overflowFrom" severity="secondary" icon="pi pi-exclamation-triangle">
-        At most {{ MAX_SELECTED_BATCH_PEAKS }} batch peaks are plotted at once, so
-        {{ MAX_SELECTED_BATCH_PEAKS }} of the {{ overflowFrom.toLocaleString('en-US') }} matching
-        rows are selected. Narrow the ledger - by tier or formula - to choose which.
+      <Message v-if="selectionNotice" severity="secondary" icon="pi pi-exclamation-triangle">
+        {{ selectionNotice }}
       </Message>
 
       <div
