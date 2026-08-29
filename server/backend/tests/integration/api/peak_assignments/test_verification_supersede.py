@@ -185,7 +185,9 @@ async def _verify(client, sample_item_id, assignment_id, verdict, evidence_level
             "evidence_level": evidence_level,
         },
     )
-    assert response.status_code == 200, response.text
+    # 201: a verdict that supersedes another is still a new record, not an edit
+    # of the one it replaces - which is the whole point of keeping both.
+    assert response.status_code == 201, response.text
     return response.json()
 
 
