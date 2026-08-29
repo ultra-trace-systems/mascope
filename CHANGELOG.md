@@ -4,6 +4,29 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
 
 ## [Unreleased]
 
+### Added
+
+- A curated sample's assignments can now be **copied to the batch's other
+  samples** (*Process → Copy assignments to batch…* in the sample's context
+  menu). One sample gets the full treatment - an engine run, inspection,
+  curation - and the copy propagates that ledger to every eligible sibling
+  without another engine run each: the rows are remapped onto each
+  destination's own peaks on a calibration-corrected axis, their evidence
+  (fit score, mass error, abundance error) is re-measured against each
+  destination's data with the engine's own scorer, and the tier is recomputed
+  from the re-measured fit under the source run's thresholds - so a sibling
+  whose data supports a formula less shows that honestly instead of
+  inheriting the source's confidence. Each destination gets a new,
+  append-only run under the dedicated `mascope-copy` engine (the run
+  selector renders it as "copy of" the source), published through the same
+  validated import pipeline external engines use, complete with one row per
+  destination peak, a copy manifest on the run, per-row `copied_from`
+  provenance, and the usual batch fold-in. Blanks, opposite-polarity
+  samples, and samples with a run already in flight are skipped and
+  reported. Verification verdicts do not copy - a verdict is a judgement
+  about one sample's evidence. Design note:
+  `docs/dev/peak_assignment_copy.md`.
+
 ### Changed
 
 - Selecting **every** batch peak no longer locks up the app. The *Batch peaks*

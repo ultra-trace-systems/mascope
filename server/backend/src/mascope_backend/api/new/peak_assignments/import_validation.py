@@ -36,16 +36,26 @@ from mascope_backend.api.new.peak_assignments.engine import tier_for_score
 SERVER_OWNED_PROVENANCE_KEYS = ("p_correct", "calibration", "corroboration")
 
 
-def normalize_engine(engine: str) -> tuple[str | None, str | None]:
+def normalize_engine(
+    engine: str, allow_reserved: str | None = None
+) -> tuple[str | None, str | None]:
     """Validate a client-supplied engine name.
 
     :param engine: The engine name from the payload.
+    :param allow_reserved: One reserved name this caller is trusted to stamp.
+        Only server-side callers pass it - the copy service publishes under its
+        reserved identity through the same import pipeline external clients use,
+        and this is the seam that lets it through. The HTTP route never forwards
+        it, so the reservation stays absolute at the API boundary.
     :return: ``(normalized_name, None)`` when acceptable, else ``(None, error)``.
     """
     name = (engine or "").strip()
     if not name:
         return None, "engine must be a non-empty name"
-    if name.lower() in RESERVED_ENGINE_NAMES:
+    if (
+        name.lower() in RESERVED_ENGINE_NAMES
+        and name.lower() != (allow_reserved or "").strip().lower()
+    ):
         return None, (
             f"engine '{name}' is reserved for runs this server computed; "
             "an imported run must name the engine that produced it"
