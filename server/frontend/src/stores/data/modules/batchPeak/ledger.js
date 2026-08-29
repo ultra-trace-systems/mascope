@@ -1,9 +1,7 @@
-import { computed } from 'vue'
 import { defineStore } from 'pinia'
 
 import { api } from '@/api'
 import { useData } from '@/lib/store'
-import { countTiers } from '@/lib/tiers'
 
 import { useBatch } from '../batch'
 
@@ -57,25 +55,11 @@ export const useBatchPeakLedger = defineStore('app.data.batchPeak', () => {
     }
   )
 
-  // Tier histogram for the ledger's filter strip (one row per batch peak).
-  //
-  // Four buckets, not the sample ledger's five: `reagent` there is a role
-  // rather than a tier, and a batch peak is a consensus across samples that
-  // carries no role at all - a bucket that can only ever read zero is a
-  // question the user is invited to click and get nothing back from.
-  //
-  // Isotopologue satellites are left out, as the sample ledger's histogram
-  // leaves out its iso_child rows: a satellite carries its family's formula and
-  // its family's tier, so counting it counts one species twice. What the strip
-  // reports is species, which is also the population the table shows at top
-  // level - the toggle unfolds satellites under their M0 without making them
-  // more species than they were.
-  const tierCounts = computed(() =>
-    countTiers(
-      data.list.value.filter((bp) => !bp.satellite_of),
-      (bp) => bp.consensus_tier
-    )
-  )
-
-  return { ...data, tierCounts }
+  // No tier histogram here. The strip it feeds counts SPECIES rather than
+  // anchors, and which anchors are species is decided by resolving the
+  // `satellite_of` links against the whole loaded list - chains onto their root,
+  // a link out of the list back to top level. That resolution lives in the pane
+  // (PaneBrowserBatchPeaks.vue), which is also what renders the rows the chips
+  // filter, so the count and the rows it promises come from one rule.
+  return { ...data }
 })

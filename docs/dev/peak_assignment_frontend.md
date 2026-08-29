@@ -58,7 +58,15 @@ a run selector that **auto-selects the latest completed run** (on load and sampl
 tier-histogram filter strip, and a virtual-scrolled table (m/z · intensity · formula `+N` · tier ·
 **P(correct)**). An **"Isotopologues" toggle** unfolds each compound's `iso_child` satellites as indented
 rows (children inherit the parent's tier rank so the stable sort keeps families grouped; rows stay
-fixed-height so virtual scrolling holds). Row↔peak selection is two-way. The old
+fixed-height so virtual scrolling holds). The batch-peak ledger
+([`PaneBrowserBatchPeaks.vue`](../../server/frontend/src/lib/panes/PaneBrowserMatch/PaneBrowserBatchPeaks.vue))
+mirrors that toggle under the same two constraints, with one difference: a batch peak is a bare m/z
+anchor, so the family link is **derived** (`satellite_of`, §5.4 of
+[`peak_assignment_batch.md`](peak_assignment_batch.md)) rather than given, and it arrives ONE hop deep
+pointing into a list the pane does not control — so the pane flattens a chain onto its root and leaves a
+link it cannot follow at top level, rather than nesting a row under one that is never drawn. Both panes
+own their sort (`lazy`) for the same reason; the batch one owns its column filtering with it, since
+`lazy` switches off both. Row↔peak selection is two-way. The old
 [`PaneBrowserPeak.vue`](../../server/frontend/src/lib/panes/PaneBrowserPeak/PaneBrowserPeak.vue) ledger
 is not mounted **while the flag is on** — but it is still the Sample tab's ledger with the flag
 off, so it is live code, not dead. Retiring it depends on the feature becoming the default.

@@ -14,7 +14,7 @@ import { getApiErrorMessage, isRefusedRequest } from '@/api/utils'
 import { BaseTabbedPanel, BaseTierTag, BaseCopyableField } from '@/lib/base'
 import { num } from '@/lib/formatters'
 import { canEditWorkspace } from '@/lib/permissions'
-import { TIERS, TIER_META, tierRank } from '@/lib/tiers'
+import { TIERS, TIER_META, countTiers, tierRank } from '@/lib/tiers'
 import { prettyTrim } from '@/lib/utils'
 import { api } from '@/api'
 import { useApp } from '@/stores'
@@ -27,7 +27,6 @@ import { MAX_SELECTED_BATCH_PEAKS } from '@/stores/data/modules/batchPeak/ledger
  * chart plots, so the chart never renders 1000+ traces at once.
  */
 const app = useApp()
-const table = ref(null)
 const computing = ref(false)
 
 const ledger = computed(() => app.data.batchPeak)
@@ -273,12 +272,11 @@ const overflowFrom = ref(0)
 // would name a number that is not the size of anything the user can see.
 const selectionAtCapacity = ref(false)
 
-// The rows the table would select on "all": filtered, sorted and folded as
-// displayed. Under `lazy` the table's own view of the rows is the array it was
-// handed, which is `rows` - already all three - so the two agree by
-// construction rather than by luck. The fallback is for a table that has not
-// mounted one yet.
-const selectableRows = () => table.value?.processedData ?? rows.value
+// The rows "all" means: filtered, sorted and folded as displayed. This used to
+// be read back off the table, which under `lazy` hands back the array it was
+// given - so it was `rows` by a longer route, and a route that could only ever
+// disagree by being wrong.
+const selectableRows = () => rows.value
 
 /**
  * The single write into the ledger selection, capped.
@@ -358,24 +356,41 @@ const onKeyDown = (event) => {
   }
 }
 
-// Folding takes the satellite rows off the table, and a selection is what the
-// chart plots: leaving them in it would draw traces with no ticked row behind
-// them, and would spend the cap on rows the user can no longer see to release.
-// So the fold drops them - and only them, not the rows a tier chip is hiding,
-// which are a filter rather than a fold and have always survived one.
-//
-// Unfolding takes nothing back: the satellites reappear unselected, which is
-// where they were before anyone ticked them.
-watch(showIsotopologues, (unfolded) => {
+// The notices belong to the gesture, so they clear when the toggle moves.
+watch(showIsotopologues, () => {
   overflowFrom.value = 0
   selectionAtCapacity.value = false
-  if (unfolded) return
-  const satellites = new Set(
-    decorated.value.filter((row) => row.parentId).map((row) => row.batch_peak_id)
-  )
-  if (!satellites.size) return
-  ledger.value.selected = ledger.value.selected.filter((row) => !satellites.has(row.batch_peak_id))
 })
+
+// While folded, no satellite is selected.
+//
+// A selection is what the chart plots, so a satellite left in it while its row
+// is folded away draws a trace with no ticked row behind it, and spends the cap
+// on a row the user can no longer see to release. Only the fold does this - the
+// rows a tier chip hides are a filter rather than a fold, and a filter has never
+// cost the selection anything.
+//
+// Written as an invariant rather than as a reaction to the toggle, because the
+// toggle is the pane's state and the selection is the store's: the pane remounts
+// folded while the selection survives, so a satellite ticked before a tab switch
+// would come back plotted, uncounted, and with no row left to untick it from.
+// Unfolding takes nothing back - the satellites reappear unselected, where they
+// were before anyone ticked them.
+watch(
+  [showIsotopologues, decorated],
+  ([unfolded]) => {
+    // Re-checked on every ledger reload, so it leaves early on the two states
+    // it has nothing to do in rather than walking the whole list to find out.
+    if (unfolded || !ledger.value.selected.length) return
+    const satellites = new Set(
+      decorated.value.filter((row) => row.parentId).map((row) => row.batch_peak_id)
+    )
+    if (!satellites.size) return
+    const kept = ledger.value.selected.filter((row) => !satellites.has(row.batch_peak_id))
+    if (kept.length !== ledger.value.selected.length) ledger.value.selected = kept
+  },
+  { immediate: true }
+)
 
 // --- Tier strip -------------------------------------------------------------
 
@@ -391,18 +406,23 @@ const toggleTier = (tier) => {
   tierConstraint.value.value = activeTier.value === tier ? null : tier
 }
 
-// One chip per tier in confidence order, counts included. Counts come from the
-// whole ledger rather than the filtered rows, as the sample pane's do: a
-// histogram that reacted to its own filter would collapse to one non-zero
-// bucket the moment it was used. Satellites are left out of them by the store,
-// for the same reason the sample ledger leaves out its iso_child rows - so the
-// counts are of species, and match the rows the table shows at top level
-// whether or not the satellites are unfolded beneath them.
+// A chip is a filter control, so its number has to be the number of rows
+// clicking it produces: counted over `parents`, the same population the table
+// shows at top level and the breadcrumb names. Satellites are left out for the
+// reason the sample ledger leaves out its iso_child rows - a satellite carries
+// its family's formula and tier, so counting it counts one species twice.
+//
+// Counted over the whole ledger rather than the filtered rows, as the sample
+// pane's are: a histogram that reacted to its own filter would collapse to one
+// non-zero bucket the moment it was used.
+const tierCounts = computed(() => countTiers(parents.value, (bp) => bp.consensus_tier))
+
+// One chip per tier in confidence order, counts included.
 const tierChips = computed(() =>
   TIERS.map((tier) => ({
     key: tier,
     label: TIER_META[tier].label,
-    count: ledger.value.tierCounts[tier] ?? 0
+    count: tierCounts.value[tier] ?? 0
   }))
 )
 
@@ -679,7 +699,6 @@ onScopeDispose(() => clearTimeout(computeTimer))
       </div>
 
       <DataTable
-        ref="table"
         :value="rows"
         dataKey="batch_peak_id"
         :selection="ledger.selected"

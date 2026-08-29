@@ -65,12 +65,7 @@ function makeApp({ batch = BATCH, workspace = WORKSPACE, samples = [{}], peaks =
         pending: false,
         error: null,
         selected: [],
-        load: vi.fn(),
-        // Mirrors the store's own computed, which is what the strip renders.
-        tierCounts: peaks.reduce(
-          (counts, p) => ({ ...counts, [p.consensus_tier]: (counts[p.consensus_tier] ?? 0) + 1 }),
-          { assigned: 0, candidate: 0, below_assignability: 0, unassigned: 0 }
-        )
+        load: vi.fn()
       }
     },
     ui: {
@@ -115,20 +110,15 @@ const ColumnStub = {
 // events it answers, so a test can select the way the header checkbox and a
 // shift-click range each do. `keydown` is left undeclared on purpose - it falls
 // through to the root element, which is how a test reaches Ctrl+A.
-// It also carries `processedData`, the filtered-and-sorted view the real table
-// exposes and the pane reads to decide what "all" means. A test can narrow it
-// to stand in for a column filter, which is the state that separates "every row
-// on screen is selected" from "the selection happens to be that large".
+// It deliberately does NOT model a filtered view of the rows. The table is
+// `lazy`, so filtering is the pane's: what it hands the table is already the
+// filtered, sorted, folded array, and a stub that could narrow it further would
+// be modelling a step that no longer exists - and the tests that drove it would
+// pass without ever touching the real filter.
 const DataTableStub = {
   name: 'DataTable',
   props: ['value', 'filters', 'scrollHeight', 'selection', 'selectAll'],
   emits: ['update:selection', 'select-all-change'],
-  data: () => ({ visible: null }),
-  computed: {
-    processedData() {
-      return this.visible ?? this.value
-    }
-  },
   template: '<div class="datatable"><slot /></div>'
 }
 
@@ -429,6 +419,24 @@ describe('PaneBrowserBatchPeaks tier strip', () => {
     expect(wrapper.vm.filters.consensus_tier.constraints[0].value).toBeNull()
   })
 
+  it('counts species rather than anchors, so a chip narrows to the number it shows', async () => {
+    // A chip is a filter control: the number on it is a promise about how many
+    // rows clicking it produces. Counting the satellites too would promise three
+    // assigned rows and deliver one.
+    wrapper = await mountPane({
+      peaks: [
+        peak('bp-m0', 'assigned', 0.9, { mz: 181.07 }),
+        peak('bp-sat-1', 'assigned', 0.9, { mz: 182.07, satellite_of: 'bp-m0' }),
+        peak('bp-sat-2', 'assigned', 0.9, { mz: 183.07, satellite_of: 'bp-m0' })
+      ]
+    })
+
+    expect(wrapper.findAll('.tier-stat')[0].text()).toBe('1 assigned')
+
+    await wrapper.findAll('.tier-stat')[0].trigger('click')
+    expect(wrapper.vm.rows).toHaveLength(1)
+  })
+
   it('marks the active chip and dims the rest', async () => {
     wrapper = await mountPane({ peaks })
     await wrapper.findAll('.tier-stat')[0].trigger('click')
@@ -645,25 +653,29 @@ describe('PaneBrowserBatchPeaks selection cap', () => {
     // compared sizes would tick over rows that are all unselected - and, since
     // a ticked box offers to clear, the next click would wipe the selection
     // instead of filling it.
+    //
+    // Narrowed through the tier chips, the control a user actually has: the
+    // table is `lazy`, so the rows on screen are the ones the pane filtered.
     wrapper = await mountPane({
       peaks: [...many(3), peak('other-1', 'candidate', 0.5), peak('other-2', 'candidate', 0.4)]
     })
-    const assigned = wrapper.vm.rows.filter((row) => row.consensus_tier === 'assigned')
-    const candidates = wrapper.vm.rows.filter((row) => row.consensus_tier === 'candidate')
+    const chip = (tier) =>
+      wrapper.findAll('.tier-stat')[tier === 'assigned' ? 0 : 1].trigger('click')
 
-    // Filter to the assigned rows and select all of them.
-    table().vm.visible = assigned
-    await wrapper.vm.$nextTick()
+    // Filter to the three assigned rows and select all of them.
+    await chip('assigned')
+    expect(wrapper.vm.rows).toHaveLength(3)
     checkSelectAll()
     await wrapper.vm.$nextTick()
     expect(table().props('selectAll')).toBe(true)
 
     // Now filter to the two candidate rows: the selection is still three rows,
     // larger than what is on screen, and shares none of it.
-    table().vm.visible = candidates
-    await wrapper.vm.$nextTick()
+    await chip('assigned') // clear
+    await chip('candidate')
 
-    expect(app.data.batchPeak.selected).toHaveLength(assigned.length)
+    expect(app.data.batchPeak.selected).toHaveLength(3)
+    expect(wrapper.vm.rows).toHaveLength(2)
     expect(table().props('selectAll')).toBe(false)
   })
 
@@ -781,6 +793,34 @@ describe('PaneBrowserBatchPeaks isotopologue folding', () => {
     await wrapper.vm.$nextTick()
 
     expect(ids()).toEqual(['bp-other', 'bp-m0', 'bp-sat-1', 'bp-sat-2'])
+  })
+
+  it('keeps every family contiguous under every sortable column', async () => {
+    // The one-column case above is the regression that prompted the pane taking
+    // the sort over; this is the invariant, so a column added later cannot
+    // quietly reintroduce it.
+    wrapper = await mountPane({ peaks: family })
+    wrapper.vm.showIsotopologues = true
+
+    for (const field of ['mz', 'max_intensity', 'consensus_formula', 'tierRank', 'n_present']) {
+      for (const order of [1, -1]) {
+        wrapper.vm.sortField = field
+        wrapper.vm.sortOrder = order
+        await wrapper.vm.$nextTick()
+
+        // Every satellite sits directly under its own parent, so a family is
+        // one unbroken block wherever the sort put it. Collected rather than
+        // asserted row by row, so a failure names the column and the direction.
+        let parent = null
+        const misplaced = []
+        for (const row of wrapper.vm.rows) {
+          if (!row.parentId) parent = row.batch_peak_id
+          else if (row.parentId !== parent) misplaced.push(row.batch_peak_id)
+        }
+        expect({ field, order, misplaced }).toEqual({ field, order, misplaced: [] })
+        expect(wrapper.vm.rows).toHaveLength(4)
+      }
+    }
   })
 
   it('shows a satellite whose parent is not in the ledger as a row of its own', async () => {
