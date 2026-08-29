@@ -589,6 +589,25 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
 
 ### Fixed
 
+- One compound can no longer end up drawn as **two batch-peak traces** because
+  two samples were folded into the batch at the same time. A batch peak is a
+  frozen m/z anchor: an arriving sample's peak joins the nearest existing anchor
+  or mints a new one, and an anchor never moves again. Nothing kept two folds of
+  the same batch apart, though, and two that each read the anchor set before
+  either had finished both minted an anchor for a species they shared. Because
+  anchors are permanent, the split never healed - the compound stayed split
+  across two traces, each present in only some of the samples it was actually
+  found in, both support fractions wrong, and re-folding only snapped each
+  sample to whichever half was nearer. Folding now takes a lock on the batch for
+  the span in which it reads and extends the anchors, so overlapping folds queue
+  instead of interleaving; folds of different batches still run in parallel, and
+  the fold's preparatory work, including the instrument-configuration lookup,
+  happens before the lock is taken. All three paths that can overlap are
+  covered: assigning a whole batch, publishing an imported run, and computing
+  batch peaks for a batch after the fact. A sample that will not fold during
+  that last one is now logged with its traceback rather than one line of
+  exception text, since the count alone is all the caller ever sees.
+
 - The peak inspector now names the peak it is showing when that peak has no
   formula. An unassigned peak read as the word *Unassigned* over an empty
   evidence grid - the same card for every unassigned peak in the sample, saying

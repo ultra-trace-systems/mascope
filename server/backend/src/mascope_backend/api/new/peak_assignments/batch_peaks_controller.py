@@ -16,7 +16,8 @@ import statistics
 from collections import defaultdict
 from datetime import datetime, timezone
 
-from sqlalchemy import select
+from sqlalchemy import func, select
+from sqlalchemy.exc import IntegrityError
 
 from mascope_backend.api.lib.api_features import api_controller_background_task
 from mascope_backend.api.new.instrument_configs.lib import read_instrument_functions
@@ -63,6 +64,63 @@ async def _latest_completed_run_id(session, sample_item_id: str) -> str | None:
             .limit(1)
         )
     ).scalar_one_or_none()
+
+
+#: Namespace discriminator for the fold-in lock, hashed into the first int of the
+#: two-int advisory-lock key space so these locks cannot collide with the other
+#: advisory-lock users (match writes, assignment claims).
+_BATCH_PEAK_FOLD_LOCK_NAMESPACE = "mascope_batch_peak_fold"
+
+
+async def _acquire_batch_fold_lock(session, sample_batch_id: str) -> None:
+    """Serialize this batch's fold-ins for the rest of the caller's transaction.
+
+    Anchors are frozen and append-only, and no unique constraint can catch a
+    duplicate one -- anchor identity is tolerance-based, which an exact-value key
+    cannot express. So the only thing keeping two folds from each minting an
+    anchor for the same species is that they do not read the anchor set before
+    the other has committed its own. Nothing enforced that. Run finalize and
+    import publish are admitted per *sample*, so two samples of one batch can be
+    assigned or published at the same time and their folds overlap; the backfill
+    is admitted not at all, so it can overlap either of those or a second
+    backfill of the same batch; and production runs parallel workers, which no
+    in-process gate would reach anyway. A duplicate minted that way is permanent
+    -- later folds snap to whichever anchor is nearest, so one species stays
+    split across two traces with both support fractions wrong.
+
+    Transaction-scoped, so it releases on the caller's commit or rollback with no
+    unlock to forget. Keyed on the batch, so folds of different batches still run
+    in parallel. ``hashtext`` is 32-bit and the key space is two ints, so a
+    collision is possible; what it cannot do is let two folds of one batch
+    through, because the same batch id always hashes to the same key. (Postgres
+    keeps session- and transaction-scoped advisory locks in one space, so a
+    collision with :mod:`admission`'s never-committed claim would be a hang
+    rather than a slowdown. Two namespaces and two ids would have to collide at
+    once; the point here is only that the failure is one-sided in our favour for
+    the case that matters -- a missed lock -- not that every collision is cheap.)
+
+    **Depends on READ COMMITTED**, which is what the engine runs (no
+    ``isolation_level`` is set anywhere). The fold's transaction opens well
+    before this lock -- at the ``Sample`` read -- so the anchor SELECT that
+    follows is only guaranteed to see the previous holder's committed anchors
+    because each statement takes its own snapshot. Under REPEATABLE READ the
+    lock would still serialize perfectly and the duplicate anchors would come
+    straight back, with nothing in the wait to hint at it.
+
+    :param session: The session whose transaction takes and holds the lock; must
+        be the one that goes on to read the anchors and write the fold.
+    :type session: AsyncSession
+    :param sample_batch_id: The batch whose fold-ins are serialized.
+    :type sample_batch_id: str
+    """
+    await session.execute(
+        select(
+            func.pg_advisory_xact_lock(
+                func.hashtext(_BATCH_PEAK_FOLD_LOCK_NAMESPACE),
+                func.hashtext(sample_batch_id),
+            )
+        )
+    )
 
 
 def _tolerance_fn(resolution_func):
@@ -141,6 +199,23 @@ async def fold_sample_into_batch_peaks(sample_item_id: str) -> str | None:
             )
             resolution_func = None
         tol_fn = _tolerance_fn(resolution_func)
+
+        # Everything from here to the commit is one batch's critical section: the
+        # anchor read, the mint, and the insert have to be one indivisible step or
+        # concurrent folds duplicate anchors. Waiting here cannot invalidate what
+        # was read above: no fold of ANOTHER sample can touch this run, its rows
+        # or this sample's offset. A fold of this same sample can leave `run_id`
+        # stale, but that is older than this lock and self-corrects -- the next
+        # fold of that sample replaces its occurrences wholesale.
+        #
+        # Taken here rather than at the top for a reason that outlives the
+        # ordering: read_instrument_functions above opens sessions of its own
+        # while this one is already holding a connection, and blocking on a lock
+        # and only then checking out more connections is the hold-and-wait shape
+        # that db/__init__ documents as deadlocking a worker. So the invariant
+        # this placement buys is that nothing between here and the commit may
+        # open a second session -- everything below runs on `session`.
+        await _acquire_batch_fold_lock(session, sample_batch_id)
 
         # Existing frozen anchors for this (batch, ionization mode).
         existing = (
@@ -345,10 +420,29 @@ async def backfill_sample_batch_peaks(sample_batch_id: str) -> tuple[int, int]:
         try:
             if await fold_sample_into_batch_peaks(sample_item_id) is not None:
                 folded += 1
-        except Exception as exc:  # noqa: BLE001 - one bad sample must not abort backfill
+        except IntegrityError:
+            # Its own branch as a tripwire, not because the cause is known: the
+            # fold-in lock plus the delete-then-flush of a re-fold should have
+            # made the (batch peak, sample) unique key unreachable, so a
+            # violation of THAT key means the serialization did not hold and is
+            # worth chasing. The same branch also catches the foreign keys a
+            # long backfill can lose under it -- a run pruned, a sample removed --
+            # which are ordinary and unrelated. Hence a message that reports
+            # which sample and leaves the diagnosis to the logged constraint.
             failed += 1
-            runtime.logger.warning(
-                f"Batch-peak backfill failed for sample '{sample_item_id}': {exc}"
+            runtime.logger.exception(
+                "Batch-peak backfill hit a database constraint on sample "
+                f"'{sample_item_id}'. A violated (batch peak, sample) unique key "
+                "means two folds of it overlapped, which the fold-in lock should "
+                "prevent; a foreign key means a run or sample it referenced went "
+                "away while the backfill ran."
+            )
+        except Exception:  # noqa: BLE001 - one bad sample must not abort backfill
+            # Logged with the traceback: the exception's message alone is often
+            # just a key or an index, and the caller only ever sees a count.
+            failed += 1
+            runtime.logger.exception(
+                f"Batch-peak backfill failed for sample '{sample_item_id}'."
             )
     return folded, failed
 
