@@ -35,11 +35,23 @@ const chartTitle = computed(() => {
   return `<i>Batch:</i>\t<b> ${batchName} </b>\t<i>(${sampleCount} samples)</i>`
 })
 
+// The chart's status line. It carries a failed series load as well as the
+// count, because the store now asks the API to keep quiet about these requests
+// - a chunk cancelled when the selection moves on is not a failure worth a
+// toast - and a chart that just came up empty owes the reader a reason.
 const chartSubtitle = computed(() => {
+  if (data.error) return `<i>Could not load the selected batch peaks:</i> ${data.error}`
   // data.traces includes a trailing TIC trace.
   const peakCount = data.traces.length ? data.traces.length - 1 : 0
   if (!peakCount) {
     return 'Select batch peaks in the Assignments ledger to plot their time series'
+  }
+  // The ledger caps its own selection, so the two counts normally agree; when
+  // they do not, saying only the plotted one would claim the chart shows a
+  // selection it is showing the head of.
+  if (data.truncated) {
+    const total = data.selectedCount.toLocaleString('en-US')
+    return `<i>Assignments:</i>\t\t ${peakCount} of ${total} selected batch peaks`
   }
   return `<i>Assignments:</i>\t\t ${peakCount} selected batch peak${peakCount === 1 ? '' : 's'}`
 })

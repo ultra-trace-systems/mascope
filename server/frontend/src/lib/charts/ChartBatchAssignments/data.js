@@ -1,8 +1,10 @@
 import { ref, shallowRef, computed, watch, watchEffect } from 'vue'
 import { defineStore } from 'pinia'
 import { api } from '@/api'
+import { getApiErrorMessage } from '@/api/utils'
 import { beautifySnakeCase } from '@/lib/utils'
 import { useApp } from '@/stores'
+import { MAX_SELECTED_BATCH_PEAKS } from '@/stores/data/modules/batchPeak/ledger'
 import { glasbey } from '../colors.js'
 
 // Confidence tier -> Plotly marker symbol. Fill decreases with confidence, mirroring
@@ -13,6 +15,9 @@ const TIER_SYMBOL = {
   below_assignability: 'diamond-open',
   unassigned: 'circle-open'
 }
+
+/** Batch peaks per POST /batch-peaks/records/series request. */
+const CHUNK_SIZE = 100
 
 /**
  * Data store for the peak-centric batch overview ("Assignments" mode).
@@ -39,52 +44,162 @@ export const useChartAssignmentsData = defineStore('chart.batch.assignments', ()
   const samples = computed(() => app.data.sample.list ?? [])
   const pending = ref(false)
   const resetChart = ref(0)
+  /** Message from the last failed series fetch, rendered by the chart itself. */
+  const error = ref(null)
+
+  // --- What the chart plots ---------------------------------------------------
+
+  /** The ledger selection, in the order the table selected it. */
+  const selectedIds = computed(() => app.data.batchPeak.selectedIds ?? [])
+  /**
+   * The head of that selection the chart will actually plot.
+   *
+   * The ledger caps its own selection, so this normally passes it through
+   * whole. It is applied again here because the store has a second way in that
+   * the ledger's table never sees - the `peak_assignment_reload` handler below
+   * reads the selection directly - and because a plot bounded only by a
+   * component it does not own is bounded by nothing it can point at.
+   */
+  const plottedIds = computed(() => selectedIds.value.slice(0, MAX_SELECTED_BATCH_PEAKS))
+  const selectedCount = computed(() => selectedIds.value.length)
+  const plottedCount = computed(() => plottedIds.value.length)
+  const truncated = computed(() => selectedCount.value > plottedCount.value)
 
   /** Fetch series (per-sample intensity arrays) for a set of batch peaks. */
-  const fetchSeries = async (batchPeakIds) => {
-    const batchId = app.data.batch.focusedId
-    if (!batchId || !batchPeakIds.length) return []
+  const fetchSeries = async (batchId, batchPeakIds, signal) => {
     const data = await api.http.post(
       `/batch-peaks/records/series`,
       { sample_batch_id: batchId, batch_peak_ids: batchPeakIds },
-      { use: 'read', type: 'load_batch_peak_series' }
+      // `errors: 'inline'` holds back the interceptor's toast. A chunk aborted
+      // because the selection moved on reaches the interceptor as a
+      // response-less failure, which it would otherwise announce as a timeout;
+      // a genuine failure is reported once, by the chart, from `error` below.
+      { use: 'read', type: 'load_batch_peak_series', errors: 'inline', signal }
     )
     return data ?? []
   }
 
+  // Bumped whenever what should be plotted changes. A run that finds its token
+  // superseded drops what it fetched instead of appending it: those records
+  // belong to a selection that is no longer on screen, and mixing them into the
+  // current one would plot two selections at once.
+  let requestToken = 0
+  let inFlight = null
+  // A re-read that was cancelled before it landed is still owed, and the debt
+  // has to outlive the run that cancelled it. Its point is that the records
+  // held are out of date, which is not something a diff of ids can see: the
+  // superseding run would find every wanted id already held, return early, and
+  // leave the pre-fold-in series plotted for good. The fold-in event and the
+  // ledger's own reload arrive together, so this is the ordinary case.
+  let rereadOwed = false
+
   /**
-   * Plot only the SELECTED batch peaks (chosen in the ledger). Diffs old/new
-   * selection: drops de-selected records and chunk-fetches newly-selected ones,
-   * so the chart draws exactly the selection -- never all 1000+ batch peaks.
+   * Bring the plotted records in line with the (capped) ledger selection.
+   *
+   * Diffs against the records actually held rather than against the previous
+   * selection: under a cap the plotted set is not the selection, so
+   * de-selecting a peak promotes one that was below the cap into view - a
+   * change a selection diff cannot see. Reading the held records instead makes
+   * the sync self-correcting whatever route the selection took.
+   *
+   * @param {{ refetch?: boolean }} options `refetch` re-reads every plotted peak
+   *   rather than reusing what is held, for when the records themselves changed.
+   *   The intent is remembered until a run actually completes it, so a re-read
+   *   cancelled by a selection change is not lost.
    */
-  const handlePeaksSelected = async (nextSelected, prevSelected = []) => {
-    records.value = records.value.filter((r) => nextSelected.includes(r.batch_peak_id))
-    const newlySelected = nextSelected.filter((id) => !prevSelected.includes(id))
-    if (!newlySelected.length) return
-    pending.value = true
-    try {
-      const chunkSize = 100
-      for (let i = 0; i < newlySelected.length; i += chunkSize) {
-        const chunk = newlySelected.slice(i, i + chunkSize)
-        const newRecords = await fetchSeries(chunk)
-        records.value = records.value.concat(newRecords)
-      }
-    } finally {
+  const syncPlotted = async ({ refetch = false } = {}) => {
+    const token = ++requestToken
+    // Whatever is still in flight was fetching a selection that has moved on.
+    inFlight?.abort()
+    inFlight = null
+    // Take on the debt of any re-read this run is superseding, as well as its own.
+    rereadOwed = rereadOwed || refetch
+    const reread = rereadOwed
+
+    const batchId = app.data.batch.focusedId
+    const wanted = batchId ? plottedIds.value : []
+    const wantedSet = new Set(wanted)
+
+    // Set membership throughout: select-all hands us tens of thousands of ids,
+    // and an `includes` inside a `filter` over them is a frozen tab.
+    const kept = reread ? [] : records.value.filter((r) => wantedSet.has(r.batch_peak_id))
+    const held = new Set(kept.map((r) => r.batch_peak_id))
+    const missing = wanted.filter((id) => !held.has(id))
+
+    if (!missing.length) {
+      // Only when something was actually dropped: `kept` is a fresh array every
+      // time, and assigning an identical one would redraw every trace. Equal
+      // lengths mean nothing was filtered out, so the held array still holds.
+      if (kept.length !== records.value.length) records.value = kept
+      rereadOwed = false
+      error.value = null
       pending.value = false
+      return
+    }
+
+    // The cap is what bounds this: `ceil(MAX_SELECTED_BATCH_PEAKS / CHUNK_SIZE)`
+    // requests, three today, so the whole set can go out at once and the plot is
+    // drawn once, when all of it has landed. The chunk loop this replaced
+    // awaited each request in turn, which on an uncapped select-all was a
+    // hundred round trips and a hundred redraws of a growing set of traces.
+    const chunks = []
+    for (let i = 0; i < missing.length; i += CHUNK_SIZE) {
+      chunks.push(missing.slice(i, i + CHUNK_SIZE))
+    }
+
+    const controller = new AbortController()
+    inFlight = controller
+    pending.value = true
+    error.value = null
+    try {
+      const fetched = await Promise.all(
+        chunks.map((chunk) => fetchSeries(batchId, chunk, controller.signal))
+      )
+      if (token !== requestToken) return
+      rereadOwed = false
+      // Ordered by the selection rather than by arrival, so the legend follows
+      // the ledger and a peak keeps its colour when its neighbours load. The
+      // records held are not necessarily the head of it: a peak selected above
+      // one already plotted belongs before it, not appended after it.
+      const byId = new Map(
+        kept.concat(fetched.flat()).map((record) => [record.batch_peak_id, record])
+      )
+      records.value = wanted.map((id) => byId.get(id)).filter(Boolean)
+    } catch (err) {
+      // A chunk that failed leaves its siblings running for nothing.
+      controller.abort()
+      // Superseded: the abort at the top of a newer run is what rejected this,
+      // and that run owns the state - including the re-read debt - now.
+      if (token !== requestToken) return
+      rereadOwed = false
+      error.value = getApiErrorMessage(err, 'Could not load the selected batch peaks.')
+      // On a re-read `kept` is empty by construction, and emptying the plot
+      // because a refresh failed is worse than leaving the last good series up
+      // beside the message saying the refresh did not happen.
+      if (!reread) records.value = kept
+    } finally {
+      if (token === requestToken) {
+        pending.value = false
+        inFlight = null
+      }
     }
   }
 
   // The ledger's multi-selection drives the plotted set.
-  watch(
-    () => app.data.batchPeak.selectedIds,
-    (next, prev) => handlePeaksSelected(next ?? [], prev ?? [])
-  )
+  watch(plottedIds, () => syncPlotted())
 
   // On batch change, clear the plot (the ledger reloads its own list + selection).
   watch(
     () => app.data.batch.focusedId,
     (id, oldId) => {
       if (id !== oldId) {
+        requestToken++
+        inFlight?.abort()
+        inFlight = null
+        // A re-read owed for the batch being left is not owed for the new one.
+        rereadOwed = false
+        pending.value = false
+        error.value = null
         records.value = []
         resetChart.value++
       }
@@ -92,13 +207,12 @@ export const useChartAssignmentsData = defineStore('chart.batch.assignments', ()
   )
 
   // When batch peaks change (arrival fold-in / backfill), refetch the current
-  // selection so the plotted traces reflect the new consensus. Registered once for
+  // selection so the plotted traces reflect the new consensus. Under the same
+  // cap and the same token as a selection change, and holding the old records
+  // until the new ones land, so a fold-in mid-session neither re-runs the
+  // unbounded fetch nor blanks the chart while it re-reads. Registered once for
   // the store's session lifetime (Pinia singleton; the chart toggles in and out).
-  api.socket.on('peak_assignment_reload', async () => {
-    const selected = app.data.batchPeak.selectedIds ?? []
-    records.value = []
-    await handlePeaksSelected(selected, [])
-  })
+  api.socket.on('peak_assignment_reload', () => syncPlotted({ refetch: true }))
 
   // --- X-axis field selection (mirrors ChartBatchOverview) ---
   const inferType = (field) => {
@@ -249,5 +363,17 @@ export const useChartAssignmentsData = defineStore('chart.batch.assignments', ()
   const samplePeakIdAt = (curveNumber, pointIndex) =>
     traces.value[curveNumber]?.assignmentData?.sample_peak_ids?.[pointIndex] ?? null
 
-  return { samples, traces, xFields, xField, resetChart, pending, samplePeakIdAt }
+  return {
+    samples,
+    traces,
+    xFields,
+    xField,
+    resetChart,
+    pending,
+    error,
+    truncated,
+    selectedCount,
+    plottedCount,
+    samplePeakIdAt
+  }
 })

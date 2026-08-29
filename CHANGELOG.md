@@ -6,6 +6,22 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
 
 ### Changed
 
+- Selecting **every** batch peak no longer locks up the app. The *Batch peaks*
+  ledger lists every anchor in the batch, singletons included, so on a large
+  batch "select all" is tens of thousands of rows - and everything downstream
+  was priced per row: a chart trace and a legend entry each, one series request
+  per hundred rows issued strictly one after the next, and, in the shared
+  selection plumbing, a log line and a scan of the whole selection per record.
+  The tab locked up before the first trace appeared. The ledger now selects at
+  most 300 batch peaks at a time, and says so where the gesture was made rather
+  than leaving it to be inferred from a chart drawing fewer traces than the
+  ledger shows ticked. The list itself is unchanged - nothing became
+  unselectable - and the tier chips and the formula box are how you choose
+  which 300: filter first, then select. The chart's series requests now go out
+  together instead of in turn, and changing the selection while they are still
+  in flight cancels them, so a plot can no longer be assembled from two
+  different selections.
+
 - The strongest assignment tier is now called **assigned** rather than
   *identified*. In mass spectrometry an identification is read as MS2- or
   reference-standard-level evidence, and what the engine actually does is
