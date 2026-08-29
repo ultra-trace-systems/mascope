@@ -63,7 +63,19 @@ export const useBatchPeakLedger = defineStore('app.data.batchPeak', () => {
   // rather than a tier, and a batch peak is a consensus across samples that
   // carries no role at all - a bucket that can only ever read zero is a
   // question the user is invited to click and get nothing back from.
-  const tierCounts = computed(() => countTiers(data.list.value, (bp) => bp.consensus_tier))
+  //
+  // Isotopologue satellites are left out, as the sample ledger's histogram
+  // leaves out its iso_child rows: a satellite carries its family's formula and
+  // its family's tier, so counting it counts one species twice. What the strip
+  // reports is species, which is also the population the table shows at top
+  // level - the toggle unfolds satellites under their M0 without making them
+  // more species than they were.
+  const tierCounts = computed(() =>
+    countTiers(
+      data.list.value.filter((bp) => !bp.satellite_of),
+      (bp) => bp.consensus_tier
+    )
+  )
 
   return { ...data, tierCounts }
 })

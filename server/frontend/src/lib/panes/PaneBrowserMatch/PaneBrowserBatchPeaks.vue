@@ -7,7 +7,8 @@ import Column from 'primevue/column'
 import InputText from 'primevue/inputtext'
 import Message from 'primevue/message'
 import Select from 'primevue/select'
-import { FilterMatchMode, FilterOperator } from '@primevue/core/api'
+import ToggleSwitch from 'primevue/toggleswitch'
+import { FilterMatchMode, FilterOperator, FilterService } from '@primevue/core/api'
 
 import { getApiErrorMessage, isRefusedRequest } from '@/api/utils'
 import { BaseTabbedPanel, BaseTierTag, BaseCopyableField } from '@/lib/base'
@@ -45,6 +46,7 @@ const filters = ref({
 const breadcrumb = computed(() => {
   const batch = app.data.batch.focused
   if (!batch) return null
+  const folded = ledger.value.list.length - parents.value.length
   return {
     items: [
       {
@@ -55,28 +57,206 @@ const breadcrumb = computed(() => {
       },
       {
         icon: 'pi ph ph-atom',
-        label: `${ledger.value.list.length} batch peaks`,
-        disabled: true
+        // Species, not anchors: the count matches the tier strip below it and
+        // the rows the table shows at top level, which is what a reader
+        // comparing the two would otherwise find disagreeing by the size of
+        // the isotopologue tail.
+        label: `${parents.value.length} batch peaks`,
+        disabled: true,
+        tooltip: folded
+          ? `${parents.value.length} species; ${folded} isotopologue satellite ` +
+            `peak${folded === 1 ? '' : 's'} shown under their main peak`
+          : undefined
       }
     ]
   }
 })
 
-// --- Rows -------------------------------------------------------------------
+// --- Isotopologue families --------------------------------------------------
+
+// Batch peaks are bare m/z anchors, so the family link is one the backend
+// derives from the members' per-sample assignments and hands over as
+// `satellite_of` - the anchor whose M0 this one is a satellite of.
+//
+// It is deliberately ONE hop, observed rather than reconciled, which leaves the
+// reader two things to settle and the whole ledger in hand to settle them with:
+// a chain (a satellite of a satellite) has to reach a row that is actually
+// drawn, and a link out of the list - to an anchor the server filtered out, or
+// one deleted since - has to fail into a top-level row rather than into a row
+// that is never rendered at all.
+const byId = computed(() => new Map(ledger.value.list.map((bp) => [bp.batch_peak_id, bp])))
+
+/**
+ * The row this one folds under, or null when it stands on its own.
+ *
+ * Walks up to the family's root so the table stays two levels deep, which is
+ * what lets it keep a fixed row height and virtual-scroll. A cycle - which no
+ * fold should produce and no ledger should have to trust it did not - ends the
+ * walk with no parent, so the row is drawn rather than lost.
+ */
+const rootParentId = (row, index) => {
+  const seen = new Set([row.batch_peak_id])
+  let parentId = row.satellite_of
+  while (parentId && !seen.has(parentId)) {
+    const parent = index.get(parentId)
+    if (!parent) return null
+    if (!parent.satellite_of) return parentId
+    seen.add(parentId)
+    parentId = parent.satellite_of
+  }
+  return null
+}
 
 // The ledger's records with the tier's confidence rank attached, which is what
 // the tier column sorts on: the raw tier string sorts alphabetically, and
 // "below_assignability" before "candidate" is not an ordering anyone asked for.
+const decorated = computed(() => {
+  const index = byId.value
+  return ledger.value.list.map((batchPeak) => ({
+    ...batchPeak,
+    tierRank: tierRank(batchPeak.consensus_tier),
+    parentId: rootParentId(batchPeak, index)
+  }))
+})
+
+// Satellites by the row they fold under, ordered by m/z among themselves -
+// which is the order an isotopologue family reads in, M0 first and then M+1,
+// M+2.
+const childrenByParent = computed(() => {
+  const families = new Map()
+  for (const row of decorated.value) {
+    if (!row.parentId) continue
+    const family = families.get(row.parentId)
+    if (family) family.push(row)
+    else families.set(row.parentId, [row])
+  }
+  for (const family of families.values()) family.sort((a, b) => a.mz - b.mz)
+  return families
+})
+
+// The rows that stand on their own: every anchor that is not a satellite of one
+// the ledger holds. This is the population the tier strip counts and the table
+// shows at top level, folded or not - the toggle decides only whether the
+// satellites are drawn underneath.
+const parents = computed(() => decorated.value.filter((row) => !row.parentId))
+
+const satelliteCount = (row) => childrenByParent.value.get(row.batch_peak_id)?.length ?? 0
+
+// Label for an unfolded satellite row. A batch peak carries no isotope formula
+// - it is an m/z anchor, and the per-sample rows behind it may not even agree
+// on one - so the label is the nominal mass offset from the M0 it folds under,
+// the same "M+1" the sample ledger's engine writes.
+const childLabel = (row) => {
+  const parent = byId.value.get(row.parentId)
+  if (!parent) return 'iso'
+  const offset = Math.round(row.mz - parent.mz)
+  if (offset > 0) return `M+${offset}`
+  return offset < 0 ? `M${offset}` : 'M0'
+}
+
+// Fold satellites under their M0 by default: a satellite carries its family's
+// formula, so unfolded it reads as a second row for one compound.
+const showIsotopologues = ref(false)
+
+// --- Sorting and filtering --------------------------------------------------
+
+// Both are the pane's, not the table's. PrimeVue sorts and filters the flat row
+// array it is handed, which tears every satellite away from the parent it
+// belongs under the moment the ledger is sorted by anything but the default -
+// sorting by intensity drops a satellite hundreds of rows below the "+N" that
+// counts it, where an indented "M+1" means nothing. `lazy` hands both back to
+// us so `rows` can order the parents and re-attach each family underneath. The
+// same choice, for the same reason, as the sample ledger's.
 //
-// Ordered here by tier and then by fit descending. The table applies its own
-// sort on top and Array.prototype.sort is stable, so this ordering survives as
-// the tie-break: equal tiers come out ordered by the very percentage the chip
-// beside them shows.
-const rows = computed(() =>
-  ledger.value.list
-    .map((batchPeak) => ({ ...batchPeak, tierRank: tierRank(batchPeak.consensus_tier) }))
-    .sort((a, b) => a.tierRank - b.tierRank || (b.best_fit_score ?? -1) - (a.best_fit_score ?? -1))
-)
+// The header still renders its sort indicator and still emits the field it was
+// clicked with, and the filter menus still write into `filters`;
+// `removableSort` gives a third click that clears the column and returns the
+// ledger to its confidence-ordered default.
+const sortField = ref('n_present')
+const sortOrder = ref(-1)
+
+// Numeric collation, so the formula column reads as a chemist expects: C2H6
+// before C10H22, not after it. This is the comparer PrimeVue sorted with -
+// @primeuix/utils' localeComparator() is
+// `new Intl.Collator(undefined, { numeric: true }).compare` - and taking the
+// sort over must not quietly change the order it used to produce.
+const collator = new Intl.Collator(undefined, { numeric: true })
+
+// Missing values sort last in both directions - a peak with no formula, or no
+// intensity, is unknown rather than "smallest" - counting the empty string as
+// missing, which is what PrimeVue's isEmpty() did.
+const isBlank = (value) => value == null || value === ''
+
+function compareBy(field, order) {
+  const dir = order === -1 ? -1 : 1
+  return (a, b) => {
+    const av = a[field]
+    const bv = b[field]
+    if (isBlank(av) && isBlank(bv)) return 0
+    if (isBlank(av)) return 1
+    if (isBlank(bv)) return -1
+    if (typeof av === 'string' && typeof bv === 'string') return collator.compare(av, bv) * dir
+    if (av < bv) return -dir
+    if (av > bv) return dir
+    return 0
+  }
+}
+
+// The ledger's resting order: most confident first, best fit first within a
+// tier. Also the tie-breaker under every other column, and what an unsorted
+// table (third click on a sorted header) falls back to.
+const byConfidence = (a, b) =>
+  a.tierRank - b.tierRank || (b.best_fit_score ?? -1) - (a.best_fit_score ?? -1)
+
+/**
+ * PrimeVue's column filtering, applied here because `lazy` hands it back.
+ *
+ * The same rules it applied itself, so the menus keep meaning what they say: a
+ * constraint whose value is null is not a filter, the operator joins the rest,
+ * and the comparison is PrimeVue's own FilterService - so a match mode chosen
+ * in the menu ("Starts with", "Not contains") is honoured rather than
+ * approximated by whichever one this pane happened to hard-code.
+ */
+const passesFilters = (row) => {
+  for (const [field, meta] of Object.entries(filters.value)) {
+    const constraints = (meta.constraints ?? [meta]).filter(
+      (constraint) => constraint.value !== null
+    )
+    if (!constraints.length) continue
+    const matches = (constraint) =>
+      FilterService.filters[constraint.matchMode ?? FilterMatchMode.STARTS_WITH](
+        row[field],
+        constraint.value
+      )
+    const passed =
+      meta.operator === FilterOperator.OR ? constraints.some(matches) : constraints.every(matches)
+    if (!passed) return false
+  }
+  return true
+}
+
+// --- Rows -------------------------------------------------------------------
+
+// Parents are filtered by the menus and the chips, then ordered by the sorted
+// column with confidence breaking ties. When unfolded, each parent's satellites
+// are inserted right after it - a family is one block wherever its parent
+// lands, which is the only arrangement in which the indented rows can be read
+// at all. The satellites ride with their parent rather than being filtered
+// themselves: a family shares one formula and one tier, so a filter that kept
+// the parent kept the family.
+const rows = computed(() => {
+  const visible = parents.value.filter(passesFilters)
+  const byColumn = sortField.value ? compareBy(sortField.value, sortOrder.value) : null
+  visible.sort(byColumn ? (a, b) => byColumn(a, b) || byConfidence(a, b) : byConfidence)
+  if (!showIsotopologues.value) return visible
+
+  const result = []
+  for (const parent of visible) {
+    result.push(parent)
+    result.push(...(childrenByParent.value.get(parent.batch_peak_id) ?? []))
+  }
+  return result
+})
 
 // --- Selection --------------------------------------------------------------
 
@@ -93,8 +273,11 @@ const overflowFrom = ref(0)
 // would name a number that is not the size of anything the user can see.
 const selectionAtCapacity = ref(false)
 
-// The rows the table would select on "all": filtered and sorted as displayed.
-// The fallback is for a table that has not mounted its own view of the rows.
+// The rows the table would select on "all": filtered, sorted and folded as
+// displayed. Under `lazy` the table's own view of the rows is the array it was
+// handed, which is `rows` - already all three - so the two agree by
+// construction rather than by luck. The fallback is for a table that has not
+// mounted one yet.
 const selectableRows = () => table.value?.processedData ?? rows.value
 
 /**
@@ -142,9 +325,7 @@ const allSelected = computed(() => {
   const selectable = selectableRows()
   if (!selectable.length) return false
   const held = new Set(ledger.value.selected.map((row) => row.batch_peak_id))
-  return selectable
-    .slice(0, MAX_SELECTED_BATCH_PEAKS)
-    .every((row) => held.has(row.batch_peak_id))
+  return selectable.slice(0, MAX_SELECTED_BATCH_PEAKS).every((row) => held.has(row.batch_peak_id))
 })
 
 /**
@@ -177,6 +358,25 @@ const onKeyDown = (event) => {
   }
 }
 
+// Folding takes the satellite rows off the table, and a selection is what the
+// chart plots: leaving them in it would draw traces with no ticked row behind
+// them, and would spend the cap on rows the user can no longer see to release.
+// So the fold drops them - and only them, not the rows a tier chip is hiding,
+// which are a filter rather than a fold and have always survived one.
+//
+// Unfolding takes nothing back: the satellites reappear unselected, which is
+// where they were before anyone ticked them.
+watch(showIsotopologues, (unfolded) => {
+  overflowFrom.value = 0
+  selectionAtCapacity.value = false
+  if (unfolded) return
+  const satellites = new Set(
+    decorated.value.filter((row) => row.parentId).map((row) => row.batch_peak_id)
+  )
+  if (!satellites.size) return
+  ledger.value.selected = ledger.value.selected.filter((row) => !satellites.has(row.batch_peak_id))
+})
+
 // --- Tier strip -------------------------------------------------------------
 
 // The chips and the tier column's filter menu drive the same filter rather than
@@ -194,7 +394,10 @@ const toggleTier = (tier) => {
 // One chip per tier in confidence order, counts included. Counts come from the
 // whole ledger rather than the filtered rows, as the sample pane's do: a
 // histogram that reacted to its own filter would collapse to one non-zero
-// bucket the moment it was used.
+// bucket the moment it was used. Satellites are left out of them by the store,
+// for the same reason the sample ledger leaves out its iso_child rows - so the
+// counts are of species, and match the rows the table shows at top level
+// whether or not the satellites are unfolded beneath them.
 const tierChips = computed(() =>
   TIERS.map((tier) => ({
     key: tier,
@@ -202,6 +405,25 @@ const tierChips = computed(() =>
     count: ledger.value.tierCounts[tier] ?? 0
   }))
 )
+
+// --- Intensity --------------------------------------------------------------
+
+// What the intensity column reports, spelled out where it is shown: the ledger
+// has one number per species and a reader has to be told which of the batch's
+// samples it came from. The unit is the batch peak's own - heights on an
+// Orbitrap, areas on a TOF - so it is read off the rows rather than assumed.
+const INTENSITY_UNITS = {
+  sum_peak_heights: 'summed peak height',
+  sum_peak_areas: 'summed peak area'
+}
+
+const intensityTooltip = computed(() => {
+  const variable = ledger.value.list.find((bp) => bp.intensity_variable)?.intensity_variable
+  const unit = INTENSITY_UNITS[variable]
+  return (
+    'Highest intensity this species reaches in any sample of the batch' + (unit ? ` (${unit})` : '')
+  )
+})
 
 // --- Compute batch peaks ----------------------------------------------------
 
@@ -337,8 +559,10 @@ onScopeDispose(() => clearTimeout(computeTimer))
         <h1>Batch Peak Ledger</h1>
         <p>
         Cross-sample m/z anchors for the batch: each row is a species seen
-        across samples, with its consensus formula and tier and the number of
-        samples it appears in.
+        across samples, with its consensus formula and tier, the number of
+        samples it appears in, and the highest intensity it reaches in any of
+        them. Isotopologue satellite peaks are folded under their main peak;
+        the Isotopologues toggle unfolds them.
         </p>
         <p>
         The rows selected here are what the Assignments chart plots &mdash;
@@ -352,6 +576,31 @@ onScopeDispose(() => clearTimeout(computeTimer))
     "
   >
     <template #menu>
+      <div
+        class="unfold-toggle"
+        v-tooltip.top="'Show isotopologue satellite peaks as indented rows under their main peak'"
+        v-help.bottom="{
+          message: `
+            <h1>Isotopologue Rows</h1>
+            <p>
+            A satellite peak carries its family's formula, so left in the list
+            it reads as a second species. By default the ledger keeps one row
+            per species &mdash; the main peak (M0) &mdash; with its satellites
+            folded into the <b>+N</b> marker beside the formula. Toggle to
+            unfold them as indented rows underneath.
+            </p>
+            <p>
+            The link is derived: a batch peak is an m/z anchor and carries no
+            family of its own, so a satellite is one whose per-sample
+            assignments agree, across the batch, that it belongs to another
+            anchor's compound.
+            </p>`
+        }"
+      >
+        <ToggleSwitch v-model="showIsotopologues" inputId="unfold-batch-iso" />
+        <label for="unfold-batch-iso">Isotopologues</label>
+      </div>
+
       <!-- The tooltip hangs off the wrapper, not the button: a disabled button
            receives no mouse events, so a reason attached to it would be
            readable only in the one state where it says nothing. -->
@@ -447,8 +696,10 @@ onScopeDispose(() => clearTimeout(computeTimer))
         scrollable
         scrollHeight="flex"
         :virtualScrollerOptions="{ itemSize: 35.74 }"
-        sortField="n_present"
-        :sortOrder="-1"
+        lazy
+        removableSort
+        v-model:sortField="sortField"
+        v-model:sortOrder="sortOrder"
         :pt="
           app.ui.help.top(
             { title: 'Batch Peaks', helpKey: 'batch-peaks' },
@@ -466,9 +717,52 @@ onScopeDispose(() => clearTimeout(computeTimer))
           <template #body="{ data }">{{ num.mz.format(data.mz) }}</template>
         </Column>
 
+        <!-- One number per species out of a per-sample matrix, so the column
+             says which one it picked: the brightest sample, which is where a
+             species is best measured and the order a reader looks for the
+             largest thing in the batch in. -->
+        <Column
+          field="max_intensity"
+          header="Intensity"
+          sortable
+          style="min-width: 7rem"
+          v-tooltip="intensityTooltip"
+        >
+          <template #body="{ data }">
+            <span class="intensity">
+              {{ data.max_intensity != null ? num.peakIntensity.format(data.max_intensity) : '—' }}
+            </span>
+          </template>
+        </Column>
+
         <Column field="consensus_formula" header="Formula" sortable style="min-width: 9rem">
           <template #body="{ data }">
-            <BaseCopyableField v-if="data.consensus_formula" :field="data.consensus_formula" />
+            <!-- An unfolded satellite says what it is rather than repeating its
+                 family's formula, which is the whole reason it was folded. -->
+            <span v-if="data.parentId" class="child-cell">
+              <span class="child-caret">&#8627;</span>
+              <span class="child-label" v-tooltip.top="data.consensus_formula || 'isotopologue'">{{
+                childLabel(data)
+              }}</span>
+            </span>
+            <!-- The satellite count rides in the slot, outside what gets
+                 copied, as the sample ledger's does. -->
+            <BaseCopyableField
+              v-else-if="data.consensus_formula"
+              class="formula"
+              :field="data.consensus_formula"
+            >
+              <span
+                v-if="satelliteCount(data)"
+                class="iso-count"
+                v-tooltip.top="
+                  `${satelliteCount(data)} isotopologue peak${
+                    satelliteCount(data) === 1 ? '' : 's'
+                  }`
+                "
+                >+{{ satelliteCount(data) }}</span
+              >
+            </BaseCopyableField>
             <span v-else class="unassigned">unassigned</span>
           </template>
           <template #filter="{ filterModel, filterCallback }">
@@ -543,6 +837,59 @@ onScopeDispose(() => clearTimeout(computeTimer))
 .unassigned {
   color: var(--p-text-muted-color, #888);
   font-style: italic;
+}
+
+.intensity {
+  font-variant-numeric: tabular-nums;
+}
+
+/* The toggle and the child-row treatment are the sample ledger's
+   (PaneBrowserAssignment.vue): the two ledgers sit in the same tab position and
+   fold the same thing, so a reader switching between them should recognize the
+   same control and the same indent. */
+.unfold-toggle {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  font-size: 0.8rem;
+  white-space: nowrap;
+}
+.unfold-toggle label {
+  cursor: pointer;
+  opacity: 0.75;
+}
+
+/* Unfolded satellite row: indented offset label under its main peak. */
+.child-cell {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 0.35rem;
+  padding-left: 0.9rem;
+}
+.child-caret {
+  opacity: 0.4;
+}
+.child-label {
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 0.86rem;
+  opacity: 0.8;
+}
+.iso-count {
+  margin-left: 0.35rem;
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 0.62rem;
+  opacity: 0.55;
+  vertical-align: super;
+  /* Its parent is BaseCopyableField's flex row, where vertical-align does
+     nothing; align to the top edge to keep the superscript reading. */
+  align-self: flex-start;
+}
+/* The copy button sits between the formula and the marker in source order, and
+   it reserves its space even while hidden - which would strand the "+N" a
+   button's width away from the formula it counts for. Ordering it last in the
+   flex row puts the marker back against the formula. */
+.formula :deep(button) {
+  order: 1;
 }
 
 /* Take the disabled button out of hit-testing so the wrapper above it receives

@@ -47,6 +47,33 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
 
 ### Added
 
+- The **Batch peaks** ledger now has an **Intensity** column and folds
+  isotopologue satellites under the peak they belong to. The intensity is the
+  highest the species reaches in any sample of the batch, in the instrument's
+  own unit, and it is sortable - which is how you find the largest thing in the
+  batch, including the largest thing nothing was assigned to, since an
+  unassigned anchor carries an intensity like any other. Peaks with no
+  intensity to report sort last rather than as zero.
+
+  The fold is the *Isotopologues* toggle the per-sample assignment ledger
+  already had, and it defaults to folded: a satellite peak carries its
+  compound's formula, so left in the list it read as a second species and the
+  ledger's row count, tier chips and formula filter all counted one compound
+  twice. Satellites now ride under their main peak, counted in the **+N**
+  marker beside the formula, and the toggle unfolds them as indented rows.
+  A batch peak is an m/z anchor and carries no compound of its own, so the link
+  is derived from the per-sample assignments behind it: a peak is folded only
+  when most of the samples that assigned it agree it belongs to another
+  anchor's compound. One that is a satellite in a single sample and a species
+  in its own right in the rest keeps its own row. Ticking rows is unchanged -
+  folding a satellite away also unticks it, so the chart never draws a trace
+  with no ticked row behind it.
+
+  Batches folded before this release get both without being recomputed; the
+  values are derived from the per-sample peaks already stored. As with the rest
+  of a batch peak's consensus, *Compute batch peaks* is what re-derives them
+  after samples are added or removed outside an assignment run.
+
 - Clicking a point on the **batch assignments chart** now opens the peak behind
   it, not just its sample. Each trace is one batch peak drawn across the batch,
   and the series it is drawn from now carries the sample peak every point was
