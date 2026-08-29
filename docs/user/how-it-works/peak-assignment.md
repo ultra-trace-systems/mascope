@@ -212,6 +212,21 @@ select all on a bigger ledger takes the first 300 rows and tells you so. Which 3
 up to you: filter the ledger first, with the tier chips or the Formula column's
 filter, and then select.
 
+One row per species, not per peak: a compound's isotopologue satellite peaks are
+folded under its main peak and counted in the **+N** marker beside the formula, the
+same way the per-sample assignment ledger folds them. The *Isotopologues* toggle
+unfolds them as indented rows underneath. The link is derived rather than given — a
+batch peak is an m/z anchor and carries no compound of its own — so a peak is folded
+only when its per-sample assignments agree, across most of the samples that assigned
+it, that it belongs to another anchor's compound. One that is a satellite in one
+sample and a species in its own right in the rest stays a row of its own.
+
+The *Intensity* column is the highest intensity the species reaches in any sample of
+the batch, in the instrument's own unit (summed peak heights on an Orbitrap, summed
+peak areas on a TOF). It is a property of the trace rather than of the assignment, so
+unassigned anchors carry one too — sorting by it is how you find the largest thing in
+the batch that nothing was assigned to.
+
 ## References
 
 - <a id="kf06"></a>Kind, T.; Fiehn, O. *Metabolomic database annotations via query of

@@ -132,6 +132,16 @@ const DataTableStub = {
   template: '<div class="datatable"><slot /></div>'
 }
 
+// Rendered rather than stubbed away, so the toggle a test flips is the one the
+// pane binds: `ToggleSwitch: true` would render an element with no v-model.
+const ToggleSwitchStub = {
+  name: 'ToggleSwitch',
+  props: ['modelValue'],
+  emits: ['update:modelValue'],
+  template:
+    '<button class="iso-toggle" @click="$emit(\'update:modelValue\', !modelValue)">{{ modelValue }}</button>'
+}
+
 const GLOBAL_STUBS = {
   Button: {
     props: ['label', 'disabled', 'loading'],
@@ -141,6 +151,7 @@ const GLOBAL_STUBS = {
   Message: { template: '<div class="pane-message"><slot /></div>' },
   DataTable: DataTableStub,
   Column: ColumnStub,
+  ToggleSwitch: ToggleSwitchStub,
   InputText: true,
   Select: true
 }
@@ -700,5 +711,312 @@ describe('PaneBrowserBatchPeaks selection cap', () => {
     await wrapper.vm.$nextTick()
 
     expect(notice()).toBeUndefined()
+  })
+})
+
+// The batch ledger has no family link of its own to read - a batch peak is an
+// m/z anchor - so `satellite_of` is derived by the backend and arrives one hop
+// deep, with the parent it names not guaranteed to be in the list. Everything
+// below is what the pane has to make of that: fold the families, keep them
+// together under any sort, and never lose a row whose link it could not follow.
+describe('PaneBrowserBatchPeaks isotopologue folding', () => {
+  const M0 = peak('bp-m0', 'assigned', 0.95, { mz: 181.0707, consensus_formula: 'C6H12O6' })
+  const SAT1 = peak('bp-sat-1', 'assigned', 0.9, {
+    mz: 182.0741,
+    consensus_formula: 'C6H12O6',
+    satellite_of: 'bp-m0'
+  })
+  const SAT2 = peak('bp-sat-2', 'assigned', 0.85, {
+    mz: 183.0775,
+    consensus_formula: 'C6H12O6',
+    satellite_of: 'bp-m0'
+  })
+  const OTHER = peak('bp-other', 'candidate', 0.5, { mz: 300.2, consensus_formula: 'C12H18O5' })
+
+  const family = [M0, SAT2, SAT1, OTHER]
+  const ids = () => wrapper.vm.rows.map((row) => row.batch_peak_id)
+
+  it('folds satellites away by default, leaving one row per species', async () => {
+    wrapper = await mountPane({ peaks: family })
+
+    expect(ids()).toEqual(['bp-m0', 'bp-other'])
+  })
+
+  it('counts the folded satellites on the row they folded into', async () => {
+    wrapper = await mountPane({ peaks: family })
+
+    expect(wrapper.vm.satelliteCount(M0)).toBe(2)
+    expect(wrapper.vm.satelliteCount(OTHER)).toBe(0)
+  })
+
+  it('unfolds them directly under their main peak, in m/z order', async () => {
+    // Seeded out of order above: a family reads M0 first and then M+1, M+2,
+    // which is the m/z order, not the order the ledger happened to arrive in.
+    wrapper = await mountPane({ peaks: family })
+
+    wrapper.vm.showIsotopologues = true
+    await wrapper.vm.$nextTick()
+
+    expect(ids()).toEqual(['bp-m0', 'bp-sat-1', 'bp-sat-2', 'bp-other'])
+  })
+
+  it('labels an unfolded satellite by its offset from the peak it folds under', async () => {
+    wrapper = await mountPane({ peaks: family })
+    wrapper.vm.showIsotopologues = true
+    await wrapper.vm.$nextTick()
+
+    const [, first, second] = wrapper.vm.rows
+    expect(wrapper.vm.childLabel(first)).toBe('M+1')
+    expect(wrapper.vm.childLabel(second)).toBe('M+2')
+  })
+
+  it('keeps a family together under a sort that would tear it apart', async () => {
+    // PrimeVue sorts the flat array it is handed, which is why the sort is the
+    // pane's: sorting by m/z descending puts the heaviest satellite first and
+    // drops its M0 to the bottom, where an indented "M+2" means nothing.
+    wrapper = await mountPane({ peaks: family })
+    wrapper.vm.showIsotopologues = true
+    wrapper.vm.sortField = 'mz'
+    wrapper.vm.sortOrder = -1
+    await wrapper.vm.$nextTick()
+
+    expect(ids()).toEqual(['bp-other', 'bp-m0', 'bp-sat-1', 'bp-sat-2'])
+  })
+
+  it('shows a satellite whose parent is not in the ledger as a row of its own', async () => {
+    // The link is one hop into a list this pane does not control: the anchor it
+    // names can have been filtered out by the request or deleted since. Folding
+    // the row under a parent that is never drawn would remove it from the
+    // ledger altogether.
+    wrapper = await mountPane({
+      peaks: [OTHER, peak('bp-orphan', 'assigned', 0.8, { satellite_of: 'bp-gone' })]
+    })
+
+    expect(ids()).toContain('bp-orphan')
+    expect(wrapper.vm.rows.find((row) => row.batch_peak_id === 'bp-orphan').parentId).toBeNull()
+  })
+
+  it('folds a chain onto its root, so the table stays two levels deep', async () => {
+    // The backend links what its members observed, one hop, and a chain is
+    // possible when one anchor is a satellite in most samples and an M0 in the
+    // rest. A row nested under a row that is itself nested would break the fixed
+    // row height the virtual scroller needs.
+    wrapper = await mountPane({
+      peaks: [M0, SAT1, peak('bp-deep', 'assigned', 0.7, { mz: 184.08, satellite_of: 'bp-sat-1' })]
+    })
+
+    expect(ids()).toEqual(['bp-m0'])
+    expect(wrapper.vm.satelliteCount(M0)).toBe(2)
+  })
+
+  it('draws both rows of a cycle rather than losing them', async () => {
+    // Nothing should produce one, and a ledger that walked into one without a
+    // guard would hang rather than render.
+    wrapper = await mountPane({
+      peaks: [
+        peak('bp-a', 'assigned', 0.9, { satellite_of: 'bp-b' }),
+        peak('bp-b', 'assigned', 0.8, { satellite_of: 'bp-a' })
+      ]
+    })
+
+    expect(ids().sort()).toEqual(['bp-a', 'bp-b'])
+  })
+})
+
+// `lazy` hands sorting AND filtering back to the pane. The chips and the column
+// menus keep looking active either way, so what these hold is that they still
+// change the rows - the regression the switch to a pane-owned sort could make
+// invisible.
+describe('PaneBrowserBatchPeaks filtering under the pane-owned table', () => {
+  const peaks = [
+    peak('bp-1', 'assigned', 0.9, { consensus_formula: 'C6H12O6' }),
+    peak('bp-2', 'candidate', 0.5, { consensus_formula: 'C12H18O5' }),
+    peak('bp-3', 'assigned', 0.8, { consensus_formula: 'C6H14O6' })
+  ]
+  const ids = () => wrapper.vm.rows.map((row) => row.batch_peak_id)
+
+  it('narrows the rows when a tier chip is clicked, not just the constraint', async () => {
+    wrapper = await mountPane({ peaks })
+
+    await wrapper.findAll('.tier-stat')[1].trigger('click')
+
+    expect(ids()).toEqual(['bp-2'])
+  })
+
+  it('narrows the rows on the formula filter', async () => {
+    wrapper = await mountPane({ peaks })
+
+    wrapper.vm.filters.consensus_formula.constraints[0].value = 'C6H'
+    await wrapper.vm.$nextTick()
+
+    expect(ids()).toEqual(['bp-1', 'bp-3'])
+  })
+
+  it('honours the match mode the menu offers rather than assuming one', async () => {
+    // The menu lets the user pick "Not contains" and the rest; a filter that
+    // hard-coded CONTAINS would go on matching while the menu said otherwise.
+    wrapper = await mountPane({ peaks })
+
+    wrapper.vm.filters.consensus_formula.constraints[0].matchMode = 'notContains'
+    wrapper.vm.filters.consensus_formula.constraints[0].value = 'C6H'
+    await wrapper.vm.$nextTick()
+
+    expect(ids()).toEqual(['bp-2'])
+  })
+
+  it('shows every row again when the constraint is cleared', async () => {
+    wrapper = await mountPane({ peaks })
+    wrapper.vm.filters.consensus_formula.constraints[0].value = 'C6H'
+    await wrapper.vm.$nextTick()
+
+    wrapper.vm.filters.consensus_formula.constraints[0].value = null
+    await wrapper.vm.$nextTick()
+
+    expect(ids()).toHaveLength(3)
+  })
+
+  it('keeps a family whole when its main peak passes the filter', async () => {
+    // A satellite shares its family's formula and tier, so a filter that kept
+    // the parent kept the family - and filtering the satellites separately would
+    // only ever produce the same answer or an incomplete family.
+    wrapper = await mountPane({
+      peaks: [
+        peak('bp-m0', 'assigned', 0.9, { mz: 181.07, consensus_formula: 'C6H12O6' }),
+        peak('bp-sat', 'assigned', 0.9, {
+          mz: 182.07,
+          consensus_formula: 'C6H12O6',
+          satellite_of: 'bp-m0'
+        }),
+        peak('bp-other', 'candidate', 0.5, { consensus_formula: 'C12H18O5' })
+      ]
+    })
+    wrapper.vm.showIsotopologues = true
+    wrapper.vm.filters.consensus_formula.constraints[0].value = 'C6H12O6'
+    await wrapper.vm.$nextTick()
+
+    expect(ids()).toEqual(['bp-m0', 'bp-sat'])
+  })
+})
+
+describe('PaneBrowserBatchPeaks intensity column', () => {
+  const peaks = [
+    peak('bp-mid', 'assigned', 0.9, {
+      max_intensity: 5000,
+      intensity_variable: 'sum_peak_heights'
+    }),
+    peak('bp-high', 'assigned', 0.9, { max_intensity: 90000 }),
+    peak('bp-none', 'assigned', 0.9, { max_intensity: null }),
+    peak('bp-low', 'assigned', 0.9, { max_intensity: 12 })
+  ]
+  const ids = () => wrapper.vm.rows.map((row) => row.batch_peak_id)
+
+  const sortBy = async (field, order) => {
+    wrapper.vm.sortField = field
+    wrapper.vm.sortOrder = order
+    await wrapper.vm.$nextTick()
+  }
+
+  it('offers a sortable intensity column', async () => {
+    wrapper = await mountPane({ peaks })
+
+    expect(columnFor('max_intensity').props('sortable')).toBe(true)
+  })
+
+  it('sorts by intensity, brightest first', async () => {
+    wrapper = await mountPane({ peaks })
+    await sortBy('max_intensity', -1)
+
+    expect(ids().slice(0, 3)).toEqual(['bp-high', 'bp-mid', 'bp-low'])
+  })
+
+  it('sorts a peak with no intensity last in both directions', async () => {
+    // No intensity is unknown, not zero: a row that sorted first ascending would
+    // put the peaks with nothing to report at the top of "quietest first".
+    wrapper = await mountPane({ peaks })
+
+    await sortBy('max_intensity', -1)
+    expect(ids().at(-1)).toBe('bp-none')
+
+    await sortBy('max_intensity', 1)
+    expect(ids().at(-1)).toBe('bp-none')
+  })
+
+  it('names the aggregate and the unit it is in', async () => {
+    // One number stands for a whole per-sample matrix, so the column has to say
+    // which one - and in what, since the unit is the instrument's.
+    wrapper = await mountPane({ peaks })
+
+    expect(wrapper.vm.intensityTooltip).toMatch(/highest intensity/i)
+    expect(wrapper.vm.intensityTooltip).toMatch(/any sample/i)
+    expect(wrapper.vm.intensityTooltip).toMatch(/summed peak height/i)
+  })
+
+  it('names no unit when the ledger carries none', async () => {
+    wrapper = await mountPane({ peaks: [peak('bp-1', 'assigned', 0.9)] })
+
+    expect(wrapper.vm.intensityTooltip).not.toMatch(/\(/)
+  })
+})
+
+describe('PaneBrowserBatchPeaks selection across the fold', () => {
+  const M0 = peak('bp-m0', 'assigned', 0.9, { mz: 181.07 })
+  const SAT = peak('bp-sat', 'assigned', 0.9, { mz: 182.07, satellite_of: 'bp-m0' })
+  const OTHER = peak('bp-other', 'candidate', 0.5, { mz: 300.2 })
+
+  const table = () => wrapper.findComponent(DataTableStub)
+  const selectedIds = () => app.data.batchPeak.selected.map((row) => row.batch_peak_id)
+
+  it('drops the satellites it hides from the selection', async () => {
+    // The selection is what the chart plots. Leaving a hidden row in it draws a
+    // trace with no ticked row behind it, and spends the cap on a row the user
+    // can no longer see to release.
+    wrapper = await mountPane({ peaks: [M0, SAT, OTHER] })
+    wrapper.vm.showIsotopologues = true
+    await wrapper.vm.$nextTick()
+
+    table().vm.$emit('update:selection', wrapper.vm.rows)
+    await wrapper.vm.$nextTick()
+    expect(selectedIds()).toEqual(['bp-m0', 'bp-sat', 'bp-other'])
+
+    wrapper.vm.showIsotopologues = false
+    await wrapper.vm.$nextTick()
+
+    expect(selectedIds()).toEqual(['bp-m0', 'bp-other'])
+  })
+
+  it('leaves the selection alone when a tier chip hides a row', async () => {
+    // A filter is not a fold: the rows it hides are still rows, and narrowing
+    // the ledger to choose the next few hundred has never cost the selection.
+    wrapper = await mountPane({ peaks: [M0, SAT, OTHER] })
+    table().vm.$emit('update:selection', wrapper.vm.rows)
+    await wrapper.vm.$nextTick()
+
+    await wrapper.findAll('.tier-stat')[1].trigger('click')
+
+    expect(selectedIds()).toEqual(['bp-m0', 'bp-other'])
+  })
+
+  it('does not give the satellites back selected when they are unfolded again', async () => {
+    wrapper = await mountPane({ peaks: [M0, SAT] })
+    wrapper.vm.showIsotopologues = true
+    await wrapper.vm.$nextTick()
+    table().vm.$emit('update:selection', wrapper.vm.rows)
+    await wrapper.vm.$nextTick()
+
+    wrapper.vm.showIsotopologues = false
+    await wrapper.vm.$nextTick()
+    wrapper.vm.showIsotopologues = true
+    await wrapper.vm.$nextTick()
+
+    expect(selectedIds()).toEqual(['bp-m0'])
+  })
+
+  it('is toggled from the pane menu', async () => {
+    wrapper = await mountPane({ peaks: [M0, SAT] })
+
+    await wrapper.find('.iso-toggle').trigger('click')
+
+    expect(wrapper.vm.showIsotopologues).toBe(true)
+    expect(wrapper.vm.rows).toHaveLength(2)
   })
 })
