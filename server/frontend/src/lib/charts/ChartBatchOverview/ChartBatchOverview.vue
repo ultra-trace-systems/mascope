@@ -2,12 +2,11 @@
 import { ref, computed, watch, toRaw, nextTick, onUnmounted } from 'vue'
 
 import Select from 'primevue/select'
-import SelectButton from 'primevue/selectbutton'
 import FloatLabel from 'primevue/floatlabel'
 import ProgressSpinner from 'primevue/progressspinner'
 
 import { useApp } from '@/stores'
-import { ToolbarIntensityScale } from '@/lib/toolbars'
+import { ToolbarDrawMode, ToolbarIntensityScale } from '@/lib/toolbars'
 
 import BaseChartPlotly from '../BaseChartPlotly.vue'
 import { useSampleScroller } from '@/lib/panes/PaneBrowserSample/stores'
@@ -26,12 +25,8 @@ const scale = ref({
   log: true
 })
 
-// Trace draw style; plotly mode strings, selectable in the settings menu
-const drawModes = [
-  { label: 'Markers', value: 'markers' },
-  { label: 'Lines', value: 'lines' },
-  { label: 'Both', value: 'lines+markers' }
-]
+// Trace draw style; the options live in ToolbarDrawMode, shared with the
+// assignments chart so the two sides of the switch offer the same control.
 const drawMode = ref('markers')
 
 const chartTitle = computed(() => {
@@ -312,16 +307,7 @@ onUnmounted(() => {
       <template v-slot:settings>
         <ToolbarIntensityScale v-model="scale" />
         <div style="height: 0.5rem" />
-        <div class="row">
-          <span>Draw style</span>
-          <SelectButton
-            v-model="drawMode"
-            :options="drawModes"
-            optionLabel="label"
-            optionValue="value"
-            :allowEmpty="false"
-          />
-        </div>
+        <ToolbarDrawMode v-model="drawMode" />
         <div style="height: 0.5rem" />
         <FloatLabel>
           <Select

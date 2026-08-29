@@ -30,7 +30,11 @@ vi.mock('@/stores', () => ({ useApp: () => mockApp }))
 import { api } from '@/api'
 import { useChartAssignmentsData } from '@/lib/charts/ChartBatchAssignments/data'
 
-/** Record as returned by POST /batch-peaks/records/series (series included) */
+/**
+ * Record as returned by POST /batch-peaks/records/series (series included).
+ * `series` carries the parallel arrays sample_item_ids / sample_peak_ids /
+ * intensities / tiers; sample_peak_ids is omitted by some fixtures on purpose.
+ */
 const peakRecord = (id, series, extra = {}) => ({
   batch_peak_id: id,
   mz: 181.0707,
@@ -84,6 +88,65 @@ describe('chart.batch.assignments data store (selection-driven)', () => {
     expect(peak.assignmentData.batch_peak_id).toBe('bp1')
     expect(peak.marker.symbol).toBe('square') // assigned
     expect(tic.name).toBe('TIC')
+  })
+
+  it('fans sample_peak_ids onto the sample axis, aligned with y', async () => {
+    api.http.post.mockResolvedValue([
+      peakRecord('bp1', {
+        sample_item_ids: ['s3', 's1'], // deliberately out of sample-list order
+        sample_peak_ids: ['p3', 'p1'],
+        intensities: [7, 5],
+        tiers: ['assigned', 'assigned']
+      })
+    ])
+
+    mockApp.data.batchPeak.selectedIds = ['bp1']
+    await flushAsync()
+
+    const [peak] = store.traces
+    // Same axis as y: index 1 is sample s2, where the batch peak is absent.
+    expect(peak.y).toEqual([5, null, 7])
+    expect(peak.assignmentData.sample_peak_ids).toEqual(['p1', null, 'p3'])
+  })
+
+  it('resolves the clicked point to its sample peak, and to null where there is none', async () => {
+    api.http.post.mockResolvedValue([
+      peakRecord('bp1', {
+        sample_item_ids: ['s1', 's3'],
+        sample_peak_ids: ['p1', 'p3'],
+        intensities: [5, 7],
+        tiers: ['assigned', 'assigned']
+      })
+    ])
+
+    mockApp.data.batchPeak.selectedIds = ['bp1']
+    await flushAsync()
+
+    expect(store.samplePeakIdAt(0, 0)).toBe('p1')
+    expect(store.samplePeakIdAt(0, 2)).toBe('p3')
+    // The batch peak is absent in s2 -> the click degrades to sample focus only.
+    expect(store.samplePeakIdAt(0, 1)).toBeNull()
+    // The TIC reference (last trace) is not a batch peak.
+    expect(store.samplePeakIdAt(1, 0)).toBeNull()
+    // Out-of-range point/curve indices resolve rather than throw.
+    expect(store.samplePeakIdAt(9, 0)).toBeNull()
+    expect(store.samplePeakIdAt(0, 9)).toBeNull()
+  })
+
+  it('tolerates a series without sample_peak_ids (server predating the field)', async () => {
+    api.http.post.mockResolvedValue([
+      peakRecord('bp1', {
+        sample_item_ids: ['s1'],
+        intensities: [5],
+        tiers: ['assigned']
+      })
+    ])
+
+    mockApp.data.batchPeak.selectedIds = ['bp1']
+    await flushAsync()
+
+    expect(store.traces[0].assignmentData.sample_peak_ids).toEqual([null, null, null])
+    expect(store.samplePeakIdAt(0, 0)).toBeNull()
   })
 
   it('adds only newly-selected peaks and drops de-selected ones', async () => {

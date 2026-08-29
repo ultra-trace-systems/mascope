@@ -268,6 +268,38 @@ async def test_series_full_load_applies_occupancy_filter(async_session_factory, 
     assert res_all["results"] == 4
 
 
+async def test_series_carries_the_sample_peak_behind_each_point(
+    async_session_factory, seeded
+):
+    """The series pairs each sample with the peak folded in from it.
+
+    This is what lets a click on a chart point land on the peak it was drawn
+    from: without it the point knows its batch peak and its sample but not which
+    of that sample's peaks it is. Row order is not guaranteed, so the arrays are
+    asserted as pairs rather than by position.
+    """
+    batch, samples = seeded
+    await fold_sample_into_batch_peaks(samples["A"])
+    await fold_sample_into_batch_peaks(samples["B"])
+
+    res = await get_batch_peak_series(sample_batch_id=batch)
+    series = res["data"][0]["peak_series"]
+
+    # The shared 181 peak was folded from A1 in sample A and B1 in sample B.
+    assert dict(zip(series["sample_item_ids"], series["sample_peak_ids"])) == {
+        samples["A"]: "A1",
+        samples["B"]: "B1",
+    }
+    # Parallel to every other array, so a point index means the same thing in all.
+    assert len(series["sample_peak_ids"]) == len(series["intensities"])
+
+    # An unassigned batch peak carries its sample peak too -- it is a first-class
+    # trace, and clicking it is how you get to a peak nothing was assigned to.
+    res_all = await get_batch_peak_series(sample_batch_id=batch, min_n_present=1)
+    unassigned = next(r for r in res_all["data"] if r["consensus_tier"] == "unassigned")
+    assert unassigned["peak_series"]["sample_peak_ids"] == ["A3"]
+
+
 async def test_series_sample_slice_ignores_occupancy(async_session_factory, seeded):
     batch, samples = seeded
     await fold_sample_into_batch_peaks(samples["A"])

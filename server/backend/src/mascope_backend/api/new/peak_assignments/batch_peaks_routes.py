@@ -89,9 +89,10 @@ async def get_batch_peak_series_route(
     """Retrieve per-sample batch-peak data in a compact columnar form.
 
     Returns one record per batch peak with its consensus (m/z, formula, tier) and a
-    ``peak_series`` object of parallel arrays (sample item IDs, intensities, tiers)
-    -- the batch-overview trace for that peak. The peak-centric counterpart of
-    ``POST /api/match/records/ion/series``.
+    ``peak_series`` object of parallel arrays (sample item IDs, sample peak IDs,
+    intensities, tiers) -- the batch-overview trace for that peak, where the sample
+    peak IDs say which peak of each sample the point was folded from. The
+    peak-centric counterpart of ``POST /api/match/records/ion/series``.
 
     :param body: Request body including sample scope and optional filters
     :param user: The current authenticated user. Requires workspace guest role.

@@ -271,10 +271,14 @@ Stage B changes *labels*, never the set of traces.
 POST /api/batch-peaks/records/series
 body: { sample_batch_id | sample_item_ids, batch_peak_ids?, tier?, source? }
 → data: [ { batch_peak_id, mz, consensus_formula, consensus_tier, n_present,
-            peak_series: { sample_item_ids[], intensities[], tiers[] } } ]
+            peak_series: { sample_item_ids[], sample_peak_ids[], intensities[],
+                           tiers[] } } ]
 ```
 
 `batch_peak_id` ↔ `target_ion_id`, `peak_series` ↔ `match_series`, `tier` ↔ `match_category`.
+`sample_peak_ids` has no targeted counterpart: it is the peak each point was folded from, which
+`BatchPeakOccurrence` already stores (§4), so projecting it costs nothing and gives a chart point
+a way back to the sample peak behind it.
 Reads the materialized `BatchPeak` consensus + the occurrence arrays for the selected peaks —
 the cheap **MatchIon-style materialized read**, not the O(samples×targets) on-the-fly aggregate.
 
@@ -295,7 +299,14 @@ Targets/Assignments switch, in the browser shell's switch bar
 ([`PaneBrowserMatch.vue`](../../server/frontend/src/lib/panes/PaneBrowserMatch/PaneBrowserMatch.vue));
 [`PaneTabBatch.vue`](../../server/frontend/src/lib/panes/PaneTabBatch.vue) carries no toggle of its
 own and only picks the chart from the shared `app.ui.matchMode`. The x-axis machinery,
-TIC trace, sum/avg + log/lin scale, and click-to-focus are reused unchanged. Species are chosen
+TIC trace and sum/avg + log/lin scale are reused unchanged; the Markers/Lines/Both draw style is
+shared as a component
+([`ToolbarDrawMode.vue`](../../server/frontend/src/lib/toolbars/ToolbarDrawMode.vue)) that both
+charts mount in their settings slot. Click-to-focus is the one control that is *extended* rather
+than reused: it focuses the sample as the overview does, and then the sample peak the clicked
+point was folded from — the peak-centric analog of the overview landing on the matched ion.
+Because focusing a different sample makes the peak store reload, the join waits for that reload
+to settle before matching `peak_id` against `sample_peak_ids`. Species are chosen
 from a **batch Assignments browser** (the merged-ledger table: species · support · consensus
 tier · agreement/QC), the batch analog of the sample-view Assignments tab.
 
