@@ -42,8 +42,16 @@ const mechById = computed(() => {
   return map
 })
 
-// Current verification verdict for a ledger row (by stable identity).
-const verdictFor = (row) => app.data.peakAssignment.verification.forAssignment(row)
+// Current verification verdict for a ledger row (by stable identity). A
+// formula-less row is a placeholder for a peak nothing explained: there is no
+// assignment to have judged, so it never carries a verdict - not in the badge
+// column, and not in the verdict filter, which would otherwise sort it under a
+// verdict whose badge the row does not show. (The stable identity
+// `sample_peak_id|assigned_formula|ionization_mechanism_id` is degenerate
+// without a formula anyway, so a verdict left by an earlier run could match the
+// wrong peak.)
+const verdictFor = (row) =>
+  row?.assigned_formula ? app.data.peakAssignment.verification.forAssignment(row) : null
 
 // Verdict filter (single-select). "unverified" = no current verdict.
 const VERDICT_FILTERS = [

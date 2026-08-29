@@ -39,12 +39,37 @@ watch(
   { immediate: true }
 )
 
+// What the card is about when there is no formula to name it by: an unassigned
+// ledger row, or a focused peak with no assignment row at all. Both otherwise
+// read "Unassigned" over an empty evidence grid - identical for every
+// unassigned peak in the sample, so the card never says which peak it is.
+// The ledger row calls the intensity `sample_peak_intensity`; the bare peak
+// record calls it `height`.
+const peakSummary = computed(() => {
+  const mz = focusedAssignment.value?.sample_peak_mz ?? app.data.peak.focused?.mz
+  const intensity = focusedAssignment.value?.sample_peak_intensity ?? app.data.peak.focused?.height
+  return [
+    mz != null ? `m/z ${num.mz.format(mz)}` : null,
+    intensity != null ? `intensity ${num.peakIntensity.format(intensity)}` : null
+  ]
+    .filter(Boolean)
+    .join(' · ')
+})
+
 // --- Verification (labelling) capture -------------------------------------
 // The current verdict for the focused assignment (by stable identity), plus a
 // small confirm/reject/unsure form. See docs/dev/verification_capture_frontend.md.
 const verification = computed(() =>
   app.data.peakAssignment.verification.forAssignment(focusedAssignment.value)
 )
+
+// Only a real assignment can be judged. A formula-less row is a placeholder for
+// a peak nothing explained, so a verdict on it is an opinion about nothing: it
+// is stored and listed as a hand label, but carries no evidence for the
+// confidence calibration to learn from, and its stable identity
+// (`sample_peak_id|assigned_formula|ionization_mechanism_id`) is degenerate
+// without a formula.
+const verifiable = computed(() => Boolean(focusedAssignment.value?.assigned_formula))
 
 const editing = ref(false) // form open despite an existing verdict (re-verify)
 const evidenceLevel = ref(null)
@@ -54,7 +79,9 @@ const pendingVerdict = ref(null) // which button is mid-submit
 const denied = ref(false) // 403: not an editor on this sample
 
 // Show the capture form when there is no verdict yet, or the user chose to edit.
-const showVerifyForm = computed(() => !denied.value && (!verification.value || editing.value))
+const showVerifyForm = computed(
+  () => verifiable.value && !denied.value && (!verification.value || editing.value)
+)
 
 function startEdit() {
   evidenceLevel.value = verification.value?.evidence_level ?? null
@@ -237,6 +264,10 @@ const altTooltip = (alt) => {
           }"
         />
       </div>
+      <!-- With no formula the headline is the word "Unassigned" and the
+           evidence grid below is empty, so the peak itself has to name the
+           card. -->
+      <div class="insp-sub" v-if="!focusedAssignment.assigned_formula">{{ peakSummary }}</div>
       <div
         class="insp-sub"
         v-if="
@@ -424,6 +455,7 @@ const altTooltip = (alt) => {
         </div>
       </div>
       <div
+        v-if="verifiable"
         class="verify"
         v-help.right="{
           title: 'Verification',
@@ -518,7 +550,7 @@ const altTooltip = (alt) => {
         <div class="insp-formula">Unassigned</div>
         <BaseTierTag tier="unassigned" />
       </div>
-      <div class="insp-sub">m/z {{ num.mz.format(app.data.peak.focused.mz) }}</div>
+      <div class="insp-sub">{{ peakSummary }}</div>
       <div class="insp-actions">
         <Button
           :label="showSearch ? 'Hide search' : 'Re-search'"
