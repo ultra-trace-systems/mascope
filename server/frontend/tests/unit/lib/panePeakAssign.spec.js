@@ -119,7 +119,7 @@ describe('PanePeakAssign unassigned card', () => {
   })
 
   it('leaves an assigned card alone - its formula already names it', async () => {
-    focusedAssignment = assignment({ formula: 'C10H12', tier: 'identified' })
+    focusedAssignment = assignment({ formula: 'C10H12', tier: 'assigned' })
     const wrapper = await mountPane()
 
     expect(wrapper.text()).toContain('C10H12')
@@ -164,7 +164,7 @@ describe('PanePeakAssign verification gating', () => {
   })
 
   it('still verifies a real assignment', async () => {
-    focusedAssignment = assignment({ formula: 'C10H12', tier: 'identified' })
+    focusedAssignment = assignment({ formula: 'C10H12', tier: 'assigned' })
     const wrapper = await mountPane()
 
     expect(wrapper.find('.verify').exists()).toBe(true)
@@ -173,7 +173,7 @@ describe('PanePeakAssign verification gating', () => {
   })
 
   it('shows the badge for a verified assignment', async () => {
-    focusedAssignment = assignment({ formula: 'C10H12', tier: 'identified' })
+    focusedAssignment = assignment({ formula: 'C10H12', tier: 'assigned' })
     verdictRecord = VERDICT
     const wrapper = await mountPane()
 
