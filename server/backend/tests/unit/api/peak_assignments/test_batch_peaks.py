@@ -119,7 +119,7 @@ def test_consensus_evidence_weighted_winner_beats_low_fit_flips():
             "assigned_formula": "C6H12O6",
             "ion_formula": "C6H11O6-",
             "ionization_mechanism_id": "mH",
-            "tier": "identified",
+            "tier": "assigned",
             "fit_score": 0.95,
             "intensity": 1e5,
             "p_correct": 0.9,
@@ -128,7 +128,7 @@ def test_consensus_evidence_weighted_winner_beats_low_fit_flips():
             "assigned_formula": "C6H12O6",
             "ion_formula": "C6H11O6-",
             "ionization_mechanism_id": "mH",
-            "tier": "identified",
+            "tier": "assigned",
             "fit_score": 0.90,
             "intensity": 9e4,
             "p_correct": 0.88,
@@ -146,7 +146,7 @@ def test_consensus_evidence_weighted_winner_beats_low_fit_flips():
     c = compute_consensus(members)
     assert c.consensus_formula == "C6H12O6"
     assert c.consensus_ion_formula == "C6H11O6-"
-    assert c.consensus_tier == "identified"
+    assert c.consensus_tier == "assigned"
     assert c.n_present == 3
     assert c.support_fraction == pytest.approx(2 / 3, rel=1e-3)
     assert c.best_fit_score == pytest.approx(0.95)
@@ -159,7 +159,7 @@ def test_consensus_prevalence_separate_from_confidence():
     members = [
         {
             "assigned_formula": "A",
-            "tier": "identified",
+            "tier": "assigned",
             "fit_score": 0.9,
             "intensity": 1e4,
         }
@@ -177,7 +177,7 @@ def test_consensus_prevalence_separate_from_confidence():
     assert c.consensus_formula == "A"
     assert c.n_present == 5  # prevalence counts all detected members
     assert c.support_fraction == pytest.approx(1.0)  # agreement among ASSIGNED only
-    assert c.consensus_tier == "identified"
+    assert c.consensus_tier == "assigned"
 
 
 def test_consensus_tie_is_flagged_ambiguous_with_alternatives():
@@ -238,12 +238,12 @@ def test_consensus_tier_downgrades_when_members_are_candidates():
         },
         {
             "assigned_formula": "A",
-            "tier": "identified",
+            "tier": "assigned",
             "fit_score": 0.6,
             "intensity": 1e2,
         },
     ]
     c = compute_consensus(members)
     assert c.consensus_formula == "A"
-    # Weighted majority are candidate (the identified member is weak) -> candidate.
+    # Weighted majority are candidate (the assigned member is weak) -> candidate.
     assert c.consensus_tier == "candidate"

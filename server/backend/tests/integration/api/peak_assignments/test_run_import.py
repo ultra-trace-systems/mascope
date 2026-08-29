@@ -38,7 +38,7 @@ from mascope_backend.db.id import gen_id
 #: row cap is "at most one row per peak", so a short list makes it reachable.
 SAMPLE_PEAK_IDS = [f"peak-{index}" for index in range(6)]
 
-TIER_BANDS = {"identified": 0.8, "candidate": 0.5}
+TIER_BANDS = {"assigned": 0.8, "candidate": 0.5}
 CALIBRATION = {"method": "client-side offset fit", "server_verified": False}
 
 
@@ -160,7 +160,7 @@ async def import_sample(async_session_factory, pa_test_data):
         await session.commit()
 
 
-def _row(peak_id: str, *, tier="identified", fit_score=0.92, **overrides) -> dict:
+def _row(peak_id: str, *, tier="assigned", fit_score=0.92, **overrides) -> dict:
     """One import row, coherent with TIER_BANDS unless a test says otherwise."""
     row = {
         "sample_peak_id": peak_id,
@@ -866,11 +866,11 @@ class TestValidation:
     async def test_an_inflated_tier_is_refused(
         self, editor_client, import_sample, feature_enabled
     ):
-        """0.62 is not 'identified' under the bands this run declared."""
+        """0.62 is not 'assigned' under the bands this run declared."""
         response = await _post(
             editor_client,
             import_sample,
-            _body([_row("peak-0", tier="identified", fit_score=0.62)]),
+            _body([_row("peak-0", tier="assigned", fit_score=0.62)]),
         )
 
         assert response.status_code == 422
@@ -884,8 +884,8 @@ class TestValidation:
             editor_client,
             import_sample,
             _body(
-                [_row("peak-0", tier="identified", fit_score=0.62)],
-                tier_bands={"identified": 0.6, "candidate": 0.3},
+                [_row("peak-0", tier="assigned", fit_score=0.62)],
+                tier_bands={"assigned": 0.6, "candidate": 0.3},
             ),
         )
 
@@ -1294,6 +1294,155 @@ class TestValidation:
                 await session.commit()
 
 
+class TestAPreRenameLedgerStillImports:
+    """The top tier used to be called 'identified', and payloads outlive a rename.
+
+    An external engine publishes against the spec it was built for, and a ledger
+    exported before the rename is re-imported exactly as it was written - so both
+    places the vocabulary appears in a payload, a row's ``tier`` and the upper
+    ``tier_bands`` key, still accept the old spelling. Only the current one is
+    ever stored, so the ledger a reader gets back is in one vocabulary whichever
+    one produced it.
+
+    What the alias must not buy is a weaker tier: the coherence rule that keeps
+    an engine's declared bands honest applies to a legacy payload exactly as it
+    does to a current one.
+    """
+
+    #: A run's bands as an engine built against the older spec declares them.
+    LEGACY_TIER_BANDS = {"identified": 0.8, "candidate": 0.5}
+
+    @pytest.mark.asyncio
+    async def test_a_legacy_row_tier_is_stored_under_the_current_name(
+        self, editor_client, import_sample, feature_enabled, async_session_factory
+    ):
+        response = await _post(
+            editor_client, import_sample, _body([_row("peak-0", tier="identified")])
+        )
+
+        assert response.status_code == 200
+        async with async_session_factory() as session:
+            rows = await _rows_of(
+                session, response.json()["data"][0]["peak_assignment_run_id"]
+            )
+        assert [row.tier for row in rows] == ["assigned"]
+
+    @pytest.mark.asyncio
+    async def test_legacy_bands_are_stored_and_disclosed_under_the_current_key(
+        self, editor_client, import_sample, feature_enabled, async_session_factory
+    ):
+        """The bands are the yardstick a reader judges an imported tier by.
+
+        Disclosing them under the spelling the engine happened to use would make
+        two runs that tiered identically look like they did not.
+        """
+        response = await _post(
+            editor_client,
+            import_sample,
+            _body([_row("peak-0")], tier_bands=self.LEGACY_TIER_BANDS),
+        )
+        assert response.status_code == 200
+
+        async with async_session_factory() as session:
+            run = await _run_of(
+                session, response.json()["data"][0]["peak_assignment_run_id"]
+            )
+        assert run.tier_bands == TIER_BANDS
+
+        listing = await editor_client.get(
+            f"/api/peak-assignments/sample/{import_sample}/runs"
+        )
+        assert listing.json()["data"][0]["tier_bands"] == TIER_BANDS
+
+    @pytest.mark.asyncio
+    async def test_a_whole_pre_rename_payload_reads_back_in_the_current_vocabulary(
+        self, editor_client, import_sample, feature_enabled
+    ):
+        """Legacy tier and legacy bands together - the re-imported export."""
+        response = await _post(
+            editor_client,
+            import_sample,
+            _body(
+                [
+                    _row("peak-0", tier="identified"),
+                    _row("peak-1", tier="candidate", fit_score=0.6),
+                ],
+                tier_bands=self.LEGACY_TIER_BANDS,
+            ),
+        )
+        assert response.status_code == 200
+
+        ledger = await editor_client.get(
+            f"/api/peak-assignments/sample/{import_sample}"
+        )
+
+        assert ledger.status_code == 200
+        assert {row["tier"] for row in ledger.json()["data"]} == {
+            "assigned",
+            "candidate",
+        }
+
+    @pytest.mark.asyncio
+    async def test_the_alias_is_not_a_way_past_the_coherence_rule(
+        self, editor_client, import_sample, feature_enabled
+    ):
+        """0.62 is no more 'identified' than it is 'assigned' under 0.8/0.5.
+
+        Tier and bands are both the old spelling here, so the check only holds
+        if the two are normalized together. Normalizing one of them alone would
+        let this row through - and an alias that admits a claim the current
+        vocabulary refuses is a hole, not a compatibility.
+        """
+        response = await _post(
+            editor_client,
+            import_sample,
+            _body(
+                [_row("peak-0", tier="identified", fit_score=0.62)],
+                tier_bands=self.LEGACY_TIER_BANDS,
+            ),
+        )
+
+        assert response.status_code == 422
+
+    @pytest.mark.asyncio
+    async def test_an_import_opened_before_the_rename_can_still_finish(
+        self, editor_client, import_sample, feature_enabled, async_session_factory
+    ):
+        """Every chunk after the first reads the bands back off the run row.
+
+        An import assembling when the rename shipped has the old key stored on
+        it, and a client paces its own upload - so its remaining chunks arrive
+        against a build that no longer writes that key. Refusing them would
+        strand the run in 'importing', where it blocks the sample's later
+        imports and in-app assigns until someone abandons it.
+        """
+        run_id = gen_id()
+        async with async_session_factory() as session:
+            session.add(
+                PeakAssignmentRun(
+                    peak_assignment_run_id=run_id,
+                    sample_item_id=import_sample,
+                    engine="peaky",
+                    engine_version="1.4.0",
+                    status="importing",
+                    tier_bands=self.LEGACY_TIER_BANDS,
+                    calibration=CALIBRATION,
+                    import_key="import-mid-rename",
+                    peak_assignment_run_utc_created=datetime.now(timezone.utc),
+                )
+            )
+            await session.commit()
+
+        response = await _post(
+            editor_client,
+            import_sample,
+            _body([_row("peak-0")], run_id=run_id, import_id="import-mid-rename"),
+        )
+
+        assert response.status_code == 200
+        assert response.json()["data"][0]["run_status"] == "completed"
+
+
 class TestServerOwnedFieldsStayEmpty:
     """An importer may not populate the confidence this server presents as its own."""
 
@@ -1695,7 +1844,7 @@ class TestRecalibrationExcludesImports:
                         sample_peak_mz=181.0707,
                         sample_peak_intensity=5000.0,
                         role="M0",
-                        tier="identified",
+                        tier="assigned",
                     )
                 )
                 # The verification's foreign key points at the assignment, and
@@ -1779,7 +1928,7 @@ class TestRunProvenanceIsServed:
     An import bypasses the server-side m/z verification gate because it
     calibrates client-side, and the `calibration` it declares is what replaces
     that gate - which only works if the run listing returns it. `tier_bands` is
-    the same argument for tiers: 'identified' means nothing comparable across
+    the same argument for tiers: 'assigned' means nothing comparable across
     engines until the thresholds behind it are visible.
     """
 
@@ -1812,7 +1961,7 @@ class TestRunProvenanceIsServed:
                     engine="mascope",
                     engine_version="test",
                     status="completed",
-                    tier_bands={"identified": 0.7, "candidate": 0.4},
+                    tier_bands={"assigned": 0.7, "candidate": 0.4},
                     peak_assignment_run_utc_created=datetime.now(timezone.utc),
                 )
             )

@@ -159,7 +159,7 @@ async def pa_test_data(async_session_factory, test_users, pa_sample_view):
                 fit_score=0.95,
                 mz_error_ppm=1.2,
                 abundance_error=0.05,
-                tier="identified",
+                tier="assigned",
                 # Inspector-only detail: the list endpoint must not serve these
                 # (slim projection), the detail endpoint must serve them whole.
                 alternatives=[
@@ -199,7 +199,7 @@ async def pa_test_data(async_session_factory, test_users, pa_sample_view):
                 fit_score=0.88,
                 mz_error_ppm=1.5,
                 abundance_error=0.08,
-                tier="identified",
+                tier="assigned",
                 owner_peak_assignment_id=m0_assignment_id,
             )
         )

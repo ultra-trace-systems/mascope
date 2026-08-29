@@ -101,7 +101,7 @@ is persistence, arbitration, and productization - not the science.
   `mascope_tools` scoring. It contributes hard-won logic the app currently lacks:
   a one-row-per-peak **ledger** with a single-owner-per-peak invariant,
   multi-pass **arbitration**, confidence **tiers**
-  (Identified / Candidate / below-assignability), mass-**degeneracy** handling,
+  (Assigned / Candidate / below-assignability), mass-**degeneracy** handling,
   offset-aware **calibration**, reagent/**context** presets, **batch merge**
   across time, and GKA / Van Krevelen **reporting**. It reads peaks via the SDK
   and writes **files, not the Mascope database**.
@@ -137,7 +137,7 @@ Analogous to peaky's `manifest.json`. `PeakAssignment` rows FK to a run.
 | `ion_formula`, `ionization_mechanism_id`, `isotope_label` | adduct + M0/M+1... |
 | `source` | `database` / `untargeted` - which stage won the peak |
 | `fit_score`, `mz_error_ppm`, `abundance_error` | evidence (`fit_score` = the fit-quality measurement, [`fit_score.md`](../../libraries/tools/docs/fit_score.md)) |
-| `tier` | `identified` / `candidate` / `below_assignability` / `unassigned` |
+| `tier` | `assigned` / `candidate` / `below_assignability` / `unassigned` |
 | `target_compound_id`, `target_ion_id` (nullable) | set when the winner came from the known library |
 | `owner_peak_assignment_id` (nullable) | an `iso_child` points at its `M0` |
 | `alternatives` (JSON) | runner-up formulas + scores |
@@ -200,7 +200,7 @@ Each phase is intended to land independently and leave the system shippable.
 
 ### Phase 3 - Arbitration & confidence
 - Global single-owner-per-peak; isotope-child attribution.
-- Tiers (identified / candidate / below-assignability / unassigned),
+- Tiers (assigned / candidate / below-assignability / unassigned),
   alternatives, mass-degeneracy notes.
 - Harvest peaky's `assignment/*` logic (arbitration, tiers, degeneracy,
   offset-aware calibration) into a backend module. The **science-based design + phased

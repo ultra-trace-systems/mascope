@@ -38,7 +38,7 @@ const props = defineProps({
 
 // Label, severity and icon come from the shared tier module, which also fixes
 // the confidence order the ledgers sort by - the chip and the sort must name
-// the same four tiers or a "below" chip can outrank an "identified" one.
+// the same four tiers or a "below" chip can outrank an "assigned" one.
 const meta = computed(() => tierMeta(props.tier))
 
 const fitFormatter = new Intl.NumberFormat('en-US', {

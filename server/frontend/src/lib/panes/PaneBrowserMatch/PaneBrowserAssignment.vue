@@ -178,7 +178,7 @@ function focusPeak(assignment) {
 
 // --- Tier ordering & filtering ----------------------------------------------
 
-// Confidence order (identified first, unassigned last) comes from the shared
+// Confidence order (assigned first, unassigned last) comes from the shared
 // tier module: it drives the default sort here and the same one in the
 // batch-peaks pane, which is the point of sharing it - two ledgers side by side
 // that ranked tiers differently would be worse than either being wrong alone.
@@ -567,7 +567,7 @@ const breadcrumb = computed(() => {
       >
         <button
           v-for="t in [
-            { key: 'identified', label: 'identified', count: tierCounts.identified },
+            { key: 'assigned', label: 'assigned', count: tierCounts.assigned },
             { key: 'candidate', label: 'candidate', count: tierCounts.candidate },
             { key: 'reagent', label: 'reagent', count: tierCounts.reagent },
             { key: 'below_assignability', label: 'below', count: tierCounts.below_assignability },
@@ -829,7 +829,7 @@ const breadcrumb = computed(() => {
 .tier-stat b {
   font-weight: 700;
 }
-.tier-stat.identified b {
+.tier-stat.assigned b {
   color: var(--p-green-600, #1f9d63);
 }
 .tier-stat.candidate b {

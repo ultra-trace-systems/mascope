@@ -23,7 +23,7 @@ const spectrumHelp = peakAssignmentEnabled
         The sample's spectrum: the continuous signal in green, with every
         detected peak drawn as a vertical line. Once the sample has an
         assignment run, the peak lines are colored by confidence tier &mdash;
-        green identified, amber candidate, grey-blue below assignability,
+        green assigned, amber candidate, grey-blue below assignability,
         purple reagent / artifact, grey unassigned.
         </p>
         <p>

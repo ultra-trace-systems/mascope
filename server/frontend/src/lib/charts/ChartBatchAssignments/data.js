@@ -8,7 +8,7 @@ import { glasbey } from '../colors.js'
 // Confidence tier -> Plotly marker symbol. Fill decreases with confidence, mirroring
 // the target overview's filled/open square encoding of match_category.
 const TIER_SYMBOL = {
-  identified: 'square',
+  assigned: 'square',
   candidate: 'square-open',
   below_assignability: 'diamond-open',
   unassigned: 'circle-open'

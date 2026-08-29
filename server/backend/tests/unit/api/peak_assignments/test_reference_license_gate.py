@@ -212,7 +212,7 @@ class TestRunRecordsTheGate:
             stored = _stored_run_config(config)
         assert stored["max_untargeted_peaks"] == 42
         assert stored["run_untargeted"] is False
-        assert stored["identified_threshold"] == config.identified_threshold
+        assert stored["assigned_threshold"] == config.assigned_threshold
 
     def test_a_client_cannot_set_the_gate_through_the_run_config(self):
         """`reference_licenses` is deliberately not a field on the request

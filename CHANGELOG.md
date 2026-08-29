@@ -4,6 +4,30 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
 
 ## [Unreleased]
 
+### Changed
+
+- The strongest assignment tier is now called **assigned** rather than
+  *identified*. In mass spectrometry an identification is read as MS2- or
+  reference-standard-level evidence, and what the engine actually does is
+  assign a molecular formula from accurate mass and an isotope pattern - real
+  evidence, but not that. The tier now claims what it can support, and matches
+  the vocabulary of the external assignment engine the app interoperates with.
+  The other three tiers - *candidate*, *below assignability*, *unassigned* -
+  are unchanged.
+
+  Nothing published needs to be re-imported. The API still accepts the old
+  spelling wherever a client can send one: as a tier on an imported ledger row,
+  as a `tier_bands` key, as the `tier` filter on the assignment ledger, and as
+  the run-config key `identified_threshold` (now `assigned_threshold`). Each is
+  normalised on the way in, so a ledger exported before the rename imports
+  unchanged and an SDK client pinned to the old vocabulary keeps working - but
+  nothing is ever stored under the old name again. A data migration rewrites the
+  tier wherever it is already stored: on the per-sample ledger, on batch peaks
+  and their per-sample occurrences, and in the two JSON columns whose keys carry
+  the name. On any deployment it should rewrite nothing, since none has the
+  workflow enabled yet; it is there for databases developers already have, where
+  an unrecognised tier would otherwise be quietly counted as *unassigned*.
+
 ### Added
 
 - The run selector now says **which engine produced the assignment run** you
@@ -16,7 +40,7 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
   side rather than passing the m/z verification an in-app run must clear, so it
   has to declare what it calibrated against, and hovering the chip shows that
   declaration. Hovering the engine chip shows the fit-score bands the run tiered
-  with, since *identified* only means the same thing on two runs that used the
+  with, since *assigned* only means the same thing on two runs that used the
   same thresholds. The in-app engine name is reserved, so the chip cannot be
   forged. The same fields (`engine`, `engine_version`, `tier_bands`,
   `calibration`) are on `list_runs()` and `df.attrs["run"]` in the Python SDK,
@@ -683,9 +707,9 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
   disagree about what the table is showing.
 
 - Sorting the **Batch peaks** table by tier now orders by confidence rather
-  than alphabetically. Ascending used to put *below_assignability* first and
-  *identified* third, which is the opposite of what the column is for; it now
-  reads identified, candidate, below, unassigned, with equal tiers ordered by
+  than alphabetically. A plain string sort puts *below_assignability* ahead of
+  *candidate*, which is the opposite of what the column is for; it now
+  reads assigned, candidate, below, unassigned, with equal tiers ordered by
   the fit percentage shown in the chip. The tier order, ranks and chip labels
   are defined once and shared with the sample ledger, so the two ledgers can
   no longer rank the same four tiers differently.

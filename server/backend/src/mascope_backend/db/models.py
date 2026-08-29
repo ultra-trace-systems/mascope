@@ -1423,7 +1423,7 @@ class PeakAssignmentRun(Base):
     engine_version: Mapped[str] = mapped_column(String(64))
     status: Mapped[str] = mapped_column(String(20), server_default=text("'pending'"))
     config: Mapped[Optional[dict]] = mapped_column(JSON)
-    # The identified/candidate fit-score thresholds this run tiered with. Its
+    # The assigned/candidate fit-score thresholds this run tiered with. Its
     # own column, not a key in the opaque config, because every row's tier is
     # validated against it. NULL for runs predating the column; an in-app run
     # stamps the thresholds from its config.
@@ -1488,7 +1488,7 @@ class PeakAssignment(Base):
 
     role values: 'M0', 'iso_child', 'reagent', 'artifact', 'unassigned'.
     source values: 'database', 'untargeted' (NULL when unassigned).
-    tier values: 'identified', 'candidate', 'below_assignability', 'unassigned'.
+    tier values: 'assigned', 'candidate', 'below_assignability', 'unassigned'.
     """
 
     __tablename__ = "peak_assignment"
@@ -1609,7 +1609,7 @@ class BatchPeak(Base):
     ``docs/dev/peak_assignment_batch.md``.
 
     consensus_tier values mirror ``PeakAssignment.tier``:
-    'identified' | 'candidate' | 'below_assignability' | 'unassigned'.
+    'assigned' | 'candidate' | 'below_assignability' | 'unassigned'.
     """
 
     __tablename__ = "batch_peak"

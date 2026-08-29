@@ -89,7 +89,7 @@ a small select). "Unverified" = no current verdict. This makes a labelling pass 
 
 ```
 ┌ Assignment ─────────────────────────────────────────────┐
-│ C10H14O9   [identified]   fit 0.83 · plaus 1.0 · P 0.98p │
+│ C10H14O9   [assigned]     fit 0.83 · plaus 1.0 · P 0.98p │
 │ supported by 2 adducts                                   │
 │                                                          │
 │  Verify:  [ ✓ Confirm ]  [ ✕ Reject ]  [ ? Unsure ]      │

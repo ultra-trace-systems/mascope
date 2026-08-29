@@ -19,6 +19,12 @@ from mascope_backend.api.controllers.match.lib.match_score_v2 import (
     ion_score_v2,
     sample_noise_floor,
 )
+from mascope_backend.api.new.peak_assignments.tiers import (
+    TIER_ASSIGNED,
+    TIER_BELOW_ASSIGNABILITY,
+    TIER_CANDIDATE,
+    TIER_UNASSIGNED,
+)
 from mascope_backend.db.id import gen_id
 from mascope_backend.runtime import runtime
 from mascope_tools.composition.arbitration import arbitrate_candidates
@@ -38,12 +44,6 @@ from mascope_tools.composition.heuristic_filter import (
 # "not provided" (fall back to the in-code registry via calibration_for).
 _CALIBRATION_UNSET = object()
 
-
-# Confidence tiers (a richer replacement for match_category 0/1/2)
-TIER_IDENTIFIED = "identified"
-TIER_CANDIDATE = "candidate"
-TIER_BELOW_ASSIGNABILITY = "below_assignability"
-TIER_UNASSIGNED = "unassigned"
 
 # Peak roles within an assignment run
 ROLE_M0 = "M0"
@@ -78,7 +78,7 @@ def tier_for_score(
     if score is None or not np.isfinite(score) or score <= 0:
         return TIER_BELOW_ASSIGNABILITY
     if score >= probable_threshold:
-        return TIER_IDENTIFIED
+        return TIER_ASSIGNED
     if score >= possible_threshold:
         return TIER_CANDIDATE
     return TIER_BELOW_ASSIGNABILITY
@@ -154,7 +154,7 @@ def score_ions_by_fit(match_isotope_df: pd.DataFrame) -> pd.DataFrame:
     pairings - a within-tolerance pairing it rejected on the intensity floor keeps
     its intensity - so without this the ownership guard in
     `invert_matches_to_peak_assignments` would let a pairing this function counted
-    as ABSENT claim its peak anyway, carrying the ion's (possibly "identified") fit
+    as ABSENT claim its peak anyway, carrying the ion's (possibly "assigned") fit
     score and blocking Stage B from explaining that peak. One gating decision, one
     frame.
 
@@ -164,7 +164,7 @@ def score_ions_by_fit(match_isotope_df: pd.DataFrame) -> pd.DataFrame:
     unchanged) when empty or missing the required columns.
 
     NOTE: the confidence-tier bands sit on the fit scale --
-    identified/candidate = 0.8/0.5 on `PeakAssignmentConfig` (config.py), the v2
+    assigned/candidate = 0.8/0.5 on `PeakAssignmentConfig` (config.py), the v2
     estimates rather than the legacy `match_params` 0.8/0.7, because a lone
     mass-only match scores low by design on this scale. Per-instrument
     recalibration of the bands is a follow-up once verification labels
@@ -262,7 +262,7 @@ def invert_matches_to_peak_assignments(
     :param sample_item_id: Sample the peaks belong to.
     :param peak_assignment_run_id: Run the assignments belong to.
     :param possible_threshold: Score threshold for the 'candidate' tier.
-    :param probable_threshold: Score threshold for the 'identified' tier.
+    :param probable_threshold: Score threshold for the 'assigned' tier.
     :param max_alternatives: Cap on stored runner-up candidates per peak.
     :param instrument: Instrument class; selects the in-code calibration when ``calibration``
         is not passed. ``None`` -> uncalibrated.
@@ -516,14 +516,14 @@ def _fold_adduct_corroboration(
 
     A compound assigned via several confident adducts corroborates each of them: for each winner
     we add the measured log-odds of the OTHER adducts its compound was seen via (see
-    ``apply_corroboration``). Only confident (identified/candidate) winners count toward the
+    ``apply_corroboration``). Only confident (assigned/candidate) winners count toward the
     co-occurrence set, so a low-confidence sibling can't manufacture corroboration. No-op when the
     calibration carries no weights. Records the co-occurrence + boost in provenance for the UI."""
     if not weights or not m0_items:
         return
     adducts_by_compound: dict[str, set[str]] = {}
     for assignment, compound_id, notation in m0_items:
-        if assignment["tier"] in (TIER_IDENTIFIED, TIER_CANDIDATE):
+        if assignment["tier"] in (TIER_ASSIGNED, TIER_CANDIDATE):
             adducts_by_compound.setdefault(compound_id, set()).add(notation)
     for assignment, compound_id, notation in m0_items:
         all_adducts = adducts_by_compound.get(compound_id, set())

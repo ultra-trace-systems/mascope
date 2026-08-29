@@ -72,7 +72,7 @@ def json_size_error(field: str, value: Any) -> str | None:
 
 
 def coherent_tiers(
-    fit_score: float | None, identified: float, candidate: float
+    fit_score: float | None, assigned: float, candidate: float
 ) -> set[str]:
     """The tiers a fit score may carry under the declared bands.
 
@@ -90,7 +90,7 @@ def coherent_tiers(
     Neither is a claim about confidence, so neither is worth refusing.
 
     :param fit_score: The row's fit score, or None when nothing was assigned.
-    :param identified: Fit score at or above which a row is 'identified'.
+    :param assigned: Fit score at or above which a row is 'assigned'.
     :param candidate: Fit score at or above which a row is 'candidate'.
     :return: The tier names coherent with this score.
     """
@@ -98,30 +98,30 @@ def coherent_tiers(
         return {"unassigned", "below_assignability"}
     return {
         tier_for_score(
-            fit_score, possible_threshold=candidate, probable_threshold=identified
+            fit_score, possible_threshold=candidate, probable_threshold=assigned
         )
     }
 
 
 def tier_coherence_error(
-    tier: str, fit_score: float | None, identified: float, candidate: float
+    tier: str, fit_score: float | None, assigned: float, candidate: float
 ) -> str | None:
     """Check one row's tier against its fit score under the run's bands.
 
     A shared fit-score scale does not make shared *bands* automatic: the in-app
     tiers come from thresholding a run-config pair, not from engine constants.
-    Without this check an engine tiering at 0.6/0.3 publishes 'identified' rows
-    at 0.62 that sort, filter and roll up beside in-app 'identified' rows
+    Without this check an engine tiering at 0.6/0.3 publishes 'assigned' rows
+    at 0.62 that sort, filter and roll up beside in-app 'assigned' rows
     meaning something considerably stricter - and outrank them in the
     cross-sample tier ranking.
 
     :param tier: The tier the row claims.
     :param fit_score: The row's fit score.
-    :param identified: The run's identified threshold.
+    :param assigned: The run's assigned threshold.
     :param candidate: The run's candidate threshold.
     :return: An error message, or None when coherent.
     """
-    expected = coherent_tiers(fit_score, identified, candidate)
+    expected = coherent_tiers(fit_score, assigned, candidate)
     if tier in expected:
         return None
     named = " or ".join(f"'{name}'" for name in sorted(expected))
@@ -129,7 +129,7 @@ def tier_coherence_error(
         return f"tier '{tier}' with no fit_score: such a row is {named}"
     return (
         f"tier '{tier}' is incoherent with fit_score {fit_score} under the "
-        f"declared tier_bands (identified >= {identified}, candidate >= "
+        f"declared tier_bands (assigned >= {assigned}, candidate >= "
         f"{candidate}), which put it at {named}"
     )
 

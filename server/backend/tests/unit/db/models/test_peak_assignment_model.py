@@ -73,7 +73,7 @@ def _assignment(run, sample_item_id, sample_peak_id, **overrides) -> PeakAssignm
         "sample_peak_mz": 181.0707,
         "sample_peak_intensity": 1234.5,
         "role": "M0",
-        "tier": "identified",
+        "tier": "assigned",
         "source": "database",
         "assigned_formula": "C6H12O6",
         "fit_score": 0.95,

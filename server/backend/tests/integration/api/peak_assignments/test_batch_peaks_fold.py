@@ -39,14 +39,14 @@ pytestmark = pytest.mark.asyncio
 # (peak_id, mz, neutral_formula, ion_formula, role, tier, fit, intensity, mz_err_ppm)
 _SPECS = {
     "A": [
-        ("A1", 181.0707, "C6H12O6", "C6H13O6+", "M0", "identified", 0.95, 5000.0, 1.0),
+        ("A1", 181.0707, "C6H12O6", "C6H13O6+", "M0", "assigned", 0.95, 5000.0, 1.0),
         ("A2", 200.0500, "C10H8O", "C10H9O+", "M0", "candidate", 0.60, 800.0, 1.0),
         ("A3", 250.1000, None, None, "unassigned", "unassigned", None, 300.0, None),
     ],
     "B": [
         # B1 shares A1's m/z -> must snap to the SAME anchor (append-only).
-        ("B1", 181.0707, "C6H12O6", "C6H13O6+", "M0", "identified", 0.90, 4500.0, 1.0),
-        ("B2", 300.2000, "C12H10", "C12H11+", "M0", "identified", 0.85, 2000.0, 1.0),
+        ("B1", 181.0707, "C6H12O6", "C6H13O6+", "M0", "assigned", 0.90, 4500.0, 1.0),
+        ("B2", 300.2000, "C12H10", "C12H11+", "M0", "assigned", 0.85, 2000.0, 1.0),
     ],
 }
 
@@ -184,7 +184,7 @@ async def test_fold_is_append_only_with_cross_sample_consensus(
     shared = peaks_b[id181]
     assert shared.n_present == 2
     assert shared.consensus_formula == "C6H12O6"
-    assert shared.consensus_tier == "identified"
+    assert shared.consensus_tier == "assigned"
     assert shared.support_fraction == pytest.approx(1.0)
 
     async with async_session_factory() as s:
@@ -252,12 +252,12 @@ async def test_series_full_load_applies_occupancy_filter(async_session_factory, 
     assert res["results"] == 1
     rec = res["data"][0]
     assert rec["consensus_formula"] == "C6H12O6"
-    assert rec["consensus_tier"] == "identified"
+    assert rec["consensus_tier"] == "assigned"
     assert rec["n_present"] == 2
     series = rec["peak_series"]
     assert set(series["sample_item_ids"]) == {samples["A"], samples["B"]}
     assert set(series["intensities"]) == {5000.0, 4500.0}
-    assert series["tiers"] == ["identified", "identified"]
+    assert series["tiers"] == ["assigned", "assigned"]
 
     # min_n_present=1 keeps every batch peak (181 + 200 + 250 + 300).
     res_all = await get_batch_peak_series(sample_batch_id=batch, min_n_present=1)

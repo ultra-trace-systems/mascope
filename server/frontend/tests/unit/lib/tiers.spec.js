@@ -15,11 +15,11 @@ import {
 // The one place the four confidence tiers are named. Two ledgers, a chip and a
 // filter read it, and the bug it exists to prevent is them disagreeing: the
 // batch-peaks table used to sort the raw tier string, which put
-// below_assignability above identified.
+// below_assignability above candidate.
 
 describe('TIERS', () => {
   it('lists the four tiers in confidence order', () => {
-    expect(TIERS).toEqual(['identified', 'candidate', 'below_assignability', 'unassigned'])
+    expect(TIERS).toEqual(['assigned', 'candidate', 'below_assignability', 'unassigned'])
   })
 
   it('has no reagent bucket', () => {
@@ -31,7 +31,7 @@ describe('TIERS', () => {
 
   it('ranks every tier by its position, best first', () => {
     expect(TIER_RANK).toEqual({
-      identified: 0,
+      assigned: 0,
       candidate: 1,
       below_assignability: 2,
       unassigned: 3
@@ -51,8 +51,8 @@ describe('TIERS', () => {
 })
 
 describe('tierRank', () => {
-  it('orders identified before candidate before below before unassigned', () => {
-    const shuffled = ['unassigned', 'below_assignability', 'identified', 'candidate']
+  it('orders assigned before candidate before below before unassigned', () => {
+    const shuffled = ['unassigned', 'below_assignability', 'assigned', 'candidate']
     expect([...shuffled].sort((a, b) => tierRank(a) - tierRank(b))).toEqual(TIERS)
   })
 
@@ -104,15 +104,15 @@ describe('tierMeta', () => {
 
 describe('countTiers', () => {
   const batchPeaks = [
-    { consensus_tier: 'identified' },
-    { consensus_tier: 'identified' },
+    { consensus_tier: 'assigned' },
+    { consensus_tier: 'assigned' },
     { consensus_tier: 'candidate' },
     { consensus_tier: null }
   ]
 
   it('counts into one bucket per tier, reading the tier where the caller says', () => {
     expect(countTiers(batchPeaks, (peak) => peak.consensus_tier)).toEqual({
-      identified: 2,
+      assigned: 2,
       candidate: 1,
       below_assignability: 0,
       unassigned: 1
@@ -137,7 +137,7 @@ describe('countTiers', () => {
   it('reads `tier` by default and tolerates no records at all', () => {
     expect(countTiers([{ tier: 'candidate' }]).candidate).toBe(1)
     expect(countTiers(undefined)).toEqual({
-      identified: 0,
+      assigned: 0,
       candidate: 0,
       below_assignability: 0,
       unassigned: 0

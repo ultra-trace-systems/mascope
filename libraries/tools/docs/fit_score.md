@@ -32,8 +32,8 @@ The fit score is the **scoring engine** of the peak-centric assignment paradigm
 candidate compositions per peak in **Stage A** (known/database compositions) and **Stage B**
 (untargeted `find_compositions`). "Find the best-fitting known composition; if none fits well
 enough, fall through to untargeted" is exactly *highest fit score in Stage A, gated by a
-threshold*. The value persists as the `PeakAssignment` fit column; the identification **tier**
-(identified / candidate / …) is decided by the separate confidence layer
+threshold*. The value persists as the `PeakAssignment` fit column; the confidence **tier**
+(assigned / candidate / …) is decided by the separate confidence layer
 ([`assignment_confidence.md`](../../../docs/dev/assignment_confidence.md)).
 
 **Wired into the engine (landed).** The peak-centric engine
@@ -51,11 +51,14 @@ unconditionally, not via the legacy `MASCOPE_MATCH_SCORE_VERSION` switch:
   score's **v1 degradation** — the untargeted path carries no SNR — instead of the crude
   single-peak term.
 - **Tier bands (landed):** the confidence-tier bands sit on the fit scale —
-  `identified_threshold = 0.8` / `candidate_threshold = 0.5` on `PeakAssignmentConfig`
+  `assigned_threshold = 0.8` / `candidate_threshold = 0.5` on `PeakAssignmentConfig`
   (`api/new/peak_assignments/config.py`), the v2 estimates rather than the legacy
   `match_params` 0.8/0.7, because on the fit scale a lone mass-only match scores low by
-  design. Still open: recalibrating those bands per instrument once verification labels
-  accumulate.
+  design. The field also accepts its old name `identified_threshold` as a validation
+  alias: the config is built from the assign request body, so a client pinned to the
+  pre-rename name still tiers the run the way it asked instead of silently falling back
+  to the default. Still open: recalibrating those bands per instrument once verification
+  labels accumulate.
 
 **Naming.** This is being renamed `match_score` → **`fit_score`** across the schema/API to
 say plainly that it measures *fit*, not identification.
@@ -247,7 +250,7 @@ proportionally less. The result is in $[0,1]$, equals $1$ only for a flawless fi
   mass term (heavier tails) actually scores $\mathrm{Br_3^-}$ *lower*, because its peaks are
   at the *shoulder* (~1.4 $\sigma$), not the deep tail where a t-distribution helps. So
   $\mathrm{Br_3^-}$ is a real **mass-accuracy outlier** and ~0.6 honestly reflects that its
-  mass fit is worse than a typical identified ion; the calibrated confidence (~0.57) conveys
+  mass fit is worse than a typical assigned-tier ion; the calibrated confidence (~0.57) conveys
   the same. The one data-supported refinement that came out of the investigation is unrelated
   to $\mathrm{Br_3^-}$ and is now **implemented**: the **SNR-aware mass $\sigma$** of §3.1 —
   weak peaks have ~3× larger errors (0.22 vs 0.07 ppm) and are no longer scored against the

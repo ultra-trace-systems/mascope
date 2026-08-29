@@ -220,10 +220,10 @@ latest completed run in time order through the same routine.
 Per touched batch peak, over its **detected** members (never over absent samples):
 
 - **Formula:** evidence-weighted vote — weight each member by `fit_score` (and signal), so a
-  high-confidence identified member outweighs several low-SNR candidate flips. Report the
+  high-confidence assigned member outweighs several low-SNR candidate flips. Report the
   winning formula's **support fraction**.
-- **Tier:** `identified` only when an evidence-weighted majority of detected members agree at
-  `identified` on the same formula; else `candidate`; else `below_assignability`.
+- **Tier:** `assigned` only when an evidence-weighted majority of detected members agree at
+  `assigned` on the same formula; else `candidate`; else `below_assignability`.
 - **p_correct:** reuse the per-sample corroboration fold-in as the template but **cap the
   multi-sample lift** (noisy-OR with a correlation discount) and **preserve `None`** for
   uncalibrated instruments — never fabricate a probability.

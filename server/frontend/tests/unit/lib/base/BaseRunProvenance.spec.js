@@ -30,7 +30,7 @@ const IN_APP_RUN = {
   engine: 'mascope',
   engine_version: '0.2.0',
   status: 'completed',
-  tier_bands: { identified: 0.8, candidate: 0.5 },
+  tier_bands: { assigned: 0.8, candidate: 0.5 },
   calibration: null
 }
 
@@ -39,7 +39,7 @@ const IMPORTED_RUN = {
   engine: 'peaky',
   engine_version: '0.6.0',
   status: 'completed',
-  tier_bands: { identified: 0.6, candidate: 0.3 },
+  tier_bands: { assigned: 0.6, candidate: 0.3 },
   calibration: { method: 'offset-aware', mascope_mz_verified: false }
 }
 
@@ -136,7 +136,7 @@ describe('BaseRunProvenance', () => {
     // produced it, so the bands travel with the engine name.
     const wrapper = mountBadge(IMPORTED_RUN)
 
-    expect(wrapper.vm.tierBandsText).toBe('Tier bands: identified ≥ 60% · candidate ≥ 30%')
+    expect(wrapper.vm.tierBandsText).toBe('Tier bands: assigned ≥ 60% · candidate ≥ 30%')
   })
 
   it('omits the bands rather than inventing them when the run carries none', () => {
