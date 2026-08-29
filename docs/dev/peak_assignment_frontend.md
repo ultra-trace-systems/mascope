@@ -93,6 +93,33 @@ consumers (which branch on opposite comparisons) cannot land on opposite sides.
 every run regenerates — plus `verify()`). Registered nested (not spread) under
 `app.data.peakAssignment.{run,peak,verification}`.
 
+**Focus across a sample switch.** Switching samples used to clear the focused peak: the peak store's
+dependency watcher resets the persisted selection and reloads, and its refocus falls through to
+`unfocus()` because the old sample's peak ids match nothing in the new list. It now follows instead.
+On a sample-to-sample switch the store resolves the focused peak's **batch-peak anchor** in the newly
+focused sample — `GET /api/batch-peaks/records/counterpart`, two hops over `BatchPeakOccurrence` (see
+[`peak_assignment_batch.md`](peak_assignment_batch.md) §6) — and focuses the counterpart once the
+reload settles. Sameness is the anchor, never m/z proximity. The mapping is not resident in the
+browser (the ledger store carries no `peak_series`, and the chart holds series only for ticked peaks),
+which is why it is a read rather than a join over loaded records.
+
+The wiring is [`peakFocusFollow.js`](../../server/frontend/src/stores/data/modules/peakFocusFollow.js),
+a factory the peak store instantiates behind `peakAssignmentEnabled`. Two things carry state: an
+**anchor** — the focused peak *and the sample it belongs to*, kept by a `flush: 'sync'` watcher on
+`peak.focusedId`, because through a burst of switches the focused peak still belongs to the sample it
+was focused in, several switches back — and a **focus epoch**, a count of focus transitions that is
+how a person clearing the selection is told apart from the reload's own unfocus (the reload clears
+while `pending` is still true, which is also why the watcher is sync). A follow writes only when its
+generation is still the newest, the target sample is still focused, the store is neither pending nor
+in error (the backstop in [`lib/store/settle.js`](../../server/frontend/src/lib/store/settle.js)
+*resolves* on timeout, and a failed sync deliberately keeps
+the previous sample's rows), nothing else has taken the focus, and no more than the one expected focus
+transition has happened. A miss at any clause degrades to the old behaviour, silently. Lookups
+supersede rather than abort — an aborted request reaches the interceptor with no response and is
+console-logged as a timeout before the `errors: 'inline'` check, which is too much noise for a
+one-row background read. Note that recomputing a sample's peaks mints fresh `peak_id`s, so its stored
+occurrences go stale until it is folded again and the follow quietly stops working for it.
+
 **Verification.** Assignments can be hand-labelled confirm / reject / unsure: the inspector renders
 the current verdict as a [`BaseVerdictBadge`](../../server/frontend/src/lib/base/BaseVerdictBadge.vue)
 (shared constants in [`lib/verification.js`](../../server/frontend/src/lib/verification.js)) with a

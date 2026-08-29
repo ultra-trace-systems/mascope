@@ -299,3 +299,64 @@ async def test_get_assignments_rejects_an_unknown_tier(guest_client, pa_test_dat
         params={"tier": "identifed"},
     )
     assert response.status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_batch_peak_counterpart_answers_a_miss_with_no_rows(
+    guest_client, pa_test_data
+):
+    """A peak with no counterpart is a 200 with no rows, not a 404.
+
+    The caller asks this on every sample switch and does nothing at all with a
+    miss -- it leaves the selection empty, which is where the switch left it.
+    An error status would be something every client has to catch and discard,
+    and a toast the user never asked for.
+    """
+    sample_item_id = pa_test_data["sample_item_id"]
+
+    response = await guest_client.get(
+        "/api/batch-peaks/records/counterpart",
+        params={
+            "sample_item_id": sample_item_id,
+            "sample_peak_id": "not-a-folded-peak",
+            "target_sample_item_id": sample_item_id,
+        },
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["results"] == 0
+    assert body["data"] == []
+
+
+@pytest.mark.asyncio
+async def test_batch_peak_counterpart_refuses_a_sample_the_user_cannot_read(
+    guest_client, pa_test_data
+):
+    """Both samples are checked, not just the one that resolves.
+
+    The request names two of them, and an id the caller has no access to has to
+    be refused even when the other one is theirs -- otherwise the endpoint
+    answers questions about samples outside their workspaces.
+    """
+    sample_item_id = pa_test_data["sample_item_id"]
+
+    as_source = await guest_client.get(
+        "/api/batch-peaks/records/counterpart",
+        params={
+            "sample_item_id": "no-such-sample",
+            "sample_peak_id": "A1",
+            "target_sample_item_id": sample_item_id,
+        },
+    )
+    as_target = await guest_client.get(
+        "/api/batch-peaks/records/counterpart",
+        params={
+            "sample_item_id": sample_item_id,
+            "sample_peak_id": "A1",
+            "target_sample_item_id": "no-such-sample",
+        },
+    )
+
+    assert as_source.status_code == 403
+    assert as_target.status_code == 403

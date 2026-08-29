@@ -227,6 +227,16 @@ peak areas on a TOF). It is a property of the trace rather than of the assignmen
 unassigned anchors carry one too — sorting by it is how you find the largest thing in
 the batch that nothing was assigned to.
 
+Because a batch peak is one identity for a species across the batch, the focused peak
+follows you between samples: pick another sample and the inspector and the spectrum
+stay on the same species rather than on nothing. It is the batch peak that decides
+what "the same" means here, not the nearest m/z — so a peak follows only where that
+species was actually observed. Move to a sample where it was not, and the selection
+clears the way it always did. The same is true in a batch whose batch peaks have not
+been computed yet: there is no anchor to follow, so nothing does. Picking a peak
+yourself always wins over this — it will not overwrite a choice you just made, or
+refill a selection you cleared.
+
 ## References
 
 - <a id="kf06"></a>Kind, T.; Fiehn, O. *Metabolomic database annotations via query of

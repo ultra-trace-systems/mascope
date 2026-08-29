@@ -106,6 +106,19 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
   values are derived from the per-sample peaks already stored. As with the rest
   of a batch peak's consensus, *Compute batch peaks* is what re-derives them
   after samples are added or removed outside an assignment run.
+- Switching samples now keeps you on the **same peak**. A batch peak is one m/z
+  anchor shared across a batch, so the peak you are looking at in one sample
+  usually has a counterpart in the next one - and moving between samples now
+  follows it there, leaving the inspector and the spectrum on the same species
+  instead of dropping you back to no selection at all. Comparing one compound
+  across a batch previously meant finding it again by m/z in every sample. The
+  peak it follows is the one that shares a batch peak, not the nearest m/z, so
+  it is the same species by the same definition the batch overview draws its
+  traces from. A sample where that species was never observed leaves the
+  selection empty exactly as before, and so does a batch whose batch peaks have
+  not been computed; nothing is announced either way. An explicit choice still
+  wins - clicking a peak, or clearing the selection, is never undone by a
+  follow arriving late.
 
 - Clicking a point on the **batch assignments chart** now opens the peak behind
   it, not just its sample. Each trace is one batch peak drawn across the batch,

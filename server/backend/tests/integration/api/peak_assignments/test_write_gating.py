@@ -192,3 +192,26 @@ async def test_verify_accepted_when_feature_enabled(
     assert response.status_code == 201
     body = response.json()
     assert body["data"][0]["verdict"] == "rejected"
+
+
+@pytest.mark.asyncio
+async def test_batch_peak_counterpart_stays_open_when_feature_disabled(
+    guest_client, pa_test_data, feature_disabled
+):
+    """The counterpart read is a read, so opting out does not close it.
+
+    A batch folded while the feature was on stays navigable afterwards, the
+    same promise the ledger read makes.
+    """
+    sample_item_id = pa_test_data["sample_item_id"]
+
+    response = await guest_client.get(
+        "/api/batch-peaks/records/counterpart",
+        params={
+            "sample_item_id": sample_item_id,
+            "sample_peak_id": "A1",
+            "target_sample_item_id": sample_item_id,
+        },
+    )
+
+    assert response.status_code == 200

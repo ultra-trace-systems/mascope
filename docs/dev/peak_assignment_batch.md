@@ -187,6 +187,11 @@ At ~thousands of peaks × thousands of samples this is ~10–25M rows — **stor
 the dense P×N matrix (1–2 GB) is never materialized.** `BatchPeak` carries the materialized
 consensus; occurrences are the truth it is derived from.
 
+*Shipped since:* the row is read in **both** directions. Forward, `batch_peak_id →` the per-sample
+points of a trace (the series read). Backward, `(sample_item_id, sample_peak_id) → batch_peak_id →`
+the same anchor's peak in another sample — which is the first-class definition of "the same peak in
+the next sample" that the Sample view's focus-follow uses (§6).
+
 ### 5.3 Stage A on arrival — the append-only fold-in **[settled]**
 
 Stage A runs for the batch on **every sample arrival**. On the arrival path a sample is
@@ -318,6 +323,25 @@ a way back to the sample peak behind it.
 Reads the materialized `BatchPeak` consensus + the occurrence arrays for the selected peaks —
 the cheap **MatchIon-style materialized read**, not the O(samples×targets) on-the-fly aggregate.
 
+**Counterpart read** (*shipped*) — the occurrence read backwards, one row:
+
+```
+GET /api/batch-peaks/records/counterpart
+    ?sample_item_id=&sample_peak_id=&target_sample_item_id=
+→ data: [ { batch_peak_id, sample_item_id, sample_peak_id, sample_peak_mz,
+            intensity, tier, peak_assignment_id } ]
+```
+
+Two hops: the source peak's occurrence names its anchor, the anchor's occurrence in the target
+sample is the answer. This is what lets the focused peak follow the user across a sample switch
+([`peak_assignment_frontend.md`](peak_assignment_frontend.md)). Not a reuse of the series read,
+which is keyed by batch peak and has no way in from a `sample_peak_id` at all — scoping it by
+`sample_item_ids` instead would return every batch peak of two samples, with full parallel arrays,
+to answer a one-row question on every sample click. An empty result is the normal "no counterpart"
+answer and is returned as a 200, including for a cross-batch or cross-mode pair, which needs no
+enforcement branch: an anchor is stamped with its batch and ionization mode when minted, so the
+join is simply empty.
+
 **Append-on-arrival event.** Add a per-sample `sample_batch_peak_created`
 (operation `created`, payload `{sample_item_id, sample_batch_id}`, room = `sample_batch_id`),
 mirroring `sample_match_created`
@@ -369,6 +393,13 @@ tier · agreement/QC), the batch analog of the sample-view Assignments tab.
   single-sample slice fetch. Model after
   `ix_match_ion_target_ion_id_match_score` (models.py:983). Chunk series requests at 100 batch
   peaks (reuse the existing 100-ion chunking).
+  *Shipped differently:* the occurrence map is bidirectional but its index support is not.
+  The forward hop rides the unique `(batch_peak_id, sample_item_id)` index; the backward one
+  (counterpart, §6) rides `(sample_item_id)` alone and filters `sample_peak_id` off the heap,
+  because that column carries no index. That is one indexed scan of a single sample's occurrences
+  per sample switch — fine at this rate. A composite `(sample_item_id, sample_peak_id)` index is
+  the fix if it ever becomes hot; it would have to be added to the model *and* a migration, since
+  the backend test schema is built from the model alone.
 - **Per mode/instrument.** Partition batch peaks by `(sample_batch_id, ionization_mode)`;
   refuse or segregate mixed orbi+tof batches at fold-in (height vs area units cannot share a
   trace) — the alignment path already rejects mixed instruments.
