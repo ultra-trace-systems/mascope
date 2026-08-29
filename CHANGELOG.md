@@ -605,6 +605,10 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
   verdict filter no longer sorts a formula-less row under a verdict its own
   column does not show.
 
+- Clearer wording on the grey *not calibrated* badge in the sample browser: it
+  now reads "No calibration collection defined for the ionization mode, or no
+  matching peaks found."
+
 - Help cards no longer run off the edge of the screen. The popover asked
   Floating UI only to offset itself from the element it points at, with nothing
   to say what should happen when the result did not fit, and its body had a
