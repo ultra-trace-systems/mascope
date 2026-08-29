@@ -2,6 +2,8 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { mount } from '@vue/test-utils'
 import { reactive } from 'vue'
 
+import { MAX_SELECTED_BATCH_PEAKS } from '@/stores/data/modules/batchPeak/ledger'
+
 // The batch-peak ledger's menu button launches a background task, so the two
 // things it must get right are both about time: it may not offer an action that
 // cannot run, and it may not report "done" when all it has is an acknowledgement
@@ -108,6 +110,18 @@ const ColumnStub = {
   template: '<div class="column-stub" />'
 }
 
+// The table is where every bulk selection is made, so the stub has to be able
+// to make one: it declares the selection props the pane binds and the two
+// events it answers, so a test can select the way the header checkbox and a
+// shift-click range each do. `keydown` is left undeclared on purpose - it falls
+// through to the root element, which is how a test reaches Ctrl+A.
+const DataTableStub = {
+  name: 'DataTable',
+  props: ['value', 'filters', 'scrollHeight', 'selection', 'selectAll'],
+  emits: ['update:selection', 'select-all-change'],
+  template: '<div class="datatable"><slot /></div>'
+}
+
 const GLOBAL_STUBS = {
   Button: {
     props: ['label', 'disabled', 'loading'],
@@ -115,10 +129,7 @@ const GLOBAL_STUBS = {
       '<button class="menu-button" :disabled="disabled" :data-loading="String(!!loading)">{{ label }}</button>'
   },
   Message: { template: '<div class="pane-message"><slot /></div>' },
-  DataTable: {
-    props: ['value', 'filters', 'scrollHeight'],
-    template: '<div class="datatable"><slot /></div>'
-  },
+  DataTable: DataTableStub,
   Column: ColumnStub,
   InputText: true,
   Select: true
@@ -514,5 +525,108 @@ describe('PaneBrowserBatchPeaks tier ordering', () => {
 
     expect(columnFor('consensus_tier').props('maxConstraints')).toBe(1)
     expect(columnFor('consensus_tier').props('showAddButton')).toBe(false)
+  })
+})
+
+// The ledger lists every batch peak of the batch, singletons included, so "all"
+// is a number that grows with the batch and nothing about the gesture warns the
+// user how large it is. Everything downstream is priced per selected record, so
+// the write into the selection is where the size has to be settled - and every
+// route into it has to land in the same place, or the ones that do not become
+// the way to get an unbounded selection anyway.
+describe('PaneBrowserBatchPeaks selection cap', () => {
+  const many = (n) => Array.from({ length: n }, (_, i) => peak(`bp-${i}`, 'assigned', 0.9))
+
+  const table = () => wrapper.findComponent(DataTableStub)
+  const notice = () =>
+    wrapper.findAll('.pane-message').find((message) => /matching rows/.test(message.text()))
+
+  /** Select all filtered rows the way the header checkbox does. */
+  const checkSelectAll = (checked = true) =>
+    table().vm.$emit('select-all-change', { checked, originalEvent: {} })
+
+  it('caps what the header checkbox selects, and says so', async () => {
+    wrapper = await mountPane({ peaks: many(MAX_SELECTED_BATCH_PEAKS + 50) })
+
+    checkSelectAll()
+    await wrapper.vm.$nextTick()
+
+    expect(app.data.batchPeak.selected).toHaveLength(MAX_SELECTED_BATCH_PEAKS)
+    expect(notice().text()).toMatch(
+      new RegExp(`${MAX_SELECTED_BATCH_PEAKS} of the ${MAX_SELECTED_BATCH_PEAKS + 50} matching`)
+    )
+  })
+
+  it('caps Ctrl+A, which selects the filtered rows without going through the table', async () => {
+    wrapper = await mountPane({ peaks: many(MAX_SELECTED_BATCH_PEAKS + 50) })
+
+    await wrapper.find('.datatable').trigger('keydown', { ctrlKey: true, key: 'a' })
+
+    expect(app.data.batchPeak.selected).toHaveLength(MAX_SELECTED_BATCH_PEAKS)
+    expect(notice().exists()).toBe(true)
+  })
+
+  it('caps a range selection, which the table writes without asking for all', async () => {
+    // Shift-clicking a range emits the rows directly rather than going through
+    // the select-all handler, so a cap on select-all alone would not see it.
+    wrapper = await mountPane({ peaks: many(MAX_SELECTED_BATCH_PEAKS + 50) })
+
+    table().vm.$emit('update:selection', wrapper.vm.rows)
+    await wrapper.vm.$nextTick()
+
+    expect(app.data.batchPeak.selected).toHaveLength(MAX_SELECTED_BATCH_PEAKS)
+  })
+
+  it('keeps the rows the ledger is showing first, so a filter chooses which', async () => {
+    wrapper = await mountPane({ peaks: many(MAX_SELECTED_BATCH_PEAKS + 50) })
+
+    checkSelectAll()
+    await wrapper.vm.$nextTick()
+
+    const selected = app.data.batchPeak.selected.map((row) => row.batch_peak_id)
+    const shownFirst = wrapper.vm.rows
+      .slice(0, MAX_SELECTED_BATCH_PEAKS)
+      .map((row) => row.batch_peak_id)
+    expect(selected).toEqual(shownFirst)
+  })
+
+  it('says nothing when the selection fits', async () => {
+    wrapper = await mountPane({ peaks: many(12) })
+
+    checkSelectAll()
+    await wrapper.vm.$nextTick()
+
+    expect(app.data.batchPeak.selected).toHaveLength(12)
+    expect(notice()).toBeUndefined()
+  })
+
+  it('reads the header checkbox as checked at the cap, so it can still clear', async () => {
+    // Left to itself the table compares the selection against every filtered
+    // row, never sees them all selected at the cap, and so offers only to
+    // re-select the same rows - with no gesture left that empties the selection.
+    wrapper = await mountPane({ peaks: many(MAX_SELECTED_BATCH_PEAKS + 50) })
+    expect(table().props('selectAll')).toBe(false)
+
+    checkSelectAll()
+    await wrapper.vm.$nextTick()
+    expect(table().props('selectAll')).toBe(true)
+
+    checkSelectAll(false)
+    await wrapper.vm.$nextTick()
+    expect(app.data.batchPeak.selected).toHaveLength(0)
+    expect(table().props('selectAll')).toBe(false)
+    expect(notice()).toBeUndefined()
+  })
+
+  it('drops the notice when the batch changes', async () => {
+    wrapper = await mountPane({ peaks: many(MAX_SELECTED_BATCH_PEAKS + 50) })
+    checkSelectAll()
+    await wrapper.vm.$nextTick()
+    expect(notice().exists()).toBe(true)
+
+    app.data.batch.focusedId = 'b-2'
+    await wrapper.vm.$nextTick()
+
+    expect(notice()).toBeUndefined()
   })
 })

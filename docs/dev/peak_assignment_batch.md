@@ -320,6 +320,13 @@ tier · agreement/QC), the batch analog of the sample-view Assignments tab.
   toward 10^5 with the noise/satellite tail; a min-present-fraction gate decides which batch
   peaks are *drawable* by default (singletons kept in the ledger, out of the default chart
   scope). Adjustable.
+  *Shipped differently:* the frontend ledger deliberately overrides the endpoint's
+  `min_n_present` default by asking for 1, so that a low-prevalence species stays selectable at
+  all; what bounds the drawable set is therefore a cap on the *selection*
+  (`MAX_SELECTED_BATCH_PEAKS`, 300, in
+  [`batchPeak/ledger.js`](../../server/frontend/src/stores/data/modules/batchPeak/ledger.js)),
+  enforced where the table writes its selection and again where the chart reads it. An occupancy
+  gate remains open as an orthogonal default for *which* peaks the ledger offers first.
 - **Indexes.** `BatchPeak(sample_batch_id, mz)` for the fold-in range scan (hot path);
   `BatchPeakOccurrence(batch_peak_id)` for series fan-out and `(sample_item_id)` for the
   single-sample slice fetch. Model after

@@ -205,6 +205,13 @@ Every completed assignment run folds into the batch peaks automatically; a batch
 runs predate the batch overview can be backfilled from them without any new
 assignment work.
 
+The rows you tick in the *Batch peaks* ledger are what the batch chart draws, one
+trace per batch peak. The ledger lists every anchor in the batch, which on a large
+batch is far more than a chart can usefully show, so a selection is capped at 300 —
+select all on a bigger ledger takes the first 300 rows and tells you so. Which 300 is
+up to you: filter the ledger first, with the tier chips or the formula box, and then
+select.
+
 ## References
 
 - <a id="kf06"></a>Kind, T.; Fiehn, O. *Metabolomic database annotations via query of

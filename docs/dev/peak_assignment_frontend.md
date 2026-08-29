@@ -72,7 +72,8 @@ written while the flag is off) — and both the browser's panes and the **Batch*
 own a toggle each, and the batch tab's was unpersisted — it came back on Targets on every page
 load while the browser came back where it was left, and either could be flipped without the other
 moving, so the browser could sit in Assignments while the chart plotted Targets. Since the assignments chart
-plots exactly what the batch-peaks ledger has selected, the ledger drove a chart that was not on
+plots what the batch-peaks ledger has selected (up to `MAX_SELECTED_BATCH_PEAKS`, the cap the
+ledger holds its own selection to), the ledger drove a chart that was not on
 screen. An unrecognised stored value falls back to `targets` rather than being carried, so the two
 consumers (which branch on opposite comparisons) cannot land on opposite sides.
 

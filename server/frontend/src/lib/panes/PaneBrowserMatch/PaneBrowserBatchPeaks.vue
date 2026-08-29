@@ -17,6 +17,7 @@ import { TIERS, TIER_META, tierRank } from '@/lib/tiers'
 import { prettyTrim } from '@/lib/utils'
 import { api } from '@/api'
 import { useApp } from '@/stores'
+import { MAX_SELECTED_BATCH_PEAKS } from '@/stores/data/modules/batchPeak/ledger'
 
 /**
  * Batch-peak ledger: the selection surface for the peak-centric batch overview.
@@ -77,12 +78,55 @@ const rows = computed(() =>
     .sort((a, b) => a.tierRank - b.tierRank || (b.best_fit_score ?? -1) - (a.best_fit_score ?? -1))
 )
 
+// --- Selection --------------------------------------------------------------
+
+// How many rows the last write wanted, when that was more than the cap allows;
+// 0 when the selection fits. This is what the notice below counts, and it is
+// what tells "select all matched more than we can plot" apart from "you have
+// selected a lot of rows one at a time".
+const overflowFrom = ref(0)
+
+// The rows the table would select on "all": filtered and sorted as displayed.
+// The fallback is for a table that has not mounted its own view of the rows.
+const selectableRows = () => table.value?.processedData ?? rows.value
+
+/**
+ * The single write into the ledger selection, capped.
+ *
+ * Every route into the selection lands here - the header checkbox, Ctrl+A, a
+ * shift-click range, and an ordinary row click - because each of the first
+ * three hands over the whole filtered row set in one go. A cap on only the one
+ * we wrote ourselves would leave the other doors to the same ten thousand rows
+ * standing open.
+ *
+ * Always assigns a fresh array: the header checkbox hands over the table's own
+ * live `processedData`, which must not be truncated in place.
+ */
+const applySelection = (selection) => {
+  const capped = selection.slice(0, MAX_SELECTED_BATCH_PEAKS)
+  overflowFrom.value = selection.length > capped.length ? selection.length : 0
+  ledger.value.selected = capped
+}
+
+// Whether the header checkbox reads as checked. Taking it over from the table
+// is what keeps the checkbox usable at the cap: left to itself it compares the
+// selection against every filtered row, never sees them all selected, and so
+// offers only to re-select the same rows - with no way back to an empty
+// selection. Derived rather than remembered, so unchecking a row by hand turns
+// it back into an offer to select.
+const allSelected = computed(() => {
+  const selectable = selectableRows()
+  if (!selectable.length) return false
+  return ledger.value.selected.length >= Math.min(selectable.length, MAX_SELECTED_BATCH_PEAKS)
+})
+
+const onSelectAllChange = (event) => applySelection(event.checked ? selectableRows() : [])
+
 // Ctrl+A selects all filtered rows (the virtual scroller only holds visible rows).
 const onKeyDown = (event) => {
   if ((event.ctrlKey || event.metaKey) && event.key === 'a') {
     event.preventDefault()
-    const selectable = table.value?.processedData ?? rows.value
-    ledger.value.selected = [...selectable]
+    applySelection(selectableRows())
   }
 }
 
@@ -219,12 +263,14 @@ app.ui.notification.on('compute_batch_peaks', (notification) => {
   endComputing()
 })
 
-// Whatever was in flight, or went wrong, belonged to the previous batch.
+// Whatever was in flight, went wrong, or was selected belonged to the previous
+// batch. The selection itself is reset by the ledger's own reload.
 watch(
   () => app.data.batch.focusedId,
   () => {
     endComputing()
     launchError.value = null
+    overflowFrom.value = 0
   }
 )
 
@@ -247,9 +293,11 @@ onScopeDispose(() => clearTimeout(computeTimer))
         samples it appears in.
         </p>
         <p>
-        The rows selected here are exactly what the Assignments chart plots
-        &mdash; Ctrl+A selects all filtered rows. Focus a sample to switch to
-        its per-sample assignment ledger.
+        The rows selected here are what the Assignments chart plots &mdash;
+        Ctrl+A selects all filtered rows, up to the
+        ${MAX_SELECTED_BATCH_PEAKS} the chart draws at once. Filter first to
+        choose which ones. Focus a sample to switch to its per-sample
+        assignment ledger.
         </p>`,
         { doc: app.ui.help.docUrl('how-it-works/peak-assignment/#batch-peaks') }
       )
@@ -299,6 +347,16 @@ onScopeDispose(() => clearTimeout(computeTimer))
         {{ launchError }}
       </Message>
 
+      <!-- Said here, where the gesture was made, rather than left for the user
+           to infer from a chart that draws fewer traces than the ledger shows
+           ticked. Informational rather than a warning: nothing went wrong, the
+           selection just has a size. -->
+      <Message v-if="overflowFrom" severity="secondary" icon="pi pi-exclamation-triangle">
+        At most {{ MAX_SELECTED_BATCH_PEAKS }} batch peaks are plotted at once, so
+        {{ MAX_SELECTED_BATCH_PEAKS }} of the {{ overflowFrom.toLocaleString('en-US') }} matching
+        rows are selected. Narrow the ledger - by tier or formula - to choose which.
+      </Message>
+
       <div
         class="tier-strip"
         v-help.top="{
@@ -329,7 +387,10 @@ onScopeDispose(() => clearTimeout(computeTimer))
         ref="table"
         :value="rows"
         dataKey="batch_peak_id"
-        v-model:selection="ledger.selected"
+        :selection="ledger.selected"
+        @update:selection="applySelection"
+        :selectAll="allSelected"
+        @select-all-change="onSelectAllChange"
         v-model:filters="filters"
         selectionMode="multiple"
         :metaKeySelection="false"
