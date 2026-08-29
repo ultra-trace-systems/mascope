@@ -20,7 +20,7 @@ so a batch folded before this revision folds its satellites and shows its
 intensities without waiting for someone to press "Compute batch peaks".
 
 Revision ID: b6a4d1e83c7f
-Revises: c1e7b409f2a5
+Revises: f3d81a6c47b9
 Create Date: 2026-08-30 09:00:00.000000
 
 """
@@ -33,7 +33,7 @@ from alembic import op
 
 # revision identifiers, used by Alembic.
 revision: str = "b6a4d1e83c7f"
-down_revision: Union[str, Sequence[str], None] = "c1e7b409f2a5"
+down_revision: Union[str, Sequence[str], None] = "f3d81a6c47b9"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
