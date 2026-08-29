@@ -215,7 +215,16 @@ initial anchors from it, so bins are not hostage to the first sample's calibrati
 with existing target identities; data-created anchors fill the rest.
 
 **Backfill.** For batches assigned before this feature, a one-time fold-in walks each sample's
-latest completed run in time order through the same routine.
+latest completed run in time order through the same routine. It reports as it goes, on the
+`compute_batch_peaks` notification channel the launching button already listens on: pending
+packets carrying `_item_index`/`_total_samples`, which the shared progress calculator turns into
+a bar, and which the background-task decorator's terminal packet ends
+([`service.py`](../../server/backend/src/mascope_backend/socket/notifications/service.py)). Every
+sample reports up to a step count, past which the batch is sampled — the per-sample cost here is
+not the assignment loop's (a sample with no completed run returns after two selects), so an
+unbounded stream would be a burst of socket traffic with no work between the packets. The bar
+counts samples *walked*, not samples folded: it can fill while nothing was folded at all, which
+is the outcome the terminal notification exists to name.
 
 **Serialization [settled].** The fold's read-mint-insert step is a critical section per batch,
 held by a transaction-scoped Postgres advisory lock keyed on `sample_batch_id`

@@ -216,6 +216,18 @@ async def send_progress_user_notification(
                 f"Assigning peaks, processing sample {item_index + 1}/{total_samples}"
             )
 
+    # A batch-peak backfill folds the batch's samples one at a time, and the
+    # message it arrives with already names which one - so only the bar is
+    # computed here. Same two ticks per sample as the batch assignment above:
+    # increment is None before the fold and 1.0 after it, stepping the bar from
+    # item_index/N to (item_index + 1)/N. Guarded on a non-zero N rather than
+    # merely a present one: a batch with no samples emits nothing today, and
+    # that is not a reason for the arithmetic here to be divisible by it.
+    if notification_copy.type == "compute_batch_peaks":
+        if total_samples and item_index is not None:
+            inc = increment if increment is not None else 0.0
+            notification_copy.progress = ((item_index + inc) / total_samples) * 100
+
     # Emit to all specified rooms with optional smart routing
     for room_id in room_ids:
         await emit_user_notification(

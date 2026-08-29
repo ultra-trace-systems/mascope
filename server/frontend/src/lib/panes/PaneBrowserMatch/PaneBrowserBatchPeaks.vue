@@ -541,8 +541,10 @@ async function computeBatchPeaks() {
 // either way. Registered in setup scope, so it unregisters with the pane.
 app.ui.notification.on('compute_batch_peaks', (notification) => {
   if (!computing.value) return
-  // This task emits no in-progress packets today, but a "still working" one
-  // would say nothing about the button's state if it ever did.
+  // The task reports per sample as it folds the batch, and those packets say
+  // only how far along it is - the app's progress bar is what renders them.
+  // The button is asking a different question, "is it still running", and the
+  // answer to that is still yes.
   if (notification?.status === 'pending') return
   // A packet whose id we can read and that is not ours belongs to someone
   // else's backfill of this batch. One we cannot identify is accepted rather
