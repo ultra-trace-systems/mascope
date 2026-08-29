@@ -117,11 +117,6 @@ provide('match-table-height', tableHeight)
           the targeted workflow. <b>Assignments</b> browses the peak-centric
           ledgers: the batch peaks of the whole batch, and every peak's
           assignment once a sample is focused.
-          </p>
-          <p>
-          This is the only switch: it also sets what the <b>Batch</b> overview
-          plots &mdash; the selected collection's matched ions across the batch,
-          or the batch peaks you select here.
           </p>`,
         doc: app.ui.help.docUrl('how-it-works/peak-assignment/')
       }"
@@ -134,6 +129,7 @@ provide('match-table-height', tableHeight)
         :allowEmpty="false"
         size="small"
         aria-label="Targets or assignments"
+        v-tooltip.bottom="'Switch between target matches and peak assignments'"
       />
     </div>
     <template v-if="app.ui.matchMode.mode === 'assignments'">
