@@ -131,6 +131,28 @@ surface: `GET /sample/{id}/verifications`, `POST /sample/{id}/verify` (editor), 
 accumulated labels. Details in [`verification_capture_frontend.md`](verification_capture_frontend.md)
 and [`verification_calibration_loop.md`](verification_calibration_loop.md).
 
+**Manual curation.** An assignment can be replaced by hand, and the change persists in the ledger
+marked as human-made. Two entry points, one endpoint
+(`PATCH /sample/{id}/assignment/{peak_assignment_id}`, editor + flag): **"use this"** on a close
+alternative in the inspector (`promote_alternative`, by index, guarded with the formula the card was
+showing) and the **hand button** on a re-search hit (`set_assignment`, for the usual case of an
+`unassigned` placeholder row with no runner-ups). The row is edited **in place** — same
+`peak_assignment_id`, same peak — with the displaced winner pushed to the head of `alternatives`, so
+promoting it back is the undo. `source` becomes `"manual"` (a third value in the shared
+`AssignmentSource` literal, so overrides are filterable and survive an import), `BaseTierTag` renders a
+hand mark for it on every surface, and `provenance.manual` records the user, the time, the action and
+the whole previous winner. Three things the server owns rather than the caller: the **tier** is
+recomputed with `tier_for_score` under *the run's own* `tier_bands`; the **calibrated fields**
+(`p_correct`, `calibrated`, `calibration`, `corroboration`) are archived with the winner they describe
+and dropped from the row, because they are the engine's reading of an arbitration that is no longer the
+row's; and **isotopologue satellites of the replaced formula are demoted** to `unassigned` (their own
+previous winner kept in their `alternatives`), since a satellite is the same compound as its M0 and
+that compound is no longer what the M0 carries. Store action: `peak.curate(id, action)`, which reloads
+the run — an override rewrites rows the caller never named. Deliberately **not** redirected to the
+family M0 the way `verify()` is: an alternative index only means something against one row's list.
+An override lives in the run it edits and a later run supersedes it; nothing is auto-verified, so the
+durable record of the judgement is still a verdict the user records with the evidence level they have.
+
 **Confidence.** fit, plausibility and calibrated P(correct) are surfaced (see
 [`peak_assignment_confidence_frontend.md`](peak_assignment_confidence_frontend.md)). Untargeted winners
 carry `plausibility` too; alternatives carry `plausibility` (database ones also fit + m/z error). Adduct
@@ -536,7 +558,8 @@ returns the same `{ match_ions, match_isotopes }` shape they consume today.
 - **B — Launch & watch.** Run-config dialog + `run.assign()`; completion refresh via
   `peak_assignment_reload` (§2.3); run selector in the Assignments browser.
 - **C — Inspect & act.** Inspector `alternatives` + commit-alternative + add-to-target-list; "Re-search"
-  fallback; "Verify fit" via the composition Fit view (§4).
+  fallback; "Verify fit" via the composition Fit view (§4). *Commit-alternative shipped later than the
+  rest of C, as the manual-curation write path — see **Current state**.*
 - **D — Retire the match_ion table.** Fold the Targets view into a `source=database` /
   `target_compound_id != null` filter over the ledger; remove `MatchIonTable` once parity is reached.
 - **E — Batch level.** Batch-overview coloring by tier; GKA / Van Krevelen (backend Phase 4).
@@ -560,6 +583,7 @@ below records the original plan items plus the consolidation that followed.
 | **B1** `peak_assignment_reload` event | ✅ done | `success_reload=[("peak_assignment","sample_batch_id")]`. |
 | **B2** composition Fit visualization | ✅ done | `visualization.py`: `aggregate_composition_fit` + `visualize_composition_focus`; kept as API/SDK surface without in-app UI (#1736). |
 | **Consolidation** onto the Sample view | ✅ done | Time series via REST, 3-pane layout, Re-search takeover, inspector trim, ledger unfold, sample-switch race fix. |
+| **C** commit-alternative (manual curation) | ✅ done | The one phase-C item that had no row here and no code anywhere. `PATCH …/assignment/{id}` with `promote_alternative` / `set_assignment`, `peakAssignments/curation.py`, `peak.curate()`, "use this" in the inspector and the hand button on a search hit. See **Current state**. |
 
 **Verified live** against the isolated instance stack (`mascope dev run backend frontend --instance
 --skip-migrations`; env `wt-…`, backend :8090, frontend :5173, seeded from the demo DB): read contract

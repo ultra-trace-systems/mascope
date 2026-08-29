@@ -35,12 +35,14 @@ from mascope_backend.api.new.peak_assignments.copy_service import (
     copy_assignments_to_batch,
     partition_copy_destinations,
 )
+from mascope_backend.api.new.peak_assignments.curation import curate_assignment
 from mascope_backend.api.new.peak_assignments.import_service import (
     abandon_import_run,
     import_assignment_run,
 )
 from mascope_backend.api.new.peak_assignments.schemas import (
     AssignBatchResponse,
+    AssignmentCurationResponse,
     AssignmentVerificationsResponse,
     AssignSamplePeaksBody,
     AssignSampleResponse,
@@ -48,6 +50,7 @@ from mascope_backend.api.new.peak_assignments.schemas import (
     CompositionVisualizeBody,
     CopyAssignmentsPreviewResponse,
     CopyAssignmentsResponse,
+    CurateAssignmentBody,
     ImportRunBody,
     PeakAssignmentDetailResponse,
     PeakAssignmentImportResponse,
@@ -281,6 +284,76 @@ async def verify_assignment_route(
         user_id=user.id,
     )
     return AssignmentVerificationsResponse.model_validate(result)
+
+
+@peak_assignments_router.patch(
+    "/sample/{sample_item_id}/assignment/{peak_assignment_id}",
+    response_model=AssignmentCurationResponse,
+    dependencies=[Depends(require_peak_assignment_enabled)],
+)
+@api_route(token_access=True)
+async def curate_assignment_route(
+    sample_item_id: str,
+    peak_assignment_id: str,
+    body: CurateAssignmentBody,
+    user: User = Depends(current_active_user),
+    membership=Depends(require_sample_role("editor")),
+) -> AssignmentCurationResponse:
+    """
+    Curate one assignment by hand: commit a different composition for its peak.
+
+    Two actions, the same edit with a different source for the winner:
+
+    - **`promote_alternative`** commits one of the row's own stored runner-ups,
+      named by its index in `alternatives`. No numbers come from the caller;
+      pass `expected_formula` to have the choice checked against the list you
+      actually read.
+    - **`set_assignment`** commits a composition you name - the re-search case,
+      where the peak's row is usually an `unassigned` placeholder with no
+      runner-ups to promote.
+
+    **The row is edited in place**, keeping its `peak_assignment_id`, its
+    `sample_peak_id` and its peak. The displaced winner moves to the head of
+    `alternatives` (so the choice is reversible by promoting it back), the row
+    is marked `source: "manual"`, and `provenance.manual` records who, when,
+    and what it said before. The tier is recomputed from the run's own
+    `tier_bands` rather than inherited, and the calibrated fields (`p_correct`
+    and its calibration metadata) do not survive the edit: they are this
+    server's judgement about the arbitration that produced the previous winner.
+
+    **Isotopologue satellites of the replaced formula are demoted** to
+    `unassigned`, keeping their own previous winner in their `alternatives`.
+    They were the same compound seen through one heavy atom, and that compound
+    is no longer what their M0 carries.
+
+    **An override lives in the run it edits.** A later assignment run rebuilds
+    the sample's ledger and supersedes it; the durable record of a human
+    judgement is a verification, which is keyed to the peak rather than the run.
+    Nothing is auto-verified here - choosing a candidate and vouching for one
+    are different acts, and a verdict needs the evidence level only the person
+    can supply. Batch views are a snapshot taken at fold-in, so an override
+    reaches them at the batch's next compute rather than immediately.
+
+    Returns 403 when peak assignment is not enabled for this environment or the
+    user is not an editor on the sample, 404 for an assignment this sample does
+    not have, 409 when the run is not completed or the promoted candidate moved
+    under the caller, and 422 when the request names a candidate, mechanism or
+    formula that cannot be committed.
+
+    :param sample_item_id: The unique identifier of the sample.
+    :param peak_assignment_id: The assignment to curate.
+    :param body: The curation action and its payload.
+    :param user: The current authenticated user. Requires workspace editor role.
+    :param membership: Workspace membership with editor role on the sample.
+    :return: The curated row, followed by any rows the override displaced.
+    """
+    result = await curate_assignment(
+        sample_item_id=sample_item_id,
+        peak_assignment_id=peak_assignment_id,
+        body=body,
+        user_id=user.id,
+    )
+    return AssignmentCurationResponse.model_validate(result)
 
 
 @peak_assignments_router.post(

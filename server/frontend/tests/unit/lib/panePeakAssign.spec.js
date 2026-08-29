@@ -15,6 +15,7 @@ const PEAK = { peak_id: 'p-1', mz: 200.12345, height: 12345, area: 999 }
 // Module-level so assertions see the same spy the component called: makeApp()
 // runs afresh on every useApp() and would otherwise hand out a new one.
 const verify = vi.fn(() => Promise.resolve(null))
+const curate = vi.fn(() => Promise.resolve(null))
 
 let focusedPeak
 let focusedAssignment
@@ -63,7 +64,8 @@ function makeApp() {
           // here is that the inspector asks for it and uses the answer.
           m0Of: (row) =>
             row?.role === 'iso_child' ? (ledger.get(row.owner_peak_assignment_id) ?? row) : row,
-          loadDetail: () => Promise.resolve()
+          loadDetail: () => Promise.resolve(),
+          curate
         },
         verification: { forAssignment: () => verdictRecord, verify }
       }
@@ -577,5 +579,112 @@ describe('PanePeakAssign close alternatives', () => {
     const wrapper = await mountPane()
 
     expect(alts(wrapper)).toEqual(['C7H16O5'])
+  })
+})
+
+// Manual curation: committing a close alternative from the card. The control is
+// per-alternative because the index it sends only means anything against the
+// list this card is showing.
+describe('PanePeakAssign manual curation', () => {
+  const ALTERNATIVES = [
+    { assigned_formula: 'C7H16O5', fit_score: 0.71, mz_error_ppm: 4.2, source: 'database' },
+    // The untargeted finder's formula-only shortlist: no fit, still promotable.
+    { assigned_formula: 'C4H8N2O3', plausibility: 0.44, source: 'untargeted' },
+    // A runner-up that names no formula at all - there is nothing to commit.
+    { ion_formula: 'C3H7+', plausibility: 0.6, source: 'untargeted' }
+  ]
+
+  const useButtons = (wrapper) => wrapper.findAll('.alt .alt-use')
+
+  beforeEach(() => {
+    focusedAssignment = { ...assignment({ formula: 'C6H12O6', tier: 'assigned' }) }
+    detailRecord = { ...focusedAssignment, alternatives: ALTERNATIVES }
+  })
+
+  it('offers the action only on candidates that name a formula', async () => {
+    const wrapper = await mountPane()
+
+    expect(wrapper.findAll('.alt')).toHaveLength(3)
+    expect(useButtons(wrapper)).toHaveLength(2)
+  })
+
+  it('commits the candidate at its own index, guarded by the formula shown', async () => {
+    const wrapper = await mountPane()
+
+    await useButtons(wrapper)[1].trigger('click')
+
+    expect(curate).toHaveBeenCalledTimes(1)
+    expect(curate).toHaveBeenCalledWith('pa-1', {
+      action: 'promote_alternative',
+      alternative_index: 1,
+      expected_formula: 'C4H8N2O3'
+    })
+  })
+
+  // The guard is the point: without it, a click on the card another curator has
+  // already changed underneath would commit whatever now sits at that position.
+  it('sends the index of the row clicked, not of the promotable ones', async () => {
+    const wrapper = await mountPane()
+
+    await useButtons(wrapper)[0].trigger('click')
+
+    expect(curate.mock.calls[0][1]).toMatchObject({
+      alternative_index: 0,
+      expected_formula: 'C7H16O5'
+    })
+  })
+
+  it('hides the control when the write comes back 403, and says why', async () => {
+    curate.mockRejectedValueOnce(Object.assign(new Error('no'), { response: { status: 403 } }))
+    const wrapper = await mountPane()
+
+    await useButtons(wrapper)[0].trigger('click')
+    await wrapper.vm.$nextTick()
+
+    expect(useButtons(wrapper)).toHaveLength(0)
+    expect(wrapper.text()).toContain('Editor access is required to change an assignment')
+  })
+
+  // Any other failure has already been toasted by the http layer; the control
+  // stays, because the user may well be able to retry.
+  it('keeps the control after a failure that is not a refusal', async () => {
+    curate.mockRejectedValueOnce(new Error('503 Service Unavailable'))
+    const wrapper = await mountPane()
+
+    await useButtons(wrapper)[0].trigger('click')
+    await wrapper.vm.$nextTick()
+
+    expect(useButtons(wrapper)).toHaveLength(2)
+  })
+
+  it('says a curated row was decided by hand, and how to undo it', async () => {
+    focusedAssignment = { ...focusedAssignment, source: 'manual' }
+    detailRecord = {
+      ...focusedAssignment,
+      alternatives: ALTERNATIVES,
+      provenance: { manual: { previous_formula: 'C6H12O6' } }
+    }
+    const wrapper = await mountPane()
+
+    const note = wrapper.find('.manual-note').text()
+    expect(note).toContain('Assigned by hand')
+    expect(note).toContain('C6H12O6')
+    expect(note).toContain('use this')
+  })
+
+  // `source` rides on the slim ledger row while provenance waits on the detail
+  // fetch, so the note must stand on its own until the formula arrives.
+  it('says so before the detail carrying the replaced formula lands', async () => {
+    focusedAssignment = { ...focusedAssignment, source: 'manual' }
+    detailRecord = null
+    const wrapper = await mountPane()
+
+    expect(wrapper.find('.manual-note').exists()).toBe(true)
+  })
+
+  it('leaves an engine-assigned row unmarked', async () => {
+    const wrapper = await mountPane()
+
+    expect(wrapper.find('.manual-note').exists()).toBe(false)
   })
 })
