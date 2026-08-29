@@ -2,6 +2,11 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { mount } from '@vue/test-utils'
 import { ref } from 'vue'
 
+// The real badge, imported past the `@/lib/base` barrel mock below: what the
+// ledger's verdict column renders for a row with no verdict is half of the
+// formula-less-row guard, and a stub could not tell us.
+import BaseVerdictBadge from '@/lib/base/BaseVerdictBadge.vue'
+
 // The per-sample launcher's job after the assign endpoint became synchronous:
 // a run that is refused (409) or a sample that cannot be assigned (422) arrives
 // as a rejection, and must land as a readable reason in the pane rather than an
@@ -12,6 +17,8 @@ const assign = vi.fn()
 // runs afresh on every useApp() and would otherwise hand out new spies.
 const sampleUnfocus = vi.fn()
 const peakUnfocus = vi.fn()
+// Reads `verdictRecord` at call time, so a test can set it after mounting.
+const forAssignment = vi.fn(() => verdictRecord)
 
 const SAMPLE = { sample_item_id: 'si-1', sample_item_name: 'Sample 1' }
 const BATCH = { sample_batch_id: 'sb-1', sample_batch_name: 'Batch 1' }
@@ -21,6 +28,7 @@ let runList
 let runError
 let assignmentList
 let childrenByOwner
+let verdictRecord
 
 // Minimal help-mode facade: the pane registers help cards through these calls;
 // the tests only need them to resolve.
@@ -62,7 +70,7 @@ function makeApp() {
           childrenOf: (id) => childrenByOwner.get(id) ?? [],
           forPeak: () => null
         },
-        verification: { forAssignment: () => null }
+        verification: { forAssignment }
       }
     },
     ui: { tab: { active: 'sample' }, help: helpStub }
@@ -144,7 +152,16 @@ async function mountPane() {
 }
 
 /** An M0 assignment with its isotopologue satellites, as the ledger sees them. */
-function family({ id, mz, intensity, formula, tier = 'identified', fit = 0.9, children = [] }) {
+function family({
+  id,
+  mz,
+  intensity,
+  formula,
+  tier = 'identified',
+  fit = 0.9,
+  role = 'target',
+  children = []
+}) {
   const parent = {
     peak_assignment_id: id,
     sample_peak_id: `p-${id}`,
@@ -153,7 +170,7 @@ function family({ id, mz, intensity, formula, tier = 'identified', fit = 0.9, ch
     assigned_formula: formula,
     tier,
     fit_score: fit,
-    role: 'target'
+    role
   }
   const kids = children.map((child, index) => ({
     peak_assignment_id: `${id}-c${index}`,
@@ -236,6 +253,7 @@ beforeEach(() => {
   focusedSampleId = ref('si-1')
   runList = []
   runError = null
+  verdictRecord = null
   seed()
 })
 
@@ -583,6 +601,60 @@ describe('PaneBrowserAssignment header and controls', () => {
     wrapper.vm.selectedRow = null
 
     expect(peakUnfocus).toHaveBeenCalledTimes(1)
+  })
+
+  // A formula-less row is a placeholder for a peak nothing explained: there is
+  // no assignment to have judged. A verdict left on one by an earlier run must
+  // neither show a badge nor answer the verdict filter, which would sort the
+  // row under a verdict its own column does not show. `verdictFor` feeds both,
+  // so it is the one place the guard has to hold - and a null record is what
+  // renders no badge (asserted against the real component below).
+  const UNASSIGNED_ROW = {
+    id: 'u',
+    mz: 50.1,
+    intensity: 90,
+    formula: null,
+    tier: 'unassigned',
+    role: 'unassigned',
+    fit: null
+  }
+
+  it('carries no verdict on a row with no formula', async () => {
+    verdictRecord = { verdict: 'confirmed', evidence_level: 'msms' }
+    seed(FAMILY_B, family(UNASSIGNED_ROW))
+    const wrapper = await mountPane()
+
+    const rowsById = new Map(wrapper.vm.rows.map((row) => [row.peak_assignment_id, row]))
+    expect(wrapper.vm.verdictFor(rowsById.get('u'))).toBeNull()
+    // The positive arm looks the verdict up by the whole row: the store keys on
+    // `sample_peak_id|assigned_formula|ionization_mechanism_id`, so handing it
+    // anything narrower would miss every time against the real one.
+    expect(wrapper.vm.verdictFor(rowsById.get('b'))).toEqual(verdictRecord)
+    expect(forAssignment).toHaveBeenLastCalledWith(rowsById.get('b'))
+  })
+
+  it('renders no badge for the verdict a formula-less row does not have', async () => {
+    // The column body is `<BaseVerdictBadge :record="verdictFor(data)" compact />`,
+    // and the stubbed table never renders it - so this pins the other half of
+    // that chain on the real component: a null record is a blank cell.
+    const badge = mount(BaseVerdictBadge, { props: { record: null, compact: true } })
+
+    expect(badge.text()).toBe('')
+    expect(badge.find('span').exists()).toBe(false)
+  })
+
+  it('leaves a formula-less row out of a verdict filter it cannot answer', async () => {
+    verdictRecord = { verdict: 'confirmed', evidence_level: 'msms' }
+    seed(FAMILY_B, family(UNASSIGNED_ROW))
+    const wrapper = await mountPane()
+
+    wrapper.vm.verdictFilter = 'confirmed'
+    await wrapper.vm.$nextTick()
+    expect(ids(wrapper)).toEqual(['b'])
+
+    wrapper.vm.verdictFilter = 'unverified'
+    await wrapper.vm.$nextTick()
+    expect(ids(wrapper)).toEqual(['u'])
   })
 
   it('shows exactly one "Assign peaks" control in every state', async () => {

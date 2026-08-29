@@ -581,6 +581,22 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
 
 ### Fixed
 
+- The peak inspector now names the peak it is showing when that peak has no
+  formula. An unassigned peak read as the word *Unassigned* over an empty
+  evidence grid - the same card for every unassigned peak in the sample, saying
+  nothing about which one was selected. It carries the peak's m/z and intensity
+  now, whether it came from an assignment run or from a sample with no run yet.
+
+- An unassigned peak can no longer be *confirmed*. Every peak in a run gets a
+  ledger row, so peaks nothing explained are real rows that simply carry no
+  formula - and the inspector offered its confirm / reject / unsure form on them
+  all the same. A verdict recorded there was a judgment about nothing, kept
+  among the hand labels but carrying no evidence for anything to learn from. The
+  form and the verdict badge now appear only where there is an assignment to
+  judge, in the inspector and in the ledger's verdict column alike; the ledger's
+  verdict filter no longer sorts a formula-less row under a verdict its own
+  column does not show.
+
 - Help cards no longer run off the edge of the screen. The popover asked
   Floating UI only to offset itself from the element it points at, with nothing
   to say what should happen when the result did not fit, and its body had a
