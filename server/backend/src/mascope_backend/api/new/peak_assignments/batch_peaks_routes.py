@@ -19,6 +19,7 @@ from mascope_backend.api.new.peak_assignments.batch_peaks_records import (
 from mascope_backend.api.new.peak_assignments.routes import (
     require_peak_assignment_enabled,
 )
+from mascope_backend.api.new.peak_assignments.schemas import AssignmentTier
 from mascope_backend.api.new.workspaces.dependencies import (
     check_batch_access,
     check_sample_access_bulk,
@@ -45,7 +46,9 @@ class BatchPeakSeriesBody(RequestBodyModel):
     batch_peak_ids: list[str] | None = Field(
         default=None, description="Restrict to these batch peaks."
     )
-    tier: str | None = Field(default=None, description="Filter by consensus tier.")
+    tier: AssignmentTier | None = Field(
+        default=None, description="Filter by consensus tier."
+    )
     min_n_present: int = Field(
         default=2,
         ge=1,
@@ -108,7 +111,7 @@ async def get_batch_peak_series_route(
 @api_route()
 async def get_batch_peak_ledger_route(
     sample_batch_id: str,
-    tier: str | None = None,
+    tier: AssignmentTier | None = None,
     min_n_present: int = 2,
     user: User = Depends(current_active_user),
 ) -> BatchPeakRecordsResponse:

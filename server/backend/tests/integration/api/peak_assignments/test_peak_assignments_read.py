@@ -120,6 +120,32 @@ async def test_the_tier_filter_still_accepts_the_pre_rename_spelling(
 
 
 @pytest.mark.asyncio
+async def test_the_batch_ledger_filter_answers_the_pre_rename_spelling(
+    guest_client, pa_test_data
+):
+    """The batch overview filters a tier the rename reaches too.
+
+    Its filter is a second wire site, on `consensus_tier` rather than on the
+    per-sample tier, and it has to keep the same promise: the old spelling is
+    answered, and one that is neither spelling is refused rather than silently
+    matching nothing.
+    """
+    sample_batch_id = pa_test_data["sample_batch_id"]
+
+    legacy = await guest_client.get(
+        f"/api/batch-peaks/batch/{sample_batch_id}",
+        params={"tier": "identified", "min_n_present": 1},
+    )
+    misspelled = await guest_client.get(
+        f"/api/batch-peaks/batch/{sample_batch_id}",
+        params={"tier": "assinged", "min_n_present": 1},
+    )
+
+    assert legacy.status_code == 200
+    assert misspelled.status_code == 422
+
+
+@pytest.mark.asyncio
 async def test_get_assignments_with_explicit_run_id(guest_client, pa_test_data):
     response = await guest_client.get(
         f"/api/peak-assignments/sample/{pa_test_data['sample_item_id']}",
