@@ -16,6 +16,14 @@ const colors = {
   offwhite: '#F5F5F2'
 }
 
+// How saturated a sweep is allowed to run, as a share of the most chroma sRGB
+// can actually show at that lightness. A color listed here is swept against the
+// gamut instead of against its own chroma; anything left out keeps the seed's
+// chroma the whole way up, which is what the near-neutral surfaces want.
+const strengths = {
+  safetyorange: 0.8
+}
+
 // shades
 const shades = [
   { lightness: 95, shade: null },
@@ -38,6 +46,7 @@ const records = []
 // iterate through the main colors
 for (const [color, hexcode] of Object.entries(colors)) {
   const [l, chroma, hue] = convert(hexcode).lch()
+  const strength = strengths[color]
   const mainLightness = getClosestShade(l).lightness
   if (Math.abs(l - mainLightness) > 1) {
     console.warn(
@@ -47,7 +56,8 @@ for (const [color, hexcode] of Object.entries(colors)) {
   // iterate through the shades
   for (const { lightness, shade } of shades) {
     // create the lch triplet
-    const lch = [lightness, chroma, hue]
+    const shadeChroma = strength ? gamutChroma(lightness, hue, chroma) * strength : chroma
+    const lch = [lightness, shadeChroma, hue]
     // compute color systems
     const rgb = convert
       .lch(...lch)
@@ -61,7 +71,7 @@ for (const [color, hexcode] of Object.entries(colors)) {
       hex,
       rgb,
       hue,
-      chroma,
+      chroma: shadeChroma,
       lightness
     })
   }
@@ -77,6 +87,25 @@ prettier
   )
 
 // helpers
+
+// The largest chroma that still fits inside sRGB at this lightness and hue,
+// found by bisection. Sweeping a seed's own chroma across every shade only
+// holds up near the seed's own lightness - further out the color falls outside
+// the gamut and the conversion to rgb clips a channel, taking the lightness and
+// the hue with it. That is why the light accent shades used to arrive as a
+// vivid peach rather than a wash, and the dark ones as maroon rather than
+// orange. Asking the gamut first keeps every shade on the lightness and hue it
+// was given.
+function gamutChroma(lightness, hue, ceiling) {
+  let low = 0
+  let high = ceiling
+  while (high - low > 0.01) {
+    const middle = (low + high) / 2
+    if (convert.lch(lightness, middle, hue).clipped()) high = middle
+    else low = middle
+  }
+  return low
+}
 
 function getClosestShade(l) {
   return shades.reduce((prev, curr) =>
