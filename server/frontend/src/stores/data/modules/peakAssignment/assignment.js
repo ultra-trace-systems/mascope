@@ -80,14 +80,17 @@ async function loadAssignments(sampleItemId, runId) {
  * judges or labels a compound therefore anchors on the M0 rather than on
  * whichever family member happens to be focused.
  *
- * A satellite whose owner is not in the loaded ledger resolves to itself. That
- * should not happen - a run stores the owner alongside its children - but
- * returning null would make callers treat a real row as no row at all, which is
- * a worse answer than treating the orphan as its own anchor.
+ * A satellite with no resolvable owner is its own anchor. This is ordinary, not
+ * corruption: the engine leaves `owner_peak_assignment_id` null when the ion's
+ * M0 peak was won by a different ion in that run, so the satellite is a real row
+ * whose family simply has no M0 in the ledger. Returning null would make callers
+ * treat it as no row at all - no badge, nothing to verify - which is a worse
+ * answer than letting it stand for itself.
  *
  * @param {Object} assignment a ledger row, or null
  * @param {Map} byId peak_assignment_id -> row, for the loaded run
- * @returns {Object|null} the family's M0, or null when there is no row
+ * @returns {Object|null} the family's M0, the row itself when it has no owner in
+ *   the ledger, or null when there is no row
  */
 export function familyM0(assignment, byId) {
   if (!assignment) return null

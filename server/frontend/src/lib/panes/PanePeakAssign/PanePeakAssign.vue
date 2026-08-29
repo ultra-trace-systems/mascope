@@ -69,10 +69,15 @@ const verification = computed(() =>
 // reads and writes through the M0 whichever family member is in view.
 const verifyTarget = computed(() => app.data.peakAssignment.peak.m0Of(focusedAssignment.value))
 
-// Whether the focused peak is a satellite rather than the compound's own peak,
-// which is the one case where the card is judging something other than the row
-// it is showing. Worth saying out loud (see the template).
-const verifyingFamily = computed(() => focusedAssignment.value?.role === 'iso_child')
+// Whether the card is judging a row other than the one it is showing - the one
+// case worth saying out loud (see the template). Keyed on whether the resolution
+// actually redirected, not on the role: a satellite whose ion lost its M0 peak
+// carries no owner, stands for itself, and gets a verdict covering nothing but
+// itself. Announcing a family there would promise a scope the write does not
+// have.
+const verifyingFamily = computed(
+  () => Boolean(verifyTarget.value) && verifyTarget.value !== focusedAssignment.value
+)
 
 // Only a real assignment can be judged. A formula-less row is a placeholder for
 // a peak nothing explained, so a verdict on it is an opinion about nothing: it
@@ -123,10 +128,13 @@ async function submitVerdict(verdict) {
   }
 }
 
-// Fresh form per peak (each judgment is independent); re-evaluate editor access
-// per sample.
+// Fresh form per compound, not per peak: the form judges the family's M0, so
+// stepping from a satellite to its own M0 (or between two satellites) is still
+// the same judgment and must not throw away a half-written note. Keyed on the
+// peak, an in-progress verdict was wiped by a click inside the family table the
+// card itself renders. Editor access is re-evaluated per sample.
 watch(
-  () => app.data.peak.focused?.peak_id,
+  () => verifyTarget.value?.peak_assignment_id,
   () => {
     editing.value = false
     evidenceLevel.value = null
@@ -518,8 +526,8 @@ const altTooltip = (alt) => {
         <div class="alts-label">Verification</div>
         <div v-if="verifyingFamily" class="verify-family">
           <span class="pi ph ph-arrow-bend-up-left" />
-          One verdict per compound: this applies to
-          {{ verifyTarget.assigned_formula }} and all its isotopologues.
+          One verdict per compound: recorded on the M0 ({{ verifyTarget.assigned_formula }}) and
+          shown on every isotopologue in this family.
         </div>
         <div v-if="verification && !editing" class="verify-current">
           <BaseVerdictBadge :record="verification" />

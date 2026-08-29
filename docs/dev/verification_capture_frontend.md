@@ -165,9 +165,15 @@ Consequences worth knowing:
   older build left a record against the satellite itself. Those historical records stay in the
   append-only history for audit and are simply not surfaced — preferring a satellite's own record is
   how a family would come to disagree with itself row by row.
-- **An orphan resolves to itself.** A satellite whose owner is not in the loaded run (which should
-  not happen — a run stores the owner alongside its children) is its own anchor, so it keeps a badge
-  and stays verifiable rather than being treated as no row at all.
+- **A satellite with no owner resolves to itself**, and that is an ordinary case rather than a
+  corrupt one: the engine leaves `owner_peak_assignment_id` null when the ion's M0 peak was won by a
+  different ion in that run
+  ([`engine.py`](../../server/backend/src/mascope_backend/api/new/peak_assignments/engine.py), see
+  `test_child_owner_stays_none_when_ions_m0_lost_its_peak`). Such a row keeps a badge and stays
+  verifiable rather than being treated as no row at all — but its verdict genuinely covers only
+  itself, so the inspector's "one verdict per compound" note is shown **only when the resolution
+  actually redirected**, never on a row standing for itself. It never reaches the ledger at all:
+  `childrenByOwner` skips null owners, so it is neither a parent row nor attached under one.
 - **The recalibration flow is untouched.** Labels still snapshot the M0's scores, so
   `recalibrate_instrument` gets one label per family per judgment instead of N correlated ones.
 - **The ledger filter was already family-scoped** and stays that way: it runs over parents only

@@ -972,6 +972,12 @@ describe('PaneBrowserAssignment header and controls', () => {
       expect(forAssignment).toHaveBeenLastCalledWith(byId.get('b'))
     })
 
+    // The next two are regression guards, not proof of the fix - both pass
+    // against the pre-fix pane too. The filter runs over parents only and
+    // re-attaches each family under whichever parent survived, so a family has
+    // always been one unit here. They are worth keeping because the badge column
+    // and the filter now have to agree: a filter that started judging satellites
+    // individually would put a family on screen with rows missing from it.
     it('keeps a family one unit in the verdict filter', async () => {
       const wrapper = await unfoldedWithVerdict()
 
@@ -1002,19 +1008,10 @@ describe('PaneBrowserAssignment header and controls', () => {
       expect(ids(wrapper)).toEqual(['b', 'b-c0', 'b-c1'])
     })
 
-    // A satellite whose owner is not in the loaded run resolves to itself, so
-    // the column falls back to its own identity rather than blanking the row.
-    it('falls back to the satellite itself when its owner is not loaded', async () => {
-      verdictRecord = VERDICT
-      verdictPeakId = 'p-b-c0'
-      seed(FAMILY_B)
-      byId.delete('b')
-      const wrapper = await mountPane()
-      wrapper.vm.showIsotopologues = true
-      await wrapper.vm.$nextTick()
-
-      expect(wrapper.vm.verdictFor(rowsById(wrapper).get('b-c0'))).toEqual(VERDICT)
-    })
+    // No ownerless-satellite case here: `childrenByOwner` skips a null owner, so
+    // such a row is neither a parent row nor attached under one and never
+    // reaches this table at all. It is reachable in the inspector, and covered
+    // there (panePeakAssign.spec.js).
   })
 
   it('shows exactly one "Assign peaks" control in every state', async () => {

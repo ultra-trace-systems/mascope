@@ -644,7 +644,12 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
   focused records a single verdict against the compound rather than another one
   against that peak, so the confidence calibration is fed one label per family
   instead of several correlated ones. The inspector says which compound a
-  verdict captured from a satellite applies to.
+  verdict captured from a satellite applies to - except where there is no
+  compound to point at: an isotopologue whose main peak was won by a different
+  ion in that run has no family, stands for itself, and is judged on its own
+  without any claim to a wider scope. A half-written verdict also survives a
+  click inside the isotopologue table now, since moving between peaks of one
+  compound no longer counts as starting a different judgment.
 
 - One compound can no longer end up drawn as **two batch-peak traces** because
   two samples were folded into the batch at the same time. A batch peak is a
