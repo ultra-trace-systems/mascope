@@ -1898,8 +1898,13 @@ class AssignmentVerification(Base):
 
     Human-in-the-loop confirmation/rejection of an identification: the honest source of the
     labelled golden set that later refits the confidence calibration
-    (``docs/dev/verification_calibration_loop.md``). Append-only (keep every verdict for audit;
-    the current one is the latest by ``verified_utc``).
+    (``docs/dev/verification_calibration_loop.md``). Append-only -- every verdict is kept for
+    audit, and the score snapshot on an earlier one stays a valid calibration pair -- but the
+    **current** verdict is marked rather than re-derived: exactly one row per identity has
+    ``superseded_utc IS NULL``, and recording a new verdict stamps the one it replaces in the same
+    transaction. The partial unique index below enforces that invariant in the database, so a
+    reader filters ``superseded_utc IS NULL`` instead of taking a max by ``verified_utc``, and no
+    consumer can silently count a retracted verdict.
 
     Keyed to the **stable identity** of what was judged -- ``sample_item_id`` + ``sample_peak_id``
     (an observed-peak id, stable across assignment runs) + ``assigned_formula`` +
@@ -1950,6 +1955,11 @@ class AssignmentVerification(Base):
     verified_utc: Mapped[dt] = mapped_column(
         TIMESTAMP(timezone=True), default=lambda: dt.now(timezone.utc)
     )
+    # NULL on the one live verdict per identity; on a replaced verdict, the moment it was
+    # replaced (the successor's verified_utc). Never cleared -- a superseded row is history.
+    superseded_utc: Mapped[Optional[dt]] = mapped_column(
+        TIMESTAMP(timezone=True), nullable=True
+    )
 
     __table_args__ = (
         CheckConstraint(
@@ -1964,6 +1974,21 @@ class AssignmentVerification(Base):
             "ix_assignment_verification_identity",
             "sample_item_id",
             "sample_peak_id",
+        ),
+        # One live verdict per stable identity. NULLS NOT DISTINCT because both
+        # assigned_formula and ionization_mechanism_id are nullable, and under the default
+        # NULLS DISTINCT two live verdicts on a formula-less peak would both be accepted --
+        # exactly the case this index exists to reject. Partial, so superseded history is
+        # unconstrained and a peak can accumulate any number of past verdicts.
+        Index(
+            "uq_assignment_verification_current",
+            "sample_item_id",
+            "sample_peak_id",
+            "assigned_formula",
+            "ionization_mechanism_id",
+            unique=True,
+            postgresql_where=text("superseded_utc IS NULL"),
+            postgresql_nulls_not_distinct=True,
         ),
     )
 

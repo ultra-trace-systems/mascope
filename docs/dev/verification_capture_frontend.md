@@ -121,8 +121,9 @@ The peak store already exposes assignments by peak; join verdicts to them via §
 
 ## 4. Deriving the *current* verdict (important)
 
-The GET returns the **append-only history** (every verdict ever recorded). The current verdict for an
-assignment is the **latest by `verified_utc`** among records sharing its **stable identity**:
+The GET returns the **append-only history** (every verdict ever recorded, superseded ones included).
+The current verdict for an assignment is the record whose **`superseded_utc` is null** among those
+sharing its **stable identity**:
 
 ```
 key = `${sample_peak_id}|${assigned_formula}|${ionization_mechanism_id}`
@@ -130,8 +131,18 @@ key = `${sample_peak_id}|${assigned_formula}|${ionization_mechanism_id}`
 
 Use that identity — **not `peak_assignment_id`**, which is regenerated on every assignment run, so a
 label made against last run must still light up this run's matching assignment. Group the list by
-that key, take the max `verified_utc` per group → `currentByIdentity`. Badge + ledger filter read
-from it.
+that key, keep the live record per group → `currentByIdentity`. Badge + ledger filter read from it.
+
+Recording a verdict stamps `superseded_utc` on the one it replaces, in the same transaction, and a
+partial unique index on the identity (`WHERE superseded_utc IS NULL`, `NULLS NOT DISTINCT` — both
+identity halves are nullable) guarantees there is **exactly one** live record per identity. Filtering
+on that field is therefore enough; the older max-by-`verified_utc` reduction gives the same answer
+but is no longer what defines it.
+
+A superseded record is history, not noise. It keeps the `fit_score` / `evidence` / `p_correct` the
+user judged at the time, which stays a valid calibration pair for *that* score even once a later
+verdict replaces it as the current answer — so it is stamped rather than deleted. It is excluded
+from the UI and from the label pool (`recalibrate_instrument` fits on live verdicts only).
 
 ### One verdict per isotopologue family
 

@@ -103,9 +103,13 @@ note (text), context (JSON, reserved)
 verified_by (fk user SET NULL, index), verified_utc
 ```
 
-Append-only (keep every verdict for audit); the **current** verdict for an assignment is the latest
-by `verified_utc` among rows matching its stable identity (`sample_item_id` + `sample_peak_id` +
-`assigned_formula` + `ionization_mechanism_id`).
+Append-only (keep every verdict for audit), with the current one **marked rather than derived**:
+`superseded_utc` is null on exactly one row per stable identity (`sample_item_id` + `sample_peak_id`
++ `assigned_formula` + `ionization_mechanism_id`), and recording a verdict stamps the row it replaces
+in the same transaction. A partial unique index (`WHERE superseded_utc IS NULL`, `NULLS NOT
+DISTINCT`, since both identity halves are nullable) enforces that invariant in the database, so a
+consumer filters on the marker instead of re-deriving the answer and no reader can silently count a
+retracted verdict.
 
 **API** (`/api/peak-assignments`): `POST /sample/{id}/verify` (editor; body
 `{peak_assignment_id, verdict, evidence_level?, note?}`; `confirmed` requires an `evidence_level` —
@@ -143,7 +147,8 @@ perfect while learning nothing, and amplifies existing bias. Guardrails:
    decision boundary; an **active-learning queue** should surface *mid-confidence* assignments to
    verify, not rubber-stamps of the obvious. Random spot-checks guard against blind spots.
 4. **Audit + provisional gating.** Append-only, with who/when/evidence, so a fit can filter to
-   trustworthy labels. Keep `provisional=True` until enough L1-grade labels exist; only then does the
+   trustworthy labels - and it fits on *current* verdicts only, so a user who changes their mind
+   replaces their label rather than contributing one to each class. Keep `provisional=True` until enough L1-grade labels exist; only then does the
    curve claim to be real.
 5. **Don't show `p_correct` as the anchor during verification** (or de-emphasise it) so the judgment
    is about the *data*, not the number.
@@ -180,6 +185,10 @@ prophecy. Everything else here is secondary to getting this right.
   workspace/instrument-scoped, with per-user attribution retained.)
 - How to weight `visual` labels in the fit without letting them dominate (down-weight vs exclude).
 - Re-verification when a re-run changes an assignment: keep the old snapshot label, or invalidate?
+  (Partly settled: a user *retracting* their own verdict supersedes it, and only the current one is
+  fit on. Whether a re-run that changes the assignment should also invalidate the label it was
+  snapshotted against is still open - that one is about the score drifting, not about the judgment
+  being withdrawn.)
 
 ## References
 

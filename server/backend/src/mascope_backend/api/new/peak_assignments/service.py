@@ -165,6 +165,11 @@ IMPORTING_STATUS = "importing"
 #: on this surface can mean, and the run listing is what tells it when to stop.
 RUN_STILL_ASSEMBLING_CODE = "run_still_assembling"
 
+#: Namespace discriminator for the per-identity verdict-write advisory lock, hashed into the
+#: first int of the two-int lock key space so it cannot collide with the other advisory-lock
+#: users (the match-write locks, the assignment admission claim).
+_VERIFICATION_WRITE_LOCK_NAMESPACE = "mascope_assignment_verification_write"
+
 
 class RunStillAssemblingException(CodedHTTPException):
     """A read named a run whose ledger is still arriving (409).
@@ -397,12 +402,18 @@ async def create_verification(
     note: str | None = None,
     user_id: int | None = None,
 ) -> dict:
-    """Record a user's verdict on an assignment (append-only), snapshotting its score.
+    """Record a user's verdict on an assignment, snapshotting its score.
 
     Looks up the judged assignment (must belong to the sample), captures its stable identity
     (sample_peak_id + formula + adduct) and the score at this moment (fit_score / evidence /
     p_correct), and inserts an :class:`AssignmentVerification`. The snapshot is what makes the
     later calibration pair `(score, label)` stable even after a re-run changes the assignment.
+
+    Storage stays append-only, but the verdict this replaces (if any) is stamped
+    ``superseded_utc`` in the same transaction, so exactly one row per identity is live and no
+    consumer has to re-derive which one that is. The superseded row is kept: it holds the score
+    the user judged *then*, which is a valid calibration pair for that score even once a later
+    verdict supersedes it as the current answer.
 
     :param sample_item_id: Sample the assignment belongs to.
     :param peak_assignment_id: The assignment being verified.
@@ -421,6 +432,47 @@ async def create_verification(
                 f"Assignment '{peak_assignment_id}' not found for sample "
                 f"'{sample.sample_item_name}'"
             )
+        # Serialize verdict writes on this identity. The supersede-then-insert below has to be
+        # atomic against a concurrent verdict on the same assignment - a double-fired submit, or
+        # two members of a workspace judging the same peak at once - which would otherwise both
+        # stamp the same predecessor and then race to insert two live rows, one of which the
+        # partial unique index rejects with an integrity error the user did nothing to deserve.
+        # Transaction-scoped, so it releases on commit or rollback.
+        await session.execute(
+            select(
+                func.pg_advisory_xact_lock(
+                    func.hashtext(_VERIFICATION_WRITE_LOCK_NAMESPACE),
+                    func.hashtext(
+                        "|".join(
+                            (
+                                sample_item_id,
+                                assignment.sample_peak_id,
+                                assignment.assigned_formula or "",
+                                assignment.ionization_mechanism_id or "",
+                            )
+                        )
+                    ),
+                )
+            )
+        )
+        now = dt.now(timezone.utc)
+        # IS NOT DISTINCT FROM, not ==: both identity halves are nullable, and a plain equality
+        # never matches a NULL, which would leave the old verdict live beside the new one.
+        await session.execute(
+            update(AssignmentVerification)
+            .where(
+                AssignmentVerification.sample_item_id == sample_item_id,
+                AssignmentVerification.sample_peak_id == assignment.sample_peak_id,
+                AssignmentVerification.assigned_formula.is_not_distinct_from(
+                    assignment.assigned_formula
+                ),
+                AssignmentVerification.ionization_mechanism_id.is_not_distinct_from(
+                    assignment.ionization_mechanism_id
+                ),
+                AssignmentVerification.superseded_utc.is_(None),
+            )
+            .values(superseded_utc=now)
+        )
         provenance = assignment.provenance or {}
         verification = AssignmentVerification(
             assignment_verification_id=gen_id(32),
@@ -437,7 +489,7 @@ async def create_verification(
             p_correct=provenance.get("p_correct"),
             note=note,
             verified_by=user_id,
-            verified_utc=dt.now(timezone.utc),
+            verified_utc=now,
         )
         session.add(verification)
         await session.commit()
@@ -459,9 +511,11 @@ async def create_verification(
 async def get_verifications(sample_item_id: str) -> dict:
     """All verification verdicts recorded for a sample, newest first.
 
-    Returns every verdict (append-only history); the current verdict for a given assignment is
-    the latest by ``verified_utc`` for its ``sample_peak_id`` + formula + adduct. The frontend
-    derives per-assignment state from this list.
+    Returns every verdict, superseded ones included, so the history stays inspectable. The
+    current verdict for a given assignment is the one row of its identity
+    (``sample_peak_id`` + formula + adduct) with ``superseded_utc`` null - a partial unique
+    index guarantees there is exactly one. The frontend derives per-assignment state from this
+    list.
     """
     sample = await fetch_sample(sample_item_id)
     async with async_session() as session:
@@ -496,10 +550,11 @@ async def recalibrate_instrument(
 ) -> dict:
     """Refit an instrument's confidence calibration from the verification labels (V2 loop).
 
-    Gathers every ``confirmed`` / ``rejected`` verification of an **in-app** run for samples on this
-    instrument, uses the arbitration ``evidence`` snapshotted at verification time as the score and
-    the verdict as the label, fits a new Platt curve, and writes it as the new active row in the
-    calibration store (carrying the corroboration weights forward). The curve stays **provisional**
+    Gathers every **current** ``confirmed`` / ``rejected`` verification of an **in-app** run for
+    samples on this instrument - one per identity, superseded verdicts excluded - uses the
+    arbitration ``evidence`` snapshotted at verification time as the score and the verdict as the
+    label, fits a new Platt curve, and writes it as the new active row in the calibration store
+    (carrying the corroboration weights forward). The curve stays **provisional**
     unless enough positives carry strong (reference-standard / MS-MS) evidence -- a pile of visual
     confirmations can't graduate it. Reports before/after held-out ECE so the change is auditable.
 
@@ -543,6 +598,12 @@ async def recalibrate_instrument(
                 .where(
                     AssignmentVerification.verdict.in_(["confirmed", "rejected"]),
                     AssignmentVerification.evidence.is_not(None),
+                    # Live verdicts only. Without this the fit sees the whole history, so a
+                    # user who changed their mind contributes one label to *each* class at an
+                    # identical evidence value - a contradictory pair that is noise to a Platt
+                    # fit, drags held-out AUC toward 0.5, and counts toward the minimum-label
+                    # gates that are supposed to be the guardrail.
+                    AssignmentVerification.superseded_utc.is_(None),
                     or_(
                         PeakAssignmentRun.engine.is_(None),
                         PeakAssignmentRun.engine == IN_APP_ENGINE,

@@ -560,10 +560,12 @@ class AssignmentVerificationRecord(BaseModel):
     note: str | None = None
     verified_by: int | None = None
     verified_utc: datetime | None = None
+    #: Null on the current verdict for this identity; set on one a later verdict replaced.
+    superseded_utc: datetime | None = None
 
 
 class AssignmentVerificationsResponse(BaseModel):
-    """Verifications recorded for a sample, newest first."""
+    """Verifications recorded for a sample, newest first; superseded ones included."""
 
     status: str = "success"
     message: str
