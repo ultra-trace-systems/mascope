@@ -354,7 +354,8 @@ tier · agreement/QC), the batch analog of the sample-view Assignments tab.
   [`batchPeak/ledger.js`](../../server/frontend/src/stores/data/modules/batchPeak/ledger.js)),
   enforced where the table writes its selection and again where the chart reads it. An occupancy
   gate remains open as an orthogonal default for *which* peaks the ledger offers first.
-- **Indexes.** `BatchPeak(sample_batch_id, mz)` for the fold-in range scan (hot path);
+- **Indexes.** `ix_batch_peak_sample_batch_id_mz` over
+  `BatchPeak(sample_batch_id, ionization_mode_id, mz)` for the fold-in range scan (hot path);
   `BatchPeakOccurrence(batch_peak_id)` for series fan-out and `(sample_item_id)` for the
   single-sample slice fetch. Model after
   `ix_match_ion_target_ion_id_match_score` (models.py:983). Chunk series requests at 100 batch
