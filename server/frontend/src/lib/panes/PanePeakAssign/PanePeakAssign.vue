@@ -145,6 +145,7 @@ watch(
   () => app.data.sample.focusedId,
   () => {
     denied.value = false
+    curateDenied.value = false
   }
 )
 
@@ -302,6 +303,46 @@ const altTooltip = (alt) => {
   if (alt.source) lines.push(`source: ${alt.source}`)
   return lines.join('\n')
 }
+
+// --- Manual curation ------------------------------------------------------
+// Commit a runner-up as this peak's assignment. The row is edited in place and
+// marked as human-made; the winner it replaces becomes the first close
+// alternative, so the same control undoes the change.
+//
+// Deliberately about THIS row, not the family M0 a verdict is redirected to: an
+// index into `alternatives` only means anything against the list the card is
+// showing.
+const curating = ref(null) // index of the alternative being committed
+const curateDenied = ref(false) // 403: not an editor on this sample
+
+// The untargeted finder's formula-only shortlist entries are promotable - a
+// formula with no fit is still a formula. An entry that names none is not:
+// there would be nothing to commit, and the server refuses it.
+const canPromote = (alt) => Boolean(alt?.assigned_formula)
+
+async function promoteAlternative(alt, index) {
+  if (!canPromote(alt) || curating.value !== null) return
+  curating.value = index
+  try {
+    await app.data.peakAssignment.peak.curate(focusedAssignment.value.peak_assignment_id, {
+      action: 'promote_alternative',
+      alternative_index: index,
+      // Checked server-side against the list as it stands now, so a click on a
+      // card another curator has already changed underneath is refused rather
+      // than committing whichever candidate now holds that position.
+      expected_formula: alt.assigned_formula
+    })
+  } catch (error) {
+    // The http layer already toasts; only 403 changes the UI (hide the control).
+    if (error?.response?.status === 403) curateDenied.value = true
+  } finally {
+    curating.value = null
+  }
+}
+
+// What an override says about itself. `source` is on the slim ledger row, so
+// the note appears at once; the formula it replaced arrives with the detail.
+const manualOverride = computed(() => provenance.value?.manual ?? null)
 </script>
 
 <template>
@@ -499,10 +540,14 @@ const altTooltip = (alt) => {
               to the committed assignment. Scored runner-ups show their fit; some
               untargeted candidates come from the composition finder's formula-only
               shortlist and show chemical plausibility only, or read as not scored.
+              </p>
+              <p>
+              <b>Use this</b> commits a candidate as the peak's assignment. The row is
+              marked as assigned by hand and the assignment it replaces becomes the
+              first alternative here, so the same button undoes the change.
+              Re-assigning the sample recomputes the ledger and replaces it.
               </p>`,
-          doc: app.ui.help.docUrl(
-            'how-it-works/peak-assignment/#arbitration-competing-the-candidates'
-          )
+          doc: app.ui.help.docUrl('how-it-works/peak-assignment/#assigning-a-peak-yourself')
         }"
       >
         <div class="alts-label">
@@ -529,8 +574,34 @@ const altTooltip = (alt) => {
               >
               <span v-else class="no-stats"><span class="pi ph ph-info" /></span>
             </span>
+            <Button
+              v-if="canPromote(alt) && !curateDenied"
+              :class="['alt-use', { busy: curating === i }]"
+              label="use this"
+              size="small"
+              text
+              severity="secondary"
+              icon="pi ph ph-hand-pointing"
+              :disabled="curating !== null"
+              :loading="curating === i"
+              @click="promoteAlternative(alt, i)"
+            />
           </div>
         </div>
+        <div v-if="curateDenied" class="verify-denied">
+          <span class="pi ph ph-lock-simple" /> Editor access is required to change an
+          assignment.
+        </div>
+      </div>
+      <div v-if="focusedAssignment.source === 'manual'" class="manual-note">
+        <span class="pi ph ph-hand-pointing" />
+        <span>
+          Assigned by hand<template v-if="manualOverride?.previous_formula">
+            in place of {{ manualOverride.previous_formula }}, which is now the first close
+            alternative - "use this" on it to undo</template
+          >. The next assignment run for this sample recomputes the ledger and supersedes the
+          change; record a verification to keep the judgement.
+        </span>
       </div>
       <div
         v-if="verifiable"
@@ -744,6 +815,30 @@ const altTooltip = (alt) => {
 }
 .alt .no-stats {
   opacity: 0.5;
+}
+/* The action is the row's, not the pane's: it stays out of the way until the
+   pointer is on the candidate it would commit, so the list still reads as a
+   list of evidence rather than a row of buttons. */
+.alt-use {
+  opacity: 0;
+  transition: opacity 0.12s ease-in-out;
+}
+.alt:hover .alt-use,
+.alt-use:focus-visible,
+.alt-use.busy {
+  opacity: 1;
+}
+.manual-note {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.4rem;
+  font-size: 0.78rem;
+  line-height: 1.35;
+  opacity: 0.75;
+}
+.manual-note > .pi {
+  color: var(--p-primary-color, currentColor);
+  margin-top: 0.1rem;
 }
 .insp-actions {
   display: flex;

@@ -119,6 +119,36 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
   not been computed; nothing is announced either way. An explicit choice still
   wins - clicking a peak, or clearing the selection, is never undone by a
   follow arriving late.
+- **You can now assign a peak yourself, and it sticks.** Until now the peak
+  inspector's close alternatives were a read-only list and a composition found
+  by re-searching a peak could only be added to a target collection - getting
+  either into the ledger meant a whole new assignment run, which might well
+  award the peak to something else again. Two controls close that: **use this**
+  on any close alternative, and a **hand button** on each re-search result that
+  puts that composition onto the selected peak.
+
+  The row is edited in place and marked as assigned by hand, with a hand icon
+  beside its tier wherever the row appears and the ledger's source filter able
+  to list every row a person decided. The assignment it replaced becomes the
+  peak's first close alternative, so the same button undoes the change. The
+  confidence tier is recalculated from the new assignment's own fit under the
+  run's own thresholds rather than inherited, and the calibrated P(correct) of
+  the assignment that was replaced is *not* carried over - that number was the
+  engine's reading of a different formula, and stating it beside a hand-picked
+  one would be a probability nothing calibrated. It is kept on the record with
+  the assignment it describes. Isotopologue satellites of the replaced formula
+  become unassigned: a satellite is the same compound seen through one heavy
+  atom, so leaving them would let one family show two compounds.
+
+  A hand assignment lives in the run it was made in - **re-assigning the sample
+  recomputes the ledger from the data and supersedes it** - and nothing is
+  confirmed automatically, because choosing a candidate and vouching for one
+  are different acts and a verdict needs the evidence level only you can
+  supply. To keep the judgment across re-runs, record a verification: those
+  attach to the peak and formula, not to a run. Batch views take their snapshot
+  when a sample is folded in, so an override reaches them at the batch's next
+  *Compute batch peaks*. Editors only, and only where peak assignment is
+  enabled.
 
 - Clicking a point on the **batch assignments chart** now opens the peak behind
   it, not just its sample. Each trace is one batch peak drawn across the batch,

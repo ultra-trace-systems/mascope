@@ -53,6 +53,10 @@ ROLE_UNASSIGNED = "unassigned"
 # Which stage won the peak
 SOURCE_DATABASE = "database"
 SOURCE_UNTARGETED = "untargeted"
+# ...or, when no stage did, the person who decided it instead. A manually
+# curated row is not the output of a stage, and saying 'database' or
+# 'untargeted' on it would credit an engine with a choice a human made.
+SOURCE_MANUAL = "manual"
 
 # Carried DataFrame column: reference-database identities (a list of dicts) for
 # isotope rows that came from the reference mirror rather than the curated target
@@ -217,6 +221,12 @@ def _alternative_dict(row, reference_identities_by_formula: dict) -> dict:
     alternative = {
         "assigned_formula": formula,
         "ion_formula": _str_or_none(row.get("target_ion_formula")),
+        # The adduct the runner-up was scored under. A formula is only half an
+        # assignment - without the mechanism a promoted runner-up would land on
+        # the ledger as an adductless claim, and a verification's identity
+        # (peak + formula + mechanism) would be incomplete. Older rows predate
+        # this key; curation falls back to the target ion's mechanism there.
+        "ionization_mechanism_id": _str_or_none(row.get("ionization_mechanism_id")),
         "target_compound_id": (
             None if is_reference_row else _str_or_none(row.get("target_compound_id"))
         ),
@@ -803,6 +813,12 @@ def untargeted_matches_to_peak_assignments(
             {
                 "assigned_formula": format_formula(loser["formula"]),
                 "ion_formula": _str_or_none(loser["row"].get("ion")),
+                # As in Stage A: the adduct the runner-up was scored under, so
+                # promoting it by hand yields a complete assignment rather than
+                # a formula with no mechanism.
+                "ionization_mechanism_id": mechanism_id_by_notation.get(
+                    _str_or_none(loser["row"].get("ionization_mechanism"))
+                ),
                 "isotope_label": loser["isotope_label"],
                 "fit_score": _score_or_none(loser["score"]),
                 "mz_error_ppm": loser["mz_error_ppm"],

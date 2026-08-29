@@ -168,6 +168,17 @@ communicates identification certainty.
 > the score — this keeps the measurement reproducible while the confidence layers evolve.
 > The current tier thresholds are provisional and will be recalibrated per instrument.
 
+## Assigning a peak yourself
+
+--8<-- "_help/assignment-curation.md"
+
+Choosing an assignment and vouching for one are deliberately separate acts. A hand
+assignment says "this candidate is the better reading of the evidence"; a verification
+says "I have evidence of *this grade* that it is right", which is why nothing is
+confirmed automatically when you assign by hand. It also keeps the calibration honest:
+the labelled record that future confidence curves are fit on stays a record of stated
+evidence, not of preferences.
+
 ## Verifying assignments
 
 --8<-- "_help/assignment-verification.md"

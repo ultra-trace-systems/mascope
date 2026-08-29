@@ -40,7 +40,12 @@ AssignmentTier = Annotated[
     BeforeValidator(normalize_tier),
 ]
 AssignmentRole = Literal["M0", "iso_child", "reagent", "artifact", "unassigned"]
-AssignmentSource = Literal["database", "untargeted"]
+# 'manual' is a peer of the two stages rather than a flag beside them: it says
+# which decision produced the row, and on a curated row that decision was a
+# person's. It is in this shared literal - which types the ledger's read filter
+# AND an imported row - so overrides are filterable in the ledger and survive a
+# round trip through export/import (and, later, a copy between samples).
+AssignmentSource = Literal["database", "untargeted", "manual"]
 
 # A run holds one row per detected peak, so an unbounded read serializes tens
 # of megabytes through Pydantic on the event loop. Clients page instead; the
@@ -648,3 +653,108 @@ class RecalibrateResponse(BaseModel):
     n_neg: int = 0
     n_strong_positives: int | None = None
     provisional: bool | None = None
+
+
+# ---------------------------------------------------------------------------
+# Manual curation
+# ---------------------------------------------------------------------------
+
+
+class PromoteAlternativeBody(BaseModel):
+    """Commit one of a row's stored runner-ups as its assignment.
+
+    The candidate is named by its position in the row's ``alternatives`` list,
+    because an alternative has no id of its own - the list is a JSON blob whose
+    entries the three producers write in three different shapes. Position is
+    only meaningful against the list the caller actually read, which is what
+    ``expected_formula`` is for.
+    """
+
+    action: Literal["promote_alternative"]
+    alternative_index: int = Field(
+        ge=0,
+        description=(
+            "Index into the assignment's `alternatives` list, as served by the "
+            "detail endpoint."
+        ),
+    )
+    expected_formula: str | None = Field(
+        None,
+        max_length=256,
+        description=(
+            "The formula the caller believes sits at that index. Supplied, it "
+            "is checked before anything is written and a mismatch is refused "
+            "with 409 - so a second curator's override, landing between the "
+            "read and this call, cannot silently turn a click on one candidate "
+            "into a commitment to another."
+        ),
+    )
+
+
+class SetAssignmentBody(BaseModel):
+    """Commit a composition the caller supplies, for the re-search case.
+
+    The scores are the ones this server's own composition search reported for
+    the formula against this sample; they are recorded as the caller's
+    declaration, are re-tiered here under the run's bands, and are labelled in
+    provenance with where they came from. The calibrated fields (`p_correct`
+    and friends) are deliberately absent: they are this server's judgement
+    about its own engine's arbitration and are never taken from a client - the
+    same rule the import path enforces with
+    ``strip_server_owned_provenance``.
+    """
+
+    action: Literal["set_assignment"]
+    assigned_formula: str = Field(
+        min_length=1,
+        max_length=256,
+        description="Neutral formula to commit for this peak.",
+    )
+    ionization_mechanism_id: str = Field(
+        min_length=1,
+        max_length=16,
+        description=(
+            "The adduct the formula is assigned under. Required: a formula "
+            "without its mechanism is half an assignment, and the mechanism is "
+            "part of a verification's identity."
+        ),
+    )
+    ion_formula: str | None = Field(None, max_length=4096)
+    isotope_label: str | None = Field(
+        None,
+        max_length=64,
+        description=(
+            "Which isotopologue of the ion this peak is: 'M0' (or omitted) for "
+            "the main one, otherwise 'M+1', 'M+2' ... A row labelled anything "
+            "but M0 is committed as an `iso_child`, so a satellite is never "
+            "recorded as a compound's main peak."
+        ),
+    )
+    isotope_formula: str | None = Field(None, max_length=256)
+    fit_score: float | None = Field(None, ge=0.0, le=1.0)
+    mz_error_ppm: float | None = Field(None, allow_inf_nan=False)
+    abundance_error: float | None = Field(None, allow_inf_nan=False)
+    plausibility: float | None = Field(None, ge=0.0, le=1.0, allow_inf_nan=False)
+
+
+#: The two curation actions, discriminated on `action` so an unknown one is a
+#: 422 naming the accepted values rather than a silently ignored body.
+CurateAssignmentBody = Annotated[
+    PromoteAlternativeBody | SetAssignmentBody, Field(discriminator="action")
+]
+
+
+class AssignmentCurationResponse(BaseModel):
+    """The rows a manual override rewrote.
+
+    `data[0]` is the curated row. Anything after it is a row the override
+    displaced - the isotopologue satellites of the formula it replaced, which
+    are demoted rather than left claiming a compound the curated row no longer
+    carries. Full detail records, so a client can refresh what it holds without
+    a follow-up read.
+    """
+
+    status: str = "success"
+    message: str
+    results: int
+    data: list[PeakAssignmentDetailRecord]

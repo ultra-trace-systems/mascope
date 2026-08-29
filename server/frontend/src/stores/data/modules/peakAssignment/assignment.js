@@ -218,6 +218,37 @@ export const usePeakAssignment = defineStore('app.data.peakAssignment', () => {
     )
   }
 
+  // Commit a different composition for one peak by hand: `promote_alternative`
+  // for a runner-up the inspector is showing, `set_assignment` for a formula
+  // the user found by re-searching the peak.
+  //
+  // NOT redirected to the family M0, unlike a verification. A verdict is about
+  // the compound, so it belongs on the M0 whichever member is in view; an
+  // override is about THIS row's candidate list, and promoting an index against
+  // a different row's list would commit whatever happened to sit there.
+  //
+  // Reloads the run rather than patching the row from the response: an override
+  // also demotes the satellites of the formula it replaced, and the ledger, the
+  // spectrum colouring and the tier histogram all read the one list. The reload
+  // clears the detail cache with it (see the watch above), so the inspector
+  // re-fetches the alternatives the override rewrote.
+  async function curate(peakAssignmentId, action) {
+    const sample_item_id = useSample().focusedId
+    if (!sample_item_id || !peakAssignmentId) return null
+    await api.http.patch(
+      `/peak-assignments/sample/${sample_item_id}/assignment/${peakAssignmentId}`,
+      action,
+      { use: 'update', type: 'curate_assignment' }
+    )
+    // As in verification.verify(): sync() records a failed refetch instead of
+    // rejecting, and the caller treats a resolved curate() as "saved and
+    // visible" - so re-raise this load's own outcome rather than reading the
+    // store-wide error ref, which belongs to whichever sync wrote it last.
+    const outcome = await data.load('curation')
+    if (outcome.error) throw outcome.error
+    return byId.value.get(peakAssignmentId) ?? null
+  }
+
   // Confidence-tier histogram for the run summary. iso_child isotopologues are
   // folded into their M0 and NOT counted, so the tiers count assigned formulas
   // (and unassigned peaks), not every isotopologue peak. Roles reagent/artifact
@@ -250,6 +281,7 @@ export const usePeakAssignment = defineStore('app.data.peakAssignment', () => {
     childrenOf,
     m0Of,
     familyOf,
+    curate,
     tierCounts,
     detailOf: detail.detailOf,
     loadDetail: detail.loadDetail

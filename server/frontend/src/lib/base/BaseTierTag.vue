@@ -67,6 +67,12 @@ const roleIcon = computed(() => {
   }
 })
 
+// A curated row is the one case where the source is not a stage but a person,
+// so it gets a mark of its own rather than a line in the hover text: a reader
+// scanning the ledger has to be able to see which rows a human decided without
+// hovering every one of them.
+const isManual = computed(() => props.source === 'manual')
+
 const autoTooltip = computed(
   () =>
     props.tooltip ??
@@ -75,7 +81,11 @@ const autoTooltip = computed(
       props.fitScore != null && !Number.isNaN(props.fitScore)
         ? `Fit: ${fitFormatter.format(props.fitScore)}`
         : null,
-      props.source ? `Source: ${props.source}` : null,
+      isManual.value
+        ? 'Assigned by hand: a person chose this formula, superseded by the next assignment run'
+        : props.source
+          ? `Source: ${props.source}`
+          : null,
       props.role ? `Role: ${props.role}` : null
     ]
       .filter(Boolean)
@@ -93,6 +103,7 @@ const autoTooltip = computed(
       style="font-size: 11px"
     />
     <span v-if="roleIcon" :class="[roleIcon, 'role-icon']" />
+    <span v-if="isManual" class="pi ph ph-hand-pointing manual-icon" data-testid="manual-mark" />
   </span>
 </template>
 
@@ -114,5 +125,12 @@ const autoTooltip = computed(
 .role-icon {
   opacity: 0.7;
   font-size: 12px;
+}
+
+/* Not recessive like the role marker: "a person decided this" is the least
+   guessable thing about a row, so it reads at full strength. */
+.manual-icon {
+  font-size: 12px;
+  color: var(--p-primary-color, currentColor);
 }
 </style>

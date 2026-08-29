@@ -175,22 +175,37 @@ re-searched or re-decided.
 
 ## 6. Manual overrides and verifications
 
-The manual-curation write path (triage WP11, in design) is expected to record
-an override in place: the row's winner becomes the chosen formula, the
-previous winner moves into `alternatives`, provenance gains a
-`manual: {user, at, previous_formula}` block, and the row is marked
-`source: "manual"`. Because the copy reads the source run's *current* rows,
-overrides propagate mechanically. After the copy an override is represented
-as: winner = the human-chosen formula; `provenance.manual` intact (import
-strips only the three server-owned keys) plus `copied_from`; and under B2 a
-destination-honest fit/tier — an override may legitimately land in a lower
-tier on a sample whose data supports it less, which is the point of
-re-scoring. One sequencing dependency between WP11 and this feature, binding
-on whichever lands second: `source: "manual"` is not a legal value in today's
-shared `AssignmentSource` literal (`database | untargeted`), which types both
-the read filter and the import row — the widening must reach that literal or
-copied override rows are 422s. If WP11 lands with a different row shape, the
-propagation story here follows that shape.
+The manual-curation write path **has shipped** (`PATCH …/assignment/{id}`,
+`peak_assignments/curation.py`), and it records an override in place much as
+this section anticipated: the row's winner becomes the chosen formula, the
+previous winner moves to the head of `alternatives`, provenance gains a
+`manual: {action, scored_by, user_id, at, previous_formula, previous}` block,
+and the row is marked `source: "manual"`. The sequencing dependency named here
+is discharged — `AssignmentSource` is now
+`database | untargeted | manual`, so a copied override row is a legal import
+rather than a 422. Because the copy reads the source run's *current* rows,
+overrides propagate mechanically.
+
+Two details of the shipped shape the copy has to respect:
+
+- **A curated row carries no calibrated fields.** `p_correct`, `calibrated`,
+  `calibration` and `corroboration` are archived inside
+  `provenance.manual.previous.engine_judgement` (they describe the arbitration
+  that produced the *displaced* winner) and are absent from the row itself. So
+  a copied override needs no stripping of those keys beyond what the import
+  path already does, and a destination reader sees "no calibrated probability"
+  rather than one belonging to another formula.
+- **An override demotes the satellites of the formula it replaced** to
+  `unassigned`, marked `source: "manual"` with their own previous winner kept
+  in `alternatives`. A copy of a curated run therefore carries demoted rows
+  too; under B2 they are re-scored like any other row, and an `unassigned`
+  source-row simply has no formula to re-score.
+
+After the copy an override is represented as: winner = the human-chosen
+formula; `provenance.manual` intact (import strips only the three server-owned
+keys) plus `copied_from`; and under B2 a destination-honest fit/tier — an
+override may legitimately land in a lower tier on a sample whose data supports
+it less, which is the point of re-scoring.
 
 Verifications do **not** copy. A verdict attaches to the judged sample's
 stable identity (`sample_item_id` + `sample_peak_id` + formula + mechanism)
