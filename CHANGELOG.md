@@ -23,6 +23,14 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
   which is what lets two engines be compared on one sample: read each run by id
   and join on `sample_peak_id`.
 
+- Design note: **copying peak assignments from a curated sample to the rest of
+  its batch** (`docs/dev/peak_assignment_copy.md`). Compares a literal copy
+  against a seeded per-sample re-score - both remap the source rows onto each
+  destination sample's own peaks and publish through the run-import channel -
+  and recommends the re-score: formulas, families and manual curation carry
+  over; evidence numbers are re-measured per sample. A design document only;
+  no behaviour changes until it is signed off and implemented.
+
 - Matches can now be refreshed for a **whole dataset** in one action:
   right-click a dataset in the *Datasets* pane and choose *Process -> Refresh
   matches*. Its batches are refreshed one after another, newest first, with the
