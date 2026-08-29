@@ -215,6 +215,23 @@ with existing target identities; data-created anchors fill the rest.
 **Backfill.** For batches assigned before this feature, a one-time fold-in walks each sample's
 latest completed run in time order through the same routine.
 
+**Serialization [settled].** The fold's read-mint-insert step is a critical section per batch,
+held by a transaction-scoped Postgres advisory lock keyed on `sample_batch_id`
+([`batch_peaks_controller.py`](../../server/backend/src/mascope_backend/api/new/peak_assignments/batch_peaks_controller.py)).
+Anchor identity is tolerance-based, so *no unique constraint can express it* — a duplicate anchor
+is not something the database can reject, and the append-only rule then makes it permanent. Two
+folds that both read the anchor set before either commits therefore each mint an anchor for a
+shared species, splitting one trace in two for good. Three paths reach the fold, and they do
+overlap: run finalize and import publish are admitted per *sample*, so two samples of one batch
+can be in flight at once, and the backfill is not admitted at all — it can overlap either of
+those, or a second backfill of the same batch. Production runs parallel workers, so no
+in-process gate would be enough. The lock is taken *after* the
+instrument-configuration lookup, which opens sessions of its own — blocking while holding a
+connection and only then needing more is the hold-and-wait that deadlocks a worker — and is
+released by the fold's own commit. Different batches stay parallel. The fix also rests on
+READ COMMITTED: the fold's transaction is already open when the lock is taken, so the waiting
+fold only sees the winner's anchors because its post-lock read takes a fresh snapshot.
+
 ### 5.4 Consensus roll-up
 
 Per touched batch peak, over its **detected** members (never over absent samples):

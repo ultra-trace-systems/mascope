@@ -3,15 +3,19 @@
 Seeds a two-sample batch (a shared m/z, two unique m/z, and an unassigned peak)
 and folds each sample, asserting the load-bearing behaviours end-to-end against a
 real database: append-only anchor stability, cross-sample consensus, unassigned
-peaks as first-class batch peaks, and idempotent re-folding.
+peaks as first-class batch peaks, idempotent re-folding, and -- driving the race
+deliberately -- that concurrent folds of one batch cannot duplicate an anchor.
 """
 
+import asyncio
+from contextlib import suppress
 from datetime import datetime, timezone
 
 import pytest
 import pytest_asyncio
 from sqlalchemy import select
 
+from mascope_backend.api.new.peak_assignments import batch_peaks_controller
 from mascope_backend.api.new.peak_assignments.batch_peaks_controller import (
     backfill_sample_batch_peaks,
     fold_sample_into_batch_peaks,
@@ -307,3 +311,175 @@ async def test_ledger_returns_metadata_without_series(async_session_factory, see
     res_all = await get_batch_peak_ledger(sample_batch_id=batch, min_n_present=1)
     assert res_all["results"] == 4
     assert all("peak_series" not in r for r in res_all["data"])
+
+
+# --- the fold-in lock -------------------------------------------------------
+#
+# Two folds of one batch that both read the frozen anchor set before either
+# commits each mint their own anchor for the species they share, and since
+# anchors never move the split is permanent. The two tests below drive that race
+# on purpose: one fold is held open after it has read the anchors and minted its
+# own, and the other is released into that window. With the lock the second fold
+# cannot get in and the species keeps one anchor; with the lock patched out the
+# same harness produces the duplicate -- which is what proves the passing test
+# is not passing vacuously.
+#
+# The gate only ever holds the fold that arrives FIRST, only until the second
+# reaches its anchor read, and only for a bounded time. So it cannot deadlock
+# against the lock it is testing: under the lock the second fold never reaches
+# that read, and the first waits out the hold alone and commits.
+
+#: How long the first fold holds the window open under the lock. Nothing can
+#: signal it early there -- the second fold is blocked before the anchor read
+#: that would -- so this is always paid in full and is the whole cost of that
+#: test. The assertions do not depend on its length: whether the second fold
+#: waits on the lock or arrives after the release, it reads a committed anchor
+#: set either way.
+_LOCKED_HOLD_SECONDS = 1.0
+
+#: The same hold with the lock removed, where it means the opposite thing: a
+#: ceiling the second fold is expected to beat, not a wait. It costs nothing to
+#: be generous (reaching the anchor read ends it early, and always does), and
+#: being generous is what keeps a slow first connection on a cold pool from
+#: overrunning it -- which would silently turn the race into a serialized run
+#: and fail the test for a reason that is not the code's.
+_UNLOCKED_HOLD_SECONDS = 10.0
+
+#: Ceiling on the whole two-fold run, so a fold that raises before it reaches
+#: the window fails the test instead of hanging the suite on an event that will
+#: never be set.
+_FOLD_RACE_TIMEOUT_SECONDS = 30.0
+
+
+class _FoldGate:
+    """Holds the first fold open inside its read-mint-insert window.
+
+    ``in_window`` fires once a fold has read the anchor set and minted its own
+    anchors but has not yet committed; ``second_read_anchors`` fires when a
+    second fold reaches its own anchor read, which is what the first one is
+    waiting to see. Under the fold-in lock the second never gets there while the
+    window is open -- that is the whole point -- so the wait is bounded rather
+    than a rendezvous.
+
+    ``raced`` is the verdict: whether the second fold reached its anchor read
+    *while the first still held the window open*. It has to be sampled at the
+    moment the hold ends, because the second fold reads the anchors either way
+    in the end -- under the lock it just does so afterwards, off a committed
+    anchor set. Reading the event after both folds return would say "yes" to
+    both the serialized and the racing run.
+    """
+
+    def __init__(self) -> None:
+        self.in_window = asyncio.Event()
+        self.second_read_anchors = asyncio.Event()
+        self.anchor_reads = 0
+        self.folds_in_window = 0
+        self.raced: bool | None = None
+
+
+def _install_fold_gate(monkeypatch, hold_seconds: float) -> _FoldGate:
+    """Patch the two seams the race needs and return the gate driving them.
+
+    ``_recompute_consensus`` is the last thing a fold awaits before its commit,
+    so it sits inside the window and after the anchor mint; ``AnchorSet`` is
+    constructed exactly once per fold, immediately after the anchor read, so
+    counting its constructions counts folds that got as far as reading.
+    """
+    gate = _FoldGate()
+    real_recompute = batch_peaks_controller._recompute_consensus
+    real_anchor_set = batch_peaks_controller.AnchorSet
+
+    async def gated_recompute(session, batch_peak_ids, now):
+        gate.folds_in_window += 1
+        if gate.folds_in_window == 1:
+            gate.in_window.set()
+            with suppress(asyncio.TimeoutError):
+                await asyncio.wait_for(gate.second_read_anchors.wait(), hold_seconds)
+            gate.raced = gate.second_read_anchors.is_set()
+        return await real_recompute(session, batch_peak_ids, now)
+
+    def counting_anchor_set(anchors=()):
+        gate.anchor_reads += 1
+        if gate.anchor_reads >= 2:
+            gate.second_read_anchors.set()
+        return real_anchor_set(anchors)
+
+    monkeypatch.setattr(batch_peaks_controller, "_recompute_consensus", gated_recompute)
+    monkeypatch.setattr(batch_peaks_controller, "AnchorSet", counting_anchor_set)
+    return gate
+
+
+async def _fold_two_samples_concurrently(gate, samples) -> list:
+    """Fold A and B at once, B entering only once A is inside its window."""
+
+    async def first():
+        return await fold_sample_into_batch_peaks(samples["A"])
+
+    async def second():
+        await gate.in_window.wait()
+        return await fold_sample_into_batch_peaks(samples["B"])
+
+    return await asyncio.wait_for(
+        asyncio.gather(first(), second()), _FOLD_RACE_TIMEOUT_SECONDS
+    )
+
+
+def _anchors_near(peaks, mz: float, tol_ppm: float = 5.0) -> list:
+    """The batch peaks within ``tol_ppm`` of ``mz`` -- one species' anchors."""
+    return [p for p in peaks if abs(p.mz - mz) / mz * 1e6 <= tol_ppm]
+
+
+async def test_concurrent_folds_of_one_batch_keep_one_anchor_per_species(
+    async_session_factory, seeded, monkeypatch
+):
+    """The lock serializes the window, so the shared species keeps one anchor."""
+    batch, samples = seeded
+    gate = _install_fold_gate(monkeypatch, _LOCKED_HOLD_SECONDS)
+
+    assert await _fold_two_samples_concurrently(gate, samples) == [batch, batch]
+
+    # The lock held: the second fold never reached the anchor read while the
+    # first had the window open, so it read a committed anchor set afterwards.
+    assert gate.raced is False
+
+    peaks = await _batch_peaks(async_session_factory, batch)
+    assert len(peaks) == 4  # 181 (shared) + 200 + 250 + 300
+
+    shared = _anchors_near(peaks, 181.0707)
+    assert len(shared) == 1
+    assert shared[0].n_present == 2  # both samples on one trace
+    assert shared[0].consensus_formula == "C6H12O6"
+    assert shared[0].support_fraction == pytest.approx(1.0)
+
+
+async def test_concurrent_folds_without_the_lock_split_one_species(
+    async_session_factory, seeded, monkeypatch
+):
+    """Negative control: the same race, lock removed, mints the duplicate.
+
+    This is what the fold did before ``_acquire_batch_fold_lock`` existed, and
+    it is what makes the test above meaningful -- without it, a fold that simply
+    never interleaved would pass just as well.
+    """
+    batch, samples = seeded
+    gate = _install_fold_gate(monkeypatch, _UNLOCKED_HOLD_SECONDS)
+
+    async def _no_lock(session, sample_batch_id):
+        return None
+
+    monkeypatch.setattr(batch_peaks_controller, "_acquire_batch_fold_lock", _no_lock)
+
+    assert await _fold_two_samples_concurrently(gate, samples) == [batch, batch]
+
+    # The second fold really did read the anchor set inside the first's window;
+    # that is the race, not a timing accident.
+    assert gate.raced is True
+
+    peaks = await _batch_peaks(async_session_factory, batch)
+    assert len(peaks) == 5  # one more than the serialized fold produces
+
+    # One species, two anchors, neither of which knows about the other sample --
+    # and because anchors are frozen, no later fold ever merges them.
+    shared = _anchors_near(peaks, 181.0707)
+    assert len(shared) == 2
+    assert [p.n_present for p in shared] == [1, 1]
