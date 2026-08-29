@@ -5,7 +5,7 @@ overview. :func:`fold_sample_into_batch_peaks` runs on the arrival path right
 after Stage-A assignment (the assignments are already committed by then), snapping
 the sample's peaks into the batch's frozen, append-only anchors and recomputing the
 consensus of every touched batch peak. :func:`backfill_sample_batch_peaks` folds a
-whole batch's existing runs in time order.
+whole batch's existing runs in time order, reporting progress per sample.
 
 Design: ``docs/dev/peak_assignment_batch.md``.
 """
@@ -38,6 +38,10 @@ from mascope_backend.db import (
 )
 from mascope_backend.db.id import gen_id
 from mascope_backend.runtime import runtime
+from mascope_backend.socket.notifications import (
+    UserNotification,
+    send_progress_user_notification,
+)
 from mascope_file.name import get_instrument_type
 
 
@@ -386,7 +390,60 @@ async def _recompute_consensus(
         bp.batch_peak_utc_modified = now
 
 
-async def backfill_sample_batch_peaks(sample_batch_id: str) -> tuple[int, int]:
+#: Roughly how many points along a batch report progress, whatever its size.
+#: Every sample reports up to this many; past it every stride-th sample does,
+#: and the last one always, so the bar still fills. Integer division puts the
+#: true worst case just under twice this (a 199-sample batch reports all 199),
+#: which matters only in that the count stops growing with the batch.
+#:
+#: Bounded at all because the backfill's per-sample cost is not the assignment
+#: loop's: a sample with no completed run returns from the fold after two
+#: selects, so on the population this button exists for - a batch assigned
+#: before batch peaks, most of it unassigned - a packet per sample is a burst of
+#: socket traffic with no work between the packets. Each one is a Redis publish
+#: plus a room-membership check, and re-runs every registered notification
+#: watcher in every subscribed browser. A hundred steps is already finer than a
+#: progress bar can draw.
+_BACKFILL_PROGRESS_STEPS = 100
+
+
+def _backfill_progress_notification(
+    sample_batch_id: str,
+    item_index: int,
+    total_samples: int,
+    user_id: int | None,
+    process_id: str,
+    parent_id: str | None,
+) -> UserNotification:
+    """The pending packet announcing that sample ``item_index`` is being folded.
+
+    Typed as ``compute_batch_peaks`` -- the controller that owns the process,
+    not the function that emits it -- so the whole run reports on one channel:
+    the browser tracks a process by its id and ends its bar on the terminal
+    packet the decorator sends under that same type.
+    """
+    return UserNotification(
+        process_id=process_id,
+        parent_id=parent_id,
+        type="compute_batch_peaks",
+        status="pending",
+        message=f"Computing batch peaks, folding sample {item_index + 1}/{total_samples}.",
+        data={
+            "sample_batch_id": sample_batch_id,
+            "_room_ids": [sample_batch_id],
+            "_user_id": user_id,
+            "_total_samples": total_samples,
+            "_item_index": item_index,
+        },
+    )
+
+
+async def backfill_sample_batch_peaks(
+    sample_batch_id: str,
+    user_id: int | None = None,
+    process_id: str | None = None,
+    parent_id: str | None = None,
+) -> tuple[int, int]:
     """Fold every sample of a batch (that has a completed run) into the batch
     peaks, in acquisition-time order. Used to seed batch peaks for batches assigned
     before this feature.
@@ -397,7 +454,25 @@ async def backfill_sample_batch_peaks(sample_batch_id: str) -> tuple[int, int]:
     nothing folded because every fold raised is a fault - and the count alone
     cannot tell them apart.
 
+    Reports progress while it runs, on the same terms as a batch assignment: a
+    reporting sample sends two pending packets, before and after its fold, so
+    the bar steps from ``i/N`` to ``(i + 1)/N``. Every sample reports up to
+    :data:`_BACKFILL_PROGRESS_STEPS`, past which the batch is sampled. The
+    after-packet is sent for a sample whose fold raised as well -- the bar
+    tracks how much of the batch has been dealt with, not how much of it
+    succeeded, and stalling it on the one sample the run isolated is exactly the
+    reading it must not invite. For the same reason the bar counts samples
+    walked, not samples folded: it can fill while nothing was folded at all,
+    which is the outcome the terminal notification exists to name.
+
     :param sample_batch_id: The batch to fold.
+    :param user_id: Who to route the progress stream to alongside the batch's
+        room; ``None`` sends to the room alone.
+    :param process_id: The process the progress belongs to. Without one there is
+        no bar to drive -- the browser tracks progress per process id, and a
+        generated one would open a new bar per packet -- so the stream is
+        skipped entirely rather than emitted anonymously.
+    :param parent_id: The owning process, when this backfill is nested in one.
     :return: ``(folded, failed)`` sample counts.
     :rtype: tuple[int, int]
     """
@@ -414,9 +489,32 @@ async def backfill_sample_batch_peaks(sample_batch_id: str) -> tuple[int, int]:
             .all()
         )
 
+    total_samples = len(sample_ids)
+    stride = max(1, total_samples // _BACKFILL_PROGRESS_STEPS)
+
     folded = 0
     failed = 0
-    for sample_item_id in sample_ids:
+    for item_index, sample_item_id in enumerate(sample_ids):
+        # The last sample always reports, whatever the stride, so the bar ends
+        # full rather than a stride short of it.
+        reports = process_id is not None and (
+            item_index % stride == 0 or item_index == total_samples - 1
+        )
+        notification = (
+            _backfill_progress_notification(
+                sample_batch_id=sample_batch_id,
+                item_index=item_index,
+                total_samples=total_samples,
+                user_id=user_id,
+                process_id=process_id,
+                parent_id=parent_id,
+            )
+            if reports
+            else None
+        )
+        if notification is not None:
+            await send_progress_user_notification(notification)
+
         try:
             if await fold_sample_into_batch_peaks(sample_item_id) is not None:
                 folded += 1
@@ -444,6 +542,13 @@ async def backfill_sample_batch_peaks(sample_batch_id: str) -> tuple[int, int]:
             runtime.logger.exception(
                 f"Batch-peak backfill failed for sample '{sample_item_id}'."
             )
+
+        # Outside the try, so the bar advances past a sample whose fold raised
+        # as well as one that folded. `send_progress_user_notification` deep
+        # copies, so this is the same object the pre-fold tick was built from.
+        if notification is not None:
+            await send_progress_user_notification(notification, 1.0)
+
     return folded, failed
 
 
@@ -536,6 +641,16 @@ async def compute_batch_peaks(
     re-folds each sample. Emits ``peak_assignment_reload`` so the Assignments
     chart refreshes, including when nothing was folded: the ledger is then
     correct in being empty, and the notification says why.
+
+    Folds sample by sample and reports as it goes, so the wait is a filling bar
+    rather than a spinner: the per-sample packets are pending ones on this same
+    ``compute_batch_peaks`` channel, and the decorator's terminal packet ends
+    the bar.
     """
-    folded, failed = await backfill_sample_batch_peaks(sample_batch_id)
+    folded, failed = await backfill_sample_batch_peaks(
+        sample_batch_id,
+        user_id=user_id,
+        process_id=process_id,
+        parent_id=parent_id,
+    )
     return backfill_outcome(folded, failed, sample_batch_id)

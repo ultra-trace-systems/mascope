@@ -296,6 +296,26 @@ describe('PaneBrowserBatchPeaks compute button progress', () => {
     expect(wrapper.vm.computing).toBe(false)
   })
 
+  it('keeps waiting through the per-sample progress packets', async () => {
+    // The backfill reports as it folds each sample, on this same channel and
+    // under this same process id. Those packets drive the app's progress bar;
+    // the button is asking whether the run is still going, and while they
+    // arrive the answer is yes.
+    wrapper = await mountPane()
+
+    await wrapper.vm.computeBatchPeaks()
+
+    notify({ type: 'compute_batch_peaks', status: 'pending', process_id: 'proc-1', progress: 25 })
+    expect(wrapper.vm.computing).toBe(true)
+
+    notify({ type: 'compute_batch_peaks', status: 'pending', process_id: 'proc-1', progress: 75 })
+    expect(wrapper.vm.computing).toBe(true)
+
+    // ...and the terminal packet still ends it.
+    notify({ type: 'compute_batch_peaks', status: 'success', process_id: 'proc-1' })
+    expect(wrapper.vm.computing).toBe(false)
+  })
+
   it('gives up after the timeout, so a dropped socket cannot strand the button', async () => {
     wrapper = await mountPane()
 

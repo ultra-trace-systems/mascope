@@ -6,6 +6,16 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
 
 ### Changed
 
+- **Computing batch peaks** now shows how far along it is. The backfill folds a
+  batch one sample at a time but reported only once the whole thing was done, so
+  all the button could offer was a spinner - for minutes on a large batch, with
+  no way to tell a slow run from a stuck one. It now fills the app's progress bar
+  as it walks the batch. The button stops spinning on the same packet as before,
+  the one that says the run ended, so a run that failed still releases it. The
+  bar counts samples looked at rather than samples folded, so on a batch where
+  nothing has been assigned yet it fills and then reports that there was nothing
+  to compute - that batch's state, not a contradiction.
+
 - Selecting **every** batch peak no longer locks up the app. The *Batch peaks*
   ledger lists every anchor in the batch, singletons included, so on a large
   batch "select all" is tens of thousands of rows - and everything downstream
