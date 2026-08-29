@@ -88,6 +88,7 @@ from mascope_backend.api.new.peak_assignments.import_validation import (
     unknown_peak_ids,
     unresolved_owner_error,
 )
+from mascope_backend.api.new.peak_assignments.tiers import normalize_tier_bands
 from mascope_backend.db import (
     IonizationMechanism,
     PeakAssignment,
@@ -316,7 +317,7 @@ def _validate_rows(rows, bands: dict, known_peak_ids: set[str]) -> None:
 
     for row in rows:
         if error := tier_coherence_error(
-            row.tier, row.fit_score, bands["identified"], bands["candidate"]
+            row.tier, row.fit_score, bands["assigned"], bands["candidate"]
         ):
             raise UnprocessableImportException(
                 f"row for peak '{row.sample_peak_id}': {error}"
@@ -343,8 +344,12 @@ def _resolved_bands(body, run: PeakAssignmentRun | None) -> dict:
             )
         return body.tier_bands.model_dump()
 
-    bands = run.tier_bands or {}
-    if "identified" not in bands or "candidate" not in bands:
+    # Read back from the run, so the keys are whatever was stored when it was
+    # opened: an import that was mid-flight when the upper band was renamed from
+    # 'identified' to 'assigned' carries the old key, and its remaining chunks
+    # have to keep landing rather than fail on a key this build no longer writes.
+    bands = normalize_tier_bands(run.tier_bands) or {}
+    if "assigned" not in bands or "candidate" not in bands:
         raise UnprocessableImportException(
             f"run '{run.peak_assignment_run_id}' carries no tier_bands, so its "
             "rows' tiers cannot be checked"

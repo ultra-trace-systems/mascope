@@ -160,7 +160,7 @@ function family({
   mz,
   intensity,
   formula,
-  tier = 'identified',
+  tier = 'assigned',
   fit = 0.9,
   role = 'target',
   children = []
@@ -215,7 +215,7 @@ const FAMILY_B = family({
   mz: 100.05,
   intensity: 500,
   formula: 'C2H6',
-  tier: 'identified',
+  tier: 'assigned',
   fit: 0.95,
   children: [
     { sample_peak_mz: 101.05, sample_peak_intensity: 800 },
@@ -366,7 +366,7 @@ describe('PaneBrowserAssignment run provenance', () => {
     engine: 'peaky',
     engine_version: '0.6.0',
     status: 'completed',
-    tier_bands: { identified: 0.6, candidate: 0.3 },
+    tier_bands: { assigned: 0.6, candidate: 0.3 },
     calibration: { method: 'offset-aware' }
   }
   const IN_APP = {
@@ -374,7 +374,7 @@ describe('PaneBrowserAssignment run provenance', () => {
     engine: 'mascope',
     engine_version: '0.2.0',
     status: 'completed',
-    tier_bands: { identified: 0.8, candidate: 0.5 },
+    tier_bands: { assigned: 0.8, candidate: 0.5 },
     calibration: null
   }
 
@@ -529,7 +529,7 @@ describe('PaneBrowserAssignment isotopologue grouping', () => {
     expect(ids(wrapper)[0]).toBe('a')
 
     // A third header click clears the field; the ledger falls back to
-    // identified-first, which puts B on top despite its weaker peak.
+    // assigned-first, which puts B on top despite its weaker peak.
     wrapper.vm.sortField = null
     wrapper.vm.sortOrder = null
     await wrapper.vm.$nextTick()

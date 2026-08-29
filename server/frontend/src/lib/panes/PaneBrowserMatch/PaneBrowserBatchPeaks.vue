@@ -65,7 +65,7 @@ const breadcrumb = computed(() => {
 
 // The ledger's records with the tier's confidence rank attached, which is what
 // the tier column sorts on: the raw tier string sorts alphabetically, and
-// "below_assignability" before "identified" is not an ordering anyone asked for.
+// "below_assignability" before "candidate" is not an ordering anyone asked for.
 //
 // Ordered here by tier and then by fit descending. The table applies its own
 // sort on top and Array.prototype.sort is stable, so this ordering survives as
@@ -485,7 +485,7 @@ onScopeDispose(() => clearTimeout(computeTimer))
 .tier-stat b {
   font-weight: 700;
 }
-.tier-stat.identified b {
+.tier-stat.assigned b {
   color: var(--p-green-600, #1f9d63);
 }
 .tier-stat.candidate b {

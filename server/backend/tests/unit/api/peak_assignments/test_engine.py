@@ -18,9 +18,9 @@ from mascope_backend.api.new.peak_assignments.engine import (
     ROLE_UNASSIGNED,
     SOURCE_DATABASE,
     SOURCE_UNTARGETED,
+    TIER_ASSIGNED,
     TIER_BELOW_ASSIGNABILITY,
     TIER_CANDIDATE,
-    TIER_IDENTIFIED,
     TIER_UNASSIGNED,
     build_unassigned_assignments,
     invert_matches_to_peak_assignments,
@@ -75,11 +75,11 @@ def _isotope_row(
 
 
 class TestTierForScore:
-    def test_probable_score_is_identified(self):
-        assert tier_for_score(0.85, POSSIBLE, PROBABLE) == TIER_IDENTIFIED
+    def test_probable_score_is_assigned(self):
+        assert tier_for_score(0.85, POSSIBLE, PROBABLE) == TIER_ASSIGNED
 
     def test_threshold_boundaries_are_inclusive(self):
-        assert tier_for_score(PROBABLE, POSSIBLE, PROBABLE) == TIER_IDENTIFIED
+        assert tier_for_score(PROBABLE, POSSIBLE, PROBABLE) == TIER_ASSIGNED
         assert tier_for_score(POSSIBLE, POSSIBLE, PROBABLE) == TIER_CANDIDATE
 
     def test_possible_score_is_candidate(self):
@@ -145,7 +145,7 @@ class TestInvertMatches:
         assert winner["target_ion_id"] == "ion1"
         assert winner["source"] == SOURCE_DATABASE
         assert winner["role"] == ROLE_M0
-        assert winner["tier"] == TIER_IDENTIFIED
+        assert winner["tier"] == TIER_ASSIGNED
         assert winner["peak_assignment_run_id"] == "run1"
         assert winner["sample_item_id"] == "sample1"
 
@@ -848,7 +848,7 @@ class TestUntargetedMatches:
         assert m0["target_compound_id"] is None
         # score = (1 - 0.1) * (1 - 2.0/100)
         assert m0["fit_score"] == pytest.approx(0.9 * 0.98)
-        assert m0["tier"] == TIER_IDENTIFIED
+        assert m0["tier"] == TIER_ASSIGNED
         assert [alt["assigned_formula"] for alt in m0["alternatives"]] == [
             "C4H8N2O",
             "C6H14N",
@@ -857,7 +857,7 @@ class TestUntargetedMatches:
         assert all(alt["plausibility"] is not None for alt in m0["alternatives"])
         assert m0["provenance"]["neutral_mass"] == pytest.approx(102.068)
         # Chemical plausibility now rides on untargeted winners too (previously
-        # database-stage only), so an identified de-novo formula reports it and
+        # database-stage only), so an assigned de-novo formula reports it and
         # the inspector shows it consistently across stages.
         assert 0.0 <= m0["provenance"]["plausibility"] <= 1.0
 
@@ -1063,7 +1063,7 @@ class TestUntargetedMatches:
         assert len(assignments) == 1
         # score = (1 - 0.1) * (1 - 2.0/100), not 0 from a collapsed mz term.
         assert assignments[0]["fit_score"] == pytest.approx(0.9 * 0.98)
-        assert assignments[0]["tier"] == TIER_IDENTIFIED
+        assert assignments[0]["tier"] == TIER_ASSIGNED
 
     def test_ionization_placeholder_formula_is_skipped(self):
         # The finder emits "()" for reagent/ionization peaks; it is not a

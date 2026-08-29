@@ -84,15 +84,15 @@ class TestTierCoherence:
 
     The two engines share a fit-score scale, but the bands are run config, not
     engine constants. Without this check an engine tiering at 0.6/0.3 publishes
-    'identified' rows at 0.62 that sort, filter and roll up beside in-app
-    'identified' rows meaning something considerably stricter.
+    'assigned' rows at 0.62 that sort, filter and roll up beside in-app
+    'assigned' rows meaning something considerably stricter.
     """
 
     @pytest.mark.parametrize(
         "fit_score,expected",
         [
-            (1.0, {"identified"}),
-            (0.8, {"identified"}),
+            (1.0, {"assigned"}),
+            (0.8, {"assigned"}),
             (0.79, {"candidate"}),
             (0.5, {"candidate"}),
             (0.49, {"below_assignability"}),
@@ -126,11 +126,11 @@ class TestTierCoherence:
         assert tier_coherence_error("candidate", 0.0, 0.8, 0.0) is not None
 
     def test_a_coherent_row_passes(self):
-        assert tier_coherence_error("identified", 0.91, 0.8, 0.5) is None
+        assert tier_coherence_error("assigned", 0.91, 0.8, 0.5) is None
 
     def test_an_inflated_tier_is_rejected(self):
         """The case the whole rule exists for."""
-        error = tier_coherence_error("identified", 0.62, 0.8, 0.5)
+        error = tier_coherence_error("assigned", 0.62, 0.8, 0.5)
 
         assert error is not None
         assert "candidate" in error
@@ -140,9 +140,9 @@ class TestTierCoherence:
         assert tier_coherence_error("candidate", 0.95, 0.8, 0.5) is not None
 
     def test_the_declared_bands_are_what_is_applied(self):
-        """0.62 is 'identified' under 0.6/0.3 and 'candidate' under 0.8/0.5."""
-        assert tier_coherence_error("identified", 0.62, 0.6, 0.3) is None
-        assert tier_coherence_error("identified", 0.62, 0.8, 0.5) is not None
+        """0.62 is 'assigned' under 0.6/0.3 and 'candidate' under 0.8/0.5."""
+        assert tier_coherence_error("assigned", 0.62, 0.6, 0.3) is None
+        assert tier_coherence_error("assigned", 0.62, 0.8, 0.5) is not None
 
     def test_a_scored_row_cannot_claim_unassigned(self):
         assert tier_coherence_error("unassigned", 0.9, 0.8, 0.5) is not None
@@ -157,7 +157,7 @@ class TestTierCoherence:
         """
         assert tier_coherence_error("unassigned", None, 0.8, 0.5) is None
         assert tier_coherence_error("below_assignability", None, 0.8, 0.5) is None
-        error = tier_coherence_error("identified", None, 0.8, 0.5)
+        error = tier_coherence_error("assigned", None, 0.8, 0.5)
         assert error is not None
         assert "no fit_score" in error
 
@@ -196,7 +196,7 @@ class TestRowFieldBoundsMatchTheColumns:
             "sample_peak_mz": 181.0707,
             "sample_peak_intensity": 5000.0,
             "role": "M0",
-            "tier": "identified",
+            "tier": "assigned",
         }
         for name in floats:
             with pytest.raises(ValidationError):

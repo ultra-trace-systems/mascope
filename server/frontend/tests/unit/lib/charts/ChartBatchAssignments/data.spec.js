@@ -35,7 +35,7 @@ const peakRecord = (id, series, extra = {}) => ({
   batch_peak_id: id,
   mz: 181.0707,
   consensus_formula: 'C6H12O6',
-  consensus_tier: 'identified',
+  consensus_tier: 'assigned',
   n_present: series.sample_item_ids.length,
   peak_series: series,
   ...extra
@@ -66,7 +66,7 @@ describe('chart.batch.assignments data store (selection-driven)', () => {
       peakRecord('bp1', {
         sample_item_ids: ['s1', 's3'],
         intensities: [5, 7],
-        tiers: ['identified', 'identified']
+        tiers: ['assigned', 'assigned']
       })
     ])
 
@@ -82,13 +82,13 @@ describe('chart.batch.assignments data store (selection-driven)', () => {
     const [peak, tic] = store.traces
     expect(peak.y).toEqual([5, null, 7]) // s2 absent -> null
     expect(peak.assignmentData.batch_peak_id).toBe('bp1')
-    expect(peak.marker.symbol).toBe('square') // identified
+    expect(peak.marker.symbol).toBe('square') // assigned
     expect(tic.name).toBe('TIC')
   })
 
   it('adds only newly-selected peaks and drops de-selected ones', async () => {
     api.http.post.mockResolvedValueOnce([
-      peakRecord('bp1', { sample_item_ids: ['s1'], intensities: [5], tiers: ['identified'] })
+      peakRecord('bp1', { sample_item_ids: ['s1'], intensities: [5], tiers: ['assigned'] })
     ])
     mockApp.data.batchPeak.selectedIds = ['bp1']
     await flushAsync()

@@ -1061,7 +1061,7 @@ async def _create_run(
         # tier means the same thing on either engine's run without reading into
         # the config blob.
         tier_bands={
-            "identified": config.identified_threshold,
+            "assigned": config.assigned_threshold,
             "candidate": config.candidate_threshold,
         },
         peak_assignment_run_utc_created=dt.now(timezone.utc),
@@ -1370,7 +1370,7 @@ async def _run_sample_assignment(
             # targeted Match pipeline does: this zeroes the score of peaks whose
             # m/z error, isotope-ratio error, or intensity falls outside
             # tolerance. Without it a peak tens of ppm off a target would be
-            # tiered "identified" here while the Match tab reports no match.
+            # tiered "assigned" here while the Match tab reports no match.
             if not match_isotope_df.empty:
                 match_isotope_df = apply_match_params(match_isotope_df, match_params)
                 # Deliberately score Stage A with the fit score (score_pattern_v2):
@@ -1388,7 +1388,7 @@ async def _run_sample_assignment(
                 sample_item_id=sample_item_id,
                 peak_assignment_run_id=run.peak_assignment_run_id,
                 possible_threshold=config.candidate_threshold,
-                probable_threshold=config.identified_threshold,
+                probable_threshold=config.assigned_threshold,
                 max_alternatives=config.max_alternatives,
                 instrument=instrument,
                 calibration=calibration,
@@ -1463,7 +1463,7 @@ async def _run_sample_assignment(
                     sample_item_id=sample_item_id,
                     peak_assignment_run_id=run.peak_assignment_run_id,
                     possible_threshold=config.candidate_threshold,
-                    probable_threshold=config.identified_threshold,
+                    probable_threshold=config.assigned_threshold,
                     mechanism_id_by_notation=mechanism_id_by_notation,
                     formula_formatter=to_custom_element_format,
                     max_alternatives=config.max_alternatives,

@@ -196,7 +196,7 @@ export const usePeakAssignment = defineStore('app.data.peakAssignment', () => {
   // are counted separately (orthogonal to tier).
   const tierCounts = computed(() => {
     const counts = {
-      identified: 0,
+      assigned: 0,
       candidate: 0,
       below_assignability: 0,
       unassigned: 0,

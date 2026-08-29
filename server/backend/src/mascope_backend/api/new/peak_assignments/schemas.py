@@ -1,14 +1,22 @@
 """Request and response schemas for the peak assignments API."""
 
 from datetime import datetime
-from typing import Literal
+from typing import Annotated, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import (
+    AliasChoices,
+    BaseModel,
+    BeforeValidator,
+    ConfigDict,
+    Field,
+    model_validator,
+)
 
 from mascope_backend.api.new.peak_assignments.config import (
     MAX_IMPORT_ROWS_PER_REQUEST,
     PeakAssignmentConfig,
 )
+from mascope_backend.api.new.peak_assignments.tiers import normalize_tier
 
 
 # Verification vocabulary (verification-calibration loop V1). Verdict is the label;
@@ -20,7 +28,17 @@ EvidenceLevel = Literal["reference_standard", "msms", "orthogonal", "pattern", "
 # The assignment vocabulary, mirrored from the engine's constants. Typed rather
 # than free strings so a misspelled filter is a 422 naming the accepted values,
 # not a 200 with an empty ledger that reads as "this sample has no such peaks".
-AssignmentTier = Literal["identified", "candidate", "below_assignability", "unassigned"]
+#
+# The tier normalizes legacy spellings before that check (see
+# `tiers.LEGACY_TIER_ALIASES`), and one Annotated type covers both directions on
+# purpose: it types the imported row's tier AND the ledger's read filter, so a
+# client that still says 'identified' - an external engine publishing to the
+# older spec, or an SDK reader filtering by what its documentation taught it -
+# is answered rather than 422'd, and stores or reads the current spelling.
+AssignmentTier = Annotated[
+    Literal["assigned", "candidate", "below_assignability", "unassigned"],
+    BeforeValidator(normalize_tier),
+]
 AssignmentRole = Literal["M0", "iso_child", "reagent", "artifact", "unassigned"]
 AssignmentSource = Literal["database", "untargeted"]
 
@@ -44,8 +62,8 @@ class PeakAssignmentRunRecord(BaseModel):
     engine_version: str
     status: str
     config: dict | None = None
-    #: The identified/candidate fit-score thresholds this run tiered with.
-    #: Served because 'identified' means nothing comparable across engines
+    #: The assigned/candidate fit-score thresholds this run tiered with.
+    #: Served because 'assigned' means nothing comparable across engines
     #: until the bands that produced it are visible: the server validates every
     #: imported row against these, and a reader needs the same yardstick.
     #: Null only for runs predating the column.
@@ -239,12 +257,23 @@ class TierBands(BaseModel):
 
     Lifted out of the opaque run `config` into a first-class field because the
     server validates every imported row's tier against it: the two engines share
-    a fit-score *scale*, but the *bands* are run configuration, so 'identified'
+    a fit-score *scale*, but the *bands* are run configuration, so 'assigned'
     means nothing comparable until the bands that produced it are on the record.
+
+    The upper band is keyed 'assigned' and accepts the legacy 'identified' for
+    the same reason the tier itself does: an engine built against the older spec
+    declares its bands under the name that spec gave them. Only the current key
+    is ever stored, so the bands a run is judged by read the same however they
+    were declared.
     """
 
-    identified: float = Field(
-        ge=0.0, le=1.0, description="Fit score at or above which a row is 'identified'."
+    model_config = ConfigDict(populate_by_name=True)
+
+    assigned: float = Field(
+        ge=0.0,
+        le=1.0,
+        validation_alias=AliasChoices("assigned", "identified"),
+        description="Fit score at or above which a row is 'assigned'.",
     )
     candidate: float = Field(
         ge=0.0, le=1.0, description="Fit score at or above which a row is 'candidate'."
@@ -252,10 +281,8 @@ class TierBands(BaseModel):
 
     @model_validator(mode="after")
     def _ordered(self) -> "TierBands":
-        if self.candidate > self.identified:
-            raise ValueError(
-                "tier_bands.candidate must not exceed tier_bands.identified"
-            )
+        if self.candidate > self.assigned:
+            raise ValueError("tier_bands.candidate must not exceed tier_bands.assigned")
         return self
 
 

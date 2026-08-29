@@ -346,7 +346,7 @@ no backend or DB, only `mascope_tools` + tests.
   0.75 for three …). Cross-peak but **competitor-blind within a compound** — it reads only
   *which* adducts were assigned, never the fit score, so it stays a separate, inspectable
   layer (design rule §3). Unit-tested (`test_corroboration.py`).
-- **Validated on the refreshed demo** (read-only): of the confident (identified/candidate)
+- **Validated on the refreshed demo** (read-only): of the confident (assigned/candidate)
   compound-instances, **~66% are seen via ≥2 adducts** (2,108 via two, 3,017 via three;
   2,620 lone) — the signal is both abundant and discriminating.
 - **Weighting the corroboration — measured (offset-decoy benchmark).** The first attempt, on the

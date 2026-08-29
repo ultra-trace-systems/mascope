@@ -2,7 +2,7 @@
 
 import os
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import AliasChoices, BaseModel, ConfigDict, Field, field_validator
 
 from mascope_backend.api.new.cheminfo.config import cheminfo_config
 from mascope_backend.runtime import runtime
@@ -128,6 +128,8 @@ class PeakAssignmentConfig(BaseModel):
     row, together with the engine version.
     """
 
+    model_config = ConfigDict(populate_by_name=True)
+
     run_untargeted: bool = Field(
         True,
         description=(
@@ -180,12 +182,19 @@ class PeakAssignmentConfig(BaseModel):
     # Confidence-tier bands on the FIT-SCORE scale (score_pattern_v2), not the legacy
     # match_params scale. The fit score demotes lone mass-only matches by design, so its
     # bands sit lower than v1's 0.8/0.7; these are the DESIGN.md v2 estimates
-    # (identified >= 0.8, candidate >= 0.5), pending per-instrument recalibration.
-    identified_threshold: float = Field(
+    # (assigned >= 0.8, candidate >= 0.5), pending per-instrument recalibration.
+    #
+    # The upper band still parses under its old name: this model is built from the
+    # assign request body, so a client pinned to the pre-rename field would
+    # otherwise silently drop back to the default instead of tiering the run the
+    # way it asked. Only the current name is stored - model_dump() lands verbatim
+    # in the run's config.
+    assigned_threshold: float = Field(
         0.8,
         ge=0.0,
         le=1.0,
-        description="Fit score at or above which a peak is tiered 'identified'.",
+        validation_alias=AliasChoices("assigned_threshold", "identified_threshold"),
+        description="Fit score at or above which a peak is tiered 'assigned'.",
     )
     candidate_threshold: float = Field(
         0.5,

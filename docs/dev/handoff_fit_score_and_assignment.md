@@ -142,7 +142,7 @@ branch's shape, not a commit hash that goes stale within a day.*
    peak-assignment-tables head). Legacy `match_ion` / `match_isotope.match_score`
    deliberately untouched. **Applied to `mascope_demo` (dev postgres) end-to-end**; the
    live API serves `fit_score`.
-4. ✅ **Fit-scale tier bands (0.8 / 0.5).** `PeakAssignmentConfig.identified_threshold`
+4. ✅ **Fit-scale tier bands (0.8 / 0.5).** `PeakAssignmentConfig.assigned_threshold`
    (0.8) / `candidate_threshold` (0.5); Stage A/B tier against them instead of the legacy
    `match_params` thresholds. Persisted on the run config; provisional (see below).
 5. ✅ **Phase 3 P2 — candidate arbitration (core).**

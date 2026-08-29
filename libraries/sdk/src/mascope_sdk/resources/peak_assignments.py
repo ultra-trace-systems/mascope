@@ -65,8 +65,8 @@ class PeakAssignmentsResource(BaseResource):
         assignments = mascope.peak_assignments.get("sample-123")
         assignments.attrs["run"]  # run metadata (engine_version, config, ...)
 
-        # Only the confidently identified peaks
-        identified = mascope.peak_assignments.get("sample-123", tier="identified")
+        # Only the confidently assigned peaks
+        assigned = mascope.peak_assignments.get("sample-123", tier="assigned")
     """
 
     def _get_envelope(
@@ -109,7 +109,7 @@ class PeakAssignmentsResource(BaseResource):
                    ``failed`` | ``cancelled``; ``importing`` while an external
                    run is still being uploaded (its rows are not servable yet)
                  - ``config``: Run configuration (dict)
-                 - ``tier_bands``: The ``identified`` / ``candidate``
+                 - ``tier_bands``: The ``assigned`` / ``candidate``
                    fit-score thresholds this run tiered with (dict). A tier is
                    only comparable across engines under the bands that
                    produced it. Null for runs predating the column.
@@ -165,8 +165,10 @@ class PeakAssignmentsResource(BaseResource):
         :param run_id: Specific run to read. Defaults to the latest completed
                        run, resolved via :meth:`list_runs`.
         :type run_id: str, optional
-        :param tier: Filter by confidence tier: ``identified`` | ``candidate``
-                     | ``below_assignability`` | ``unassigned``.
+        :param tier: Filter by confidence tier: ``assigned`` | ``candidate``
+                     | ``below_assignability`` | ``unassigned``. The server
+                     still accepts the legacy spelling ``identified`` for
+                     ``assigned``, so older scripts keep working.
         :type tier: str, optional
         :param role: Filter by peak role: ``M0`` | ``iso_child`` | ``reagent``
                      | ``artifact`` | ``unassigned``.

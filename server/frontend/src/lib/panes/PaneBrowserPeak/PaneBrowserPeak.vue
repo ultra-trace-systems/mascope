@@ -123,8 +123,8 @@ onBeforeUnmount(() => {
         >{{ matchedCount }}/{{ app.data.peak.list.length }} peaks matched
       </span>
       <span v-else-if="hasRun" class="tier-summary">
-        <span class="tier-stat identified" v-tooltip.bottom="'Identified'">
-          {{ tierCounts.identified }}
+        <span class="tier-stat assigned" v-tooltip.bottom="'Assigned'">
+          {{ tierCounts.assigned }}
         </span>
         <span class="tier-stat candidate" v-tooltip.bottom="'Candidate'">
           {{ tierCounts.candidate }}
@@ -319,7 +319,7 @@ onBeforeUnmount(() => {
   font-variant-numeric: tabular-nums;
   font-weight: 600;
 }
-.tier-stat.identified {
+.tier-stat.assigned {
   color: var(--p-green-600, #1f9d63);
   background: color-mix(in srgb, var(--p-green-500, #22c55e) 15%, transparent);
 }

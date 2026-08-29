@@ -723,8 +723,10 @@ class MascopeClient:
                     latest completed run of each sample) is supported; run IDs
                     are per-sample and cannot be given across samples.
         :type run: str
-        :param tier: Filter by confidence tier: ``identified`` | ``candidate``
-                     | ``below_assignability`` | ``unassigned``.
+        :param tier: Filter by confidence tier: ``assigned`` | ``candidate``
+                     | ``below_assignability`` | ``unassigned``. The server
+                     still accepts the legacy spelling ``identified`` for
+                     ``assigned``.
         :type tier: str, optional
         :param source: Filter by assignment source: ``database`` |
                        ``untargeted``.
@@ -764,10 +766,10 @@ class MascopeClient:
                 batches="Uronium",
             )
 
-            # Identified, untargeted-sourced peaks only
+            # Assigned, untargeted-sourced peaks only
             assignments = mascope.load_assignments(
                 dataset="My Dataset",
-                tier="identified",
+                tier="assigned",
                 source="untargeted",
             )
         """

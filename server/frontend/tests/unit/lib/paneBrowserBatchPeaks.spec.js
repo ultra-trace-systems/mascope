@@ -67,7 +67,7 @@ function makeApp({ batch = BATCH, workspace = WORKSPACE, samples = [{}], peaks =
         // Mirrors the store's own computed, which is what the strip renders.
         tierCounts: peaks.reduce(
           (counts, p) => ({ ...counts, [p.consensus_tier]: (counts[p.consensus_tier] ?? 0) + 1 }),
-          { identified: 0, candidate: 0, below_assignability: 0, unassigned: 0 }
+          { assigned: 0, candidate: 0, below_assignability: 0, unassigned: 0 }
         )
       }
     },
@@ -352,8 +352,8 @@ describe('PaneBrowserBatchPeaks failed launch', () => {
 
 describe('PaneBrowserBatchPeaks tier strip', () => {
   const peaks = [
-    peak('bp-1', 'identified', 0.9),
-    peak('bp-2', 'identified', 0.7),
+    peak('bp-1', 'assigned', 0.9),
+    peak('bp-2', 'assigned', 0.7),
     peak('bp-3', 'candidate', 0.5),
     peak('bp-4', 'unassigned', null)
   ]
@@ -363,7 +363,7 @@ describe('PaneBrowserBatchPeaks tier strip', () => {
     const chips = wrapper.findAll('.tier-stat')
 
     expect(chips.map((chip) => chip.text())).toEqual([
-      '2 identified',
+      '2 assigned',
       '1 candidate',
       '0 below',
       '1 unassigned'
@@ -411,24 +411,24 @@ describe('PaneBrowserBatchPeaks tier strip', () => {
 describe('PaneBrowserBatchPeaks tier ordering', () => {
   it('carries a confidence rank on every row for the tier column to sort on', async () => {
     wrapper = await mountPane({
-      peaks: [peak('bp-1', 'unassigned', null), peak('bp-2', 'identified', 0.9)]
+      peaks: [peak('bp-1', 'unassigned', null), peak('bp-2', 'assigned', 0.9)]
     })
 
     expect(wrapper.vm.rows.map((row) => row.tierRank)).toEqual([0, 3])
   })
 
-  it('orders identified before candidate before below before unassigned', async () => {
+  it('orders assigned before candidate before below before unassigned', async () => {
     wrapper = await mountPane({
       peaks: [
         peak('bp-1', 'unassigned', null),
         peak('bp-2', 'below_assignability', 0.2),
-        peak('bp-3', 'identified', 0.9),
+        peak('bp-3', 'assigned', 0.9),
         peak('bp-4', 'candidate', 0.5)
       ]
     })
 
     expect(wrapper.vm.rows.map((row) => row.consensus_tier)).toEqual([
-      'identified',
+      'assigned',
       'candidate',
       'below_assignability',
       'unassigned'
@@ -438,9 +438,9 @@ describe('PaneBrowserBatchPeaks tier ordering', () => {
   it('breaks a tier tie by fit, the percentage the chip beside it shows', async () => {
     wrapper = await mountPane({
       peaks: [
-        peak('bp-low', 'identified', 0.61),
-        peak('bp-high', 'identified', 0.98),
-        peak('bp-none', 'identified', null)
+        peak('bp-low', 'assigned', 0.61),
+        peak('bp-high', 'assigned', 0.98),
+        peak('bp-none', 'assigned', null)
       ]
     })
 
@@ -472,12 +472,12 @@ describe('PaneBrowserBatchPeaks tier ordering', () => {
   it('orders by confidence when sorted the way the table sorts', async () => {
     // Ascending on the column's sort field, as PrimeVue does on the first
     // header click. On the raw tier string this reads
-    // below_assignability, candidate, identified, unassigned.
+    // assigned, below_assignability, candidate, unassigned.
     wrapper = await mountPane({
       peaks: [
         peak('bp-1', 'unassigned', null),
         peak('bp-2', 'below_assignability', 0.2),
-        peak('bp-3', 'identified', 0.9),
+        peak('bp-3', 'assigned', 0.9),
         peak('bp-4', 'candidate', 0.5)
       ]
     })
@@ -491,7 +491,7 @@ describe('PaneBrowserBatchPeaks tier ordering', () => {
     )
 
     expect(ascending.map((row) => row.consensus_tier)).toEqual([
-      'identified',
+      'assigned',
       'candidate',
       'below_assignability',
       'unassigned'

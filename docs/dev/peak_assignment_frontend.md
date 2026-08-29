@@ -179,7 +179,7 @@ written while it was on remain inspectable:
 peak_assignment_id · peak_assignment_run_id · sample_item_id
 sample_peak_id · sample_peak_mz · sample_peak_intensity · sample_peak_tof
 role            M0 | iso_child | reagent | artifact | unassigned
-tier            identified | candidate | below_assignability | unassigned
+tier            assigned | candidate | below_assignability | unassigned
 source          database | untargeted | null
 assigned_formula · ion_formula · ionization_mechanism_id · isotope_label
 fit_score · mz_error_ppm · abundance_error
@@ -307,7 +307,7 @@ export const usePeakAssignment = defineStore('app.data.peakAssignment', () => {
     return m
   })
   const tierCounts = computed(() => {
-    const c = { identified: 0, candidate: 0, below_assignability: 0, unassigned: 0, reagent: 0 }
+    const c = { assigned: 0, candidate: 0, below_assignability: 0, unassigned: 0, reagent: 0 }
     for (const a of data.list.value) {
       if (a.role === 'reagent' || a.role === 'artifact') c.reagent++
       else c[a.tier] = (c[a.tier] ?? 0) + 1

@@ -140,7 +140,7 @@ def _annotate_assignment_scores(
         fit = float(fit) if fit is not None and np.isfinite(fit) else None
         entry["fit_score"] = round(fit, 4) if fit is not None else None
         entry["tier"] = tier_for_score(
-            fit, cfg.candidate_threshold, cfg.identified_threshold
+            fit, cfg.candidate_threshold, cfg.assigned_threshold
         )
         formula = (entry.get("cheminfo") or {}).get("target_compound_formula")
         entry["plausibility"] = (

@@ -64,7 +64,7 @@ async def test_get_assignments_supports_tier_and_role_filters(
 
     response = await guest_client.get(
         f"/api/peak-assignments/sample/{sample_item_id}",
-        params={"tier": "identified"},
+        params={"tier": "assigned"},
     )
     assert response.status_code == 200
     assert response.json()["results"] == 2
@@ -84,6 +84,39 @@ async def test_get_assignments_supports_tier_and_role_filters(
     )
     assert response.status_code == 200
     assert response.json()["results"] == 2
+
+
+@pytest.mark.asyncio
+async def test_the_tier_filter_still_accepts_the_pre_rename_spelling(
+    guest_client, pa_test_data
+):
+    """A reader pinned to 'identified' keeps getting the rows it asked for.
+
+    The filter is a closed vocabulary, so a spelling the server does not know
+    is a 422 rather than an empty ledger - which would turn every SDK client
+    written against the older documentation into an error on the release that
+    renamed the tier. The rows it wants are the ones now stored as 'assigned',
+    so the alias resolves to that and the answer is the same ledger.
+    """
+    sample_item_id = pa_test_data["sample_item_id"]
+
+    legacy = await guest_client.get(
+        f"/api/peak-assignments/sample/{sample_item_id}",
+        params={"tier": "identified"},
+    )
+    current = await guest_client.get(
+        f"/api/peak-assignments/sample/{sample_item_id}",
+        params={"tier": "assigned"},
+    )
+
+    assert legacy.status_code == 200
+    assert legacy.json()["results"] == 2
+    assert [row["sample_peak_id"] for row in legacy.json()["data"]] == [
+        row["sample_peak_id"] for row in current.json()["data"]
+    ]
+    # The rows come back under the current spelling either way: the alias is
+    # applied to the query, never to what is served.
+    assert {row["tier"] for row in legacy.json()["data"]} == {"assigned"}
 
 
 @pytest.mark.asyncio

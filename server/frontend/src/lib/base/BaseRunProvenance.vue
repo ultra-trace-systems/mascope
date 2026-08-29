@@ -102,15 +102,15 @@ const pctFmt = new Intl.NumberFormat('en-US', { style: 'percent', maximumFractio
 const band = (value) =>
   typeof value === 'number' && !Number.isNaN(value) ? pctFmt.format(value) : null
 
-// "identified" means nothing comparable across engines until the thresholds
+// "assigned" means nothing comparable across engines until the thresholds
 // that produced it are visible, so the bands travel with the engine name.
 const tierBandsText = computed(() => {
   const bands = props.run?.tier_bands
   if (!bands || typeof bands !== 'object') return null
-  const identified = band(bands.identified)
+  const assigned = band(bands.assigned)
   const candidate = band(bands.candidate)
   const parts = [
-    identified ? `identified \u2265 ${identified}` : null,
+    assigned ? `assigned \u2265 ${assigned}` : null,
     candidate ? `candidate \u2265 ${candidate}` : null
   ].filter(Boolean)
   return parts.length ? `Tier bands: ${parts.join(' \u00b7 ')}` : null

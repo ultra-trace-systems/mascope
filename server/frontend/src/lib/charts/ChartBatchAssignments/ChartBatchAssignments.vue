@@ -221,7 +221,7 @@ onUnmounted(() => {
         <p>
         Time series of the batch peaks selected in the Assignments ledger: one
         trace per batch peak, one point per sample. Marker fill encodes the
-        consensus tier &mdash; filled squares identified, open squares
+        consensus tier &mdash; filled squares assigned, open squares
         candidate, open diamonds below assignability, open circles unassigned
         &mdash; and the neutral open-diamond trace is the total ion current
         (TIC) reference.

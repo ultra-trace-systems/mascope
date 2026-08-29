@@ -4,11 +4,12 @@
 // and severity (BaseTierTag), the rank the tier column sorts by (the sample
 // ledger), the option list a tier filter offers, and the buckets a tier
 // histogram counts into. Each copy could drift from the others, and one did -
-// the batch-peaks table sorted the raw tier string, which put the worst tier
-// first and read as nonsense next to the sample ledger's ranked column.
+// the batch-peaks table sorted the raw tier string, which ordered the tiers
+// alphabetically and read as nonsense next to the sample ledger's ranked
+// column.
 //
 // Order here is meaning, not presentation: the list is written most confident
-// (identified) to least (unassigned), and a tier's rank is its position in it.
+// (assigned) to least (unassigned), and a tier's rank is its position in it.
 // Sorting a tier column ascending therefore reads as "best first", which is
 // what alphabetical order got wrong.
 
@@ -20,8 +21,8 @@ export const FALLBACK_TIER = 'unassigned'
 
 const TIER_DEFINITIONS = [
   {
-    key: 'identified',
-    label: 'identified',
+    key: 'assigned',
+    label: 'assigned',
     severity: 'success',
     icon: 'ph ph-seal-check'
   },

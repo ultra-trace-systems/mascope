@@ -16,7 +16,7 @@ Design (consistent with the rest of the confidence layer):
 - **Bounded and saturating.** ``corroboration = 1 - 2**-(n_adducts - 1)``: 0 for a lone
   adduct, 0.5 for two, 0.75 for three … — extra adducts help with diminishing returns.
 - **Conservative.** Only *accepted* assignments (per the caller's ``accept`` predicate, e.g.
-  identified/candidate tier) count; a lone adduct yields 0 (no boost, no penalty).
+  assigned/candidate tier) count; a lone adduct yields 0 (no boost, no penalty).
 
 Intensity-consistency across adducts and in-source-fragment grouping are later P3 refinements;
 this increment is the adduct-count signal, which is the largest untapped piece.
@@ -64,7 +64,7 @@ def adduct_corroboration(
         e.g. untargeted/unassigned rows have no ``target_compound_id``).
     :param adduct_key: field naming the adduct / ionization channel.
     :param accept: optional predicate to keep only confident assignments (e.g. tier in
-        {identified, candidate}); default keeps all.
+        {assigned, candidate}); default keeps all.
     :returns: ``{compound_id: AdductCorroboration}`` for every compound with >= 1 accepted
         assignment. ``corroboration`` is 0 for a compound seen via a single adduct.
     """

@@ -29,6 +29,13 @@ from collections import Counter, defaultdict
 from dataclasses import dataclass, field
 from typing import Any, Callable, Iterable, Optional
 
+from mascope_backend.api.new.peak_assignments.tiers import (
+    TIER_ASSIGNED,
+    TIER_BELOW_ASSIGNABILITY,
+    TIER_CANDIDATE,
+    TIER_UNASSIGNED,
+)
+
 
 # --- tolerances ---------------------------------------------------------------
 
@@ -38,17 +45,6 @@ from typing import Any, Callable, Iterable, Optional
 DEFAULT_DRIFT_MARGIN_PPM = 2.0
 
 # --- consensus ----------------------------------------------------------------
-
-TIER_UNASSIGNED = "unassigned"
-TIER_BELOW = "below_assignability"
-TIER_CANDIDATE = "candidate"
-TIER_IDENTIFIED = "identified"
-TIER_RANK = {
-    TIER_UNASSIGNED: 0,
-    TIER_BELOW: 1,
-    TIER_CANDIDATE: 2,
-    TIER_IDENTIFIED: 3,
-}
 
 #: Minimum vote weight for any assigned member, so a real-but-weak fit still counts.
 WEIGHT_FLOOR = 1e-3
@@ -328,7 +324,7 @@ def _mode(values: Iterable[Any]) -> Optional[Any]:
 
 def _rollup_tier(winner_members: list) -> str:
     """Batch tier from the winner members' per-sample tiers, evidence-weighted:
-    ``identified`` only when a weighted majority reach it, else ``candidate`` when a
+    ``assigned`` only when a weighted majority reach it, else ``candidate`` when a
     weighted majority are candidate-or-better, else ``below_assignability``.
     """
     weighted: dict[str, float] = defaultdict(float)
@@ -338,11 +334,11 @@ def _rollup_tier(winner_members: list) -> str:
         weighted[_member(m, "tier") or TIER_UNASSIGNED] += w
         total += w
     if total <= 0:
-        return TIER_BELOW
-    id_frac = weighted.get(TIER_IDENTIFIED, 0.0) / total
+        return TIER_BELOW_ASSIGNABILITY
+    id_frac = weighted.get(TIER_ASSIGNED, 0.0) / total
     cand_or_better = id_frac + weighted.get(TIER_CANDIDATE, 0.0) / total
     if id_frac >= 0.5:
-        return TIER_IDENTIFIED
+        return TIER_ASSIGNED
     if cand_or_better >= 0.5:
         return TIER_CANDIDATE
-    return TIER_BELOW
+    return TIER_BELOW_ASSIGNABILITY

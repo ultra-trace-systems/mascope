@@ -53,7 +53,7 @@ RUNS = [
     },
 ]
 
-TIERS = ("identified", "candidate", "below_assignability", "unassigned")
+TIERS = ("assigned", "candidate", "below_assignability", "unassigned")
 SOURCES = ("database", "untargeted")
 
 
@@ -276,16 +276,16 @@ class TestGet:
         assert resource.get(SAMPLE_ID, tier="candidate") is None
 
     def test_filters_are_passed_through(self, server, resource):
-        df = resource.get(SAMPLE_ID, tier="identified", source="database")
+        df = resource.get(SAMPLE_ID, tier="assigned", source="database")
 
-        assert set(df["tier"]) == {"identified"}
-        assert server.list_calls[0]["tier"] == "identified"
+        assert set(df["tier"]) == {"assigned"}
+        assert server.list_calls[0]["tier"] == "assigned"
         assert server.list_calls[0]["source"] == "database"
         assert "role" not in server.list_calls[0]
 
     def test_misspelled_enum_filter_raises_validation_error(self, resource):
         with pytest.raises(ValidationError):
-            resource.get(SAMPLE_ID, tier="identifed")
+            resource.get(SAMPLE_ID, tier="assinged")
 
 
 class TestDetail:

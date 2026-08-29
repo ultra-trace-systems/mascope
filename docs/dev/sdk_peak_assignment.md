@@ -151,7 +151,7 @@ is done).
 (`M0`/`iso_child`/`reagent`/`artifact`/`unassigned`), `assigned_formula`, `ion_formula`,
 `ionization_mechanism_id`, `isotope_label`, `isotope_formula`, `source`
 (`database`/`untargeted`), `fit_score`, `mz_error_ppm`, `abundance_error`, `tier`
-(`identified`/`candidate`/`below_assignability`/`unassigned`), `target_compound_id`,
+(`assigned`/`candidate`/`below_assignability`/`unassigned`), `target_compound_id`,
 `target_ion_id`, `owner_peak_assignment_id`, plus the flattened provenance scalars
 `p_correct` / `p_correct_provisional` / `corroboration_adducts`. The `alternatives`
 (JSON list) and `provenance` (JSON) blobs live on the per-assignment detail record:
@@ -271,7 +271,7 @@ mascope.peak_assignments.get(
     sample_id,
     *,
     run_id=None,        # default: latest completed run
-    tier=None,          # identified | candidate | below_assignability | unassigned
+    tier=None,          # assigned | candidate | below_assignability | unassigned
     role=None,          # M0 | iso_child | reagent | artifact | unassigned
     source=None,        # database | untargeted
 ) -> pd.DataFrame | None
@@ -490,7 +490,7 @@ Request, top level:
 | `engine` | external engine name (e.g. `"peaky"`), stamped on the run - see the `engine` column below. Reserved values are rejected (422) |
 | `engine_version` | the external engine's version string (the existing `engine_version` column, `String(64)`) |
 | `config` | the engine's full run configuration, **opaque JSON**, stored **verbatim** - the server never reads it and never writes into it. Size-capped (below) |
-| `tier_bands` | the `identified` / `candidate` fit-score thresholds the engine tiered with, **required** - a first-class run field, *not* buried in opaque `config`, because the server validates rows against it |
+| `tier_bands` | the `assigned` / `candidate` fit-score thresholds the engine tiered with, **required** - a first-class run field, *not* buried in opaque `config`, because the server validates rows against it. The legacy key `identified` is accepted and normalised to `assigned` (see "Enum validity" in Validation) |
 | `calibration` | the client's calibration state, **required** - its own nullable JSON column on the run, *not* a reserved key inside `config` |
 | `rows` | assignment rows (below) |
 | `chunk` | assembly control: `{run_id, import_id, index, complete}`, **required** (`import_id` with it) - see "One logical import" |
@@ -813,20 +813,27 @@ accept what is merely the importer's judgement.
 - **Enum validity.** `role` / `tier` / `source` are validated against the same
   typed vocabularies the read filters use (§3); a bad value is a 422 naming
   the accepted set. The *vocabulary* needs no mapping: the app's tier names
-  (`identified` / `candidate` / `below_assignability` / `unassigned`) and its
+  (`assigned` / `candidate` / `below_assignability` / `unassigned`) and its
   fit-score scale came *from* peaky, and both engines score with `mascope_tools`
   `score_pattern` - compatibility is by construction, not by translation
   ([peak_assignment_paradigm.md](peak_assignment_paradigm.md) §2,
-  [fit_score.md](../../libraries/tools/docs/fit_score.md)).
+  [fit_score.md](../../libraries/tools/docs/fit_score.md)). The one translation
+  the server does perform is historical: the top tier was called `identified`
+  before it was called `assigned`, and that spelling is still accepted - on an
+  imported row's `tier`, on the read filter, and as a `tier_bands` key -
+  normalised to `assigned` on the way in. An engine built against the old
+  vocabulary keeps publishing without a version negotiation, and because the
+  normalisation happens at the edge, nothing downstream ever sees two names for
+  one tier.
 - **Tier coherence against declared bands.** The shared *scale* does not make
   the shared *bands* automatic: in-app tiers are derived by thresholding
-  `fit_score` against `identified_threshold` (0.8) and `candidate_threshold`
+  `fit_score` against `assigned_threshold` (0.8) and `candidate_threshold`
   (0.5), which are **run config**, not engine constants. Since an import's
   `config` is opaque, the bands are lifted out as the required `tier_bands`
   field and each row's `tier` is checked against its `fit_score` under them; an
   incoherent row is a 422. Otherwise an engine tiering at 0.6/0.3 publishes
-  `identified` rows at `fit_score` 0.62 that sort and filter beside in-app
-  `identified` rows meaning something stricter - and outrank them in the
+  `assigned` rows at `fit_score` 0.62 that sort and filter beside in-app
+  `assigned` rows meaning something stricter - and outrank them in the
   cross-sample `TIER_RANK` roll-up in `compute_consensus`.
 
   The rule has **one stated exemption, and it covers most of a complete
@@ -1080,8 +1087,9 @@ about at request time.
 - **`assign(sample_id, *, config=None, wait=True, poll_interval=..., timeout=...)`**
   - wraps `POST .../assign`. `config` mirrors `PeakAssignmentConfig`
   (`run_untargeted`, `mz_precision_ppm`, `formula_ranges`, `max_untargeted_peaks`,
-  `peak_intensity_threshold`, `max_alternatives`, `identified_threshold`,
-  `candidate_threshold`). The 202 body carries the run id, so completion is
+  `peak_intensity_threshold`, `max_alternatives`, `assigned_threshold`,
+  `candidate_threshold`; the old `identified_threshold` spelling is still
+  accepted). The 202 body carries the run id, so completion is
   observed by polling **that run** to a terminal state - all three of which
   exist: `completed` | `failed` | `cancelled`. `wait=True` blocks and returns
   `get(...)` of the finished run; it raises on `failed` (carrying the run's
