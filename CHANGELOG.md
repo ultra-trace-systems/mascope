@@ -666,6 +666,26 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
   without any claim to a wider scope. A half-written verdict also survives a
   click inside the isotopologue table now, since moving between peaks of one
   compound no longer counts as starting a different judgment.
+- Refitting an instrument's confidence calibration no longer counts a verdict
+  somebody changed their mind about **twice**. Verification verdicts are stored
+  append-only, and every reader was left to work out which row was the current
+  one by taking the latest timestamp within an assignment's identity. The user
+  interface did that; the recalibration fit did not, so it trained on the whole
+  history - a confirm later switched to a reject contributed a positive *and* a
+  negative label, at an identical score. That pair is noise to the curve being
+  fitted, it drags the held-out quality metric toward chance, and it counts
+  toward the minimum-label thresholds that are supposed to be the guardrail
+  against fitting on too little.
+
+  The current verdict is now marked rather than re-derived: recording one stamps
+  the verdict it replaces in the same transaction, and a partial unique index
+  keeps exactly one live verdict per assignment identity, so a second one cannot
+  be written even by a double-fired submit. Replaced verdicts are kept, with the
+  score snapshot they were judged against - a retracted judgment is still an
+  honest observation about the model at that score, and it stays available for
+  audit - they are simply no longer counted as current. A migration marks the
+  history in databases that already hold verdicts; on any deployment it should
+  mark nothing, since none has the workflow enabled yet.
 
 - One compound can no longer end up drawn as **two batch-peak traces** because
   two samples were folded into the batch at the same time. A batch peak is a
