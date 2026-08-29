@@ -149,20 +149,6 @@ const fitPercent = new Intl.NumberFormat('en-US', {
 const formatFit = (value) =>
   value != null && !Number.isNaN(value) ? fitPercent.format(value) : '-'
 
-// Adduct-corroboration signal (P3): present only when the compound was seen via
-// several adducts (co-occurrence) -- winner-only, calibrated assignments. The
-// boost is already folded into p_correct, so the badge is purely informational.
-const corroboration = computed(() => provenance.value?.corroboration ?? null)
-const corroborationTooltip = computed(() => {
-  const c = corroboration.value
-  if (!c) return ''
-  const adducts = (c.adducts ?? []).join(', ')
-  return (
-    `Seen via ${c.n_adducts} adducts${adducts ? ` (${adducts})` : ''}. ` +
-    'Independent corroborating evidence, already folded into P(correct).'
-  )
-})
-
 // The isotopologue family (M0 + M+1, M+2 ...) of the focused assignment.
 const family = computed(() => app.data.peakAssignment.peak.familyOf(focusedAssignment.value))
 
@@ -170,6 +156,60 @@ const family = computed(() => app.data.peakAssignment.peak.familyOf(focusedAssig
 const m0 = computed(
   () => family.value.find((f) => f.role === 'M0' || f.isotope_label === 'M0') ?? null
 )
+
+// Adduct-corroboration signal (P3): present only when the compound was seen via
+// several adducts (co-occurrence) -- winner-only, calibrated assignments. The
+// boost is already folded into p_correct, so the badge is purely informational.
+//
+// The engine writes `provenance.corroboration` onto the M0 winner alone: a
+// satellite is the same ion measured at another isotope, not a second sighting
+// of the compound. The evidence is about the formula the family shares, so a
+// focused satellite shows its M0's count, flagged inherited. Only the count
+// carries across - the corroborating adducts are named in the M0's provenance,
+// and detail is fetched for the focused assignment alone.
+const corroboration = computed(() => {
+  const own = provenance.value?.corroboration
+  if (own?.n_adducts != null) return { ...own, inherited: false }
+  // The slim ledger row carries the count flattened, so the badge is there
+  // before the detail fetch lands - just without the adduct names.
+  const flat = focusedAssignment.value?.corroboration_adducts
+  if (flat != null) return { n_adducts: flat, adducts: [], inherited: false }
+  // Same two-step as the ledger's, so the two panes agree about a family whose
+  // rows carry provenance inline (a backend predating the slim projection).
+  const fromM0 = m0.value?.corroboration_adducts ?? m0.value?.provenance?.corroboration?.n_adducts
+  return fromM0 != null ? { n_adducts: fromM0, adducts: [], inherited: true } : null
+})
+
+// The badge says "via M0" on its face, not only on hover: the count is the same
+// number the M0 shows, and a satellite that displayed it unqualified would read
+// as a peak seen through several adducts in its own right.
+const corroborationLabel = computed(() => {
+  const c = corroboration.value
+  if (!c) return ''
+  return `Supported by ${c.n_adducts} adducts${c.inherited ? ' via M0' : ''}`
+})
+
+// The boost is folded into the record that carries the corroboration - the M0's
+// p_correct - and never into a satellite's, which stays calibrated on its own
+// evidence (engine.py::_fold_adduct_corroboration rewrites M0 winners only). So
+// an inherited badge must not claim the number beside it already accounts for
+// this, which is the one thing the M0's wording does say.
+const corroborationTooltip = computed(() => {
+  const c = corroboration.value
+  if (!c) return ''
+  if (c.inherited) {
+    return (
+      `The M0 of this isotopologue family was seen via ${c.n_adducts} adducts. ` +
+      "Independent corroborating evidence for the formula, folded into the M0's " +
+      "P(correct) - not into this satellite's, which is calibrated on its own."
+    )
+  }
+  const adducts = (c.adducts ?? []).join(', ')
+  return (
+    `Seen via ${c.n_adducts} adducts${adducts ? ` (${adducts})` : ''}. ` +
+    'Independent corroborating evidence, already folded into P(correct).'
+  )
+})
 
 // Compact substitution label (e.g. "[15N]", "[81Br][2H]") from the full
 // isotopologue formula; falls back to the M0/M+1 offset label.
@@ -353,10 +393,11 @@ const altTooltip = (alt) => {
       <div
         v-if="corroboration && corroboration.n_adducts > 1"
         class="corroboration"
+        :class="{ inherited: corroboration.inherited }"
         v-tooltip.top="corroborationTooltip"
       >
         <span class="pi ph ph-link-simple" />
-        Supported by {{ corroboration.n_adducts }} adducts
+        {{ corroborationLabel }}
       </div>
       <div
         v-if="family.length > 1"
@@ -791,6 +832,12 @@ const altTooltip = (alt) => {
 }
 .corroboration .pi {
   font-size: 0.8rem;
+}
+/* Corroboration read off the family's M0 rather than measured on this peak. The
+   badge says so in words too - dimming it instead would borrow the "no value
+   here" idiom the uncalibrated states use, and cost contrast the pill needs. */
+.corroboration.inherited {
+  border-style: dashed;
 }
 .ev .v.uncal {
   opacity: 0.55;

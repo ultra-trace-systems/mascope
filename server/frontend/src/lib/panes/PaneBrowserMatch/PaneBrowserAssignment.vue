@@ -278,6 +278,7 @@ const rows = computed(() => {
       pCorrect: row.p_correct ?? row.provenance?.p_correct ?? null,
       pProvisional: row.p_correct_provisional ?? row.provenance?.calibration?.provisional ?? false,
       corrobAdducts: row.corroboration_adducts ?? row.provenance?.corroboration?.n_adducts ?? 0,
+      corrobInherited: false,
       mech: mechById.value.get(row.ionization_mechanism_id) ?? null,
       isChild: false
     }))
@@ -292,17 +293,28 @@ const rows = computed(() => {
       .childrenOf(parent.peak_assignment_id)
       .slice()
       .sort((a, b) => (a.sample_peak_mz ?? 0) - (b.sample_peak_mz ?? 0))
-      .map((child) => ({
-        ...child,
-        tierRank: parent.tierRank,
-        pCorrect: child.p_correct ?? child.provenance?.p_correct ?? null,
-        pProvisional:
-          child.p_correct_provisional ?? child.provenance?.calibration?.provisional ?? false,
-        corrobAdducts:
-          child.corroboration_adducts ?? child.provenance?.corroboration?.n_adducts ?? 0,
-        mech: mechById.value.get(child.ionization_mechanism_id) ?? null,
-        isChild: true
-      }))
+      .map((child) => {
+        // Adduct corroboration is written onto the M0 winner alone: a satellite
+        // is the same ion measured at another isotope, not a second sighting of
+        // the compound, so it never carries a count of its own. The evidence is
+        // about the formula the family shares, so the satellite shows its
+        // parent's count and the marker says where it came from.
+        const own = child.corroboration_adducts ?? child.provenance?.corroboration?.n_adducts
+        return {
+          ...child,
+          tierRank: parent.tierRank,
+          pCorrect: child.p_correct ?? child.provenance?.p_correct ?? null,
+          pProvisional:
+            child.p_correct_provisional ?? child.provenance?.calibration?.provisional ?? false,
+          corrobAdducts: own ?? parent.corrobAdducts,
+          // True whenever the count on this row is the parent's, independent of
+          // whether it clears the marker's threshold, so the row stays
+          // self-describing to anything that reads it below that threshold.
+          corrobInherited: own == null && parent.corrobAdducts > 0,
+          mech: mechById.value.get(child.ionization_mechanism_id) ?? null,
+          isChild: true
+        }
+      })
     result.push(...children)
   }
   return result
@@ -315,6 +327,22 @@ const childLabel = (row) =>
 
 // Calibrated probability formatter for the P(correct) column.
 const pctFmt = new Intl.NumberFormat('en-US', { style: 'percent', maximumFractionDigits: 0 })
+
+// A borrowed count is parenthesised, so a satellite does not read at a glance as
+// a peak seen through several adducts in its own right.
+const corrobLabel = (row) =>
+  row.corrobInherited ? `(${row.corrobAdducts})` : `${row.corrobAdducts}`
+
+// Tooltip for the adduct-corroboration marker. A satellite shows the count its
+// M0 was corroborated by, so it has to say both that the evidence is the
+// family's and that the boost is in the M0's P(correct) - the engine folds it
+// into the record carrying the corroboration and never into a satellite's, so
+// the number this marker sits beside does not include it.
+const corrobTooltip = (row) =>
+  row.corrobInherited
+    ? `Supported by ${row.corrobAdducts} adducts, via the M0 of this isotopologue family ` +
+      "(folded into the M0's P(correct), not into this row's)"
+    : `Supported by ${row.corrobAdducts} adducts (already folded into P(correct))`
 
 // Two-way selection tied to the focused peak: clicking a row focuses its peak,
 // and focusing a peak elsewhere (spectrum click, inspector) highlights its row.
@@ -720,10 +748,8 @@ const breadcrumb = computed(() => {
             <span
               v-if="data.corrobAdducts > 1"
               class="corrob-mark"
-              v-tooltip.top="
-                `Supported by ${data.corrobAdducts} adducts (already folded into P(correct))`
-              "
-              ><span class="pi ph ph-link-simple" />{{ data.corrobAdducts }}</span
+              v-tooltip.top="corrobTooltip(data)"
+              ><span class="pi ph ph-link-simple" />{{ corrobLabel(data) }}</span
             >
           </template>
         </Column>
