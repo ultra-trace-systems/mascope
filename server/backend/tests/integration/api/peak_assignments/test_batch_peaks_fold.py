@@ -21,6 +21,7 @@ from mascope_backend.api.new.peak_assignments.batch_peaks_controller import (
     fold_sample_into_batch_peaks,
 )
 from mascope_backend.api.new.peak_assignments.batch_peaks_records import (
+    get_batch_peak_counterpart,
     get_batch_peak_ledger,
     get_batch_peak_series,
 )
@@ -515,3 +516,116 @@ async def test_concurrent_folds_without_the_lock_split_one_species(
     shared = _anchors_near(peaks, 181.0707)
     assert len(shared) == 2
     assert [p.n_present for p in shared] == [1, 1]
+
+
+async def test_counterpart_follows_a_peak_into_another_sample(seeded):
+    """A peak resolves to the sample peak that shares its anchor.
+
+    This is the mapping read backwards: A1 and B1 are different sample peaks at
+    the same m/z, so they fold into one batch peak, and that is what makes them
+    "the same peak" for a user moving between the two samples. Asserted in both
+    directions, because the follow runs whichever way the user goes.
+    """
+    _, samples = seeded
+    await fold_sample_into_batch_peaks(samples["A"])
+    await fold_sample_into_batch_peaks(samples["B"])
+
+    forward = await get_batch_peak_counterpart(
+        sample_item_id=samples["A"],
+        sample_peak_id="A1",
+        target_sample_item_id=samples["B"],
+    )
+    assert forward["results"] == 1
+    assert forward["data"][0]["sample_peak_id"] == "B1"
+    assert forward["data"][0]["sample_item_id"] == samples["B"]
+
+    back = await get_batch_peak_counterpart(
+        sample_item_id=samples["B"],
+        sample_peak_id="B1",
+        target_sample_item_id=samples["A"],
+    )
+    assert back["results"] == 1
+    assert back["data"][0]["sample_peak_id"] == "A1"
+    # Both directions travel through the one anchor, so they agree on it.
+    assert back["data"][0]["batch_peak_id"] == forward["data"][0]["batch_peak_id"]
+
+
+async def test_counterpart_is_empty_when_the_species_is_absent(seeded):
+    """No counterpart is an ordinary answer, not a failure.
+
+    A2 was seen only in sample A, so its anchor has no member in sample B. The
+    caller reads that as "leave the selection empty", which is why it must come
+    back as a successful empty result rather than as an error.
+    """
+    _, samples = seeded
+    await fold_sample_into_batch_peaks(samples["A"])
+    await fold_sample_into_batch_peaks(samples["B"])
+
+    result = await get_batch_peak_counterpart(
+        sample_item_id=samples["A"],
+        sample_peak_id="A2",
+        target_sample_item_id=samples["B"],
+    )
+
+    assert result["status"] == "success"
+    assert result["results"] == 0
+    assert result["data"] == []
+
+
+async def test_counterpart_resolves_an_unassigned_peak_through_its_own_anchor(seeded):
+    """An unassigned peak is resolvable by this read like any other.
+
+    Every observed peak folds into a batch peak, assigned or not, so the follow
+    is not a privilege of assigned species -- which matters, because comparing
+    an unexplained m/z across samples is exactly when you want it. Only sample A
+    saw this m/z, so what is asserted here is that the peak has an anchor and
+    resolves through it; the cross-sample hop is covered above.
+    """
+    _, samples = seeded
+    await fold_sample_into_batch_peaks(samples["A"])
+
+    # A3 is the unassigned peak; it has an anchor of its own in sample A.
+    own = await get_batch_peak_counterpart(
+        sample_item_id=samples["A"],
+        sample_peak_id="A3",
+        target_sample_item_id=samples["A"],
+    )
+    assert own["results"] == 1
+    assert own["data"][0]["tier"] == "unassigned"
+
+
+async def test_counterpart_is_empty_before_the_batch_is_folded(seeded):
+    """Nothing to follow until batch peaks exist.
+
+    A batch assigned before this feature, or never folded, has no occurrences at
+    all -- the read has to answer that quietly rather than fail, because it is
+    the state every batch starts in.
+    """
+    _, samples = seeded
+
+    result = await get_batch_peak_counterpart(
+        sample_item_id=samples["A"],
+        sample_peak_id="A1",
+        target_sample_item_id=samples["B"],
+    )
+
+    assert result["results"] == 0
+
+
+async def test_counterpart_of_an_unknown_peak_is_empty(seeded):
+    """An id that is not in the batch resolves to nothing, not to a wrong peak.
+
+    Recomputing a sample's peaks mints new ids, so a stale id is a real thing to
+    be handed; it must never be answered with someone else's peak.
+    """
+    _, samples = seeded
+    await fold_sample_into_batch_peaks(samples["A"])
+    await fold_sample_into_batch_peaks(samples["B"])
+
+    result = await get_batch_peak_counterpart(
+        sample_item_id=samples["A"],
+        sample_peak_id="no-such-peak",
+        target_sample_item_id=samples["B"],
+    )
+
+    assert result["results"] == 0

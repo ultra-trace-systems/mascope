@@ -1,6 +1,5 @@
 <script setup>
 import { ref, computed, watch, toRaw, nextTick, onUnmounted } from 'vue'
-import { until } from '@vueuse/core'
 
 import Select from 'primevue/select'
 import FloatLabel from 'primevue/floatlabel'
@@ -8,6 +7,7 @@ import ProgressSpinner from 'primevue/progressspinner'
 
 import { useApp } from '@/stores'
 import { ToolbarDrawMode, ToolbarIntensityScale } from '@/lib/toolbars'
+import { untilStoreSettled } from '@/lib/store/settle'
 
 import BaseChartPlotly from '../BaseChartPlotly.vue'
 import { useSampleScroller } from '@/lib/panes/PaneBrowserSample/stores'
@@ -135,18 +135,13 @@ const layout = computed(() => {
 /**
  * Resolve once the peak store holds the focused sample's peaks.
  *
- * The store reloads on a sample switch through a plain dependency watcher, so
- * at the moment of the switch `pending` is still false and `list` still holds
- * the PREVIOUS sample's peaks -- joining right away would always miss. One tick
- * lets the reload be queued; then we wait for it to finish. The timeout is a
- * backstop: a load that never settles degrades the click to sample-focus only
- * rather than leaving the promise (and its watcher) alive for good. It resolves
- * rather than throws, so there is no rejection to handle.
+ * See `@/lib/store/settle` for why the tick and the backstop are both needed.
+ * A load that never settles degrades the click to sample-focus only rather than
+ * leaving the promise alive for good, which is why the find below treats a
+ * missing peak as "nothing to focus" rather than an error.
  */
-async function peakStoreSettled() {
-  await nextTick()
-  if (!app.data.peak.pending) return
-  await until(() => app.data.peak.pending).toBe(false, { timeout: 30_000 })
+function peakStoreSettled() {
+  return untilStoreSettled(() => app.data.peak.pending)
 }
 
 /**
@@ -154,7 +149,12 @@ async function peakStoreSettled() {
  * from, and bring the Sample tab (spectrum + inspector) forward -- the same
  * click-through the ledger offers (PaneBrowserAssignment) and the overview
  * chart offers for a matched ion. A click on the TIC trace, or on a sample
- * where this batch peak was never observed, focuses the sample and stops there.
+ * where this batch peak was never observed, focuses the sample and stops there
+ * -- this handler writes no peak focus in that case. What the peak focus then
+ * does is the general rule for any sample switch: it follows the peak that was
+ * already focused into the new sample (see `peakFocusFollow`). That follow
+ * stands down whenever this handler focuses a peak itself, so an explicit
+ * click-through always wins over it.
  */
 async function onClick({ pointIndex, curveNumber }) {
   if (pointIndex == null) return

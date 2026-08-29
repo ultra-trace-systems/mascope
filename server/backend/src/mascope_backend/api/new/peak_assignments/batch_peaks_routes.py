@@ -13,6 +13,7 @@ from mascope_backend.api.new.peak_assignments.batch_peaks_controller import (
     compute_batch_peaks,
 )
 from mascope_backend.api.new.peak_assignments.batch_peaks_records import (
+    get_batch_peak_counterpart,
     get_batch_peak_ledger,
     get_batch_peak_series,
 )
@@ -22,6 +23,7 @@ from mascope_backend.api.new.peak_assignments.routes import (
 from mascope_backend.api.new.peak_assignments.schemas import AssignmentTier
 from mascope_backend.api.new.workspaces.dependencies import (
     check_batch_access,
+    check_sample_access,
     check_sample_access_bulk,
     require_batch_role,
 )
@@ -77,8 +79,11 @@ class BatchPeakRecordsResponse(BaseModel):
 
     status: str = Field(description="Response status")
     message: str = Field(description="Response message")
-    results: int = Field(description="Number of batch peaks returned")
-    data: list[dict] = Field(description="Batch-peak series records")
+    results: int = Field(description="Number of records returned")
+    data: list[dict] = Field(
+        description="Batch-peak records: series, ledger rows, or a counterpart "
+        "occurrence, depending on the route"
+    )
 
 
 @batch_peaks_router.post("/records/series", response_model=BatchPeakRecordsResponse)
@@ -103,6 +108,45 @@ async def get_batch_peak_series_route(
     else:
         await check_sample_access_bulk(body.sample_item_ids, user, "guest")
     result = await get_batch_peak_series(**body.model_dump())
+    return BatchPeakRecordsResponse.model_validate(result)
+
+
+@batch_peaks_router.get("/records/counterpart", response_model=BatchPeakRecordsResponse)
+@api_route()
+async def get_batch_peak_counterpart_route(
+    sample_item_id: str,
+    sample_peak_id: str,
+    target_sample_item_id: str,
+    user: User = Depends(current_active_user),
+) -> BatchPeakRecordsResponse:
+    """Find the peak in one sample that is the same species as a peak in another.
+
+    Sameness is the batch-peak anchor, not m/z proximity: the source peak's
+    occurrence names its batch peak, and that batch peak's occurrence in the
+    target sample is the answer. The Sample view calls this when the focused
+    sample changes, so the focused peak can follow the user across samples.
+
+    A miss is a 200 with ``results: 0``, not a 404. Having no counterpart is the
+    ordinary state of a peak that only one sample saw, and the caller's response
+    to it is to leave the selection empty and say nothing -- an error status
+    would only be something every client has to swallow.
+
+    Both samples are access-checked individually rather than as a list, so an id
+    the caller cannot read is refused even when the other one resolves.
+
+    :param sample_item_id: The sample the peak being followed belongs to.
+    :param sample_peak_id: The peak to find a counterpart for.
+    :param target_sample_item_id: The sample to find it in.
+    :param user: The current authenticated user. Requires workspace guest role.
+    :return: The counterpart occurrence, or no rows when there is none.
+    """
+    await check_sample_access(sample_item_id, user, "guest")
+    await check_sample_access(target_sample_item_id, user, "guest")
+    result = await get_batch_peak_counterpart(
+        sample_item_id=sample_item_id,
+        sample_peak_id=sample_peak_id,
+        target_sample_item_id=target_sample_item_id,
+    )
     return BatchPeakRecordsResponse.model_validate(result)
 
 

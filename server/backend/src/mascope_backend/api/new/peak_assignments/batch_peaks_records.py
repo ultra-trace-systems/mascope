@@ -1,9 +1,11 @@
-"""Batch-peak series read service -- the columnar feed for the batch overview.
+"""Batch-peak read services -- the feeds behind the batch overview.
 
-Mirrors ``get_match_ion_series``: one record per batch peak carrying its consensus
-(m/z, formula, tier) once, plus a ``peak_series`` of parallel per-sample arrays.
-This keeps chart-data responses for large batches small. See
-``docs/dev/peak_assignment_batch.md``.
+The series read mirrors ``get_match_ion_series``: one record per batch peak
+carrying its consensus (m/z, formula, tier) once, plus a ``peak_series`` of
+parallel per-sample arrays. This keeps chart-data responses for large batches
+small. The ledger read is its metadata-only counterpart, and the counterpart
+read walks one occurrence backwards, from a sample peak to the same species in
+another sample. See ``docs/dev/peak_assignment_batch.md``.
 """
 
 from __future__ import annotations
@@ -182,6 +184,94 @@ async def get_batch_peak_ledger(
     return {
         "status": "success",
         "message": f"Retrieved {len(data)} batch peak{'s' if len(data) != 1 else ''}",
+        "results": len(data),
+        "data": data,
+    }
+
+
+@api_controller()
+async def get_batch_peak_counterpart(
+    sample_item_id: str,
+    sample_peak_id: str,
+    target_sample_item_id: str,
+) -> dict:
+    """Resolve one sample peak's counterpart in another sample, via its batch peak.
+
+    "The same peak in another sample" has a first-class definition in the batch
+    model: two observed peaks are the same species when they folded into the same
+    frozen m/z anchor. This walks that mapping in reverse, which is the direction
+    the occurrence table was never read in before -- two hops over
+    ``BatchPeakOccurrence``: the source peak's occurrence gives its
+    ``batch_peak_id``, and that anchor's occurrence in the target sample is the
+    counterpart. It answers a question no existing read can: the series feed is
+    keyed by batch peak and has no way in from a ``sample_peak_id``.
+
+    Empty is a normal answer, never an error, and it covers every way the two
+    samples can fail to share a species: the source peak was never folded (its
+    sample has no completed run, or batch peaks were never computed for the
+    batch), the anchor was never observed in the target sample, or the two
+    samples belong to different batches or ionization modes. The last case needs
+    no enforcement branch because it cannot match: a batch peak is stamped with
+    its ``sample_batch_id`` and ``ionization_mode_id`` when it is minted, and a
+    sample's batch is a scalar column, so a cross-batch pair simply finds no row.
+
+    Two caveats worth knowing when a lookup comes back empty. Recomputing a
+    sample's peaks mints fresh ``peak_id`` values, so that sample's stored
+    occurrences point at peaks that no longer exist until it is folded again.
+    And ``.limit(1)`` is defensive rather than decorative: no constraint makes
+    ``(sample_item_id, sample_peak_id)`` unique -- that holds only because the
+    fold writes one occurrence per assignment row and deletes a sample's prior
+    occurrences before re-inserting. The ``order_by`` keeps the answer stable if
+    that invariant were ever broken, rather than returning a different peak per
+    request.
+
+    Hop 2 rides the unique index on ``(batch_peak_id, sample_item_id)``. Hop 1
+    has no index on ``sample_peak_id``, so it filters over the source sample's
+    own occurrences; that is one indexed scan per sample switch, not per frame.
+
+    :param sample_item_id: The sample the peak being followed belongs to
+    :param sample_peak_id: The peak to find a counterpart for
+    :param target_sample_item_id: The sample to find it in
+    :return: Dictionary with status, message, results count, and 0 or 1 rows
+    """
+    anchor = select(BatchPeakOccurrence.batch_peak_id).where(
+        BatchPeakOccurrence.sample_item_id == sample_item_id,
+        BatchPeakOccurrence.sample_peak_id == str(sample_peak_id),
+    )
+
+    async with async_session() as session:
+        row = (
+            await session.execute(
+                select(
+                    BatchPeakOccurrence.batch_peak_id,
+                    BatchPeakOccurrence.sample_item_id,
+                    BatchPeakOccurrence.sample_peak_id,
+                    BatchPeakOccurrence.sample_peak_mz,
+                    BatchPeakOccurrence.intensity,
+                    BatchPeakOccurrence.tier,
+                    BatchPeakOccurrence.peak_assignment_id,
+                )
+                .where(
+                    BatchPeakOccurrence.batch_peak_id.in_(anchor),
+                    BatchPeakOccurrence.sample_item_id == target_sample_item_id,
+                )
+                .order_by(BatchPeakOccurrence.batch_peak_id)
+                .limit(1)
+            )
+        ).first()
+
+    data = [dict(row._mapping)] if row is not None else []
+    message = (
+        f"Resolved peak '{sample_peak_id}' into sample '{target_sample_item_id}'"
+        if data
+        else (
+            f"No counterpart for peak '{sample_peak_id}' in sample "
+            f"'{target_sample_item_id}'"
+        )
+    )
+    return {
+        "status": "success",
+        "message": message,
         "results": len(data),
         "data": data,
     }
