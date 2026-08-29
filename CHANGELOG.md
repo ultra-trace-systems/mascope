@@ -631,6 +631,21 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
 
 ### Fixed
 
+- A verification verdict now covers a compound's whole **isotopologue family**
+  rather than one peak of it. An M+1 is not a second thing to judge - it is the
+  same compound seen through one heavy atom - but a verdict was looked up by the
+  peak it was recorded against, so confirming a compound left every satellite
+  looking unjudged: focusing one opened an empty confirm / reject / unsure form
+  beside its own confirmed parent, and an unfolded family in the assignment
+  ledger showed a *Confirmed* badge on the M0 row with blank verdict cells on
+  every child row beneath it - even under the ledger's *Confirmed* filter, which
+  is what had put the family on screen. Confirming a compound now shows the
+  verdict on every member of its family, and verifying while a satellite is
+  focused records a single verdict against the compound rather than another one
+  against that peak, so the confidence calibration is fed one label per family
+  instead of several correlated ones. The inspector says which compound a
+  verdict captured from a satellite applies to.
+
 - One compound can no longer end up drawn as **two batch-peak traces** because
   two samples were folded into the batch at the same time. A batch peak is a
   frozen m/z anchor: an arriving sample's peak joins the nearest existing anchor

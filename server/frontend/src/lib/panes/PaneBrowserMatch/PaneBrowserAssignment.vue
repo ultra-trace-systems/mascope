@@ -50,8 +50,16 @@ const mechById = computed(() => {
 // `sample_peak_id|assigned_formula|ionization_mechanism_id` is degenerate
 // without a formula anyway, so a verdict left by an earlier run could match the
 // wrong peak.)
-const verdictFor = (row) =>
-  row?.assigned_formula ? app.data.peakAssignment.verification.forAssignment(row) : null
+//
+// Both the guard and the lookup resolve through the family M0: an unfolded
+// satellite is the same compound as the parent above it, so it shows the same
+// badge rather than a blank cell that reads as "not yet judged". The filter
+// below runs over parents only, so a family is one unit there already - keeping
+// the two in step is the point.
+const verdictFor = (row) => {
+  const m0 = assignments.value.m0Of(row)
+  return m0?.assigned_formula ? app.data.peakAssignment.verification.forAssignment(m0) : null
+}
 
 // Verdict filter (single-select). "unverified" = no current verdict.
 const VERDICT_FILTERS = [

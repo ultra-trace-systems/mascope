@@ -71,6 +71,30 @@ async function loadAssignments(sampleItemId, runId) {
   return rows
 }
 
+/**
+ * The M0 of a row's isotopologue family - the row itself unless it is a
+ * satellite, in which case its owner.
+ *
+ * The M0 is what the whole family is *about*: an M+1 peak is not a separate
+ * finding, it is the same compound seen through one heavy atom. Anything that
+ * judges or labels a compound therefore anchors on the M0 rather than on
+ * whichever family member happens to be focused.
+ *
+ * A satellite whose owner is not in the loaded ledger resolves to itself. That
+ * should not happen - a run stores the owner alongside its children - but
+ * returning null would make callers treat a real row as no row at all, which is
+ * a worse answer than treating the orphan as its own anchor.
+ *
+ * @param {Object} assignment a ledger row, or null
+ * @param {Map} byId peak_assignment_id -> row, for the loaded run
+ * @returns {Object|null} the family's M0, or null when there is no row
+ */
+export function familyM0(assignment, byId) {
+  if (!assignment) return null
+  if (assignment.role !== 'iso_child') return assignment
+  return byId?.get(assignment.owner_peak_assignment_id) ?? assignment
+}
+
 // Peak ASSIGNMENTS for the focused sample + focused run.
 //
 // One row per observed peak, keyed by sample_peak_id (unique within a run and
@@ -176,15 +200,16 @@ export const usePeakAssignment = defineStore('app.data.peakAssignment', () => {
   const childrenOf = (peakAssignmentId) =>
     peakAssignmentId == null ? [] : (childrenByOwner.value.get(peakAssignmentId) ?? [])
 
+  // The M0 any row belongs to (see familyM0). The anchor a family-scoped
+  // judgment is read from and written against - consumed by the verification
+  // store and by both surfaces that show a verdict.
+  const m0Of = (assignment) => familyM0(assignment, byId.value)
+
   // The full isotopologue family (M0 + its children), ordered by m/z, for any
   // member of the family. Consumed by the peak inspector.
   const familyOf = (assignment) => {
-    if (!assignment) return []
-    const m0 =
-      assignment.role === 'iso_child'
-        ? byId.value.get(assignment.owner_peak_assignment_id)
-        : assignment
-    if (!m0) return [assignment]
+    const m0 = m0Of(assignment)
+    if (!m0) return []
     return [m0, ...childrenOf(m0.peak_assignment_id)].sort(
       (a, b) => a.sample_peak_mz - b.sample_peak_mz
     )
@@ -220,6 +245,7 @@ export const usePeakAssignment = defineStore('app.data.peakAssignment', () => {
     forPeak,
     byId,
     childrenOf,
+    m0Of,
     familyOf,
     tierCounts,
     detailOf: detail.detailOf,

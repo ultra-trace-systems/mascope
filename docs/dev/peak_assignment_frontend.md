@@ -78,9 +78,9 @@ consumers (which branch on opposite comparisons) cannot land on opposite sides.
 
 **Stores** ([`peakAssignment/`](../../server/frontend/src/stores/data/modules/peakAssignment/)):
 `run` (auto-focus latest completed via a list-membership watcher in the store itself;
-`peak_assignment_reload` event), `peak` (`byPeakId`/`forPeak`, `childrenOf`/`familyOf`, `tierCounts`
-excluding iso_child; loads the ledger itself page by page — see §2.2) and `verification` (the
-append-only verdict history: `currentByIdentity`/`forAssignment` keyed on the stable
+`peak_assignment_reload` event), `peak` (`byPeakId`/`forPeak`, `childrenOf`/`familyOf`/`m0Of`,
+`tierCounts` excluding iso_child; loads the ledger itself page by page — see §2.2) and `verification`
+(the append-only verdict history: `currentByIdentity`/`forAssignment` keyed on the stable
 `sample_peak_id|assigned_formula|ionization_mechanism_id` identity — not `peak_assignment_id`, which
 every run regenerates — plus `verify()`). Registered nested (not spread) under
 `app.data.peakAssignment.{run,peak,verification}`.
@@ -88,8 +88,10 @@ every run regenerates — plus `verify()`). Registered nested (not spread) under
 **Verification.** Assignments can be hand-labelled confirm / reject / unsure: the inspector renders
 the current verdict as a [`BaseVerdictBadge`](../../server/frontend/src/lib/base/BaseVerdictBadge.vue)
 (shared constants in [`lib/verification.js`](../../server/frontend/src/lib/verification.js)) with a
-small verdict form posting through `verification.verify()`. Backend surface:
-`GET /sample/{id}/verifications`, `POST /sample/{id}/verify` (editor), and the superuser
+small verdict form posting through `verification.verify()`. **One verdict covers the isotopologue
+family**: both the read and the write resolve a row to its family's M0 (`peak.m0Of`), so a satellite
+shows its compound's verdict and verifying from one writes a single label against the M0. Backend
+surface: `GET /sample/{id}/verifications`, `POST /sample/{id}/verify` (editor), and the superuser
 `POST /calibration/{instrument}/recalibrate` that refits the confidence calibration from the
 accumulated labels. Details in [`verification_capture_frontend.md`](verification_capture_frontend.md)
 and [`verification_calibration_loop.md`](verification_calibration_loop.md).
