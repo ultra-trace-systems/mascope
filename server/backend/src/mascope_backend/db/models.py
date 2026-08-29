@@ -1652,6 +1652,21 @@ class BatchPeak(Base):
     # 1 when the top consensus candidates are within a tie tolerance, or the
     # member disagreement looks like a co-eluting blend.
     is_ambiguous: Mapped[int] = mapped_column(Integer, server_default=text("'0'"))
+    # Brightest member: the largest occurrence intensity, in the unit
+    # ``intensity_variable`` names. A member aggregate materialized here for the
+    # same reason ``n_present`` is -- the ledger reads batch peaks alone and
+    # never joins the occurrence table.
+    max_intensity: Mapped[Optional[float]] = mapped_column(Float)
+    # The batch peak this one is an isotopologue satellite of, derived from the
+    # members' per-sample ``PeakAssignment`` family links (see
+    # ``resolve_satellite_of``). NULL for an M0 anchor, for an unassigned one,
+    # and whenever the members do not agree that this is a satellite. One hop
+    # only: a chain is left for the reader to flatten.
+    satellite_of: Mapped[Optional[str]] = mapped_column(
+        String(16),
+        ForeignKey("batch_peak.batch_peak_id", ondelete="SET NULL"),
+        index=True,
+    )
     alternatives: Mapped[Optional[list]] = mapped_column(JSON)
     provenance: Mapped[Optional[dict]] = mapped_column(JSON)
     batch_peak_utc_created: Mapped[Optional[dt]] = mapped_column(

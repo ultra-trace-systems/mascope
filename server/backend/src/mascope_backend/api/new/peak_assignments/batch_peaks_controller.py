@@ -22,6 +22,7 @@ from sqlalchemy.exc import IntegrityError
 from mascope_backend.api.lib.api_features import api_controller_background_task
 from mascope_backend.api.new.instrument_configs.lib import read_instrument_functions
 from mascope_backend.api.new.peak_assignments.batch_peaks import (
+    ROLE_ISO_CHILD,
     Anchor,
     AnchorSet,
     compute_consensus,
@@ -319,6 +320,47 @@ async def fold_sample_into_batch_peaks(sample_item_id: str) -> str | None:
     return sample_batch_id
 
 
+async def _owner_anchor_by_assignment(session, owner_ids: set[str]) -> dict[str, str]:
+    """Map each owning assignment to the batch peak its own peak folded into.
+
+    The family link a satellite needs is per-sample: an ``iso_child`` assignment
+    names the assignment that owns it, and what the batch level wants is the
+    ANCHOR that owning peak landed on. ``BatchPeakOccurrence`` already records
+    the assignment each member was folded from, so the hop is one indexed lookup
+    rather than a walk back through the owner's sample peak.
+
+    An owner with no occurrence resolves to nothing, which is the honest answer:
+    a peak dropped from the fold (two peaks inside one anchor's tolerance in one
+    sample, nearest wins) has no anchor to point at, and the satellite abstains
+    from the vote rather than naming a peak that is not in the ledger.
+
+    One lookup per owner, not one per (owner, sample), because an assignment
+    belongs to a single sample and a sample's peak folds into a single anchor -
+    so an assignment has at most one occurrence. No constraint says so
+    (``batch_peak_occurrence`` is unique on batch peak + sample), which is why
+    it is written down here rather than relied on silently.
+
+    Runs on the caller's session, as everything between the fold lock and the
+    commit must.
+
+    :param session: The fold's session, already holding the batch lock.
+    :param owner_ids: ``peak_assignment_id`` of each owning assignment.
+    :return: owning ``peak_assignment_id`` -> ``batch_peak_id``.
+    :rtype: dict[str, str]
+    """
+    if not owner_ids:
+        return {}
+    rows = (
+        await session.execute(
+            select(
+                BatchPeakOccurrence.peak_assignment_id,
+                BatchPeakOccurrence.batch_peak_id,
+            ).where(BatchPeakOccurrence.peak_assignment_id.in_(owner_ids))
+        )
+    ).all()
+    return {peak_assignment_id: bp_id for peak_assignment_id, bp_id in rows}
+
+
 async def _recompute_consensus(
     session, batch_peak_ids: set[str], now: datetime
 ) -> None:
@@ -339,6 +381,8 @@ async def _recompute_consensus(
                 PeakAssignment.ion_formula,
                 PeakAssignment.ionization_mechanism_id,
                 PeakAssignment.provenance,
+                PeakAssignment.role,
+                PeakAssignment.owner_peak_assignment_id,
             )
             .outerjoin(
                 PeakAssignment,
@@ -348,6 +392,17 @@ async def _recompute_consensus(
             .where(BatchPeakOccurrence.batch_peak_id.in_(id_list))
         )
     ).all()
+
+    # Second hop of the satellite link, resolved once for every member of this
+    # recompute rather than once per batch peak.
+    anchor_of_owner = await _owner_anchor_by_assignment(
+        session,
+        {
+            r.owner_peak_assignment_id
+            for r in rows
+            if r.role == ROLE_ISO_CHILD and r.owner_peak_assignment_id
+        },
+    )
 
     members_by_peak: dict[str, list] = defaultdict(list)
     for r in rows:
@@ -361,6 +416,8 @@ async def _recompute_consensus(
                 "fit_score": r.fit_score,
                 "intensity": r.intensity,
                 "p_correct": prov.get("p_correct"),
+                "role": r.role,
+                "owner_batch_peak_id": anchor_of_owner.get(r.owner_peak_assignment_id),
             }
         )
 
@@ -372,7 +429,7 @@ async def _recompute_consensus(
         if not members:
             await session.delete(bp)
             continue
-        c = compute_consensus(members)
+        c = compute_consensus(members, batch_peak_id=bp_id)
         bp.consensus_formula = c.consensus_formula
         bp.consensus_ion_formula = c.consensus_ion_formula
         bp.ionization_mechanism_id = c.ionization_mechanism_id
@@ -381,6 +438,8 @@ async def _recompute_consensus(
         bp.support_fraction = c.support_fraction
         bp.n_present = c.n_present
         bp.is_ambiguous = int(c.is_ambiguous)
+        bp.max_intensity = c.max_intensity
+        bp.satellite_of = c.satellite_of
         bp.alternatives = c.alternatives
         bp.provenance = c.provenance
         bp.batch_peak_utc_modified = now

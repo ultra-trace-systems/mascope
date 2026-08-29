@@ -1,9 +1,11 @@
 """Unit tests for the pure batch-peak fold-in + consensus engine.
 
 No DB / I/O -- exercises the append-only anchor invariant (existing batch peaks
-never move when a sample arrives), the resolution-adaptive membership, and the
+never move when a sample arrives), the resolution-adaptive membership, the
 evidence-weighted consensus (confidence over assigned members, prevalence kept
-separate, ties surfaced). See docs/dev/peak_assignment_batch.md.
+separate, ties surfaced), and the two ledger aggregates the consensus pass rolls
+up alongside it: the brightest member and the isotopologue family link. See
+docs/dev/peak_assignment_batch.md.
 """
 
 import itertools
@@ -11,11 +13,14 @@ import itertools
 import pytest
 
 from mascope_backend.api.new.peak_assignments.batch_peaks import (
+    ROLE_ISO_CHILD,
     Anchor,
     AnchorSet,
     compute_consensus,
     fold_in_sample,
+    max_intensity,
     resolution_adaptive_tol_ppm,
+    resolve_satellite_of,
 )
 
 
@@ -247,3 +252,149 @@ def test_consensus_tier_downgrades_when_members_are_candidates():
     assert c.consensus_formula == "A"
     # Weighted majority are candidate (the assigned member is weak) -> candidate.
     assert c.consensus_tier == "candidate"
+
+
+# --- ledger aggregates: brightest member --------------------------------------
+
+
+def test_max_intensity_is_taken_over_every_member_not_the_assigned_ones():
+    # How bright a species gets is a property of the trace, so the unassigned
+    # sample that happens to be the brightest is the answer.
+    members = [
+        {"assigned_formula": "A", "intensity": 1e4},
+        {"assigned_formula": None, "intensity": 5e4},
+    ]
+    assert max_intensity(members) == pytest.approx(5e4)
+    assert compute_consensus(members).max_intensity == pytest.approx(5e4)
+
+
+def test_max_intensity_skips_a_member_carrying_none_rather_than_reading_zero():
+    assert max_intensity(
+        [{"intensity": None}, {"intensity": 12.0}, {"intensity": None}]
+    ) == pytest.approx(12.0)
+    # Nothing to report is None, not 0 -- the ledger shows a dash for it.
+    assert max_intensity([{"intensity": None}]) is None
+    assert max_intensity([]) is None
+
+
+def test_an_all_unassigned_batch_peak_still_reports_its_brightest_member():
+    # The early return for a peak nothing was assigned to takes a different path
+    # through compute_consensus, and the intensity has to survive it: an
+    # unassigned trace is exactly the kind a user sorts the ledger to find.
+    c = compute_consensus(
+        [
+            {"assigned_formula": None, "tier": "unassigned", "intensity": 1e3},
+            {"assigned_formula": None, "tier": "unassigned", "intensity": 7e3},
+        ]
+    )
+    assert c.consensus_formula is None
+    assert c.max_intensity == pytest.approx(7e3)
+    assert c.satellite_of is None
+
+
+# --- ledger aggregates: the isotopologue family link --------------------------
+#
+# A batch peak is a bare m/z anchor and carries no family link of its own, so the
+# link is a vote of its members' per-sample roles. The rule is a strict majority
+# of the ASSIGNED members, the same population the consensus measures agreement
+# over -- which is what these cover: prevalence must not dilute it, disagreement
+# must not resolve it, and a satellite that names no owner must not vote.
+
+
+def _child(owner, formula="A", **extra):
+    """An iso_child member pointing at ``owner``'s anchor."""
+    return {
+        "assigned_formula": formula,
+        "role": ROLE_ISO_CHILD,
+        "owner_batch_peak_id": owner,
+        **extra,
+    }
+
+
+def _m0(formula="A", **extra):
+    return {"assigned_formula": formula, "role": "M0", **extra}
+
+
+def test_role_constant_matches_the_assignment_engine():
+    # batch_peaks is pure and cannot import the engine (pandas, numpy, the id
+    # helper), so the role it compares against is spelled twice. This is the
+    # tripwire that keeps the two spellings one value.
+    from mascope_backend.api.new.peak_assignments import engine
+
+    assert ROLE_ISO_CHILD == engine.ROLE_ISO_CHILD
+
+
+def test_a_majority_of_assigned_members_makes_it_a_satellite():
+    assert resolve_satellite_of([_child("bp-m0"), _child("bp-m0"), _m0()]) == "bp-m0"
+
+
+def test_no_majority_leaves_the_anchor_standing_on_its_own():
+    # Assigned in its own right more often than it is seen as a satellite: it is
+    # a peak, not a member of someone's family.
+    members = [_child("bp-m0"), _child("bp-m0"), _child("bp-m0"), *[_m0()] * 4]
+    assert resolve_satellite_of(members) is None
+
+
+def test_the_majority_is_over_assigned_members_not_prevalence():
+    # A satellite is often only assignable in the brightest samples. Counting the
+    # samples it was merely PRESENT in would leave a real satellite unfolded, and
+    # prevalence is kept out of confidence everywhere else in this module.
+    members = [
+        *[_child("bp-m0") for _ in range(3)],
+        *[{"assigned_formula": None, "role": "unassigned"} for _ in range(7)],
+    ]
+    assert resolve_satellite_of(members) == "bp-m0"
+
+
+def test_two_owners_splitting_the_vote_resolve_to_neither():
+    # Genuinely ambiguous membership: nothing here holds more than half, and the
+    # strict majority is what makes the winner unique without a tie-break.
+    assert resolve_satellite_of([_child("bp-x"), _child("bp-y")]) is None
+    assert (
+        resolve_satellite_of([_child("bp-x"), _child("bp-x"), _child("bp-y"), _m0()])
+        is None
+    )
+
+
+def test_an_ownerless_satellite_abstains_but_still_counts_against_the_majority():
+    # The engine leaves owner_peak_assignment_id NULL when the family's M0 was
+    # not won by the same ion in that run, and the fold leaves the anchor
+    # unresolved when the owning peak was dropped from it. Either way the member
+    # names no anchor to vote for -- and it is still an assigned member, so it
+    # belongs in the denominator.
+    assert resolve_satellite_of([_child("bp-m0"), _child(None)]) is None
+    assert resolve_satellite_of([_child("bp-m0"), _child("bp-m0"), _child(None)]) == (
+        "bp-m0"
+    )
+
+
+def test_an_unassigned_member_never_votes_and_never_counts():
+    assert resolve_satellite_of(
+        [{"assigned_formula": None, "role": ROLE_ISO_CHILD}]
+    ) is (None)
+
+
+def test_a_batch_peak_cannot_become_its_own_parent():
+    assert resolve_satellite_of([_child("bp-self"), _child("bp-self")], "bp-self") is (
+        None
+    )
+
+
+def test_members_from_a_reader_that_knows_no_roles_are_simply_not_satellites():
+    # Every existing caller passes members without a role; they must come through
+    # as ordinary anchors rather than raising.
+    assert resolve_satellite_of([{"assigned_formula": "A"}]) is None
+
+
+def test_consensus_carries_the_family_link_alongside_the_formula():
+    members = [
+        _child("bp-m0", tier="assigned", fit_score=0.9, intensity=1e4),
+        _child("bp-m0", tier="assigned", fit_score=0.8, intensity=9e3),
+    ]
+    c = compute_consensus(members, batch_peak_id="bp-sat")
+    assert c.satellite_of == "bp-m0"
+    # The satellite is the same species measured at another isotope, so it
+    # carries the family's formula -- which is exactly why the ledger reads as a
+    # duplicate row until it is folded.
+    assert c.consensus_formula == "A"
+    assert c.max_intensity == pytest.approx(1e4)

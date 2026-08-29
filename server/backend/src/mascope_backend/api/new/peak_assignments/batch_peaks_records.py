@@ -24,7 +24,15 @@ def _empty_series() -> dict:
 
 
 def _batch_peak_meta(bp) -> dict:
-    """The scalar consensus metadata of a batch peak (no per-sample series)."""
+    """The scalar consensus metadata of a batch peak (no per-sample series).
+
+    ``max_intensity`` and ``satellite_of`` are member aggregates materialized on
+    the row at fold time, so the ledger can offer an intensity column and fold
+    isotopologue satellites under their M0 without joining the occurrence table
+    it is defined by not joining. ``intensity_variable`` rides along because it
+    is what names the unit ``max_intensity`` is in (heights or areas, per
+    instrument type).
+    """
     return {
         "batch_peak_id": bp.batch_peak_id,
         "sample_batch_id": bp.sample_batch_id,
@@ -38,6 +46,9 @@ def _batch_peak_meta(bp) -> dict:
         "support_fraction": bp.support_fraction,
         "n_present": bp.n_present,
         "is_ambiguous": bool(bp.is_ambiguous),
+        "intensity_variable": bp.intensity_variable,
+        "max_intensity": bp.max_intensity,
+        "satellite_of": bp.satellite_of,
     }
 
 
@@ -148,10 +159,16 @@ async def get_batch_peak_ledger(
 ) -> dict:
     """Metadata-only list of a batch's batch peaks -- the ledger table feed.
 
-    One row per batch peak with its consensus (m/z, formula, tier, prevalence) but
-    WITHOUT the per-sample series, so a 1000+ row ledger stays cheap (it never
-    touches the occurrence table). The chart fetches series only for the rows the
-    user selects.
+    One row per batch peak with its consensus (m/z, formula, tier, prevalence,
+    brightest member, isotopologue parent) but WITHOUT the per-sample series, so
+    a 1000+ row ledger stays cheap (it never touches the occurrence table). The
+    chart fetches series only for the rows the user selects.
+
+    ``satellite_of`` is one hop: it names the batch peak whose family this one
+    belongs to as its own members observed it. A satellite whose parent is
+    itself a satellite is left as observed, and a parent this call filtered out
+    (by tier, or by the occupancy floor) is simply not in the response -- both
+    are the reader's to resolve, which it can because it holds the whole list.
     """
     async with async_session() as session:
         query = select(BatchPeak).where(BatchPeak.sample_batch_id == sample_batch_id)
