@@ -115,10 +115,20 @@ const ColumnStub = {
 // events it answers, so a test can select the way the header checkbox and a
 // shift-click range each do. `keydown` is left undeclared on purpose - it falls
 // through to the root element, which is how a test reaches Ctrl+A.
+// It also carries `processedData`, the filtered-and-sorted view the real table
+// exposes and the pane reads to decide what "all" means. A test can narrow it
+// to stand in for a column filter, which is the state that separates "every row
+// on screen is selected" from "the selection happens to be that large".
 const DataTableStub = {
   name: 'DataTable',
   props: ['value', 'filters', 'scrollHeight', 'selection', 'selectAll'],
   emits: ['update:selection', 'select-all-change'],
+  data: () => ({ visible: null }),
+  computed: {
+    processedData() {
+      return this.visible ?? this.value
+    }
+  },
   template: '<div class="datatable"><slot /></div>'
 }
 
@@ -616,6 +626,68 @@ describe('PaneBrowserBatchPeaks selection cap', () => {
     expect(app.data.batchPeak.selected).toHaveLength(0)
     expect(table().props('selectAll')).toBe(false)
     expect(notice()).toBeUndefined()
+  })
+
+  it('does not read as all-selected over rows none of which are selected', async () => {
+    // Narrowing the filter after a large selection leaves the selection as big
+    // as the rows now on screen while sharing none of them. A checkbox that
+    // compared sizes would tick over rows that are all unselected - and, since
+    // a ticked box offers to clear, the next click would wipe the selection
+    // instead of filling it.
+    wrapper = await mountPane({
+      peaks: [...many(3), peak('other-1', 'candidate', 0.5), peak('other-2', 'candidate', 0.4)]
+    })
+    const assigned = wrapper.vm.rows.filter((row) => row.consensus_tier === 'assigned')
+    const candidates = wrapper.vm.rows.filter((row) => row.consensus_tier === 'candidate')
+
+    // Filter to the assigned rows and select all of them.
+    table().vm.visible = assigned
+    await wrapper.vm.$nextTick()
+    checkSelectAll()
+    await wrapper.vm.$nextTick()
+    expect(table().props('selectAll')).toBe(true)
+
+    // Now filter to the two candidate rows: the selection is still three rows,
+    // larger than what is on screen, and shares none of it.
+    table().vm.visible = candidates
+    await wrapper.vm.$nextTick()
+
+    expect(app.data.batchPeak.selected).toHaveLength(assigned.length)
+    expect(table().props('selectAll')).toBe(false)
+  })
+
+  it('refuses one row at the cap without claiming a filter matched more', async () => {
+    // A row click hands over the selection with the clicked row appended, so at
+    // the cap it arrives one over and the slice drops the row that was clicked.
+    // Saying "300 of the 301 matching rows" would name a number that is not the
+    // size of anything the user can see.
+    wrapper = await mountPane({ peaks: many(MAX_SELECTED_BATCH_PEAKS + 50) })
+    checkSelectAll()
+    await wrapper.vm.$nextTick()
+
+    const held = app.data.batchPeak.selected
+    const oneMore = wrapper.vm.rows[MAX_SELECTED_BATCH_PEAKS]
+    table().vm.$emit('update:selection', [...held, oneMore])
+    await wrapper.vm.$nextTick()
+
+    expect(app.data.batchPeak.selected).toHaveLength(MAX_SELECTED_BATCH_PEAKS)
+    expect(notice()).toBeUndefined()
+    const full = wrapper
+      .findAll('.pane-message')
+      .find((message) => /selection is full/.test(message.text()))
+    expect(full.text()).toMatch(new RegExp(`full at ${MAX_SELECTED_BATCH_PEAKS} batch peaks`))
+    expect(full.text()).not.toMatch(String(MAX_SELECTED_BATCH_PEAKS + 1))
+  })
+
+  it('survives the bare row the table sends when a range collapses onto one', async () => {
+    // Shift+Space emits `rowData` rather than an array of one when the range it
+    // would select is the row already focused.
+    wrapper = await mountPane({ peaks: many(4) })
+
+    table().vm.$emit('update:selection', wrapper.vm.rows[2])
+    await wrapper.vm.$nextTick()
+
+    expect(app.data.batchPeak.selected.map((row) => row.batch_peak_id)).toEqual(['bp-2'])
   })
 
   it('drops the notice when the batch changes', async () => {
