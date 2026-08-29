@@ -49,7 +49,10 @@ async def supersede_data(async_session_factory, pa_test_data):
 
     Function-scoped and self-deleting: the recalibration endpoint gathers
     labels across every sample on the instrument, so a row left behind would
-    show up in the counts of any later test that calls it.
+    show up in the counts of any later test that calls it. The names carry
+    their own id because a dataset name is unique per workspace, case- and
+    whitespace-insensitively - a fixed name would collide with the previous
+    test's leftovers rather than the point being tested.
 
     :return: Dict with the sample and assignment ids the tests address.
     """
@@ -67,7 +70,7 @@ async def supersede_data(async_session_factory, pa_test_data):
             Dataset(
                 dataset_id=dataset_id,
                 workspace_id=pa_test_data["workspace_id"],
-                dataset_name="Verdict Supersede Dataset",
+                dataset_name=f"Verdict Supersede Dataset {dataset_id}",
                 dataset_utc_created=now,
             )
         )
@@ -75,7 +78,7 @@ async def supersede_data(async_session_factory, pa_test_data):
             SampleBatch(
                 sample_batch_id=sample_batch_id,
                 dataset_id=dataset_id,
-                sample_batch_name="Verdict Supersede Batch",
+                sample_batch_name=f"Verdict Supersede Batch {sample_batch_id}",
                 sample_batch_utc_created=now,
             )
         )
@@ -99,7 +102,7 @@ async def supersede_data(async_session_factory, pa_test_data):
                 sample_item_id=sample_item_id,
                 sample_batch_id=sample_batch_id,
                 sample_file_id=sample_file_id,
-                sample_item_name="Verdict Supersede Sample",
+                sample_item_name=f"Verdict Supersede Sample {sample_item_id}",
                 sample_item_type="sample",
                 polarity="+",
                 sample_item_utc_created=now,
@@ -166,11 +169,33 @@ async def supersede_data(async_session_factory, pa_test_data):
         "other_assignment_id": other_assignment_id,
     }
 
+    # Torn down innermost-first: the whole chain goes, not just the verdicts,
+    # so a later test in this module seeds into a workspace holding none of it.
     async with async_session_factory() as session:
         await session.execute(
             delete(AssignmentVerification).where(
                 AssignmentVerification.sample_item_id == sample_item_id
             )
+        )
+        await session.execute(
+            delete(PeakAssignment).where(
+                PeakAssignment.sample_item_id == sample_item_id
+            )
+        )
+        await session.execute(
+            delete(PeakAssignmentRun).where(
+                PeakAssignmentRun.peak_assignment_run_id == run_id
+            )
+        )
+        await session.execute(
+            delete(SampleItem).where(SampleItem.sample_item_id == sample_item_id)
+        )
+        await session.execute(
+            delete(SampleBatch).where(SampleBatch.sample_batch_id == sample_batch_id)
+        )
+        await session.execute(delete(Dataset).where(Dataset.dataset_id == dataset_id))
+        await session.execute(
+            delete(SampleFile).where(SampleFile.sample_file_id == sample_file_id)
         )
         await session.commit()
 
