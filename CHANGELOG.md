@@ -290,7 +290,23 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
 
 ### Changed
 
-- **Peak assignment is now on by default.** A composition is assigned to every
+- **The orange accent is quieter, and the selection wash is finally a wash.**
+  The interface palette is swept from the brand safety orange into eleven
+  shades, and that sweep used to carry the seed's full colourfulness to every
+  shade. Almost none of them could be shown that way on a normal screen, so
+  each one was quietly flattened on its way to the display, arriving off its
+  intended brightness and off its intended hue - the pale end as a vivid peach
+  rather than a tint, the dark end as maroon rather than orange. The sweep now
+  asks how much colour the screen can actually hold at each shade and stays
+  inside that, at 80% strength. What you see: selected rows in the peak and
+  match tables are washed in a soft cream instead of banded in orange, and
+  buttons, tabs, focus rings and panel labels settle to a warmer, less
+  insistent orange in both themes. Nothing moves in the layout, and the brand
+  seed is unchanged - only how it is swept. Text contrast is held or improved
+  everywhere; text on a selected row improves markedly. Status colours that
+  are deliberately their own - the amber for calibration drift, an unsure
+  verdict, or a provisional assignment - do not follow this accent and are
+  unchanged, so they now stand out a little more against it. A composition is assigned to every
   peak of a sample as it is processed (the fast database stage only - the
   untargeted search stays something you launch deliberately), the assignment
   views are present, and the `/api/peak-assignments` write routes accept work
