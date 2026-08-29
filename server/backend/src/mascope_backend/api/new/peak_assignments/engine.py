@@ -234,6 +234,40 @@ def _alternative_dict(row, reference_identities_by_formula: dict) -> dict:
     return alternative
 
 
+def _restates_winner(contenders: "pd.DataFrame", winner) -> "pd.Series":
+    """Mask of contender rows that restate the winner's own hypothesis.
+
+    Same formula through the same ionization mechanism is one explanation of the
+    peak, however many rows carried it into the frame - the reference mirror sits
+    in the same frame as the curated targets, so a compound that is both a target
+    and a known reference contributes two rows, and two targets can share a
+    formula outright. Excluding the winner by position alone left those twins in
+    `alternatives`, where the inspector rendered them exactly like the committed
+    assignment: the peak's own answer offered back as a close alternative.
+
+    The isotope label adds nothing to that identity. Within one ion the matcher
+    already forbids two isotopes from holding the same peak - `_match_assign`
+    keeps a per-ion set of claimed peaks and awards a contested one to the higher
+    relative abundance - so the winner's own ion is represented here exactly once.
+    Two ions that share a formula and a mechanism can still claim one peak through
+    different isotopologues, and that row is dropped as well: an alternative
+    carries no isotope label, so it would render as the bare committed formula,
+    which is the duplicate this screen exists to remove.
+
+    :param contenders: The peak's rows other than the winning one.
+    :param winner: The row that won the peak.
+    :return: Boolean mask, True where the row is the winner's hypothesis again.
+    """
+    same = contenders["target_compound_formula"].astype(str) == str(
+        winner.get("target_compound_formula")
+    )
+    if "ionization_mechanism_id" in contenders.columns:
+        same &= contenders["ionization_mechanism_id"].astype(str) == str(
+            winner.get("ionization_mechanism_id")
+        )
+    return same
+
+
 def invert_matches_to_peak_assignments(
     match_isotope_df: pd.DataFrame,
     sample_item_id: str,
@@ -361,10 +395,15 @@ def invert_matches_to_peak_assignments(
 
     for sample_peak_id, group in matched.groupby("sample_peak_id", sort=False):
         winner = group.iloc[0]
+        # The winner is never its own alternative. Dropping the rows that merely
+        # restate it BEFORE the cap matters twice over: the duplicate never
+        # reaches the inspector, and it does not burn one of the `max_alternatives`
+        # slots that a genuinely different formula could have had.
+        contenders = group.iloc[1:]
         runners = (
-            group.iloc[1 : 1 + max_alternatives]
+            contenders[~_restates_winner(contenders, winner)].iloc[:max_alternatives]
             if max_alternatives
-            else group.iloc[1:1]
+            else contenders.iloc[:0]
         )
 
         # Arbitration confidence and the tie flag come from the shared
@@ -752,6 +791,14 @@ def untargeted_matches_to_peak_assignments(
         # finder's other_candidates are formula names only (no per-candidate fit or mass
         # error), but chemical plausibility is computable from the formula itself, so the
         # inspector can still rank them.
+        #
+        # Both sources are screened against the winner, because neither can be trusted to
+        # have left it out. A loser reaching the same formula through the same mechanism is
+        # the winner's own hypothesis arriving twice; and the finder's shortlist is frozen
+        # before the heuristic filter and the isotope-pattern ranking pick the winner, so
+        # older results still name the winning formula among the "other" candidates. Both
+        # would render as the committed assignment listed among its own close alternatives.
+        # Screening happens before the cap so a duplicate cannot displace a real rival.
         alternatives = [
             {
                 "assigned_formula": format_formula(loser["formula"]),
@@ -763,9 +810,16 @@ def untargeted_matches_to_peak_assignments(
                 "source": SOURCE_UNTARGETED,
             }
             for loser in losers
+            if (
+                loser["formula"],
+                _str_or_none(loser["row"].get("ionization_mechanism")),
+            )
+            != (formula, notation)
         ]
         other_candidates = _str_or_none(row.get("other_candidates"))
         if other_candidates:
+            # Formula-only entries, all drawn from this peak's own composition search:
+            # one naming the winning formula IS the winner, not a rival mechanism.
             alternatives.extend(
                 {
                     "assigned_formula": format_formula(alt.strip()),
@@ -773,7 +827,7 @@ def untargeted_matches_to_peak_assignments(
                     "source": SOURCE_UNTARGETED,
                 }
                 for alt in other_candidates.split(",")
-                if alt.strip()
+                if alt.strip() and alt.strip() != formula
             )
         alternatives = alternatives[: max_alternatives or 0] or None
 

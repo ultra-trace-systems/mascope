@@ -491,3 +491,91 @@ describe('PanePeakAssign verification on an isotopologue satellite', () => {
     expect(wrapper.vm.note).toBe('')
   })
 })
+
+// The engine no longer writes the committed assignment into its own
+// `alternatives`, but every run stored before it learned not to still carries
+// it, and only re-running the sample rewrites those rows. So the card screens
+// the list as well, rather than offering the analyst the peak's own answer as
+// an alternative to itself.
+describe('PanePeakAssign close alternatives', () => {
+  const COMMITTED = {
+    ...assignment({ formula: 'C6H12O6', tier: 'assigned' }),
+    ion_formula: 'C6H13O6+'
+  }
+  const alts = (wrapper) => wrapper.findAll('.alt').map((node) => node.find('.f').text())
+
+  beforeEach(() => {
+    focusedAssignment = COMMITTED
+  })
+
+  it('drops the entry that restates the committed assignment', async () => {
+    detailRecord = {
+      alternatives: [
+        { assigned_formula: 'C6H12O6', ion_formula: 'C6H13O6+', fit_score: 0.8 },
+        { assigned_formula: 'C7H16O5', ion_formula: 'C7H17O5+', fit_score: 0.7 }
+      ]
+    }
+    const wrapper = await mountPane()
+
+    expect(alts(wrapper)).toEqual(['C7H16O5'])
+    // The count in the label is the shown list, not the stored one.
+    expect(wrapper.find('.alts-count').text()).toBe('1')
+  })
+
+  // The untargeted shortlist is formula-only, so a missing `ion_formula` is not
+  // evidence of a different mechanism - it is the winner with less detail.
+  it('drops a formula-only entry naming the committed formula', async () => {
+    detailRecord = {
+      alternatives: [
+        { assigned_formula: 'C6H12O6', plausibility: 0.9 },
+        { assigned_formula: 'C4H8N2O', plausibility: 0.6 }
+      ]
+    }
+    const wrapper = await mountPane()
+
+    expect(alts(wrapper)).toEqual(['C4H8N2O'])
+  })
+
+  // One formula seen through two adducts is a real second arrival, not the
+  // winner repeated, and the analyst needs to see it.
+  it('keeps the same formula reached through another adduct', async () => {
+    detailRecord = {
+      alternatives: [
+        { assigned_formula: 'C6H12O6', ion_formula: 'C6H12NaO6+', fit_score: 0.7 }
+      ]
+    }
+    const wrapper = await mountPane()
+
+    expect(alts(wrapper)).toEqual(['C6H12O6'])
+  })
+
+  it('hides the section when the only alternative was the assignment itself', async () => {
+    detailRecord = {
+      alternatives: [{ assigned_formula: 'C6H12O6', ion_formula: 'C6H13O6+', fit_score: 0.8 }]
+    }
+    const wrapper = await mountPane()
+
+    expect(wrapper.find('.alts').exists()).toBe(false)
+  })
+
+  it('leaves the list alone when the peak has no committed formula', async () => {
+    focusedAssignment = assignment({ tier: 'unassigned' })
+    detailRecord = { alternatives: [{ assigned_formula: 'C6H12O6', plausibility: 0.9 }] }
+    const wrapper = await mountPane()
+
+    expect(alts(wrapper)).toEqual(['C6H12O6'])
+  })
+
+  it('screens the slim row fallback too, before the detail fetch lands', async () => {
+    focusedAssignment = {
+      ...COMMITTED,
+      alternatives: [
+        { assigned_formula: 'C6H12O6', ion_formula: 'C6H13O6+', fit_score: 0.8 },
+        { assigned_formula: 'C7H16O5', ion_formula: 'C7H17O5+', fit_score: 0.7 }
+      ]
+    }
+    const wrapper = await mountPane()
+
+    expect(alts(wrapper)).toEqual(['C7H16O5'])
+  })
+})

@@ -155,10 +155,28 @@ const provenance = computed(
   () => focusedDetail.value?.provenance ?? focusedAssignment.value?.provenance ?? null
 )
 
-// Close alternatives (runner-ups), same detail-then-fallback resolution.
-const alternatives = computed(
-  () => focusedDetail.value?.alternatives ?? focusedAssignment.value?.alternatives ?? []
-)
+// Close alternatives (runner-ups), same detail-then-fallback resolution, with
+// the committed assignment screened out of its own shortlist.
+//
+// The engine no longer writes the winner into `alternatives`, but every run
+// stored before it learned not to still carries it, and only re-running the
+// sample rewrites those rows - so the card filters as well rather than showing
+// the analyst the peak's own answer as an alternative to itself.
+//
+// An entry restates the assignment when it names the same formula through the
+// same ionization. The untargeted shortlist is formula-only, so an entry with
+// no `ion_formula` cannot be evidence of a different mechanism: a missing one
+// counts as the same, and only a present-and-different one keeps the entry.
+const alternatives = computed(() => {
+  const stored = focusedDetail.value?.alternatives ?? focusedAssignment.value?.alternatives ?? []
+  const committed = focusedAssignment.value
+  if (!committed?.assigned_formula) return stored
+  return stored.filter(
+    (alt) =>
+      alt?.assigned_formula !== committed.assigned_formula ||
+      (alt?.ion_formula != null && alt.ion_formula !== committed.ion_formula)
+  )
+})
 
 const fitPercent = new Intl.NumberFormat('en-US', {
   style: 'percent',
