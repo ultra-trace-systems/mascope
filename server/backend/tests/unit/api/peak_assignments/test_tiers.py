@@ -15,7 +15,11 @@ import and read suites instead.
 """
 
 import pytest
+from pydantic import ValidationError
 
+from mascope_backend.api.new.peak_assignments.batch_peaks_routes import (
+    BatchPeakSeriesBody,
+)
 from mascope_backend.api.new.peak_assignments.config import PeakAssignmentConfig
 from mascope_backend.api.new.peak_assignments.schemas import AssignSamplePeaksBody
 from mascope_backend.api.new.peak_assignments.tiers import (
@@ -83,6 +87,38 @@ class TestNormalizeTierBands:
         normalize_tier_bands(bands)
 
         assert bands == {"identified": 0.8, "candidate": 0.5}
+
+
+class TestTheBatchLedgerFilterTakesTheOldSpellingToo:
+    """The batch overview filters on `consensus_tier`, which the rename reaches.
+
+    Its filter is a separate wire site from the per-sample ledger's, and an
+    unaliased one would not have refused a client still saying `identified` -
+    it would have compared the word to a column no longer holding it and
+    answered with an empty batch, which reads as "this batch has no assigned
+    peaks" rather than as the stale vocabulary it is.
+    """
+
+    def test_the_series_body_normalizes_a_legacy_tier(self):
+        body = BatchPeakSeriesBody.model_validate(
+            {"sample_batch_id": "sb-1", "tier": "identified"}
+        )
+
+        assert body.tier == "assigned"
+
+    def test_the_series_body_still_takes_the_current_tier(self):
+        body = BatchPeakSeriesBody.model_validate(
+            {"sample_batch_id": "sb-1", "tier": "assigned"}
+        )
+
+        assert body.tier == "assigned"
+
+    def test_a_tier_that_is_neither_is_refused(self):
+        """A typo is a 422, not an empty batch."""
+        with pytest.raises(ValidationError):
+            BatchPeakSeriesBody.model_validate(
+                {"sample_batch_id": "sb-1", "tier": "assinged"}
+            )
 
 
 class TestTheRunConfigBandParsesUnderItsOldName:

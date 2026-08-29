@@ -17,8 +17,9 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
 
   Nothing published needs to be re-imported. The API still accepts the old
   spelling wherever a client can send one: as a tier on an imported ledger row,
-  as a `tier_bands` key, as the `tier` filter on the assignment ledger, and as
-  the run-config key `identified_threshold` (now `assigned_threshold`). Each is
+  as a `tier_bands` key, as the `tier` filter on the per-sample assignment
+  ledger and on the batch-peak ledger, and as the run-config key
+  `identified_threshold` (now `assigned_threshold`). Each is
   normalised on the way in, so a ledger exported before the rename imports
   unchanged and an SDK client pinned to the old vocabulary keeps working - but
   nothing is ever stored under the old name again. A data migration rewrites the
