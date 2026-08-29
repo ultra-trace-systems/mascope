@@ -155,6 +155,200 @@ class TestInvertMatches:
         assert winner["alternatives"][0]["assigned_formula"] == "C7H16O5"
         assert winner["alternatives"][0]["fit_score"] == pytest.approx(0.75)
 
+    def test_winner_is_not_listed_among_its_own_alternatives(self):
+        # The reference mirror sits in the same frame as the curated library, so a
+        # compound that is both a target and a known reference reaches one peak on
+        # two rows. Excluding the winner by position alone kept the loser, which
+        # carries the same formula and the same ion formula and so renders in the
+        # inspector as the committed assignment offered as an alternative to itself.
+        shared = dict(
+            compound_formula="C10H16O3",
+            ion_formula="C10H15O3",
+            mz=183.1027,
+            relative_abundance=1.0,
+            sample_peak_id="p1",
+            ionization="-H-",
+        )
+        df = pd.DataFrame(
+            [
+                _isotope_row(
+                    target_isotope_id="iso1",
+                    target_ion_id="ion1",
+                    target_compound_id="cmp1",
+                    match_score=0.95,
+                    **shared,
+                ),
+                _reference_row(
+                    target_isotope_id="refiso1",
+                    target_ion_id="refion1",
+                    match_score=0.80,
+                    **shared,
+                ),
+                # A genuinely different formula on the same peak must survive.
+                _isotope_row(
+                    target_isotope_id="iso2",
+                    target_ion_id="ion2",
+                    target_compound_id="cmp2",
+                    compound_formula="C9H12N2O2",
+                    ion_formula="C9H11N2O2",
+                    mz=183.1027,
+                    relative_abundance=1.0,
+                    sample_peak_id="p1",
+                    match_score=0.60,
+                    ionization="-H-",
+                ),
+            ]
+        )
+
+        [assignment] = invert_matches_to_peak_assignments(
+            df,
+            sample_item_id="s1",
+            peak_assignment_run_id="run1",
+            possible_threshold=POSSIBLE,
+            probable_threshold=PROBABLE,
+        )
+
+        assert assignment["assigned_formula"] == "C10H16O3"
+        assert [alt["assigned_formula"] for alt in assignment["alternatives"]] == [
+            "C9H12N2O2"
+        ]
+
+    def test_only_alternative_being_the_winner_leaves_no_alternatives(self):
+        # Nothing else contested the peak, so screening the twin out must leave the
+        # field empty rather than an empty list.
+        shared = dict(
+            compound_formula="C10H16O3",
+            ion_formula="C10H15O3",
+            mz=183.1027,
+            relative_abundance=1.0,
+            sample_peak_id="p1",
+            ionization="-H-",
+        )
+        df = pd.DataFrame(
+            [
+                _isotope_row(
+                    target_isotope_id="iso1",
+                    target_ion_id="ion1",
+                    target_compound_id="cmp1",
+                    match_score=0.95,
+                    **shared,
+                ),
+                _reference_row(
+                    target_isotope_id="refiso1",
+                    target_ion_id="refion1",
+                    match_score=0.80,
+                    **shared,
+                ),
+            ]
+        )
+
+        [assignment] = invert_matches_to_peak_assignments(
+            df,
+            sample_item_id="s1",
+            peak_assignment_run_id="run1",
+            possible_threshold=POSSIBLE,
+            probable_threshold=PROBABLE,
+        )
+
+        assert assignment["alternatives"] is None
+
+    def test_same_formula_through_another_adduct_stays_an_alternative(self):
+        # One formula seen through two ionization mechanisms is two arrivals of the
+        # same compound, not the winner repeated: the screen keys on the mechanism
+        # as well as the formula so this alternative survives.
+        df = pd.DataFrame(
+            [
+                _isotope_row(
+                    target_isotope_id="iso1",
+                    target_ion_id="ion1",
+                    target_compound_id="cmp1",
+                    compound_formula="C10H16O3",
+                    ion_formula="C10H15O3",
+                    mz=183.1027,
+                    relative_abundance=1.0,
+                    sample_peak_id="p1",
+                    match_score=0.95,
+                    ionization="-H-",
+                ),
+                _isotope_row(
+                    target_isotope_id="iso2",
+                    target_ion_id="ion2",
+                    target_compound_id="cmp1",
+                    compound_formula="C10H16O3",
+                    ion_formula="C10H16ClO3",
+                    mz=183.1027,
+                    relative_abundance=1.0,
+                    sample_peak_id="p1",
+                    match_score=0.70,
+                    ionization="+Cl-",
+                ),
+            ]
+        )
+
+        [assignment] = invert_matches_to_peak_assignments(
+            df,
+            sample_item_id="s1",
+            peak_assignment_run_id="run1",
+            possible_threshold=POSSIBLE,
+            probable_threshold=PROBABLE,
+        )
+
+        assert len(assignment["alternatives"]) == 1
+        assert assignment["alternatives"][0]["ion_formula"] == "C10H16ClO3"
+
+    def test_winner_twin_does_not_consume_an_alternatives_slot(self):
+        # Screening happens before the cap, so a duplicate cannot displace a rival
+        # the analyst would otherwise have seen.
+        shared = dict(
+            mz=183.1027,
+            relative_abundance=1.0,
+            sample_peak_id="p1",
+            ionization="-H-",
+        )
+        df = pd.DataFrame(
+            [
+                _isotope_row(
+                    target_isotope_id="iso1",
+                    target_ion_id="ion1",
+                    target_compound_id="cmp1",
+                    compound_formula="C10H16O3",
+                    ion_formula="C10H15O3",
+                    match_score=0.95,
+                    **shared,
+                ),
+                _reference_row(
+                    target_isotope_id="refiso1",
+                    target_ion_id="refion1",
+                    compound_formula="C10H16O3",
+                    ion_formula="C10H15O3",
+                    match_score=0.90,
+                    **shared,
+                ),
+                _isotope_row(
+                    target_isotope_id="iso2",
+                    target_ion_id="ion2",
+                    target_compound_id="cmp2",
+                    compound_formula="C9H12N2O2",
+                    ion_formula="C9H11N2O2",
+                    match_score=0.60,
+                    **shared,
+                ),
+            ]
+        )
+
+        [assignment] = invert_matches_to_peak_assignments(
+            df,
+            sample_item_id="s1",
+            peak_assignment_run_id="run1",
+            possible_threshold=POSSIBLE,
+            probable_threshold=PROBABLE,
+            max_alternatives=1,
+        )
+
+        assert [alt["assigned_formula"] for alt in assignment["alternatives"]] == [
+            "C9H12N2O2"
+        ]
+
     def test_arbitration_demotes_implausible_higher_fit_winner(self):
         # C6H17NO4 is over-saturated (plausibility 0): despite the higher fit it must
         # lose the peak to the plausible glucose formula (evidence = fit x plausibility).
@@ -676,19 +870,31 @@ class TestInvertMatches:
         assert peaks == {"pGood"}  # the stolen peak is released, not owned
 
     def test_alternatives_are_capped(self):
+        # One formula per contender: rows repeating the winner's formula through
+        # the winner's mechanism are a single hypothesis and are screened out
+        # before the cap is applied, so a field of six identical formulas would
+        # leave nothing to cap in the first place.
+        contenders = [
+            ("C6H12O6", "C6H13O6+"),
+            ("C7H14O6", "C7H15O6+"),
+            ("C8H16O6", "C8H17O6+"),
+            ("C9H18O6", "C9H19O6+"),
+            ("C10H20O6", "C10H21O6+"),
+            ("C11H22O6", "C11H23O6+"),
+        ]
         rows = [
             _isotope_row(
                 target_isotope_id=f"iso{i}",
                 target_ion_id=f"ion{i}",
                 target_compound_id=f"cmp{i}",
-                compound_formula="C6H12O6",
-                ion_formula="C6H13O6+",
+                compound_formula=compound_formula,
+                ion_formula=ion_formula,
                 mz=181.0707,
                 relative_abundance=1.0,
                 sample_peak_id="p1",
                 match_score=0.9 - i * 0.05,
             )
-            for i in range(6)
+            for i, (compound_formula, ion_formula) in enumerate(contenders)
         ]
         assignments = invert_matches_to_peak_assignments(
             pd.DataFrame(rows),
@@ -824,6 +1030,109 @@ class TestUntargetedMatches:
         return pd.DataFrame(
             {"sample_peak_id": [peak_id], "mz": [mz], "intensity": [intensity]}
         )
+
+    def _untargeted_row(self, **overrides) -> dict:
+        """One composition-finder result row, all contending for the same peak."""
+        return {
+            "mz": 100.1,
+            "formula": "C5H10O2",
+            "ion": "C5H11O2+",
+            "isotope_label": "M0",
+            "ionization_mechanism": "+H+",
+            "mz_error_ppm": 2.0,
+            "intensity_error": 0.1,
+            "other_candidates": "",
+            "neutral_mass": 102.068,
+            "unsaturation": 1.0,
+        } | overrides
+
+    def test_winner_formula_in_the_finder_shortlist_is_not_an_alternative(self):
+        # The finder freezes `other_candidates` before the heuristic filter and the
+        # isotope-pattern ranking choose the winner, so a stored result can name the
+        # winning formula among the peak's "other" candidates. Extending that into
+        # `alternatives` put the committed assignment in its own shortlist.
+        assignments = untargeted_matches_to_peak_assignments(
+            pd.DataFrame([self._untargeted_row(other_candidates="C5H10O2, C4H8N2O")]),
+            self._one_peak_df("pA", 100.1, 5000.0),
+            "sample1",
+            "run1",
+            POSSIBLE,
+            PROBABLE,
+        )
+
+        [assignment] = assignments
+        assert assignment["assigned_formula"] == "C5H10O2"
+        assert [alt["assigned_formula"] for alt in assignment["alternatives"]] == [
+            "C4H8N2O"
+        ]
+
+    def test_shortlist_naming_only_the_winner_leaves_no_alternatives(self):
+        assignments = untargeted_matches_to_peak_assignments(
+            pd.DataFrame([self._untargeted_row(other_candidates="C5H10O2")]),
+            self._one_peak_df("pA", 100.1, 5000.0),
+            "sample1",
+            "run1",
+            POSSIBLE,
+            PROBABLE,
+        )
+
+        assert assignments[0]["alternatives"] is None
+
+    def test_losing_contender_restating_the_winner_is_not_an_alternative(self):
+        # Two finder rows can land on one observed peak. One reaching the winner's
+        # formula through the winner's mechanism is the same explanation arriving
+        # twice; a different formula is a real rival and stays.
+        assignments = untargeted_matches_to_peak_assignments(
+            pd.DataFrame(
+                [
+                    self._untargeted_row(),
+                    self._untargeted_row(mz_error_ppm=5.0, intensity_error=0.3),
+                    self._untargeted_row(
+                        formula="C4H8N2O",
+                        ion="C4H9N2O+",
+                        mz_error_ppm=8.0,
+                        intensity_error=0.4,
+                    ),
+                ]
+            ),
+            self._one_peak_df("pA", 100.1, 5000.0),
+            "sample1",
+            "run1",
+            POSSIBLE,
+            PROBABLE,
+        )
+
+        [assignment] = assignments
+        assert assignment["assigned_formula"] == "C5H10O2"
+        assert [alt["assigned_formula"] for alt in assignment["alternatives"]] == [
+            "C4H8N2O"
+        ]
+
+    def test_same_formula_through_another_mechanism_stays_an_alternative(self):
+        # The screen keys on the mechanism too, so one composition seen through two
+        # ionizations keeps the loser as the distinct alternative it is.
+        assignments = untargeted_matches_to_peak_assignments(
+            pd.DataFrame(
+                [
+                    self._untargeted_row(),
+                    self._untargeted_row(
+                        ion="C5H10NaO2+",
+                        ionization_mechanism="+Na+",
+                        mz_error_ppm=5.0,
+                        intensity_error=0.3,
+                    ),
+                ]
+            ),
+            self._one_peak_df("pA", 100.1, 5000.0),
+            "sample1",
+            "run1",
+            POSSIBLE,
+            PROBABLE,
+        )
+
+        [assignment] = assignments
+        assert len(assignment["alternatives"]) == 1
+        assert assignment["alternatives"][0]["ion_formula"] == "C5H10NaO2+"
 
     def test_assigned_rows_map_to_assignments_and_placeholder_is_skipped(self):
         assignments = untargeted_matches_to_peak_assignments(

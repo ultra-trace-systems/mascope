@@ -38,6 +38,32 @@ def _is_notebook():
         return False
 
 
+def _other_candidate_formulas(
+    comp_results: list[dict], chosen_formula: str | None = None
+) -> str:
+    """Format a peak's runner-up compositions, never including the chosen one.
+
+    `other_candidates` is the shortlist an inspector shows beside a committed
+    assignment, so the composition that WON the peak must not appear in it. It
+    cannot be taken positionally: `comp_results` arrives in mass-error order,
+    while the winner is whatever survives `apply_heuristic_rules` and then ranks
+    first on `match_isotopic_pattern`'s isotope-pattern score - routinely not
+    `comp_results[0]`. Dropping index 0 therefore listed the winner as its own
+    alternative and hid the mass-closest composition, which is exactly the
+    runner-up worth seeing when the isotope pattern demoted it.
+
+    :param comp_results: Every composition found for the peak's mass.
+    :param chosen_formula: Formula that won the peak, excluded from the result;
+        ``None`` when no candidate survived, where all of them stay open.
+    :return: Comma-separated formulas, empty when there are no others.
+    """
+    return ", ".join(
+        result["formula"]
+        for result in comp_results
+        if result["formula"] != chosen_formula
+    )
+
+
 def assign_compositions(
     peaks: pd.DataFrame,
     config: CompositionSearchConfig,
@@ -82,11 +108,6 @@ def assign_compositions(
             continue
 
         comp_results = find_compositions(mz, config)
-        all_candidates = (
-            ", ".join([r["formula"] for r in comp_results[1:]])
-            if len(comp_results) > 1
-            else ""
-        )
 
         if comp_results:
             candidates, log_messages = apply_heuristic_rules(
@@ -105,7 +126,7 @@ def assign_compositions(
                         "formula": "---",
                         "ion": "---",
                         "mz": mz,
-                        "other_candidates": all_candidates,
+                        "other_candidates": _other_candidate_formulas(comp_results),
                         "isotope_label": "---",
                     }
                 )
@@ -113,7 +134,9 @@ def assign_compositions(
             main_candidate = candidates[0].copy()
             main_candidate["mz"] = mz
             main_candidate["formula"] = main_candidate.get("formula", "---")
-            main_candidate["other_candidates"] = all_candidates
+            main_candidate["other_candidates"] = _other_candidate_formulas(
+                comp_results, main_candidate["formula"]
+            )
 
             if all_matched_isotopes:
                 all_matched_isotopes = [

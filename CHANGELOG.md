@@ -647,6 +647,32 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
 
 ### Fixed
 
+- The peak inspector's **close alternatives** no longer include the assignment
+  the peak was actually given. The list is meant to be the runners-up a peak
+  could have gone to instead, so the committed formula appearing in it - with
+  the same ion formula, the same mass error and the same plausibility as the
+  card above it - read either as a duplicate assignment or as the engine
+  competing a formula against itself. It reached the list two ways, and both are
+  now closed at the point the list is built. In the targeted stage the winner
+  was excluded by position alone, which is not the same as excluding its
+  identity: one formula reaches a peak on more than one row whenever a compound
+  is both a curated target and a known reference, or when two targets share a
+  formula, so the losing twin became an alternative. In the untargeted stage the
+  composition finder's shortlist of other candidates was frozen before the
+  heuristic filter and the isotope-pattern ranking had chosen the winner, so it
+  named that winner whenever the pattern promoted anything but the
+  mass-closest composition - the usual case, not an edge case.
+
+  An entry is now dropped when it reaches the winner's formula through the
+  winner's ionization mechanism; the same formula seen through a different
+  adduct is a real second sighting and still appears. Screening happens before
+  the cap on how many alternatives are kept, so a duplicate can no longer take
+  a slot from a genuine rival. The finder's shortlist also stops hiding the
+  mass-closest composition, which is exactly the runner-up worth seeing when
+  the isotope pattern demoted it. Runs already stored keep the duplicate until
+  the sample is assigned again, so the inspector screens the list on display as
+  well.
+
 - A verification verdict now covers a compound's whole **isotopologue family**
   rather than one peak of it. An M+1 is not a second thing to judge - it is the
   same compound seen through one heavy atom - but a verdict was looked up by the

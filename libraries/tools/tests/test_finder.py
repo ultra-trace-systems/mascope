@@ -3,6 +3,7 @@ import pytest
 
 from mascope_tools.composition.exceptions import CompositionFinderException
 from mascope_tools.composition.finder import (
+    _other_candidate_formulas,
     assign_compositions,
     find_compositions,
     replace_atom_with_isotope,
@@ -175,3 +176,38 @@ def test_composition_results_are_ranked_by_error_magnitude():
         "expected at least one candidate below the observed m/z, so the ordering "
         "is actually exercised on signed values"
     )
+
+
+# `other_candidates` is the shortlist shown beside a committed assignment, so the
+# composition that won the peak must never be in it. It cannot be taken
+# positionally: `find_compositions` ranks by mass error, while the winner is
+# whatever survives `apply_heuristic_rules` and then ranks first on
+# `match_isotopic_pattern`'s isotope-pattern score.
+def test_other_candidates_excludes_the_chosen_composition():
+    comp_results = [
+        {"formula": "C4H8N2O"},
+        {"formula": "C5H10O2"},
+        {"formula": "C6H14N"},
+    ]
+
+    # The isotope pattern promoted the second-closest composition.
+    assert _other_candidate_formulas(comp_results, "C5H10O2") == "C4H8N2O, C6H14N"
+
+
+def test_other_candidates_keeps_the_mass_closest_composition_when_it_loses():
+    # Dropping index 0 also hid the mass-closest formula, which is exactly the
+    # runner-up worth seeing when the isotope pattern demoted it.
+    comp_results = [{"formula": "C4H8N2O"}, {"formula": "C5H10O2"}]
+
+    assert _other_candidate_formulas(comp_results, "C5H10O2") == "C4H8N2O"
+
+
+def test_other_candidates_keeps_every_composition_when_none_was_chosen():
+    comp_results = [{"formula": "C4H8N2O"}, {"formula": "C5H10O2"}]
+
+    assert _other_candidate_formulas(comp_results) == "C4H8N2O, C5H10O2"
+
+
+def test_other_candidates_is_empty_when_the_winner_stood_alone():
+    assert _other_candidate_formulas([{"formula": "C5H10O2"}], "C5H10O2") == ""
+    assert _other_candidate_formulas([]) == ""
