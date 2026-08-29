@@ -643,11 +643,13 @@ def _insert_refusal(error: DBAPIError) -> UnprocessableImportException | None:
     )
 
 
-def _validate_new_run(sample, body) -> str:
+def _validate_new_run(sample, body, allow_reserved_engine: str | None = None) -> str:
     """Check everything about a new import that does not depend on its rows.
 
     :param sample: The sample being imported into.
     :param body: The request body.
+    :param allow_reserved_engine: A reserved engine name this caller may stamp;
+        see :func:`import_assignment_run`.
     :return: The validated engine name.
     :raises UnprocessableImportException: When the run may not be opened.
     """
@@ -674,7 +676,9 @@ def _validate_new_run(sample, body) -> str:
             "disclosed on the run instead. An engine that calibrated nothing "
             "records that."
         )
-    engine, engine_error = normalize_engine(body.engine)
+    engine, engine_error = normalize_engine(
+        body.engine, allow_reserved=allow_reserved_engine
+    )
     if engine_error:
         raise UnprocessableImportException(engine_error)
     for field, value in (("config", body.config), ("calibration", body.calibration)):
@@ -688,6 +692,7 @@ async def import_assignment_run(
     sample_item_id: str,
     body,
     user_id: int | None = None,
+    allow_reserved_engine: str | None = None,
 ) -> dict:
     """Accept one request of an externally computed assignment run.
 
@@ -698,6 +703,10 @@ async def import_assignment_run(
     :param sample_item_id: The sample the run assigns.
     :param body: The import request body.
     :param user_id: The importing user, for the log line.
+    :param allow_reserved_engine: A reserved engine name this caller may stamp.
+        The trusted entry for the server-side copy service, which publishes
+        under its reserved identity through this same pipeline; the HTTP route
+        never forwards it, so an external client cannot reach it.
     :return: Status envelope with the run id, its status, and its row count.
     """
     sample = await fetch_sample(sample_item_id)
@@ -712,15 +721,19 @@ async def import_assignment_run(
                 f"Another peak assignment operation is in progress for sample "
                 f"'{sample.sample_item_name}'. Retry when it has finished."
             )
-        return await _import_chunk(sample, body, user_id)
+        return await _import_chunk(sample, body, user_id, allow_reserved_engine)
 
 
-async def _import_chunk(sample, body, user_id: int | None) -> dict:
+async def _import_chunk(
+    sample, body, user_id: int | None, allow_reserved_engine: str | None = None
+) -> dict:
     """Apply one import request to the run it addresses.
 
     :param sample: The sample being imported into.
     :param body: The request body.
     :param user_id: The importing user, for the log line.
+    :param allow_reserved_engine: A reserved engine name this caller may stamp;
+        see :func:`import_assignment_run`.
     :return: Status envelope for this request.
     """
     run: PeakAssignmentRun | None = None
@@ -754,7 +767,7 @@ async def _import_chunk(sample, body, user_id: int | None) -> dict:
 
     creating = run is None
     if creating:
-        engine = _validate_new_run(sample, body)
+        engine = _validate_new_run(sample, body, allow_reserved_engine)
         if (blocking_run := await in_flight_run_id(sample.sample_item_id)) is not None:
             raise DuplicateException(
                 f"Peak assignment run '{blocking_run}' is already in flight for "

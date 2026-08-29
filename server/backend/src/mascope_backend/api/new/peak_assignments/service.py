@@ -1040,12 +1040,16 @@ def _untargeted_ionization_notations(
     return notations, mechanism_id_by_notation
 
 
-def _load_sample_peaks(sample: Sample) -> pd.DataFrame:
+def load_sample_peaks(sample: Sample) -> pd.DataFrame:
     """
     Load every observed peak of the sample with an averaged intensity.
 
     Uses peak heights for Orbitrap files and peak areas for TOF files,
-    mirroring the targeted matcher.
+    mirroring the targeted matcher. Public because it defines the engine's
+    peak read - id set, m/z axis, and the instrument-correct intensity
+    quantity - and the copy service must see a destination sample through
+    exactly the same read (``copy_service``), or its remapped rows would
+    carry a different intensity quantity than an engine run's.
 
     :param sample: Sample model object
     :return: DataFrame with sample_peak_id, mz, and intensity columns
@@ -1402,7 +1406,7 @@ async def _run_sample_assignment(
         )
 
         # -- Load every observed peak of the sample
-        peaks_df = _load_sample_peaks(sample)
+        peaks_df = load_sample_peaks(sample)
         await send_progress_user_notification(notification, 0.1)
 
         # -- Resolve the sample's mechanism set once; every stage below

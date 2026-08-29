@@ -18,10 +18,23 @@ PEAK_ASSIGNMENT_ENGINE_VERSION = "0.2.0"
 # recalibration pool filters on.
 IN_APP_ENGINE = "mascope"
 
+# The identity of runs the server-side copy service publishes (assignments
+# copied from a curated sample onto its batch's other samples, re-scored per
+# destination - docs/dev/peak_assignment_copy.md). Reserved for the same reason
+# the in-app name is: the UI presents this value as a first-party copy, so an
+# external import that could stamp it would forge that presentation. The copy
+# service itself passes the reservation through a trusted server-side parameter
+# on the import entry point that the HTTP route never forwards.
+COPY_ENGINE = "mascope-copy"
+
+# Bump when the copy pipeline changes in a way that affects results (mapping
+# tolerance, re-scoring, drop rules). Stamped as engine_version on copied runs.
+COPY_ENGINE_VERSION = "0.1.0"
+
 # Engine names a client may not claim. Matched case-insensitively on the
 # stripped value: 'Mascope' is not a different engine, it is the same forgery
 # with different capitalization.
-RESERVED_ENGINE_NAMES = frozenset({IN_APP_ENGINE})
+RESERVED_ENGINE_NAMES = frozenset({IN_APP_ENGINE, COPY_ENGINE})
 
 # Rows one import request may carry, mirroring the ledger read's page size for
 # the same reason: a dense sample's full ledger with alternatives and provenance
