@@ -680,7 +680,7 @@ describe('PaneBrowserAssignment adduct corroboration', () => {
   })
 
   // The engine folds the boost into the record that carries the corroboration -
-  // the M0's p_correct - and never into an isotopologue's. So the isotopologue's
+  // the M0's p_correct - and never into a child's. So the child's
   // tooltip must not claim the number it sits beside already accounts for it,
   // which is exactly what the M0's own wording says.
   it('says whose evidence it is, and whose P(correct) has the boost', async () => {
@@ -737,7 +737,7 @@ describe('PaneBrowserAssignment adduct corroboration', () => {
 
   // An imported ledger is not bound by the in-app engine's winner-only rule, so
   // an isotopologue that does carry its own count keeps it rather than the family's.
-  it('prefers an isotopologue own count over the family one', async () => {
+  it('prefers the count on the isotopologue itself over the family one', async () => {
     const wrapper = await unfolded(corroborated(3, [{ corroboration_adducts: 2 }, {}]))
     const rows = rowsById(wrapper)
 
@@ -750,7 +750,7 @@ describe('PaneBrowserAssignment adduct corroboration', () => {
   // Each isotopologue inherits from ITS OWN parent, not from whichever family the
   // loop happened to reach first. With one family on screen the two are
   // indistinguishable, so this is the case that pins the per-parent scope.
-  it('inherits from each isotopologue own parent, not across families', async () => {
+  it('inherits from the parent of each isotopologue, not across families', async () => {
     const corroboratedFamily = corroborated(3)
     const bare = family({
       id: 'b',
