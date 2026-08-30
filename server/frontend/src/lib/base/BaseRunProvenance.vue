@@ -36,17 +36,43 @@ const props = defineProps({
 // reserves it.
 const IN_APP_ENGINE = 'mascope'
 
+// The identity of a run this deployment produced by copying another sample's
+// assignments (docs/dev/peak_assignment_copy.md section 5). Reserved server-side
+// exactly as the in-app name is, so a run carrying it really was copied here -
+// which is what lets this render it as first-party rather than foreign. It
+// still reaches the ledger through the import channel, so it carries a
+// disclosure (the copy manifest) and no calibrated P(correct), like any import.
+const COPY_ENGINE = 'mascope-copy'
+
 const engine = computed(() => props.run?.engine ?? null)
+const engineKey = computed(() => engine.value?.trim().toLowerCase() ?? null)
+
+const isCopy = computed(() => engineKey.value === COPY_ENGINE)
 
 // Runs predating the engine column were backfilled to the in-app identity, so a
 // missing engine means an old row rather than an unknown producer - read it as
-// in-app rather than badging it as foreign.
+// in-app rather than badging it as foreign. A copied run is this deployment's
+// work too, so it is not external either, even though it was published through
+// the import channel.
 const isExternal = computed(
-  () => !!engine.value && engine.value.trim().toLowerCase() !== IN_APP_ENGINE
+  () => !!engineKey.value && engineKey.value !== IN_APP_ENGINE && !isCopy.value
 )
+
+// The sample a copied run was copied from, named in the manifest the copy
+// service discloses. Null for any other run, and for a copy whose manifest a
+// future version reshapes - the label then falls back to saying only that it
+// is a copy, rather than rendering "copy of undefined".
+const copySource = computed(() => {
+  if (!isCopy.value) return null
+  const copy = props.run?.calibration?.copy
+  if (!copy || typeof copy !== 'object') return null
+  const name = copy.source_sample_item_name ?? copy.source_sample_item_id
+  return typeof name === 'string' && name ? name : null
+})
 
 const engineLabel = computed(() => {
   if (!props.run) return ''
+  if (isCopy.value) return 'Copy'
   if (!isExternal.value) return 'Mascope'
   return engine.value
 })
@@ -118,14 +144,26 @@ const tierBandsText = computed(() => {
 
 // --- Tooltips ----------------------------------------------------------------
 
+function engineOrigin() {
+  if (isCopy.value) {
+    return copySource.value
+      ? `Copied from sample ${copySource.value} by this Mascope deployment`
+      : 'Copied from another sample of this batch by this Mascope deployment'
+  }
+  return isExternal.value
+    ? `Published into Mascope by an external engine: ${engine.value}`
+    : 'Computed by this Mascope deployment'
+}
+
 const engineTooltip = computed(() => {
   if (!props.run) return ''
   return [
-    isExternal.value
-      ? `Published into Mascope by an external engine: ${engine.value}`
-      : 'Computed by this Mascope deployment',
+    engineOrigin(),
     version.value ? `Engine version: ${version.value}` : null,
     tierBandsText.value,
+    isCopy.value
+      ? 'The formulas were copied; the fit, mass error and tier were re-measured against this sample. Copied rows carry no Mascope-calibrated P(correct).'
+      : null,
     isExternal.value
       ? 'Imported runs carry no Mascope-calibrated P(correct); their rows show it empty.'
       : null
@@ -134,10 +172,23 @@ const engineTooltip = computed(() => {
     .join('\n')
 })
 
+// A copied run discloses its copy manifest in the same field an import
+// discloses its calibration state in, so it gets the same chip - what differs
+// is what the disclosure is about.
+const showsDisclosure = computed(() => isExternal.value || isCopy.value)
+
 const calibrationTooltip = computed(() => {
-  if (!isExternal.value) return ''
+  if (!showsDisclosure.value) return ''
   if (!calibration.value) {
     return 'This run disclosed no calibration state.'
+  }
+  if (isCopy.value) {
+    return [
+      'How this copy was made: the source run, the per-sample mass-axis',
+      'offsets it corrected for, and how many rows mapped or were dropped.',
+      '',
+      calibrationDump.value
+    ].join('\n')
   }
   return [
     'What this engine calibrated against, as it disclosed at import.',
@@ -147,6 +198,11 @@ const calibrationTooltip = computed(() => {
     calibrationDump.value
   ].join('\n')
 })
+
+const disclosureLabel = computed(() => {
+  if (isCopy.value) return calibration.value ? 'copy details' : 'no copy details'
+  return calibration.value ? calibrationLabel.value : 'no calibration'
+})
 </script>
 
 <template>
@@ -154,19 +210,21 @@ const calibrationTooltip = computed(() => {
     <Tag
       :value="compact || !version ? engineLabel : `${engineLabel} ${version}`"
       :severity="isExternal ? 'info' : 'secondary'"
-      :icon="`pi ${isExternal ? 'ph ph-upload-simple' : 'ph ph-house'}`"
+      :icon="`pi ${isCopy ? 'pi-copy' : isExternal ? 'ph ph-upload-simple' : 'ph ph-house'}`"
       :class="['engine', isExternal ? 'external' : 'in-app']"
       style="font-size: 11px"
       v-tooltip.top="engineTooltip"
     />
-    <!-- Only an imported run has a disclosure to show: an in-app run's
-         calibration state is the sample's own, which the engine already gates
-         on before it will run at all. -->
+    <!-- Only a run that came through the import channel has a disclosure to
+         show: an in-app run's calibration state is the sample's own, which the
+         engine already gates on before it will run at all. A copied run does
+         come through that channel, and what it discloses is its copy
+         manifest. -->
     <Tag
-      v-if="isExternal"
-      :value="calibration ? (compact ? 'calibration' : calibrationLabel) : 'no calibration'"
+      v-if="showsDisclosure"
+      :value="compact ? (isCopy ? 'details' : 'calibration') : disclosureLabel"
       :severity="calibration ? 'secondary' : 'warn'"
-      :icon="`pi ${calibration ? 'ph ph-crosshair' : 'ph ph-warning'}`"
+      :icon="`pi ${calibration ? (isCopy ? 'pi-copy' : 'ph ph-crosshair') : 'ph ph-warning'}`"
       class="calibration"
       style="font-size: 11px"
       v-tooltip.top="calibrationTooltip"

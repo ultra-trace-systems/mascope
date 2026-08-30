@@ -1143,6 +1143,11 @@ async def _copy_to_destination(
     manifest = {
         "copy": {
             "source_sample_item_id": source.sample_item_id,
+            # Named as well as identified: the run selector's badge renders
+            # "copied from <sample>", and an id there tells a reader nothing.
+            # A rename afterwards leaves this stale, which is the right
+            # trade - the manifest records what was true when the copy ran.
+            "source_sample_item_name": source.sample_item_name,
             "source_peak_assignment_run_id": source_run.peak_assignment_run_id,
             "source_engine": source_run.engine,
             "source_engine_version": source_run.engine_version,
@@ -1435,6 +1440,12 @@ async def _run_copy_fanout(
         f"{len(partition.admitted)} of {len(partition.destinations)} batch "
         f"samples ({'seeded re-score' if rescore else 'literal'})."
     )
+
+    # The route hands one over so its per-destination progress nests under the
+    # process the response named. A caller with nobody to report to gets a
+    # fresh one, because the notification's process id is a required string
+    # and its default only applies when the field is left out entirely.
+    process_id = process_id or gen_id(8)
 
     outcomes: list[dict] = []
     total = len(partition.destinations)

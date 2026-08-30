@@ -54,7 +54,7 @@ def _scalar_session(value):
 
 
 def _peaks_df(peak_specs: list[tuple[str, float, float]]) -> pd.DataFrame:
-    """Build the frame ``_load_sample_peaks`` returns: id, m/z, intensity."""
+    """Build the frame ``load_sample_peaks`` returns: id, m/z, intensity."""
     return pd.DataFrame(
         [
             {"sample_peak_id": pid, "mz": mz, "intensity": intensity}
@@ -128,7 +128,7 @@ def _patches(
             f"{_MOD}._create_run", new_callable=AsyncMock, return_value=run
         ),
         "finalize": patch(f"{_MOD}._finalize_run", new_callable=AsyncMock),
-        "load_peaks": patch(f"{_MOD}._load_sample_peaks", return_value=peaks),
+        "load_peaks": patch(f"{_MOD}.load_sample_peaks", return_value=peaks),
         "known": patch(
             f"{_MOD}._fetch_known_target_isotopes",
             new_callable=AsyncMock,

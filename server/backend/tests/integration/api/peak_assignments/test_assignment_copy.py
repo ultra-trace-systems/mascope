@@ -56,14 +56,22 @@ SOURCE_SPECS = (
     ("src-3", 250.1200, "C10H16N2", "C10H17N2+", "M0", "M0", 0.61, "candidate"),
 )
 
-#: The destination's peak file. The first three mirror the source's peaks
-#: within a hair; the fourth is the destination's own, which nothing explains
-#: and which therefore must come back as an unassigned placeholder.
+#: The source run's residual mass offset: every row above carries this error,
+#: so it is the median the copy corrects the source axis by.
+SOURCE_MU_PPM = 1.2
+
+#: The destination's peak file. The first three are the same species as the
+#: source's, sitting where a well-calibrated destination measures them - that
+#: is, a few tenths of a ppm from the source's peaks once the source's own 1.2
+#: ppm offset is corrected out, comfortably inside the 2 ppm drift margin these
+#: fixtures fall back to (no resolution function behind a synthetic file). The
+#: fourth is the destination's own peak, which nothing explains and which must
+#: therefore come back as an unassigned placeholder.
 DESTINATION_PEAKS = (
-    ("dst-1", 181.0709, 4200.0),
-    ("dst-2", 182.0743, 300.0),
-    ("dst-3", 250.1203, 900.0),
-    ("dst-4", 310.9999, 55.0),
+    ("dst-1", 181.07050, 4200.0),
+    ("dst-2", 182.07390, 300.0),
+    ("dst-3", 250.11975, 900.0),
+    ("dst-4", 310.99990, 55.0),
 )
 
 
@@ -282,7 +290,7 @@ async def copy_batch(async_session_factory, pa_test_data):
                     isotope_label=label,
                     source="database",
                     fit_score=fit,
-                    mz_error_ppm=1.2,
+                    mz_error_ppm=SOURCE_MU_PPM,
                     abundance_error=0.05,
                     tier=tier,
                     owner_peak_assignment_id=(
@@ -615,7 +623,7 @@ class TestFanOut:
         row = next(row for row in rows if row.sample_peak_id == "dst-1")
 
         assert row.assigned_formula == "C6H12O6"
-        assert row.sample_peak_mz == pytest.approx(181.0709)
+        assert row.sample_peak_mz == pytest.approx(181.07050)
         assert row.sample_peak_intensity == pytest.approx(4200.0)
 
     @pytest.mark.asyncio
