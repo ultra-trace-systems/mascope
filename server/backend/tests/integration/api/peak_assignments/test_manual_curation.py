@@ -19,6 +19,7 @@ from sqlalchemy import delete, select
 
 from mascope_backend.api.new.peak_assignments.config import MAX_ALTERNATIVES_CEILING
 from mascope_backend.db import (
+    AssignmentVerification,
     IonizationMechanism,
     PeakAssignment,
     PeakAssignmentRun,
@@ -68,6 +69,11 @@ ALTERNATIVE = {
 def _alternative(mechanism_id: str, **overrides) -> dict:
     """The stock runner-up, under a real mechanism, with fields overridden."""
     return {**ALTERNATIVE, "ionization_mechanism_id": mechanism_id, **overrides}
+
+
+#: The peaks ``curated_run`` seeds on the shared sample. Named once because the
+#: teardown has to reach rows keyed on them rather than on the run.
+PEAK_IDS = ("cur-1", "cur-2", "cur-3")
 
 
 @pytest_asyncio.fixture
@@ -188,6 +194,18 @@ async def curated_run(async_session_factory, pa_test_data):
     }
 
     async with async_session_factory() as session:
+        # A verdict does NOT belong to the run - its identity is the peak plus
+        # the formula and adduct judged, precisely so it outlives a re-run - so
+        # deleting the run leaves any verdict these tests recorded standing on
+        # the shared sample. There it joins the instrument's calibration pool
+        # and is fitted by whatever runs next, which is a failure two files
+        # away with nothing to point at this one.
+        await session.execute(
+            delete(AssignmentVerification).where(
+                AssignmentVerification.sample_item_id == pa_test_data["sample_item_id"],
+                AssignmentVerification.sample_peak_id.in_(PEAK_IDS),
+            )
+        )
         # The run cascades to its assignments; the mechanism is independent.
         await session.execute(
             delete(PeakAssignmentRun).where(
