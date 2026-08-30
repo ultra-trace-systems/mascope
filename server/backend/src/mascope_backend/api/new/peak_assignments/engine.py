@@ -209,18 +209,36 @@ def _row_reference_identities(row) -> list | None:
     return value if isinstance(value, list) and value else None
 
 
-def _alternative_dict(row, reference_identities_by_formula: dict) -> dict:
+def _alternative_dict(
+    row,
+    reference_identities_by_formula: dict,
+    main_isotope_ids: set | frozenset = frozenset(),
+    main_mz_by_ion: dict | None = None,
+) -> dict:
     """Build one runner-up candidate dict for a peak's ``alternatives`` list.
 
     Null the target FKs when the runner-up is itself a reference row, and attach
     the formula's reference identities (if any) so a runner-up known compound is
     still named.
+
+    The isotopologue label is recorded the same way the winner's is. A runner-up
+    is a target *isotope* that also landed on this peak, and it is just as free
+    as the winner to be one of its ion's satellites rather than the main one -
+    so without the label, promoting such a candidate by hand would enter a
+    compound's M+1 into the ledger as the compound's main peak.
     """
     is_reference_row = _row_reference_identities(row) is not None
     formula = _str_or_none(row.get("target_compound_formula"))
+    ion_id = _str_or_none(row.get("target_ion_id"))
+    isotope_label = (
+        "M0"
+        if row.get("target_isotope_id") in main_isotope_ids
+        else _isotope_offset_label(row["mz"], (main_mz_by_ion or {}).get(ion_id))
+    )
     alternative = {
         "assigned_formula": formula,
         "ion_formula": _str_or_none(row.get("target_ion_formula")),
+        "isotope_label": isotope_label,
         # The adduct the runner-up was scored under. A formula is only half an
         # assignment - without the mechanism a promoted runner-up would land on
         # the ledger as an adductless claim, and a verification's identity
@@ -457,7 +475,9 @@ def invert_matches_to_peak_assignments(
             p_correct = None
             calibration_meta = None
         alternatives = [
-            _alternative_dict(row, reference_identities_by_formula)
+            _alternative_dict(
+                row, reference_identities_by_formula, main_isotope_ids, main_mz_by_ion
+            )
             for _, row in runners.iterrows()
         ]
 

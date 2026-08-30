@@ -734,7 +734,9 @@ class SetAssignmentBody(BaseModel):
     fit_score: float | None = Field(None, ge=0.0, le=1.0)
     mz_error_ppm: float | None = Field(None, allow_inf_nan=False)
     abundance_error: float | None = Field(None, allow_inf_nan=False)
-    plausibility: float | None = Field(None, ge=0.0, le=1.0, allow_inf_nan=False)
+    # No `plausibility` here on purpose: it is a pure function of the formula
+    # (Seven Golden Rules), so the server computes it from what is committed
+    # rather than accepting a number about chemistry from a caller.
 
 
 #: The two curation actions, discriminated on `action` so an unknown one is a

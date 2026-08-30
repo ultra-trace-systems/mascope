@@ -19,7 +19,7 @@ import { num } from '@/lib/formatters'
 import { peakAssignmentEnabled } from '@/lib/features'
 
 import { usePreview } from './preview.js'
-import { isotopeOfHit } from './isotope.js'
+import { curationBodyForHit, hitKey } from './searchHit.js'
 
 // On-demand composition search for the focused peak. Lives in the Sample view's
 // bottom pane, shown in place of the time series while "Re-search" is active
@@ -343,11 +343,6 @@ const assignTarget = computed(() =>
 const assigning = ref(null) // key of the hit being committed
 const assignDenied = ref(false) // 403: not an editor on this sample
 
-// A hit is identified by formula AND mechanism: the same composition can be
-// found under two adducts, and the table's dataKey (formula alone) cannot tell
-// those rows apart.
-const hitKey = (hit) => `${hit?.target_compound_formula}|${hit?.ionization_mechanism_id ?? ''}`
-
 const assignTooltip = computed(() =>
   assignTarget.value
     ? 'Assign this composition to the selected peak, as a manual assignment'
@@ -356,23 +351,12 @@ const assignTooltip = computed(() =>
 
 async function assignToPeak(hit) {
   if (!assignTarget.value || assigning.value !== null) return
-  const isotope = isotopeOfHit(hit)
   assigning.value = hitKey(hit)
   try {
-    await app.data.peakAssignment.peak.curate(assignTarget.value.peak_assignment_id, {
-      action: 'set_assignment',
-      assigned_formula: hit.target_compound_formula,
-      ionization_mechanism_id: hit.ionization_mechanism_id,
-      ion_formula: hit.target_ion_formula ?? null,
-      isotope_label: isotope.label,
-      isotope_formula: isotope.formula,
-      // The scores this server reported for the candidate moments ago. They
-      // are re-tiered against the run's own bands server-side and recorded as
-      // search-derived, never as the engine's own arbitration.
-      fit_score: hit.fit_score ?? null,
-      mz_error_ppm: hit.cheminfo?.target_isotope_mz_error_ppm ?? null,
-      plausibility: hit.plausibility ?? null
-    })
+    await app.data.peakAssignment.peak.curate(
+      assignTarget.value.peak_assignment_id,
+      curationBodyForHit(hit)
+    )
   } catch (error) {
     // The http layer already toasts; only 403 changes the UI (hide the control).
     if (error?.response?.status === 403) assignDenied.value = true
