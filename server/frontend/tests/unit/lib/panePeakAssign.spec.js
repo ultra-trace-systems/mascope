@@ -587,37 +587,89 @@ describe('PanePeakAssign close alternatives', () => {
 // list this card is showing.
 describe('PanePeakAssign manual curation', () => {
   const ALTERNATIVES = [
-    { assigned_formula: 'C7H16O5', fit_score: 0.71, mz_error_ppm: 4.2, source: 'database' },
-    // The untargeted finder's formula-only shortlist: no fit, still promotable.
-    { assigned_formula: 'C4H8N2O3', plausibility: 0.44, source: 'untargeted' },
+    // A scored runner-up, carrying the adduct it was scored under.
+    {
+      assigned_formula: 'C7H16O5',
+      ionization_mechanism_id: 'im-h',
+      fit_score: 0.71,
+      mz_error_ppm: 4.2,
+      source: 'database'
+    },
     // A runner-up that names no formula at all - there is nothing to commit.
-    { ion_formula: 'C3H7+', plausibility: 0.6, source: 'untargeted' }
+    { ion_formula: 'C3H7+', plausibility: 0.6, source: 'untargeted' },
+    // Written before alternatives carried the mechanism: the target ion it was
+    // scored against still resolves to one, so this is committable too.
+    { assigned_formula: 'C9H8', target_ion_id: 'ti-9', fit_score: 0.6, source: 'database' },
+    // The untargeted finder's formula-only shortlist: a composition and a
+    // plausibility and nothing else, so there is no adduct to assign it under.
+    { assigned_formula: 'C4H8N2O3', plausibility: 0.44, source: 'untargeted' }
   ]
 
-  const useButtons = (wrapper) => wrapper.findAll('.alt .alt-use')
+  // The controls that would actually commit something, and the ones that are
+  // there only to say why they cannot.
+  const useButtons = (wrapper) => wrapper.findAll('.alt .alt-use:not(.blocked)')
+  const blockedButtons = (wrapper) => wrapper.findAll('.alt .alt-use.blocked')
 
   beforeEach(() => {
     focusedAssignment = { ...assignment({ formula: 'C6H12O6', tier: 'assigned' }) }
     detailRecord = { ...focusedAssignment, alternatives: ALTERNATIVES }
   })
 
-  it('offers the action only on candidates that name a formula', async () => {
+  it('offers the action only on candidates that name a formula and an adduct', async () => {
     const wrapper = await mountPane()
 
-    expect(wrapper.findAll('.alt')).toHaveLength(3)
+    expect(wrapper.findAll('.alt')).toHaveLength(4)
     expect(useButtons(wrapper)).toHaveLength(2)
+    // The shortlist entry gets a control that explains itself; the entry with
+    // no formula at all gets none, because there is nothing to explain.
+    expect(blockedButtons(wrapper)).toHaveLength(1)
+  })
+
+  // A verification's identity is peak + formula + mechanism, so the server
+  // refuses an adductless formula with a 422. Offering the button and letting
+  // the click fail would be the card promising something it cannot do.
+  it('will not commit a formula with no adduct, and says where one comes from', async () => {
+    const wrapper = await mountPane()
+    const blocked = blockedButtons(wrapper)[0]
+
+    expect(blocked.attributes('disabled')).toBeDefined()
+    await blocked.trigger('click')
+    expect(curate).not.toHaveBeenCalled()
+
+    // The reason rides on the row's own tooltip as well as the control: the
+    // control only fades in on hover and is disabled, so a tooltip bound to it
+    // alone would seldom be reachable.
+    const reason = wrapper.vm.altTooltip(ALTERNATIVES[3])
+    expect(reason).toContain('No adduct')
+    expect(reason).toContain('Re-search this peak')
+    expect(wrapper.vm.altTooltip(ALTERNATIVES[0])).not.toContain('No adduct')
+  })
+
+  it('accepts either the recorded mechanism or the target ion as the adduct', async () => {
+    const wrapper = await mountPane()
+
+    expect(
+      wrapper.vm.canPromote({ assigned_formula: 'C9H8', ionization_mechanism_id: 'im-h' })
+    ).toBe(true)
+    expect(wrapper.vm.canPromote({ assigned_formula: 'C9H8', target_ion_id: 'ti-9' })).toBe(true)
+    expect(wrapper.vm.canPromote({ assigned_formula: 'C9H8', plausibility: 0.5 })).toBe(false)
+    expect(wrapper.vm.canPromote({ ion_formula: 'C3H7+', ionization_mechanism_id: 'im-h' })).toBe(
+      false
+    )
   })
 
   it('commits the candidate at its own index, guarded by the formula shown', async () => {
     const wrapper = await mountPane()
 
+    // The second committable candidate is the third alternative: the index sent
+    // is the row's own position in the list the card is showing.
     await useButtons(wrapper)[1].trigger('click')
 
     expect(curate).toHaveBeenCalledTimes(1)
     expect(curate).toHaveBeenCalledWith('pa-1', {
       action: 'promote_alternative',
-      alternative_index: 1,
-      expected_formula: 'C4H8N2O3'
+      alternative_index: 2,
+      expected_formula: 'C9H8'
     })
   })
 
@@ -642,6 +694,9 @@ describe('PanePeakAssign manual curation', () => {
     await wrapper.vm.$nextTick()
 
     expect(useButtons(wrapper)).toHaveLength(0)
+    // Including the one that only explains itself: without the right to change
+    // an assignment, why a particular candidate cannot be committed is moot.
+    expect(blockedButtons(wrapper)).toHaveLength(0)
     expect(wrapper.text()).toContain('Editor access is required to change an assignment')
   })
 
@@ -662,7 +717,7 @@ describe('PanePeakAssign manual curation', () => {
     detailRecord = {
       ...focusedAssignment,
       alternatives: ALTERNATIVES,
-      provenance: { manual: { previous_formula: 'C6H12O6' } }
+      provenance: { manual: { action: 'promote_alternative', previous_formula: 'C6H12O6' } }
     }
     const wrapper = await mountPane()
 
@@ -670,6 +725,86 @@ describe('PanePeakAssign manual curation', () => {
     expect(note).toContain('Assigned by hand')
     expect(note).toContain('C6H12O6')
     expect(note).toContain('use this')
+  })
+
+  /**
+   * The manual block of a row curated away from C6H12O6, archiving one demoted
+   * satellite per entry in `demoted` - keyed, as the server keys the restore,
+   * on the compound the satellite was taken under.
+   */
+  function override(demoted = []) {
+    return {
+      manual: {
+        action: 'promote_alternative',
+        previous_formula: 'C6H12O6',
+        previous: { assigned_formula: 'C6H12O6', ionization_mechanism_id: 'im-h' },
+        demoted: demoted.map((entry, i) => ({
+          peak_assignment_id: `pa-c${i}`,
+          owner_formula: 'C6H12O6',
+          owner_ionization_mechanism_id: 'im-h',
+          ...entry
+        }))
+      }
+    }
+  }
+
+  // The undo is not only about this row: the override unassigned the replaced
+  // compound's isotopologues too, and committing that compound again brings
+  // them back. A person who is told only about the first alternative would not
+  // expect two other peaks to change.
+  it('says the undo brings the replaced compound isotopologues back', async () => {
+    focusedAssignment = { ...focusedAssignment, source: 'manual' }
+    detailRecord = {
+      ...focusedAssignment,
+      alternatives: ALTERNATIVES,
+      provenance: override([{}, {}])
+    }
+    const wrapper = await mountPane()
+
+    const note = wrapper.find('.manual-note').text()
+    expect(note).toContain('puts back the 2 isotopologue satellites unassigned with it')
+    // The restore skips a satellite someone has curated since, so the note must
+    // not promise all of them come back.
+    expect(note).toContain('except any of them assigned by hand since')
+  })
+
+  it('promises no restore for an override that unassigned nobody', async () => {
+    focusedAssignment = { ...focusedAssignment, source: 'manual' }
+    detailRecord = {
+      ...focusedAssignment,
+      alternatives: ALTERNATIVES,
+      provenance: override()
+    }
+    const wrapper = await mountPane()
+
+    expect(wrapper.find('.manual-note').text()).not.toContain('isotopologue')
+  })
+
+  it('counts one restored satellite in the singular', async () => {
+    focusedAssignment = { ...focusedAssignment, source: 'manual' }
+    detailRecord = { ...focusedAssignment, provenance: override([{}]) }
+    const wrapper = await mountPane()
+
+    expect(wrapper.find('.manual-note').text()).toContain('the 1 isotopologue satellite ')
+  })
+
+  // Curating one row twice carries the first override's archive forward, so the
+  // archive can hold satellites taken under a compound the undo would not
+  // commit. Those come back with THEIR compound, not with this one - counting
+  // them here would promise peaks the click does not touch.
+  it('counts only the satellites the first alternative would bring back', async () => {
+    focusedAssignment = { ...focusedAssignment, source: 'manual' }
+    detailRecord = {
+      ...focusedAssignment,
+      provenance: override([
+        {},
+        { owner_formula: 'C5H10O5' },
+        { owner_ionization_mechanism_id: 'im-na' }
+      ])
+    }
+    const wrapper = await mountPane()
+
+    expect(wrapper.find('.manual-note').text()).toContain('the 1 isotopologue satellite ')
   })
 
   // `source` rides on the slim ledger row while provenance waits on the detail
@@ -680,11 +815,268 @@ describe('PanePeakAssign manual curation', () => {
     const wrapper = await mountPane()
 
     expect(wrapper.find('.manual-note').exists()).toBe(true)
+    expect(wrapper.find('.manual-note').text()).toContain('Assigned by hand')
   })
 
   it('leaves an engine-assigned row unmarked', async () => {
     const wrapper = await mountPane()
 
     expect(wrapper.find('.manual-note').exists()).toBe(false)
+  })
+})
+
+// The backend marks a stripped satellite 'manual' too, so the ledger's source
+// filter shows the whole footprint of an override rather than only the row that
+// gained a formula. Such a row had nothing assigned to it: it was cleared
+// because its M0 was reassigned under it. Read as an override it claimed a
+// person had picked this peak's (absent) formula "in place of" the compound it
+// had actually belonged to, which inverts the relationship.
+describe('PanePeakAssign a satellite stripped by an override', () => {
+  const DEMOTED = {
+    ...assignment({ formula: null }),
+    peak_assignment_id: 'pa-c1',
+    source: 'manual',
+    tier: 'unassigned',
+    role: 'unassigned'
+  }
+  const PROVENANCE = {
+    manual: {
+      action: 'demote_satellite',
+      reason: 'owner_overridden',
+      previous_formula: 'C6H12O6',
+      previous_owner_formula: 'C6H12O6'
+    }
+  }
+
+  beforeEach(() => {
+    focusedAssignment = DEMOTED
+    detailRecord = { ...DEMOTED, provenance: PROVENANCE }
+  })
+
+  it('does not read as a formula somebody chose', async () => {
+    const wrapper = await mountPane()
+    const note = wrapper.find('.manual-note').text()
+
+    expect(note).not.toContain('Assigned by hand')
+    expect(note).not.toContain('in place of')
+  })
+
+  it('says what happened to the row and names the compound it belonged to', async () => {
+    const wrapper = await mountPane()
+    const note = wrapper.find('.manual-note').text()
+
+    expect(note).toContain('Unassigned by hand')
+    expect(note).toContain('this peak was an isotopologue of C6H12O6')
+    expect(note).toContain('Assigning C6H12O6 there again restores this row')
+  })
+
+  // A satellite carries its M0's formula verbatim, so the engine writes both
+  // keys with the same value; an imported run may carry only one of them.
+  it('falls back to the formula the row itself held', async () => {
+    detailRecord = {
+      ...DEMOTED,
+      provenance: { manual: { action: 'demote_satellite', previous_formula: 'C6H12O6' } }
+    }
+    const wrapper = await mountPane()
+
+    expect(wrapper.find('.manual-note').text()).toContain('isotopologue of C6H12O6')
+  })
+
+  // `source` is on the slim row and the action is not, so the note has to pick
+  // its side before the detail lands. Curating a peak always puts a formula on
+  // it, which makes a formula-less 'manual' row a demotion.
+  it('reads as a demotion before the detail arrives, without naming a compound', async () => {
+    detailRecord = null
+    const wrapper = await mountPane()
+    const note = wrapper.find('.manual-note').text()
+
+    expect(note).toContain(
+      'Unassigned by hand when the compound this peak was an isotopologue of was replaced'
+    )
+    expect(note).not.toContain('Assigned by hand')
+  })
+
+  // Curating a demoted row assigns it in its own right - it is no longer part
+  // of anyone's family - so the override note is the true one again.
+  it('reads as an override once someone assigns the row by hand', async () => {
+    focusedAssignment = { ...DEMOTED, assigned_formula: 'C4H8N2O3', tier: 'candidate' }
+    detailRecord = {
+      ...focusedAssignment,
+      provenance: { manual: { action: 'set_assignment' } }
+    }
+    const wrapper = await mountPane()
+
+    expect(wrapper.find('.manual-note').text()).toContain('Assigned by hand')
+  })
+})
+
+// Two surfaces describe a row an override stripped: the tier chip and this
+// note. BaseTierTag.vue marks such a row with an eraser and deliberately not
+// with the hand - the hand says "a person chose this", which is the one claim a
+// stripped row cannot make - and the two sit on the same screen, so they have
+// to agree about the glyph AND about how loudly it is drawn (the classes are
+// what the recessive treatment keys on).
+describe('PanePeakAssign manual note marks', () => {
+  it('marks a row somebody chose with the hand, at full strength', async () => {
+    focusedAssignment = {
+      ...assignment({ formula: 'C6H12O6', tier: 'assigned' }),
+      source: 'manual'
+    }
+    detailRecord = {
+      ...focusedAssignment,
+      provenance: { manual: { action: 'promote_alternative', previous_formula: 'C5H10O5' } }
+    }
+    const wrapper = await mountPane()
+
+    expect(wrapper.find('.manual-note .manual-icon').classes()).toContain('ph-hand-pointing')
+    expect(wrapper.find('.manual-note .ph-eraser').exists()).toBe(false)
+  })
+
+  it('marks a row the override stripped with the eraser, recessive', async () => {
+    focusedAssignment = {
+      ...assignment({ formula: null }),
+      peak_assignment_id: 'pa-c1',
+      source: 'manual'
+    }
+    detailRecord = {
+      ...focusedAssignment,
+      provenance: { manual: { action: 'demote_satellite', previous_owner_formula: 'C6H12O6' } }
+    }
+    const wrapper = await mountPane()
+
+    expect(wrapper.find('.manual-note .demoted-icon').classes()).toContain('ph-eraser')
+    expect(wrapper.find('.manual-note .ph-hand-pointing').exists()).toBe(false)
+  })
+})
+
+// A winner can be committed with no ionization mechanism at all: the untargeted
+// stage writes one when the finder echoes a notation the mechanism map does not
+// hold, and an imported run reaches the same state trivially, since an imported
+// row may only ever have carried a formula. Override such a row and the winner
+// it displaced - archived, and pushed to the head of the alternatives as the
+// undo entry - is refused by the same 422 that refuses any adductless
+// candidate. So the undo is not merely inconvenient here, it does not exist:
+// re-searching assigns the formula under a real adduct, which is a new
+// assignment, and the satellites this override unassigned are restored by
+// compound AND mechanism, so they stay unassigned.
+describe('PanePeakAssign an override whose previous winner named no adduct', () => {
+  // `_previous_winner` drops the keys it has no value for, so an adductless
+  // winner is archived without `ionization_mechanism_id` at all.
+  const PREVIOUS = {
+    assigned_formula: 'C6H12O6',
+    ion_formula: 'C6H13O6+',
+    fit_score: 0.55,
+    tier: 'candidate',
+    source: 'untargeted'
+  }
+  // An ordinary formula-only shortlist entry, further down the same list: it is
+  // blocked for the same reason and re-searching really is its route.
+  const SHORTLIST = { assigned_formula: 'C9H8', plausibility: 0.5, source: 'untargeted' }
+  const CURATED = { ...assignment({ formula: 'C4H8N2O3', tier: 'candidate' }), source: 'manual' }
+
+  /** The manual block of an override that displaced `previous`. */
+  function override(demoted = [], previous = PREVIOUS) {
+    return {
+      manual: {
+        action: 'promote_alternative',
+        previous_formula: previous.assigned_formula,
+        previous,
+        demoted: demoted.map((entry, i) => ({
+          peak_assignment_id: `pa-c${i}`,
+          owner_formula: previous.assigned_formula,
+          owner_ionization_mechanism_id: previous.ionization_mechanism_id ?? null,
+          ...entry
+        }))
+      }
+    }
+  }
+
+  const useButtons = (wrapper) => wrapper.findAll('.alt .alt-use:not(.blocked)')
+  const blockedButtons = (wrapper) => wrapper.findAll('.alt .alt-use.blocked')
+
+  beforeEach(() => {
+    focusedAssignment = CURATED
+    detailRecord = {
+      ...CURATED,
+      alternatives: [PREVIOUS, SHORTLIST],
+      provenance: override([{}])
+    }
+  })
+
+  it('offers no working undo - the archived winner is as unassignable as any', async () => {
+    const wrapper = await mountPane()
+
+    expect(useButtons(wrapper)).toHaveLength(0)
+    expect(blockedButtons(wrapper)).toHaveLength(2)
+
+    await blockedButtons(wrapper)[0].trigger('click')
+    expect(curate).not.toHaveBeenCalled()
+  })
+
+  // "This candidate is a composition the finder listed" is simply untrue of the
+  // undo entry, and re-searching does not put its family back.
+  it('does not describe the undo entry as something the finder listed', async () => {
+    const wrapper = await mountPane()
+    const reason = wrapper.vm.altTooltip(PREVIOUS, 0)
+
+    expect(reason).toContain('the assignment this replaced named none itself')
+    expect(reason).toContain('does not bring back the satellites unassigned with it')
+    expect(reason).not.toContain('the finder listed')
+  })
+
+  it('still points a shortlist candidate on the same list at the search', async () => {
+    const wrapper = await mountPane()
+    const reason = wrapper.vm.altTooltip(SHORTLIST, 1)
+
+    expect(reason).toContain('this candidate is a composition the finder listed')
+    expect(reason).toContain('Re-search this peak and assign the hit instead')
+  })
+
+  // The undo wording is earned by being the archived winner, not by sitting
+  // first: on a row nobody has curated, the head is just the best runner-up.
+  it('reads the head of an engine row as a shortlist candidate', async () => {
+    focusedAssignment = assignment({ formula: 'C4H8N2O3', tier: 'candidate' })
+    detailRecord = { ...focusedAssignment, alternatives: [PREVIOUS, SHORTLIST] }
+    const wrapper = await mountPane()
+
+    expect(wrapper.vm.altTooltip(PREVIOUS, 0)).toContain('a composition the finder listed')
+  })
+
+  it('does not promise an undo the card cannot perform', async () => {
+    const wrapper = await mountPane()
+    const note = wrapper.find('.manual-note').text()
+
+    expect(note).toContain('in place of C6H12O6')
+    expect(note).toContain('cannot be put back by hand')
+    expect(note).toContain('the 1 isotopologue satellite unassigned with it stays unassigned')
+    expect(note).not.toContain('on it to undo')
+  })
+
+  it('keeps the undo wording when the archived winner did name an adduct', async () => {
+    const previous = { ...PREVIOUS, ionization_mechanism_id: 'im-h' }
+    detailRecord = {
+      ...CURATED,
+      alternatives: [previous, SHORTLIST],
+      provenance: override([{}], previous)
+    }
+    const wrapper = await mountPane()
+    const note = wrapper.find('.manual-note').text()
+
+    expect(note).toContain('on it to undo')
+    expect(note).toContain('puts back the 1 isotopologue satellite')
+    expect(note).not.toContain('cannot be put back')
+  })
+
+  // Nothing archived at all: an override written before the archive existed, or
+  // the detail fetch still in flight. Guessing "unassignable" there would put a
+  // refusal on the common case, so the wording stays the ordinary one.
+  it('assumes the ordinary undo when nothing was archived', async () => {
+    detailRecord = {
+      ...CURATED,
+      provenance: { manual: { action: 'promote_alternative', previous_formula: 'C6H12O6' } }
+    }
+    const wrapper = await mountPane()
+
+    expect(wrapper.find('.manual-note').text()).toContain('on it to undo')
   })
 })

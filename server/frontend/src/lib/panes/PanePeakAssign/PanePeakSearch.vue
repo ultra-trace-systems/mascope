@@ -19,7 +19,7 @@ import { num } from '@/lib/formatters'
 import { peakAssignmentEnabled } from '@/lib/features'
 
 import { usePreview } from './preview.js'
-import { curationBodyForHit, hitKey } from './searchHit.js'
+import { canCurateHit, curationBodyForHit, hitKey } from './searchHit.js'
 
 // On-demand composition search for the focused peak. Lives in the Sample view's
 // bottom pane, shown in place of the time series while "Re-search" is active
@@ -88,17 +88,28 @@ const resultsHelp = {
     <p>
     Expand a row to see the candidate's full theoretical isotope pattern, and
     click an isotope row to preview it in the spectrum chart. The <b>+</b>
-    button adds a candidate to the open target collection.${
-      peakAssignmentEnabled
-        ? ` The <b>hand</b> button assigns it to the
-    selected peak: the peak's ledger row takes this composition, marked as
-    assigned by hand, until the next assignment run recomputes the sample.`
-        : ''
-    }
+    button adds a candidate to the open target collection.
     </p>`,
   doc: peakAssignmentEnabled
     ? app.ui.help.docUrl('how-it-works/peak-assignment/#the-fit-score-a-pure-measurement')
     : app.ui.help.docUrl('how-it-works/matching/')
+}
+
+// The hand button's own card, rendered from the shared docs snippet rather than
+// restated here: the same `_help/assignment-curation.md` is pulled into the
+// user manual, so the in-app text and the manual cannot drift apart the way two
+// hand-maintained copies of it did.
+//
+// Anchored on the column header, not on the button. Help cards register per
+// element and are never unregistered (see stores/ui/help.js), so a directive
+// inside a virtual-scrolled row body would leave one dead card behind for every
+// row the table ever rendered. The same rule is why the header's directive
+// hangs on a wrapper that outlives the glyph rather than on the glyph itself -
+// see the column header.
+const curationHelp = {
+  title: 'Assigning by Hand',
+  helpKey: 'assignment-curation',
+  doc: app.ui.help.docUrl('how-it-works/peak-assignment/#assigning-a-peak-yourself')
 }
 
 const PARAMS_STORAGE_KEY = 'mascope.peakAssign.params'
@@ -130,6 +141,11 @@ const params = reactive({
 })
 const formulaRangeModel = ref('')
 const results = ref([])
+// Which peak the rows currently in `results` were found for. Kept beside the
+// rows themselves and updated only where they are, because the two must never
+// disagree: the write path below refuses to commit a hit against any other
+// peak. Null whenever the table holds nothing anyone searched for.
+const resultsPeakId = ref(null)
 const totalMatches = ref(0)
 const displayedMatches = ref(0)
 const loading = ref(false)
@@ -185,6 +201,13 @@ app.ui.notification.on('match_compositions_by_mz', (payload) => {
     if (payload.data?.data) {
       totalMatches.value = payload?.data?.total || 0
       displayedMatches.value = payload?.data?.results || 0
+
+      // The two checks above already established that this payload is the
+      // focused peak's, so this is the one place in the pane where a result set
+      // is tied to a peak. Stamped with `peak_id` rather than the m/z the
+      // payload carries: the ledger joins on peak_id, and it is the identity
+      // the write path has to match.
+      resultsPeakId.value = app.data.peak.focused?.peak_id ?? null
 
       results.value = payload.data.data.map((res) => {
         const existing = app.data.target.compound.list.filter(
@@ -245,6 +268,7 @@ watchDebounced(
   async (deps) => {
     if (!chemConfig.value || !deps.peakFocused || !deps.mzPrecision || !deps.formulaRange) {
       results.value = []
+      resultsPeakId.value = null
       loading.value = false
       lastRequestParams.value = null
       return
@@ -257,6 +281,7 @@ watchDebounced(
 
     loading.value = true
     results.value = []
+    resultsPeakId.value = null
     totalMatches.value = 0
     displayedMatches.value = 0
 
@@ -343,14 +368,41 @@ const assignTarget = computed(() =>
 const assigning = ref(null) // key of the hit being committed
 const assignDenied = ref(false) // 403: not an editor on this sample
 
-const assignTooltip = computed(() =>
-  assignTarget.value
-    ? 'Assign this composition to the selected peak, as a manual assignment'
-    : 'No assignment run covers this peak yet - assign the sample first'
+// The results outlive the peak they were found for, so the write has to be
+// pinned to that peak rather than to whatever is focused now. Focus moves the
+// instant a peak is clicked and `assignTarget` follows it synchronously, but
+// the table is only replaced when the debounced search callback finally runs -
+// DEBOUNCE_DELAY_MS later, 800 ms by default. For that whole window the rows on
+// screen belong to the previous peak while the hand button already aims at the
+// new peak's ledger row, and `set_assignment` commits the composition it is
+// given without ever comparing it to the peak's m/z. Unguarded, one click there
+// records a formula hundreds of daltons off on the newly focused peak, tiered
+// from the other peak's fit score, and demotes the satellites of the formula
+// that peak really had - silently, with a success toast.
+//
+// Compared against the target row's own peak, not against the focused peak:
+// the question is whether the row about to be written is the row the results
+// were found for, and answering it off the row itself does not depend on two
+// computeds agreeing about focus.
+const resultsMatchTarget = computed(
+  () =>
+    resultsPeakId.value != null &&
+    assignTarget.value != null &&
+    String(assignTarget.value.sample_peak_id) === String(resultsPeakId.value)
 )
 
+const assignTooltip = computed(() => {
+  if (!assignTarget.value) return 'No assignment run covers this peak yet - assign the sample first'
+  if (!resultsMatchTarget.value)
+    return 'These results are for the previously selected peak - the search for this one is still coming'
+  return 'Assign this composition to the selected peak, as a manual assignment'
+})
+
 async function assignToPeak(hit) {
-  if (!assignTarget.value || assigning.value !== null) return
+  // Re-checked here and not only on the button: `disabled` lands on the next
+  // render, so a click can already be on its way when the focus changes.
+  if (!assignTarget.value || !resultsMatchTarget.value || !canCurateHit(hit)) return
+  if (assigning.value !== null) return
   assigning.value = hitKey(hit)
   try {
     await app.data.peakAssignment.peak.curate(
@@ -594,13 +646,38 @@ watch(
         </template>
       </Column>
       <Column>
+        <!-- Also the anchor for the curation help card, which is why the icon
+             follows the control it explains and goes with it for a viewer who
+             may not curate at all.
+             The card hangs on the wrapper and the meaning on the glyph inside
+             it, because the two have different lifetimes. `assignDenied` flips
+             when a write comes back 403, and a help card whose element goes
+             away is never unregistered (see stores/ui/help.js) - it would sit
+             in the store's list for the rest of the session holding a mouse
+             watcher on an element nobody can reach. The wrapper is gated on the
+             build-time feature flag alone, which cannot change after mount;
+             with the glyph gone it collapses to nothing, so a viewer who may
+             not curate still gets no control and no card. -->
+        <template #header>
+          <span v-if="peakAssignmentEnabled" class="curate-header" v-help.left="curationHelp">
+            <span
+              v-if="!assignDenied"
+              class="pi ph ph-hand-pointing"
+              v-tooltip.left="{ value: 'Assign to the selected peak', showDelay: 500 }"
+            />
+          </span>
+        </template>
         <template #body="{ data }">
           <div class="row-actions">
-            <!-- The Button is disabled when no run covers the peak, and a
-                 disabled PrimeVue button receives no mouse events - so the
-                 tooltip explaining why has to hang on a wrapper. -->
+            <!-- The Button is disabled when no run covers the peak, or while
+                 the rows on screen still belong to the previously focused one,
+                 and a disabled PrimeVue button receives no mouse events - so
+                 the tooltip explaining why has to hang on a wrapper. A hit with
+                 no adduct is a different case: there is no state in which it
+                 could be committed, so it gets no control at all rather than a
+                 permanently dead one. -->
             <span
-              v-if="peakAssignmentEnabled && !assignDenied"
+              v-if="peakAssignmentEnabled && !assignDenied && canCurateHit(data)"
               v-tooltip.left="{ value: assignTooltip, showDelay: 300 }"
             >
               <Button
@@ -608,7 +685,7 @@ watch(
                 size="small"
                 text
                 severity="secondary"
-                :disabled="!assignTarget || assigning !== null"
+                :disabled="!assignTarget || !resultsMatchTarget || assigning !== null"
                 :loading="assigning === hitKey(data)"
                 :aria-label="`Assign ${data.target_compound_formula} to the selected peak`"
                 @click="assignToPeak(data)"
@@ -729,6 +806,13 @@ watch(
   flex-flow: row nowrap;
   gap: 1rem;
   width: 100%;
+}
+/* The element the curation help card is registered on. It is a hook for the
+   directive and nothing else, so with its glyph gone it takes up no space -
+   which is what keeps a card that must not unmount from being reachable by a
+   viewer the control has been taken away from. */
+.curate-header {
+  display: inline-flex;
 }
 .row-actions {
   display: flex;

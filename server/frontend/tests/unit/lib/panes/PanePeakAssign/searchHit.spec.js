@@ -1,6 +1,11 @@
 import { describe, it, expect } from 'vitest'
 
-import { isotopeOfHit, curationBodyForHit, hitKey } from '@/lib/panes/PanePeakAssign/searchHit.js'
+import {
+  isotopeOfHit,
+  curationBodyForHit,
+  canCurateHit,
+  hitKey
+} from '@/lib/panes/PanePeakAssign/searchHit.js'
 
 // Assigning a re-search hit to a peak has to say WHICH isotopologue of the
 // candidate's ion that peak is. The search scores whole ions, so a heavy-isotope
@@ -71,7 +76,6 @@ describe('isotopeOfHit', () => {
   })
 })
 
-
 // The other half of the translation: what actually gets sent when a hit is
 // committed to the focused peak. This is the request contract with the curation
 // endpoint, so it is pinned here rather than left to a pane mount.
@@ -128,6 +132,44 @@ describe('curationBodyForHit', () => {
     expect(body.fit_score).toBeNull()
     expect(body.mz_error_ppm).toBeNull()
     expect(body.isotope_label).toBe('M0')
+  })
+
+  // The mechanism is required by the endpoint, so this body cannot succeed -
+  // but a dropped key is refused as "field required", which names nothing the
+  // caller can act on, while an explicit null points at the field.
+  it('states a missing mechanism rather than dropping the key', () => {
+    const body = curationBodyForHit({ target_compound_formula: 'CH4' })
+
+    expect(body).toHaveProperty('ionization_mechanism_id')
+    expect(body.ionization_mechanism_id).toBeNull()
+  })
+})
+
+// A composition committed under no adduct is half an assignment: the
+// verification identity is (peak, formula, mechanism), so such a row could
+// never carry a verdict, and `set_assignment` refuses it with a 422 the user
+// would only ever meet as a toast. The control is withheld instead.
+describe('canCurateHit', () => {
+  it('accepts a hit that names a composition and its adduct', () => {
+    expect(
+      canCurateHit({ target_compound_formula: 'C6H12O6', ionization_mechanism_id: 'mech-1' })
+    ).toBe(true)
+  })
+
+  it('refuses a hit with no ionization mechanism', () => {
+    expect(canCurateHit({ target_compound_formula: 'C6H12O6' })).toBe(false)
+    expect(
+      canCurateHit({ target_compound_formula: 'C6H12O6', ionization_mechanism_id: null })
+    ).toBe(false)
+    expect(canCurateHit({ target_compound_formula: 'C6H12O6', ionization_mechanism_id: '' })).toBe(
+      false
+    )
+  })
+
+  it('refuses a hit with no composition to commit', () => {
+    expect(canCurateHit({ ionization_mechanism_id: 'mech-1' })).toBe(false)
+    expect(canCurateHit({})).toBe(false)
+    expect(canCurateHit(null)).toBe(false)
   })
 })
 

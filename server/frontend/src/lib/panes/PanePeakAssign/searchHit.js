@@ -61,6 +61,28 @@ export function isotopeOfHit(hit) {
 }
 
 /**
+ * Whether a hit is a complete enough assignment to be committed at all.
+ *
+ * A formula without its adduct is half an assignment: the endpoint requires the
+ * ionization mechanism because a verification's identity is
+ * (sample_peak_id, assigned_formula, ionization_mechanism_id), so a formula
+ * committed under no mechanism could never carry a verdict. `set_assignment`
+ * refuses one with a 422 the user would meet as a bare toast, so the control is
+ * withheld instead of offering a write that cannot succeed.
+ *
+ * Every hit this search produces does carry a mechanism - the backend pairs a
+ * composition result with the matched ion of the same mechanism and drops it
+ * otherwise - so this guards the control against a hit shape the search does
+ * not currently emit rather than one it does.
+ *
+ * @param {Object} hit a composition-search result row
+ * @returns {boolean} true when the hit names both a composition and its adduct
+ */
+export function canCurateHit(hit) {
+  return Boolean(hit?.target_compound_formula && hit?.ionization_mechanism_id)
+}
+
+/**
  * The `set_assignment` request body for committing a hit to a peak.
  *
  * Sends only what the hit actually measured. `plausibility` is deliberately
@@ -70,6 +92,10 @@ export function isotopeOfHit(hit) {
  * this server's own search moments earlier; it re-tiers them under the run's
  * bands and records where they came from.
  *
+ * Callers gate on `canCurateHit` first, so the mechanism is always there; it is
+ * still sent as an explicit null when it is not, because a dropped key reads as
+ * "field required" while a null names the field the hit was missing.
+ *
  * @param {Object} hit a composition-search result row
  * @returns {Object} the PATCH body for `peak.curate()`
  */
@@ -78,7 +104,7 @@ export function curationBodyForHit(hit) {
   return {
     action: 'set_assignment',
     assigned_formula: hit?.target_compound_formula,
-    ionization_mechanism_id: hit?.ionization_mechanism_id,
+    ionization_mechanism_id: hit?.ionization_mechanism_id ?? null,
     ion_formula: hit?.target_ion_formula ?? null,
     isotope_label: isotope.label,
     isotope_formula: isotope.formula,
