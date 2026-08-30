@@ -1,4 +1,15 @@
 /**
+ * What a composition-search hit means when it is committed to a peak.
+ *
+ * The re-search results table and the assignment ledger speak different
+ * languages: a hit is an ION scored against the spectrum, carrying its match
+ * fields at the top level and its search parameters under `cheminfo`, while a
+ * ledger row is one PEAK with one composition on it. This module is the
+ * translation, kept out of the pane so the rules in it can be tested without
+ * mounting a DataTable.
+ */
+
+/**
  * Which isotopologue of a search hit's ion the searched peak actually is.
  *
  * The composition search scores a whole ION against the spectrum and reports one
@@ -47,4 +58,45 @@ export function isotopeOfHit(hit) {
     label: offset === 0 ? 'M0' : offset > 0 ? `M+${offset}` : `M${offset}`,
     formula: matched.target_isotope_formula ?? null
   }
+}
+
+/**
+ * The `set_assignment` request body for committing a hit to a peak.
+ *
+ * Sends only what the hit actually measured. `plausibility` is deliberately
+ * absent even though the results table shows one: it is a pure function of the
+ * formula, so the server computes it from what it commits rather than take a
+ * number about chemistry from the client. The scores that ARE sent came from
+ * this server's own search moments earlier; it re-tiers them under the run's
+ * bands and records where they came from.
+ *
+ * @param {Object} hit a composition-search result row
+ * @returns {Object} the PATCH body for `peak.curate()`
+ */
+export function curationBodyForHit(hit) {
+  const isotope = isotopeOfHit(hit)
+  return {
+    action: 'set_assignment',
+    assigned_formula: hit?.target_compound_formula,
+    ionization_mechanism_id: hit?.ionization_mechanism_id,
+    ion_formula: hit?.target_ion_formula ?? null,
+    isotope_label: isotope.label,
+    isotope_formula: isotope.formula,
+    fit_score: hit?.fit_score ?? null,
+    mz_error_ppm: hit?.cheminfo?.target_isotope_mz_error_ppm ?? null
+  }
+}
+
+/**
+ * Identity of a hit for per-row UI state (which row is mid-write).
+ *
+ * Formula AND mechanism: the same composition can be found under two adducts,
+ * and the results table's dataKey is the formula alone, so it cannot tell those
+ * two rows apart.
+ *
+ * @param {Object} hit a composition-search result row
+ * @returns {string} a key unique to the hit within one result set
+ */
+export function hitKey(hit) {
+  return `${hit?.target_compound_formula}|${hit?.ionization_mechanism_id ?? ''}`
 }

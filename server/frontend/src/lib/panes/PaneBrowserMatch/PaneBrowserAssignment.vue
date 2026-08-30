@@ -341,6 +341,22 @@ const pctFmt = new Intl.NumberFormat('en-US', { style: 'percent', maximumFractio
 const corrobLabel = (row) =>
   row.corrobInherited ? `(${row.corrobAdducts})` : `${row.corrobAdducts}`
 
+// Why a row shows no calibrated probability. Three different reasons, and the
+// wrong one is worse than none: a hand-assigned row has no P(correct) because
+// nobody calibrated the formula a person chose, which says nothing about
+// whether this instrument has a curve - and reading "no calibration curve for
+// this instrument" there would send someone to calibrate an instrument that is
+// calibrated perfectly well.
+const uncalibratedReason = (row) => {
+  if (row.source === 'manual') {
+    return 'Assigned by hand - the calibration never scored this formula'
+  }
+  if (row.source === 'untargeted') {
+    return 'Untargeted assignment - no calibrated probability'
+  }
+  return 'No calibration curve for this instrument'
+}
+
 // Tooltip for the adduct-corroboration marker. An isotopologue shows the count its
 // M0 was corroborated by, so it has to say both that the evidence is the
 // family's and that the boost is in the M0's P(correct) - the engine folds it
@@ -746,11 +762,7 @@ const breadcrumb = computed(() => {
             <span
               v-else
               class="pcorrect uncal"
-              v-tooltip.top="
-                data.source === 'untargeted'
-                  ? 'Untargeted assignment - no calibrated probability'
-                  : 'No calibration curve for this instrument'
-              "
+              v-tooltip.top="uncalibratedReason(data)"
               >&mdash;</span
             >
             <span

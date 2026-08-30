@@ -48,15 +48,22 @@ RUN_BANDS = {"assigned": 0.9, "candidate": 0.4}
 
 #: The runner-up promoted by most tests. Its fit sits between the two bands, so
 #: promoting it must land 'candidate' - neither the winner's 'assigned' tier
-#: inherited, nor 'assigned' under the default bands.
+#: inherited, nor 'assigned' under the default bands. The mechanism is filled in
+#: per test from the fixture's own, since it is a foreign key.
 ALTERNATIVE = {
     "assigned_formula": "C7H16O5",
     "ion_formula": "C7H17O5+",
+    "isotope_label": "M0",
     "fit_score": 0.62,
     "mz_error_ppm": 4.2,
     "plausibility": 0.5,
     "source": "database",
 }
+
+
+def _alternative(mechanism_id: str, **overrides) -> dict:
+    """The stock runner-up, under a real mechanism, with fields overridden."""
+    return {**ALTERNATIVE, "ionization_mechanism_id": mechanism_id, **overrides}
 
 
 @pytest_asyncio.fixture
@@ -113,7 +120,7 @@ async def curated_run(async_session_factory, pa_test_data):
                 mz_error_ppm=1.2,
                 abundance_error=0.05,
                 tier="assigned",
-                alternatives=[dict(ALTERNATIVE)],
+                alternatives=[_alternative(mechanism_id)],
                 provenance={
                     "plausibility": 0.9,
                     "confidence": 0.8,
@@ -279,6 +286,35 @@ async def test_the_calibrated_fields_do_not_survive_the_override(
     archived = row.provenance["manual"]["previous"]["engine_judgement"]
     assert archived["p_correct"] == pytest.approx(0.93)
     assert archived["corroboration"]["n_adducts"] == 2
+
+
+@pytest.mark.asyncio
+async def test_the_promoted_formulas_known_identity_comes_with_it(
+    editor_client, curated_run, async_session_factory
+):
+    """`reference_identities` is the one provenance key that DOES cross over.
+
+    It is not a judgement about the winner that was displaced - it names the
+    formula the row now holds, so dropping it would leave a known compound
+    unnamed in the inspector for no reason.
+    """
+    async with async_session_factory() as session:
+        row = await session.get(PeakAssignment, curated_run["m0_id"])
+        row.alternatives = [
+            _alternative(
+                curated_run["mechanism_id"],
+                reference_identities=[{"name": "Xylitol pentanoate", "source": "test"}],
+            )
+        ]
+        await session.commit()
+
+    await editor_client.patch(
+        _url(curated_run, curated_run["m0_id"]),
+        json={"action": "promote_alternative", "alternative_index": 0},
+    )
+
+    row = await _row(async_session_factory, curated_run["m0_id"])
+    assert row.provenance["reference_identities"][0]["name"] == "Xylitol pentanoate"
 
 
 @pytest.mark.asyncio
@@ -610,3 +646,251 @@ async def test_an_assignment_of_another_sample_is_not_found(editor_client, curat
     )
 
     assert response.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_the_promoted_candidates_adduct_comes_with_it(
+    editor_client, curated_run, async_session_factory
+):
+    """A formula is half an assignment.
+
+    Without the mechanism the row would land adductless, and a verification's
+    identity - peak + formula + mechanism - would be incomplete. This is what
+    the engine change recording ``ionization_mechanism_id`` on alternatives is
+    for.
+    """
+    await editor_client.patch(
+        _url(curated_run, curated_run["m0_id"]),
+        json={"action": "promote_alternative", "alternative_index": 0},
+    )
+
+    row = await _row(async_session_factory, curated_run["m0_id"])
+    assert row.ionization_mechanism_id == curated_run["mechanism_id"]
+
+
+@pytest.mark.asyncio
+async def test_committing_the_formula_the_row_already_carries_keeps_the_family(
+    editor_client, curated_run, async_session_factory
+):
+    """Demotion is about a compound being REPLACED, not about a write happening.
+
+    A candidate entry naming the formula and adduct the row already carries
+    leaves the family standing for exactly what it stood for before, so
+    stripping it would destroy correct rows to record a change that did not
+    happen.
+    """
+    async with async_session_factory() as session:
+        row = await session.get(PeakAssignment, curated_run["m0_id"])
+        row.alternatives = [
+            _alternative(curated_run["mechanism_id"], assigned_formula="C6H12O6")
+        ]
+        await session.commit()
+
+    response = await editor_client.patch(
+        _url(curated_run, curated_run["m0_id"]),
+        json={"action": "promote_alternative", "alternative_index": 0},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["results"] == 1  # the curated row alone
+    child = await _row(async_session_factory, curated_run["child_id"])
+    assert child.assigned_formula == "C6H12O6"
+    assert child.role == "iso_child"
+    assert child.owner_peak_assignment_id == curated_run["m0_id"]
+
+
+@pytest.mark.asyncio
+async def test_a_satellite_row_can_be_curated_on_its_own(
+    editor_client, curated_run, async_session_factory
+):
+    """Curation is about the row in hand, not the family M0 a verdict is
+    redirected to - an alternative index only means something against one row's
+    list. The satellite detaches from a family whose compound it no longer
+    shares, and the M0 it left is untouched.
+    """
+    async with async_session_factory() as session:
+        row = await session.get(PeakAssignment, curated_run["child_id"])
+        row.alternatives = [_alternative(curated_run["mechanism_id"])]
+        await session.commit()
+
+    response = await editor_client.patch(
+        _url(curated_run, curated_run["child_id"]),
+        json={"action": "promote_alternative", "alternative_index": 0},
+    )
+
+    assert response.status_code == 200
+    child = await _row(async_session_factory, curated_run["child_id"])
+    assert child.assigned_formula == "C7H16O5"
+    assert child.owner_peak_assignment_id is None
+    assert child.role == "M0"
+    m0 = await _row(async_session_factory, curated_run["m0_id"])
+    assert m0.assigned_formula == "C6H12O6"
+    assert m0.source == "database"
+
+
+@pytest.mark.asyncio
+async def test_a_searched_composition_can_replace_an_existing_assignment(
+    editor_client, curated_run, async_session_factory
+):
+    """``set_assignment`` is not only for blank peaks: the displaced winner is
+    archived exactly as a promotion archives it.
+    """
+    response = await editor_client.patch(
+        _url(curated_run, curated_run["m0_id"]),
+        json={
+            "action": "set_assignment",
+            "assigned_formula": "C12H22O11",
+            "ionization_mechanism_id": curated_run["mechanism_id"],
+            "fit_score": 0.93,
+        },
+    )
+
+    assert response.status_code == 200
+    row = await _row(async_session_factory, curated_run["m0_id"])
+    assert row.assigned_formula == "C12H22O11"
+    assert row.alternatives[0]["assigned_formula"] == "C6H12O6"
+    assert row.provenance["manual"]["previous_formula"] == "C6H12O6"
+    # And the satellites of the formula it replaced are gone, as for a promote.
+    child = await _row(async_session_factory, curated_run["child_id"])
+    assert child.role == "unassigned"
+
+
+@pytest.mark.asyncio
+async def test_a_malformed_stored_candidate_is_refused_not_flushed(
+    editor_client, curated_run, async_session_factory
+):
+    """``alternatives`` is a bare JSON list that nothing validates on the way
+    in, and an imported run's entries are whatever the publishing client sent.
+    A candidate that cannot go in the columns has to be a 422 naming the field,
+    not a class-22 data error surfacing as a 500.
+    """
+    async with async_session_factory() as session:
+        row = await session.get(PeakAssignment, curated_run["m0_id"])
+        row.alternatives = [
+            _alternative(curated_run["mechanism_id"], assigned_formula="C" * 300),
+            _alternative(curated_run["mechanism_id"], fit_score=7.5),
+            _alternative(curated_run["mechanism_id"], mz_error_ppm="not a number"),
+        ]
+        await session.commit()
+
+    for index in (0, 1, 2):
+        response = await editor_client.patch(
+            _url(curated_run, curated_run["m0_id"]),
+            json={"action": "promote_alternative", "alternative_index": index},
+        )
+        assert response.status_code == 422, f"alternative {index}"
+
+    row = await _row(async_session_factory, curated_run["m0_id"])
+    assert row.assigned_formula == "C6H12O6"
+
+
+@pytest.mark.asyncio
+async def test_an_adduct_of_the_wrong_polarity_is_refused(
+    editor_client, curated_run, async_session_factory
+):
+    """The rule the import path enforces on the same column: a mechanism of the
+    opposite polarity is not an adduct this measurement could have produced.
+    The in-app engine satisfies it structurally by only searching the sample's
+    own mechanisms, so a hand-supplied id is the one way in.
+    """
+    opposite_id = gen_id()
+    async with async_session_factory() as session:
+        session.add(
+            IonizationMechanism(
+                ionization_mechanism_id=opposite_id,
+                ionization_mechanism_polarity="-",
+                ionization_mechanism=f"-H- ({opposite_id})",
+            )
+        )
+        await session.commit()
+
+    try:
+        response = await editor_client.patch(
+            _url(curated_run, curated_run["blank_id"]),
+            json={
+                "action": "set_assignment",
+                "assigned_formula": "C12H22O11",
+                "ionization_mechanism_id": opposite_id,
+            },
+        )
+
+        assert response.status_code == 422
+        row = await _row(async_session_factory, curated_run["blank_id"])
+        assert row.assigned_formula is None
+    finally:
+        async with async_session_factory() as session:
+            await session.execute(
+                delete(IonizationMechanism).where(
+                    IonizationMechanism.ionization_mechanism_id == opposite_id
+                )
+            )
+            await session.commit()
+
+
+# ---------------------------------------------------------------------------
+# The verification layer is left alone
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_curating_writes_no_verification(editor_client, curated_run):
+    """Choosing a candidate and vouching for one are different acts.
+
+    A ``confirmed`` verdict requires an evidence level by design, which an
+    automatic one would have to fabricate, and verdicts are the confidence
+    calibration's training labels - so an override must not manufacture one.
+    """
+    before = await editor_client.get(
+        f"/api/peak-assignments/sample/{curated_run['sample_item_id']}/verifications"
+    )
+
+    await editor_client.patch(
+        _url(curated_run, curated_run["m0_id"]),
+        json={"action": "promote_alternative", "alternative_index": 0},
+    )
+
+    after = await editor_client.get(
+        f"/api/peak-assignments/sample/{curated_run['sample_item_id']}/verifications"
+    )
+    assert after.json()["results"] == before.json()["results"]
+
+
+@pytest.mark.asyncio
+async def test_an_existing_verdict_stays_with_the_formula_it_judged(
+    editor_client, curated_run
+):
+    """A verdict's identity is peak + formula + mechanism, so an override
+    CHANGES the identity rather than re-pointing the verdict.
+
+    The old verdict is neither destroyed nor inherited: it stays in the
+    append-only history attached to the formula a person actually judged, and
+    the row reads unverified until someone judges the new one. This is why
+    nothing here has to touch the verification table at all.
+    """
+    verdict = await editor_client.post(
+        f"/api/peak-assignments/sample/{curated_run['sample_item_id']}/verify",
+        json={
+            "peak_assignment_id": curated_run["m0_id"],
+            "verdict": "confirmed",
+            "evidence_level": "msms",
+        },
+    )
+    assert verdict.status_code == 201
+
+    await editor_client.patch(
+        _url(curated_run, curated_run["m0_id"]),
+        json={"action": "promote_alternative", "alternative_index": 0},
+    )
+
+    verifications = await editor_client.get(
+        f"/api/peak-assignments/sample/{curated_run['sample_item_id']}/verifications"
+    )
+    records = [
+        record
+        for record in verifications.json()["data"]
+        if record["sample_peak_id"] == "cur-1"
+    ]
+    assert len(records) == 1
+    # Still against C6H12O6 - the formula it was recorded on, not the new one.
+    assert records[0]["assigned_formula"] == "C6H12O6"
+    assert records[0]["verdict"] == "confirmed"

@@ -27,6 +27,7 @@ Three rules keep an edited row honest beside the engine's own:
   so an override can be read back, audited, and undone by hand.
 """
 
+import math
 from datetime import datetime as dt
 from datetime import timezone
 
@@ -207,7 +208,10 @@ def _run_bands(run: PeakAssignmentRun) -> tuple[float, float]:
 
 
 async def _resolve_mechanism_id(
-    session, mechanism_id: str | None, target_ion_id: str | None
+    session,
+    mechanism_id: str | None,
+    target_ion_id: str | None,
+    polarity: str | None,
 ) -> str | None:
     """The ionization mechanism a curated winner is assigned under.
 
@@ -215,15 +219,37 @@ async def _resolve_mechanism_id(
     target ion - which is how an alternative written before alternatives
     carried the mechanism still promotes to a complete assignment.
 
-    :raises ApiException: 422, when the stated mechanism does not exist. It is
-        a foreign key on the row, so an unknown id would otherwise surface as a
-        500 from the flush rather than as a verdict on the request.
+    The polarity rule is the import path's
+    (``validate_reference_ids``): a mechanism of the wrong polarity is not an
+    adduct this measurement could have produced, and the in-app engine satisfies
+    that structurally by only ever searching the sample's own mechanisms. A
+    hand-supplied id is the one way an opposite-polarity adduct could reach the
+    column, so it is checked here rather than trusted.
+
+    :raises ApiException: 422, when the stated mechanism does not exist or does
+        not match the sample. Existence matters because it is a foreign key on
+        the row, so an unknown id would otherwise surface as a 500 from the
+        flush rather than as a verdict on the request.
     """
     if mechanism_id:
-        if await session.get(IonizationMechanism, mechanism_id) is None:
+        mechanism = await session.get(IonizationMechanism, mechanism_id)
+        if mechanism is None:
             raise ApiException(
                 "That ionization mechanism does not exist.",
                 {"ionization_mechanism_id": mechanism_id},
+                422,
+            )
+        if polarity and mechanism.ionization_mechanism_polarity != polarity:
+            raise ApiException(
+                f"Ionization mechanism "
+                f"'{mechanism.ionization_mechanism}' is "
+                f"'{mechanism.ionization_mechanism_polarity}', which does not "
+                f"match this sample's polarity '{polarity}'.",
+                {
+                    "ionization_mechanism_id": mechanism_id,
+                    "mechanism_polarity": mechanism.ionization_mechanism_polarity,
+                    "sample_polarity": polarity,
+                },
                 422,
             )
         return mechanism_id
@@ -254,6 +280,105 @@ async def _surviving_target_ids(
     return target_compound_id, target_ion_id
 
 
+#: Column widths a promoted candidate's strings land in, mirroring
+#: ``PeakAssignment``. An alternative is untyped JSON - Pydantic validates
+#: nothing inside the blob, and an imported run's alternatives are whatever the
+#: publishing client sent - so what the engine writes is not what may be there.
+_CANDIDATE_WIDTHS = {
+    "assigned_formula": 256,
+    "ion_formula": 4096,
+    "ionization_mechanism_id": 16,
+    "isotope_label": 64,
+    "isotope_formula": 256,
+    "target_compound_id": 16,
+    "target_ion_id": 16,
+}
+
+#: Numeric candidate fields, with the bounds their columns carry. `fit_score`
+#: has a CHECK constraint; the other two only have to be finite, since the read
+#: path renders with ``allow_nan=False`` and one NaN row breaks the whole run's
+#: ledger.
+_CANDIDATE_NUMBERS = {
+    "fit_score": (0.0, 1.0),
+    "mz_error_ppm": None,
+    "abundance_error": None,
+}
+
+
+def _validated_candidate(candidate: dict, where: dict) -> dict:
+    """Check a stored candidate before any of it reaches a typed column.
+
+    ``alternatives`` is a bare JSON list: no schema validates its entries on the
+    way in, an imported run's are client-supplied, and the two engine stages
+    already write three different shapes. So a promoted entry can carry a string
+    where a float belongs, a formula longer than its column, or a non-finite
+    number that Postgres stores happily and the ledger read then chokes on for
+    the whole run. Each of those is a class-22 data error or a constraint
+    violation out of the flush - a 500 - where the request deserves a 422 that
+    names the field.
+
+    :param candidate: The chosen entry, as stored.
+    :param where: Context merged into the error detail.
+    :return: The candidate with its typed fields coerced and checked.
+    :raises ApiException: 422, naming the field that cannot be committed.
+    """
+    clean: dict = {}
+    for field, width in _CANDIDATE_WIDTHS.items():
+        value = candidate.get(field)
+        if value is None:
+            continue
+        if not isinstance(value, str):
+            raise ApiException(
+                f"That candidate's {field} is not text, so it cannot be "
+                "committed to the peak.",
+                {**where, "field": field},
+                422,
+            )
+        if len(value) > width:
+            raise ApiException(
+                f"That candidate's {field} is {len(value)} characters, above "
+                f"the {width} this column holds.",
+                {**where, "field": field, "length": len(value)},
+                422,
+            )
+        clean[field] = value
+
+    for field, bounds in _CANDIDATE_NUMBERS.items():
+        value = candidate.get(field)
+        if value is None:
+            continue
+        # bool is an int subclass, and True would silently become 1.0.
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            raise ApiException(
+                f"That candidate's {field} is not a number.",
+                {**where, "field": field},
+                422,
+            )
+        value = float(value)
+        if not math.isfinite(value):
+            raise ApiException(
+                f"That candidate's {field} is not a finite number.",
+                {**where, "field": field},
+                422,
+            )
+        if bounds is not None and not (bounds[0] <= value <= bounds[1]):
+            raise ApiException(
+                f"That candidate's {field} is {value}, outside the "
+                f"[{bounds[0]}, {bounds[1]}] this column allows.",
+                {**where, "field": field, "value": value},
+                422,
+            )
+        clean[field] = value
+
+    # Carried through unchecked on purpose: they go into the JSON provenance
+    # blob, not into a typed column, and the reference identities are whatever
+    # shape the reference mirror wrote.
+    for field in ("plausibility", "reference_identities"):
+        if candidate.get(field) is not None:
+            clean[field] = candidate[field]
+    return clean
+
+
 def _role_for(isotope_label: str | None) -> str:
     """M0 unless the candidate says this peak is one of the ion's satellites.
 
@@ -274,6 +399,7 @@ def _manual_provenance(
     previous: dict | None,
     plausibility: float | None,
     fit_score: float | None,
+    reference_identities: list | None = None,
 ) -> dict:
     """The provenance a curated row carries.
 
@@ -294,6 +420,12 @@ def _manual_provenance(
             "plausibility": plausibility,
             "evidence": evidence,
             "score_version": SCORE_VERSION,
+            # The known-compound identities of the formula being committed, when
+            # the candidate carried them. Unlike the calibrated fields, this is
+            # not a judgement about the displaced winner - it names the formula
+            # the row now holds, read from the reference mirror when the run was
+            # computed, so the inspector still names a known compound.
+            "reference_identities": reference_identities,
             "manual": _clean(
                 {
                     "action": action,
@@ -487,16 +619,28 @@ async def curate_assignment(
                     "fit_score": body.fit_score,
                     "mz_error_ppm": body.mz_error_ppm,
                     "abundance_error": body.abundance_error,
-                    "plausibility": body.plausibility,
                 }
             )
             scored_by = SCORED_BY_SEARCH
             remaining = list(assignment.alternatives or [])
 
+        # Checked for both actions, though only a promoted candidate can really
+        # be malformed: a `set_assignment` body is already bounded by its
+        # schema, and running it through the same gate keeps one answer to
+        # "what may be committed" rather than two that can drift.
+        chosen = _validated_candidate(
+            chosen,
+            {
+                "peak_assignment_id": peak_assignment_id,
+                "action": body.action,
+            },
+        )
+
         mechanism_id = await _resolve_mechanism_id(
             session,
             chosen.get("ionization_mechanism_id"),
             chosen.get("target_ion_id"),
+            sample.polarity,
         )
         target_compound_id, target_ion_id = await _surviving_target_ids(
             session, chosen.get("target_compound_id"), chosen.get("target_ion_id")
@@ -504,9 +648,15 @@ async def curate_assignment(
 
         previous = _previous_winner(assignment)
         previous_formula = assignment.assigned_formula
+        previous_mechanism_id = assignment.ionization_mechanism_id
         # Satellites are read before the winner changes; after it, nothing on
-        # the row says which compound they were satellites of.
-        displaced = (
+        # the row says which compound they were satellites of. They are only
+        # DEMOTED when the compound actually changes: committing the formula the
+        # row already carries (a different candidate entry for the same
+        # composition, or one adduct's row re-confirmed) leaves the family
+        # standing for exactly what it stood for before, and stripping it would
+        # destroy correct rows to record a change that did not happen.
+        family = (
             (
                 await session.execute(
                     select(PeakAssignment)
@@ -527,6 +677,13 @@ async def curate_assignment(
         plausibility = _plausibility_of(assigned)
         fit_score = chosen.get("fit_score")
         assigned_band, candidate_band = _run_bands(run)
+        # The compound is what a satellite is a satellite OF, and a compound is
+        # a formula under an adduct - so the family survives only when both are
+        # the ones it was built for.
+        same_compound = (
+            assigned == previous_formula and mechanism_id == previous_mechanism_id
+        )
+        displaced = [] if same_compound else family
 
         assignment.alternatives = _push_alternative(remaining, previous)
         assignment.provenance = _manual_provenance(
@@ -536,6 +693,7 @@ async def curate_assignment(
             previous=previous,
             plausibility=plausibility,
             fit_score=fit_score,
+            reference_identities=chosen.get("reference_identities"),
         )
         assignment.assigned_formula = assigned
         assignment.ion_formula = chosen.get("ion_formula")
