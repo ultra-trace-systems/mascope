@@ -341,21 +341,50 @@ const pctFmt = new Intl.NumberFormat('en-US', { style: 'percent', maximumFractio
 const corrobLabel = (row) =>
   row.corrobInherited ? `(${row.corrobAdducts})` : `${row.corrobAdducts}`
 
-// Why a row shows no calibrated probability. Three different reasons, and the
+// Why a row shows no calibrated probability. Several different reasons, and the
 // wrong one is worse than none: a hand-assigned row has no P(correct) because
 // nobody calibrated the formula a person chose, which says nothing about
 // whether this instrument has a curve - and reading "no calibration curve for
 // this instrument" there would send someone to calibrate an instrument that is
 // calibrated perfectly well.
+//
+// Kept as one list because the column header has to name all of them: a reader
+// deciding whether the column is worth sorting on cannot hover every dash in it
+// to find out why the dashes are there. Written once so a reworded reason - or
+// a fifth one - cannot land in the cells and miss the header.
+const UNCALIBRATED_REASONS = {
+  // First because a demoted satellite is both: curation.py's _demote strips the
+  // satellites of a formula their M0 no longer holds and leaves source =
+  // 'manual' on them, so a row can be a person's doing and hold no formula at
+  // all. "Assigned by hand" on a row the tier chip beside it labels Unassigned
+  // is the ledger's copy contradicting itself.
+  unassigned: 'Nothing assigned to this peak',
+  manual: 'Assigned by hand - the calibration never scored this formula',
+  untargeted: 'Untargeted assignment - no calibrated probability',
+  uncalibrated: 'No calibration curve for this instrument'
+}
+
 const uncalibratedReason = (row) => {
+  if (!row.assigned_formula) {
+    return UNCALIBRATED_REASONS.unassigned
+  }
   if (row.source === 'manual') {
-    return 'Assigned by hand - the calibration never scored this formula'
+    return UNCALIBRATED_REASONS.manual
   }
   if (row.source === 'untargeted') {
-    return 'Untargeted assignment - no calibrated probability'
+    return UNCALIBRATED_REASONS.untargeted
   }
-  return 'No calibration curve for this instrument'
+  return UNCALIBRATED_REASONS.uncalibrated
 }
+
+// The column header tells the same story the empty cells tell, assembled from
+// the same list rather than summarised again in its own words - the old header
+// promised only "untargeted / uncalibrated show -", which is now two reasons
+// out of four and left a reader with no account of the other two.
+const pCorrectHeaderTooltip =
+  'Calibrated probability the assignment is correct, from database-stage ' +
+  'assignments on calibrated instruments. A cell reads a dash when there is ' +
+  `none: ${Object.values(UNCALIBRATED_REASONS).join('; ')}.`
 
 // Tooltip for the adduct-corroboration marker. An isotopologue shows the count its
 // M0 was corroborated by, so it has to say both that the evidence is the
@@ -736,9 +765,7 @@ const breadcrumb = computed(() => {
         <Column field="pCorrect" sortable style="min-width: 6.5rem">
           <template #header>
             <span
-              v-tooltip.top="
-                'Calibrated probability the assignment is correct. Database-stage, calibrated instruments only; untargeted / uncalibrated show —.'
-              "
+              v-tooltip.top="pCorrectHeaderTooltip"
               v-help.top="{
                 title: 'P(correct)',
                 helpKey: 'assignment-p-correct',
@@ -759,10 +786,7 @@ const breadcrumb = computed(() => {
                 >*</span
               >
             </span>
-            <span
-              v-else
-              class="pcorrect uncal"
-              v-tooltip.top="uncalibratedReason(data)"
+            <span v-else class="pcorrect uncal" v-tooltip.top="uncalibratedReason(data)"
               >&mdash;</span
             >
             <span

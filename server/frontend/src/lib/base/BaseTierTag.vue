@@ -3,7 +3,7 @@ import { computed } from 'vue'
 
 import Tag from 'primevue/tag'
 
-import { tierMeta } from '@/lib/tiers'
+import { FALLBACK_TIER, tierMeta } from '@/lib/tiers'
 
 // Confidence-tier chip for a peak assignment. Replaces BaseMatchTag's 0/1/2
 // match_category with the four peak-centric tiers, optionally showing the fit
@@ -73,6 +73,44 @@ const roleIcon = computed(() => {
 // hovering every one of them.
 const isManual = computed(() => props.source === 'manual')
 
+// But 'manual' covers two different acts, and only one of them is a choice
+// about this row. When a person reassigns a peak, the backend also strips the
+// isotopologue satellites of the formula the M0 no longer holds
+// (curation.py's _demote) and leaves source = 'manual' on each of them, so the
+// ledger's source filter shows the whole footprint of one override. That
+// produces UNASSIGNED rows a person's edit is responsible for without anyone
+// having chosen a formula for them - and the hand's "a person chose this
+// formula" is false twice over there, since such a row carries no formula at
+// all.
+//
+// Told apart by the tier and not by provenance.manual.action, which is what
+// actually records the demotion: the ledger serves a slim row with no
+// provenance on it (PeakAssignmentRecord), so the action is unreadable on most
+// of the surfaces this chip renders on. The tier is readable everywhere, and
+// it is exact - both curation actions commit a formula and tier_for_score
+// never returns 'unassigned', so a demotion is the only way a manual row ends
+// up at this tier. Read off the bucketed tier the chip displays rather than
+// the raw prop, so the mark can never contradict the label beside it.
+const isDemoted = computed(() => isManual.value && meta.value.key === FALLBACK_TIER)
+
+// The hover line for the row's source. A demoted row gets a sentence and a mark
+// of its own rather than neither: what happened to it is the least guessable
+// thing about it, and left unmarked it is indistinguishable from a peak the
+// engine simply never proposed anything for - the wrong answer for the person
+// hunting for where their assignment went.
+const sourceLine = computed(() => {
+  if (isDemoted.value) {
+    return (
+      'Unassigned by hand: this row was unassigned when its M0 was reassigned by hand, ' +
+      'superseded by the next assignment run'
+    )
+  }
+  if (isManual.value) {
+    return 'Assigned by hand: a person chose this formula, superseded by the next assignment run'
+  }
+  return props.source ? `Source: ${props.source}` : null
+})
+
 const autoTooltip = computed(
   () =>
     props.tooltip ??
@@ -81,11 +119,7 @@ const autoTooltip = computed(
       props.fitScore != null && !Number.isNaN(props.fitScore)
         ? `Fit: ${fitFormatter.format(props.fitScore)}`
         : null,
-      isManual.value
-        ? 'Assigned by hand: a person chose this formula, superseded by the next assignment run'
-        : props.source
-          ? `Source: ${props.source}`
-          : null,
+      sourceLine.value,
       props.role ? `Role: ${props.role}` : null
     ]
       .filter(Boolean)
@@ -103,7 +137,12 @@ const autoTooltip = computed(
       style="font-size: 11px"
     />
     <span v-if="roleIcon" :class="[roleIcon, 'role-icon']" />
-    <span v-if="isManual" class="pi ph ph-hand-pointing manual-icon" data-testid="manual-mark" />
+    <span v-if="isDemoted" class="pi ph ph-eraser demoted-icon" data-testid="demoted-mark" />
+    <span
+      v-else-if="isManual"
+      class="pi ph ph-hand-pointing manual-icon"
+      data-testid="manual-mark"
+    />
   </span>
 </template>
 
@@ -132,5 +171,15 @@ const autoTooltip = computed(
 .manual-icon {
   font-size: 12px;
   color: var(--p-primary-color, currentColor);
+}
+
+/* Recessive where the hand is not: a demoted row is the consequence of a
+   decision taken on another row, not a decision about this one, so it must not
+   compete for attention with the rows a person actually chose a formula for.
+   It also sits beside the deliberately pale "unassigned" chip, which the full
+   strength of the hand would fight. */
+.demoted-icon {
+  font-size: 12px;
+  opacity: 0.7;
 }
 </style>

@@ -834,6 +834,91 @@ describe('PaneBrowserAssignment adduct corroboration', () => {
   })
 })
 
+// A dash in the P(correct) column has several different causes and only one of
+// them is about the instrument's calibration. Naming the wrong one is worse than
+// naming none: "no calibration curve for this instrument" on a hand-assigned row
+// sends someone off to calibrate an instrument that is calibrated perfectly well.
+describe('PaneBrowserAssignment uncalibrated P(correct)', () => {
+  beforeEach(() => {
+    runList = [{ peak_assignment_run_id: 'run-1', status: 'completed' }]
+  })
+  afterEach(() => vi.clearAllMocks())
+
+  // One ledger holding a row per cause, so the reasons are read off rows that
+  // have been through the pane's own row mapping rather than off literals.
+  const LEDGER = [
+    { id: 'hand', source: 'manual', formula: 'C10H12' },
+    { id: 'untargeted', source: 'untargeted', formula: 'C6H6' },
+    { id: 'engine', source: 'database', formula: 'C2H6' },
+    // A satellite that curation stripped when its M0 was reassigned: a person's
+    // edit is what unassigned it, so the backend leaves source 'manual' on it,
+    // and it holds no formula at all.
+    { id: 'stripped', source: 'manual', formula: null, tier: 'unassigned', role: 'unassigned' }
+  ]
+
+  async function ledger() {
+    const families = LEDGER.map(({ id, source, formula, tier, role }, index) => {
+      const fam = family({
+        id,
+        mz: 200.1 + index,
+        intensity: 1000 - index,
+        formula,
+        ...(tier ? { tier } : {}),
+        ...(role ? { role } : {})
+      })
+      fam.parent.source = source
+      return fam
+    })
+    seed(...families)
+    const wrapper = await mountPane()
+    return { wrapper, rows: new Map(wrapper.vm.rows.map((row) => [row.peak_assignment_id, row])) }
+  }
+
+  it('names the cause of an empty cell, and never one of the others', async () => {
+    const { wrapper, rows } = await ledger()
+    const reason = (id) => wrapper.vm.uncalibratedReason(rows.get(id))
+
+    expect(reason('hand')).toBe('Assigned by hand - the calibration never scored this formula')
+    expect(reason('untargeted')).toBe('Untargeted assignment - no calibrated probability')
+    expect(reason('engine')).toBe('No calibration curve for this instrument')
+  })
+
+  // The stripped row is 'manual' too, so the source alone would call it
+  // hand-assigned - on a row that holds no formula and whose tier chip beside it
+  // reads Unassigned.
+  it('does not call a row with no formula assigned by hand', async () => {
+    const { wrapper, rows } = await ledger()
+
+    expect(wrapper.vm.uncalibratedReason(rows.get('stripped'))).toBe(
+      'Nothing assigned to this peak'
+    )
+  })
+
+  // The header has to account for every dash in the column: a reader deciding
+  // whether the column is worth sorting on cannot hover them all to find out.
+  // Asserted against what the cells themselves say, so rewording a cell tooltip
+  // fails here rather than quietly leaving the header telling the old story.
+  it('names every cause in the column header', async () => {
+    const { wrapper, rows } = await ledger()
+    const reasons = LEDGER.map(({ id }) => wrapper.vm.uncalibratedReason(rows.get(id)))
+
+    // Four rows, four distinct sentences - otherwise the loop below would pass
+    // on a header that names one cause and misses three.
+    expect(new Set(reasons).size).toBe(LEDGER.length)
+    for (const reason of reasons) {
+      expect(wrapper.vm.pCorrectHeaderTooltip, reason).toContain(reason)
+    }
+  })
+
+  it('still says what the column is', async () => {
+    const { wrapper } = await ledger()
+
+    expect(wrapper.vm.pCorrectHeaderTooltip).toContain(
+      'Calibrated probability the assignment is correct'
+    )
+  })
+})
+
 describe('PaneBrowserAssignment header and controls', () => {
   beforeEach(() => {
     runList = [{ peak_assignment_run_id: 'run-1', status: 'completed' }]

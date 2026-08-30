@@ -292,7 +292,7 @@ const isPoorMatch = (iso) => {
 // runner-ups (from either stage) carry fit + m/z error + plausibility; entries
 // from the untargeted finder's formula-only shortlist have no per-candidate
 // fit, so fit reads "not scored" for them.
-const altTooltip = (alt) => {
+const altTooltip = (alt, index) => {
   const lines = [
     `fit: ${alt.fit_score != null ? formatFit(alt.fit_score) : '— not scored (untargeted)'}`
   ]
@@ -301,13 +301,20 @@ const altTooltip = (alt) => {
   }
   lines.push(`plausibility: ${alt.plausibility != null ? formatFit(alt.plausibility) : '—'}`)
   if (alt.source) lines.push(`source: ${alt.source}`)
+  // Why this one carries no usable "use this". Said here as well as on the
+  // control because the row is where the pointer actually is: the control only
+  // fades in on hover and is disabled, and a disabled button dispatches no
+  // mouse events, so a tooltip bound to it alone would seldom be read.
+  if (promoteBlocked(alt)) lines.push(noAdductHint(alt, index))
   return lines.join('\n')
 }
 
 // --- Manual curation ------------------------------------------------------
 // Commit a runner-up as this peak's assignment. The row is edited in place and
 // marked as human-made; the winner it replaces becomes the first close
-// alternative, so the same control undoes the change.
+// alternative, so the same control undoes the change - and the undo puts the
+// replaced compound's isotopologue satellites back with it, since they were
+// unassigned only because the compound they belonged to was.
 //
 // Deliberately about THIS row, not the family M0 a verdict is redirected to: an
 // index into `alternatives` only means anything against the list the card is
@@ -315,10 +322,54 @@ const altTooltip = (alt) => {
 const curating = ref(null) // index of the alternative being committed
 const curateDenied = ref(false) // 403: not an editor on this sample
 
-// The untargeted finder's formula-only shortlist entries are promotable - a
-// formula with no fit is still a formula. An entry that names none is not:
-// there would be nothing to commit, and the server refuses it.
-const canPromote = (alt) => Boolean(alt?.assigned_formula)
+// A candidate can only be committed when it names both halves of an
+// assignment: the formula and the adduct it was found under. The server
+// refuses the rest with a 422, for the reason a set_assignment call has always
+// had to name a mechanism - a verification's identity is peak + formula +
+// mechanism, so a row assigned without an adduct could never carry a verdict.
+// `ionization_mechanism_id` is what the engine records on a runner-up now;
+// `target_ion_id` is how one written before that key still resolves to one.
+const canPromote = (alt) =>
+  Boolean(alt?.assigned_formula) && Boolean(alt?.ionization_mechanism_id || alt?.target_ion_id)
+
+// The entries that fail that test are the untargeted finder's formula-only
+// shortlist: a composition and a chemical plausibility and nothing else. They
+// get a disabled control with a reason rather than no control at all, because
+// the formula is not unassignable - re-searching it finds it under the
+// sample's own adducts, and the hand button there commits it with one.
+const promoteBlocked = (alt) => Boolean(alt?.assigned_formula) && !canPromote(alt)
+const NO_ADDUCT_HINT =
+  'No adduct: this candidate is a composition the finder listed, and a formula ' +
+  'without the adduct it was seen under cannot be verified. Re-search this peak and ' +
+  'assign the hit instead - the search supplies the adduct.'
+
+// One blocked entry is not a candidate the finder listed: the winner an
+// override displaced, which the server archives and pushes back to the head of
+// this list so the same control undoes the change. That winner can name no
+// adduct of its own - the untargeted stage writes one when the finder echoes a
+// notation the mechanism map does not hold, and an imported run reaches it
+// trivially, since an imported row may only ever have carried a formula - and
+// then the undo is refused by the same 422. Telling that reader to re-search is
+// not wrong, but it is not the undo they clicked for either: what comes back is
+// a new assignment, and the satellites this override unassigned are restored by
+// compound AND mechanism, so they stay unassigned.
+const NO_ADDUCT_UNDO_HINT =
+  'No adduct: the assignment this replaced named none itself, so it cannot be put ' +
+  'back from here. Re-search this peak to assign the formula under a real adduct - ' +
+  'a new assignment, which does not bring back the satellites unassigned with it.'
+
+// Whether an entry is that archived winner - the one "use this" would undo.
+// Position and formula together: the head is where the server puts it, and the
+// formula check keeps an ordinary shortlist entry from wearing the undo wording
+// on a row whose override recorded no previous winner at all (overriding an
+// `unassigned` placeholder displaces nothing).
+const isUndoEntry = (alt, index) =>
+  index === 0 &&
+  Boolean(manualOverride.value?.previous_formula) &&
+  alt?.assigned_formula === manualOverride.value.previous_formula
+
+const noAdductHint = (alt, index) =>
+  isUndoEntry(alt, index) ? NO_ADDUCT_UNDO_HINT : NO_ADDUCT_HINT
 
 async function promoteAlternative(alt, index) {
   if (!canPromote(alt) || curating.value !== null) return
@@ -343,6 +394,65 @@ async function promoteAlternative(alt, index) {
 // What an override says about itself. `source` is on the slim ledger row, so
 // the note appears at once; the formula it replaced arrives with the detail.
 const manualOverride = computed(() => provenance.value?.manual ?? null)
+
+// Whether the assignment this override replaced could be committed again at
+// all. The archive keeps that winner in the alternatives shape, so the same
+// rule decides it as decides any other candidate: no adduct, no assignment. A
+// winner really can carry none (see NO_ADDUCT_UNDO_HINT), and then the note's
+// "use this on it to undo" points at a control this very card disables. With
+// nothing archived - an override written before the archive existed, or the
+// detail not landed yet - the common case is the honest guess.
+const previousRestorable = computed(() => {
+  const previous = manualOverride.value?.previous
+  return !previous || canPromote(previous)
+})
+
+// Two different things wear source 'manual'. A person assigning a peak is one;
+// the other is a satellite the server unassigned because its M0 was reassigned
+// under it, which is marked 'manual' so the ledger's source filter shows the
+// whole footprint of an override. That row was stripped, not chosen, so the
+// override note would read as a claim nobody made.
+//
+// The recorded action decides it once the detail lands. Until then the row's
+// own formula does: curating a peak always puts a formula on it, so a manual
+// row with none was demoted.
+const manualDemoted = computed(() => {
+  const action = manualOverride.value?.action
+  if (action) return action === 'demote_satellite'
+  return !focusedAssignment.value?.assigned_formula
+})
+
+// The compound this peak was a satellite of, which is the compound to put back
+// on the M0's own peak to restore it. A satellite carries its M0's formula
+// verbatim, so the two keys agree on anything the engine wrote; the fallback is
+// for an imported run that recorded only one of them.
+const demotedOwnerFormula = computed(
+  () =>
+    manualOverride.value?.previous_owner_formula ?? manualOverride.value?.previous_formula ?? null
+)
+
+// How many satellites undoing THIS override would put back. They were the same
+// compound as their M0 seen through a heavy atom, so committing the replaced
+// compound again restores them along with it - the part of "use this to undo" a
+// person would otherwise be surprised by.
+//
+// Counted against the compound the undo would commit, not over the whole
+// archive, because a row curated twice carries the first override's demotions
+// forward: those satellites come back with the compound they were taken under,
+// which is no longer the one the first alternative holds. Matched on the same
+// key the server restores by (formula + mechanism), so an entry this cannot
+// account for is left out of the promise rather than added to it.
+const demotedCount = computed(() => {
+  const manual = manualOverride.value
+  const formula = manual?.previous_formula
+  if (!formula) return 0
+  const mechanism = manual?.previous?.ionization_mechanism_id ?? null
+  return (manual.demoted ?? []).filter(
+    (entry) =>
+      entry?.owner_formula === formula &&
+      (entry?.owner_ionization_mechanism_id ?? null) === mechanism
+  ).length
+})
 </script>
 
 <template>
@@ -533,20 +643,8 @@ const manualOverride = computed(() => provenance.value?.manual ?? null)
         v-if="alternatives.length"
         class="alts"
         v-help.right="{
-          message: `
-              <h1>Close Alternatives</h1>
-              <p>
-              Runner-up candidates that also fit this peak but lost the arbitration
-              to the committed assignment. Scored runner-ups show their fit; some
-              untargeted candidates come from the composition finder's formula-only
-              shortlist and show chemical plausibility only, or read as not scored.
-              </p>
-              <p>
-              <b>Use this</b> commits a candidate as the peak's assignment. The row is
-              marked as assigned by hand and the assignment it replaces becomes the
-              first alternative here, so the same button undoes the change.
-              Re-assigning the sample recomputes the ledger and replaces it.
-              </p>`,
+          title: 'Close Alternatives',
+          helpKey: 'assignment-curation',
           doc: app.ui.help.docUrl('how-it-works/peak-assignment/#assigning-a-peak-yourself')
         }"
       >
@@ -559,7 +657,7 @@ const manualOverride = computed(() => provenance.value?.manual ?? null)
             v-for="(alt, i) in alternatives"
             :key="i"
             class="alt"
-            v-tooltip.left="altTooltip(alt)"
+            v-tooltip.left="altTooltip(alt, i)"
           >
             <span class="f">{{ alt.assigned_formula || alt.ion_formula || '?' }}</span>
             <span class="s">
@@ -575,30 +673,67 @@ const manualOverride = computed(() => provenance.value?.manual ?? null)
               <span v-else class="no-stats"><span class="pi ph ph-info" /></span>
             </span>
             <Button
-              v-if="canPromote(alt) && !curateDenied"
-              :class="['alt-use', { busy: curating === i }]"
+              v-if="(canPromote(alt) || promoteBlocked(alt)) && !curateDenied"
+              :class="['alt-use', { busy: curating === i, blocked: promoteBlocked(alt) }]"
               label="use this"
               size="small"
               text
               severity="secondary"
               icon="pi ph ph-hand-pointing"
-              :disabled="curating !== null"
+              :disabled="curating !== null || promoteBlocked(alt)"
               :loading="curating === i"
+              v-tooltip.top="promoteBlocked(alt) ? noAdductHint(alt, i) : ''"
               @click="promoteAlternative(alt, i)"
             />
           </div>
         </div>
         <div v-if="curateDenied" class="verify-denied">
-          <span class="pi ph ph-lock-simple" /> Editor access is required to change an
-          assignment.
+          <span class="pi ph ph-lock-simple" /> Editor access is required to change an assignment.
         </div>
       </div>
-      <div v-if="focusedAssignment.source === 'manual'" class="manual-note">
-        <span class="pi ph ph-hand-pointing" />
+      <!-- A row the server stripped: it was never anyone's choice, so it says
+           what happened to it and how to get it back, not what was picked. The
+           eraser rather than the hand for the same reason the tier chip uses
+           one (BaseTierTag.vue): the hand claims a person chose this row, which
+           is the one thing that did not happen here. -->
+      <div v-if="focusedAssignment.source === 'manual' && manualDemoted" class="manual-note">
+        <span class="pi ph ph-eraser demoted-icon" />
+        <span>
+          Unassigned by hand<template v-if="demotedOwnerFormula"
+            >: this peak was an isotopologue of {{ demotedOwnerFormula }} - the same compound seen
+            through a heavy atom - and was cleared when that assignment was replaced by hand on the
+            compound's own peak. Assigning {{ demotedOwnerFormula }} there again restores this
+            row</template
+          ><template v-else>
+            when the compound this peak was an isotopologue of was replaced on the compound's own
+            peak</template
+          >. The next assignment run for this sample recomputes the ledger and supersedes the
+          change.
+        </span>
+      </div>
+      <div v-else-if="focusedAssignment.source === 'manual'" class="manual-note">
+        <span class="pi ph ph-hand-pointing manual-icon" />
         <span>
           Assigned by hand<template v-if="manualOverride?.previous_formula">
-            in place of {{ manualOverride.previous_formula }}, which is now the first close
-            alternative - "use this" on it to undo</template
+            in place of {{ manualOverride.previous_formula
+            }}<template v-if="previousRestorable"
+              >, which is now the first close alternative - "use this" on it to undo<template
+                v-if="demotedCount"
+                >, which also puts back the {{ demotedCount }} isotopologue satellite{{
+                  demotedCount === 1 ? '' : 's'
+                }}
+                unassigned with it, except any of them assigned by hand since</template
+              ></template
+            ><template v-else
+              >, which named no adduct itself and so cannot be put back by hand<template
+                v-if="demotedCount"
+                >, and the {{ demotedCount }} isotopologue satellite{{
+                  demotedCount === 1 ? '' : 's'
+                }}
+                unassigned with it {{ demotedCount === 1 ? 'stays' : 'stay' }} unassigned</template
+              >
+              - re-search this peak to assign it again under a real adduct</template
+            ></template
           >. The next assignment run for this sample recomputes the ledger and supersedes the
           change; record a verification to keep the judgement.
         </span>
@@ -828,6 +963,13 @@ const manualOverride = computed(() => provenance.value?.manual ?? null)
 .alt-use.busy {
   opacity: 1;
 }
+/* The control that is there only to say why it cannot be used. It has to show
+   while the row is hovered - that is when its reason gets read - but must not
+   look clickable, and the hover rule above outranks the theme's own dimming of
+   a disabled button. */
+.alt:hover .alt-use.blocked {
+  opacity: 0.45;
+}
 .manual-note {
   display: flex;
   align-items: flex-start;
@@ -837,8 +979,19 @@ const manualOverride = computed(() => provenance.value?.manual ?? null)
   opacity: 0.75;
 }
 .manual-note > .pi {
-  color: var(--p-primary-color, currentColor);
   margin-top: 0.1rem;
+}
+/* "A person chose this" reads at full strength, as the same mark does on the
+   tier chip. */
+.manual-note > .manual-icon {
+  color: var(--p-primary-color, currentColor);
+}
+/* The eraser does not. A demoted row is the consequence of a decision taken on
+   another peak, not a decision about this one, so it must not be coloured like
+   a choice - BaseTierTag.vue makes the same call for the same rows, and the two
+   surfaces describing one row have to agree about how loudly they say it. */
+.manual-note > .demoted-icon {
+  opacity: 0.75;
 }
 .insp-actions {
   display: flex;
