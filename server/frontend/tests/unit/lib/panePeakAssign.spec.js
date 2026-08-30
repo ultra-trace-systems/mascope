@@ -301,7 +301,7 @@ describe('PanePeakAssign adduct corroboration', () => {
     )
   })
 
-  // An imported ledger is not bound by the in-app engine's winner-only rule, so a
+  // An imported ledger is not bound by the in-app engine's winner-only rule, so an
   // isotopologue that carries its own count keeps it - and it is not "via M0".
   it('prefers an isotopologue own count over the family one', async () => {
     focusedAssignment = { ...ISOTOPOLOGUE, corroboration_adducts: 2 }

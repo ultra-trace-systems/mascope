@@ -43,7 +43,7 @@ vi.mock('@/stores/data/modules/peakAssignment/assignment', async () => {
   }
 })
 
-// An assignment and its M+1 isotopologue, shaped as the engine writes them: a
+// An assignment and its M+1 isotopologue, shaped as the engine writes them: an
 // isotopologue carries its M0's formula and mechanism verbatim, so `sample_peak_id`
 // is the only one of the three identity fields that differs across a family.
 // That single divergence is the whole bug - two thirds of an isotopologue's identity

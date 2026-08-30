@@ -73,7 +73,7 @@ async function loadAssignments(sampleItemId, runId) {
 
 /**
  * The M0 of a row's isotopologue family - the row itself unless it is a
- * isotopologue, in which case its owner.
+ * child, in which case its owner.
  *
  * The M0 is what the whole family is *about*: an M+1 peak is not a separate
  * finding, it is the same compound seen through one heavy atom. Anything that
@@ -136,7 +136,9 @@ export const usePeakAssignment = defineStore('app.data.peakAssignment', () => {
         // let the panel ask for rows the server will not give.
         const servable = run && run.status !== 'importing'
         const peak_assignment_run_id =
-          servable && run.sample_item_id === sample_item_id ? run.peak_assignment_run_id : null
+          servable && run.sample_item_id === sample_item_id
+            ? run.peak_assignment_run_id
+            : null
         return { sample_item_id, peak_assignment_run_id }
       },
       selection: true

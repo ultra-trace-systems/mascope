@@ -760,14 +760,14 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
   unfolding the isotopologues in the ledger, dropped the badge entirely, which read
   as *this peak has no corroboration* when what was true is that corroboration
   is not a property of a single isotopologue at all. The engine records it on
-  the main isotopologue by design: an isotopologue is the same ion measured at
+  the main isotopologue by design: a child is the same ion measured at
   another isotope, not a second sighting of the compound. The evidence belongs
   to the formula the whole family shares, so the isotopologues now show their
   family's count, and say on their face that it is borrowed - "via M0" in the
   inspector, a parenthesised count in the ledger. The tooltip is careful about
   one thing in particular: the confidence boost from that corroboration is in
   the main isotopologue's P(correct), *not* in the child's, which stays
-  calibrated on its own evidence - so an isotopologue never claims the probability
+  calibrated on its own evidence - so a child never claims the probability
   shown next to it already accounts for the other adducts. Rows whose family was
   never corroborated are unchanged, and a family corroborated by a single adduct
   still shows nothing. In the peak inspector the badge now also appears
@@ -794,7 +794,7 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
   orders its own rows: it sorts the parents and re-attaches each family
   underneath. Sorting by intensity was the worst of it - an isotopologue is a few
   percent of its main peak, so every child sank hundreds of rows below its
-  parent and arrived as a bare indented arrow with nothing to say what it was a
+  parent and arrived as a bare indented arrow with nothing to say what it was an
   isotopologue of. A third click on a sorted header now clears the column and
   returns the ledger to its confidence order, which previously took a reload.
 
@@ -884,7 +884,7 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
   week a production session keeps.
 
 - The peak inspector's *abu.* column now shows the correct theoretical
-  relative abundance for untargeted isotope isotopologues. The column recovers
+  relative abundance for untargeted isotopologues. The column recovers
   the prediction from the stored abundance error, which untargeted assignment
   saved without its sign - so an isotopologue observed *below* its prediction was
   rendered as if it had been observed above it (a peak predicted at 10% of M0

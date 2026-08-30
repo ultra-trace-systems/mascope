@@ -11,8 +11,8 @@ the occurrence table (docs/dev/peak_assignment_batch.md, section 6):
   is derived from the members' per-sample ``PeakAssignment`` rows: an
   ``iso_child`` member's ``owner_peak_assignment_id`` names the owning
   assignment, whose own occurrence in that same sample names the owner's
-  anchor. A batch peak is an isotopologue when a strict majority of its ASSIGNED
-  members vote for one owner anchor -- consistent with the consensus, which
+  anchor. A batch peak is FOLDED as an isotopologue when a strict majority of its
+  ASSIGNED members vote for one owner anchor -- consistent with the consensus, which
   decides confidence over the assigned members and keeps prevalence separate.
 
 Both are backfilled here, from the occurrences that are their source of truth,

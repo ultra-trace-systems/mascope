@@ -24,7 +24,7 @@ BASE_INTENSITY = 1.0e6
 
 
 def _run(factor: float = 1.0, isotopologue_shift_ppm: float = 0.0):
-    """Match one glucose candidate against a spectrum whose first isotope isotopologue
+    """Match one glucose candidate against a spectrum whose first isotopologue
     is `factor` times its predicted relative intensity and sits `isotopologue_shift_ppm`
     off its predicted m/z."""
     predicted_mzs, predicted_intensities, _ = predict_isotopes(ION[:-1], 1)

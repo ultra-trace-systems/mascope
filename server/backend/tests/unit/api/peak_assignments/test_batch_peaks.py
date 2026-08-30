@@ -391,7 +391,7 @@ def test_consensus_carries_the_family_link_alongside_the_formula():
         _child("bp-m0", tier="assigned", fit_score=0.9, intensity=1e4),
         _child("bp-m0", tier="assigned", fit_score=0.8, intensity=9e3),
     ]
-    c = compute_consensus(members, batch_peak_id="bp-sat")
+    c = compute_consensus(members, batch_peak_id="bp-iso")
     assert c.isotopologue_of == "bp-m0"
     # The isotopologue is the same species measured at another isotope, so it
     # carries the family's formula -- which is exactly why the ledger reads as a

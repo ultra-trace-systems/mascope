@@ -274,7 +274,7 @@ than of the formula, so the ledger can show them without joining the occurrence 
   leaves `owner_peak_assignment_id` NULL when the family's M0 was not won by the same ion) or
   whose owner was dropped from the fold abstains rather than voting.
 
-  **One hop, observed rather than reconciled.** An isotopologue whose owner anchor is itself a
+  **One hop, observed rather than reconciled.** An isotopologue whose owner anchor is itself an
   isotopologue is stored as observed; flattening the chain needs the whole ledger and belongs to
   the reader that has it. Both computations run inside `_recompute_consensus`, i.e. inside the
   serialized per-batch fold (§5.3), on the fold's own session — nothing between the advisory

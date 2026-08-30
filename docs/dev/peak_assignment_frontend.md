@@ -121,7 +121,7 @@ this column already spends opacity on "no calibrated value here", and a borrowed
 absent. Only the count carries across — the corroborating adducts are named in the M0's `provenance`, and
 detail is fetched for the focused assignment alone. The inherited tooltip is also careful that the **boost
 lives in the M0's `p_correct`, never in a child's**: `_fold_adduct_corroboration` rewrites M0 winners
-only, so an isotopologue must not claim the probability beside it already accounts for the other adducts. The
+only, so a child must not claim the probability beside it already accounts for the other adducts. The
 M0's own badge now also resolves from the flattened `corroboration_adducts` before its detail arrives, so
 it no longer pops in a moment late.
 
