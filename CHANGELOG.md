@@ -201,6 +201,18 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
   which is what lets two engines be compared on one sample: read each run by id
   and join on `sample_peak_id`.
 
+- Design note: **temporal-continuity evidence and anchor-scoped verdicts**
+  (`docs/dev/peak_assignment_continuity.md`). Over a time-ordered batch, an
+  isotopologue or adduct ratio should hold constant however the source strength
+  moves, so the note proposes ratio stability as a computed evidence badge on
+  each batch peak - display-only, feeding neither P(correct) nor a tier - and,
+  separately, a verdict recorded once per species at the batch-peak anchor that
+  overlays the per-sample verdicts without replacing them: a per-sample verdict
+  still wins wherever one exists. Anchor verdicts stay out of the calibration
+  label pool by living in their own table, so one judgment can never become
+  many correlated labels. A design document only; no behaviour changes until it
+  is signed off and implemented.
+
 - Design note: **copying peak assignments from a curated sample to the rest of
   its batch** (`docs/dev/peak_assignment_copy.md`). Compares a literal copy
   against a seeded per-sample re-score - both remap the source rows onto each

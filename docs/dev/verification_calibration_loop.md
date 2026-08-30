@@ -38,8 +38,8 @@ near-mass decoys.
   peak-centric assignments.
 - **The calibration pipeline that consumes these labels.**
   [`calibration.py`](../../libraries/tools/src/mascope_tools/composition/calibration.py):
-  `fit_calibration(scores, is_correct)` → a `Calibration` with held-out ECE; `MIN_CALIBRATION_LABELS`
-  = 30 of each class.
+  `fit_calibration(scores, is_correct)` → a `Calibration` with held-out ECE; it refuses to fit below
+  `MIN_CALIBRATION_LABELS` = 30 labels in total *and* `MIN_CALIBRATION_CLASS_LABELS` = 10 of each class.
 - **The D6 store + loader.** `assignment_calibration` table (migration `a1f8c25d9e47`) and
   `calibration_store.load_calibration` (active row → in-code fallback). Writing a new active row
   *is* "recalibrate this instrument".
