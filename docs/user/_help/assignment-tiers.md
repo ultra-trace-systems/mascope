@@ -11,5 +11,5 @@ Each assignment lands in a confidence tier from its fit score:
 
 Orthogonal to its tier, a peak can carry a role: **reagent** and **artifact**
 peaks stem from the ionization chemistry or the instrument rather than the
-sample's compounds, and **isotopologue** peaks are satellites of another
+sample's compounds, and **isotopologue** peaks belong to another
 assignment's isotope pattern, counted with their main peak.

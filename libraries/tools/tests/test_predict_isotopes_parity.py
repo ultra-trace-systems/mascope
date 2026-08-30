@@ -8,7 +8,7 @@ guards the self-contained custom-element convolution in ``predict_isotopes`` aga
 drift, and the non-labelled cases guard the standard IsoSpec path against regressions.
 
 We assert parity on the chemically significant peaks (>= 1.5% relative, which
-includes the ~2% 14N satellite of a labelled reagent). Trace peaks below that are
+includes the ~2% 14N isotopologue of a labelled reagent). Trace peaks below that are
 threshold/grouping-convention dependent between IsoSpec and molmass and are not
 asserted -- they are negligible for scoring (mass-dominated 0.6/0.2/0.2).
 
@@ -109,11 +109,13 @@ def test_predict_isotopes_matches_molmass(ion, charge):
         )
 
 
-def test_15n_satellite_present_and_base_is_15n():
+def test_15n_isotopologue_present_and_base_is_15n():
     """The defining 15N behaviour: the dominant (base) peak is the 15N form, with a
-    ~2% 14N satellite ~0.997 Da below it (purity default 0.98)."""
+    ~2% 14N isotopologue ~0.997 Da below it (purity default 0.98)."""
     mz, rel = _tools_envelope("C5H8O6^N", -1)
     base = int(np.argmax(rel))
-    satellite = np.where((mz < mz[base] - 0.9) & (mz > mz[base] - 1.1))[0]
-    assert satellite.size == 1, "expected exactly one 14N satellite below the base"
-    assert 0.01 < rel[satellite[0]] < 0.035, "14N satellite should be ~2%"
+    isotopologue = np.where((mz < mz[base] - 0.9) & (mz > mz[base] - 1.1))[0]
+    assert isotopologue.size == 1, (
+        "expected exactly one 14N isotopologue below the base"
+    )
+    assert 0.01 < rel[isotopologue[0]] < 0.035, "14N isotopologue should be ~2%"

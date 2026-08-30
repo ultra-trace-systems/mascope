@@ -1,4 +1,4 @@
-"""Add batch peak ledger columns: max_intensity and satellite_of
+"""Add batch peak ledger columns: max_intensity and isotopologue_of
 
 Two member aggregates materialized onto ``batch_peak`` so the ledger keeps its
 defining property -- one cheap read of the batch peaks alone, never a join to
@@ -6,17 +6,17 @@ the occurrence table (docs/dev/peak_assignment_batch.md, section 6):
 
 - ``max_intensity``: the brightest member's intensity, in the unit
   ``intensity_variable`` already names. The ledger's sortable intensity column.
-- ``satellite_of``: the batch peak this one is an isotopologue satellite of.
+- ``isotopologue_of``: the batch peak this one is an isotopologue of.
   Batch peaks are bare m/z anchors and carry no family link of their own, so it
   is derived from the members' per-sample ``PeakAssignment`` rows: an
   ``iso_child`` member's ``owner_peak_assignment_id`` names the owning
   assignment, whose own occurrence in that same sample names the owner's
-  anchor. A batch peak is a satellite when a strict majority of its ASSIGNED
+  anchor. A batch peak is an isotopologue when a strict majority of its ASSIGNED
   members vote for one owner anchor -- consistent with the consensus, which
   decides confidence over the assigned members and keeps prevalence separate.
 
 Both are backfilled here, from the occurrences that are their source of truth,
-so a batch folded before this revision folds its satellites and shows its
+so a batch folded before this revision folds its isotopologues and shows its
 intensities without waiting for someone to press "Compute batch peaks".
 
 Revision ID: b6a4d1e83c7f
@@ -68,7 +68,7 @@ _BACKFILL_MAX_INTENSITY = """
 # A row backfilled under a looser rule than the one its next fold applies would
 # disagree with its own recompute, which is the one difference between these two
 # implementations that would ever be seen.
-_BACKFILL_SATELLITE_OF = """
+_BACKFILL_ISOTOPOLOGUE_OF = """
     WITH assigned AS (
         SELECT batch_peak_id, count(*) AS n_assigned
         FROM batch_peak_occurrence
@@ -102,7 +102,7 @@ _BACKFILL_SATELLITE_OF = """
         ORDER BY vote.batch_peak_id, vote.votes DESC, vote.owner_batch_peak_id
     )
     UPDATE batch_peak
-    SET satellite_of = winner.owner_batch_peak_id
+    SET isotopologue_of = winner.owner_batch_peak_id
     FROM winner
     WHERE batch_peak.batch_peak_id = winner.batch_peak_id
       AND winner.votes * 2 > winner.n_assigned
@@ -112,29 +112,29 @@ _BACKFILL_SATELLITE_OF = """
 def upgrade() -> None:
     op.add_column("batch_peak", sa.Column("max_intensity", sa.Float(), nullable=True))
     op.add_column(
-        "batch_peak", sa.Column("satellite_of", sa.String(length=16), nullable=True)
+        "batch_peak", sa.Column("isotopologue_of", sa.String(length=16), nullable=True)
     )
     op.create_index(
-        op.f("ix_batch_peak_satellite_of"),
+        op.f("ix_batch_peak_isotopologue_of"),
         "batch_peak",
-        ["satellite_of"],
+        ["isotopologue_of"],
         unique=False,
     )
     op.create_foreign_key(
-        op.f("fk_batch_peak_satellite_of_batch_peak"),
+        op.f("fk_batch_peak_isotopologue_of_batch_peak"),
         "batch_peak",
         "batch_peak",
-        ["satellite_of"],
+        ["isotopologue_of"],
         ["batch_peak_id"],
         ondelete="SET NULL",
     )
     op.execute(_BACKFILL_MAX_INTENSITY)
-    op.execute(_BACKFILL_SATELLITE_OF)
+    op.execute(_BACKFILL_ISOTOPOLOGUE_OF)
 
 
 def downgrade() -> None:
     # The columns are derived, so dropping them loses nothing that the
     # occurrences cannot produce again.
-    op.drop_index(op.f("ix_batch_peak_satellite_of"), table_name="batch_peak")
-    op.drop_column("batch_peak", "satellite_of")
+    op.drop_index(op.f("ix_batch_peak_isotopologue_of"), table_name="batch_peak")
+    op.drop_column("batch_peak", "isotopologue_of")
     op.drop_column("batch_peak", "max_intensity")

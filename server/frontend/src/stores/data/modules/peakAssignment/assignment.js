@@ -73,16 +73,16 @@ async function loadAssignments(sampleItemId, runId) {
 
 /**
  * The M0 of a row's isotopologue family - the row itself unless it is a
- * satellite, in which case its owner.
+ * isotopologue, in which case its owner.
  *
  * The M0 is what the whole family is *about*: an M+1 peak is not a separate
  * finding, it is the same compound seen through one heavy atom. Anything that
  * judges or labels a compound therefore anchors on the M0 rather than on
  * whichever family member happens to be focused.
  *
- * A satellite with no resolvable owner is its own anchor. This is ordinary, not
+ * An isotopologue with no resolvable owner is its own anchor. This is ordinary, not
  * corruption: the engine leaves `owner_peak_assignment_id` null when the ion's
- * M0 peak was won by a different ion in that run, so the satellite is a real row
+ * M0 peak was won by a different ion in that run, so the isotopologue is a real row
  * whose family simply has no M0 in the ledger. Returning null would make callers
  * treat it as no row at all - no badge, nothing to verify - which is a worse
  * answer than letting it stand for itself.
@@ -136,9 +136,7 @@ export const usePeakAssignment = defineStore('app.data.peakAssignment', () => {
         // let the panel ask for rows the server will not give.
         const servable = run && run.status !== 'importing'
         const peak_assignment_run_id =
-          servable && run.sample_item_id === sample_item_id
-            ? run.peak_assignment_run_id
-            : null
+          servable && run.sample_item_id === sample_item_id ? run.peak_assignment_run_id : null
         return { sample_item_id, peak_assignment_run_id }
       },
       selection: true
@@ -218,7 +216,7 @@ export const usePeakAssignment = defineStore('app.data.peakAssignment', () => {
     )
   }
 
-  // Confidence-tier histogram for the run summary. iso_child satellites are
+  // Confidence-tier histogram for the run summary. iso_child isotopologues are
   // folded into their M0 and NOT counted, so the tiers count assigned formulas
   // (and unassigned peaks), not every isotopologue peak. Roles reagent/artifact
   // are counted separately (orthogonal to tier).

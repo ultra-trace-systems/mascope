@@ -192,7 +192,7 @@ def unknown_peak_ids(
 
 
 #: The role a row must carry to reference an owner. Owner linkage models one
-#: thing - an isotopologue satellite pointing at the M0 it belongs to - and the
+#: thing - an isotopologue pointing at the M0 it belongs to - and the
 #: in-app engine builds it that way structurally.
 OWNED_ROLE = "iso_child"
 

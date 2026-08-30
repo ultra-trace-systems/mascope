@@ -112,11 +112,11 @@ function assignment({ formula = null, tier = 'unassigned', mz = 200.12345, inten
 }
 
 /**
- * An isotopologue satellite of `parent`, as the engine writes one: it carries
+ * An isotopologue of `parent`, as the engine writes one: it carries
  * the M0's formula, tier and mechanism verbatim and differs only in which peak
  * it sits on. Registers the parent in `ledger` so `m0Of` can resolve it.
  */
-function satellite(parent) {
+function isotopologue(parent) {
   ledger.set(parent.peak_assignment_id, parent)
   return {
     ...parent,
@@ -232,10 +232,10 @@ describe('PanePeakAssign verification gating', () => {
   })
 })
 
-// Adduct corroboration is written onto the M0 winner alone: a satellite is the
+// Adduct corroboration is written onto the M0 winner alone: an isotopologue is the
 // same ion measured at another isotope, not a second sighting of the compound,
 // so the backend leaves its provenance without one by construction. The badge
-// still belongs on a focused satellite - the evidence is about the formula the
+// still belongs on a focused isotopologue - the evidence is about the formula the
 // whole family shares - it just has to say the count is the family's. The
 // corroborating adducts are named only in the M0's provenance, and the
 // inspector fetches detail for the focused assignment alone, so an inherited
@@ -251,7 +251,7 @@ describe('PanePeakAssign adduct corroboration', () => {
     role: 'M0',
     fit_score: 0.9
   }
-  const SATELLITE = {
+  const ISOTOPOLOGUE = {
     peak_assignment_id: 'pa-c1',
     sample_peak_id: 'p-1',
     owner_peak_assignment_id: 'pa-m0',
@@ -261,21 +261,21 @@ describe('PanePeakAssign adduct corroboration', () => {
     tier: 'assigned',
     role: 'iso_child',
     isotope_label: 'M+1',
-    // What the backend actually sends for a satellite.
+    // What the backend actually sends for an isotopologue.
     corroboration_adducts: null,
     fit_score: 0.9
   }
 
-  /** Focus the satellite of a family whose M0 carries `n` corroborating adducts. */
-  function focusSatellite(n) {
-    focusedAssignment = SATELLITE
-    familyRows = [{ ...M0, corroboration_adducts: n }, SATELLITE]
+  /** Focus the isotopologue of a family whose M0 carries `n` corroborating adducts. */
+  function focusIsotopologue(n) {
+    focusedAssignment = ISOTOPOLOGUE
+    familyRows = [{ ...M0, corroboration_adducts: n }, ISOTOPOLOGUE]
   }
 
   const badge = (wrapper) => wrapper.find('.corroboration')
 
-  it('shows the family corroboration on a focused satellite, marked inherited', async () => {
-    focusSatellite(3)
+  it('shows the family corroboration on a focused isotopologue, marked inherited', async () => {
+    focusIsotopologue(3)
     const wrapper = await mountPane()
 
     expect(badge(wrapper).exists()).toBe(true)
@@ -287,24 +287,24 @@ describe('PanePeakAssign adduct corroboration', () => {
   })
 
   // The engine folds the boost into the record carrying the corroboration - the
-  // M0's p_correct - and never into a satellite's, which stays calibrated on its
-  // own evidence. The inspector renders that satellite's own P(correct) directly
+  // M0's p_correct - and never into an isotopologue's, which stays calibrated on its
+  // own evidence. The inspector renders that isotopologue's own P(correct) directly
   // above this badge, so claiming the boost is in it would be false.
-  it('does not claim the boost is in the satellite own P(correct)', async () => {
-    focusSatellite(3)
+  it('does not claim the boost is in the isotopologue own P(correct)', async () => {
+    focusIsotopologue(3)
     const wrapper = await mountPane()
 
     expect(wrapper.vm.corroborationTooltip).toBe(
       'The M0 of this isotopologue family was seen via 3 adducts. ' +
         "Independent corroborating evidence for the formula, folded into the M0's " +
-        "P(correct) - not into this satellite's, which is calibrated on its own."
+        "P(correct) - not into this isotopologue's, which is calibrated on its own."
     )
   })
 
   // An imported ledger is not bound by the in-app engine's winner-only rule, so a
-  // satellite that carries its own count keeps it - and it is not "via M0".
-  it('prefers a satellite own count over the family one', async () => {
-    focusedAssignment = { ...SATELLITE, corroboration_adducts: 2 }
+  // isotopologue that carries its own count keeps it - and it is not "via M0".
+  it('prefers an isotopologue own count over the family one', async () => {
+    focusedAssignment = { ...ISOTOPOLOGUE, corroboration_adducts: 2 }
     familyRows = [{ ...M0, corroboration_adducts: 5 }, focusedAssignment]
     const wrapper = await mountPane()
 
@@ -317,8 +317,8 @@ describe('PanePeakAssign adduct corroboration', () => {
   // .corroboration.n_adducts`; the inspector's M0 lookup has to do the same, or
   // the two panes disagree about a family whose rows carry provenance inline.
   it('reads the family count off M0 provenance when the flat field is absent', async () => {
-    focusedAssignment = SATELLITE
-    familyRows = [{ ...M0, provenance: { corroboration: { n_adducts: 4 } } }, SATELLITE]
+    focusedAssignment = ISOTOPOLOGUE
+    familyRows = [{ ...M0, provenance: { corroboration: { n_adducts: 4 } } }, ISOTOPOLOGUE]
     const wrapper = await mountPane()
 
     expect(badge(wrapper).text()).toContain('Supported by 4 adducts via M0')
@@ -326,16 +326,16 @@ describe('PanePeakAssign adduct corroboration', () => {
   })
 
   it('says nothing when the family M0 was not corroborated', async () => {
-    focusSatellite(null)
+    focusIsotopologue(null)
     const wrapper = await mountPane()
 
     expect(badge(wrapper).exists()).toBe(false)
   })
 
   // The badge is gated on more than one adduct: a lone sighting corroborates
-  // nothing, and must not become "Supported by 1 adducts" on the satellites.
-  it('does not spread a single-adduct M0 onto its satellites', async () => {
-    focusSatellite(1)
+  // nothing, and must not become "Supported by 1 adducts" on the isotopologues.
+  it('does not spread a single-adduct M0 onto its isotopologues', async () => {
+    focusIsotopologue(1)
     const wrapper = await mountPane()
 
     expect(badge(wrapper).exists()).toBe(false)
@@ -343,7 +343,7 @@ describe('PanePeakAssign adduct corroboration', () => {
 
   it('names the adducts on the M0 itself, and does not mark it inherited', async () => {
     focusedAssignment = { ...M0, corroboration_adducts: 2 }
-    familyRows = [focusedAssignment, SATELLITE]
+    familyRows = [focusedAssignment, ISOTOPOLOGUE]
     detailRecord = {
       provenance: { corroboration: { n_adducts: 2, adducts: ['+H+', '+Na+'], boost: 0.4 } }
     }
@@ -376,14 +376,14 @@ describe('PanePeakAssign adduct corroboration', () => {
 
 // An M+1 is not a second finding to judge - it is the same compound seen through
 // one heavy atom. Focusing one used to open an empty verify form beside a
-// confirmed M0, and confirming there wrote a second label against the satellite
+// confirmed M0, and confirming there wrote a second label against the isotopologue
 // peak. The card now reads and writes through the compound whichever family
 // member is in view.
-describe('PanePeakAssign verification on an isotopologue satellite', () => {
+describe('PanePeakAssign verification on an isotopologue', () => {
   const M0 = assignment({ formula: 'C10H12', tier: 'assigned' })
 
-  it('verifies the compound rather than refusing the satellite', async () => {
-    focusedAssignment = satellite(M0)
+  it('verifies the compound rather than refusing the isotopologue', async () => {
+    focusedAssignment = isotopologue(M0)
     const wrapper = await mountPane()
 
     expect(wrapper.find('.verify').exists()).toBe(true)
@@ -391,7 +391,7 @@ describe('PanePeakAssign verification on an isotopologue satellite', () => {
   })
 
   it('says which row the verdict is really about', async () => {
-    focusedAssignment = satellite(M0)
+    focusedAssignment = isotopologue(M0)
     const wrapper = await mountPane()
     const note = wrapper.find('.verify-family')
 
@@ -404,8 +404,8 @@ describe('PanePeakAssign verification on an isotopologue satellite', () => {
     expect(onM0.find('.verify-family').exists()).toBe(false)
   })
 
-  it('records the verdict against the compound, not the satellite peak', async () => {
-    focusedAssignment = satellite(M0)
+  it('records the verdict against the compound, not the isotopologue peak', async () => {
+    focusedAssignment = isotopologue(M0)
     const wrapper = await mountPane()
 
     await wrapper.vm.submitVerdict('rejected')
@@ -417,14 +417,14 @@ describe('PanePeakAssign verification on an isotopologue satellite', () => {
     })
   })
 
-  // The satellite carries the M0's formula verbatim, so the formula gate never
-  // had anything to say here. A satellite with no owner in the ledger stands for
+  // The isotopologue carries the M0's formula verbatim, so the formula gate never
+  // had anything to say here. An isotopologue with no owner in the ledger stands for
   // itself and is judged on its own formula rather than becoming unverifiable.
   // The engine produces these routinely - `owner_peak_assignment_id` stays null
   // when the ion's M0 peak was won by another ion in that run - so this is an
   // ordinary row, not a corrupt one.
-  it('still verifies a satellite that has no owner in the ledger', async () => {
-    const orphan = { ...satellite(M0), owner_peak_assignment_id: null }
+  it('still verifies an isotopologue that has no owner in the ledger', async () => {
+    const orphan = { ...isotopologue(M0), owner_peak_assignment_id: null }
     focusedAssignment = orphan
     const wrapper = await mountPane()
 
@@ -436,8 +436,8 @@ describe('PanePeakAssign verification on an isotopologue satellite', () => {
   // ...and it must not claim a scope it does not have. Such a verdict covers
   // that peak alone: there is no M0 to hang it on and no sibling to share it
   // with, so the family note would be a promise the write does not keep.
-  it('claims no family for a satellite that stands for itself', async () => {
-    focusedAssignment = { ...satellite(M0), owner_peak_assignment_id: null }
+  it('claims no family for an isotopologue that stands for itself', async () => {
+    focusedAssignment = { ...isotopologue(M0), owner_peak_assignment_id: null }
     const wrapper = await mountPane()
 
     expect(wrapper.vm.verifyingFamily).toBe(false)
@@ -449,7 +449,7 @@ describe('PanePeakAssign verification on an isotopologue satellite', () => {
   // a half-written verdict away on a click inside the family table this very
   // card renders.
   it('keeps a half-written verdict while focus moves within the family', async () => {
-    const child = satellite(M0)
+    const child = isotopologue(M0)
     focusedAssignment = child
     focusedPeak.value = { ...PEAK, peak_id: child.sample_peak_id }
     const wrapper = await mountPane()

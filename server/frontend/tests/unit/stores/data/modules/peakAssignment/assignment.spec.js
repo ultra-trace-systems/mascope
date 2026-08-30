@@ -26,7 +26,7 @@ const M0 = {
   assigned_formula: 'C6H12O6',
   role: 'M0'
 }
-// A satellite carries its M0's formula verbatim (the engine copies it), so the
+// An isotopologue carries its M0's formula verbatim (the engine copies it), so the
 // role and the owner id are the only things that mark it as one.
 const CHILD = {
   peak_assignment_id: 'pa-c1',
@@ -44,7 +44,7 @@ const ledger = new Map([
 ])
 
 describe('familyM0', () => {
-  it('resolves a satellite to the M0 that names it', () => {
+  it('resolves an isotopologue to the M0 that names it', () => {
     expect(familyM0(CHILD, ledger)).toBe(M0)
   })
 
@@ -75,7 +75,7 @@ describe('familyM0', () => {
 
   // The owner id arrives off the wire and is compared by Map lookup, which does
   // not coerce: a number owner id would silently miss a string-keyed ledger and
-  // orphan every satellite in the run. Pinned so the day it changes type, this
+  // orphan every isotopologue in the run. Pinned so the day it changes type, this
   // fails rather than the badges quietly going blank.
   it('matches the owner id exactly, without coercion', () => {
     const numeric = { ...CHILD, owner_peak_assignment_id: 7 }
