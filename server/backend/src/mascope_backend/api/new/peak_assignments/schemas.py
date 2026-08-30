@@ -749,11 +749,34 @@ CurateAssignmentBody = Annotated[
 class AssignmentCurationResponse(BaseModel):
     """The rows a manual override rewrote.
 
-    `data[0]` is the curated row. Anything after it is a row the override
-    displaced - the isotopologue satellites of the formula it replaced, which
-    are demoted rather than left claiming a compound the curated row no longer
-    carries. Full detail records, so a client can refresh what it holds without
-    a follow-up read.
+    `data[0]` is the curated row. After it come the satellite rows the same
+    edit moved, in two groups and always in this order:
+
+    1. The isotopologue satellites the override **demoted**: the family of the
+       formula it replaced, stripped to `unassigned` rather than left claiming
+       a compound their M0 no longer carries. Empty when the edit commits the
+       formula and mechanism the row already held, since then the family still
+       stands for exactly what it stood for.
+    2. The satellites it **restored**: the family of the compound now being
+       committed, put back from the archive an earlier override of this row
+       left behind. This is what makes promoting the displaced winner back a
+       real undo rather than one that revives the M0 and leaves its satellites
+       unassigned and ownerless.
+
+    A demoted satellite that someone has curated by hand since is deliberately
+    not restored, and so is not in `data` either - their judgement is newer
+    than the undo. How many were left alone that way is in `message`.
+    `message` counts a second group apart from those, and it means the
+    opposite: satellites the undo could not put back at all - the row gone from
+    this run, or the state archived for it unusable - which are missing from
+    `data` not out of restraint towards a row somebody else now owns but
+    because the restore did not reach them. The curated row's
+    `provenance.manual` carries the ids behind both, under `restore_skipped`
+    and `restore_failed`, beside the `restored` ids of the ones that did go
+    back.
+
+    Full detail records throughout, so a client can refresh every row the edit
+    touched without a follow-up read.
     """
 
     status: str = "success"

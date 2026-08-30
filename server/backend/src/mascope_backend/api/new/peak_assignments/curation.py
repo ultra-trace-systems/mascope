@@ -17,14 +17,31 @@ Three rules keep an edited row honest beside the engine's own:
   with :func:`engine.tier_for_score` under the run's own ``tier_bands``, so a
   curated row sorts, filters and rolls up against the same yardstick as every
   other row of that run.
-- **The calibrated fields do not survive.** ``p_correct``, ``calibrated``,
-  ``calibration`` and ``corroboration`` are this server's judgement about the
-  arbitration that produced the *previous* winner; carried across they would
-  read as a calibrated probability for a formula the calibration never saw.
-  They are archived inside the override's own record and dropped from the row.
+- **The engine's reading of the old winner does not survive.** All nine keys
+  of :data:`_ENGINE_JUDGEMENT_KEYS` - ``p_correct``, ``calibrated``,
+  ``calibration``, ``corroboration``, ``confidence``, ``n_candidates``,
+  ``is_tie``, ``evidence`` and ``reference_identities`` - are this server's
+  record of the arbitration that produced the *previous* winner; carried
+  across they would read as a calibrated probability, an arbitration and a
+  known compound's name for a formula none of them describes. A curated row's
+  provenance is rebuilt from the candidate being committed rather than edited,
+  so nothing of the old blob is inherited and those nine are archived with the
+  winner they describe. Two are then re-established for the *new* winner out of
+  its own record: ``evidence`` is recomputed here from the committed fit and
+  plausibility, and ``reference_identities`` is whatever known-compound names
+  the committed candidate carried. That last one is why the displaced winner's
+  snapshot repeats it outside ``engine_judgement`` as well - it names the
+  winner's own formula rather than judging it, and without the copy promoting
+  that winner back would restore the formula and silently lose its identity.
 - **Nothing is thrown away.** The previous winner moves to the head of
   ``alternatives`` and is repeated verbatim in ``provenance.manual.previous``,
-  so an override can be read back, audited, and undone by hand.
+  so an override can be read back, audited, and undone by hand. The
+  isotopologue satellites an override strips are archived next to it in
+  ``provenance.manual.demoted``, and committing their compound back onto the
+  row puts them back on their own rows. That is what makes promoting the
+  previous winner a real undo rather than half of one: without it the M0 would
+  return to its formula while its family stayed behind as orphaned unassigned
+  peaks that only a full re-run could re-attach.
 """
 
 import math
@@ -47,7 +64,9 @@ from mascope_backend.api.new.peak_assignments.engine import (
     ROLE_ISO_CHILD,
     ROLE_M0,
     ROLE_UNASSIGNED,
+    SOURCE_DATABASE,
     SOURCE_MANUAL,
+    SOURCE_UNTARGETED,
     tier_for_score,
 )
 from mascope_backend.api.new.peak_assignments.schemas import (
@@ -56,6 +75,8 @@ from mascope_backend.api.new.peak_assignments.schemas import (
 )
 from mascope_backend.api.new.peak_assignments.tiers import (
     TIER_UNASSIGNED,
+    TIERS,
+    normalize_tier,
     normalize_tier_bands,
 )
 from mascope_backend.db import (
@@ -78,8 +99,12 @@ from mascope_tools.composition.heuristic_filter import (
 COMPLETED_RUN_STATUS = "completed"
 
 #: Provenance keys that describe the engine's arbitration and calibration of
-#: the row's *previous* winner. They are archived with that winner and dropped
-#: from the curated row - see the module docstring.
+#: the row's *previous* winner. They are archived with that winner and none of
+#: them is inherited by the curated row - see the module docstring.
+#: ``reference_identities`` is the odd one out and is deliberately archived
+#: twice: it names the winner's own formula rather than judging it, so
+#: :func:`_previous_winner` also repeats it at the top level of the snapshot,
+#: where a re-promotion of that winner reads it back.
 _ENGINE_JUDGEMENT_KEYS = (
     "p_correct",
     "calibrated",
@@ -96,6 +121,20 @@ _ENGINE_JUDGEMENT_KEYS = (
 #: never has to guess whether a fit was measured by the run or handed over.
 SCORED_BY_ALTERNATIVE = "run_alternative"
 SCORED_BY_SEARCH = "composition_search"
+
+#: How many demoted satellites one row's archive keeps for restoring. An
+#: isotopologue family is a handful of peaks, so this is far above any real
+#: one; the bound exists because the archive lives in a JSON column on the
+#: highest-volume table and an imported run can point any number of rows at a
+#: single owner. A satellite past the bound simply stays demoted - its own row
+#: still records what it was, so nothing is lost, but putting it back is a
+#: re-run rather than a click.
+MAX_DEMOTED_ARCHIVE = 32
+
+#: The action `_demote` writes on a satellite it strips. A restore only touches
+#: a row that still reads exactly like this, so the value is compared, not just
+#: written - see :func:`_restore_demoted`.
+ACTION_DEMOTE_SATELLITE = "demote_satellite"
 
 
 def _plausibility_of(formula: str | None) -> float | None:
@@ -127,7 +166,12 @@ def _previous_winner(assignment: PeakAssignment) -> dict | None:
 
     ``ionization_mechanism_id`` rides along even though the engine's own
     alternatives predate it: without the mechanism a re-promotion would restore
-    the formula and lose the adduct.
+    the formula and lose the adduct. ``reference_identities`` rides along at the
+    top level for the same reason and against the same failure: it is also
+    inside ``engine_judgement``, but only the top level is where the promotion
+    path looks - :func:`_validated_candidate` carries it from there and
+    :func:`_manual_provenance` writes it back onto the row - so buried it alone
+    the undo would restore the formula and lose the known compound's name.
 
     :param assignment: The row about to be overridden.
     :return: The winner as an alternative entry, or None when the row carried
@@ -147,6 +191,7 @@ def _previous_winner(assignment: PeakAssignment) -> dict | None:
             "mz_error_ppm": assignment.mz_error_ppm,
             "abundance_error": assignment.abundance_error,
             "plausibility": provenance.get("plausibility"),
+            "reference_identities": provenance.get("reference_identities"),
             "target_compound_id": assignment.target_compound_id,
             "target_ion_id": assignment.target_ion_id,
             "role": assignment.role,
@@ -212,52 +257,94 @@ async def _resolve_mechanism_id(
     mechanism_id: str | None,
     target_ion_id: str | None,
     polarity: str | None,
-) -> str | None:
+    where: dict,
+) -> str:
     """The ionization mechanism a curated winner is assigned under.
 
     Prefers what the candidate states, and falls back to the mechanism of its
     target ion - which is how an alternative written before alternatives
     carried the mechanism still promotes to a complete assignment.
 
+    A candidate that yields neither is refused rather than committed
+    adductless. ``SetAssignmentBody`` already makes the mechanism mandatory on
+    the other action, for the reason that governs both: a formula without its
+    adduct is half an assignment, and the mechanism is part of a verification's
+    identity (sample peak + formula + mechanism), so a row that lacks one can
+    only ever carry an incomplete verdict. Refusing here is what makes the two
+    actions agree instead of one of them enforcing a rule the other lets
+    through. The entries this catches are the untargeted stage's
+    ``other_candidates`` shortlist, which is formula names and a plausibility
+    and nothing else; the way to commit such a formula is the re-search hand
+    button, which searches the composition against the sample's own adducts and
+    so supplies one.
+
     The polarity rule is the import path's
     (``validate_reference_ids``): a mechanism of the wrong polarity is not an
     adduct this measurement could have produced, and the in-app engine satisfies
-    that structurally by only ever searching the sample's own mechanisms. A
-    hand-supplied id is the one way an opposite-polarity adduct could reach the
-    column, so it is checked here rather than trusted.
+    that structurally by only ever searching the sample's own mechanisms.
+    Nothing that reaches this function has that structural guarantee, so the
+    checks run on the mechanism this **resolves to** rather than only on the one
+    a caller stated. The fallback needs them just as much: ``alternatives`` is
+    untyped JSON, an imported run's entries are whatever the publishing client
+    sent, and a target compound ordinarily carries ions in both polarities - so
+    a candidate naming a negative-mode ion is an ordinary way for an
+    opposite-polarity adduct to reach a positive sample's column.
 
-    :raises ApiException: 422, when the stated mechanism does not exist or does
-        not match the sample. Existence matters because it is a foreign key on
-        the row, so an unknown id would otherwise surface as a 500 from the
-        flush rather than as a verdict on the request.
+    :param where: Context merged into the error detail.
+    :raises ApiException: 422, when the candidate's target ion is gone, when the
+        resolved mechanism does not exist or does not match the sample, or when
+        the candidate resolves to no mechanism at all. Existence matters because
+        it is a foreign key on the row, so an unknown id would otherwise surface
+        as a 500 from the flush rather than as a verdict on the request.
     """
-    if mechanism_id:
-        mechanism = await session.get(IonizationMechanism, mechanism_id)
-        if mechanism is None:
-            raise ApiException(
-                "That ionization mechanism does not exist.",
-                {"ionization_mechanism_id": mechanism_id},
-                422,
-            )
-        if polarity and mechanism.ionization_mechanism_polarity != polarity:
-            raise ApiException(
-                f"Ionization mechanism "
-                f"'{mechanism.ionization_mechanism}' is "
-                f"'{mechanism.ionization_mechanism_polarity}', which does not "
-                f"match this sample's polarity '{polarity}'.",
-                {
-                    "ionization_mechanism_id": mechanism_id,
-                    "mechanism_polarity": mechanism.ionization_mechanism_polarity,
-                    "sample_polarity": polarity,
-                },
-                422,
-            )
-        return mechanism_id
-    if target_ion_id:
+    if not mechanism_id and target_ion_id:
         ion = await session.get(TargetIon, target_ion_id)
-        if ion is not None:
-            return ion.ionization_mechanism_id
-    return None
+        if ion is None:
+            # The frontend offers "use this" on a candidate that names an ion
+            # without knowing whether the ion still exists, so this is a
+            # reachable click and deserves its own answer: telling someone the
+            # candidate "names no adduct" would be wrong about a candidate that
+            # named one perfectly well until the target library moved on.
+            raise ApiException(
+                "That candidate was scored against a target ion that no longer "
+                "exists, so the adduct it was found under cannot be read back. "
+                "Search this peak's composition and assign the hit instead, "
+                "which comes with an adduct of its own.",
+                {**where, "target_ion_id": target_ion_id},
+                422,
+            )
+        mechanism_id = ion.ionization_mechanism_id
+    if not mechanism_id:
+        raise ApiException(
+            "That candidate names no adduct, and a formula without one is half "
+            "an assignment - it cannot carry a verification. Search this peak's "
+            "composition and assign the hit instead, which comes with the adduct "
+            "the formula was found under.",
+            {**where, "target_ion_id": target_ion_id},
+            422,
+        )
+    mechanism = await session.get(IonizationMechanism, mechanism_id)
+    if mechanism is None:
+        raise ApiException(
+            "That ionization mechanism does not exist.",
+            {**where, "ionization_mechanism_id": mechanism_id},
+            422,
+        )
+    if polarity and mechanism.ionization_mechanism_polarity != polarity:
+        raise ApiException(
+            f"Ionization mechanism "
+            f"'{mechanism.ionization_mechanism}' is "
+            f"'{mechanism.ionization_mechanism_polarity}', which does not "
+            f"match this sample's polarity '{polarity}'.",
+            {
+                **where,
+                "ionization_mechanism_id": mechanism_id,
+                "mechanism_polarity": mechanism.ionization_mechanism_polarity,
+                "sample_polarity": polarity,
+            },
+            422,
+        )
+    return mechanism_id
 
 
 async def _surviving_target_ids(
@@ -399,7 +486,12 @@ def _manual_provenance(
     previous: dict | None,
     plausibility: float | None,
     fit_score: float | None,
+    at: str,
     reference_identities: list | None = None,
+    demoted: list | None = None,
+    restored: list | None = None,
+    restore_skipped: list | None = None,
+    restore_failed: list | None = None,
 ) -> dict:
     """The provenance a curated row carries.
 
@@ -409,6 +501,24 @@ def _manual_provenance(
     that are on the record - the quantity a verification snapshots as its
     calibration label. Everything the calibration layer *derives* is absent, so
     a curated row is never mistaken for a calibrated one.
+
+    :param at: When the edit happened. Passed in rather than read here so the
+        row and the satellites it strips carry the same instant - the archive's
+        skip rule matches on that timestamp, and one act deserves one time.
+    :param demoted: Archive of the isotopologue satellites this row has
+        stripped and can put back, newest first. Carried across curations that
+        strip nothing: an override that demotes nobody must not drop the record
+        of one that did, or the compound's family would become unrestorable
+        just because the row was edited twice.
+    :param restored: Ids of the satellites this edit put back,
+    :param restore_skipped: ids of the archived satellites it deliberately left
+        alone because a person had curated them since, and
+    :param restore_failed: ids it could not put back at all - the row is gone
+        from this run, or the state archived for it cannot be committed. Kept
+        apart from the skips because the two say opposite things about what
+        happened: one is restraint towards a row somebody else owns, the other
+        is an undo that did not reach. All three are audit only - the rows
+        themselves say what they are.
     """
     evidence = (
         round(fit_score * plausibility, 4)
@@ -431,16 +541,26 @@ def _manual_provenance(
                     "action": action,
                     "scored_by": scored_by,
                     "user_id": user_id,
-                    "at": dt.now(timezone.utc).isoformat(),
+                    "at": at,
                     "previous_formula": (previous or {}).get("assigned_formula"),
                     "previous": previous,
+                    "demoted": demoted or None,
+                    "restored": restored or None,
+                    "restore_skipped": restore_skipped or None,
+                    "restore_failed": restore_failed or None,
                 }
             ),
         }
     )
 
 
-def _demote(child: PeakAssignment, user_id: int | None, owner_formula: str) -> None:
+def _demote(
+    child: PeakAssignment,
+    user_id: int | None,
+    owner_formula: str | None,
+    owner_mechanism_id: str | None,
+    at: str,
+) -> dict:
     """Strip an isotopologue satellite of a formula that is no longer its M0's.
 
     A satellite is not an independent finding - it is the same compound seen
@@ -453,17 +573,46 @@ def _demote(child: PeakAssignment, user_id: int | None, owner_formula: str) -> N
     ``source`` stays 'manual': the row's state is a person's doing, and the
     ledger's source filter has to show the whole footprint of an override, not
     only the row that gained a formula.
+
+    :param owner_formula: The formula the satellite belonged to, and
+    :param owner_mechanism_id: the adduct it belonged to under. The two
+        together key the archive: a satellite is stripped because a compound
+        was replaced, so it is that compound coming back that puts it back.
+    :param at: The instant of the override, shared with the owner's own record
+        so a restore can tell an untouched demotion from a later hand edit.
+    :return: The archive entry the owner keeps under
+        ``provenance.manual.demoted`` - everything needed to put this row back
+        as it stood.
     """
     previous = _previous_winner(child)
+    # Two kinds of state, both needed to restore the row: the typed columns
+    # (snapshotted in the alternatives shape `_previous_winner` writes, the one
+    # shape every archive in this module uses) and the provenance blob, kept
+    # verbatim because it holds numbers no column does. They overlap on
+    # plausibility and the engine judgement; the blob is the one that goes back
+    # on the row.
+    entry = _clean(
+        {
+            "peak_assignment_id": child.peak_assignment_id,
+            # Named for a reader: within a run the peak id is what identifies a
+            # row, and a 32-character key means nothing in an audit view.
+            "sample_peak_id": child.sample_peak_id,
+            "owner_formula": owner_formula,
+            "owner_ionization_mechanism_id": owner_mechanism_id,
+            "at": at,
+            "previous": previous,
+            "provenance": child.provenance,
+        }
+    )
     child.alternatives = _push_alternative(child.alternatives, previous)
     child.provenance = _clean(
         {
             "manual": _clean(
                 {
-                    "action": "demote_satellite",
+                    "action": ACTION_DEMOTE_SATELLITE,
                     "reason": "owner_overridden",
                     "user_id": user_id,
-                    "at": dt.now(timezone.utc).isoformat(),
+                    "at": at,
                     "previous_formula": (previous or {}).get("assigned_formula"),
                     "previous_owner_formula": owner_formula,
                     "previous": previous,
@@ -485,6 +634,226 @@ def _demote(child: PeakAssignment, user_id: int | None, owner_formula: str) -> N
     child.target_compound_id = None
     child.target_ion_id = None
     child.owner_peak_assignment_id = None
+    return entry
+
+
+#: The sources a restored satellite may claim. A row that is owned by an M0 is
+#: always engine output - curating a row detaches it from its family, so a
+#: 'manual' row is never anyone's satellite to demote - and the archive is JSON
+#: an imported run could have written anything into. Anything else comes back
+#: sourceless rather than mislabelled.
+_ENGINE_SOURCES = (SOURCE_DATABASE, SOURCE_UNTARGETED)
+
+
+async def _restore(
+    session,
+    child: PeakAssignment,
+    entry: dict,
+    owner_id: str,
+    bands: tuple[float, float],
+) -> bool:
+    """Put one demoted satellite back as its archive recorded it.
+
+    The row comes back as what it was, engine source and all, and its manual
+    block goes with the rest of the demotion's provenance: after a restore the
+    row is not a person's edit any more, it is the engine's row it was before
+    one. The record of the round trip lives on the owner, which is the row a
+    person actually curated.
+
+    Three things are not taken out of the archive on trust, for the reason the
+    curated row's own tier is recomputed: the archive is JSON, an imported
+    run's provenance is whatever the publishing client sent, and all of it is
+    on its way into typed columns.
+
+    - The **role** is ``iso_child`` unconditionally. The row is being given an
+      owner, and being owned is what makes a row a satellite.
+    - The **tier** comes back as the archive recorded it, since a restore is an
+      undo and not a re-judgement - but only when it is a tier the vocabulary
+      knows. Anything else is recomputed from the fit under the run's own
+      bands, the same yardstick the curated row itself is tiered by.
+    - The **foreign keys** are confirmed to still exist. The archive does not
+      cascade, so a mechanism or target deleted since the demotion would
+      otherwise raise from the flush instead of the request. The mechanism is
+      usually the owner's own and already loaded in this session, so the common
+      case costs nothing.
+
+    :param bands: ``(assigned, candidate)`` fit-score thresholds of the run.
+    :return: True when the row was put back; False when the archived state
+        cannot go in the columns at all, in which case the row is untouched.
+    """
+    previous = entry.get("previous")
+    previous = previous if isinstance(previous, dict) else {}
+    try:
+        state = _validated_candidate(
+            previous,
+            {"peak_assignment_id": child.peak_assignment_id, "action": "restore"},
+        )
+    except ApiException:
+        # An archive entry too malformed to commit - a formula longer than its
+        # column, a fit score outside it. Refusing the whole curation over it
+        # would be the wrong verdict, since the request itself is fine, so the
+        # entry is dropped and the row stays demoted exactly as it already was.
+        return False
+
+    # The demotion pushed this exact snapshot onto the head of the row's own
+    # alternatives; popping it back off is what stops a demote/restore round
+    # trip from growing the list by one entry every time. Only the head, and
+    # only while it is still verbatim what was pushed - an entry the ceiling
+    # truncated off the tail back then is not resurrected here.
+    alternatives = list(child.alternatives or [])
+    if alternatives and alternatives[0] == previous:
+        alternatives.pop(0)
+
+    mechanism_id = state.get("ionization_mechanism_id")
+    if mechanism_id and await session.get(IonizationMechanism, mechanism_id) is None:
+        mechanism_id = None
+    target_compound_id, target_ion_id = await _surviving_target_ids(
+        session, state.get("target_compound_id"), state.get("target_ion_id")
+    )
+    fit_score = state.get("fit_score")
+    assigned_band, candidate_band = bands
+    tier = normalize_tier(previous.get("tier"))
+    if tier not in TIERS:
+        tier = tier_for_score(
+            fit_score,
+            possible_threshold=candidate_band,
+            probable_threshold=assigned_band,
+        )
+    source = previous.get("source")
+    restored_provenance = entry.get("provenance")
+
+    child.alternatives = alternatives or None
+    child.provenance = (
+        restored_provenance if isinstance(restored_provenance, dict) else None
+    )
+    child.role = ROLE_ISO_CHILD
+    child.tier = tier
+    child.source = source if source in _ENGINE_SOURCES else None
+    child.assigned_formula = state.get("assigned_formula")
+    child.ion_formula = state.get("ion_formula")
+    child.ionization_mechanism_id = mechanism_id
+    child.isotope_label = state.get("isotope_label")
+    child.isotope_formula = state.get("isotope_formula")
+    child.fit_score = fit_score
+    child.mz_error_ppm = state.get("mz_error_ppm")
+    child.abundance_error = state.get("abundance_error")
+    child.target_compound_id = target_compound_id
+    child.target_ion_id = target_ion_id
+    child.owner_peak_assignment_id = owner_id
+    return True
+
+
+async def _restore_demoted(
+    session,
+    owner: PeakAssignment,
+    archive: list,
+    assigned: str | None,
+    mechanism_id: str | None,
+    bands: tuple[float, float],
+) -> tuple[list[PeakAssignment], list[str], list[str], list[dict]]:
+    """Put back the satellites an earlier override of this row stripped.
+
+    Fires when the compound now being committed is the one an archive entry was
+    taken under - the row is being put back to the compound whose family was
+    stripped, so the family goes back with it. That is what the inspector's
+    "use this to undo" promises, and without this the undo would restore the M0
+    and leave its satellites unassigned and ownerless.
+
+    The ids are on the owner's own provenance, so each restore is a primary-key
+    read - no JSON-path query over the table.
+
+    **A satellite someone has curated by hand since the demotion is skipped,
+    never overwritten.** The person's judgement is newer than the undo, and a
+    restore that silently replaced their assignment with the engine's older one
+    would destroy a deliberate act to reverse an accidental one. The tell is
+    the row's own provenance: a demotion writes ``manual.action ==
+    'demote_satellite'`` with the override's timestamp, so a row whose manual
+    block says anything else, or carries a different instant, has been written
+    by someone after the demotion. Such an entry is reported and dropped from
+    the archive rather than kept for a later attempt - the row belongs to
+    whoever claimed it now.
+
+    **An entry that cannot be put back at all is reported too**, under its own
+    heading rather than as a skip: a skip is a deliberate act of restraint
+    towards a row somebody else now owns, and reporting a failure as one would
+    tell a person their satellite was left alone on purpose when in truth the
+    undo could not reach it. Silence is the worse option either way - the
+    response would say an undo happened while a satellite stayed demoted with
+    nothing anywhere saying why.
+
+    :param owner: The row being curated, which holds the archive.
+    :param archive: ``provenance.manual.demoted`` as it stood *before* this
+        edit rewrote the row's provenance.
+    :param assigned: The formula being committed, and
+    :param mechanism_id: the mechanism it is committed under. Together they are
+        the compound an entry has to have been archived under to be restored.
+    :param bands: The run's fit-score thresholds, for re-tiering a restored row.
+    :return: ``(restored rows, skipped ids, unrestorable ids, the entries that
+        stay archived)``.
+    """
+    restored: list[PeakAssignment] = []
+    skipped: list[str] = []
+    failed: list[str] = []
+    remaining: list[dict] = []
+    for entry in archive:
+        # The only two drops that go unreported, because there is nothing to
+        # report: an entry that is not an object, or one that names no row,
+        # points at no satellite at all. Every drop below names a real row and
+        # says so.
+        if not isinstance(entry, dict):
+            continue
+        child_id = entry.get("peak_assignment_id")
+        if not isinstance(child_id, str) or not child_id:
+            continue
+        if (
+            entry.get("owner_formula") != assigned
+            or entry.get("owner_ionization_mechanism_id") != mechanism_id
+        ):
+            # Archived under some other compound: this edit says nothing about
+            # it, so it waits for the override that does commit that compound.
+            remaining.append(entry)
+            continue
+        child = await session.get(PeakAssignment, child_id, with_for_update=True)
+        # The id comes out of a JSON blob, and an imported run's provenance is
+        # whatever the publishing client sent, so it can name a row of another
+        # run - or of another workspace's sample - entirely. A restore may only
+        # ever write rows of the run it is curating.
+        if (
+            child is None
+            or child.peak_assignment_run_id != owner.peak_assignment_run_id
+        ):
+            # Reported, and the entry is CONSUMED rather than kept. Nothing that
+            # happens later turns this into a restorable satellite: a deleted
+            # row does not come back under the same id, and an id belonging to
+            # another run never becomes this one's. Keeping the entry would hold
+            # one of the archive's 32 slots to offer an undo that can only ever
+            # fail again. (Contrast the failure below, where the row is still
+            # here and only the archived state is unusable.)
+            failed.append(child_id)
+            continue
+        manual = (child.provenance or {}).get("manual")
+        manual = manual if isinstance(manual, dict) else {}
+        # Still the demotion this archive recorded, and nothing since.
+        untouched = manual.get("action") == ACTION_DEMOTE_SATELLITE and manual.get(
+            "at"
+        ) == entry.get("at")
+        if not untouched:
+            skipped.append(child_id)
+            continue
+        if await _restore(session, child, entry, owner.peak_assignment_id, bands):
+            restored.append(child)
+        else:
+            # The archived state cannot go in the columns - a formula longer
+            # than its column, a fit score outside it, the shapes an imported
+            # run's provenance can carry. Reported like a gone row, but the
+            # entry is KEPT: the satellite is still here and still demoted, and
+            # a re-import that republishes this run's provenance with the entry
+            # repaired would make it restorable again. Dropping it would throw
+            # away the archive of a row that is still standing, which is the one
+            # copy of it a curator can act on from the M0.
+            failed.append(child_id)
+            remaining.append(entry)
+    return restored, skipped, failed, remaining
 
 
 def _chosen_from_alternative(
@@ -556,16 +925,28 @@ async def curate_assignment(
     ``sample_peak_id``, same peak. What changes is which composition it commits
     to, plus the bookkeeping that says a person changed it.
 
+    An edit reaches beyond the row in both directions, and both are the same
+    rule - a satellite belongs to its M0's compound: the isotopologue family of
+    a compound being replaced is demoted and archived, and the family of a
+    compound being committed *back* is restored from that archive, so promoting
+    the previous winner really undoes the override instead of leaving its
+    satellites behind. A satellite a person has curated in the meantime is left
+    exactly as they left it and reported as skipped, never overwritten, and one
+    the undo cannot reach at all - its row deleted since, or its archived state
+    unusable - is reported as such rather than passed over in silence.
+
     :param sample_item_id: Sample the assignment belongs to.
     :param peak_assignment_id: The row to curate.
     :param body: A validated ``PromoteAlternativeBody`` or ``SetAssignmentBody``.
     :param user_id: The curating user, recorded in provenance.
-    :return: Status envelope; ``data[0]`` is the curated row, followed by any
-        satellite rows the override displaced.
+    :return: Status envelope; ``data[0]`` is the curated row, followed by the
+        satellite rows the edit displaced and the ones it restored.
     :raises NotFoundException: The assignment is not this sample's.
     :raises ApiException: 409 when the run is not completed (something else is
         still writing it) or the promoted candidate moved; 422 when the request
-        names a candidate, mechanism or formula that cannot be committed.
+        names a candidate, mechanism or formula that cannot be committed -
+        including a candidate that resolves to no adduct at all, which both
+        actions refuse alike.
     """
     sample = await fetch_sample(sample_item_id)
 
@@ -624,23 +1005,22 @@ async def curate_assignment(
             scored_by = SCORED_BY_SEARCH
             remaining = list(assignment.alternatives or [])
 
+        where = {
+            "peak_assignment_id": peak_assignment_id,
+            "action": body.action,
+        }
         # Checked for both actions, though only a promoted candidate can really
         # be malformed: a `set_assignment` body is already bounded by its
         # schema, and running it through the same gate keeps one answer to
         # "what may be committed" rather than two that can drift.
-        chosen = _validated_candidate(
-            chosen,
-            {
-                "peak_assignment_id": peak_assignment_id,
-                "action": body.action,
-            },
-        )
+        chosen = _validated_candidate(chosen, where)
 
         mechanism_id = await _resolve_mechanism_id(
             session,
             chosen.get("ionization_mechanism_id"),
             chosen.get("target_ion_id"),
             sample.polarity,
+            where,
         )
         target_compound_id, target_ion_id = await _surviving_target_ids(
             session, chosen.get("target_compound_id"), chosen.get("target_ion_id")
@@ -649,6 +1029,17 @@ async def curate_assignment(
         previous = _previous_winner(assignment)
         previous_formula = assignment.assigned_formula
         previous_mechanism_id = assignment.ionization_mechanism_id
+        # Read before this edit overwrites the row's provenance: it carries the
+        # archive of the satellites an EARLIER override of this row stripped,
+        # which is the only record of how to put them back. Type-checked on the
+        # way out because provenance is JSON an import may have written.
+        previous_manual = (assignment.provenance or {}).get("manual")
+        archived = (
+            previous_manual.get("demoted")
+            if isinstance(previous_manual, dict)
+            else None
+        )
+        archived = archived if isinstance(archived, list) else []
         # Satellites are read before the winner changes; after it, nothing on
         # the row says which compound they were satellites of. They are only
         # DEMOTED when the compound actually changes: committing the formula the
@@ -685,6 +1076,33 @@ async def curate_assignment(
         )
         displaced = [] if same_compound else family
 
+        # One act, one instant: the owner's record and the satellites it moves
+        # carry the same timestamp, which is what a later restore matches on to
+        # tell an untouched demotion from a row someone has curated since.
+        at = dt.now(timezone.utc).isoformat()
+        (
+            restored,
+            restore_skipped,
+            restore_failed,
+            kept_archive,
+        ) = await _restore_demoted(
+            session,
+            assignment,
+            archived,
+            assigned,
+            mechanism_id,
+            (assigned_band, candidate_band),
+        )
+        demoted_archive = [
+            _demote(child, user_id, previous_formula, previous_mechanism_id, at)
+            for child in displaced
+        ]
+        # Newest first, and what this edit did not consume rides along: an
+        # override that strips nobody must not drop the archive of one that
+        # did, or a family would stop being restorable merely because its M0
+        # was edited a second time in between.
+        archive_now = (demoted_archive + kept_archive)[:MAX_DEMOTED_ARCHIVE]
+
         assignment.alternatives = _push_alternative(remaining, previous)
         assignment.provenance = _manual_provenance(
             action=body.action,
@@ -693,7 +1111,12 @@ async def curate_assignment(
             previous=previous,
             plausibility=plausibility,
             fit_score=fit_score,
+            at=at,
             reference_identities=chosen.get("reference_identities"),
+            demoted=archive_now,
+            restored=[child.peak_assignment_id for child in restored],
+            restore_skipped=restore_skipped,
+            restore_failed=restore_failed,
         )
         assignment.assigned_formula = assigned
         assignment.ion_formula = chosen.get("ion_formula")
@@ -721,14 +1144,13 @@ async def curate_assignment(
         # is no owner here that was ever competed for.
         assignment.owner_peak_assignment_id = None
 
-        for child in displaced:
-            _demote(child, user_id, previous_formula)
-
         # Read out before the commit expires these instances. A refresh per row
         # would be the alternative, and an expired attribute read on an async
         # session is a lazy load - which raises rather than reloading.
         sample_peak_id = assignment.sample_peak_id
-        records = [assignment.to_dict()] + [child.to_dict() for child in displaced]
+        records = [assignment.to_dict()] + [
+            child.to_dict() for child in [*displaced, *restored]
+        ]
 
         await session.commit()
 
@@ -739,13 +1161,39 @@ async def curate_assignment(
         if displaced
         else ""
     )
+    restored_note = (
+        f" {len(restored)} isotopologue satellite"
+        f"{'s' if len(restored) != 1 else ''} of "
+        f"'{assigned}' restored."
+        if restored
+        else ""
+    )
+    skipped_note = (
+        f" {len(restore_skipped)} demoted satellite"
+        f"{'s' if len(restore_skipped) != 1 else ''} left as "
+        f"{'they are' if len(restore_skipped) != 1 else 'it is'}, curated by "
+        "hand since."
+        if restore_skipped
+        else ""
+    )
+    # Said out loud rather than left to the provenance blob: without it the
+    # message would report an undo while a satellite stayed demoted, and the
+    # person clicking has no other way to learn that.
+    failed_note = (
+        f" {len(restore_failed)} demoted satellite"
+        f"{'s' if len(restore_failed) != 1 else ''} could not be put back: "
+        f"{'their rows are' if len(restore_failed) != 1 else 'the row is'} gone "
+        "from this run, or the archived state cannot be committed."
+        if restore_failed
+        else ""
+    )
     return {
         "status": "success",
         "message": (
             f"Assigned '{assigned}' to peak {sample_peak_id} of sample "
             f"'{sample.sample_item_name}' by hand"
             f"{f' (was {previous_formula!r})' if previous_formula else ''}."
-            f"{displaced_note}"
+            f"{displaced_note}{restored_note}{skipped_note}{failed_note}"
         ),
         "results": len(records),
         "data": records,

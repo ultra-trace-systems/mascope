@@ -321,10 +321,29 @@ async def curate_assignment_route(
     and its calibration metadata) do not survive the edit: they are this
     server's judgement about the arbitration that produced the previous winner.
 
-    **Isotopologue satellites of the replaced formula are demoted** to
-    `unassigned`, keeping their own previous winner in their `alternatives`.
-    They were the same compound seen through one heavy atom, and that compound
-    is no longer what their M0 carries.
+    **Isotopologue satellites follow their M0's compound, in both
+    directions.** The satellites of the formula being replaced are demoted to
+    `unassigned`, keeping their own previous winner in their `alternatives`:
+    they were the same compound seen through one heavy atom, and that compound
+    is no longer what their M0 carries. The reverse of that is the undo -
+    committing a compound this row was overridden away from **restores the
+    satellites that earlier override stripped**, so promoting the displaced
+    winner back really puts the family back instead of reviving the M0 alone
+    and leaving its satellites unassigned and ownerless. Neither happens when
+    the edit commits the formula and mechanism the row already held: the family
+    still stands for what it stood for, so it is left alone.
+
+    **A satellite a person has curated by hand since it was demoted is never
+    overwritten** by such a restore - their judgement is the newer one, and a
+    restore that replaced it with the engine's older row would destroy a
+    deliberate act to reverse an accidental one. Those rows stay exactly as
+    they were left, and `message` says how many were skipped for that reason.
+    `message` reports a second and opposite group beside them: satellites the
+    undo could not put back at all - their row gone from this run, or the state
+    archived for them not committable - which is a restore that failed rather
+    than one withheld on purpose, so the two counts must not be read as the
+    same thing. The curated row's `provenance.manual` names the ids behind all
+    three outcomes, under `restored`, `restore_skipped` and `restore_failed`.
 
     **An override lives in the run it edits.** A later assignment run rebuilds
     the sample's ledger and supersedes it; the durable record of a human
@@ -336,16 +355,32 @@ async def curate_assignment_route(
 
     Returns 403 when peak assignment is not enabled for this environment or the
     user is not an editor on the sample, 404 for an assignment this sample does
-    not have, 409 when the run is not completed or the promoted candidate moved
-    under the caller, and 422 when the request names a candidate, mechanism or
-    formula that cannot be committed.
+    not have, and 409 when the run is not completed (something else is still
+    writing its ledger) or when `expected_formula` no longer matches the
+    candidate sitting at `alternative_index`. 422 is the verdict on anything
+    that cannot be committed to the peak: an index past the end of the
+    `alternatives` list or an entry with no formula in it; a stored candidate
+    whose fields do not fit their columns (not text, over length, not a number,
+    non-finite, or out of range); an `ionization_mechanism_id` that does not
+    exist, or one whose polarity is not this sample's, which is not an adduct
+    the measurement could have produced; and a candidate that resolves to no
+    adduct at all - `set_assignment` requires the mechanism outright and
+    `promote_alternative` refuses a candidate that names none, because a
+    formula without its adduct is half an assignment and can never carry a
+    verification. The way to commit such a formula is the re-search action,
+    which finds it under one of the sample's own adducts.
 
     :param sample_item_id: The unique identifier of the sample.
     :param peak_assignment_id: The assignment to curate.
     :param body: The curation action and its payload.
     :param user: The current authenticated user. Requires workspace editor role.
     :param membership: Workspace membership with editor role on the sample.
-    :return: The curated row, followed by any rows the override displaced.
+    :return: The curated row first, then the satellite rows the override
+        demoted, then the ones it restored. Satellites left alone because
+        someone had curated them by hand are counted in `message` but not
+        returned, and so are the ones the restore could not reach at all -
+        absent from `data` for the opposite reason, since nothing about them
+        was rewritten.
     """
     result = await curate_assignment(
         sample_item_id=sample_item_id,
