@@ -45,8 +45,8 @@ pytestmark = pytest.mark.asyncio
 
 # (key, mz, neutral formula, ion formula, role, tier, fit, intensity, owner key)
 #
-# `m0` / `sat` are the plain family: an M0 and its M+1 isotopologue, present and
-# assigned in every sample. `flip` is the anchor that must NOT fold -- a
+# `m0` / `iso` are the plain family: an M0 and its M+1 isotopologue, present and
+# assigned in every sample. `flip` is the anchor that must NOT fold -- an
 # isotopologue of `solo` in sample A, a peak assigned in its own right in B and C.
 # `orphan` is an iso_child whose owner was never won in its run, which the
 # engine leaves with a null owner. `bare` is an unassigned peak: still a trace,
@@ -197,7 +197,7 @@ async def _seed(session, now):
         session.add(
             SampleFile(
                 sample_file_id=sf,
-                filename=f"orbi-bp-sat-{name}-{sf}.zarr",
+                filename=f"orbi-bp-iso-{name}-{sf}.zarr",
                 instrument="orbi-test",
                 datetime=datetime(2026, 7, 4, 12, 0, 0) + timedelta(hours=index),
                 datetime_utc=now,

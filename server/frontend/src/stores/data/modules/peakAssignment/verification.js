@@ -66,7 +66,7 @@ export const usePeakAssignmentVerification = defineStore(
 
     // Current verdict record for a given assignment (peak store row), or null.
     // Read through the family M0, so an isotopologue shows the verdict its compound
-    // was given rather than a blank of its own. A verdict recorded against a
+    // was given rather than a blank of its own. A verdict recorded against an
     // isotopologue by an older build is left in the history and not surfaced here:
     // resolving strictly to the M0 is what keeps one family showing one verdict,
     // where preferring an isotopologue's own record would let a family disagree with

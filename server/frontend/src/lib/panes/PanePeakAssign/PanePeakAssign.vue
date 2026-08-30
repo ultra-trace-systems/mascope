@@ -198,7 +198,7 @@ const m0 = computed(
 // several adducts (co-occurrence) -- winner-only, calibrated assignments. The
 // boost is already folded into p_correct, so the badge is purely informational.
 //
-// The engine writes `provenance.corroboration` onto the M0 winner alone: a
+// The engine writes `provenance.corroboration` onto the M0 winner alone: an
 // isotopologue is the same ion measured at another isotope, not a second sighting
 // of the compound. The evidence is about the formula the family shares, so a
 // focused isotopologue shows its M0's count, flagged inherited. Only the count
@@ -443,7 +443,7 @@ const altTooltip = (alt) => {
           message: `
               <h1>Isotopologues</h1>
               <p>
-              The isotope pattern behind this assignment: the main isotopologue (M0)
+              The isotope pattern behind this assignment: the main peak (M0)
               and its isotopologues (M+1, M+2 ...), each with its m/z error and its
               estimated relative abundance (<b>abu.</b>, as a fraction of M0).
               </p>

@@ -228,7 +228,7 @@ Guests (no editor role) see the **badge only**, no capture control.
 - [x] Confirm is blocked until an evidence level is chosen; the five levels are labelled.
 - [x] Reject and Unsure work without an evidence level.
 - [x] The badge shows the **current** verdict derived by stable identity (survives a re-assign run).
-- [x] One verdict covers the isotopologue family: every member shows it, and verifying from a
+- [x] One verdict covers the isotopologue family: every member shows it, and verifying from an
       isotopologue writes a single label against the M0 (§4).
 - [x] Ledger filter narrows to verified / rejected / unverified.
 - [x] Guests see the badge but no capture control (a 403 hides the control behind an "editor access
