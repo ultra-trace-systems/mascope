@@ -356,6 +356,7 @@ assignments["tier"].value_counts()
 # Server-side filters (a bad value raises ValidationError naming the accepted set)
 assigned = mascope.peak_assignments.get(sample_id, tier="assigned")
 stage_b = mascope.peak_assignments.get(sample_id, source="untargeted")
+curated = mascope.peak_assignments.get(sample_id, source="manual")
 
 # A specific (e.g. older) run
 old = mascope.peak_assignments.get(
@@ -370,9 +371,37 @@ full = mascope.peak_assignments.detail(
 
 Key `get()` columns: `sample_peak_mz`, `sample_peak_intensity`, `role` (`M0` |
 `iso_child` | `reagent` | `artifact` | `unassigned`), `assigned_formula`,
-`ion_formula`, `isotope_formula`, `source` (`database` | `untargeted`),
-`fit_score`, `mz_error_ppm`, `tier`, `p_correct`, and
+`ion_formula`, `isotope_formula`, `source` (`database` | `untargeted` |
+`manual`), `fit_score`, `mz_error_ppm`, `tier`, `p_correct`, and
 `target_compound_id`/`target_ion_id` for database-sourced assignments.
+
+### Hand-curated rows (`source: manual`)
+
+A person can overrule the engine on a single row from the app's peak
+inspector — promote a close alternative, or commit a re-search hit. That row is
+persisted with `source` **`manual`**, so it **leaves** `database`/`untargeted`
+rather than joining them:
+
+```python
+# Wrong: these two no longer sum to the run
+stage_a = mascope.peak_assignments.get(sample_id, source="database")
+stage_b = mascope.peak_assignments.get(sample_id, source="untargeted")
+
+# Right: read the run once and split it locally, so nothing can fall out
+assignments = mascope.peak_assignments.get(sample_id)
+assignments.groupby("source", dropna=False).size()
+```
+
+Peaks nothing explained carry no source at all (`None`), which is why the
+groupby above passes `dropna=False`. A `manual` row is not necessarily an
+*assigned* one either: when an override displaces a compound, the isotopologue
+satellites of that compound are stripped and end up `source: manual`,
+`tier: unassigned`, with no formula.
+
+`peak_assignments.detail()` on a curated row returns a `provenance.manual`
+block — `action`, `user_id`, `at`, and `previous` (the displaced winner, kept
+verbatim), plus `manual.demoted`, the archive of the satellites the override
+stripped so committing that compound back restores them.
 
 ### Which engine produced a run
 

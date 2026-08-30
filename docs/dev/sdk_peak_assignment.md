@@ -150,7 +150,8 @@ is done).
 `sample_peak_mz/_intensity/_tof`, `role`
 (`M0`/`iso_child`/`reagent`/`artifact`/`unassigned`), `assigned_formula`, `ion_formula`,
 `ionization_mechanism_id`, `isotope_label`, `isotope_formula`, `source`
-(`database`/`untargeted`), `fit_score`, `mz_error_ppm`, `abundance_error`, `tier`
+(`database`/`untargeted`/`manual` - the last for a row a person assigned by hand;
+null on a peak nothing explained), `fit_score`, `mz_error_ppm`, `abundance_error`, `tier`
 (`assigned`/`candidate`/`below_assignability`/`unassigned`), `target_compound_id`,
 `target_ion_id`, `owner_peak_assignment_id`, plus the flattened provenance scalars
 `p_correct` / `p_correct_provisional` / `corroboration_adducts`. The `alternatives`
@@ -273,7 +274,7 @@ mascope.peak_assignments.get(
     run_id=None,        # default: latest completed run
     tier=None,          # assigned | candidate | below_assignability | unassigned
     role=None,          # M0 | iso_child | reagent | artifact | unassigned
-    source=None,        # database | untargeted
+    source=None,        # database | untargeted | manual
 ) -> pd.DataFrame | None
 
 mascope.peak_assignments.list_runs(sample_id) -> pd.DataFrame | None
@@ -347,9 +348,19 @@ through the existing `_get`, so the new resource needs **no change to `_base.py`
 - **`10_peak_assignment.ipynb`** (shipped) - read + analyze a persisted run: pick a
   sample, `peak_assignments.list_runs` -> `peak_assignments.get`, inspect the `run`
   config on `.attrs`, filter by `tier` / `source`, plot a **tier-colored mass-defect**
-  map and a **Van Krevelen**, break peaks down by `source` (database vs untargeted),
-  and drill into `alternatives` for contested peaks. Assumes a run already exists
-  (created in the app) - explicitly noted, since v1 doesn't trigger runs.
+  map and a **Van Krevelen**, break peaks down by `source` (database, untargeted,
+  and manual - see below), and drill into `alternatives` for contested peaks. Assumes
+  a run already exists (created in the app) - explicitly noted, since v1 doesn't
+  trigger runs.
+
+  The source breakdown groups **one** frame rather than issuing one `get()` per
+  source, and that is load-bearing: `source` grew a third value when manual
+  curation landed, and a curated row *leaves* `database`/`untargeted` instead of
+  joining them. Two filtered reads would have stopped summing to the run the day
+  someone hand-assigned a peak, and the curated rows - the ones a curator is most
+  likely to be looking for - would have been the ones missing. A local groupby
+  cannot go stale that way, so prefer it wherever a notebook partitions a run by a
+  server-side enum.
 - **`09_composition_assignment.ipynb` retired** (reversing this doc's earlier
   "keep as client-side fallback" call): with the read surface shipped, a second
   hand-rolled path to the same goal - different scores, no ledger, no tiers -

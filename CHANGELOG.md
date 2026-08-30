@@ -124,21 +124,38 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
   by re-searching a peak could only be added to a target collection - getting
   either into the ledger meant a whole new assignment run, which might well
   award the peak to something else again. Two controls close that: **use this**
-  on any close alternative, and a **hand button** on each re-search result that
-  puts that composition onto the selected peak.
+  on a close alternative, and a **hand button** on each re-search result that
+  puts that composition onto the selected peak. One kind of candidate cannot be
+  committed: the compositions the finder lists with no adduct, since a formula
+  without the adduct it was seen under is half an assignment and could never
+  carry a verdict, which is keyed on the peak, the formula and the adduct
+  together. Its *use this* is offered but disabled, with that reason - the
+  formula is not unassignable, it just has to be re-searched first, because the
+  search finds it under the sample's own adducts and the hand button there
+  commits it with one.
 
   The row is edited in place and marked as assigned by hand, with a hand icon
-  beside its tier wherever the row appears and the ledger's source filter able
-  to list every row a person decided. The assignment it replaced becomes the
-  peak's first close alternative, so the same button undoes the change. The
-  confidence tier is recalculated from the new assignment's own fit under the
-  run's own thresholds rather than inherited, and the calibrated P(correct) of
-  the assignment that was replaced is *not* carried over - that number was the
-  engine's reading of a different formula, and stating it beside a hand-picked
-  one would be a probability nothing calibrated. It is kept on the record with
-  the assignment it describes. Isotopologue satellites of the replaced formula
-  become unassigned: a satellite is the same compound seen through one heavy
-  atom, so leaving them would let one family show two compounds.
+  beside its tier wherever the row appears. A satellite that the override
+  unassigned gets a mark of its own rather than the hand: it is the consequence
+  of a decision taken on another peak, not a formula anyone chose. The ledger's
+  source filter lists both, so the whole footprint of one override reads off in
+  one place. The assignment it replaced becomes the peak's first close
+  alternative, so the same button undoes the change. The confidence tier is
+  recalculated from the new assignment's own fit under the run's own thresholds
+  rather than inherited, and the calibrated P(correct) of the assignment that
+  was replaced is *not* carried over - that number was the engine's reading of
+  a different formula, and stating it beside a hand-picked one would be a
+  probability nothing calibrated. It is kept on the record with the assignment
+  it describes. Isotopologue satellites of the replaced formula become
+  unassigned: a satellite is the same compound seen through one heavy atom, so
+  leaving them would let one family show two compounds. They go only when the
+  compound really changes - the formula and the adduct together, so
+  re-committing the composition a row already carries leaves its family exactly
+  where it stood - and putting the original assignment back restores them along
+  with it, which is what makes the undo a whole one rather than half of one.
+  The exception is a satellite someone has assigned by hand in the meantime:
+  that judgment is the newer one, so the restore reports it and leaves it as it
+  stands.
 
   A hand assignment lives in the run it was made in - **re-assigning the sample
   recomputes the ledger from the data and supersedes it** - and nothing is
