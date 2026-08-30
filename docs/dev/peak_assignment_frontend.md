@@ -139,19 +139,70 @@ showing) and the **hand button** on a re-search hit (`set_assignment`, for the u
 `unassigned` placeholder row with no runner-ups). The row is edited **in place** — same
 `peak_assignment_id`, same peak — with the displaced winner pushed to the head of `alternatives`, so
 promoting it back is the undo. `source` becomes `"manual"` (a third value in the shared
-`AssignmentSource` literal, so overrides are filterable and survive an import), `BaseTierTag` renders a
-hand mark for it on every surface, and `provenance.manual` records the user, the time, the action and
-the whole previous winner. Three things the server owns rather than the caller: the **tier** is
-recomputed with `tier_for_score` under *the run's own* `tier_bands`; the **calibrated fields**
-(`p_correct`, `calibrated`, `calibration`, `corroboration`) are archived with the winner they describe
-and dropped from the row, because they are the engine's reading of an arbitration that is no longer the
-row's; and **isotopologue satellites of the replaced formula are demoted** to `unassigned` (their own
+`AssignmentSource` literal, so overrides are filterable and survive an import), `BaseTierTag` marks it
+on every surface, and `provenance.manual` records the user, the time, the action and the whole previous
+winner. **Two marks, not one**, because `source: "manual"` covers both halves of an override — the row a
+person chose a formula for and the satellites the same act stripped. The chip renders the **hand**
+(`ph-hand-pointing`, `data-testid="manual-mark"`) only for the first, and an **eraser**
+(`ph-eraser`, `data-testid="demoted-mark"`) for a manual row sitting at the `unassigned` tier, which is
+the second: nobody chose that row's formula, and it has none to show. It tells the two apart by the tier
+it is already displaying rather than by `provenance.manual.action` — the ledger serves slim rows with no
+provenance on them at all, so the action is unreadable on most of the surfaces the chip renders on, and
+the tier is exact here anyway, since both curation actions commit a formula and `tier_for_score` never
+returns `unassigned`. Three things the server owns rather than the caller: the **tier** is recomputed
+with `tier_for_score` under *the run's own* `tier_bands`; the engine's judgement of the displaced
+winner — all nine `_ENGINE_JUDGEMENT_KEYS` (`p_correct`, `calibrated`, `calibration`, `corroboration`,
+`confidence`, `n_candidates`, `is_tie`, `evidence`, `reference_identities`), not merely the calibrated
+four — is archived with the winner it describes, and the curated row's provenance is rebuilt from the
+candidate being committed rather than edited, so none of it is inherited: it was the engine's reading of
+an arbitration that is no longer the row's. Two of the nine are then re-established for the *new* winner
+out of its own record — `evidence` recomputed from the committed fit and plausibility,
+`reference_identities` taken from the committed candidate — and the rest simply go. And
+**isotopologue satellites of the replaced formula are demoted** to `unassigned` (their own
 previous winner kept in their `alternatives`), since a satellite is the same compound as its M0 and
-that compound is no longer what the M0 carries. Store action: `peak.curate(id, action)`, which reloads
-the run — an override rewrites rows the caller never named. Deliberately **not** redirected to the
-family M0 the way `verify()` is: an alternative index only means something against one row's list.
-An override lives in the run it edits and a later run supersedes it; nothing is auto-verified, so the
-durable record of the judgement is still a verdict the user records with the evidence level they have.
+that compound is no longer what the M0 carries. Satellites are stripped only when the *committed*
+(formula, mechanism) pair differs from the one the row held — a family belongs to a compound, and a
+compound is a formula under an adduct.
+
+**The undo is a real undo.** Each stripped satellite's previous state is archived on the M0's
+`provenance.manual.demoted`, keyed by the (formula, mechanism) it belonged to, and committing that
+compound back onto the M0 **restores them onto their own rows**. Without it, promoting the previous
+winner back would return the M0 to its formula and leave the family behind as orphaned `unassigned`
+peaks that only a full re-run could re-attach. A restore deliberately skips any satellite a person has
+curated since the demotion (matched on `action == "demote_satellite"` plus the override's own
+timestamp). It reports **three** outcomes, on the curated row's `provenance.manual` and in the
+response `message`: `restored` (ids put back), `restore_skipped` (ids left alone because a hand has
+claimed that row since — restraint, not failure) and `restore_failed` (ids the undo could not put back
+at all: the row is gone from this run or belongs to another, or the state archived for it will not go
+into the columns). The last two are kept apart deliberately — reporting a failure as a skip would tell
+a person their satellite was spared on purpose when in truth the undo never reached it, and silence
+would report an undo while a satellite stayed demoted with nothing anywhere saying why. The two kinds
+of failure part company in the *archive* rather than in the report: an entry naming a row that is gone
+or is not this run's is **consumed**, since nothing later turns it back into a restorable satellite and
+keeping it would hold one of the archive's slots to offer an undo that can only fail again; an entry
+whose row is still standing and only whose archived state is unusable is **kept**, because that archive
+is the one copy of a live row's previous state a curator can act on from the M0. The archive is capped
+at 32 entries.
+
+**A candidate with no adduct cannot be committed** — 422, symmetric with `set_assignment`, where
+`ionization_mechanism_id` is a required field. A stored alternative that names no mechanism falls back
+to the mechanism of its own target ion, so an engine runner-up from the database stage still promotes
+to a complete assignment; what cannot resolve one is the untargeted stage's `other_candidates`
+shortlist, whose entries carry a formula and a plausibility and nothing else. A formula without its
+adduct is half an assignment and cannot carry a verification identity (`sample_peak_id` +
+`assigned_formula` + `ionization_mechanism_id`), so the route to committing such a formula is the
+re-search hand button, which supplies one. A mechanism the client *does* name is checked for existence
+and against the sample's polarity (422 either way) — the engine only ever searches the sample's own
+adducts, so a hand-supplied id is the one way an opposite-polarity one could reach the column.
+
+Store action: `peak.curate(id, action)`, which reloads the run — an override rewrites rows the caller
+never named. Deliberately **not** redirected to the family M0 the way `verify()` is: an alternative
+index only means something against one row's list.
+**Curation never writes a verdict**, and an existing verdict does not follow the row: verification is
+keyed on (`sample_peak_id`, `assigned_formula`, `ionization_mechanism_id`), so it stays attached to the
+formula it judged and a curated row comes back with no current verdict. An override lives in the run it
+edits and a later run supersedes it; the durable record of the judgement is still a verdict the user
+records with the evidence level they have.
 
 **Confidence.** fit, plausibility and calibrated P(correct) are surfaced (see
 [`peak_assignment_confidence_frontend.md`](peak_assignment_confidence_frontend.md)). Untargeted winners
@@ -224,11 +275,13 @@ applies rather than a null overriding it.
 
 ## 1. The backend contract (what we consume)
 
-Twelve endpoints, all under `/api/peak-assignments` (see
+Thirteen endpoints, all under `/api/peak-assignments` (see
 [`routes.py`](../../server/backend/src/mascope_backend/api/new/peak_assignments/routes.py)). The
-write routes (assign / verify / recalibrate / import) are additionally gated on the feature flag —
-`require_peak_assignment_enabled` returns 403 with the feature off; the reads stay open so ledgers
-written while it was on remain inspectable:
+seven write routes — assign (per sample and per batch), verify, **curate**, recalibrate, import, and
+abandon-an-import — are additionally gated on the feature flag: they carry
+`Depends(require_peak_assignment_enabled)`, which returns 403 with the feature off. The reads stay
+open so ledgers written while it was on remain inspectable, and so do the two `fit/…` endpoints,
+which persist nothing:
 
 | Method | Path | Returns | Notes |
 |---|---|---|---|
@@ -237,6 +290,7 @@ written while it was on remain inspectable:
 | `GET` | `/sample/{sample_item_id}/runs` | `{ data: PeakAssignmentRun[] }` | Newest first. |
 | `GET` | `/sample/{sample_item_id}/verifications` | `{ data: AssignmentVerification[] }` | Append-only verdict history, newest first. |
 | `POST` | `/sample/{sample_item_id}/verify` | `201` | Record confirm / reject / unsure. Requires `editor` + flag. |
+| `PATCH` | `/sample/{sample_item_id}/assignment/{peak_assignment_id}` | `{ data: PeakAssignmentDetail[] }` | Manual curation. Body is one of two actions: `promote_alternative` (`alternative_index`, optional `expected_formula` guard → 409 on a mismatch) or `set_assignment` (`assigned_formula` + `ionization_mechanism_id`, both required, plus the search's own `ion_formula` / `isotope_label` / `isotope_formula` / `fit_score` / `mz_error_ppm`). `data[0]` is the curated row, **followed by every satellite row the edit moved** — the isotopologue satellites it demoted, then the ones it restored — as full detail records, so a client can refresh what it holds without a second read. Requires `editor` + flag. |
 | `POST` | `/calibration/{instrument}/recalibrate` | `{ recalibrated, ... }` | Refit the confidence calibration from labels. Superuser + flag. |
 | `POST` | `/sample/{sample_item_id}/assign` | `202 { message, process_id }` | Body `{ config?: PeakAssignmentConfig }`. Requires `editor` + flag. |
 | `POST` | `/batch/{sample_batch_id}/assign` | `202 { message, process_id }` | One run per eligible sample; Stage A only by default. Requires `editor` + flag. |
@@ -252,8 +306,8 @@ peak_assignment_id · peak_assignment_run_id · sample_item_id
 sample_peak_id · sample_peak_mz · sample_peak_intensity · sample_peak_tof
 role            M0 | iso_child | reagent | artifact | unassigned
 tier            assigned | candidate | below_assignability | unassigned
-source          database | untargeted | null
-assigned_formula · ion_formula · ionization_mechanism_id · isotope_label
+source          database | untargeted | manual | null
+assigned_formula · ion_formula · ionization_mechanism_id · isotope_label · isotope_formula
 fit_score · mz_error_ppm · abundance_error
 target_compound_id · target_ion_id        (nullable — set when the winner came from the library)
 owner_peak_assignment_id                   (an iso_child points at its M0)
@@ -265,6 +319,40 @@ alternatives (JSON list) · provenance (JSON)    — detail endpoint only (~74% 
 > **probability** `provenance.p_correct`. How to surface fit / plausibility / probability (and the
 > upcoming adduct-corroboration signal) honestly is written up in
 > [`peak_assignment_confidence_frontend.md`](peak_assignment_confidence_frontend.md).
+
+> **`source: "manual"` and the `provenance.manual` block.** A curated row is not an engine row with a
+> flag on it — `manual` is a third value of the same `AssignmentSource` literal that types the ledger's
+> `source=` filter and an imported row, so an override is filterable and survives an export/import
+> round trip. What made the row is under `provenance.manual` (detail endpoint only):
+>
+> ```
+> action           promote_alternative | set_assignment | demote_satellite
+> scored_by        run_alternative | composition_search   (where the row's numbers came from)
+> user_id · at     who curated it, and when
+> previous_formula · previous     the displaced winner, verbatim, in the `alternatives` shape —
+>                                 including previous.engine_judgement, where the calibrated fields
+>                                 (p_correct, calibrated, calibration, corroboration, confidence,
+>                                 n_candidates, is_tie, evidence, reference_identities) are archived
+> demoted          the isotopologue satellites this override stripped, each with enough state to be
+>                  put back; capped at 32 entries (MAX_DEMOTED_ARCHIVE)
+> restored                        what a restoring edit put back,
+> restore_skipped                 what it left to a later hand (that satellite has been curated since),
+> restore_failed                  and what it could not put back at all: the row is gone from this run
+>                                 or belongs to another, or its archived state cannot be committed
+>                                 (all three audit only — see "The undo is a real undo" under
+>                                 Current state)
+> ```
+>
+> A demoted satellite gets its own thinner block: `action: "demote_satellite"`, `reason:
+> "owner_overridden"`, and `previous_owner_formula` beside its own `previous`. A curated row still
+> carries `p_correct` / `p_correct_provisional` / `corroboration_adducts` as flattened record fields,
+> but all three read **null** on it. They are not columns — `PeakAssignment` in
+> [`models.py`](../../server/backend/src/mascope_backend/db/models.py) has no such field, and
+> `_provenance_scalars` ([`service.py`](../../server/backend/src/mascope_backend/api/new/peak_assignments/service.py))
+> derives them from `provenance` on every read — which is the actual mechanism by which they vanish:
+> curation archives the calibrated block into `manual.previous.engine_judgement` and leaves nothing in
+> `provenance` for the flattener to pick up. The calibration described an arbitration that is no
+> longer the row's.
 
 ### 1.1 Two facts that drive the wiring
 
@@ -583,7 +671,7 @@ below records the original plan items plus the consolidation that followed.
 | **B1** `peak_assignment_reload` event | ✅ done | `success_reload=[("peak_assignment","sample_batch_id")]`. |
 | **B2** composition Fit visualization | ✅ done | `visualization.py`: `aggregate_composition_fit` + `visualize_composition_focus`; kept as API/SDK surface without in-app UI (#1736). |
 | **Consolidation** onto the Sample view | ✅ done | Time series via REST, 3-pane layout, Re-search takeover, inspector trim, ledger unfold, sample-switch race fix. |
-| **C** commit-alternative (manual curation) | ✅ done | The one phase-C item that had no row here and no code anywhere. `PATCH …/assignment/{id}` with `promote_alternative` / `set_assignment`, `peakAssignments/curation.py`, `peak.curate()`, "use this" in the inspector and the hand button on a search hit. See **Current state**. |
+| **C** commit-alternative (manual curation) | ✅ done | The one phase-C item that had no row here and no code anywhere. `PATCH …/assignment/{id}` with `promote_alternative` / `set_assignment`, backend `api/new/peak_assignments/curation.py`, store `peakAssignment/assignment.js` → `peak.curate()`, "use this" in the inspector and the hand button on a search hit. See **Current state**. |
 
 **Verified live** against the isolated instance stack (`mascope dev run backend frontend --instance
 --skip-migrations`; env `wt-…`, backend :8090, frontend :5173, seeded from the demo DB): read contract

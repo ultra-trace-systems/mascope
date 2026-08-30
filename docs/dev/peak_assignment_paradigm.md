@@ -135,13 +135,13 @@ Analogous to peaky's `manifest.json`. `PeakAssignment` rows FK to a run.
 | `role` | `M0` / `iso_child` / `reagent` / `artifact` / `unassigned` |
 | `assigned_formula` | committed neutral formula |
 | `ion_formula`, `ionization_mechanism_id`, `isotope_label` | adduct + M0/M+1... |
-| `source` | `database` / `untargeted` - which stage won the peak |
+| `source` | `database` / `untargeted` / `manual` - which decision produced the row: the known-library stage, the untargeted stage, or a person |
 | `fit_score`, `mz_error_ppm`, `abundance_error` | evidence (`fit_score` = the fit-quality measurement, [`fit_score.md`](../../libraries/tools/docs/fit_score.md)) |
 | `tier` | `assigned` / `candidate` / `below_assignability` / `unassigned` |
 | `target_compound_id`, `target_ion_id` (nullable) | set when the winner came from the known library |
 | `owner_peak_assignment_id` (nullable) | an `iso_child` points at its `M0` |
-| `alternatives` (JSON) | runner-up formulas + scores |
-| `provenance` (JSON) | per-peak config/notes |
+| `alternatives` (JSON) | runner-up formulas + scores (a manual override pushes the winner it displaced onto the head of this list, so promoting that entry back is the undo) |
+| `provenance` (JSON) | per-peak config/notes; on a curated row a `manual` block recording who overrode it, when, and everything the row said before |
 
 This yields a direct query - "every peak in sample X and its formula and
 confidence" - without importing raw peak rows into Postgres. Crucially, the
@@ -149,6 +149,15 @@ nullable `target_compound_id` / `target_ion_id` is how **targeted analysis
 becomes a view over peak assignments** rather than a separate subsystem: a
 targeted result is just a peak assignment whose winner came from the curated
 library.
+
+`source: manual` is a peer of the two stages rather than a flag beside them: it
+says which decision produced the row, and on a curated row that decision was a
+person's. Being one of the three values the type allows is what makes an
+override filterable in the ledger and legal in an imported run, instead of
+special-cased state that every reader has to learn about separately. The
+override is **run-scoped** - a later run over that sample rebuilds its ledger
+and supersedes it - so the durable record of a human judgement is a
+verification, which is keyed on the peak rather than on a run.
 
 ### 3.2 Two-stage engine (database-first, then untargeted)
 

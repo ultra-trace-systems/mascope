@@ -1,11 +1,11 @@
 # Copying Assignments From One Sample to a Batch's Other Samples — Design Note
 
 *One sample of a batch gets the full treatment — an engine run, inspection,
-and (once the manual-curation write path lands) human overrides. The batch's
-other samples usually carry closely related chemistry, yet their only route to
-a ledger today is another full engine run each, which re-derives everything
-and knows nothing about the curation. This note compares two ways to propagate
-the curated sample's assignments instead — **B1**, a literal copy, and **B2**,
+and human overrides — the manual-curation write path has since shipped (§6).
+The batch's other samples usually carry closely related chemistry, yet their
+only route to a ledger today is another full engine run each, which re-derives
+everything and knows nothing about the curation. This note compares two ways to
+propagate the curated sample's assignments instead — **B1**, a literal copy, and **B2**,
 a seeded copy with per-sample re-score — both publishing through the
 run-import channel ([`sdk_peak_assignment.md`](sdk_peak_assignment.md) §8.2),
 and recommends B2. The target-collection detour is rejected (§8).*
@@ -179,33 +179,94 @@ The manual-curation write path **has shipped** (`PATCH …/assignment/{id}`,
 `peak_assignments/curation.py`), and it records an override in place much as
 this section anticipated: the row's winner becomes the chosen formula, the
 previous winner moves to the head of `alternatives`, provenance gains a
-`manual: {action, scored_by, user_id, at, previous_formula, previous}` block,
-and the row is marked `source: "manual"`. The sequencing dependency named here
-is discharged — `AssignmentSource` is now
+`manual: {action, scored_by, user_id, at, previous_formula, previous, demoted,
+restored, restore_skipped, restore_failed}` block, and the row is marked
+`source: "manual"`.
+The sequencing dependency named here is discharged — `AssignmentSource` is now
 `database | untargeted | manual`, so a copied override row is a legal import
 rather than a 422. Because the copy reads the source run's *current* rows,
 overrides propagate mechanically.
 
-Two details of the shipped shape the copy has to respect:
+Three details of the shipped shape the copy has to respect:
 
-- **A curated row carries no calibrated fields.** `p_correct`, `calibrated`,
-  `calibration` and `corroboration` are archived inside
-  `provenance.manual.previous.engine_judgement` (they describe the arbitration
-  that produced the *displaced* winner) and are absent from the row itself. So
-  a copied override needs no stripping of those keys beyond what the import
-  path already does, and a destination reader sees "no calibrated probability"
-  rather than one belonging to another formula.
+- **A curated row carries no calibrated fields.** The engine's judgement of the
+  displaced winner is archived whole inside
+  `provenance.manual.previous.engine_judgement` — all nine
+  `_ENGINE_JUDGEMENT_KEYS`, not only the calibrated `p_correct` / `calibrated` /
+  `calibration` / `corroboration` — because every one of them describes the
+  arbitration that produced the *displaced* winner. The curated row's own
+  provenance is rebuilt from the candidate being committed rather than edited,
+  so nothing of that blob is inherited; only what is honest for the new winner
+  comes back (`evidence` recomputed from the committed fit and plausibility,
+  `reference_identities` taken from the committed candidate). So a copied
+  override needs no stripping of those keys beyond what the import path already
+  does, and a destination reader sees "no calibrated probability" rather than
+  one belonging to another formula.
 - **An override demotes the satellites of the formula it replaced** to
   `unassigned`, marked `source: "manual"` with their own previous winner kept
-  in `alternatives`. A copy of a curated run therefore carries demoted rows
-  too; under B2 they are re-scored like any other row, and an `unassigned`
-  source-row simply has no formula to re-score.
+  in `alternatives`. Satellites go only when the committed (formula, mechanism)
+  pair actually differs from the one the row held — a family belongs to a
+  compound, and a compound is a formula under an adduct. A copy of a curated
+  run therefore carries demoted rows too; under B2 they are re-scored like any
+  other row, and an `unassigned` source-row simply has no formula to re-score.
+- **The undo trail would travel as data, but not as an undo — and would not
+  survive being tried.** Each stripped satellite is archived on the M0's
+  `provenance.manual.demoted`, and committing the same (formula, mechanism)
+  back onto that M0 restores the satellites onto their own rows — a real undo
+  rather than a message that the change was reversed. The archive would ride
+  along on a copy like the rest of the manual block (import strips three
+  top-level keys and never descends into it). But each entry names a
+  `peak_assignment_id`, and a restore may only ever write rows of the run it is
+  curating — the ids come out of a JSON blob an imported run's publisher could
+  have put anything in, so that guard is deliberate and right. On a destination
+  those ids name the *source* run's rows: the importer mints fresh ids for
+  every published row, so nothing the copy writes can ever answer to them.
+  What that would cost is worth stating plainly, because the entries would not
+  simply lie dormant as audit. They are read only by the edit that commits
+  their compound back onto the M0 — which is the undo itself — and that edit
+  reports them under `manual.restore_failed` and **consumes** them, on the
+  correct reasoning that an id belonging to another run never becomes this
+  one's and a kept entry would hold one of the archive's 32 slots to offer an
+  undo that can only fail again. So the first attempt to undo a copied override
+  on a destination would put the M0 back to its formula, put none of its family
+  back, say so in the response, and leave that compound's entries gone from the
+  archive; the copied demotions would stay `unassigned` with nothing pointing
+  at them any more. For the copy design the consequence is one line: **an
+  override survives a copy; its undo does not.** A destination is put right by
+  undoing on the source and re-copying, or by an engine run there — both of
+  which rebuild the family from data rather than from an archive.
 
-After the copy an override is represented as: winner = the human-chosen
-formula; `provenance.manual` intact (import strips only the three server-owned
-keys) plus `copied_from`; and under B2 a destination-honest fit/tier — an
-override may legitimately land in a lower tier on a sample whose data supports
-it less, which is the point of re-scoring.
+**How an override would travel: as data.** It is not a side channel. `source:
+"manual"` is a third value of the same `AssignmentSource` literal the importer
+validates against and the ledger's `source=` filter reads, and everything about
+the act — action, user, time, the displaced winner verbatim, the archived
+engine judgement, the demotion archive — is in the row's own `provenance.manual`
+JSON. So the copy would need no override-specific transport: the remap rewrites
+`sample_peak_id` / `mz` / `intensity`, and the rest of the row goes across as it
+stands (import strips only the three server-owned provenance keys, all
+top-level, so the nested manual block survives whole). The same fact is what
+lets the re-score behave itself: B2 can tell a person's choice from the
+engine's by reading a column, and it re-measures a curated row's evidence
+exactly as it does any other row's while leaving the winner alone — §3
+re-scores, it does not re-arbitrate, so a curated formula cannot lose its peak
+to a runner-up on a destination sample. That is the difference from the
+rejected target-collection route (§8), where curated winners re-compete. What
+does change is the tier: under B2 an override may legitimately land in a lower
+tier on a sample whose data supports it less, which is the point of re-scoring.
+
+**But an override is run-scoped, and a verdict is not.** An override lives in
+the run it edits; a later engine run on that sample rebuilds the ledger from
+the data and supersedes it. A verification is the durable memory — append-only,
+keyed on (`sample_peak_id`, `assigned_formula`, `ionization_mechanism_id`)
+rather than on a run, and surviving re-runs by design. Two consequences for a
+copy. First, what a copy carries is the source run's rows as they stand at that
+moment, not a standing instruction: re-assign the source sample and its
+overrides are gone, while copies already published keep theirs. Second, a
+destination's copied override has exactly the same lifetime it had at home — it
+is that sample's latest completed run until someone runs the engine there, and
+then it is not. Neither is a defect introduced by copying; it is the lifetime
+the override already has. A judgement meant to outlive a re-run is recorded as
+a verdict rather than as an override.
 
 Verifications do **not** copy. A verdict attaches to the judged sample's
 stable identity (`sample_item_id` + `sample_peak_id` + formula + mechanism)

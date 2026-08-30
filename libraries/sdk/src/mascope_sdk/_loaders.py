@@ -364,7 +364,10 @@ def load_assignments(
     :type run: str
     :param tier: Filter by confidence tier.
     :type tier: str, optional
-    :param source: Filter by assignment source (``database``/``untargeted``).
+    :param source: Filter by assignment source (``database``/``untargeted``/
+                   ``manual`` - the last being rows a person assigned by hand).
+                   A curated row leaves the two engine sources, so reading a
+                   batch as ``database`` plus ``untargeted`` drops it.
     :type source: str, optional
     :param confirm_above: If the number of samples exceeds this threshold,
                           an interactive confirmation prompt is shown before

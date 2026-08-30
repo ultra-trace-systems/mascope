@@ -728,8 +728,11 @@ class MascopeClient:
                      still accepts the legacy spelling ``identified`` for
                      ``assigned``.
         :type tier: str, optional
-        :param source: Filter by assignment source: ``database`` |
-                       ``untargeted``.
+        :param source: Filter by assignment source: ``database`` (Stage A) |
+                       ``untargeted`` (Stage B) | ``manual`` (a person assigned
+                       this row by hand). A curated row leaves the two engine
+                       sources rather than joining them, so ``database`` plus
+                       ``untargeted`` no longer covers every assigned peak.
         :type source: str, optional
         :param confirm_above: If the number of samples exceeds this threshold,
                               an interactive confirmation prompt is shown

@@ -52,6 +52,11 @@ class PeakAssignmentsResource(BaseResource):
     into a confidence tier. Runs are launched from the Mascope app; this
     resource reads the persisted results.
 
+    A person can also overrule the engine on a single row from the app's peak
+    inspector - promoting a close alternative, or committing a re-search hit.
+    Such a row reads back with ``source`` ``manual`` (see :meth:`get`), which
+    is why a run does not partition into ``database`` plus ``untargeted``.
+
     Example::
 
         from mascope_sdk import MascopeClient
@@ -173,8 +178,16 @@ class PeakAssignmentsResource(BaseResource):
         :param role: Filter by peak role: ``M0`` | ``iso_child`` | ``reagent``
                      | ``artifact`` | ``unassigned``.
         :type role: str, optional
-        :param source: Filter by assignment source: ``database`` |
-                       ``untargeted``.
+        :param source: Filter by assignment source: ``database`` (Stage A, the
+                       curated target library) | ``untargeted`` (Stage B, the
+                       composition search) | ``manual`` (a person assigned this
+                       row by hand, in the app's peak inspector). Peaks nothing
+                       explained carry no source at all, so the three values
+                       plus null cover the run. Note that ``manual`` is not a
+                       subset of the other two: a curated row *leaves*
+                       ``database``/``untargeted``, so partitioning a run into
+                       those two frames alone silently drops every hand-assigned
+                       peak.
         :type source: str, optional
         :return: A DataFrame with one row per observed peak, containing:
 
@@ -214,6 +227,11 @@ class PeakAssignmentsResource(BaseResource):
             # Untargeted winners only
             stage_b = mascope.peak_assignments.get(
                 "sample-123", source="untargeted"
+            )
+
+            # Hand-curated rows only
+            curated = mascope.peak_assignments.get(
+                "sample-123", source="manual"
             )
         """
         # Resolve the run client-side (the ledger response carries no run
@@ -285,6 +303,16 @@ class PeakAssignmentsResource(BaseResource):
         fetches the inspector-detail JSON of a single assignment - the ranked
         alternative compositions considered for the peak and the full scoring
         provenance.
+
+        On a hand-curated row (``source`` ``manual``) the provenance also
+        carries a ``manual`` block recording who changed what: ``action``,
+        ``user_id``, ``at``, and ``previous`` - the displaced winner, kept
+        verbatim so an override can be audited and undone. When the override
+        stripped the previous compound's isotopologue satellites, they are
+        archived under ``manual.demoted`` (one entry per satellite) so
+        committing that compound back restores them. Those stripped satellites
+        are themselves ``source`` ``manual`` rows, but ``unassigned`` and
+        carrying no formula - a manual row is not necessarily an assigned one.
 
         :param sample_id: The ID of the sample.
         :type sample_id: str

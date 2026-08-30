@@ -54,7 +54,14 @@ RUNS = [
 ]
 
 TIERS = ("assigned", "candidate", "below_assignability", "unassigned")
-SOURCES = ("database", "untargeted")
+
+#: The assignment sources the server's ``AssignmentSource`` enum accepts, in
+#: the same order. ``manual`` is a row a person assigned by hand from the app's
+#: peak inspector: it *leaves* ``database``/``untargeted`` rather than joining
+#: them, so a client that knows only the two engine sources silently loses
+#: every curated peak. Kept in step with
+#: ``peak_assignments/schemas.py::AssignmentSource``.
+SOURCES = ("database", "untargeted", "manual")
 
 
 def _make_assignments(run_id: str, count: int) -> list[dict[str, Any]]:
@@ -74,7 +81,7 @@ def _make_assignments(run_id: str, count: int) -> list[dict[str, Any]]:
             "ionization_mechanism_id": "mech-1",
             "isotope_label": None,
             "isotope_formula": None,
-            "source": SOURCES[i % 2],
+            "source": SOURCES[i % len(SOURCES)],
             "fit_score": 0.9,
             "mz_error_ppm": 0.5,
             "abundance_error": 0.1,
@@ -282,6 +289,30 @@ class TestGet:
         assert server.list_calls[0]["tier"] == "assigned"
         assert server.list_calls[0]["source"] == "database"
         assert "role" not in server.list_calls[0]
+
+    def test_manual_source_is_a_first_class_filter_value(self, server, resource):
+        # A hand-curated row is reachable on its own, not only by reading the
+        # whole run. If 'manual' were still treated as a bad enum value this
+        # would raise ValidationError instead of returning rows.
+        df = resource.get(SAMPLE_ID, source="manual")
+
+        assert df is not None and set(df["source"]) == {"manual"}
+        assert server.list_calls[0]["source"] == "manual"
+
+    def test_the_three_sources_account_for_every_assigned_row(self, resource):
+        # The regression this guards: a curated row *leaves* database and
+        # untargeted rather than joining them, so a caller who partitions a run
+        # into those two frames loses exactly the hand-assigned peaks. Reading
+        # the run once and splitting locally cannot drift that way.
+        whole_run = resource.get(SAMPLE_ID)
+
+        per_source = whole_run.groupby("source", dropna=False).size()
+        assert per_source.sum() == len(whole_run)
+        assert "manual" in per_source.index
+        engine_only = int(per_source.get("database", 0)) + int(
+            per_source.get("untargeted", 0)
+        )
+        assert engine_only < len(whole_run)
 
     def test_misspelled_enum_filter_raises_validation_error(self, resource):
         with pytest.raises(ValidationError):

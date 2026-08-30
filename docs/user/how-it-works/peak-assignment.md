@@ -172,12 +172,20 @@ communicates identification certainty.
 
 --8<-- "_help/assignment-curation.md"
 
-Choosing an assignment and vouching for one are deliberately separate acts. A hand
-assignment says "this candidate is the better reading of the evidence"; a verification
-says "I have evidence of *this grade* that it is right", which is why nothing is
-confirmed automatically when you assign by hand. It also keeps the calibration honest:
-the labelled record that future confidence curves are fit on stays a record of stated
-evidence, not of preferences.
+A hand assignment says "this candidate is the better reading of the evidence"; a
+verification says "I have evidence of *this grade* that it is right". Keeping the two
+apart is what keeps the calibration honest: the labelled record that future confidence
+curves are fit on stays a record of stated evidence, not of preferences. It is the same
+reason an override drops the engine's calibrated P(correct) instead of carrying it over
+&mdash; the curve was fit to score the engine's arbitration, and a probability quoted
+beside a formula it never scored would be a number with nothing behind it.
+
+The run-scoped lifetime follows from what a run is: one reading of the sample, computed
+from the data at a moment. Editing a row of it corrects that reading; it is not a
+standing instruction, so the next run starts from the data again and knows nothing about
+it. Verifications are the layer built to outlive a run &mdash; keyed on the peak, formula
+and ionization mechanism rather than on a run &mdash; which is why they carry over a
+re-assignment and an override does not.
 
 ## Verifying assignments
 
