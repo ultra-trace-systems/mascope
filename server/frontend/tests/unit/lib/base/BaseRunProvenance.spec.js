@@ -43,6 +43,26 @@ const IMPORTED_RUN = {
   calibration: { method: 'offset-aware', mascope_mz_verified: false }
 }
 
+// A run this deployment produced by copying another sample's assignments. It
+// reaches the ledger through the import channel, so it carries a disclosure
+// and no calibrated P(correct) - but it is this deployment's own work, and
+// badging it as a foreign engine would misattribute it.
+const COPIED_RUN = {
+  peak_assignment_run_id: 'run-3',
+  engine: 'mascope-copy',
+  engine_version: '0.1.0',
+  status: 'completed',
+  tier_bands: { assigned: 0.8, candidate: 0.5 },
+  calibration: {
+    copy: {
+      source_sample_item_id: 'si-source',
+      source_sample_item_name: 'Curated Sample',
+      mode: 'seeded_rescore',
+      mapping: { mapped: 42, dropped_no_destination_peak: 3 }
+    }
+  }
+}
+
 describe('BaseRunProvenance', () => {
   it('renders nothing without a run', () => {
     expect(mountBadge(null).find('.tag').exists()).toBe(false)
@@ -170,5 +190,60 @@ describe('BaseRunProvenance', () => {
 
     expect(wrapper.vm.calibrationDump.length).toBeLessThanOrEqual(601)
     expect(wrapper.vm.calibrationDump.endsWith('…')).toBe(true)
+  })
+
+  describe('a copied run', () => {
+    it('is presented as first-party, not as a foreign engine', () => {
+      // The copy engine is reserved server-side exactly as the in-app name is,
+      // so a run carrying it really was produced here. Rendering the raw
+      // 'mascope-copy' with the "published by an external engine" chip would
+      // misattribute this deployment's own work to an outside party.
+      const wrapper = mountBadge(COPIED_RUN)
+      const tags = wrapper.findAll('.tag')
+
+      expect(tags[0].text()).toBe('Copy 0.1.0')
+      expect(tags[0].attributes('data-severity')).toBe('secondary')
+      expect(wrapper.vm.isExternal).toBe(false)
+    })
+
+    it('names the sample it was copied from', () => {
+      expect(mountBadge(COPIED_RUN).vm.engineTooltip).toContain('Copied from sample Curated Sample')
+    })
+
+    it('says the formulas were copied but the evidence re-measured', () => {
+      // The distinction the whole feature turns on: a copied tier is this
+      // sample's own verdict, not the source's inherited one.
+      const tooltip = mountBadge(COPIED_RUN).vm.engineTooltip
+
+      expect(tooltip).toContain('re-measured against this sample')
+      expect(tooltip).toContain('no Mascope-calibrated P(correct)')
+    })
+
+    it('shows its copy manifest where an import shows its calibration', () => {
+      const wrapper = mountBadge(COPIED_RUN)
+      const tags = wrapper.findAll('.tag')
+
+      expect(tags).toHaveLength(2)
+      expect(tags[1].text()).toBe('copy details')
+      expect(wrapper.vm.calibrationTooltip).toContain('How this copy was made')
+      // The manifest itself, not an import's calibration wording.
+      expect(wrapper.vm.calibrationTooltip).toContain('source_sample_item_name')
+      expect(wrapper.vm.calibrationTooltip).not.toContain('m/z verification gate')
+    })
+
+    it('falls back to naming no sample rather than "undefined"', () => {
+      // A future manifest reshape must degrade to the general statement.
+      const wrapper = mountBadge({ ...COPIED_RUN, calibration: { copy: {} } })
+
+      expect(wrapper.vm.engineTooltip).toContain('Copied from another sample of this batch')
+      expect(wrapper.vm.engineTooltip).not.toContain('undefined')
+    })
+
+    it('keeps both chips distinct in compact mode', () => {
+      const tags = mountBadge(COPIED_RUN, { compact: true }).findAll('.tag')
+
+      expect(tags[0].text()).toBe('Copy')
+      expect(tags[1].text()).toBe('details')
+    })
   })
 })
