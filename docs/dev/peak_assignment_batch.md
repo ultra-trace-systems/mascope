@@ -175,7 +175,7 @@ Two tables, mirroring the `PeakAssignmentRun` / `PeakAssignment` reproducibility
 | `best_fit_score`, `support_fraction`, `is_ambiguous` | evidence + honesty flags |
 | `n_present` | prevalence (how many samples) — kept **separate** from confidence |
 | `max_intensity` | brightest member, in the unit `intensity_variable` names — the ledger's intensity column |
-| `satellite_of` | the batch peak this one is an isotopologue satellite of; nullable self-FK (§5.4) |
+| `isotopologue_of` | the batch peak this one is an isotopologue of; nullable self-FK (§5.4) |
 | `alternatives` (JSON) | runner-up consensus formulas (ties / blends) |
 
 **`BatchPeakOccurrence`** — the sparse per-sample matrix and source of truth:
@@ -261,21 +261,21 @@ than of the formula, so the ledger can show them without joining the occurrence 
 - **`max_intensity`** — the brightest member, over *every* member rather than the assigned ones:
   how bright a species gets is a property of the trace, and an unassigned batch peak has an
   intensity worth sorting a ledger by. A member with no intensity is skipped, not read as zero.
-- **`satellite_of`** — the isotopologue family link. A batch peak is a bare m/z anchor and
+- **`isotopologue_of`** — the isotopologue family link. A batch peak is a bare m/z anchor and
   carries no family of its own, so it is **derived**: a member whose per-sample role is
   `iso_child` names the assignment that owns it, and the anchor that owning peak folded into in
   the *same sample* is the owner anchor (`BatchPeakOccurrence` records the assignment each
   member came from, so the hop is one indexed lookup). The members need not agree — one sample's
-  satellite is another's M0 — so it is a **vote over the assigned members**, the same population
+  isotopologue is another's M0 — so it is a **vote over the assigned members**, the same population
   the formula consensus is decided over, requiring a **strict majority** for one owner anchor.
   That is also what makes the winner unique: two owners cannot each hold more than half.
-  Prevalence stays out of it, so a satellite detected in six samples of ten and assigned in none
-  of the other four is still a satellite. An `iso_child` whose owner is unknown (the engine
+  Prevalence stays out of it, so an isotopologue detected in six samples of ten and assigned in none
+  of the other four is still an isotopologue. An `iso_child` whose owner is unknown (the engine
   leaves `owner_peak_assignment_id` NULL when the family's M0 was not won by the same ion) or
   whose owner was dropped from the fold abstains rather than voting.
 
-  **One hop, observed rather than reconciled.** A satellite whose owner anchor is itself a
-  satellite is stored as observed; flattening the chain needs the whole ledger and belongs to
+  **One hop, observed rather than reconciled.** An isotopologue whose owner anchor is itself a
+  isotopologue is stored as observed; flattening the chain needs the whole ledger and belongs to
   the reader that has it. Both computations run inside `_recompute_consensus`, i.e. inside the
   serialized per-batch fold (§5.3), on the fold's own session — nothing between the advisory
   lock and the commit may open a second one.

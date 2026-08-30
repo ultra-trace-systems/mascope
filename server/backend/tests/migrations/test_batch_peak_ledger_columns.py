@@ -4,23 +4,23 @@ Stairway and drift both walk the chain against a database created empty, so the
 two backfills in this revision run over zero rows there and a green migrations
 suite says nothing about either. The DDL is trivial - two nullable columns - and
 the whole point of the revision is what it puts IN them: a batch folded before
-it must fold its isotopologue satellites and sort by intensity without anyone
+it must fold its isotopologues and sort by intensity without anyone
 pressing "Compute batch peaks" first.
 
-The satellite backfill is the half worth seeding. It is the same vote the
+The isotopologue backfill is the half worth seeding. It is the same vote the
 consensus now casts at fold time, expressed once in SQL over the whole table: a
-batch peak is a satellite when a strict majority of its ASSIGNED members are
+batch peak is an isotopologue when a strict majority of its ASSIGNED members are
 `iso_child` rows whose owning assignment has an occurrence of its own in the
 SAME sample, and they all name one anchor. Every clause there is a way to get it
 wrong, so the seed below holds one batch peak per way:
 
-- `bp-sat`  - both members agree; the plain case.
-- `bp-flip` - a satellite in one sample, assigned in its own right in the other:
+- `bp-iso`  - both members agree; the plain case.
+- `bp-flip` - an isotopologue in one sample, assigned in its own right in the other:
               no majority, so the link must not be drawn.
 - `bp-lost` - an `iso_child` whose owner was dropped from the fold and so has no
               occurrence: no anchor to point at.
 - `bp-bare` - unassigned members, one of them with no assignment row left at
-              all: neither a satellite nor a NULL intensity read as zero.
+              all: neither an isotopologue nor a NULL intensity read as zero.
 
 Rows are seeded at the previous revision through raw SQL rather than the ORM: a
 migration test has to describe the schema as it was, not as the models are now.
@@ -63,7 +63,7 @@ _RUN_ID = "run-bpl"
 # leaves behind.
 _ASSIGNMENTS = [
     ("pa-m0-1", "si-bpl-1", "p1", 181.0707, 5000.0, "M0", "C6H12O6", None),
-    ("pa-sat-1", "si-bpl-1", "p2", 182.0741, 350.0, "iso_child", "C6H12O6", "pa-m0-1"),
+    ("pa-iso-1", "si-bpl-1", "p2", 182.0741, 350.0, "iso_child", "C6H12O6", "pa-m0-1"),
     ("pa-solo-1", "si-bpl-1", "p3", 299.1900, 2000.0, "M0", "C12H18O5", None),
     (
         "pa-flip-1",
@@ -89,7 +89,7 @@ _ASSIGNMENTS = [
         "pa-m0-1",
     ),
     ("pa-m0-2", "si-bpl-2", "p1", 181.0707, 6000.0, "M0", "C6H12O6", None),
-    ("pa-sat-2", "si-bpl-2", "p2", 182.0741, 500.0, "iso_child", "C6H12O6", "pa-m0-2"),
+    ("pa-iso-2", "si-bpl-2", "p2", 182.0741, 500.0, "iso_child", "C6H12O6", "pa-m0-2"),
     ("pa-flip-2", "si-bpl-2", "p4", 300.1930, 900.0, "M0", "C13H24O3", None),
     ("pa-blank-2", "si-bpl-2", "p8", 183.0000, 30.0, "M0", "", None),
 ]
@@ -97,7 +97,7 @@ _ASSIGNMENTS = [
 # (batch_peak_id, mz)
 _BATCH_PEAKS = [
     ("bp-m0", 181.0707),
-    ("bp-sat", 182.0741),
+    ("bp-iso", 182.0741),
     ("bp-solo", 299.1900),
     ("bp-flip", 300.1930),
     ("bp-bare", 250.1000),
@@ -110,7 +110,7 @@ _BATCH_PEAKS = [
 #
 # `occ-solo-2` carries no intensity and no formula: the member that must be
 # skipped by the max rather than counted as zero, and left out of the vote's
-# denominator rather than counted as evidence against a satellite.
+# denominator rather than counted as evidence against an isotopologue.
 # `occ-bare-2` carries no assignment at all - the state an occurrence is left in
 # when the run behind it is pruned (the FK is ON DELETE SET NULL) - and the
 # join must step over it rather than drop the batch peak.
@@ -120,8 +120,8 @@ _BATCH_PEAKS = [
 _OCCURRENCES = [
     ("occ-m0-1", "bp-m0", "si-bpl-1", "pa-m0-1", "p1", 5000.0, "C6H12O6"),
     ("occ-m0-2", "bp-m0", "si-bpl-2", "pa-m0-2", "p1", 6000.0, "C6H12O6"),
-    ("occ-sat-1", "bp-sat", "si-bpl-1", "pa-sat-1", "p2", 350.0, "C6H12O6"),
-    ("occ-sat-2", "bp-sat", "si-bpl-2", "pa-sat-2", "p2", 500.0, "C6H12O6"),
+    ("occ-iso-1", "bp-iso", "si-bpl-1", "pa-iso-1", "p2", 350.0, "C6H12O6"),
+    ("occ-iso-2", "bp-iso", "si-bpl-2", "pa-iso-2", "p2", 500.0, "C6H12O6"),
     ("occ-solo-1", "bp-solo", "si-bpl-1", "pa-solo-1", "p3", 2000.0, "C12H18O5"),
     ("occ-solo-2", "bp-solo", "si-bpl-2", None, "p3", None, None),
     ("occ-flip-1", "bp-flip", "si-bpl-1", "pa-flip-1", "p4", 150.0, "C12H18O5"),
@@ -309,14 +309,14 @@ def _snapshot(engine: Engine) -> dict:
 
     :param engine: Engine on the seeded test database.
     :type engine: Engine
-    :return: 'satellites' and 'intensities' keyed by batch_peak_id, with the
+    :return: 'isotopologues' and 'intensities' keyed by batch_peak_id, with the
              current 'version' alongside.
     :rtype: dict
     """
     with engine.connect() as conn:
         rows = conn.execute(
             text(
-                "SELECT batch_peak_id, satellite_of, max_intensity FROM batch_peak"
+                "SELECT batch_peak_id, isotopologue_of, max_intensity FROM batch_peak"
                 " ORDER BY batch_peak_id"
             )
         ).all()
@@ -324,7 +324,7 @@ def _snapshot(engine: Engine) -> dict:
 
     return {
         "version": version,
-        "satellites": {row.batch_peak_id: row.satellite_of for row in rows},
+        "isotopologues": {row.batch_peak_id: row.isotopologue_of for row in rows},
         "intensities": {row.batch_peak_id: row.max_intensity for row in rows},
     }
 
@@ -381,53 +381,55 @@ def test_upgrade_reaches_the_revision(migrated: dict) -> None:
     assert migrated["version"] == REVISION
 
 
-def test_a_satellite_every_member_agrees_on_is_linked(migrated: dict) -> None:
+def test_an_isotopologue_every_member_agrees_on_is_linked(migrated: dict) -> None:
     """Both members are iso_child rows owned by the same M0, whose own peak
     folded into `bp-m0`. That is the two-hop link the ledger folds rows by."""
-    assert migrated["satellites"]["bp-sat"] == "bp-m0"
+    assert migrated["isotopologues"]["bp-iso"] == "bp-m0"
 
 
-def test_an_m0_anchor_is_nobody_s_satellite(migrated: dict) -> None:
+def test_an_m0_anchor_is_nobody_s_isotopologue(migrated: dict) -> None:
     """The parent has to stay a top-level row, or there is nothing to fold under."""
-    assert migrated["satellites"]["bp-m0"] is None
-    assert migrated["satellites"]["bp-solo"] is None
+    assert migrated["isotopologues"]["bp-m0"] is None
+    assert migrated["isotopologues"]["bp-solo"] is None
 
 
 def test_no_majority_leaves_the_anchor_unlinked(migrated: dict) -> None:
-    """A satellite in one sample and a peak assigned in its own right in the
+    """An isotopologue in one sample and a peak assigned in its own right in the
     other. One of two assigned members is not a majority, and folding it away on
     a single sample's word would hide a species from the ledger."""
-    assert migrated["satellites"]["bp-flip"] is None
+    assert migrated["isotopologues"]["bp-flip"] is None
 
 
-def test_a_satellite_whose_owner_never_folded_is_left_unlinked(migrated: dict) -> None:
+def test_an_isotopologue_whose_owner_never_folded_is_left_unlinked(
+    migrated: dict,
+) -> None:
     """`pa-lost-1` names a real owning assignment that has no occurrence - the
     state a peak dropped from a contested anchor leaves. There is no anchor to
     point at, so the join finds nothing and the row stays top-level."""
-    assert migrated["satellites"]["bp-lost"] is None
+    assert migrated["isotopologues"]["bp-lost"] is None
 
 
 def test_an_unassigned_anchor_is_never_linked(migrated: dict) -> None:
     """Unassigned members carry no formula, so they are not in the denominator
     and cannot be in the numerator either."""
-    assert migrated["satellites"]["bp-bare"] is None
+    assert migrated["isotopologues"]["bp-bare"] is None
 
 
 def test_an_empty_formula_is_not_a_formula(migrated: dict) -> None:
-    """`bp-blank` has one satellite member and one member whose formula is the
+    """`bp-blank` has one isotopologue member and one member whose formula is the
     empty string. The empty string is not a formula - which is how the Python
     side reads it, testing the value for truthiness - so the denominator is one
     and the single vote carries it. Counting the blank as assigned makes this
     one vote of two, no majority, and no link: a row the backfill would leave
     unfolded that the very next fold of the batch would fold."""
-    assert migrated["satellites"]["bp-blank"] == "bp-m0"
+    assert migrated["isotopologues"]["bp-blank"] == "bp-m0"
 
 
 def test_intensity_is_the_brightest_member(migrated: dict) -> None:
     """Across samples, and over every member rather than the assigned ones: an
     unassigned trace has an intensity worth sorting the ledger by."""
     assert migrated["intensities"]["bp-m0"] == pytest.approx(6000.0)
-    assert migrated["intensities"]["bp-sat"] == pytest.approx(500.0)
+    assert migrated["intensities"]["bp-iso"] == pytest.approx(500.0)
     assert migrated["intensities"]["bp-flip"] == pytest.approx(900.0)
     assert migrated["intensities"]["bp-bare"] == pytest.approx(300.0)
 
@@ -447,7 +449,7 @@ def test_a_member_with_no_intensity_is_skipped_not_read_as_zero(
 def test_downgrade_drops_both_columns(downgraded: set[str]) -> None:
     """The columns are derived from the occurrences, so dropping them loses
     nothing a re-fold cannot produce again."""
-    assert "satellite_of" not in downgraded
+    assert "isotopologue_of" not in downgraded
     assert "max_intensity" not in downgraded
     # The rest of the row is untouched - this revision adds, it does not rewrite.
     assert {"batch_peak_id", "consensus_tier", "n_present"} <= downgraded

@@ -64,14 +64,14 @@ const verification = computed(() =>
 )
 
 // What a verdict captured here is about: the compound, which is the family's M0
-// even when the focused peak is one of its satellites. Judging an M+1 apart from
+// even when the focused peak is one of its isotopologues. Judging an M+1 apart from
 // its M0 is not a thing a chemist does - it is the same compound - so the form
 // reads and writes through the M0 whichever family member is in view.
 const verifyTarget = computed(() => app.data.peakAssignment.peak.m0Of(focusedAssignment.value))
 
 // Whether the card is judging a row other than the one it is showing - the one
 // case worth saying out loud (see the template). Keyed on whether the resolution
-// actually redirected, not on the role: a satellite whose ion lost its M0 peak
+// actually redirected, not on the role: an isotopologue whose ion lost its M0 peak
 // carries no owner, stands for itself, and gets a verdict covering nothing but
 // itself. Announcing a family there would promise a scope the write does not
 // have.
@@ -129,7 +129,7 @@ async function submitVerdict(verdict) {
 }
 
 // Fresh form per compound, not per peak: the form judges the family's M0, so
-// stepping from a satellite to its own M0 (or between two satellites) is still
+// stepping from an isotopologue to its own M0 (or between two isotopologues) is still
 // the same judgment and must not throw away a half-written note. Keyed on the
 // peak, an in-progress verdict was wiped by a click inside the family table the
 // card itself renders. Editor access is re-evaluated per sample.
@@ -199,9 +199,9 @@ const m0 = computed(
 // boost is already folded into p_correct, so the badge is purely informational.
 //
 // The engine writes `provenance.corroboration` onto the M0 winner alone: a
-// satellite is the same ion measured at another isotope, not a second sighting
+// isotopologue is the same ion measured at another isotope, not a second sighting
 // of the compound. The evidence is about the formula the family shares, so a
-// focused satellite shows its M0's count, flagged inherited. Only the count
+// focused isotopologue shows its M0's count, flagged inherited. Only the count
 // carries across - the corroborating adducts are named in the M0's provenance,
 // and detail is fetched for the focused assignment alone.
 const corroboration = computed(() => {
@@ -218,7 +218,7 @@ const corroboration = computed(() => {
 })
 
 // The badge says "via M0" on its face, not only on hover: the count is the same
-// number the M0 shows, and a satellite that displayed it unqualified would read
+// number the M0 shows, and an isotopologue that displayed it unqualified would read
 // as a peak seen through several adducts in its own right.
 const corroborationLabel = computed(() => {
   const c = corroboration.value
@@ -227,7 +227,7 @@ const corroborationLabel = computed(() => {
 })
 
 // The boost is folded into the record that carries the corroboration - the M0's
-// p_correct - and never into a satellite's, which stays calibrated on its own
+// p_correct - and never into a child's, which stays calibrated on its own
 // evidence (engine.py::_fold_adduct_corroboration rewrites M0 winners only). So
 // an inherited badge must not claim the number beside it already accounts for
 // this, which is the one thing the M0's wording does say.
@@ -238,7 +238,7 @@ const corroborationTooltip = computed(() => {
     return (
       `The M0 of this isotopologue family was seen via ${c.n_adducts} adducts. ` +
       "Independent corroborating evidence for the formula, folded into the M0's " +
-      "P(correct) - not into this satellite's, which is calibrated on its own."
+      "P(correct) - not into this isotopologue's, which is calibrated on its own."
     )
   }
   const adducts = (c.adducts ?? []).join(', ')
@@ -444,7 +444,7 @@ const altTooltip = (alt) => {
               <h1>Isotopologues</h1>
               <p>
               The isotope pattern behind this assignment: the main isotopologue (M0)
-              and its satellites (M+1, M+2 ...), each with its m/z error and its
+              and its isotopologues (M+1, M+2 ...), each with its m/z error and its
               estimated relative abundance (<b>abu.</b>, as a fraction of M0).
               </p>
               <p>
@@ -782,7 +782,7 @@ const altTooltip = (alt) => {
   font-size: 0.78rem;
   opacity: 0.7;
 }
-/* Says which row a verdict captured from a satellite is really about. Quiet:
+/* Says which row a verdict captured from an isotopologue is really about. Quiet:
    it explains the control rather than competing with it. */
 .verify-family {
   display: flex;

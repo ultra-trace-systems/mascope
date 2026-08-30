@@ -32,7 +32,7 @@ ISOTOPE_CANDIDATE_LIMIT = 64
 # A labelled reagent atom is not 100% pure; e.g. 15N-nitrate is ~98% 15N / 2% 14N.
 # We model it as a custom element '^X' whose isotope abundances are the labelled
 # distribution, so predict_isotopes yields the heavy base AND the small light
-# satellite. `purity` is the heaviest-isotope fraction (e.g. 0.98 for 15N).
+# isotopologue. `purity` is the heaviest-isotope fraction (e.g. 0.98 for 15N).
 # The element definitions come from the shared registry (custom_elements.py) --
 # the single source of truth also used by the Mascope backend, so no molmass
 # dependency and no duplicated isotope data.

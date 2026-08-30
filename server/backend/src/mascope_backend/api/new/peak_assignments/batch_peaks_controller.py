@@ -323,7 +323,7 @@ async def fold_sample_into_batch_peaks(sample_item_id: str) -> str | None:
 async def _owner_anchor_by_assignment(session, owner_ids: set[str]) -> dict[str, str]:
     """Map each owning assignment to the batch peak its own peak folded into.
 
-    The family link a satellite needs is per-sample: an ``iso_child`` assignment
+    The family link an isotopologue needs is per-sample: an ``iso_child`` assignment
     names the assignment that owns it, and what the batch level wants is the
     ANCHOR that owning peak landed on. ``BatchPeakOccurrence`` already records
     the assignment each member was folded from, so the hop is one indexed lookup
@@ -331,7 +331,7 @@ async def _owner_anchor_by_assignment(session, owner_ids: set[str]) -> dict[str,
 
     An owner with no occurrence resolves to nothing, which is the honest answer:
     a peak dropped from the fold (two peaks inside one anchor's tolerance in one
-    sample, nearest wins) has no anchor to point at, and the satellite abstains
+    sample, nearest wins) has no anchor to point at, and the isotopologue abstains
     from the vote rather than naming a peak that is not in the ledger.
 
     One lookup per owner, not one per (owner, sample), because an assignment
@@ -393,7 +393,7 @@ async def _recompute_consensus(
         )
     ).all()
 
-    # Second hop of the satellite link, resolved once for every member of this
+    # Second hop of the isotopologue link, resolved once for every member of this
     # recompute rather than once per batch peak.
     anchor_of_owner = await _owner_anchor_by_assignment(
         session,
@@ -439,7 +439,7 @@ async def _recompute_consensus(
         bp.n_present = c.n_present
         bp.is_ambiguous = int(c.is_ambiguous)
         bp.max_intensity = c.max_intensity
-        bp.satellite_of = c.satellite_of
+        bp.isotopologue_of = c.isotopologue_of
         bp.alternatives = c.alternatives
         bp.provenance = c.provenance
         bp.batch_peak_utc_modified = now

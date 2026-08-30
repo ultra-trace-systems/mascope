@@ -23,16 +23,16 @@ CANDIDATES = [{"formula": "C6H12O6", "ion": ION, "composition_error_ppm": 0.5}]
 BASE_INTENSITY = 1.0e6
 
 
-def _run(factor: float = 1.0, satellite_shift_ppm: float = 0.0):
-    """Match one glucose candidate against a spectrum whose first isotope satellite
-    is `factor` times its predicted relative intensity and sits `satellite_shift_ppm`
+def _run(factor: float = 1.0, isotopologue_shift_ppm: float = 0.0):
+    """Match one glucose candidate against a spectrum whose first isotope isotopologue
+    is `factor` times its predicted relative intensity and sits `isotopologue_shift_ppm`
     off its predicted m/z."""
     predicted_mzs, predicted_intensities, _ = predict_isotopes(ION[:-1], 1)
     predicted_rel = predicted_intensities / predicted_intensities[0]
-    satellite_mz = predicted_mzs[1] * (1 + satellite_shift_ppm * 1e-6)
+    isotopologue_mz = predicted_mzs[1] * (1 + isotopologue_shift_ppm * 1e-6)
     peaks = pl.DataFrame(
         {
-            "mz": [predicted_mzs[0], satellite_mz],
+            "mz": [predicted_mzs[0], isotopologue_mz],
             "intensity": [BASE_INTENSITY, factor * predicted_rel[1] * BASE_INTENSITY],
         }
     ).sort("mz")
@@ -41,9 +41,9 @@ def _run(factor: float = 1.0, satellite_shift_ppm: float = 0.0):
 
 
 def test_intensity_error_is_signed_observed_over_predicted_minus_one():
-    # Satellite at 70% of prediction: error must come out negative, not |.|.
+    # Isotopologue at 70% of prediction: error must come out negative, not |.|.
     data, _, _ = _run(factor=0.7)
-    assert data["masses"][1] > 0, "satellite should be matched"
+    assert data["masses"][1] > 0, "isotopologue should be matched"
     assert data["intensity_errors"][1] == pytest.approx(-0.3)
 
     data, _, _ = _run(factor=1.3)
@@ -62,7 +62,7 @@ def test_predicted_abundance_is_recoverable_from_the_signed_error():
 
 
 def test_tolerance_gate_still_works_on_the_magnitude():
-    # 50% low is a -0.5 error: outside the 0.4 tolerance, so the satellite
+    # 50% low is a -0.5 error: outside the 0.4 tolerance, so the isotopologue
     # must be rejected exactly as its +0.5 mirror image would be.
     data, _, _ = _run(factor=0.5)
     assert data["masses"][1] == 0.0
@@ -70,23 +70,23 @@ def test_tolerance_gate_still_works_on_the_magnitude():
 
 
 def test_mass_error_is_signed_observed_minus_predicted():
-    # A satellite 2 ppm BELOW its prediction must report -2 ppm. An unsigned m/z
+    # An isotopologue 2 ppm BELOW its prediction must report -2 ppm. An unsigned m/z
     # error is the same defect the abundance error had: the spectrum chart places
     # the theoretical marker at observed / (1 + ppm/1e6), which mirrors it onto
     # the wrong side of the measured peak, and the inspector shows every
     # untargeted assignment as if its peak were heavy.
-    data, _, _ = _run(satellite_shift_ppm=-2.0)
-    assert data["masses"][1] > 0, "satellite should be matched"
+    data, _, _ = _run(isotopologue_shift_ppm=-2.0)
+    assert data["masses"][1] > 0, "isotopologue should be matched"
     assert data["mass_errors_ppm"][1] == pytest.approx(-2.0, abs=1e-4)
 
-    data, _, _ = _run(satellite_shift_ppm=2.0)
+    data, _, _ = _run(isotopologue_shift_ppm=2.0)
     assert data["mass_errors_ppm"][1] == pytest.approx(2.0, abs=1e-4)
 
 
 def test_predicted_mz_is_recoverable_from_the_signed_mass_error():
     # The chart recovers theoretical_mz = observed_mz / (1 + mz_error_ppm/1e6).
     for shift_ppm in (-2.0, 2.0):
-        data, predicted_mzs, _ = _run(satellite_shift_ppm=shift_ppm)
+        data, predicted_mzs, _ = _run(isotopologue_shift_ppm=shift_ppm)
         recovered = data["masses"][1] / (1 + data["mass_errors_ppm"][1] / 1e6)
         assert recovered == pytest.approx(predicted_mzs[1], rel=1e-12)
 

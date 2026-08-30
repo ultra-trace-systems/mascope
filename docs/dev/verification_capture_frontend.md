@@ -68,7 +68,7 @@ Strongest → weakest:
 ### 2a. Capture control — inspector
 [`PanePeakAssign.vue`](../../server/frontend/src/lib/panes/PanePeakAssign/PanePeakAssign.vue), on the
 committed-assignment card (only for a real assignment — hide for `unassigned` / empty peaks). With an
-isotopologue satellite focused the control judges the family's M0 instead, and says so (§4).
+isotopologue focused the control judges the family's M0 instead, and says so (§4).
 
 - Three buttons: **Confirm · Reject · Unsure**. Confirm and Reject get **equal visual weight**
   (Reject is a first-class negative label, not a destructive-styled afterthought).
@@ -151,7 +151,7 @@ not across adducts — an M+1 peak is not a second finding to judge, it is the s
 through one heavy atom, and a chemist does not confirm the carbon-12 form while leaving the
 carbon-13 form open.
 
-The engine copies the M0's `assigned_formula` and `ionization_mechanism_id` onto each satellite, so
+The engine copies the M0's `assigned_formula` and `ionization_mechanism_id` onto each isotopologue, so
 **`sample_peak_id` is the only one of the three identity fields that differs across a family** — two
 thirds already match, and the lookup still misses. That single divergence is what used to give a
 focused M+1 an empty verify form beside a confirmed M0, and blank verdict cells on unfolded child
@@ -172,11 +172,11 @@ Consequences worth knowing:
   always holds an *M0's* peak id. A formula-scoped key would have needed nullable identity halves and
   would have collided with the per-peak score snapshot and the `(sample_item_id, sample_peak_id)`
   index; this needs none of that.
-- **Resolution is strict, not a preference order.** A satellite reads its M0's verdict even when an
-  older build left a record against the satellite itself. Those historical records stay in the
-  append-only history for audit and are simply not surfaced — preferring a satellite's own record is
+- **Resolution is strict, not a preference order.** An isotopologue reads its M0's verdict even when an
+  older build left a record against the isotopologue itself. Those historical records stay in the
+  append-only history for audit and are simply not surfaced — preferring an isotopologue's own record is
   how a family would come to disagree with itself row by row.
-- **A satellite with no owner resolves to itself**, and that is an ordinary case rather than a
+- **An isotopologue with no owner resolves to itself**, and that is an ordinary case rather than a
   corrupt one: the engine leaves `owner_peak_assignment_id` null when the ion's M0 peak was won by a
   different ion in that run
   ([`engine.py`](../../server/backend/src/mascope_backend/api/new/peak_assignments/engine.py), see
@@ -188,7 +188,7 @@ Consequences worth knowing:
 - **The recalibration flow is untouched.** Labels still snapshot the M0's scores, so
   `recalibrate_instrument` gets one label per family per judgment instead of N correlated ones.
 - **The ledger filter was already family-scoped** and stays that way: it runs over parents only
-  (satellites are re-attached under whichever parent survived), so a family has always been one unit
+  (isotopologues are re-attached under whichever parent survived), so a family has always been one unit
   there. What changed is that the badge column now agrees with it.
 
 ---
@@ -229,7 +229,7 @@ Guests (no editor role) see the **badge only**, no capture control.
 - [x] Reject and Unsure work without an evidence level.
 - [x] The badge shows the **current** verdict derived by stable identity (survives a re-assign run).
 - [x] One verdict covers the isotopologue family: every member shows it, and verifying from a
-      satellite writes a single label against the M0 (§4).
+      isotopologue writes a single label against the M0 (§4).
 - [x] Ledger filter narrows to verified / rejected / unverified.
 - [x] Guests see the badge but no capture control (a 403 hides the control behind an "editor access
       required" note, consistent with the app's existing backend-enforced editor actions).

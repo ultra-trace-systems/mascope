@@ -19,7 +19,7 @@ This module holds the PURE logic (no DB, no I/O) behind the batch overview:
   The same pass rolls up the two ledger aggregates that are properties of the
   members rather than of the formula: the brightest member
   (:func:`max_intensity`) and the isotopologue family link
-  (:func:`resolve_satellite_of`), which an anchor has no way to carry itself.
+  (:func:`resolve_isotopologue_of`), which an anchor has no way to carry itself.
 
 The DB controller (fold-in on arrival, backfill, consensus persistence) calls into
 these functions. Design: ``docs/dev/peak_assignment_batch.md``.
@@ -58,7 +58,7 @@ CONSENSUS_TIE_TOL = 0.10
 #: (likely a co-eluting blend or a mass-degenerate pair).
 AMBIGUOUS_SUPPORT = 0.5
 
-#: The per-sample role a member carries when it is an isotopologue satellite of
+#: The per-sample role a member carries when it is an isotopologue of
 #: another peak in the same sample. Spelled again here rather than imported from
 #: the assignment engine: this module is pure, and the engine pulls in pandas,
 #: numpy and the database id helper. A unit test holds the two spellings in step.
@@ -211,8 +211,8 @@ class Consensus:
     is_ambiguous: bool = False
     #: Brightest member, in the batch peak's own intensity unit.
     max_intensity: Optional[float] = None
-    #: The batch peak this one is an isotopologue satellite of, or None.
-    satellite_of: Optional[str] = None
+    #: The batch peak this one is an isotopologue of, or None.
+    isotopologue_of: Optional[str] = None
     alternatives: list[dict] = field(default_factory=list)
     provenance: dict = field(default_factory=dict)
 
@@ -247,10 +247,10 @@ def max_intensity(members: Iterable[Any]) -> Optional[float]:
     return max(values) if values else None
 
 
-def resolve_satellite_of(
+def resolve_isotopologue_of(
     members: Iterable[Any], batch_peak_id: Optional[str] = None
 ) -> Optional[str]:
-    """The batch peak this one is an isotopologue satellite of, or ``None``.
+    """The batch peak this one is an isotopologue of, or ``None``.
 
     Batch peaks are bare m/z anchors and carry no family link of their own, so
     the link is derived from the members' per-sample assignments: a member whose
@@ -258,16 +258,16 @@ def resolve_satellite_of(
     owning assignment folded into in the same sample is the owner anchor. The
     caller resolves that hop and hands each member an ``owner_batch_peak_id``.
 
-    The members span samples and need not agree - one sample's satellite is
-    another's M0, and an ownerless satellite names no anchor at all - so this is
+    The members span samples and need not agree - one sample's isotopologue is
+    another's M0, and an ownerless isotopologue names no anchor at all - so this is
     a vote. It is counted over the **assigned** members, the same population
     :func:`compute_consensus` measures agreement over, and prevalence is again
-    kept out of it: a satellite detected in six of ten samples and assigned in
-    none of the other four is still a satellite. A strict majority is required,
+    kept out of it: an isotopologue detected in six of ten samples and assigned in
+    none of the other four is still an isotopologue. A strict majority is required,
     which is also what makes the winner unique - two owners cannot each hold
     more than half of one set of votes - so no tie-break is needed.
 
-    One hop only. A satellite whose owner anchor is itself a satellite is left
+    One hop only. An isotopologue whose owner anchor is itself an isotopologue is left
     as it was observed; flattening the chain needs the whole ledger and belongs
     to the reader that has it.
 
@@ -314,7 +314,7 @@ def compute_consensus(
 
     :param members: The batch peak's occurrences.
     :param batch_peak_id: This batch peak's own id, used only to keep the
-        satellite link from pointing at itself.
+        isotopologue link from pointing at itself.
     """
     members = list(members)
     n_present = len(members)
@@ -398,7 +398,7 @@ def compute_consensus(
         n_present=n_present,
         is_ambiguous=bool(is_ambiguous),
         max_intensity=brightest,
-        satellite_of=resolve_satellite_of(members, batch_peak_id),
+        isotopologue_of=resolve_isotopologue_of(members, batch_peak_id),
         alternatives=alternatives,
         provenance=provenance,
     )

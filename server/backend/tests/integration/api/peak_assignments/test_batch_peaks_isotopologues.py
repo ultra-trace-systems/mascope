@@ -4,13 +4,13 @@ A batch peak is a bare m/z anchor: it carries no isotopologue family link of its
 own, and the ledger reads batch peaks alone rather than joining the occurrences
 they are folded from. So both of the ledger's member-derived columns are rolled
 up at fold time and stored on the row -- the brightest member (``max_intensity``)
-and the family link (``satellite_of``), whose two hops (an ``iso_child``
+and the family link (``isotopologue_of``), whose two hops (an ``iso_child``
 member's owning assignment, then the anchor that owning peak folded into in the
 same sample) can only be walked where the occurrences are.
 
 Seeds a three-sample batch holding, deliberately, all four cases the vote has to
-tell apart: a satellite every sample agrees on, an anchor seen as a satellite in
-one sample and assigned in its own right in the other two, a satellite whose
+tell apart: an isotopologue every sample agrees on, an anchor seen as an isotopologue in
+one sample and assigned in its own right in the other two, an isotopologue whose
 owner is unknown, and an unassigned peak that is neither. See
 docs/dev/peak_assignment_batch.md.
 """
@@ -45,17 +45,17 @@ pytestmark = pytest.mark.asyncio
 
 # (key, mz, neutral formula, ion formula, role, tier, fit, intensity, owner key)
 #
-# `m0` / `sat` are the plain family: an M0 and its M+1 satellite, present and
+# `m0` / `sat` are the plain family: an M0 and its M+1 isotopologue, present and
 # assigned in every sample. `flip` is the anchor that must NOT fold -- a
-# satellite of `solo` in sample A, a peak assigned in its own right in B and C.
+# isotopologue of `solo` in sample A, a peak assigned in its own right in B and C.
 # `orphan` is an iso_child whose owner was never won in its run, which the
 # engine leaves with a null owner. `bare` is an unassigned peak: still a trace,
-# still has an intensity, never anyone's satellite.
+# still has an intensity, never anyone's isotopologue.
 _SPECS = {
     "A": [
         ("m0", 181.0707, "C6H12O6", "C6H13O6+", "M0", "assigned", 0.95, 5000.0, None),
         (
-            "sat",
+            "iso",
             182.0741,
             "C6H12O6",
             "C6H13O6+",
@@ -92,7 +92,7 @@ _SPECS = {
     "B": [
         ("m0", 181.0707, "C6H12O6", "C6H13O6+", "M0", "assigned", 0.90, 4500.0, None),
         (
-            "sat",
+            "iso",
             182.0741,
             "C6H12O6",
             "C6H13O6+",
@@ -117,7 +117,7 @@ _SPECS = {
     "C": [
         ("m0", 181.0707, "C6H12O6", "C6H13O6+", "M0", "assigned", 0.92, 6000.0, None),
         (
-            "sat",
+            "iso",
             182.0741,
             "C6H12O6",
             "C6H13O6+",
@@ -163,13 +163,13 @@ async def _seed(session, now):
 
     The owner reference is written the way the engine writes it -- the owning
     row's ``peak_assignment_id`` -- which means the M0 of a sample has to be
-    inserted before the satellite that names it.
+    inserted before the isotopologue that names it.
     """
     ws, ds, batch = gen_id(), gen_id(), gen_id()
     session.add(
         Workspace(
             workspace_id=ws,
-            workspace_name=f"Batch Peak Satellites WS {ws}",
+            workspace_name=f"Batch Peak Isotopologues WS {ws}",
             workspace_status="active",
             workspace_utc_created=now,
             workspace_utc_modified=now,
@@ -179,7 +179,7 @@ async def _seed(session, now):
         Dataset(
             dataset_id=ds,
             workspace_id=ws,
-            dataset_name="BP Satellites DS",
+            dataset_name="BP Isotopologues DS",
             dataset_utc_created=now,
         )
     )
@@ -187,7 +187,7 @@ async def _seed(session, now):
         SampleBatch(
             sample_batch_id=batch,
             dataset_id=ds,
-            sample_batch_name="BP Satellites Batch",
+            sample_batch_name="BP Isotopologues Batch",
             sample_batch_utc_created=now,
         )
     )
@@ -211,7 +211,7 @@ async def _seed(session, now):
                 sample_item_id=si,
                 sample_batch_id=batch,
                 sample_file_id=sf,
-                sample_item_name=f"BP Satellites Sample {name}",
+                sample_item_name=f"BP Isotopologues Sample {name}",
                 sample_item_type="sample",
                 polarity="+",
                 sample_item_utc_created=now,
@@ -287,18 +287,20 @@ async def _fold_all(samples):
 # --- the family link ---------------------------------------------------------
 
 
-async def test_satellite_anchor_points_at_its_m0_anchor(async_session_factory, seeded):
+async def test_isotopologue_anchor_points_at_its_m0_anchor(
+    async_session_factory, seeded
+):
     batch, samples = seeded
     await _fold_all(samples)
     peaks = await _by_mz(async_session_factory, batch)
 
     # The two hops resolved: the M+1 anchor names the anchor its members' owning
     # assignments folded into, which is the M0 anchor of the same family.
-    assert peaks[182].satellite_of == peaks[181].batch_peak_id
-    # And the M0 itself is nobody's satellite, which is what makes it the row
+    assert peaks[182].isotopologue_of == peaks[181].batch_peak_id
+    # And the M0 itself is nobody's isotopologue, which is what makes it the row
     # the ledger folds the other under.
-    assert peaks[181].satellite_of is None
-    # The satellite carries the family's formula -- it is the same species
+    assert peaks[181].isotopologue_of is None
+    # The isotopologue carries the family's formula -- it is the same species
     # measured at another isotope - which is exactly why an unfolded ledger
     # reads as two rows for one compound.
     assert peaks[182].consensus_formula == peaks[181].consensus_formula
@@ -311,29 +313,29 @@ async def test_an_anchor_assigned_in_its_own_right_is_not_folded_away(
     await _fold_all(samples)
     peaks = await _by_mz(async_session_factory, batch)
 
-    # Seen as a satellite in one sample of three and assigned in its own right in
+    # Seen as an isotopologue in one sample of three and assigned in its own right in
     # the other two: no majority, so it stays a peak of its own. Folding it under
     # the anchor a single sample named would hide a species from the ledger.
-    assert peaks[300].satellite_of is None
+    assert peaks[300].isotopologue_of is None
 
 
 async def test_a_later_sample_can_take_the_link_back(async_session_factory, seeded):
     batch, samples = seeded
 
-    # On sample A alone the only evidence is that this is a satellite, and the
+    # On sample A alone the only evidence is that this is an isotopologue, and the
     # consensus says so.
     await fold_sample_into_batch_peaks(samples["A"])
     peaks = await _by_mz(async_session_factory, batch)
-    assert peaks[300].satellite_of == peaks[299].batch_peak_id
+    assert peaks[300].isotopologue_of == peaks[299].batch_peak_id
 
     # Sample B assigns the same anchor in its own right, which is now half the
     # evidence rather than none: no majority, so the link goes.
     await fold_sample_into_batch_peaks(samples["B"])
     peaks = await _by_mz(async_session_factory, batch)
-    assert peaks[300].satellite_of is None
+    assert peaks[300].isotopologue_of is None
 
 
-async def test_a_satellite_whose_owner_is_unknown_stays_a_top_level_anchor(
+async def test_an_isotopologue_whose_owner_is_unknown_stays_a_top_level_anchor(
     async_session_factory, seeded
 ):
     batch, samples = seeded
@@ -343,10 +345,10 @@ async def test_a_satellite_whose_owner_is_unknown_stays_a_top_level_anchor(
     # The engine leaves owner_peak_assignment_id NULL when the family's M0 was
     # not won by the same ion in that run. There is no anchor to point at, and
     # inventing one would put the row under a compound it was never linked to.
-    assert peaks[400].satellite_of is None
+    assert peaks[400].isotopologue_of is None
 
 
-async def test_an_unassigned_anchor_is_nobody_s_satellite(
+async def test_an_unassigned_anchor_is_nobody_s_isotopologue(
     async_session_factory, seeded
 ):
     batch, samples = seeded
@@ -354,7 +356,7 @@ async def test_an_unassigned_anchor_is_nobody_s_satellite(
     peaks = await _by_mz(async_session_factory, batch)
 
     assert peaks[250].consensus_formula is None
-    assert peaks[250].satellite_of is None
+    assert peaks[250].isotopologue_of is None
 
 
 async def test_refolding_a_sample_leaves_the_link_where_it_was(
@@ -367,8 +369,8 @@ async def test_refolding_a_sample_leaves_the_link_where_it_was(
     await fold_sample_into_batch_peaks(samples["A"])
     after = await _by_mz(async_session_factory, batch)
 
-    assert after[182].satellite_of == before[181].batch_peak_id
-    assert after[300].satellite_of is None
+    assert after[182].isotopologue_of == before[181].batch_peak_id
+    assert after[300].isotopologue_of is None
 
 
 # --- the brightest member ----------------------------------------------------
@@ -414,12 +416,12 @@ async def test_the_ledger_serves_both_aggregates(async_session_factory, seeded):
     rows = {row["batch_peak_id"]: row for row in res["data"]}
     assert len(rows) == len(peaks)
 
-    satellite = rows[peaks[182].batch_peak_id]
-    assert satellite["satellite_of"] == peaks[181].batch_peak_id
-    assert satellite["max_intensity"] == pytest.approx(500.0)
+    isotopologue = rows[peaks[182].batch_peak_id]
+    assert isotopologue["isotopologue_of"] == peaks[181].batch_peak_id
+    assert isotopologue["max_intensity"] == pytest.approx(500.0)
     # The unit the intensity is in travels with it: heights here, areas on a TOF.
-    assert satellite["intensity_variable"] == "sum_peak_heights"
-    assert rows[peaks[181].batch_peak_id]["satellite_of"] is None
+    assert isotopologue["intensity_variable"] == "sum_peak_heights"
+    assert rows[peaks[181].batch_peak_id]["isotopologue_of"] is None
 
 
 async def test_the_series_records_carry_the_same_aggregates(
@@ -436,5 +438,5 @@ async def test_the_series_records_carry_the_same_aggregates(
         sample_batch_id=batch, batch_peak_ids=[peaks[182].batch_peak_id]
     )
     record = res["data"][0]
-    assert record["satellite_of"] == peaks[181].batch_peak_id
+    assert record["isotopologue_of"] == peaks[181].batch_peak_id
     assert record["max_intensity"] == pytest.approx(500.0)

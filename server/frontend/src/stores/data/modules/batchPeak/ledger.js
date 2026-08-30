@@ -57,7 +57,7 @@ export const useBatchPeakLedger = defineStore('app.data.batchPeak', () => {
 
   // No tier histogram here. The strip it feeds counts SPECIES rather than
   // anchors, and which anchors are species is decided by resolving the
-  // `satellite_of` links against the whole loaded list - chains onto their root,
+  // `isotopologue_of` links against the whole loaded list - chains onto their root,
   // a link out of the list back to top level. That resolution lives in the pane
   // (PaneBrowserBatchPeaks.vue), which is also what renders the rows the chips
   // filter, so the count and the rows it promises come from one rule.

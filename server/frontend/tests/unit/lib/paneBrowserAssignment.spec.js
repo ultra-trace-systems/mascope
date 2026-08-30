@@ -168,7 +168,7 @@ async function mountPane() {
   return wrapper
 }
 
-/** An M0 assignment with its isotopologue satellites, as the ledger sees them. */
+/** An M0 assignment with its isotopologues, as the ledger sees them. */
 function family({
   id,
   mz,
@@ -195,7 +195,7 @@ function family({
     owner_peak_assignment_id: id,
     role: 'iso_child',
     tier,
-    // The engine copies the M0's formula and mechanism onto every satellite, so
+    // The engine copies the M0's formula and mechanism onto every isotopologue, so
     // `sample_peak_id` is the only identity field that differs across a family.
     // Leaving them off here would let the ledger's formula guard stand in for
     // the family resolution and hide whether the resolution happens at all.
@@ -215,7 +215,7 @@ function seed(...families) {
   byId = new Map(assignmentList.map((row) => [row.peak_assignment_id, row]))
 }
 
-// Two families whose satellites are nowhere near their parent on any axis: A's
+// Two families whose isotopologues are nowhere near their parent on any axis: A's
 // parent is the most intense peak in the sample while its children are the two
 // weakest, and B's brightest child outshines both parents. A flat sort by
 // intensity therefore interleaves them completely, which is exactly the bug.
@@ -247,7 +247,7 @@ const FAMILY_B = family({
 const ids = (wrapper) => wrapper.vm.rows.map((row) => row.peak_assignment_id)
 
 /** Null when every family is one contiguous block led by its parent, with the
- *  satellites in m/z order; otherwise the reason it is not. */
+ *  isotopologues in m/z order; otherwise the reason it is not. */
 function familyBreak(rows) {
   const seen = new Set()
   let owner = null
@@ -258,7 +258,7 @@ function familyBreak(rows) {
         return `${row.peak_assignment_id} is under ${owner ?? 'nothing'}, not its parent`
       }
       if (row.sample_peak_mz < previousChildMz) {
-        return `satellites of ${owner} are not in m/z order`
+        return `isotopologues of ${owner} are not in m/z order`
       }
       previousChildMz = row.sample_peak_mz
     } else {
@@ -486,7 +486,7 @@ describe('PaneBrowserAssignment ledger sizing', () => {
 })
 
 // Sorting is the pane's job, not DataTable's: PrimeVue sorts the flat array it
-// is handed and would scatter every isotopologue satellite away from the parent
+// is handed and would scatter every isotopologue away from the parent
 // whose formula names it. These assert on `rows`, which with `lazy` set is
 // exactly the order the table renders.
 describe('PaneBrowserAssignment isotopologue grouping', () => {
@@ -512,7 +512,7 @@ describe('PaneBrowserAssignment isotopologue grouping', () => {
     return wrapper
   }
 
-  it('keeps each satellite under its own parent when sorting by intensity', async () => {
+  it('keeps each isotopologue under its own parent when sorting by intensity', async () => {
     const wrapper = await unfolded()
 
     wrapper.vm.sortField = 'sample_peak_intensity'
@@ -559,7 +559,7 @@ describe('PaneBrowserAssignment isotopologue grouping', () => {
   })
 
   // Without this the grouping above is computed and then thrown away: PrimeVue
-  // re-sorts the flat array it is given, which is what scattered the satellites
+  // re-sorts the flat array it is given, which is what scattered the isotopologues
   // in the first place. `lazy` is the only thing that stops it, so it is worth
   // an assertion of its own - every ordering test above would pass without it.
   it('hands the table its rows to render, not to re-sort', async () => {
@@ -625,10 +625,10 @@ describe('PaneBrowserAssignment isotopologue grouping', () => {
   })
 })
 
-// The engine writes adduct corroboration onto the M0 winner alone: a satellite
+// The engine writes adduct corroboration onto the M0 winner alone: an isotopologue
 // is the same ion measured at another isotope, not a second sighting of the
 // compound, so the backend leaves its count null by construction. The marker
-// still belongs on the satellite rows - the evidence is about the formula the
+// still belongs on the isotopologue rows - the evidence is about the formula the
 // whole family shares - it just has to say the count is the family's.
 describe('PaneBrowserAssignment adduct corroboration', () => {
   beforeEach(() => {
@@ -637,7 +637,7 @@ describe('PaneBrowserAssignment adduct corroboration', () => {
   afterEach(() => vi.clearAllMocks())
 
   /** A family whose M0 was corroborated by `n` adducts (null for none). Its
-   *  satellites carry whatever the backend put on them, which is nothing. */
+   *  isotopologues carry whatever the backend put on them, which is nothing. */
   function corroborated(n, children = [{}, {}]) {
     const fam = family({
       id: 'a',
@@ -665,11 +665,11 @@ describe('PaneBrowserAssignment adduct corroboration', () => {
 
   const rowsById = (wrapper) => new Map(wrapper.vm.rows.map((row) => [row.peak_assignment_id, row]))
 
-  it('carries the family count onto satellite rows, marked inherited', async () => {
+  it('carries the family count onto isotopologue rows, marked inherited', async () => {
     const wrapper = await unfolded(corroborated(3))
     const rows = rowsById(wrapper)
 
-    // Every satellite shows the count, and says it is not its own.
+    // Every isotopologue shows the count, and says it is not its own.
     for (const id of ['a-c0', 'a-c1']) {
       expect(rows.get(id).corrobAdducts, id).toBe(3)
       expect(rows.get(id).corrobInherited, id).toBe(true)
@@ -680,7 +680,7 @@ describe('PaneBrowserAssignment adduct corroboration', () => {
   })
 
   // The engine folds the boost into the record that carries the corroboration -
-  // the M0's p_correct - and never into a satellite's. So the satellite's
+  // the M0's p_correct - and never into an isotopologue's. So the isotopologue's
   // tooltip must not claim the number it sits beside already accounts for it,
   // which is exactly what the M0's own wording says.
   it('says whose evidence it is, and whose P(correct) has the boost', async () => {
@@ -722,7 +722,7 @@ describe('PaneBrowserAssignment adduct corroboration', () => {
   })
 
   // A lone adduct corroborates nothing, so the marker's `> 1` gate hides it. The
-  // count still travels to the satellites, and the row says so - `corrobInherited`
+  // count still travels to the isotopologues, and the row says so - `corrobInherited`
   // tracks where the number came from, not whether it happens to render.
   it('keeps a single-adduct count below the marker threshold', async () => {
     const wrapper = await unfolded(corroborated(1))
@@ -736,8 +736,8 @@ describe('PaneBrowserAssignment adduct corroboration', () => {
   })
 
   // An imported ledger is not bound by the in-app engine's winner-only rule, so
-  // a satellite that does carry its own count keeps it rather than the family's.
-  it('prefers a satellite own count over the family one', async () => {
+  // an isotopologue that does carry its own count keeps it rather than the family's.
+  it('prefers an isotopologue own count over the family one', async () => {
     const wrapper = await unfolded(corroborated(3, [{ corroboration_adducts: 2 }, {}]))
     const rows = rowsById(wrapper)
 
@@ -747,10 +747,10 @@ describe('PaneBrowserAssignment adduct corroboration', () => {
     expect(rows.get('a-c1').corrobInherited).toBe(true)
   })
 
-  // Each satellite inherits from ITS OWN parent, not from whichever family the
+  // Each isotopologue inherits from ITS OWN parent, not from whichever family the
   // loop happened to reach first. With one family on screen the two are
   // indistinguishable, so this is the case that pins the per-parent scope.
-  it('inherits from each satellite own parent, not across families', async () => {
+  it('inherits from each isotopologue own parent, not across families', async () => {
     const corroboratedFamily = corroborated(3)
     const bare = family({
       id: 'b',
@@ -765,7 +765,7 @@ describe('PaneBrowserAssignment adduct corroboration', () => {
 
     expect(rows.get('a-c0').corrobAdducts).toBe(3)
     expect(rows.get('a-c0').corrobInherited).toBe(true)
-    // The uncorroborated family's satellite has no claim on the other's count.
+    // The uncorroborated family's isotopologue has no claim on the other's count.
     expect(rows.get('b-c0').corrobAdducts).toBe(0)
     expect(rows.get('b-c0').corrobInherited).toBe(false)
   })
@@ -808,7 +808,7 @@ describe('PaneBrowserAssignment adduct corroboration', () => {
     return wrapper
   }
 
-  it('renders a parenthesised marker on satellites and a bare one on the M0', async () => {
+  it('renders a parenthesised marker on isotopologues and a bare one on the M0', async () => {
     const wrapper = await rendered(corroborated(3))
     const marks = wrapper.findAll('.corrob-mark').map((m) => m.text())
 
@@ -930,7 +930,7 @@ describe('PaneBrowserAssignment header and controls', () => {
     expect(ids(wrapper)).toEqual(['u'])
   })
 
-  // One verdict covers the isotopologue family. An unfolded satellite used to
+  // One verdict covers the isotopologue family. An unfolded isotopologue used to
   // show a blank verdict cell because its own identity was looked up and the
   // record had been stored against its M0's peak - so under the `confirmed`
   // filter a family arrived on screen with a confirmed badge on the parent and
@@ -951,7 +951,7 @@ describe('PaneBrowserAssignment header and controls', () => {
 
     const rowsById = (wrapper) => new Map(wrapper.vm.rows.map((r) => [r.peak_assignment_id, r]))
 
-    it('shows the compound its verdict on every satellite', async () => {
+    it('shows the compound its verdict on every isotopologue', async () => {
       const wrapper = await unfoldedWithVerdict()
       const rows = rowsById(wrapper)
 
@@ -960,14 +960,14 @@ describe('PaneBrowserAssignment header and controls', () => {
       expect(wrapper.vm.verdictFor(rows.get('b-c1'))).toEqual(VERDICT)
     })
 
-    it('looks the satellite up by its M0 rather than by itself', async () => {
+    it('looks the isotopologue up by its M0 rather than by itself', async () => {
       const wrapper = await unfoldedWithVerdict()
       const rows = rowsById(wrapper)
 
       wrapper.vm.verdictFor(rows.get('b-c0'))
 
       // The row handed to the store is the M0 off the assignment list, which is
-      // where the record was written; the satellite's own identity is not asked
+      // where the record was written; the isotopologue's own identity is not asked
       // about at all.
       expect(forAssignment).toHaveBeenLastCalledWith(byId.get('b'))
     })
@@ -976,7 +976,7 @@ describe('PaneBrowserAssignment header and controls', () => {
     // against the pre-fix pane too. The filter runs over parents only and
     // re-attaches each family under whichever parent survived, so a family has
     // always been one unit here. They are worth keeping because the badge column
-    // and the filter now have to agree: a filter that started judging satellites
+    // and the filter now have to agree: a filter that started judging isotopologues
     // individually would put a family on screen with rows missing from it.
     it('keeps a family one unit in the verdict filter', async () => {
       const wrapper = await unfoldedWithVerdict()
@@ -1008,7 +1008,7 @@ describe('PaneBrowserAssignment header and controls', () => {
       expect(ids(wrapper)).toEqual(['b', 'b-c0', 'b-c1'])
     })
 
-    // No ownerless-satellite case here: `childrenByOwner` skips a null owner, so
+    // No ownerless-isotopologue case here: `childrenByOwner` skips a null owner, so
     // such a row is neither a parent row nor attached under one and never
     // reaches this table at all. It is reachable in the inspector, and covered
     // there (panePeakAssign.spec.js).

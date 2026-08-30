@@ -41,7 +41,7 @@ const focusedAssignment = computed(() =>
 const family = computed(() => app.data.peakAssignment.peak.familyOf(focusedAssignment.value))
 
 // Compact substitution label (e.g. "[13C]") from the isotopologue formula, with
-// the offset label ("M0", "M+1") as the fallback for untargeted satellites.
+// the offset label ("M0", "M+1") as the fallback for untargeted isotopologues.
 const isoLabel = (iso) =>
   iso.isotope_formula ? formatIsotopeFormula(iso.isotope_formula) : iso.isotope_label || null
 

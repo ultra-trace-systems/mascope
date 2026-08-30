@@ -16,7 +16,7 @@ import { usePeakAssignment } from './assignment'
 // peak_assignment_id, which is regenerated on every assignment run, so a verdict
 // made against a prior run still lights up this run's matching assignment.
 //
-// One verdict covers the whole isotopologue family. A satellite (M+1, M+2 ...)
+// One verdict covers the whole isotopologue family. An isotopologue (M+1, M+2 ...)
 // is the same compound as its M0 seen through one heavy atom, so it is judged
 // with the M0 and never apart from it: every row is resolved to its family's M0
 // before its identity is taken, on read and on write alike. Records therefore
@@ -65,11 +65,11 @@ export const usePeakAssignmentVerification = defineStore(
     })
 
     // Current verdict record for a given assignment (peak store row), or null.
-    // Read through the family M0, so a satellite shows the verdict its compound
+    // Read through the family M0, so an isotopologue shows the verdict its compound
     // was given rather than a blank of its own. A verdict recorded against a
-    // satellite by an older build is left in the history and not surfaced here:
+    // isotopologue by an older build is left in the history and not surfaced here:
     // resolving strictly to the M0 is what keeps one family showing one verdict,
-    // where preferring a satellite's own record would let a family disagree with
+    // where preferring an isotopologue's own record would let a family disagree with
     // itself row by row.
     const forAssignment = (assignment) => {
       const m0 = usePeakAssignment().m0Of(assignment)

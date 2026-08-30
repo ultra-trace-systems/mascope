@@ -56,12 +56,12 @@ is a 3-pane nested splitter:
 ([`PaneBrowserAssignment.vue`](../../server/frontend/src/lib/panes/PaneBrowserMatch/PaneBrowserAssignment.vue)):
 a run selector that **auto-selects the latest completed run** (on load and sample switch), a clickable
 tier-histogram filter strip, and a virtual-scrolled table (m/z · intensity · formula `+N` · tier ·
-**P(correct)**). An **"Isotopologues" toggle** unfolds each compound's `iso_child` satellites as indented
+**P(correct)**). An **"Isotopologues" toggle** unfolds each compound's `iso_child` isotopologues as indented
 rows (children inherit the parent's tier rank so the stable sort keeps families grouped; rows stay
 fixed-height so virtual scrolling holds). The batch-peak ledger
 ([`PaneBrowserBatchPeaks.vue`](../../server/frontend/src/lib/panes/PaneBrowserMatch/PaneBrowserBatchPeaks.vue))
 mirrors that toggle under the same two constraints, with one difference: a batch peak is a bare m/z
-anchor, so the family link is **derived** (`satellite_of`, §5.4 of
+anchor, so the family link is **derived** (`isotopologue_of`, §5.4 of
 [`peak_assignment_batch.md`](peak_assignment_batch.md)) rather than given, and it arrives ONE hop deep
 pointing into a list the pane does not control — so the pane flattens a chain onto its root and leaves a
 link it cannot follow at top level, rather than nesting a row under one that is never drawn. Both panes
@@ -97,7 +97,7 @@ every run regenerates — plus `verify()`). Registered nested (not spread) under
 the current verdict as a [`BaseVerdictBadge`](../../server/frontend/src/lib/base/BaseVerdictBadge.vue)
 (shared constants in [`lib/verification.js`](../../server/frontend/src/lib/verification.js)) with a
 small verdict form posting through `verification.verify()`. **One verdict covers the isotopologue
-family**: both the read and the write resolve a row to its family's M0 (`peak.m0Of`), so a satellite
+family**: both the read and the write resolve a row to its family's M0 (`peak.m0Of`), so an isotopologue
 shows its compound's verdict and verifying from one writes a single label against the M0. Backend
 surface: `GET /sample/{id}/verifications`, `POST /sample/{id}/verify` (editor), and the superuser
 `POST /calibration/{instrument}/recalibrate` that refits the confidence calibration from the
@@ -111,17 +111,17 @@ carry `plausibility` too; alternatives carry `plausibility` (database ones also 
 `p_correct` by the backend) and is surfaced as a **"Supported by N adducts" badge** — a teal pill in the
 inspector (adduct list on hover) and a compact link-icon + count beside `P(correct)` in the ledger, shown
 only when `n_adducts > 1`. (The demo dataset has no multi-adduct co-occurrence, so it stays hidden there.)
-The backend writes it onto **M0 winners only, by construction** — a satellite is the same ion measured at
+The backend writes it onto **M0 winners only, by construction** — an isotopologue is the same ion measured at
 another isotope, not a second sighting of the compound — so an `iso_child` row's own count is always null.
-The evidence is about the formula the family shares, so the frontend resolves a satellite's badge from its
+The evidence is about the formula the family shares, so the frontend resolves an isotopologue's badge from its
 M0 (`owner_peak_assignment_id`; in the ledger the parent row is already in hand, in the inspector via
 `familyOf`) and renders it **inherited**, saying so on its face — "Supported by N adducts **via M0**" in the
 inspector (dashed pill), a **parenthesised** count in the ledger. It is deliberately not merely dimmed:
 this column already spends opacity on "no calibrated value here", and a borrowed count is the opposite of
 absent. Only the count carries across — the corroborating adducts are named in the M0's `provenance`, and
 detail is fetched for the focused assignment alone. The inherited tooltip is also careful that the **boost
-lives in the M0's `p_correct`, never in the satellite's**: `_fold_adduct_corroboration` rewrites M0 winners
-only, so a satellite must not claim the probability beside it already accounts for the other adducts. The
+lives in the M0's `p_correct`, never in a child's**: `_fold_adduct_corroboration` rewrites M0 winners
+only, so an isotopologue must not claim the probability beside it already accounts for the other adducts. The
 M0's own badge now also resolves from the flattened `corroboration_adducts` before its detail arrives, so
 it no longer pops in a moment late.
 

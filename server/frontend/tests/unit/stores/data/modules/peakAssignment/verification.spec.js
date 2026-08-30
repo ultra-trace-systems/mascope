@@ -43,10 +43,10 @@ vi.mock('@/stores/data/modules/peakAssignment/assignment', async () => {
   }
 })
 
-// An assignment and its M+1 satellite, shaped as the engine writes them: a
-// satellite carries its M0's formula and mechanism verbatim, so `sample_peak_id`
+// An assignment and its M+1 isotopologue, shaped as the engine writes them: a
+// isotopologue carries its M0's formula and mechanism verbatim, so `sample_peak_id`
 // is the only one of the three identity fields that differs across a family.
-// That single divergence is the whole bug - two thirds of a satellite's identity
+// That single divergence is the whole bug - two thirds of an isotopologue's identity
 // already matches, and it still misses.
 const M0 = {
   peak_assignment_id: 'pa-m0',
@@ -148,7 +148,7 @@ describe('peakAssignment verification family scope', () => {
     get.mockResolvedValue([VERDICT])
   })
 
-  it('shows the compound its verdict when a satellite is the row in hand', async () => {
+  it('shows the compound its verdict when an isotopologue is the row in hand', async () => {
     const store = usePeakAssignmentVerification()
     await store.load('verification')
 
@@ -165,11 +165,11 @@ describe('peakAssignment verification family scope', () => {
     expect(store.forAssignment(null)).toBeNull()
   })
 
-  // Resolution is strict rather than a preference order: a satellite reads its
-  // M0's verdict even when an older build left one on the satellite itself.
-  // Preferring the satellite's own record is how a family would come to disagree
+  // Resolution is strict rather than a preference order: an isotopologue reads its
+  // M0's verdict even when an older build left one on the isotopologue itself.
+  // Preferring the isotopologue's own record is how a family would come to disagree
   // with itself row by row, which is the thing this WP exists to stop.
-  it('ignores a verdict an older build left on the satellite itself', async () => {
+  it('ignores a verdict an older build left on the isotopologue itself', async () => {
     const onChild = { ...VERDICT, assignment_verification_id: 'v-old', sample_peak_id: 'p2' }
     get.mockResolvedValue([onChild])
     const store = usePeakAssignmentVerification()
@@ -178,7 +178,7 @@ describe('peakAssignment verification family scope', () => {
     expect(store.forAssignment(CHILD)).toBeNull()
   })
 
-  it('records a verdict captured from a satellite against the compound', async () => {
+  it('records a verdict captured from an isotopologue against the compound', async () => {
     const store = usePeakAssignmentVerification()
 
     await store.verify({ peak_assignment_id: CHILD.peak_assignment_id, verdict: 'rejected' })
@@ -207,7 +207,7 @@ describe('peakAssignment verification family scope', () => {
 
   // The redirect is the store's rule, not the form's, so that curation tools
   // added later cannot post a family a second label by going straight to it.
-  it('redirects whichever caller posts the satellite', async () => {
+  it('redirects whichever caller posts the isotopologue', async () => {
     const store = usePeakAssignmentVerification()
 
     await store.verify({ peak_assignment_id: CHILD.peak_assignment_id, verdict: 'unsure' })

@@ -52,7 +52,7 @@ const mechById = computed(() => {
 // wrong peak.)
 //
 // Both the guard and the lookup resolve through the family M0: an unfolded
-// satellite is the same compound as the parent above it, so it shows the same
+// isotopologue is the same compound as the parent above it, so it shows the same
 // badge rather than a blank cell that reads as "not yet judged". The filter
 // below runs over parents only, so a family is one unit there already - keeping
 // the two in step is the point.
@@ -206,7 +206,7 @@ function toggleTier(key) {
   else activeTiers.add(key)
 }
 
-// Fold isotopologue satellites by default: one row per assigned formula (M0)
+// Fold isotopologues by default: one row per assigned formula (M0)
 // plus unassigned/reagent peaks, which keeps this a flat, fixed-height list
 // compatible with virtual scrolling. Toggle to unfold (see below).
 const showIsotopologues = ref(false)
@@ -214,7 +214,7 @@ const showIsotopologues = ref(false)
 // --- Sorting ----------------------------------------------------------------
 
 // The sort is the pane's, not the table's. PrimeVue sorts the flat row array it
-// is handed, which tears every isotopologue satellite away from the parent it
+// is handed, which tears every isotopologue away from the parent it
 // belongs under the moment the user sorts by anything but the default - sorting
 // by intensity drops a child hundreds of rows below its "+N" parent, where an
 // indented "iso" label means nothing. `lazy` hands sorting back to us so `rows`
@@ -263,7 +263,7 @@ const byConfidence = (a, b) => a.tierRank - b.tierRank || (b.fit_score ?? -1) - 
 
 // Table rows. Parents (M0 + unassigned/reagent) are filtered by the active
 // chips, then ordered by the sorted column with confidence breaking ties. When
-// unfolded, each parent's iso_child satellites are inserted right after it,
+// unfolded, each parent's iso_child isotopologues are inserted right after it,
 // ordered by m/z among themselves - a family is one block wherever its parent
 // lands, which is the only arrangement in which the indented child rows can be
 // read at all.
@@ -302,10 +302,10 @@ const rows = computed(() => {
       .slice()
       .sort((a, b) => (a.sample_peak_mz ?? 0) - (b.sample_peak_mz ?? 0))
       .map((child) => {
-        // Adduct corroboration is written onto the M0 winner alone: a satellite
+        // Adduct corroboration is written onto the M0 winner alone: an isotopologue
         // is the same ion measured at another isotope, not a second sighting of
         // the compound, so it never carries a count of its own. The evidence is
-        // about the formula the family shares, so the satellite shows its
+        // about the formula the family shares, so the isotopologue shows its
         // parent's count and the marker says where it came from.
         const own = child.corroboration_adducts ?? child.provenance?.corroboration?.n_adducts
         return {
@@ -336,15 +336,15 @@ const childLabel = (row) =>
 // Calibrated probability formatter for the P(correct) column.
 const pctFmt = new Intl.NumberFormat('en-US', { style: 'percent', maximumFractionDigits: 0 })
 
-// A borrowed count is parenthesised, so a satellite does not read at a glance as
+// A borrowed count is parenthesised, so an isotopologue does not read at a glance as
 // a peak seen through several adducts in its own right.
 const corrobLabel = (row) =>
   row.corrobInherited ? `(${row.corrobAdducts})` : `${row.corrobAdducts}`
 
-// Tooltip for the adduct-corroboration marker. A satellite shows the count its
+// Tooltip for the adduct-corroboration marker. An isotopologue shows the count its
 // M0 was corroborated by, so it has to say both that the evidence is the
 // family's and that the boost is in the M0's P(correct) - the engine folds it
-// into the record carrying the corroboration and never into a satellite's, so
+// into the record carrying the corroboration and never into a child's, so
 // the number this marker sits beside does not include it.
 const corrobTooltip = (row) =>
   row.corrobInherited
@@ -381,7 +381,7 @@ const selectedRow = computed({
   }
 })
 
-// Isotopologue satellites folded under a formula's M0.
+// Isotopologues folded under a formula's M0.
 const isoCount = (row) => assignments.value.childrenOf(row.peak_assignment_id).length
 
 // --- Header ------------------------------------------------------------------
@@ -499,7 +499,7 @@ const breadcrumb = computed(() => {
               <h1>Isotopologue Rows</h1>
               <p>
               By default the ledger keeps one row per assigned formula, its
-              isotopologue satellite peaks folded into the <b>+N</b> marker.
+              isotopologue peaks folded into the <b>+N</b> marker.
               Toggle to unfold them as indented rows under their main peak (M0).
               </p>`
           }"
@@ -681,7 +681,7 @@ const breadcrumb = computed(() => {
             <!-- The formula is the one cell in the ledger a reader wants out of
                  the app - into a search, a note, a target list - so it carries
                  the same hover-to-copy affordance as the batch ledger's. The
-                 satellite count rides in the slot, outside what gets copied. -->
+                 isotopologue count rides in the slot, outside what gets copied. -->
             <BaseCopyableField
               v-else-if="data.assigned_formula"
               class="formula"

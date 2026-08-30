@@ -1525,7 +1525,7 @@ class PeakAssignment(Base):
     isotope_label: Mapped[Optional[str]] = mapped_column(String(64))
     # Full isotopologue formula of the matched isotope (e.g. "[15N]CH5BrNO+"),
     # from which the UI renders the compact substitution label ("[15N]").
-    # NULL for untargeted satellites without a predicted formula and for
+    # NULL for untargeted isotopologues without a predicted formula and for
     # unassigned peaks. Mirrors target_isotope.target_isotope_formula.
     isotope_formula: Mapped[Optional[str]] = mapped_column(String(256))
     source: Mapped[Optional[str]] = mapped_column(String(16))
@@ -1657,12 +1657,12 @@ class BatchPeak(Base):
     # same reason ``n_present`` is -- the ledger reads batch peaks alone and
     # never joins the occurrence table.
     max_intensity: Mapped[Optional[float]] = mapped_column(Float)
-    # The batch peak this one is an isotopologue satellite of, derived from the
+    # The batch peak this one is an isotopologue of, derived from the
     # members' per-sample ``PeakAssignment`` family links (see
-    # ``resolve_satellite_of``). NULL for an M0 anchor, for an unassigned one,
-    # and whenever the members do not agree that this is a satellite. One hop
+    # ``resolve_isotopologue_of``). NULL for an M0 anchor, for an unassigned one,
+    # and whenever the members do not agree that this is an isotopologue. One hop
     # only: a chain is left for the reader to flatten.
-    satellite_of: Mapped[Optional[str]] = mapped_column(
+    isotopologue_of: Mapped[Optional[str]] = mapped_column(
         String(16),
         ForeignKey("batch_peak.batch_peak_id", ondelete="SET NULL"),
         index=True,

@@ -63,7 +63,7 @@ const breadcrumb = computed(() => {
         label: `${parents.value.length} batch peaks`,
         disabled: true,
         tooltip: folded
-          ? `${parents.value.length} species; ${folded} isotopologue satellite ` +
+          ? `${parents.value.length} species; ${folded} isotopologue ` +
             `peak${folded === 1 ? '' : 's'} shown under their main peak`
           : undefined
       }
@@ -75,11 +75,11 @@ const breadcrumb = computed(() => {
 
 // Batch peaks are bare m/z anchors, so the family link is one the backend
 // derives from the members' per-sample assignments and hands over as
-// `satellite_of` - the anchor whose M0 this one is a satellite of.
+// `isotopologue_of` - the anchor whose M0 this one is an isotopologue of.
 //
 // It is deliberately ONE hop, observed rather than reconciled, which leaves the
 // reader two things to settle and the whole ledger in hand to settle them with:
-// a chain (a satellite of a satellite) has to reach a row that is actually
+// a chain (an isotopologue of an isotopologue) has to reach a row that is actually
 // drawn, and a link out of the list - to an anchor the server filtered out, or
 // one deleted since - has to fail into a top-level row rather than into a row
 // that is never rendered at all.
@@ -95,13 +95,13 @@ const byId = computed(() => new Map(ledger.value.list.map((bp) => [bp.batch_peak
  */
 const rootParentId = (row, index) => {
   const seen = new Set([row.batch_peak_id])
-  let parentId = row.satellite_of
+  let parentId = row.isotopologue_of
   while (parentId && !seen.has(parentId)) {
     const parent = index.get(parentId)
     if (!parent) return null
-    if (!parent.satellite_of) return parentId
+    if (!parent.isotopologue_of) return parentId
     seen.add(parentId)
-    parentId = parent.satellite_of
+    parentId = parent.isotopologue_of
   }
   return null
 }
@@ -118,7 +118,7 @@ const decorated = computed(() => {
   }))
 })
 
-// Satellites by the row they fold under, ordered by m/z among themselves -
+// Isotopologues by the row they fold under, ordered by m/z among themselves -
 // which is the order an isotopologue family reads in, M0 first and then M+1,
 // M+2.
 const childrenByParent = computed(() => {
@@ -133,15 +133,15 @@ const childrenByParent = computed(() => {
   return families
 })
 
-// The rows that stand on their own: every anchor that is not a satellite of one
+// The rows that stand on their own: every anchor that is not an isotopologue of one
 // the ledger holds. This is the population the tier strip counts and the table
 // shows at top level, folded or not - the toggle decides only whether the
-// satellites are drawn underneath.
+// isotopologues are drawn underneath.
 const parents = computed(() => decorated.value.filter((row) => !row.parentId))
 
-const satelliteCount = (row) => childrenByParent.value.get(row.batch_peak_id)?.length ?? 0
+const isotopologueCount = (row) => childrenByParent.value.get(row.batch_peak_id)?.length ?? 0
 
-// Label for an unfolded satellite row. A batch peak carries no isotope formula
+// Label for an unfolded isotopologue row. A batch peak carries no isotope formula
 // - it is an m/z anchor, and the per-sample rows behind it may not even agree
 // on one - so the label is the nominal mass offset from the M0 it folds under,
 // the same "M+1" the sample ledger's engine writes.
@@ -153,16 +153,16 @@ const childLabel = (row) => {
   return offset < 0 ? `M${offset}` : 'M0'
 }
 
-// Fold satellites under their M0 by default: a satellite carries its family's
+// Fold isotopologues under their M0 by default: an isotopologue carries its family's
 // formula, so unfolded it reads as a second row for one compound.
 const showIsotopologues = ref(false)
 
 // --- Sorting and filtering --------------------------------------------------
 
 // Both are the pane's, not the table's. PrimeVue sorts and filters the flat row
-// array it is handed, which tears every satellite away from the parent it
+// array it is handed, which tears every isotopologue away from the parent it
 // belongs under the moment the ledger is sorted by anything but the default -
-// sorting by intensity drops a satellite hundreds of rows below the "+N" that
+// sorting by intensity drops an isotopologue hundreds of rows below the "+N" that
 // counts it, where an indented "M+1" means nothing. `lazy` hands both back to
 // us so `rows` can order the parents and re-attach each family underneath. The
 // same choice, for the same reason, as the sample ledger's.
@@ -237,10 +237,10 @@ const passesFilters = (row) => {
 // --- Rows -------------------------------------------------------------------
 
 // Parents are filtered by the menus and the chips, then ordered by the sorted
-// column with confidence breaking ties. When unfolded, each parent's satellites
+// column with confidence breaking ties. When unfolded, each parent's isotopologues
 // are inserted right after it - a family is one block wherever its parent
 // lands, which is the only arrangement in which the indented rows can be read
-// at all. The satellites ride with their parent rather than being filtered
+// at all. The isotopologues ride with their parent rather than being filtered
 // themselves: a family shares one formula and one tier, so a filter that kept
 // the parent kept the family.
 const rows = computed(() => {
@@ -362,9 +362,9 @@ watch(showIsotopologues, () => {
   selectionAtCapacity.value = false
 })
 
-// While folded, no satellite is selected.
+// While folded, no isotopologue is selected.
 //
-// A selection is what the chart plots, so a satellite left in it while its row
+// A selection is what the chart plots, so an isotopologue left in it while its row
 // is folded away draws a trace with no ticked row behind it, and spends the cap
 // on a row the user can no longer see to release. Only the fold does this - the
 // rows a tier chip hides are a filter rather than a fold, and a filter has never
@@ -372,9 +372,9 @@ watch(showIsotopologues, () => {
 //
 // Written as an invariant rather than as a reaction to the toggle, because the
 // toggle is the pane's state and the selection is the store's: the pane remounts
-// folded while the selection survives, so a satellite ticked before a tab switch
+// folded while the selection survives, so an isotopologue ticked before a tab switch
 // would come back plotted, uncounted, and with no row left to untick it from.
-// Unfolding takes nothing back - the satellites reappear unselected, where they
+// Unfolding takes nothing back - the isotopologues reappear unselected, where they
 // were before anyone ticked them.
 watch(
   [showIsotopologues, decorated],
@@ -382,11 +382,11 @@ watch(
     // Re-checked on every ledger reload, so it leaves early on the two states
     // it has nothing to do in rather than walking the whole list to find out.
     if (unfolded || !ledger.value.selected.length) return
-    const satellites = new Set(
+    const isotopologues = new Set(
       decorated.value.filter((row) => row.parentId).map((row) => row.batch_peak_id)
     )
-    if (!satellites.size) return
-    const kept = ledger.value.selected.filter((row) => !satellites.has(row.batch_peak_id))
+    if (!isotopologues.size) return
+    const kept = ledger.value.selected.filter((row) => !isotopologues.has(row.batch_peak_id))
     if (kept.length !== ledger.value.selected.length) ledger.value.selected = kept
   },
   { immediate: true }
@@ -408,8 +408,8 @@ const toggleTier = (tier) => {
 
 // A chip is a filter control, so its number has to be the number of rows
 // clicking it produces: counted over `parents`, the same population the table
-// shows at top level and the breadcrumb names. Satellites are left out for the
-// reason the sample ledger leaves out its iso_child rows - a satellite carries
+// shows at top level and the breadcrumb names. Isotopologues are left out for the
+// reason the sample ledger leaves out its iso_child rows - an isotopologue carries
 // its family's formula and tier, so counting it counts one species twice.
 //
 // Counted over the whole ledger rather than the filtered rows, as the sample
@@ -581,7 +581,7 @@ onScopeDispose(() => clearTimeout(computeTimer))
         Cross-sample m/z anchors for the batch: each row is a species seen
         across samples, with its consensus formula and tier, the number of
         samples it appears in, and the highest intensity it reaches in any of
-        them. Isotopologue satellite peaks are folded under their main peak;
+        them. Isotopologue peaks are folded under their main peak;
         the Isotopologues toggle unfolds them.
         </p>
         <p>
@@ -598,20 +598,20 @@ onScopeDispose(() => clearTimeout(computeTimer))
     <template #menu>
       <div
         class="unfold-toggle"
-        v-tooltip.top="'Show isotopologue satellite peaks as indented rows under their main peak'"
+        v-tooltip.top="'Show isotopologue peaks as indented rows under their main peak'"
         v-help.bottom="{
           message: `
             <h1>Isotopologue Rows</h1>
             <p>
-            A satellite peak carries its family's formula, so left in the list
+            An isotopologue peak carries its family's formula, so left in the list
             it reads as a second species. By default the ledger keeps one row
-            per species &mdash; the main peak (M0) &mdash; with its satellites
+            per species &mdash; the main peak (M0) &mdash; with its isotopologues
             folded into the <b>+N</b> marker beside the formula. Toggle to
             unfold them as indented rows underneath.
             </p>
             <p>
             The link is derived: a batch peak is an m/z anchor and carries no
-            family of its own, so a satellite is one whose per-sample
+            family of its own, so an isotopologue is one whose per-sample
             assignments agree, across the batch, that it belongs to another
             anchor's compound.
             </p>`
@@ -756,7 +756,7 @@ onScopeDispose(() => clearTimeout(computeTimer))
 
         <Column field="consensus_formula" header="Formula" sortable style="min-width: 9rem">
           <template #body="{ data }">
-            <!-- An unfolded satellite says what it is rather than repeating its
+            <!-- An unfolded isotopologue says what it is rather than repeating its
                  family's formula, which is the whole reason it was folded. -->
             <span v-if="data.parentId" class="child-cell">
               <span class="child-caret">&#8627;</span>
@@ -764,7 +764,7 @@ onScopeDispose(() => clearTimeout(computeTimer))
                 childLabel(data)
               }}</span>
             </span>
-            <!-- The satellite count rides in the slot, outside what gets
+            <!-- The isotopologue count rides in the slot, outside what gets
                  copied, as the sample ledger's does. -->
             <BaseCopyableField
               v-else-if="data.consensus_formula"
@@ -772,14 +772,14 @@ onScopeDispose(() => clearTimeout(computeTimer))
               :field="data.consensus_formula"
             >
               <span
-                v-if="satelliteCount(data)"
+                v-if="isotopologueCount(data)"
                 class="iso-count"
                 v-tooltip.top="
-                  `${satelliteCount(data)} isotopologue peak${
-                    satelliteCount(data) === 1 ? '' : 's'
+                  `${isotopologueCount(data)} isotopologue peak${
+                    isotopologueCount(data) === 1 ? '' : 's'
                   }`
                 "
-                >+{{ satelliteCount(data) }}</span
+                >+{{ isotopologueCount(data) }}</span
               >
             </BaseCopyableField>
             <span v-else class="unassigned">unassigned</span>
@@ -878,7 +878,7 @@ onScopeDispose(() => clearTimeout(computeTimer))
   opacity: 0.75;
 }
 
-/* Unfolded satellite row: indented offset label under its main peak. */
+/* Unfolded isotopologue row: indented offset label under its main peak. */
 .child-cell {
   display: inline-flex;
   align-items: baseline;

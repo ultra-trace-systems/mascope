@@ -48,7 +48,7 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
 ### Added
 
 - The **Batch peaks** ledger now has an **Intensity** column and folds
-  isotopologue satellites under the peak they belong to. The intensity is the
+  isotopologues under the peak they belong to. The intensity is the
   highest the species reaches in any sample of the batch, in the instrument's
   own unit, and it is sortable - which is how you find the largest thing in the
   batch, including the largest thing nothing was assigned to, since an
@@ -56,17 +56,17 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
   intensity to report sort last rather than as zero.
 
   The fold is the *Isotopologues* toggle the per-sample assignment ledger
-  already had, and it defaults to folded: a satellite peak carries its
+  already had, and it defaults to folded: an isotopologue peak carries its
   compound's formula, so left in the list it read as a second species and the
   ledger's row count, tier chips and formula filter all counted one compound
-  twice. Satellites now ride under their main peak, counted in the **+N**
+  twice. Isotopologues now ride under their main peak, counted in the **+N**
   marker beside the formula, and the toggle unfolds them as indented rows.
   A batch peak is an m/z anchor and carries no compound of its own, so the link
   is derived from the per-sample assignments behind it: a peak is folded only
   when most of the samples that assigned it agree it belongs to another
-  anchor's compound. One that is a satellite in a single sample and a species
+  anchor's compound. One that is an isotopologue in a single sample and a species
   in its own right in the rest keeps its own row. Ticking rows is unchanged -
-  folding a satellite away also unticks it, so the chart never draws a trace
+  folding an isotopologue away also unticks it, so the chart never draws a trace
   with no ticked row behind it.
 
   Batches folded before this release get both without being recomputed; the
@@ -703,17 +703,17 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
 - A verification verdict now covers a compound's whole **isotopologue family**
   rather than one peak of it. An M+1 is not a second thing to judge - it is the
   same compound seen through one heavy atom - but a verdict was looked up by the
-  peak it was recorded against, so confirming a compound left every satellite
+  peak it was recorded against, so confirming a compound left every isotopologue
   looking unjudged: focusing one opened an empty confirm / reject / unsure form
   beside its own confirmed parent, and an unfolded family in the assignment
   ledger showed a *Confirmed* badge on the M0 row with blank verdict cells on
   every child row beneath it - even under the ledger's *Confirmed* filter, which
   is what had put the family on screen. Confirming a compound now shows the
-  verdict on every member of its family, and verifying while a satellite is
+  verdict on every member of its family, and verifying while an isotopologue is
   focused records a single verdict against the compound rather than another one
   against that peak, so the confidence calibration is fed one label per family
   instead of several correlated ones. The inspector says which compound a
-  verdict captured from a satellite applies to - except where there is no
+  verdict captured from an isotopologue applies to - except where there is no
   compound to point at: an isotopologue whose main peak was won by a different
   ion in that run has no family, stands for itself, and is judged on its own
   without any claim to a wider scope. A half-written verdict also survives a
@@ -783,17 +783,17 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
   When a compound is seen through several adducts, that co-occurrence is
   independent evidence for the formula, and the badge says so - but it was
   showing only on the main isotopologue. Selecting an M+1 or M+2 peak, or
-  unfolding the satellites in the ledger, dropped the badge entirely, which read
+  unfolding the isotopologues in the ledger, dropped the badge entirely, which read
   as *this peak has no corroboration* when what was true is that corroboration
   is not a property of a single isotopologue at all. The engine records it on
-  the main isotopologue by design: a satellite is the same ion measured at
+  the main isotopologue by design: an isotopologue is the same ion measured at
   another isotope, not a second sighting of the compound. The evidence belongs
-  to the formula the whole family shares, so the satellites now show their
+  to the formula the whole family shares, so the isotopologues now show their
   family's count, and say on their face that it is borrowed - "via M0" in the
   inspector, a parenthesised count in the ledger. The tooltip is careful about
   one thing in particular: the confidence boost from that corroboration is in
-  the main isotopologue's P(correct), *not* in the satellite's, which stays
-  calibrated on its own evidence - so a satellite never claims the probability
+  the main isotopologue's P(correct), *not* in the child's, which stays
+  calibrated on its own evidence - so an isotopologue never claims the probability
   shown next to it already accounts for the other adducts. Rows whose family was
   never corroborated are unchanged, and a family corroborated by a single adduct
   still shows nothing. In the peak inspector the badge now also appears
@@ -815,13 +815,13 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
   both follow the side the card ended up on rather than the side it asked for,
   so neither is left pointing at nothing after a flip.
 - Unfolded isotopologue rows in the assignment ledger no longer scatter when you
-  sort by a column. Each satellite stays directly under the parent whose formula
+  sort by a column. Each isotopologue stays directly under the parent whose formula
   names it, in every column and in both directions, because the ledger now
   orders its own rows: it sorts the parents and re-attaches each family
-  underneath. Sorting by intensity was the worst of it - a satellite is a few
+  underneath. Sorting by intensity was the worst of it - an isotopologue is a few
   percent of its main peak, so every child sank hundreds of rows below its
   parent and arrived as a bare indented arrow with nothing to say what it was a
-  satellite of. A third click on a sorted header now clears the column and
+  isotopologue of. A third click on a sorted header now clears the column and
   returns the ledger to its confidence order, which previously took a reload.
 
 - Clicking the selected row in the assignment ledger deselects it again. The
@@ -910,9 +910,9 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
   week a production session keeps.
 
 - The peak inspector's *abu.* column now shows the correct theoretical
-  relative abundance for untargeted isotope satellites. The column recovers
+  relative abundance for untargeted isotope isotopologues. The column recovers
   the prediction from the stored abundance error, which untargeted assignment
-  saved without its sign - so a satellite observed *below* its prediction was
+  saved without its sign - so an isotopologue observed *below* its prediction was
   rendered as if it had been observed above it (a peak predicted at 10% of M0
   but observed at 5% displayed as 3.3% instead of 10%). Untargeted assignments
   now store the same signed error as targeted ones (positive = observed above
