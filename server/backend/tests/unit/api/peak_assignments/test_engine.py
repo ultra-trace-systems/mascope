@@ -50,8 +50,15 @@ def _isotope_row(
     match_mz_error: float = 1.0,
     match_abundance_error: float = 0.05,
     ionization: str = "+H+",
+    ionization_mechanism_id: str | None = None,
 ) -> dict:
-    """One row of the targeted matcher's output enriched with target metadata."""
+    """One row of the targeted matcher's output enriched with target metadata.
+
+    The mechanism's database id and its notation are two separate columns on the
+    real frame. Rows that do not care let the id default to the notation, which
+    keeps the fixtures readable; pass ``ionization_mechanism_id`` explicitly when
+    the point of the test is WHICH of the two columns a value was read from.
+    """
     return {
         "target_isotope_id": target_isotope_id,
         "target_ion_id": target_ion_id,
@@ -60,7 +67,7 @@ def _isotope_row(
         "relative_abundance": relative_abundance,
         "resolution": "HIGH",
         "target_ion_formula": ion_formula,
-        "ionization_mechanism_id": ionization,
+        "ionization_mechanism_id": ionization_mechanism_id or ionization,
         "ionization_mechanism": ionization,
         "target_compound_id": target_compound_id,
         "target_compound_formula": compound_formula,
@@ -118,17 +125,21 @@ class TestInvertMatches:
                     relative_abundance=1.0,
                     sample_peak_id="p1",
                     match_score=0.95,
+                    ionization="+H+",
+                    ionization_mechanism_id="mech-h",
                 ),
                 _isotope_row(
                     target_isotope_id="iso3",
                     target_ion_id="ion2",
                     target_compound_id="cmp2",
                     compound_formula="C7H16O5",
-                    ion_formula="C7H17O5+",
+                    ion_formula="C7H16NaO5+",
                     mz=181.0705,
                     relative_abundance=1.0,
                     sample_peak_id="p1",
                     match_score=0.75,
+                    ionization="+Na+",
+                    ionization_mechanism_id="mech-na",
                 ),
             ]
         )
@@ -151,9 +162,92 @@ class TestInvertMatches:
 
         # The losing candidate is preserved as an alternative
         assert len(winner["alternatives"]) == 1
-        assert winner["alternatives"][0]["target_ion_id"] == "ion2"
-        assert winner["alternatives"][0]["assigned_formula"] == "C7H16O5"
-        assert winner["alternatives"][0]["fit_score"] == pytest.approx(0.75)
+        alternative = winner["alternatives"][0]
+        assert alternative["target_ion_id"] == "ion2"
+        assert alternative["assigned_formula"] == "C7H16O5"
+        assert alternative["fit_score"] == pytest.approx(0.75)
+        # The runner-up records the adduct IT was scored under, not the winner's.
+        # A formula without its mechanism is half an assignment: promoting one by
+        # hand would put an adductless claim on the ledger, and a verification's
+        # identity (peak + formula + mechanism) could not be formed from it. The
+        # id is a column of its own - the notation ("+Na+") must not stand in.
+        assert winner["ionization_mechanism_id"] == "mech-h"
+        assert alternative["ionization_mechanism_id"] == "mech-na"
+        # Both candidates are their ion's most abundant isotope, so the runner-up
+        # is labelled the main peak it is; the satellite case is the test below.
+        assert alternative["isotope_label"] == "M0"
+
+    def test_runner_up_satellite_keeps_its_own_isotope_label(self):
+        """A runner-up is as free as a winner to be one of its ion's satellites.
+
+        ion2's M+1 contests the peak ion1's M0 wins. The label is computed per
+        candidate off ion2's own M0 m/z, not copied from the winner: without it
+        there is nothing on the alternative to say it is a satellite, and
+        promoting it by hand would enter C7H11NO3's M+1 into the ledger as
+        C7H11NO3 itself - one compound owning a peak a mass unit off its own,
+        and an isotopologue family headed by its own child.
+        """
+        match_df = pd.DataFrame(
+            [
+                _isotope_row(  # wins the contested peak
+                    target_isotope_id="iso1",
+                    target_ion_id="ion1",
+                    target_compound_id="cmp1",
+                    compound_formula="C6H12O6",
+                    ion_formula="C6H13O6+",
+                    mz=181.0707,
+                    relative_abundance=1.0,
+                    sample_peak_id="p1",
+                    match_score=0.95,
+                    ionization_mechanism_id="mech-h",
+                ),
+                _isotope_row(  # ion2's own M0, on a peak of its own
+                    target_isotope_id="iso2",
+                    target_ion_id="ion2",
+                    target_compound_id="cmp2",
+                    compound_formula="C7H11NO3",
+                    ion_formula="C7H11NNaO3+",
+                    mz=180.0631,
+                    relative_abundance=1.0,
+                    sample_peak_id="p0",
+                    match_score=0.60,
+                    ionization="+Na+",
+                    ionization_mechanism_id="mech-na",
+                ),
+                _isotope_row(  # ion2's M+1, contesting p1 and losing it
+                    target_isotope_id="iso3",
+                    target_ion_id="ion2",
+                    target_compound_id="cmp2",
+                    compound_formula="C7H11NO3",
+                    ion_formula="C7H11NNaO3+",
+                    mz=181.0665,
+                    relative_abundance=0.08,
+                    sample_peak_id="p1",
+                    sample_peak_mz=181.0707,
+                    match_score=0.60,
+                    match_mz_error=23.0,
+                    ionization="+Na+",
+                    ionization_mechanism_id="mech-na",
+                ),
+            ]
+        )
+
+        assignments = invert_matches_to_peak_assignments(
+            match_df, "sample1", "run1", POSSIBLE, PROBABLE
+        )
+        by_peak = {a["sample_peak_id"]: a for a in assignments}
+
+        contested = by_peak["p1"]
+        assert contested["assigned_formula"] == "C6H12O6"
+        assert contested["isotope_label"] == "M0"
+        [alternative] = contested["alternatives"]
+        assert alternative["assigned_formula"] == "C7H11NO3"
+        assert alternative["target_ion_id"] == "ion2"
+        assert alternative["ionization_mechanism_id"] == "mech-na"
+        # 181.0665 sits one nominal mass above ion2's own M0 at 180.0631.
+        assert alternative["isotope_label"] == "M+1"
+        # ...and ion2's M0 is labelled as the main peak it is, on its own peak.
+        assert by_peak["p0"]["isotope_label"] == "M0"
 
     def test_winner_is_not_listed_among_its_own_alternatives(self):
         # The reference mirror sits in the same frame as the curated library, so a
@@ -1164,11 +1258,74 @@ class TestUntargetedMatches:
         ]
         # untargeted runner-ups are formula-only, but still carry plausibility
         assert all(alt["plausibility"] is not None for alt in m0["alternatives"])
+        # ...and nothing else. The finder's other_candidates shortlist resolved no
+        # adduct for them, so there is no mechanism id to record - which is why
+        # curation refuses to commit one of these rather than write an assignment
+        # whose verification identity (peak + formula + mechanism) is half missing.
+        assert all(
+            alt.get("ionization_mechanism_id") is None for alt in m0["alternatives"]
+        )
         assert m0["provenance"]["neutral_mass"] == pytest.approx(102.068)
         # Chemical plausibility now rides on untargeted winners too (previously
         # database-stage only), so an assigned de-novo formula reports it and
         # the inspector shows it consistently across stages.
         assert 0.0 <= m0["provenance"]["plausibility"] <= 1.0
+
+    def test_scored_runner_up_carries_its_own_adduct_and_isotope_label(self):
+        """A losing CONTENDER is a whole candidate, unlike the shortlist above.
+
+        Two compositions explain the same observed peak; the loser was scored on
+        that peak under a resolved ionization, so it records the mechanism id
+        that ionization maps to - the runner-up a person can actually promote.
+        Its isotope label rides along for the same reason a Stage A runner-up's
+        does: promoting a 13C child as though it were an M0 would enter a
+        compound's satellite into the ledger as the compound.
+        """
+        matches_df = pd.DataFrame(
+            [
+                {
+                    "mz": 100.1,
+                    "formula": "C5H10O2",
+                    "ion": "C5H11O2+",
+                    "isotope_label": "M0",
+                    "ionization_mechanism": "+H+",
+                    "mz_error_ppm": 1.0,
+                    "intensity_error": 0.05,
+                    "other_candidates": "",
+                },
+                {
+                    # A second composition's 13C child, sodiated, landing on the
+                    # same peak and losing it on evidence.
+                    "mz": 100.1,
+                    "formula": "C4H8N2O",
+                    "ion": "[13C]C3H8N2NaO+",
+                    "isotope_label": "13C",
+                    "ionization_mechanism": "+Na+",
+                    "mz_error_ppm": 12.0,
+                    "intensity_error": 0.4,
+                    "other_candidates": "",
+                },
+            ]
+        )
+        [assignment] = untargeted_matches_to_peak_assignments(
+            matches_df,
+            self._one_peak_df("pA", 100.1, 5000.0),
+            "sample1",
+            "run1",
+            POSSIBLE,
+            PROBABLE,
+            mechanism_id_by_notation={"+H+": "mech1", "+Na+": "mech2"},
+        )
+
+        assert assignment["assigned_formula"] == "C5H10O2"
+        assert assignment["ionization_mechanism_id"] == "mech1"
+        [alternative] = assignment["alternatives"]
+        assert alternative["assigned_formula"] == "C4H8N2O"
+        assert alternative["source"] == SOURCE_UNTARGETED
+        assert alternative["ionization_mechanism_id"] == "mech2"
+        assert alternative["isotope_label"] == "13C"
+        # fit = (1 - 0.4) * (1 - 12.0/100), well under the winner's
+        assert alternative["fit_score"] == pytest.approx(0.6 * 0.88)
 
     def test_isotopic_pattern_fit_score_is_used_when_present(self):
         # When assign_compositions scored the whole envelope, Stage B uses that
@@ -1521,6 +1678,7 @@ class TestReferenceStageAInversion:
                     sample_peak_id="p1",
                     match_score=0.95,
                     ionization="-H-",
+                    ionization_mechanism_id="mech-deprot",
                 ),
                 _isotope_row(
                     target_isotope_id="iso2",
@@ -1533,6 +1691,7 @@ class TestReferenceStageAInversion:
                     sample_peak_id="p1",
                     match_score=0.60,
                     ionization="-H-",
+                    ionization_mechanism_id="mech-deprot",
                 ),
             ]
         )
@@ -1551,6 +1710,11 @@ class TestReferenceStageAInversion:
         alt = assignment["alternatives"][0]
         assert alt["assigned_formula"] == "C9H12N2O2"
         assert alt["target_ion_id"] == "ion2"
+        # Both candidates were scored deprotonated, and the alternative says so:
+        # the id comes off the mechanism column, not the "-H-" notation beside it.
+        assert alt["ionization_mechanism_id"] == "mech-deprot"
+        # Each is its ion's only isotope, so the runner-up is a main peak too.
+        assert alt["isotope_label"] == "M0"
 
     def test_target_winner_inherits_reference_identity_for_shared_formula(self):
         # Convergence precedence: when the curated target and a reference compound

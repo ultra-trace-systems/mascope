@@ -10,16 +10,20 @@ session-scoped ``pa_test_data`` ledger: ``curated_run`` seeds a run of its own
 per test and deletes it afterwards.
 """
 
+from copy import deepcopy
 from datetime import datetime, timedelta, timezone
 
 import pytest
 import pytest_asyncio
 from sqlalchemy import delete, select
 
+from mascope_backend.api.new.peak_assignments.config import MAX_ALTERNATIVES_CEILING
 from mascope_backend.db import (
     IonizationMechanism,
     PeakAssignment,
     PeakAssignmentRun,
+    TargetCompound,
+    TargetIon,
 )
 from mascope_backend.db.id import gen_id
 
@@ -149,6 +153,15 @@ async def curated_run(async_session_factory, pa_test_data):
                 fit_score=0.88,
                 tier="assigned",
                 owner_peak_assignment_id=m0_id,
+                # A satellite carries provenance of its own, and no column
+                # holds it - so a restore that only put the columns back would
+                # lose it. `score_version` is the one key here that no archived
+                # winner snapshot repeats, which makes it the tell.
+                provenance={
+                    "plausibility": 0.9,
+                    "evidence": 0.79,
+                    "score_version": "v2-test",
+                },
             )
         )
         session.add(
@@ -318,6 +331,54 @@ async def test_the_promoted_formulas_known_identity_comes_with_it(
 
 
 @pytest.mark.asyncio
+async def test_undoing_an_override_brings_the_known_identity_back_too(
+    editor_client, curated_run, async_session_factory
+):
+    """The same key, in the other direction - the one nothing else covers.
+
+    The test above proves an ENGINE alternative's identities cross over, because
+    the engine writes them at the top level of the entry. The displaced winner's
+    snapshot is written here instead, and `reference_identities` is one of the
+    keys buried inside `previous.engine_judgement` - which nothing reads. So an
+    undo would put the formula back and silently strip the compound's name off a
+    row that had carried it all along, with only a re-run to restore it. The
+    snapshot repeats the key at the top level for exactly this.
+    """
+    async with async_session_factory() as session:
+        row = await session.get(PeakAssignment, curated_run["m0_id"])
+        row.provenance = {
+            **row.provenance,
+            "reference_identities": [{"name": "D-Glucose", "source": "test"}],
+        }
+        await session.commit()
+
+    await editor_client.patch(
+        _url(curated_run, curated_run["m0_id"]),
+        json={"action": "promote_alternative", "alternative_index": 0},
+    )
+
+    overridden = await _row(async_session_factory, curated_run["m0_id"])
+    # While the override stands the row is nameless, and rightly so: the
+    # promoted formula is a different compound and carries no identities.
+    assert "reference_identities" not in overridden.provenance
+    # They went with the winner they name, where the undo can find them.
+    assert overridden.alternatives[0]["reference_identities"][0]["name"] == "D-Glucose"
+
+    await editor_client.patch(
+        _url(curated_run, curated_run["m0_id"]),
+        json={
+            "action": "promote_alternative",
+            "alternative_index": 0,
+            "expected_formula": "C6H12O6",
+        },
+    )
+
+    row = await _row(async_session_factory, curated_run["m0_id"])
+    assert row.assigned_formula == "C6H12O6"
+    assert row.provenance["reference_identities"][0]["name"] == "D-Glucose"
+
+
+@pytest.mark.asyncio
 async def test_the_override_records_who_changed_it_and_from_what(
     editor_client, curated_run, async_session_factory
 ):
@@ -403,6 +464,46 @@ async def test_an_index_past_the_end_is_a_verdict_on_the_request(
 
 
 @pytest.mark.asyncio
+async def test_a_stored_candidate_that_names_no_formula_is_refused(
+    editor_client, curated_run, async_session_factory
+):
+    """A candidate with no formula in it is not a choice anyone can commit.
+
+    The shape is real: the database stage builds a runner-up out of a target
+    row, and that row's compound formula can be absent, while an imported run's
+    alternatives are whatever the publishing client sent. Promoted as they
+    stand they would blank the row's assignment and demote its family - an
+    assignment destroyed by a click labelled "use this" - and mark the wreckage
+    'manual', so nothing about the ledger would say it was an accident.
+    """
+    async with async_session_factory() as session:
+        row = await session.get(PeakAssignment, curated_run["m0_id"])
+        row.alternatives = [
+            {
+                "ion_formula": "C7H17O5+",
+                "ionization_mechanism_id": curated_run["mechanism_id"],
+                "fit_score": 0.62,
+            },
+            _alternative(curated_run["mechanism_id"], assigned_formula=""),
+        ]
+        await session.commit()
+
+    for index in (0, 1):
+        response = await editor_client.patch(
+            _url(curated_run, curated_run["m0_id"]),
+            json={"action": "promote_alternative", "alternative_index": index},
+        )
+        assert response.status_code == 422, f"alternative {index}"
+
+    row = await _row(async_session_factory, curated_run["m0_id"])
+    assert row.assigned_formula == "C6H12O6"
+    assert row.source == "database"
+    # And the family of the formula that still stands is still standing.
+    child = await _row(async_session_factory, curated_run["child_id"])
+    assert child.owner_peak_assignment_id == curated_run["m0_id"]
+
+
+@pytest.mark.asyncio
 async def test_promoting_back_undoes_the_override(
     editor_client, curated_run, async_session_factory
 ):
@@ -427,6 +528,313 @@ async def test_promoting_back_undoes_the_override(
     assert row.tier == "assigned"
     # Still a curated row: a person decided it, even back to what it was.
     assert row.source == "manual"
+    # And the whole family is back with it, not just the M0 - an undo that
+    # left the satellites unassigned would be half an undo.
+    child = await _row(async_session_factory, curated_run["child_id"])
+    assert child.assigned_formula == "C6H12O6"
+    assert child.owner_peak_assignment_id == curated_run["m0_id"]
+
+
+# ---------------------------------------------------------------------------
+# The demoted family, and putting it back
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_the_demoted_satellites_are_archived_on_their_owner(
+    editor_client, curated_run, async_session_factory
+):
+    """Demoting a family is only half of what an override owes it.
+
+    The satellites are stripped from the ledger's point of view, so the record
+    of what they were has to live somewhere a later edit can find it by a
+    primary-key read - which is the M0's own provenance, keyed by the compound
+    they were satellites of.
+    """
+    await editor_client.patch(
+        _url(curated_run, curated_run["m0_id"]),
+        json={"action": "promote_alternative", "alternative_index": 0},
+    )
+
+    row = await _row(async_session_factory, curated_run["m0_id"])
+    manual = row.provenance["manual"]
+    assert len(manual["demoted"]) == 1
+    entry = manual["demoted"][0]
+    assert entry["peak_assignment_id"] == curated_run["child_id"]
+    assert entry["sample_peak_id"] == "cur-2"
+    # Keyed by the COMPOUND, which is a formula under an adduct: that pair is
+    # what a later edit has to commit for this family to come back.
+    assert entry["owner_formula"] == "C6H12O6"
+    assert entry["owner_ionization_mechanism_id"] == curated_run["mechanism_id"]
+    # One act, one instant. The satellite's own record carries the same
+    # timestamp, which is how a restore tells an untouched demotion from a row
+    # someone has curated since.
+    assert entry["at"] == manual["at"]
+    assert entry["previous"]["assigned_formula"] == "C6H12O6"
+    assert entry["previous"]["isotope_label"] == "M+1"
+    assert entry["previous"]["role"] == "iso_child"
+    assert entry["previous"]["tier"] == "assigned"
+    assert entry["previous"]["fit_score"] == pytest.approx(0.88)
+    # The provenance blob too - it holds numbers no column does.
+    assert entry["provenance"]["score_version"] == "v2-test"
+
+
+@pytest.mark.asyncio
+async def test_promoting_the_previous_compound_back_restores_the_family(
+    editor_client, curated_run, async_session_factory
+):
+    """The undo the inspector promises, in full.
+
+    Restoring only the M0 would leave the family as orphaned unassigned peaks:
+    the isotopologue block would vanish from the inspector and the tier counts
+    would carry two extra unassigned rows, with only a re-assignment of the
+    whole sample to fix it.
+    """
+    await editor_client.patch(
+        _url(curated_run, curated_run["m0_id"]),
+        json={"action": "promote_alternative", "alternative_index": 0},
+    )
+    stripped = await _row(async_session_factory, curated_run["child_id"])
+    assert stripped.role == "unassigned"  # it really was demoted first
+
+    response = await editor_client.patch(
+        _url(curated_run, curated_run["m0_id"]),
+        json={
+            "action": "promote_alternative",
+            "alternative_index": 0,
+            "expected_formula": "C6H12O6",
+        },
+    )
+
+    assert response.status_code == 200
+    assert {row["sample_peak_id"] for row in response.json()["data"]} == {
+        "cur-1",
+        "cur-2",
+    }
+    child = await _row(async_session_factory, curated_run["child_id"])
+    assert child.assigned_formula == "C6H12O6"
+    assert child.ion_formula == "C6H13O6+"
+    assert child.ionization_mechanism_id == curated_run["mechanism_id"]
+    assert child.isotope_label == "M+1"
+    assert child.role == "iso_child"
+    assert child.fit_score == pytest.approx(0.88)
+    assert child.owner_peak_assignment_id == curated_run["m0_id"]
+    # The tier it had, not one re-judged: 0.88 sits below this run's 0.9 band,
+    # so a recompute would land 'candidate' and lose what the run decided.
+    assert child.tier == "assigned"
+    # And it reads as the engine's row again rather than a person's edit: the
+    # demotion's manual block goes, the provenance it had comes back.
+    assert child.source == "database"
+    assert child.provenance == {
+        "plausibility": 0.9,
+        "evidence": 0.79,
+        "score_version": "v2-test",
+    }
+    # The snapshot the demotion pushed onto its alternatives is popped back
+    # off, so a demote/restore round trip does not grow the list every time.
+    assert child.alternatives is None
+    # The owner stops offering a restore that has already happened, and says
+    # what it did.
+    m0 = await _row(async_session_factory, curated_run["m0_id"])
+    assert "demoted" not in m0.provenance["manual"]
+    assert m0.provenance["manual"]["restored"] == [curated_run["child_id"]]
+
+
+@pytest.mark.asyncio
+async def test_a_satellite_curated_by_hand_is_not_restored_over(
+    editor_client, curated_run, async_session_factory
+):
+    """A person's judgement on the satellite is newer than the undo.
+
+    Putting the engine's older row back over it would destroy a deliberate act
+    in order to reverse an accidental one, so the row is left exactly as its
+    curator left it and only reported as skipped.
+    """
+    await editor_client.patch(
+        _url(curated_run, curated_run["m0_id"]),
+        json={"action": "promote_alternative", "alternative_index": 0},
+    )
+    claimed = await editor_client.patch(
+        _url(curated_run, curated_run["child_id"]),
+        json={
+            "action": "set_assignment",
+            "assigned_formula": "C3H8O3",
+            "ionization_mechanism_id": curated_run["mechanism_id"],
+            "fit_score": 0.95,
+        },
+    )
+    assert claimed.status_code == 200
+
+    response = await editor_client.patch(
+        _url(curated_run, curated_run["m0_id"]),
+        json={
+            "action": "promote_alternative",
+            "alternative_index": 0,
+            "expected_formula": "C6H12O6",
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["results"] == 1  # the M0 alone; nothing came back
+    child = await _row(async_session_factory, curated_run["child_id"])
+    assert child.assigned_formula == "C3H8O3"
+    assert child.source == "manual"
+    assert child.owner_peak_assignment_id is None
+    m0 = await _row(async_session_factory, curated_run["m0_id"])
+    assert m0.provenance["manual"]["restore_skipped"] == [curated_run["child_id"]]
+    assert "restored" not in m0.provenance["manual"]
+    # Consumed either way: the row belongs to whoever claimed it now, so no
+    # later edit gets a second attempt at overwriting them.
+    assert "demoted" not in m0.provenance["manual"]
+
+
+@pytest.mark.asyncio
+async def test_a_satellite_whose_row_is_gone_is_reported_not_passed_over(
+    editor_client, curated_run, async_session_factory
+):
+    """An undo that cannot reach a satellite has to say so.
+
+    The archive names rows by id out of a JSON blob, and the row can be gone by
+    the time the undo runs - deleted, or (in an imported run's provenance)
+    never this run's to write in the first place. Passed over in silence the
+    response would report a successful undo while the satellite stayed demoted,
+    with nothing anywhere recording that anything was missed, and the archive
+    entry gone too - a satellite permanently unrestorable and no trace of it.
+    """
+    await editor_client.patch(
+        _url(curated_run, curated_run["m0_id"]),
+        json={"action": "promote_alternative", "alternative_index": 0},
+    )
+    async with async_session_factory() as session:
+        # Demoted, so nothing points at it any more and it deletes cleanly.
+        await session.execute(
+            delete(PeakAssignment).where(
+                PeakAssignment.peak_assignment_id == curated_run["child_id"]
+            )
+        )
+        await session.commit()
+
+    response = await editor_client.patch(
+        _url(curated_run, curated_run["m0_id"]),
+        json={
+            "action": "promote_alternative",
+            "alternative_index": 0,
+            "expected_formula": "C6H12O6",
+        },
+    )
+
+    assert response.status_code == 200
+    assert "could not be put back" in response.json()["message"]
+    m0 = await _row(async_session_factory, curated_run["m0_id"])
+    manual = m0.provenance["manual"]
+    assert manual["restore_failed"] == [curated_run["child_id"]]
+    # Not a skip: that word means a row somebody else now owns was deliberately
+    # left alone, which is the opposite of what happened here.
+    assert "restore_skipped" not in manual
+    assert "restored" not in manual
+    # And the entry is consumed: no id ever names that row again, so keeping it
+    # would hold an archive slot to offer an undo that can only fail.
+    assert "demoted" not in manual
+
+
+@pytest.mark.asyncio
+async def test_an_archive_entry_that_cannot_be_committed_is_reported_and_kept(
+    editor_client, curated_run, async_session_factory
+):
+    """The other unreachable case, which deserves the other answer.
+
+    ``provenance`` is JSON an import may have written, so an archived state can
+    be unusable - a formula longer than its column, a fit score outside it.
+    Refusing the whole curation over it would be the wrong verdict, since the
+    request is fine, but restoring nothing and saying nothing is how a satellite
+    goes missing quietly. Unlike a deleted row this one is still standing, so
+    the entry stays archived: repair the provenance and the undo works again.
+    """
+    await editor_client.patch(
+        _url(curated_run, curated_run["m0_id"]),
+        json={"action": "promote_alternative", "alternative_index": 0},
+    )
+    async with async_session_factory() as session:
+        m0 = await session.get(PeakAssignment, curated_run["m0_id"])
+        provenance = deepcopy(m0.provenance)
+        # Past the 256 the column holds. The demotion's own timestamp is left
+        # alone, so the entry still passes the "nobody has curated this since"
+        # gate and fails on the state itself.
+        provenance["manual"]["demoted"][0]["previous"]["assigned_formula"] = "C" * 300
+        m0.provenance = provenance
+        await session.commit()
+
+    response = await editor_client.patch(
+        _url(curated_run, curated_run["m0_id"]),
+        json={
+            "action": "promote_alternative",
+            "alternative_index": 0,
+            "expected_formula": "C6H12O6",
+        },
+    )
+
+    assert response.status_code == 200
+    assert "could not be put back" in response.json()["message"]
+    child = await _row(async_session_factory, curated_run["child_id"])
+    assert child.assigned_formula is None  # left exactly as it was
+    m0 = await _row(async_session_factory, curated_run["m0_id"])
+    manual = m0.provenance["manual"]
+    assert manual["restore_failed"] == [curated_run["child_id"]]
+    # Kept, not consumed: the row it describes is still there to be restored.
+    assert manual["demoted"][0]["peak_assignment_id"] == curated_run["child_id"]
+
+
+@pytest.mark.asyncio
+async def test_a_restore_only_fires_for_the_compound_it_was_archived_under(
+    editor_client, curated_run, async_session_factory
+):
+    """A satellite belongs to a compound, not to a row.
+
+    Committing some third formula is not the compound coming back, so the
+    family stays demoted - and the archive rides along to the edit that does
+    put that compound back, rather than being lost because the row was edited
+    twice in between.
+    """
+    await editor_client.patch(
+        _url(curated_run, curated_run["m0_id"]),
+        json={
+            "action": "set_assignment",
+            "assigned_formula": "C12H22O11",
+            "ionization_mechanism_id": curated_run["mechanism_id"],
+            "fit_score": 0.93,
+        },
+    )
+    response = await editor_client.patch(
+        _url(curated_run, curated_run["m0_id"]),
+        json={
+            "action": "set_assignment",
+            "assigned_formula": "C9H20O2",
+            "ionization_mechanism_id": curated_run["mechanism_id"],
+            "fit_score": 0.7,
+        },
+    )
+
+    assert response.json()["results"] == 1  # nothing demoted, nothing restored
+    child = await _row(async_session_factory, curated_run["child_id"])
+    assert child.assigned_formula is None
+    assert child.owner_peak_assignment_id is None
+    m0 = await _row(async_session_factory, curated_run["m0_id"])
+    assert m0.provenance["manual"]["demoted"][0]["owner_formula"] == "C6H12O6"
+
+    # Its own compound, two edits later, still restores it: the alternatives
+    # now read [C12H22O11, C6H12O6, C7H16O5], newest displacement first.
+    await editor_client.patch(
+        _url(curated_run, curated_run["m0_id"]),
+        json={
+            "action": "promote_alternative",
+            "alternative_index": 1,
+            "expected_formula": "C6H12O6",
+        },
+    )
+
+    child = await _row(async_session_factory, curated_run["child_id"])
+    assert child.assigned_formula == "C6H12O6"
+    assert child.owner_peak_assignment_id == curated_run["m0_id"]
 
 
 # ---------------------------------------------------------------------------
@@ -518,6 +926,144 @@ async def test_an_unknown_action_is_refused(editor_client, curated_run):
     )
 
     assert response.status_code == 422
+
+
+# ---------------------------------------------------------------------------
+# The run's own yardstick, and the ceiling on its lists
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_a_run_without_tier_bands_falls_back_to_its_configs_thresholds(
+    editor_client, curated_run, async_session_factory
+):
+    """``tier_bands`` is a later column, so a run computed before it recorded
+    its thresholds only in the config blob.
+
+    Without this fallback such a run's curated rows would be tiered by the
+    engine defaults while every other row of the same ledger was tiered by the
+    config's bands, and one row's 'assigned' would mean something different
+    from its neighbour's.
+    """
+    async with async_session_factory() as session:
+        run = await session.get(PeakAssignmentRun, curated_run["run_id"])
+        run.tier_bands = None
+        run.config = {"assigned_threshold": 0.6, "candidate_threshold": 0.3}
+        await session.commit()
+
+    await editor_client.patch(
+        _url(curated_run, curated_run["m0_id"]),
+        json={"action": "promote_alternative", "alternative_index": 0},
+    )
+
+    # The candidate's 0.62 clears the config's 0.6 band and clears neither the
+    # run's own 0.9 nor the engine's default 0.8, so 'assigned' can only have
+    # come from the config.
+    row = await _row(async_session_factory, curated_run["m0_id"])
+    assert row.tier == "assigned"
+
+
+@pytest.mark.asyncio
+async def test_the_configs_pre_rename_upper_threshold_is_read_too(
+    editor_client, curated_run, async_session_factory
+):
+    """A run configured before the tier rename names its upper band
+    ``identified_threshold``.
+
+    ``normalize_tier_bands`` does not reach it - that renames tier KEYS in the
+    bands column, not a config field that carries the same band under another
+    name - so without the second spelling here a pre-rename run would silently
+    drop to the engine defaults for exactly the rows a person curated.
+    """
+    async with async_session_factory() as session:
+        run = await session.get(PeakAssignmentRun, curated_run["run_id"])
+        run.tier_bands = None
+        run.config = {"identified_threshold": 0.6, "candidate_threshold": 0.3}
+        await session.commit()
+
+    await editor_client.patch(
+        _url(curated_run, curated_run["m0_id"]),
+        json={"action": "promote_alternative", "alternative_index": 0},
+    )
+
+    row = await _row(async_session_factory, curated_run["m0_id"])
+    assert row.tier == "assigned"
+
+
+@pytest.mark.asyncio
+async def test_a_run_that_records_no_bands_at_all_uses_the_engine_defaults(
+    editor_client, curated_run, async_session_factory
+):
+    """The oldest runs record their thresholds nowhere at all.
+
+    Something still has to tier a row curated into one, and the engine defaults
+    are what that run was itself computed under. The alternative is a float()
+    of None out of the band lookup, which would make the rows of every such run
+    uncurateable with a 500.
+    """
+    async with async_session_factory() as session:
+        run = await session.get(PeakAssignmentRun, curated_run["run_id"])
+        run.tier_bands = None
+        run.config = None
+        await session.commit()
+
+    await editor_client.patch(
+        _url(curated_run, curated_run["blank_id"]),
+        json={
+            "action": "set_assignment",
+            "assigned_formula": "C12H22O11",
+            "ionization_mechanism_id": curated_run["mechanism_id"],
+            "fit_score": 0.85,
+        },
+    )
+
+    # 0.85 clears the default 0.8 band but not the run's own 0.9, so 'assigned'
+    # here says the defaults were reached and RUN_BANDS was not.
+    row = await _row(async_session_factory, curated_run["blank_id"])
+    assert row.tier == "assigned"
+
+
+@pytest.mark.asyncio
+async def test_the_alternatives_list_is_truncated_at_its_ceiling(
+    editor_client, curated_run, async_session_factory
+):
+    """Every override pushes the winner it displaced onto the head of the list.
+
+    The list is a JSON blob on the highest-volume table, so without the ceiling
+    a row curated back and forth would grow it by a candidate each time, and an
+    imported row can arrive at the ceiling already with no override at all.
+    """
+    async with async_session_factory() as session:
+        row = await session.get(PeakAssignment, curated_run["m0_id"])
+        row.alternatives = [
+            _alternative(
+                curated_run["mechanism_id"], assigned_formula=f"C{n}H{2 * n}O2"
+            )
+            for n in range(1, MAX_ALTERNATIVES_CEILING + 1)
+        ]
+        await session.commit()
+
+    response = await editor_client.patch(
+        _url(curated_run, curated_run["m0_id"]),
+        json={
+            "action": "set_assignment",
+            "assigned_formula": "C12H22O11",
+            "ionization_mechanism_id": curated_run["mechanism_id"],
+            "fit_score": 0.7,
+        },
+    )
+
+    assert response.status_code == 200
+    row = await _row(async_session_factory, curated_run["m0_id"])
+    assert len(row.alternatives) == MAX_ALTERNATIVES_CEILING
+    formulas = [alternative["assigned_formula"] for alternative in row.alternatives]
+    # The displaced winner takes the head and the loss comes off the tail, so
+    # what falls out is the weakest runner-up rather than the formula a person
+    # just replaced - which is the entry the undo needs.
+    last = MAX_ALTERNATIVES_CEILING
+    assert formulas[0] == "C6H12O6"
+    assert f"C{last}H{2 * last}O2" not in formulas
+    assert f"C{last - 1}H{2 * (last - 1)}O2" in formulas
 
 
 # ---------------------------------------------------------------------------
@@ -669,6 +1215,175 @@ async def test_the_promoted_candidates_adduct_comes_with_it(
 
 
 @pytest.mark.asyncio
+async def test_a_candidate_that_names_no_adduct_cannot_be_committed(
+    editor_client, curated_run, async_session_factory
+):
+    """The untargeted stage's `other_candidates` shortlist is formula names and
+    a plausibility and nothing else.
+
+    Committed as they stand they would give a row with a formula and no
+    mechanism, which cannot carry a verification identity - the very thing
+    ``SetAssignmentBody`` makes the mechanism mandatory to prevent. Refusing
+    here is what makes the two actions agree; the way to commit such a formula
+    is the re-search hand button, which supplies an adduct.
+    """
+    async with async_session_factory() as session:
+        row = await session.get(PeakAssignment, curated_run["m0_id"])
+        row.alternatives = [
+            {
+                "assigned_formula": "C9H12O3",
+                "plausibility": 0.71,
+                "source": "untargeted",
+            }
+        ]
+        await session.commit()
+
+    response = await editor_client.patch(
+        _url(curated_run, curated_run["m0_id"]),
+        json={"action": "promote_alternative", "alternative_index": 0},
+    )
+
+    assert response.status_code == 422
+    # Refused before anything was written: the old winner still stands, adduct
+    # and all, and its satellite was not demoted on the way to the refusal.
+    row = await _row(async_session_factory, curated_run["m0_id"])
+    assert row.assigned_formula == "C6H12O6"
+    assert row.ionization_mechanism_id == curated_run["mechanism_id"]
+    assert row.source == "database"
+    assert row.tier == "assigned"
+    child = await _row(async_session_factory, curated_run["child_id"])
+    assert child.assigned_formula == "C6H12O6"
+    assert child.owner_peak_assignment_id == curated_run["m0_id"]
+
+
+@pytest.mark.asyncio
+async def test_a_candidates_target_ion_supplies_the_adduct_it_omits(
+    editor_client, curated_run, async_session_factory
+):
+    """The documented fallback, which is how an alternative written before
+    alternatives carried ``ionization_mechanism_id`` still promotes to a
+    complete assignment: a database candidate names the target ion it was
+    scored against, and that ion knows its own mechanism.
+    """
+    compound_id = gen_id()
+    ion_id = gen_id()
+    async with async_session_factory() as session:
+        session.add(
+            TargetCompound(
+                target_compound_id=compound_id,
+                target_compound_name="Curation fallback compound",
+                target_compound_formula="C7H16O5",
+            )
+        )
+        session.add(
+            TargetIon(
+                target_ion_id=ion_id,
+                target_compound_id=compound_id,
+                ionization_mechanism_id=curated_run["mechanism_id"],
+                target_ion_formula="C7H17O5+",
+            )
+        )
+        row = await session.get(PeakAssignment, curated_run["m0_id"])
+        # No `ionization_mechanism_id` at all - the pre-mechanism shape.
+        row.alternatives = [
+            {**ALTERNATIVE, "target_ion_id": ion_id},
+        ]
+        await session.commit()
+
+    try:
+        response = await editor_client.patch(
+            _url(curated_run, curated_run["m0_id"]),
+            json={"action": "promote_alternative", "alternative_index": 0},
+        )
+
+        assert response.status_code == 200
+        row = await _row(async_session_factory, curated_run["m0_id"])
+        assert row.assigned_formula == "C7H16O5"
+        assert row.ionization_mechanism_id == curated_run["mechanism_id"]
+        assert row.target_ion_id == ion_id
+    finally:
+        async with async_session_factory() as session:
+            # Cascades to the ion; the assignment's links are ON DELETE SET NULL.
+            await session.execute(
+                delete(TargetCompound).where(
+                    TargetCompound.target_compound_id == compound_id
+                )
+            )
+            await session.commit()
+
+
+@pytest.mark.asyncio
+async def test_a_candidate_whose_target_ion_is_gone_is_told_which_it_is(
+    editor_client, curated_run, async_session_factory
+):
+    """A refusal has to name the thing that is actually wrong.
+
+    The inspector offers "use this" on a candidate that names a target ion
+    without knowing whether the ion still exists, so this click is reachable.
+    Answering it with the adductless refusal - "that candidate names no adduct,
+    search this peak's composition" - would tell a person their candidate never
+    had one, when it had one perfectly well until the target library moved on.
+    """
+    async with async_session_factory() as session:
+        row = await session.get(PeakAssignment, curated_run["m0_id"])
+        # Never inserted: the shape of a target ion deleted since the run, and
+        # no mechanism of its own, so the dead ion is the only route to one.
+        row.alternatives = [{**ALTERNATIVE, "target_ion_id": gen_id()}]
+        await session.commit()
+
+    response = await editor_client.patch(
+        _url(curated_run, curated_run["m0_id"]),
+        json={"action": "promote_alternative", "alternative_index": 0},
+    )
+
+    assert response.status_code == 422
+    assert "no longer exists" in response.json()["error"]
+    assert "names no adduct" not in response.json()["error"]
+    row = await _row(async_session_factory, curated_run["m0_id"])
+    assert row.assigned_formula == "C6H12O6"
+
+
+@pytest.mark.asyncio
+async def test_a_candidates_dead_target_links_are_dropped_not_flushed(
+    editor_client, curated_run, async_session_factory
+):
+    """The target ids in a candidate were written when the run was computed,
+    and the target library has moved on since.
+
+    They are foreign keys on the assignment, so committing an id whose row has
+    been deleted raises out of the flush - a 500 on a request that is otherwise
+    perfectly good, and one nobody can fix except by editing the target
+    library. Dropping them keeps the override a verdict on the chemistry rather
+    than on the library's history.
+    """
+    async with async_session_factory() as session:
+        row = await session.get(PeakAssignment, curated_run["m0_id"])
+        row.alternatives = [
+            _alternative(
+                curated_run["mechanism_id"],
+                # Never inserted: the shape of a target deleted since the run.
+                target_compound_id=gen_id(),
+                target_ion_id=gen_id(),
+            )
+        ]
+        await session.commit()
+
+    response = await editor_client.patch(
+        _url(curated_run, curated_run["m0_id"]),
+        json={"action": "promote_alternative", "alternative_index": 0},
+    )
+
+    assert response.status_code == 200
+    row = await _row(async_session_factory, curated_run["m0_id"])
+    assert row.assigned_formula == "C7H16O5"
+    assert row.target_compound_id is None
+    assert row.target_ion_id is None
+    # The adduct is unaffected: it is the candidate's own, and only the
+    # mechanism fallback would have had to read the dead ion.
+    assert row.ionization_mechanism_id == curated_run["mechanism_id"]
+
+
+@pytest.mark.asyncio
 async def test_committing_the_formula_the_row_already_carries_keeps_the_family(
     editor_client, curated_run, async_session_factory
 ):
@@ -697,6 +1412,67 @@ async def test_committing_the_formula_the_row_already_carries_keeps_the_family(
     assert child.assigned_formula == "C6H12O6"
     assert child.role == "iso_child"
     assert child.owner_peak_assignment_id == curated_run["m0_id"]
+
+
+@pytest.mark.asyncio
+async def test_the_same_formula_under_another_adduct_still_demotes_the_family(
+    editor_client, curated_run, async_session_factory
+):
+    """The other half of the rule the test above pins, and the half the
+    (formula, mechanism) comparison was written for.
+
+    A family belongs to a COMPOUND, and a compound is a formula under an adduct:
+    the satellites of C6H12O6 as a protonated ion are not the satellites of the
+    same formula sodiated - a different ion at a different m/z, with different
+    peaks. Comparing formulas alone would leave the old family standing under an
+    adduct their M0 no longer carries, and the ledger would show an isotopologue
+    block that no longer belongs to anything.
+    """
+    other_id = gen_id()
+    async with async_session_factory() as session:
+        session.add(
+            IonizationMechanism(
+                ionization_mechanism_id=other_id,
+                ionization_mechanism_polarity="+",
+                ionization_mechanism=f"+Na+ ({other_id})",
+            )
+        )
+        await session.commit()
+
+    try:
+        response = await editor_client.patch(
+            _url(curated_run, curated_run["m0_id"]),
+            json={
+                "action": "set_assignment",
+                # The formula the row already carries, under a different adduct.
+                "assigned_formula": "C6H12O6",
+                "ionization_mechanism_id": other_id,
+                "fit_score": 0.93,
+            },
+        )
+
+        assert response.status_code == 200
+        assert response.json()["results"] == 2  # the row and its ex-satellite
+        child = await _row(async_session_factory, curated_run["child_id"])
+        assert child.assigned_formula is None
+        assert child.role == "unassigned"
+        assert child.owner_peak_assignment_id is None
+        # Archived under the adduct they belonged to, so it is that adduct
+        # coming back that brings them home - not the formula on its own.
+        m0 = await _row(async_session_factory, curated_run["m0_id"])
+        entry = m0.provenance["manual"]["demoted"][0]
+        assert entry["owner_formula"] == "C6H12O6"
+        assert entry["owner_ionization_mechanism_id"] == curated_run["mechanism_id"]
+    finally:
+        async with async_session_factory() as session:
+            # The row's link is ON DELETE SET NULL, and the run is dropped by
+            # the fixture's own teardown straight after.
+            await session.execute(
+                delete(IonizationMechanism).where(
+                    IonizationMechanism.ionization_mechanism_id == other_id
+                )
+            )
+            await session.commit()
 
 
 @pytest.mark.asyncio
@@ -753,6 +1529,64 @@ async def test_a_searched_composition_can_replace_an_existing_assignment(
     # And the satellites of the formula it replaced are gone, as for a promote.
     child = await _row(async_session_factory, curated_run["child_id"])
     assert child.role == "unassigned"
+
+
+@pytest.mark.asyncio
+async def test_a_searched_composition_archives_the_winner_it_displaced(
+    editor_client, curated_run, async_session_factory
+):
+    """The displaced-winner path in full, on the action that does not read the
+    row for its candidate.
+
+    ``set_assignment`` builds its winner from the request body, so it reaches
+    the archive down a different branch than ``promote_alternative`` - which is
+    where the snapshot, the calibrated-field archive and the family demotion
+    are otherwise pinned. A regression that overwrote the row in place on this
+    branch, keeping the engine's P(correct) beside a formula the caller typed
+    and leaving the old family assigned, would pass every one of those.
+    """
+    response = await editor_client.patch(
+        _url(curated_run, curated_run["m0_id"]),
+        json={
+            "action": "set_assignment",
+            "assigned_formula": "C12H22O11",
+            "ionization_mechanism_id": curated_run["mechanism_id"],
+            "fit_score": 0.7,
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["results"] == 2  # the curated row and its satellite
+
+    row = await _row(async_session_factory, curated_run["m0_id"])
+    # The whole winner, not just its formula: promoting this entry back has to
+    # restore the adduct and the numbers too, or the undo is a different row.
+    displaced = row.alternatives[0]
+    assert displaced["assigned_formula"] == "C6H12O6"
+    assert displaced["ion_formula"] == "C6H13O6+"
+    assert displaced["ionization_mechanism_id"] == curated_run["mechanism_id"]
+    assert displaced["fit_score"] == pytest.approx(0.95)
+    assert displaced["tier"] == "assigned"
+    assert displaced["source"] == "database"
+    # The engine's reading of that winner travels with it and not with the row:
+    # stated beside a formula a person typed, P(correct) would be a calibrated
+    # probability for a candidate nothing calibrated.
+    assert displaced["engine_judgement"]["p_correct"] == pytest.approx(0.93)
+    for key in ("p_correct", "calibrated", "calibration", "corroboration"):
+        assert key not in row.provenance
+    archived = row.provenance["manual"]["previous"]["engine_judgement"]
+    assert archived["p_correct"] == pytest.approx(0.93)
+    assert archived["corroboration"]["n_adducts"] == 2
+
+    # The old formula's family goes with it, archived under the compound it
+    # was a family of so that committing that compound back brings it home.
+    entry = row.provenance["manual"]["demoted"][0]
+    assert entry["peak_assignment_id"] == curated_run["child_id"]
+    assert entry["owner_formula"] == "C6H12O6"
+    assert entry["owner_ionization_mechanism_id"] == curated_run["mechanism_id"]
+    child = await _row(async_session_factory, curated_run["child_id"])
+    assert child.assigned_formula is None
+    assert child.owner_peak_assignment_id is None
 
 
 @pytest.mark.asyncio
@@ -819,6 +1653,86 @@ async def test_an_adduct_of_the_wrong_polarity_is_refused(
         assert row.assigned_formula is None
     finally:
         async with async_session_factory() as session:
+            await session.execute(
+                delete(IonizationMechanism).where(
+                    IonizationMechanism.ionization_mechanism_id == opposite_id
+                )
+            )
+            await session.commit()
+
+
+@pytest.mark.asyncio
+async def test_an_adduct_reached_through_a_target_ion_is_polarity_checked_too(
+    editor_client, curated_run, async_session_factory
+):
+    """The fallback is the untested half of the rule, and the reachable half.
+
+    A hand-supplied id is not the only way an opposite-polarity adduct gets in:
+    ``alternatives`` is untyped JSON that nothing validates on the way in, an
+    imported run's entries are whatever the publishing client sent, and a target
+    compound ordinarily carries ions in both polarities - so a candidate
+    pointing at a negative-mode ion is an ordinary route for an adduct this
+    measurement could not have produced. Checking only the id a caller states
+    leaves that door open while the docstring says it is shut.
+    """
+    opposite_id = gen_id()
+    compound_id = gen_id()
+    ion_id = gen_id()
+    async with async_session_factory() as session:
+        session.add(
+            IonizationMechanism(
+                ionization_mechanism_id=opposite_id,
+                ionization_mechanism_polarity="-",
+                ionization_mechanism=f"-H- ({opposite_id})",
+            )
+        )
+        session.add(
+            TargetCompound(
+                target_compound_id=compound_id,
+                target_compound_name="Opposite polarity compound",
+                target_compound_formula="C7H16O5",
+            )
+        )
+        session.add(
+            TargetIon(
+                target_ion_id=ion_id,
+                target_compound_id=compound_id,
+                ionization_mechanism_id=opposite_id,
+                target_ion_formula="C7H15O5-",
+            )
+        )
+        row = await session.get(PeakAssignment, curated_run["m0_id"])
+        # No mechanism of its own, so the ion's is the one that would land.
+        row.alternatives = [{**ALTERNATIVE, "target_ion_id": ion_id}]
+        await session.commit()
+
+    try:
+        response = await editor_client.patch(
+            _url(curated_run, curated_run["m0_id"]),
+            json={"action": "promote_alternative", "alternative_index": 0},
+        )
+
+        assert response.status_code == 422
+        # The polarity refusal specifically, not the adductless one: the
+        # fallback did resolve a mechanism, and that mechanism is the problem.
+        detail = response.json()["detail"]
+        assert detail["mechanism_polarity"] == "-"
+        assert detail["sample_polarity"] != "-"
+        # Refused before anything was written, the family included.
+        row = await _row(async_session_factory, curated_run["m0_id"])
+        assert row.assigned_formula == "C6H12O6"
+        assert row.ionization_mechanism_id == curated_run["mechanism_id"]
+        assert row.source == "database"
+        child = await _row(async_session_factory, curated_run["child_id"])
+        assert child.owner_peak_assignment_id == curated_run["m0_id"]
+    finally:
+        async with async_session_factory() as session:
+            # The compound cascades to its ion, which frees the mechanism.
+            await session.execute(
+                delete(TargetCompound).where(
+                    TargetCompound.target_compound_id == compound_id
+                )
+            )
             await session.execute(
                 delete(IonizationMechanism).where(
                     IonizationMechanism.ionization_mechanism_id == opposite_id
