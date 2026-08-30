@@ -287,10 +287,10 @@ describe('PanePeakAssign adduct corroboration', () => {
   })
 
   // The engine folds the boost into the record carrying the corroboration - the
-  // M0's p_correct - and never into an isotopologue's, which stays calibrated on its
+  // M0's p_correct - and never into a child's, which stays calibrated on its
   // own evidence. The inspector renders that isotopologue's own P(correct) directly
   // above this badge, so claiming the boost is in it would be false.
-  it('does not claim the boost is in the isotopologue own P(correct)', async () => {
+  it('does not claim the boost is in the P(correct) of the isotopologue itself', async () => {
     focusIsotopologue(3)
     const wrapper = await mountPane()
 
@@ -303,7 +303,7 @@ describe('PanePeakAssign adduct corroboration', () => {
 
   // An imported ledger is not bound by the in-app engine's winner-only rule, so an
   // isotopologue that carries its own count keeps it - and it is not "via M0".
-  it('prefers an isotopologue own count over the family one', async () => {
+  it('prefers the count on the isotopologue itself over the family one', async () => {
     focusedAssignment = { ...ISOTOPOLOGUE, corroboration_adducts: 2 }
     familyRows = [{ ...M0, corroboration_adducts: 5 }, focusedAssignment]
     const wrapper = await mountPane()
