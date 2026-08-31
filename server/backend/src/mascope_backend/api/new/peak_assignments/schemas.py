@@ -116,6 +116,10 @@ class PeakAssignmentRecord(BaseModel):
     target_compound_id: str | None = None
     target_ion_id: str | None = None
     owner_peak_assignment_id: str | None = None
+    #: The evidence this row's tier was read off - ``fit_score`` weighted by the
+    #: chemical plausibility of ``assigned_formula`` (provenance.evidence),
+    #: flattened because the tier chip displays it beside the tier it produced.
+    evidence: float | None = None
     #: Calibrated probability the assignment is correct (provenance.p_correct),
     #: flattened for the ledger's sortable P(correct) column.
     p_correct: float | None = None

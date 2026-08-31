@@ -17,7 +17,7 @@ from mascope_backend.api.new.peak_assignments.config import (
     IN_APP_ENGINE,
     MAX_IMPORT_JSON_BYTES,
 )
-from mascope_backend.api.new.peak_assignments.engine import tier_for_score
+from mascope_backend.api.new.peak_assignments.engine import tier_for_evidence
 from mascope_backend.api.new.peak_assignments.import_validation import (
     chunk_offset_error,
     coherent_tiers,
@@ -79,17 +79,34 @@ class TestEngineIsReserved:
         assert "non-empty" in error
 
 
+#: A formula whose element ratios sit in the Seven Golden Rules' common range,
+#: so its plausibility is exactly 1.0 and its evidence is its fit. Most of the
+#: cases below are about the BANDS, not about chemistry, and they say so by
+#: using a formula that weighs nothing.
+PLAUSIBLE = "C6H12O6"
+#: Methanesulfonic acid - a real compound, but three oxygens on one carbon put
+#: its O/C ratio deep in the distribution's tail: plausibility ~0.40.
+IMPLAUSIBLE = "CH4O3S"
+
+
 class TestTierCoherence:
     """A tier must mean what the run's declared bands say it means.
 
-    The two engines share a fit-score scale, but the bands are run config, not
-    engine constants. Without this check an engine tiering at 0.6/0.3 publishes
-    'assigned' rows at 0.62 that sort, filter and roll up beside in-app
-    'assigned' rows meaning something considerably stricter.
+    The two engines share an EVIDENCE scale (fit x chemical plausibility), but
+    the bands are run config, not engine constants. Without this check an engine
+    tiering at 0.6/0.3 publishes 'assigned' rows at 0.62 that sort, filter and
+    roll up beside in-app 'assigned' rows meaning something considerably
+    stricter.
+
+    What an importer declares did not grow a field: it declares evidence-scale
+    ``tier_bands`` and a per-row ``fit_score`` and ``assigned_formula``, and the
+    server derives the evidence itself. Plausibility is a pure function of the
+    formula, so there is nothing an importer could tell us about it that we
+    would rather believe than compute.
     """
 
     @pytest.mark.parametrize(
-        "fit_score,expected",
+        "evidence,expected",
         [
             (1.0, {"assigned"}),
             (0.8, {"assigned"}),
@@ -100,66 +117,107 @@ class TestTierCoherence:
             (None, {"unassigned", "below_assignability"}),
         ],
     )
-    def test_thresholds_are_inclusive_at_the_band_edge(self, fit_score, expected):
-        assert coherent_tiers(fit_score, 0.8, 0.5) == expected
+    def test_thresholds_are_inclusive_at_the_band_edge(self, evidence, expected):
+        assert coherent_tiers(evidence, 0.8, 0.5) == expected
 
-    @pytest.mark.parametrize("fit_score", [1.0, 0.8, 0.79, 0.5, 0.49, 0.01, 0.0])
-    def test_a_scored_row_is_tiered_by_the_in_app_engine(self, fit_score):
+    @pytest.mark.parametrize("evidence", [1.0, 0.8, 0.79, 0.5, 0.49, 0.01, 0.0])
+    def test_a_scored_row_is_tiered_by_the_in_app_engine(self, evidence):
         """The check delegates rather than restating, so it cannot drift.
 
         Restating it is what made an earlier version refuse rows the in-app
         engine itself writes. This pins the delegation, not a second copy of
         the thresholds.
         """
-        assert coherent_tiers(fit_score, 0.8, 0.5) == {
-            tier_for_score(fit_score, possible_threshold=0.5, probable_threshold=0.8)
+        assert coherent_tiers(evidence, 0.8, 0.5) == {
+            tier_for_evidence(evidence, candidate_threshold=0.5, assigned_threshold=0.8)
         }
 
     def test_a_zero_score_is_below_assignability_even_at_a_zero_band(self):
-        """`tier_for_score` guards on `score <= 0` before the bands apply.
+        """`tier_for_evidence` guards on `evidence <= 0` before the bands apply.
 
-        An engine may legitimately declare `candidate: 0.0`; a 0.0 score is
+        An engine may legitimately declare `candidate: 0.0`; a 0.0 evidence is
         still not a candidate, and that is what the in-app engine records.
         """
         assert coherent_tiers(0.0, 0.8, 0.0) == {"below_assignability"}
-        assert tier_coherence_error("below_assignability", 0.0, 0.8, 0.0) is None
-        assert tier_coherence_error("candidate", 0.0, 0.8, 0.0) is not None
+        assert (
+            tier_coherence_error("below_assignability", 0.0, PLAUSIBLE, 0.8, 0.0)
+            is None
+        )
+        assert tier_coherence_error("candidate", 0.0, PLAUSIBLE, 0.8, 0.0) is not None
 
     def test_a_coherent_row_passes(self):
-        assert tier_coherence_error("assigned", 0.91, 0.8, 0.5) is None
+        assert tier_coherence_error("assigned", 0.91, PLAUSIBLE, 0.8, 0.5) is None
 
     def test_an_inflated_tier_is_rejected(self):
         """The case the whole rule exists for."""
-        error = tier_coherence_error("assigned", 0.62, 0.8, 0.5)
+        error = tier_coherence_error("assigned", 0.62, PLAUSIBLE, 0.8, 0.5)
 
         assert error is not None
         assert "candidate" in error
 
     def test_a_demoted_tier_is_rejected_too(self):
         """Bands are checked, not merely bounded: a tier is derived, not chosen."""
-        assert tier_coherence_error("candidate", 0.95, 0.8, 0.5) is not None
+        assert tier_coherence_error("candidate", 0.95, PLAUSIBLE, 0.8, 0.5) is not None
 
     def test_the_declared_bands_are_what_is_applied(self):
         """0.62 is 'assigned' under 0.6/0.3 and 'candidate' under 0.8/0.5."""
-        assert tier_coherence_error("assigned", 0.62, 0.6, 0.3) is None
-        assert tier_coherence_error("assigned", 0.62, 0.8, 0.5) is not None
+        assert tier_coherence_error("assigned", 0.62, PLAUSIBLE, 0.6, 0.3) is None
+        assert tier_coherence_error("assigned", 0.62, PLAUSIBLE, 0.8, 0.5) is not None
 
     def test_a_scored_row_cannot_claim_unassigned(self):
-        assert tier_coherence_error("unassigned", 0.9, 0.8, 0.5) is not None
+        assert tier_coherence_error("unassigned", 0.9, PLAUSIBLE, 0.8, 0.5) is not None
 
     def test_an_unscored_row_is_unassigned_or_below_assignability(self):
         """Both are shapes the in-app ledger writes, so both are accepted.
 
         A peak nothing was assigned to is 'unassigned'; an assigned row whose
-        score came back non-finite is 'below_assignability' (`tier_for_score`
-        maps a None score to exactly that). Refusing the second - as an earlier
+        score came back non-finite is 'below_assignability' (`tier_for_evidence`
+        maps a None to exactly that). Refusing the second - as an earlier
         version did - refused an engine for reproducing Mascope's own output.
         """
-        assert tier_coherence_error("unassigned", None, 0.8, 0.5) is None
-        assert tier_coherence_error("below_assignability", None, 0.8, 0.5) is None
-        error = tier_coherence_error("assigned", None, 0.8, 0.5)
+        assert tier_coherence_error("unassigned", None, None, 0.8, 0.5) is None
+        assert tier_coherence_error("below_assignability", None, None, 0.8, 0.5) is None
+        error = tier_coherence_error("assigned", None, None, 0.8, 0.5)
         assert error is not None
         assert "no fit_score" in error
+
+    # --- the chemistry half of the rule ------------------------------------
+
+    def test_an_implausible_formula_cannot_claim_a_tier_its_fit_would_earn(self):
+        """The reason the check moved off the bare fit.
+
+        An importer tiering on fit alone publishes this row as 'assigned' on a
+        superb 0.95 mass fit. Its evidence is ~0.38, so under the very bands it
+        declared the row is 'below_assignability' - and the check now says so
+        instead of taking the tier on trust.
+        """
+        error = tier_coherence_error("assigned", 0.95, IMPLAUSIBLE, 0.8, 0.5)
+
+        assert error is not None
+        assert "below_assignability" in error
+        # The message names both numbers, so an importer can see which one the
+        # check used and how far the chemistry moved it.
+        assert "evidence" in error
+        assert "0.95" in error
+
+    def test_a_plausible_formula_at_the_same_fit_is_accepted(self):
+        """The contrast case: the fit is identical, only the chemistry differs."""
+        assert tier_coherence_error("assigned", 0.95, PLAUSIBLE, 0.8, 0.5) is None
+
+    def test_an_importer_may_publish_the_demotion_the_engine_would_write(self):
+        """An import must never be refused for reproducing Mascope's own output.
+
+        This is the shape the copy service publishes through this very pipeline,
+        so if the two disagreed the whole copy path would 422.
+        """
+        assert (
+            tier_coherence_error("below_assignability", 0.95, IMPLAUSIBLE, 0.8, 0.5)
+            is None
+        )
+
+    def test_a_formula_the_chemistry_layer_cannot_read_weighs_nothing(self):
+        """Fail-open: plausibility never decides whether a write happens."""
+        assert tier_coherence_error("assigned", 0.91, "not a formula", 0.8, 0.5) is None
 
 
 class TestRowFieldBoundsMatchTheColumns:

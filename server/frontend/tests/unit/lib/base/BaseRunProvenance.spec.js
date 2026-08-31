@@ -153,10 +153,14 @@ describe('BaseRunProvenance', () => {
 
   it('puts the run tier bands on the engine tooltip, as percentages', () => {
     // A tier is only comparable across engines under the thresholds that
-    // produced it, so the bands travel with the engine name.
+    // produced it, so the bands travel with the engine name - and named as
+    // EVIDENCE bands, because the same 60% means one thing against a fit and
+    // another against fit x plausibility.
     const wrapper = mountBadge(IMPORTED_RUN)
 
-    expect(wrapper.vm.tierBandsText).toBe('Tier bands: assigned ≥ 60% · candidate ≥ 30%')
+    expect(wrapper.vm.tierBandsText).toBe(
+      'Tier bands (evidence): assigned ≥ 60% · candidate ≥ 30%'
+    )
   })
 
   it('omits the bands rather than inventing them when the run carries none', () => {

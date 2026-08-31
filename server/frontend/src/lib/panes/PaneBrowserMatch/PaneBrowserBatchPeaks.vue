@@ -826,7 +826,13 @@ onScopeDispose(() => clearTimeout(computeTimer))
             >
           </template>
           <template #body="{ data }">
-            <BaseTierTag :tier="data.consensus_tier" :fit-score="data.best_fit_score" />
+            <!-- No number beside this one. A batch peak's consensus tier is a
+                 weighted vote over its members' tiers, not a threshold on any
+                 single quantity, so there is no evidence figure that produced it.
+                 `best_fit_score` is the best member's fit and is still served and
+                 sorted on; showing it here would read as the number the tier came
+                 from, which it never was. -->
+            <BaseTierTag :tier="data.consensus_tier" />
           </template>
           <template #filter="{ filterModel, filterCallback }">
             <Select

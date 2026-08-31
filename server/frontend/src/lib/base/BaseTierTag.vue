@@ -6,14 +6,27 @@ import Tag from 'primevue/tag'
 import { FALLBACK_TIER, tierMeta } from '@/lib/tiers'
 
 // Confidence-tier chip for a peak assignment. Replaces BaseMatchTag's 0/1/2
-// match_category with the four peak-centric tiers, optionally showing the fit
-// score and a role marker (reagent/artifact/iso_child are orthogonal to tier).
+// match_category with the four peak-centric tiers, optionally showing the
+// evidence and a role marker (reagent/artifact/iso_child are orthogonal to tier).
+//
+// The number beside the tier is the EVIDENCE (fit x chemical plausibility), not
+// the fit. It was the fit until tiers were bound to evidence, and the pairing
+// then became a contradiction on exactly the rows that matter most: a
+// chemically implausible formula with a superb mass fit would have read
+// "below assignability · 95%". The chip shows the quantity that put the row in
+// that band, so the label and the number can never disagree. The raw fit is
+// still served on the row and shown in the inspector as the pure measurement.
+//
+// Where a tier is not derived from a single number at all - the batch ledger's
+// consensus tier is a weighted vote over member tiers - the caller passes no
+// evidence and the chip shows the tier alone, rather than borrowing a number
+// that did not produce it.
 const props = defineProps({
   tier: {
     type: String,
     default: 'unassigned'
   },
-  fitScore: {
+  evidence: {
     type: Number,
     default: null
   },
@@ -25,8 +38,8 @@ const props = defineProps({
     type: String,
     default: null
   },
-  // Append the fit score to the tier label.
-  showFit: {
+  // Append the evidence to the tier label.
+  showEvidence: {
     type: Boolean,
     default: true
   },
@@ -41,18 +54,22 @@ const props = defineProps({
 // the same four tiers or a "below" chip can outrank an "assigned" one.
 const meta = computed(() => tierMeta(props.tier))
 
-const fitFormatter = new Intl.NumberFormat('en-US', {
+const percentFormatter = new Intl.NumberFormat('en-US', {
   style: 'percent',
   minimumFractionDigits: 0,
   maximumFractionDigits: 0
 })
 
-const fit = computed(() => {
-  const value = props.fitScore
-  return props.showFit && value != null && !Number.isNaN(value) ? fitFormatter.format(value) : null
+const evidence = computed(() => {
+  const value = props.evidence
+  return props.showEvidence && value != null && !Number.isNaN(value)
+    ? percentFormatter.format(value)
+    : null
 })
 
-const label = computed(() => (fit.value ? `${meta.value.label} · ${fit.value}` : meta.value.label))
+const label = computed(() =>
+  evidence.value ? `${meta.value.label} · ${evidence.value}` : meta.value.label
+)
 
 const roleIcon = computed(() => {
   switch (props.role) {
@@ -87,7 +104,7 @@ const isManual = computed(() => props.source === 'manual')
 // actually records the demotion: the ledger serves a slim row with no
 // provenance on it (PeakAssignmentRecord), so the action is unreadable on most
 // of the surfaces this chip renders on. The tier is readable everywhere, and
-// it is exact - both curation actions commit a formula and tier_for_score
+// it is exact - both curation actions commit a formula and tier_for_evidence
 // never returns 'unassigned', so a demotion is the only way a manual row ends
 // up at this tier. Read off the bucketed tier the chip displays rather than
 // the raw prop, so the mark can never contradict the label beside it.
@@ -116,8 +133,8 @@ const autoTooltip = computed(
     props.tooltip ??
     [
       `Tier: ${props.tier}`,
-      props.fitScore != null && !Number.isNaN(props.fitScore)
-        ? `Fit: ${fitFormatter.format(props.fitScore)}`
+      props.evidence != null && !Number.isNaN(props.evidence)
+        ? `Evidence: ${percentFormatter.format(props.evidence)} (fit x plausibility)`
         : null,
       sourceLine.value,
       props.role ? `Role: ${props.role}` : null

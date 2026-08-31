@@ -1204,7 +1204,7 @@ class TestValidation:
     ):
         """An engine reproducing Mascope's tiering must not be refused for it.
 
-        `tier_for_score` maps a None score to 'below_assignability', and the
+        `tier_for_evidence` maps a None to 'below_assignability', and the
         in-app ledger writes exactly that pair. Restating the thresholds here
         instead of delegating to it made that shape a 422.
         """

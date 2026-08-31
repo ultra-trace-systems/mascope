@@ -240,7 +240,7 @@ onBeforeUnmount(() => {
             </span>
             <BaseTierTag
               :tier="assignmentFor(data).tier"
-              :fit-score="assignmentFor(data).fit_score"
+              :evidence="assignmentFor(data).evidence"
               :role="assignmentFor(data).role"
               :source="assignmentFor(data).source"
             />

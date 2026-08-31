@@ -563,7 +563,7 @@ watch(
           />
         </template>
         <template #body="{ data }">
-          <BaseTierTag :tier="data.tier" :fit-score="data.fit_score" :source="data.source" />
+          <BaseTierTag :tier="data.tier" :evidence="data.evidence" :source="data.source" />
         </template>
       </Column>
       <Column v-if="peakAssignmentEnabled" field="plausibility" sortable>

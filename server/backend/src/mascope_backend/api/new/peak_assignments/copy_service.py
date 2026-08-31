@@ -37,7 +37,7 @@ The three stages, and what each deliberately reuses:
   ``score_ions_by_fit`` - the persisted Stage-A fit scale, NOT the legacy v1
   aggregate of ``/fit/aggregate``. Each copied row takes its ion's fit and
   the mass/abundance error of the isotopologue that paired to its destination
-  peak, and is re-tiered with ``tier_for_score`` under the source run's
+  peak, and is re-tiered with ``tier_for_evidence`` under the source run's
   declared bands, so tier-fit coherence holds by construction. ``alternatives``
   travel verbatim: they are curation context, and their embedded fits are
   labeled by the run's copy provenance rather than re-scored.
@@ -99,8 +99,9 @@ from mascope_backend.api.new.peak_assignments.config import (
 from mascope_backend.api.new.peak_assignments.engine import (
     ROLE_ISO_CHILD,
     ROLE_UNASSIGNED,
+    evidence_for,
     score_ions_by_fit,
-    tier_for_score,
+    tier_for_evidence,
 )
 from mascope_backend.api.new.peak_assignments.import_service import (
     abandon_import_run,
@@ -759,10 +760,14 @@ def build_copied_rows(
             mz_error_ppm = errors.get("mz_error_ppm")
             abundance_error = errors.get("abundance_error")
             sample_peak_tof = errors.get("sample_peak_tof")
-            tier = tier_for_score(
-                fit_score,
-                possible_threshold=bands["candidate"],
-                probable_threshold=bands["assigned"],
+            # The formula is carried over from the source row, so only the fit is
+            # re-measured here; plausibility is a property of that formula and is
+            # the same on either sample. Evidence is therefore the destination's
+            # fit against the copied formula's own plausibility.
+            tier = tier_for_evidence(
+                evidence_for(fit_score, source_row["assigned_formula"]),
+                candidate_threshold=bands["candidate"],
+                assigned_threshold=bands["assigned"],
             )
         else:
             fit_score = _score_or_none(source_row["fit_score"])

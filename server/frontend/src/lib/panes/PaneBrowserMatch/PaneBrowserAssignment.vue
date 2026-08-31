@@ -767,7 +767,7 @@ const breadcrumb = computed(() => {
           <template #body="{ data }">
             <BaseTierTag
               :tier="data.tier"
-              :fit-score="data.fit_score"
+              :evidence="data.evidence"
               :role="data.role"
               :source="data.source"
             />
