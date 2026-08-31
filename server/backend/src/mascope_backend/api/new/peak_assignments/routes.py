@@ -22,6 +22,9 @@ from mascope_backend.api.new.peak_assignments.admission import (
     in_flight_run_id,
     in_flight_run_ids,
 )
+from mascope_backend.api.new.peak_assignments.alternatives_scoring import (
+    score_row_alternatives,
+)
 from mascope_backend.api.new.peak_assignments.batch import (
     assign_sample_batch_peaks,
     partition_batch_samples,
@@ -41,6 +44,7 @@ from mascope_backend.api.new.peak_assignments.import_service import (
     import_assignment_run,
 )
 from mascope_backend.api.new.peak_assignments.schemas import (
+    AlternativeScoresResponse,
     AssignBatchResponse,
     AssignmentCurationResponse,
     AssignmentVerificationsResponse,
@@ -202,6 +206,46 @@ async def get_peak_assignment_detail_route(
         sample_item_id=sample_item_id, peak_assignment_id=peak_assignment_id
     )
     return PeakAssignmentDetailResponse.model_validate(result)
+
+
+@peak_assignments_router.get(
+    "/sample/{sample_item_id}/assignment/{peak_assignment_id}/alternative-scores",
+    response_model=AlternativeScoresResponse,
+)
+@api_route(token_access=True)
+async def get_alternative_scores_route(
+    sample_item_id: str,
+    peak_assignment_id: str,
+    user: User = Depends(current_active_user),
+) -> AlternativeScoresResponse:
+    """
+    Score this row's formula-only alternatives against its peak, on demand.
+
+    The untargeted finder's shortlist reaches a row as formulas and chemical
+    plausibilities only - the run does not measure them, because doing it for
+    every peak of a sample is an isotope-envelope match per candidate. For one
+    peak it is cheap, so it is done here when somebody is looking at that peak.
+
+    Deliberately separate from the detail endpoint, which is a database read on
+    the path of every peak click: this one loads peaks and generates isotope
+    envelopes, and most rows have no formula-only alternatives to spend that on.
+
+    Nothing is written. The scores are not persisted onto the run's rows - a run
+    records what the engine did, and this is not something it did - so a client
+    committing one of these candidates sends it back through the
+    `set_assignment` curation action, whose provenance says the numbers came
+    from a composition search.
+
+    :param sample_item_id: The unique identifier of the sample.
+    :param peak_assignment_id: The assignment whose shortlist to measure.
+    :param user: The current authenticated user. Requires workspace guest role.
+    :return: One entry per formula-only alternative, scored or blocked.
+    """
+    await check_sample_access(sample_item_id, user, "guest")
+    result = await score_row_alternatives(
+        sample_item_id=sample_item_id, peak_assignment_id=peak_assignment_id
+    )
+    return AlternativeScoresResponse.model_validate(result)
 
 
 @peak_assignments_router.get(

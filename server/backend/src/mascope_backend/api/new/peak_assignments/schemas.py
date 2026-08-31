@@ -164,6 +164,53 @@ class PeakAssignmentDetailResponse(BaseModel):
     data: list[PeakAssignmentDetailRecord]
 
 
+class AlternativeScoreRecord(BaseModel):
+    """One formula-only alternative, measured against the peak on demand.
+
+    Either scored - `fit_score` and the adduct it was measured under are
+    present - or blocked, where `blocked_reason` says in plain language why no
+    adduct puts the formula on this peak. Never both.
+
+    These numbers are session data, not run data: they are computed per request
+    and never written onto the stored row, so a client that wants to commit one
+    sends it back as a `set_assignment` (the composition-search action) rather
+    than promoting a stored alternative.
+    """
+
+    #: Position of the entry in the row's stored `alternatives` list. Clients
+    #: should match on `assigned_formula` instead where the list they render is
+    #: filtered, since the index is only meaningful against the stored order.
+    alternative_index: int
+    assigned_formula: str
+    #: Seven Golden Rules plausibility, a pure function of the formula.
+    plausibility: float | None = None
+    #: How many of the sample's adducts were tried, and how many placed the
+    #: formula on this peak. `adducts_matched` is absent when none did.
+    adducts_tried: int
+    adducts_matched: int | None = None
+    fit_score: float | None = None
+    mz_error_ppm: float | None = None
+    abundance_error: float | None = None
+    #: `fit x plausibility`, the currency a tier is read off.
+    evidence: float | None = None
+    ionization_mechanism_id: str | None = None
+    ionization_mechanism: str | None = None
+    ion_formula: str | None = None
+    #: Always "M0" when scored: the shortlist proposes a composition for this
+    #: peak's own mass, so only the ion's monoisotopic peak was allowed to pair.
+    isotope_label: str | None = None
+    blocked_reason: str | None = None
+
+
+class AlternativeScoresResponse(BaseModel):
+    """A row's formula-only alternatives, measured against its peak."""
+
+    status: str = "success"
+    message: str
+    results: int
+    data: list[AlternativeScoreRecord]
+
+
 class PeakAssignmentRunsResponse(BaseModel):
     """Peak assignment runs of a sample, newest first."""
 
