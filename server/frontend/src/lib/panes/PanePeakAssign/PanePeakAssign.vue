@@ -168,7 +168,7 @@ const provenance = computed(
 // same ionization. The untargeted shortlist is formula-only, so an entry with
 // no `ion_formula` cannot be evidence of a different mechanism: a missing one
 // counts as the same, and only a present-and-different one keeps the entry.
-const alternatives = computed(() => {
+const storedAlternatives = computed(() => {
   const stored = focusedDetail.value?.alternatives ?? focusedAssignment.value?.alternatives ?? []
   const committed = focusedAssignment.value
   if (!committed?.assigned_formula) return stored
@@ -178,6 +178,60 @@ const alternatives = computed(() => {
       (alt?.ion_formula != null && alt.ion_formula !== committed.ion_formula)
   )
 })
+
+// The untargeted finder's shortlist entries carry no fit and no adduct: they
+// are compositions whose mass fits the peak, listed before the run picked a
+// winner, and the run does not measure them (one isotope-envelope match per
+// candidate per peak is a whole-sample cost). The server measures them for one
+// peak on request; the results arrive here and are matched to their entries by
+// formula rather than by position, because the list rendered above is filtered
+// and the server indexes the stored one.
+//
+// A score is session data, not part of the run - see `promoteAlternative` for
+// what committing one therefore is.
+const altScores = computed(() =>
+  app.data.peakAssignment.peak.altScoresOf(focusedAssignment.value?.peak_assignment_id)
+)
+const scoring = computed(() =>
+  app.data.peakAssignment.peak.altScoresPending(focusedAssignment.value?.peak_assignment_id)
+)
+const scoreByFormula = computed(() => {
+  const map = new Map()
+  for (const score of altScores.value ?? []) map.set(score.assigned_formula, score)
+  return map
+})
+
+// Each entry with whatever the server measured for it hung off it. `scored` is
+// null for an entry the run already scored (it needs nothing) and for one the
+// measurement has not reached yet.
+const alternatives = computed(() =>
+  storedAlternatives.value.map((alt) => ({
+    ...alt,
+    scored: alt?.assigned_formula ? (scoreByFormula.value.get(alt.assigned_formula) ?? null) : null
+  }))
+)
+
+// Whether this row has entries worth measuring at all: the ones with a formula
+// and no adduct, which is exactly what the server would score. Checked here so
+// the request is only made for rows that have something to gain from it.
+const hasUnscored = computed(() =>
+  storedAlternatives.value.some(
+    (alt) => alt?.assigned_formula && !alt?.ionization_mechanism_id && !alt?.target_ion_id
+  )
+)
+
+// Fired off the detail rather than off the focus, because the shortlist only
+// arrives with the detail - and only for rows that actually have one. Failures
+// already toast via the http layer; the cards just keep reading "not measured".
+watch(
+  [focusedDetail, hasUnscored],
+  () => {
+    if (!hasUnscored.value) return
+    const assignment = focusedAssignment.value
+    if (assignment) app.data.peakAssignment.peak.loadAltScores(assignment).catch(() => {})
+  },
+  { immediate: true }
+)
 
 const fitPercent = new Intl.NumberFormat('en-US', {
   style: 'percent',
@@ -288,18 +342,33 @@ const isPoorMatch = (iso) => {
   return ab * mz < 0.5
 }
 
-// Stats for a close alternative (runner-up), surfaced on hover. Scored
-// runner-ups (from either stage) carry fit + m/z error + plausibility; entries
-// from the untargeted finder's formula-only shortlist have no per-candidate
-// fit, so fit reads "not scored" for them.
+// The numbers an entry was scored on, whichever of the two ways it got them.
+// A runner-up the run competed carries its own; a finder shortlist entry gets
+// them from the on-demand measurement, which also names the adduct it found.
+// Falls back to the entry's own fields so a run stored before this existed,
+// and an imported one, read exactly as they did.
+const altFit = (alt) => alt?.fit_score ?? alt?.scored?.fit_score ?? null
+const altMzError = (alt) => alt?.mz_error_ppm ?? alt?.scored?.mz_error_ppm ?? null
+const altAdduct = (alt) => alt?.scored?.ionization_mechanism ?? null
+
+// Stats for a close alternative (runner-up), surfaced on hover. Entries the
+// run scored carry fit + m/z error; the finder's shortlist entries read
+// "measuring" until their measurement lands, then either show one or say why
+// there is none.
 const altTooltip = (alt, index) => {
+  const fit = altFit(alt)
+  const measuring = fit == null && !alt?.scored && scoring.value
   const lines = [
-    `fit: ${alt.fit_score != null ? formatFit(alt.fit_score) : '— not scored (untargeted)'}`
+    `fit: ${fit != null ? formatFit(fit) : measuring ? '— measuring' : '— not measured'}`
   ]
-  if (alt.mz_error_ppm != null) {
-    lines.push(`m/z error: ${num.mzError.format(alt.mz_error_ppm)} ppm`)
+  const mzError = altMzError(alt)
+  if (mzError != null) {
+    lines.push(`m/z error: ${num.mzError.format(mzError)} ppm`)
   }
   lines.push(`plausibility: ${alt.plausibility != null ? formatFit(alt.plausibility) : '—'}`)
+  // Named only when the measurement supplied it: an entry that arrived with an
+  // adduct already shows it as its ion formula in the row above.
+  if (altAdduct(alt)) lines.push(`adduct: ${altAdduct(alt)}`)
   if (alt.source) lines.push(`source: ${alt.source}`)
   // Why this one carries no usable "use this". Said here as well as on the
   // control because the row is where the pointer actually is: the control only
@@ -328,20 +397,32 @@ const curateDenied = ref(false) // 403: not an editor on this sample
 // had to name a mechanism - a verification's identity is peak + formula +
 // mechanism, so a row assigned without an adduct could never carry a verdict.
 // `ionization_mechanism_id` is what the engine records on a runner-up now;
-// `target_ion_id` is how one written before that key still resolves to one.
+// `target_ion_id` is how one written before that key still resolves to one;
+// and `scored` is the adduct the on-demand measurement found for a shortlist
+// entry that reached the row with none.
 const canPromote = (alt) =>
-  Boolean(alt?.assigned_formula) && Boolean(alt?.ionization_mechanism_id || alt?.target_ion_id)
+  Boolean(alt?.assigned_formula) &&
+  Boolean(alt?.ionization_mechanism_id || alt?.target_ion_id || alt?.scored?.ionization_mechanism_id)
 
-// The entries that fail that test are the untargeted finder's formula-only
-// shortlist: a composition and a chemical plausibility and nothing else. They
-// get a disabled control with a reason rather than no control at all, because
-// the formula is not unassignable - re-searching it finds it under the
-// sample's own adducts, and the hand button there commits it with one.
+// Entries that fail that test are the untargeted finder's shortlist, either
+// still being measured or measured and placed on this peak by no adduct at
+// all. They get a disabled control with a reason rather than no control,
+// because the formula is not unassignable in principle - it just has nothing
+// to be assigned under yet.
 const promoteBlocked = (alt) => Boolean(alt?.assigned_formula) && !canPromote(alt)
+
+// Said on the row as well as on the control, because a disabled button
+// dispatches no mouse events and its own tooltip would seldom be read.
+//
+// Re-search is the way past every one of these states: it searches the peak's
+// composition against the sample's adducts from scratch rather than measuring
+// the formulas this shortlist happens to name, so it can find one this list
+// never held.
+const RESEARCH_HINT = 'Re-search the peak to look wider than this shortlist.'
 const NO_ADDUCT_HINT =
-  'No adduct: this candidate is a composition the finder listed, and a formula ' +
-  'without the adduct it was seen under cannot be verified. Re-search this peak and ' +
-  'assign the hit instead - the search supplies the adduct.'
+  'Not assignable to this peak. A formula needs an adduct to go with it, and this ' +
+  `one has none. ${RESEARCH_HINT}`
+const SCORING_HINT = 'Measuring this formula against the peak. One moment.'
 
 // One blocked entry is not a candidate the finder listed: the winner an
 // override displaced, which the server archives and pushes back to the head of
@@ -349,14 +430,16 @@ const NO_ADDUCT_HINT =
 // adduct of its own - the untargeted stage writes one when the finder echoes a
 // notation the mechanism map does not hold, and an imported run reaches it
 // trivially, since an imported row may only ever have carried a formula - and
-// then the undo is refused by the same 422. Telling that reader to re-search is
-// not wrong, but it is not the undo they clicked for either: what comes back is
-// a new assignment, and the satellites this override unassigned are restored by
-// compound AND mechanism, so they stay unassigned.
+// then the undo is refused by the same 422.
+//
+// Re-search is worth naming, but not as if it were the undo: it writes a NEW
+// assignment, and the satellites this override unassigned are put back by
+// compound AND adduct, so they stay unassigned.
 const NO_ADDUCT_UNDO_HINT =
-  'No adduct: the assignment this replaced named none itself, so it cannot be put ' +
-  'back from here. Re-search this peak to assign the formula under a real adduct - ' +
-  'a new assignment, which does not bring back the satellites unassigned with it.'
+  'Cannot be undone here. The assignment this replaced named no adduct, and one is ' +
+  'required to put it back. Re-searching the peak assigns the formula again under a ' +
+  'real adduct, but that is a new assignment: the isotopologues this override cleared ' +
+  'stay cleared.'
 
 // Whether an entry is that archived winner - the one "use this" would undo.
 // Position and formula together: the head is where the server puts it, and the
@@ -368,21 +451,64 @@ const isUndoEntry = (alt, index) =>
   Boolean(manualOverride.value?.previous_formula) &&
   alt?.assigned_formula === manualOverride.value.previous_formula
 
-const noAdductHint = (alt, index) =>
-  isUndoEntry(alt, index) ? NO_ADDUCT_UNDO_HINT : NO_ADDUCT_HINT
+// Why this entry has no usable "use this", in whichever of the four states it
+// is actually in. The server's own reason is preferred where there is one: it
+// can tell "no adduct this sample uses reaches the peak" from "the sample has
+// no adducts recorded" and from "this formula will not make an ion at all",
+// which one fixed sentence cannot.
+const noAdductHint = (alt, index) => {
+  if (isUndoEntry(alt, index)) return NO_ADDUCT_UNDO_HINT
+  if (alt?.scored?.blocked_reason) return `${alt.scored.blocked_reason} ${RESEARCH_HINT}`
+  if (scoring.value) return SCORING_HINT
+  return NO_ADDUCT_HINT
+}
+
+// What committing this entry actually is.
+//
+// An entry the run itself scored is promoted: its numbers and its adduct are
+// on the stored row, the server reads them from there, and nothing about the
+// request is the client's word.
+//
+// An entry the on-demand measurement scored is a `set_assignment` instead -
+// the same action the re-search hand button uses. Its numbers are not on the
+// stored row and are deliberately never written there: a run is the record of
+// what the engine did, and this measurement is not something it did. Sending
+// them as a declaration is the honest shape, and it is the shape the server
+// already has a validated action for - one that re-tiers under the run's own
+// bands and records in provenance that the numbers came from a composition
+// search rather than from the run's arbitration.
+const promoteBody = (alt, index) =>
+  alt?.ionization_mechanism_id || alt?.target_ion_id
+    ? {
+        action: 'promote_alternative',
+        alternative_index: index,
+        // Checked server-side against the list as it stands now, so a click on
+        // a card another curator has already changed underneath is refused
+        // rather than committing whichever candidate now holds that position.
+        expected_formula: alt.assigned_formula
+      }
+    : {
+        action: 'set_assignment',
+        assigned_formula: alt.assigned_formula,
+        ionization_mechanism_id: alt.scored.ionization_mechanism_id,
+        ion_formula: alt.scored.ion_formula ?? null,
+        // Always M0: the shortlist proposes a composition for this peak's own
+        // mass, and the measurement only accepts an adduct whose monoisotopic
+        // peak lands here.
+        isotope_label: alt.scored.isotope_label ?? 'M0',
+        fit_score: alt.scored.fit_score ?? null,
+        mz_error_ppm: alt.scored.mz_error_ppm ?? null,
+        abundance_error: alt.scored.abundance_error ?? null
+      }
 
 async function promoteAlternative(alt, index) {
   if (!canPromote(alt) || curating.value !== null) return
   curating.value = index
   try {
-    await app.data.peakAssignment.peak.curate(focusedAssignment.value.peak_assignment_id, {
-      action: 'promote_alternative',
-      alternative_index: index,
-      // Checked server-side against the list as it stands now, so a click on a
-      // card another curator has already changed underneath is refused rather
-      // than committing whichever candidate now holds that position.
-      expected_formula: alt.assigned_formula
-    })
+    await app.data.peakAssignment.peak.curate(
+      focusedAssignment.value.peak_assignment_id,
+      promoteBody(alt, index)
+    )
   } catch (error) {
     // The http layer already toasts; only 403 changes the UI (hide the control).
     if (error?.response?.status === 403) curateDenied.value = true
@@ -673,12 +799,13 @@ const demotedCount = computed(() => {
           >
             <span class="f">{{ alt.assigned_formula || alt.ion_formula || '?' }}</span>
             <span class="s">
-              <span v-if="alt.fit_score != null"
-                >fit {{ formatFit(alt.fit_score)
-                }}<span v-if="alt.mz_error_ppm != null">
-                  &middot; {{ num.mzError.format(alt.mz_error_ppm) }} ppm</span
+              <span v-if="altFit(alt) != null"
+                >fit {{ formatFit(altFit(alt))
+                }}<span v-if="altMzError(alt) != null">
+                  &middot; {{ num.mzError.format(altMzError(alt)) }} ppm</span
                 ></span
               >
+              <span v-else-if="scoring && !alt.scored" class="scoring">measuring&hellip;</span>
               <span v-else-if="alt.plausibility != null"
                 >plaus {{ formatFit(alt.plausibility) }}</span
               >
@@ -962,6 +1089,13 @@ const demotedCount = computed(() => {
 }
 .alt .no-stats {
   opacity: 0.5;
+}
+/* The measurement is in flight. Dimmed and italic rather than a spinner: it is
+   one short line in a list of numbers, and a spinner per row would read as the
+   list itself loading. */
+.alt .scoring {
+  opacity: 0.6;
+  font-style: italic;
 }
 /* The action is the row's, not the pane's: it stays out of the way until the
    pointer is on the candidate it would commit, so the list still reads as a
