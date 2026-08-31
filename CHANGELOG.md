@@ -36,14 +36,18 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
   widths people actually work at. The two that describe the run rather than the
   table, the **run selector** and **Assign peaks**, moved up into the switch bar
   beside *Targets / Assignments*, where they sit for both assignment ledgers
-  instead of only the per-sample one. The two that only change how the table
-  reads, the **Isotopologues toggle** and the **verdict filter**, are behind a
-  single view-options button in the ledger header; both keep their setting while
-  the menu is closed, both keep their tooltips and help cards, and the switch
-  keeps the text label that names it to a screen reader. The bar wraps rather
-  than clips if the column is narrowed far enough. Nothing changes with
-  peak-centric assignment turned off, and there is still exactly one *Assign
-  peaks* button on screen at a time. The backfill folds a
+  instead of only the per-sample one; the selector takes whatever width the
+  switch leaves it. The two that only change how the table reads, the
+  **Isotopologues toggle** and the **verdict filter**, are behind a cog at the
+  end of the tier-chip row, so everything that narrows the table is on one row
+  and the cog is the same table-controls affordance the sample and ion browsers
+  already use. Both keep their setting while the menu is closed. The verdict
+  filter is now a chip strip rather than a dropdown, which is what makes the
+  menu usable from the keyboard at all: a dropdown inside it swallowed the
+  Escape key that closes the menu, in a panel Tab cannot leave either. The bar
+  wraps rather than clips if the column is narrowed far enough. Nothing changes
+  with peak-centric assignment turned off, and there is still exactly one
+  *Assign peaks* button on screen at a time. The backfill folds a
   batch one sample at a time but reported only once the whole thing was done, so
   all the button could offer was a spinner - for minutes on a large batch, with
   no way to tell a slow run from a stuck one. It now fills the app's progress bar

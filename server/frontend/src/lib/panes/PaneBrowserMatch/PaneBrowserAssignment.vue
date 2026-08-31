@@ -2,7 +2,6 @@
 import { ref, reactive, computed, watch } from 'vue'
 
 import Button from 'primevue/button'
-import Select from 'primevue/select'
 import Dialog from 'primevue/dialog'
 import DataTable from 'primevue/datatable'
 import Column from 'primevue/column'
@@ -500,93 +499,6 @@ const breadcrumb = computed(() => {
       )
     "
   >
-    <template #menu>
-      <div class="menu-row">
-        <Button
-          v-if="runs.list.length"
-          class="view-menu-button"
-          icon="pi ph ph-sliders-horizontal"
-          severity="secondary"
-          text
-          size="small"
-          aria-label="Ledger view options"
-          aria-haspopup="dialog"
-          aria-controls="assignment-view-menu"
-          :aria-expanded="viewMenuOpen"
-          v-tooltip.bottom="'View options: isotopologue rows, verdict filter'"
-          @click="toggleViewMenu"
-          :pt="
-            app.ui.help.bottom(
-              `
-              <h1>View Options</h1>
-              <p>
-              How this ledger reads, rather than what it is reading: unfold each
-              compound's isotopologue peaks as indented rows, and narrow the
-              table to one verification verdict. Both keep their setting while
-              the menu is closed.
-              </p>`,
-              { doc: app.ui.help.docUrl('how-it-works/peak-assignment/') }
-            )
-          "
-        />
-        <Popover
-          ref="viewMenu"
-          id="assignment-view-menu"
-          @show="viewMenuOpen = true"
-          @hide="viewMenuOpen = false"
-        >
-          <div class="view-menu">
-            <div
-              class="unfold-toggle"
-              v-tooltip.top="'Show isotopologue peaks as indented rows under their compound'"
-              v-help.bottom="{
-                message: `
-                  <h1>Isotopologue Rows</h1>
-                  <p>
-                  By default the ledger keeps one row per assigned formula, its
-                  isotopologue peaks folded into the <b>+N</b> marker.
-                  Toggle to unfold them as indented rows under their main peak (M0).
-                  </p>`
-              }"
-            >
-              <!-- autofocus on the switch itself, not on its wrapper: Popover
-                   moves focus only to a genuinely focusable `[autofocus]` child,
-                   and ToggleSwitch puts a fallthrough attribute on its root div.
-                   Without it the panel opens with nothing focused and, being
-                   teleported to the end of <body>, is unreachable by keyboard. -->
-              <ToggleSwitch
-                v-model="showIsotopologues"
-                inputId="unfold-iso"
-                :pt="{ input: { autofocus: true } }"
-              />
-              <label for="unfold-iso">Isotopologues</label>
-            </div>
-            <div class="verdict-filter">
-              <label for="verdict-filter">Verdict</label>
-              <Select
-                v-model="verdictFilter"
-                inputId="verdict-filter"
-                :options="VERDICT_FILTERS"
-                optionLabel="label"
-                optionValue="value"
-                size="small"
-                style="min-width: 9rem"
-                v-tooltip.top="'Filter by verification verdict'"
-                :pt="
-                  app.ui.help.bottom(
-                    { title: 'Verification', helpKey: 'assignment-verification' },
-                    {
-                      doc: app.ui.help.docUrl('how-it-works/peak-assignment/#verifying-assignments')
-                    }
-                  )
-                "
-              />
-            </div>
-          </div>
-        </Popover>
-      </div>
-    </template>
-
     <Message
       v-if="launchError"
       :severity="launchRefused ? 'warn' : 'error'"
@@ -662,6 +574,90 @@ const breadcrumb = computed(() => {
         >
           <b>{{ t.count }}</b> {{ t.label }}
         </button>
+
+        <!-- At the end of the filter row, because that is what it holds: the
+             tier chips beside it narrow the table by confidence, the menu
+             narrows it by verdict and chooses whether isotopologues are their
+             own rows. A cog, matching the table-controls button the sample and
+             ion browsers already put in the same corner. -->
+        <Button
+          class="view-menu-button"
+          icon="pi pi-cog"
+          severity="secondary"
+          text
+          size="small"
+          aria-label="Ledger view options"
+          aria-haspopup="dialog"
+          :aria-controls="viewMenuOpen ? 'assignment-view-menu' : undefined"
+          :aria-expanded="viewMenuOpen"
+          v-tooltip.top="'View options: isotopologue rows, verdict filter'"
+          @click="toggleViewMenu"
+          :pt="
+            app.ui.help.top(
+              `
+              <h1>View Options</h1>
+              <p>
+              How this ledger reads, rather than what it is reading. <b>Isotopologues</b>
+              unfolds each compound's isotopologue peaks - folded into the <b>+N</b>
+              marker by default - as indented rows under their main peak (M0).
+              <b>Verdict</b> narrows the table to one verification verdict.
+              </p>
+              <p>
+              Both keep their setting while the menu is closed.
+              </p>`,
+              { doc: app.ui.help.docUrl('how-it-works/peak-assignment/') }
+            )
+          "
+        />
+        <Popover
+          ref="viewMenu"
+          id="assignment-view-menu"
+          @show="viewMenuOpen = true"
+          @hide="viewMenuOpen = false"
+        >
+          <div class="view-menu">
+            <div
+              class="unfold-toggle"
+              v-tooltip.top="'Show isotopologue peaks as indented rows under their compound'"
+            >
+              <!-- autofocus on the switch itself, not on its wrapper: Popover
+                   moves focus only to a genuinely focusable `[autofocus]` child,
+                   and ToggleSwitch puts a fallthrough attribute on its root div.
+                   Without it the panel opens with nothing focused and, being
+                   teleported to the end of <body>, is unreachable by keyboard. -->
+              <ToggleSwitch
+                v-model="showIsotopologues"
+                inputId="unfold-iso"
+                :pt="{ input: { autofocus: true } }"
+              />
+              <label for="unfold-iso">Isotopologues</label>
+            </div>
+            <!-- Chips rather than a dropdown, and the same shape as the tier
+                 chips this menu hangs off. A Select here would be a second
+                 overlay inside a focus-trapping one: PrimeVue's Select swallows
+                 Escape unconditionally (stopPropagation in its onEscapeKey) and
+                 both of Popover's Escape handlers listen on the bubble path, so
+                 a keyboard user who tabbed into the filter could neither close
+                 the menu with Escape nor tab out past the trap's sentinels.
+                 Plain buttons keep Escape working and name themselves. -->
+            <div class="verdict-filter" role="group" aria-label="Filter by verification verdict">
+              <span class="view-menu-label">Verdict</span>
+              <div class="verdict-chips">
+                <button
+                  v-for="option in VERDICT_FILTERS"
+                  :key="option.value"
+                  type="button"
+                  class="verdict-chip"
+                  :class="{ active: verdictFilter === option.value }"
+                  :aria-pressed="verdictFilter === option.value"
+                  @click="verdictFilter = option.value"
+                >
+                  {{ option.label }}
+                </button>
+              </div>
+            </div>
+          </div>
+        </Popover>
       </div>
 
       <div v-if="assignments.pending" class="center loading-region">
@@ -956,40 +952,72 @@ const breadcrumb = computed(() => {
   font-size: 0.75rem;
 }
 
-.menu-row {
-  display: flex;
-  align-items: center;
-  gap: 0.75rem;
+/* The cog sits at the far end of the tier-chip row, which wraps; pushing it
+   with auto margin keeps it in the corner however many chips precede it. */
+.view-menu-button {
+  margin-left: auto;
+  align-self: center;
 }
 
-/* The view-options panel: one labelled control per row, so each reads as a
-   setting rather than as a toolbar item that lost its toolbar. */
+/* The view-options panel: one labelled setting per row. */
 .view-menu {
   display: flex;
   flex-direction: column;
-  gap: 0.7rem;
-  min-width: 13rem;
+  gap: 0.75rem;
+  min-width: 14rem;
 }
-.unfold-toggle,
-.verdict-filter {
+.unfold-toggle {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 0.6rem;
   font-size: 0.8rem;
   white-space: nowrap;
+  /* Label first, control last. Reversing the row rather than reordering the
+     markup keeps the switch as the panel's first focusable child, which is
+     where Popover sends focus on open. */
+  flex-direction: row-reverse;
 }
-.unfold-toggle label,
-.verdict-filter label {
+.unfold-toggle label {
   cursor: pointer;
   opacity: 0.75;
 }
-/* Label first, control last, matching the verdict row - the switch has to lead
-   with its text for `<label for>` to be the thing a reader clicks. Reversing
-   the row rather than reordering the markup keeps the switch as the panel's
-   first focusable child, which is where Popover sends focus on open. */
-.unfold-toggle {
-  flex-direction: row-reverse;
+.verdict-filter {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+}
+.view-menu-label {
+  font-size: 0.8rem;
+  opacity: 0.75;
+}
+.verdict-chips {
+  display: flex;
+  flex-flow: row wrap;
+  gap: 0.3rem;
+}
+/* Deliberately the tier chip's shape: the two strips filter the same table, so
+   a reader who has learned one has learned the other. */
+.verdict-chip {
+  font-size: 0.72rem;
+  padding: 0.15rem 0.5rem;
+  border-radius: 100px;
+  border: 1px solid var(--p-content-border-color, #e3e6ec);
+  background: transparent;
+  color: inherit;
+  font-family: inherit;
+  cursor: pointer;
+  white-space: nowrap;
+  transition:
+    border-color 0.12s,
+    background 0.12s;
+}
+.verdict-chip:hover {
+  border-color: var(--p-primary-color, #6366f1);
+}
+.verdict-chip.active {
+  border-color: var(--p-primary-color, #6366f1);
+  background: color-mix(in srgb, var(--p-primary-color, #6366f1) 12%, transparent);
 }
 
 /* Unfolded isotopologue child row: indented substitution label under its M0. */

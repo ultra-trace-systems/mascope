@@ -55,13 +55,19 @@ is a 3-pane nested splitter:
 **The ledger** is the Match browser's **"Assignments"** tab
 ([`PaneBrowserAssignment.vue`](../../server/frontend/src/lib/panes/PaneBrowserMatch/PaneBrowserAssignment.vue)):
 a clickable tier-histogram filter strip and a virtual-scrolled table (m/z · intensity · formula `+N` ·
-tier · **P(correct)** · verdict). Its two view options — an **"Isotopologues" toggle** that unfolds each
-compound's `iso_child` isotopologues as indented rows (children inherit the parent's tier rank so the
-stable sort keeps families grouped; rows stay fixed-height so virtual scrolling holds), and a **verdict
-filter** — sit behind one menu button in the panel header, a `Popover` rather than a `Menu` so the
-switch keeps its `<label for>` (its only accessible name). Both settings are refs in the pane, not in
-the overlay, so closing the menu cannot discard a choice made in it. The run selector and the
-**Assign peaks** button are not here at all: they belong to the paradigm rather than to one of its
+tier · **P(correct)** · verdict). Its other two view options — an **"Isotopologues" toggle** that
+unfolds each compound's `iso_child` isotopologues as indented rows (children inherit the parent's tier
+rank so the stable sort keeps families grouped; rows stay fixed-height so virtual scrolling holds), and
+a **verdict filter** — are behind a cog at the end of that same strip, so everything that narrows the
+table is on one row. A `Popover` rather than a `Menu`, so the switch keeps its `<label for>` (its only
+accessible name); the verdict filter is a chip strip rather than a `Select`, because PrimeVue's `Select`
+calls `stopPropagation()` in its `onEscapeKey` unconditionally while both of `Popover`'s Escape handlers
+listen on the bubble path — a `Select` in there would swallow the only key that closes a panel whose
+focus trap `Tab` cannot leave either. Both settings are refs in the pane, not in the overlay, so closing
+the menu cannot discard a choice made in it, and the panel carries no help card (a card behind its
+`v-if` is unreachable in help mode while closed and leaks a `cards` entry per open — see
+`stores/ui/help.js`); one merged card sits on the always-mounted trigger instead. The run selector and
+the **Assign peaks** button are not here at all: they belong to the paradigm rather than to one of its
 ledgers, and live a row up in the switch bar (below). The batch-peak ledger
 ([`PaneBrowserBatchPeaks.vue`](../../server/frontend/src/lib/panes/PaneBrowserMatch/PaneBrowserBatchPeaks.vue))
 mirrors that toggle under the same two constraints, with one difference: a batch peak is a bare m/z
