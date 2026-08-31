@@ -1132,6 +1132,17 @@ describe('PaneBrowserAssignment view options menu', () => {
     expect(trigger(wrapper).attributes('aria-controls')).toBe('assignment-view-menu')
   })
 
+  // PrimeVue gives the panel role="dialog" aria-modal="true" and no name, so an
+  // unnamed one is announced as just "dialog". The attribute reaches that root
+  // because Popover merges fallthrough attrs into it (ptmi).
+  it('names the panel it opens', async () => {
+    const wrapper = await mountPane()
+    const panel = wrapper.find('.view-menu-popover')
+
+    expect(panel.attributes('id')).toBe('assignment-view-menu')
+    expect(panel.attributes('aria-label')).toBe('Ledger view options')
+  })
+
   // The switch's only accessible name is its `<label for>`; a menu that rendered
   // its items as menuitems would have taken that pairing away. Both ends are
   // asserted - a label pointing at an id nothing carries names nothing, which

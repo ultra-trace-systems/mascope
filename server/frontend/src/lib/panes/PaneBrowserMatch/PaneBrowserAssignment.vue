@@ -626,9 +626,14 @@ const breadcrumb = computed(() => {
             )
           "
         />
+        <!-- Named, because Popover gives its panel role="dialog"
+             aria-modal="true" and nothing else: an unnamed dialog is announced
+             as just "dialog". Both attributes land on that root - Popover
+             merges fallthrough attrs into it via ptmi. -->
         <Popover
           ref="viewMenu"
           id="assignment-view-menu"
+          aria-label="Ledger view options"
           @show="viewMenuOpen = true"
           @hide="viewMenuOpen = false"
         >
