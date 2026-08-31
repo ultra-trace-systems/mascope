@@ -60,14 +60,18 @@ const GLOBAL_STUBS = {
   // the same way.
   Button: { template: '<button><slot /></button>' },
   // Renders both slots the run selector fills, so what a user sees closed and
-  // what they see in the open list are both under test.
+  // what they see in the open list are both under test - and reports a choice
+  // through v-model the way PrimeVue does, so the binding is exercised rather
+  // than bypassed.
   Select: {
     props: ['options', 'modelValue'],
+    emits: ['update:modelValue'],
     template:
       '<div class="select">' +
       '<span class="select-value"><slot name="value" :value="modelValue" placeholder="Select run" /></span>' +
-      '<span v-for="o in options" :key="o.peak_assignment_run_id" class="select-option">' +
-      '<slot name="option" :option="o" /></span>' +
+      '<button v-for="o in options" :key="o.peak_assignment_run_id" class="select-option" ' +
+      '@click="$emit(\'update:modelValue\', o)">' +
+      '<slot name="option" :option="o" /></button>' +
       '</div>'
   }
 }
@@ -162,9 +166,13 @@ describe('AssignmentRunBar run provenance', () => {
     runList = [IMPORTED, IN_APP]
     const wrapper = await mountBar()
 
-    wrapper.vm.selectedRun = IN_APP
+    // Through the control, not through the computed: the selector's v-model is
+    // the half that would silently stop working if the writable computed were
+    // ever bound one-way.
+    await runSelect(wrapper).findAll('.select-option')[1].trigger('click')
 
-    expect(runFocus).toHaveBeenCalledWith(IN_APP)
+    expect(runFocus).toHaveBeenCalledTimes(1)
+    expect(runFocus.mock.calls[0][0].peak_assignment_run_id).toBe('run-1')
   })
 })
 
@@ -177,12 +185,28 @@ describe('AssignmentRunBar states', () => {
   it('collapses to nothing at batch level', async () => {
     // The run store only loads for a focused sample, so at batch level there is
     // nothing to select and nothing to add to. A dead "Select run" box over the
-    // batch-peak ledger would be worse than an empty bar.
+    // batch-peak ledger would be worse than an empty bar - and so would an empty
+    // wrapper, which grows to fill the bar and would push the paradigm switch
+    // off centre.
     focusedSample = null
     const wrapper = await mountBar()
 
-    expect(wrapper.find('.select').exists()).toBe(false)
-    expect(assignButton(wrapper).exists()).toBe(false)
+    expect(wrapper.find('.run-bar').exists()).toBe(false)
+    // Nothing rendered at all, comments aside - not an empty div.
+    expect(wrapper.element.children).toHaveLength(0)
+  })
+
+  // Not the same state, and the one the previous test would pass in by
+  // accident: the sample is gone but the run list has not caught up yet. The
+  // selector is still worth showing; the launch button has nothing to launch
+  // for, so it is offered but disabled.
+  it('disables the launch button when the run list outlives its sample', async () => {
+    focusedSample = null
+    runList = [IN_APP]
+    const wrapper = await mountBar()
+
+    expect(wrapper.find('.select').exists()).toBe(true)
+    expect(assignButton(wrapper).attributes('disabled')).toBeDefined()
   })
 
   it('offers the selector and the launch button once a run exists', async () => {

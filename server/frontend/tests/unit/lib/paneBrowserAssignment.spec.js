@@ -157,11 +157,14 @@ const GLOBAL_STUBS = {
   // with every row-level test still green.
   ToggleSwitch: {
     name: 'ToggleSwitch',
-    props: ['modelValue'],
+    // `inputId` and `pt` are declared so a test can read what the pane asked
+    // for: the id is the other half of the `<label for>` pairing, and the pt is
+    // the autofocus that makes the popover reachable by keyboard at all.
+    props: ['modelValue', 'inputId', 'pt'],
     emits: ['update:modelValue'],
     template:
-      '<button class="iso-toggle" @click="$emit(\'update:modelValue\', !modelValue)">' +
-      '{{ modelValue }}</button>'
+      '<button class="iso-toggle" :id="inputId" ' +
+      '@click="$emit(\'update:modelValue\', !modelValue)">{{ modelValue }}</button>'
   }
 }
 
@@ -1130,13 +1133,31 @@ describe('PaneBrowserAssignment view options menu', () => {
   })
 
   // The switch's only accessible name is its `<label for>`; a menu that rendered
-  // its items as menuitems would have taken that pairing away.
+  // its items as menuitems would have taken that pairing away. Both ends are
+  // asserted - a label pointing at an id nothing carries names nothing, which
+  // is exactly what the verdict filter's old label did.
   it('keeps the isotopologue switch labelled by its own text', async () => {
     const wrapper = await mountPane()
     const label = wrapper.find('.view-menu-popover label[for="unfold-iso"]')
+    const toggle = wrapper.findComponent({ name: 'ToggleSwitch' })
 
     expect(label.text()).toBe('Isotopologues')
-    expect(wrapper.find('.view-menu-popover .iso-toggle').exists()).toBe(true)
+    expect(toggle.props('inputId')).toBe('unfold-iso')
+    expect(wrapper.find('.view-menu-popover #unfold-iso').exists()).toBe(true)
+  })
+
+  // Without this the panel opens with nothing focused, and being teleported to
+  // the end of <body> it is then unreachable by keyboard: PrimeVue's Popover
+  // focuses a child only if one carries `[autofocus]`, and there is no fallback
+  // to "first focusable". It has to ride on `pt.input` because ToggleSwitch is
+  // inheritAttrs:false and puts a fallthrough attribute on its root div, where
+  // .focus() is a silent no-op.
+  it('marks the switch as the panel autofocus target', async () => {
+    const wrapper = await mountPane()
+
+    expect(wrapper.findComponent({ name: 'ToggleSwitch' }).props('pt')).toEqual({
+      input: { autofocus: true }
+    })
   })
 
   // Chips, not a Select. PrimeVue's Select calls stopPropagation() on Escape
@@ -1184,9 +1205,11 @@ describe('PaneBrowserAssignment view options menu', () => {
     expect(ids(wrapper)).toEqual(['b'])
   })
 
-  // Both refs live in the pane rather than in the menu, so closing it cannot
-  // discard a choice - the failure mode of holding view state inside an overlay
-  // whose content is destroyed every time it hides.
+  // The real guarantee is structural: both refs live in the pane's own setup
+  // scope, not in the overlay, whose content PrimeVue destroys on every hide.
+  // The stub renders its slot unconditionally, so this cycle cannot reproduce
+  // that loss - what it does pin is that the rendered controls read the pane's
+  // state back rather than holding a copy of their own.
   it('keeps both settings across an open/close cycle', async () => {
     const wrapper = await mountPane()
 

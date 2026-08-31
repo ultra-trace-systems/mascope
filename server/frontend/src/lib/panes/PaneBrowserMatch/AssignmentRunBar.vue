@@ -58,13 +58,20 @@ const selectedRun = computed({
 // The button outlives the selector by one state: a run list that failed to
 // load has no empty state to carry the call to action, and a failed load must
 // not also cost the user the way to start a run. Its counterpart in the
-// ledger's empty state (PaneBrowserAssignment) fills in for the other
-// direction, so exactly one of the two is offered at any time.
+// ledger's empty state (PaneBrowserAssignment's `v-else-if="!runs.list.length"`
+// branch) fills in for the other direction, so exactly one of the two is
+// offered at any time. The four run states are a set maintained in two files;
+// no single mount can see both halves, because every spec that mounts
+// PaneBrowserMatch stubs the ledger at the module boundary. Change one branch,
+// read the other.
 const canAssign = computed(() => runs.value.list.length > 0 || Boolean(runs.value.error))
 </script>
 
 <template>
-  <div class="run-bar">
+  <!-- Nothing at all rather than an empty box: this grows to fill the bar, so
+       at batch level an always-rendered wrapper would push the paradigm switch
+       off centre with a blank flex item beside it. -->
+  <div v-if="runOptions.length || canAssign" class="run-bar">
     <Select
       v-if="runOptions.length"
       v-model="selectedRun"
@@ -108,7 +115,7 @@ const canAssign = computed(() => runs.value.list.length > 0 || Boolean(runs.valu
       icon="pi ph ph-magic-wand"
       size="small"
       :disabled="!app.data.sample.focused"
-      @click="launcher.open()"
+      @click="launcher.configVisible = true"
       :pt="
         app.ui.help.bottom(
           `
@@ -131,7 +138,12 @@ const canAssign = computed(() => runs.value.list.length > 0 || Boolean(runs.valu
    the bar. */
 .run-bar {
   display: flex;
+  /* Wraps for the same reason the bar around it does: the selector stops
+     shrinking at 7rem, and past that the button has to move to its own line
+     rather than off the edge of the column. */
+  flex-flow: row wrap;
   align-items: center;
+  justify-content: flex-end;
   gap: 0.5rem;
   flex: 1 1 auto;
   min-width: 0;

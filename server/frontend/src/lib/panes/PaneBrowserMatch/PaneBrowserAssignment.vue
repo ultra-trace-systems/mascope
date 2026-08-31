@@ -1,5 +1,5 @@
 <script setup>
-import { ref, reactive, computed, watch } from 'vue'
+import { ref, reactive, computed, watch, onScopeDispose } from 'vue'
 
 import Button from 'primevue/button'
 import Dialog from 'primevue/dialog'
@@ -75,11 +75,13 @@ const verdictFilter = ref('all')
 
 // --- View options menu ------------------------------------------------------
 
-// The two controls above are the ledger's view options, and they used to sit
-// bare in the panel header beside the run selector and the launch button. Four
-// controls never fitted a browser column the user can drag to half a window, so
-// the two that only change how this one table reads went behind a button and
-// the two that outlive the table moved up into the switch bar.
+// The verdict filter above and the isotopologue fold below are the ledger's two
+// view options, and they used to sit bare in the panel header beside the run
+// selector and the launch button. Four controls never fitted a browser column
+// the user can drag to half a window, so the two that only change how this one
+// table reads went behind a cog at the end of the tier-chip row - everything
+// that narrows the table on one row - and the two that outlive the table moved
+// up into the switch bar.
 //
 // A Popover rather than a Menu: the isotopologue switch's only accessible name
 // is its `<label for>`, which plain markup keeps and a menu's item roles would
@@ -96,9 +98,17 @@ const toggleViewMenu = (event) => viewMenu.value?.toggle(event)
 // here - next to the ledger a refusal is about. Exposed as a plain writable
 // ref-alike so the dialog, the empty state and the watchers below read the same
 // way they did when the flag was local.
+//
+// Cleared when this pane goes away, because the dialog goes with it: the flag
+// is the only piece that now outlives the component, and a stale `true` would
+// reopen the dialog on the next mount without the watcher below having run -
+// so with last sample's configuration still in the form.
 const configVisible = computed({
   get: () => launcher.configVisible,
   set: (value) => (launcher.configVisible = value)
+})
+onScopeDispose(() => {
+  launcher.configVisible = false
 })
 const submitting = ref(false)
 // A per-sample run is cheap and the user is looking at one spectrum, so the
@@ -524,6 +534,13 @@ const breadcrumb = computed(() => {
         :onRetry="() => runs.load('retry')"
       />
     </div>
+    <!-- The one state that carries its own call to action, and the reason
+         AssignmentRunBar hides its copy of the button here: two identical
+         buttons a few centimetres apart read as two different things. The four
+         run states are a set maintained in two files - no sample, run list
+         errored, no runs, and a run to show - so a change to any of these
+         branches needs the bar's `canAssign` read alongside it. Both buttons
+         open the same dialog, below, through the launcher store. -->
     <div v-else-if="!runs.list.length" class="center empty">
       <div class="col" style="gap: 0.75rem; text-align: center; max-width: 40ch">
         <strong><span class="pi ph ph-info" /> No assignment runs</strong>
@@ -663,8 +680,10 @@ const breadcrumb = computed(() => {
       <div v-if="assignments.pending" class="center loading-region">
         <ProgressSpinner />
       </div>
-      <!-- Inline rather than through the panel's :error, so the run selector and
-           tier strip above stay usable while only the ledger is unavailable. -->
+      <!-- Inline rather than through the panel's :error, so the tier strip and
+           its view menu above stay usable, and the run selector in the bar
+           above them keeps offering another run, while only this run's rows are
+           unavailable. -->
       <div v-else-if="assignments.error" class="center loading-region">
         <BaseLoadError
           :error="assignments.error"
@@ -973,9 +992,9 @@ const breadcrumb = computed(() => {
   gap: 0.6rem;
   font-size: 0.8rem;
   white-space: nowrap;
-  /* Label first, control last. Reversing the row rather than reordering the
-     markup keeps the switch as the panel's first focusable child, which is
-     where Popover sends focus on open. */
+  /* Label first, control last, matching the verdict row below. Reversed here
+     rather than reordered in the markup so the switch stays the first element
+     in the panel, and so Tab reaches it before the verdict chips. */
   flex-direction: row-reverse;
 }
 .unfold-toggle label {

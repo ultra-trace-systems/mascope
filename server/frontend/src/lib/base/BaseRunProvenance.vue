@@ -247,8 +247,8 @@ const disclosureLabel = computed(() => {
 }
 
 /* An engine name is client-supplied and may be up to 64 characters, which would
-   otherwise push the run selector's toolbar out of shape. Clip the chip and let
-   the tooltip carry the full name. */
+   otherwise push the row the run selector sits in out of shape. Clip the chip
+   and let the tooltip carry the full name. */
 .engine {
   max-width: 12rem;
 }

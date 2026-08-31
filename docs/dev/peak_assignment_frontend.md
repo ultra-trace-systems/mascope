@@ -55,7 +55,7 @@ is a 3-pane nested splitter:
 **The ledger** is the Match browser's **"Assignments"** tab
 ([`PaneBrowserAssignment.vue`](../../server/frontend/src/lib/panes/PaneBrowserMatch/PaneBrowserAssignment.vue)):
 a clickable tier-histogram filter strip and a virtual-scrolled table (m/z · intensity · formula `+N` ·
-tier · **P(correct)** · verdict). Its other two view options — an **"Isotopologues" toggle** that
+ionization · tier · **P(correct)** · verdict). Its other two view options — an **"Isotopologues" toggle** that
 unfolds each compound's `iso_child` isotopologues as indented rows (children inherit the parent's tier
 rank so the stable sort keeps families grouped; rows stay fixed-height so virtual scrolling holds), and
 a **verdict filter** — are behind a cog at the end of that same strip, so everything that narrows the
@@ -67,10 +67,13 @@ focus trap `Tab` cannot leave either. Both settings are refs in the pane, not in
 the menu cannot discard a choice made in it, and the panel carries no help card (a card behind its
 `v-if` is unreachable in help mode while closed and leaks a `cards` entry per open — see
 `stores/ui/help.js`); one merged card sits on the always-mounted trigger instead. The run selector and
-the **Assign peaks** button are not here at all: they belong to the paradigm rather than to one of its
-ledgers, and live a row up in the switch bar (below). The batch-peak ledger
+the toolbar **Assign peaks** button are not here: they belong to the paradigm rather than to one of its
+ledgers, and live a row up in the switch bar (below). The ledger keeps one *Assign peaks* button of its
+own, the call to action in its no-runs empty state, which is why the bar hides its copy in exactly that
+state. The batch-peak ledger
 ([`PaneBrowserBatchPeaks.vue`](../../server/frontend/src/lib/panes/PaneBrowserMatch/PaneBrowserBatchPeaks.vue))
-mirrors that toggle under the same two constraints, with one difference: a batch peak is a bare m/z
+mirrors the isotopologue fold under the same two constraints — its own toggle is still inline in its
+panel header, not behind a cog — with one difference: a batch peak is a bare m/z
 anchor, so the family link is **derived** (`isotopologue_of`, §5.4 of
 [`peak_assignment_batch.md`](peak_assignment_batch.md)) rather than given, and it arrives ONE hop deep
 pointing into a list the pane does not control — so the pane flattens a chain onto its root and leaves a
