@@ -1,11 +1,15 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { mount } from '@vue/test-utils'
 import { ref } from 'vue'
+import { createPinia, setActivePinia } from 'pinia'
 
 // The real badge, imported past the `@/lib/base` barrel mock below: what the
 // ledger's verdict column renders for a row with no verdict is half of the
 // formula-less-row guard, and a stub could not tell us.
 import BaseVerdictBadge from '@/lib/base/BaseVerdictBadge.vue'
+// The real store, not a stub: it is the whole channel between the Assign-peaks
+// button in the switch bar and the dialog this pane owns.
+import { useAssignmentLauncher } from '@/lib/panes/PaneBrowserMatch/stores'
 
 // The per-sample launcher's job after the assign endpoint became synchronous:
 // a run that is refused (409) or a sample that cannot be assigned (422) arrives
@@ -110,15 +114,33 @@ const GLOBAL_STUBS = {
   Dialog: { template: '<div><slot /><slot name="footer" /></div>' },
   Message: { template: '<div class="pane-message"><slot /></div>' },
   Button: { template: '<button><slot /></button>' },
-  // Renders both slots the run selector fills, so what a user sees closed and
-  // what they see in the open list are both under test.
+  // Mandatory, not a convenience: a real Popover renders `<!---->` until it is
+  // opened and then teleports its content to document.body, where wrapper
+  // queries cannot reach it. Rendering the slot inline is what lets a test see
+  // the controls the menu holds - `open` says whether the pane asked for it.
+  Popover: {
+    data: () => ({ open: false }),
+    emits: ['show', 'hide'],
+    methods: {
+      toggle() {
+        this.open = !this.open
+        this.$emit(this.open ? 'show' : 'hide')
+      }
+    },
+    template: '<div class="view-menu-popover"><slot /></div>'
+  },
+  // The only Select left in this pane is the verdict filter, so the stub is
+  // shaped for it: one clickable option per verdict, reporting the choice the
+  // way PrimeVue does. (The run selector's slot-rendering stub went with it to
+  // assignmentRunBar.spec.js.)
   Select: {
-    props: ['options', 'modelValue'],
+    props: ['options', 'modelValue', 'optionValue'],
+    emits: ['update:modelValue'],
     template:
       '<div class="select">' +
-      '<span class="select-value"><slot name="value" :value="modelValue" placeholder="Select run" /></span>' +
-      '<span v-for="o in options" :key="o.peak_assignment_run_id" class="select-option">' +
-      '<slot name="option" :option="o" /></span>' +
+      '<button v-for="o in options" :key="o.value" class="select-option" ' +
+      ':class="{ chosen: o[optionValue] === modelValue }" ' +
+      '@click="$emit(\'update:modelValue\', o[optionValue])">{{ o.label }}</button>' +
       '</div>'
   },
   // Declared rather than auto-stubbed so the sizing tests can read what the
@@ -143,7 +165,18 @@ const GLOBAL_STUBS = {
   },
   Column: true,
   ProgressSpinner: true,
-  ToggleSwitch: true
+  // Rendered rather than stubbed away, so the switch a test flips is the one
+  // the pane binds: `ToggleSwitch: true` renders an element with no v-model,
+  // which is how the control could have been left unwired behind the new menu
+  // with every row-level test still green.
+  ToggleSwitch: {
+    name: 'ToggleSwitch',
+    props: ['modelValue'],
+    emits: ['update:modelValue'],
+    template:
+      '<button class="iso-toggle" @click="$emit(\'update:modelValue\', !modelValue)">' +
+      '{{ modelValue }}</button>'
+  }
 }
 
 /** An axios-shaped rejection carrying a server message. */
@@ -274,6 +307,10 @@ function familyBreak(rows) {
 // Reset before every test in the file, including the describes below that only
 // override part of it.
 beforeEach(() => {
+  // The pane reads the Assign-peaks dialog's open flag from a real Pinia store
+  // (the button that sets it lives a row up, in the switch bar). A fresh Pinia
+  // per test keeps that flag from leaking between them.
+  setActivePinia(createPinia())
   focusedSampleId = ref('si-1')
   runList = []
   runError = null
@@ -371,80 +408,8 @@ describe('PaneBrowserAssignment launcher', () => {
   })
 })
 
-// The run selector is where a reader learns which engine produced the ledger
-// they are looking at. It matters here rather than only in the badge's own test
-// because the pane auto-shows the newest completed run whatever produced it: an
-// imported run is what a user sees by default, without ever opening the list.
-describe('PaneBrowserAssignment run provenance', () => {
-  beforeEach(() => {
-    focusedSampleId = ref('si-1')
-    assign.mockReset()
-    assign.mockResolvedValue({ data: [{ peak_assignment_run_id: 'run-1' }] })
-  })
-  afterEach(() => vi.clearAllMocks())
-
-  const IMPORTED = {
-    peak_assignment_run_id: 'run-2',
-    engine: 'peaky',
-    engine_version: '0.6.0',
-    status: 'completed',
-    tier_bands: { assigned: 0.6, candidate: 0.3 },
-    calibration: { method: 'offset-aware' }
-  }
-  const IN_APP = {
-    peak_assignment_run_id: 'run-1',
-    engine: 'mascope',
-    engine_version: '0.2.0',
-    status: 'completed',
-    tier_bands: { assigned: 0.8, candidate: 0.5 },
-    calibration: null
-  }
-
-  // The menu holds two Selects (runs, then the verdict filter) and the stub is
-  // generic, so scope every query to the first one.
-  const runSelect = (wrapper) => wrapper.findAll('.select')[0]
-
-  it('names the producing engine on the selected run, not only in the open list', async () => {
-    runList = [IMPORTED, IN_APP]
-    const wrapper = await mountPane()
-
-    expect(runSelect(wrapper).find('.select-value').text()).toContain('peaky')
-  })
-
-  it('keeps the run label in the closed selector', async () => {
-    // The #value slot is handed the raw v-model value - the record off the run
-    // store - not the matched option, so a label carried only on the option
-    // copy renders blank here while every other assertion still passes.
-    runList = [IMPORTED, IN_APP]
-    const wrapper = await mountPane()
-    const closed = runSelect(wrapper).find('.select-value').text()
-
-    expect(closed).toContain('#2')
-    expect(closed).toContain('completed')
-  })
-
-  it('carries each run its own provenance in the list', async () => {
-    runList = [IMPORTED, IN_APP]
-    const wrapper = await mountPane()
-    const options = runSelect(wrapper).findAll('.select-option')
-
-    expect(options).toHaveLength(2)
-    // Newest first, so the import is #2 and the in-app run is #1.
-    expect(options[0].text()).toContain('#2')
-    expect(options[0].text()).toContain('peaky 0.6.0')
-    expect(options[0].text()).toContain('calibration')
-    expect(options[1].text()).toContain('Mascope 0.2.0')
-    // An in-app run has no disclosure to make: its calibration is the sample's.
-    expect(options[1].text()).not.toContain('calibration')
-  })
-
-  it('still marks an in-flight import as in progress', async () => {
-    runList = [{ ...IMPORTED, status: 'importing' }]
-    const wrapper = await mountPane()
-
-    expect(runSelect(wrapper).find('.select-option').text()).toContain('importing…')
-  })
-})
+// Run provenance moved out with the run selector, to
+// tests/unit/lib/panes/PaneBrowserMatch/assignmentRunBar.spec.js.
 
 // The ledger used to be sized as the window height minus a constant 60, which
 // was meant to stand in for the switch bar and the tier strip and covered
@@ -1099,21 +1064,149 @@ describe('PaneBrowserAssignment header and controls', () => {
     // there (panePeakAssign.spec.js).
   })
 
-  it('shows exactly one "Assign peaks" control in every state', async () => {
+  // The "never two Assign peaks buttons at once" rule now spans two components:
+  // the switch bar's copy (AssignmentRunBar) and this pane's empty-state copy.
+  // This is the ledger's half - the bar shows one in exactly the states the
+  // ledger shows none, asserted in assignmentRunBar.spec.js.
+  it('carries an "Assign peaks" control only in the empty state', async () => {
     const withRuns = await mountPane()
-    expect(withRuns.findAll('[label="Assign peaks"]')).toHaveLength(1)
+    expect(withRuns.findAll('[label="Assign peaks"]')).toHaveLength(0)
 
-    // No runs: the empty state carries the only call to action.
+    // No runs, nothing to select: the empty state is the only call to action.
     runList = []
     const withoutRuns = await mountPane()
     expect(withoutRuns.findAll('[label="Assign peaks"]')).toHaveLength(1)
 
-    // The run list failed to load. There is no empty state to carry it here, so
-    // the toolbar has to - a failed load must not also remove the way to start
-    // a run.
+    // A run list that failed to load reads nothing like "this sample has none",
+    // so it gets the load error rather than the empty state - and the bar keeps
+    // the button for it.
     runList = []
     runError = new Error('nope')
     const withError = await mountPane()
-    expect(withError.findAll('[label="Assign peaks"]')).toHaveLength(1)
+    expect(withError.findAll('[label="Assign peaks"]')).toHaveLength(0)
+  })
+
+  it('opens the shared config dialog from the empty state', async () => {
+    runList = []
+    const wrapper = await mountPane()
+
+    await wrapper.find('[label="Assign peaks"]').trigger('click')
+
+    // The same flag the switch bar's button sets, so whichever button the user
+    // reached for opens the one dialog this pane owns.
+    expect(useAssignmentLauncher().configVisible).toBe(true)
+    expect(wrapper.vm.configVisible).toBe(true)
+  })
+})
+
+// The isotopologue toggle and the verdict filter used to sit bare in the panel
+// header, next to the run selector and the launch button; four controls in a
+// column the user can drag to half a window meant the last of them was simply
+// clipped off the pane. They are now behind one menu button - which is only
+// worth anything if they are still reachable and still remember their setting.
+describe('PaneBrowserAssignment view options menu', () => {
+  beforeEach(() => {
+    runList = [{ peak_assignment_run_id: 'run-1', status: 'completed' }]
+    seed(FAMILY_A, FAMILY_B)
+  })
+  afterEach(() => vi.clearAllMocks())
+
+  const trigger = (wrapper) => wrapper.find('[aria-label="Ledger view options"]')
+
+  it('offers one button in the header, not four controls', async () => {
+    const wrapper = await mountPane()
+    const menuRow = wrapper.find('.menu-row')
+
+    expect(trigger(wrapper).exists()).toBe(true)
+    // The header row itself holds the trigger and the popover it opens, and
+    // nothing else. Counted over direct children rather than descendants: the
+    // stub renders the panel inline, where the real one teleports it away.
+    const inTheRow = [...menuRow.element.children].filter((el) => el.tagName === 'BUTTON')
+    expect(inTheRow).toHaveLength(1)
+    // The run selector and the launch button are a row up now.
+    expect(wrapper.find('[label="Assign peaks"]').exists()).toBe(false)
+    expect(wrapper.find('[placeholder="Select run"]').exists()).toBe(false)
+  })
+
+  it('announces itself as a menu button and tracks whether it is open', async () => {
+    const wrapper = await mountPane()
+
+    expect(trigger(wrapper).attributes('aria-haspopup')).toBe('dialog')
+    expect(trigger(wrapper).attributes('aria-controls')).toBe('assignment-view-menu')
+    expect(trigger(wrapper).attributes('aria-expanded')).toBe('false')
+
+    await trigger(wrapper).trigger('click')
+
+    expect(trigger(wrapper).attributes('aria-expanded')).toBe('true')
+  })
+
+  // The switch's only accessible name is its `<label for>`; a menu that renders
+  // its items as menuitems would have taken that pairing away.
+  it('keeps the isotopologue switch labelled by its own text', async () => {
+    const wrapper = await mountPane()
+    const label = wrapper.find('.view-menu-popover label[for="unfold-iso"]')
+
+    expect(label.text()).toBe('Isotopologues')
+    expect(wrapper.find('.view-menu-popover .iso-toggle').exists()).toBe(true)
+  })
+
+  it('gives the verdict filter a label of its own', async () => {
+    const wrapper = await mountPane()
+
+    // It never had an accessible name - only a tooltip, which contributes
+    // nothing to the accessibility tree.
+    expect(wrapper.find('.view-menu-popover label[for="verdict-filter"]').text()).toBe('Verdict')
+  })
+
+  it('unfolds isotopologues from the menu, not just from the ref', async () => {
+    const wrapper = await mountPane()
+
+    await wrapper.find('.view-menu-popover .iso-toggle').trigger('click')
+
+    expect(wrapper.vm.showIsotopologues).toBe(true)
+    // The rows change too: the control is wired to the table, not only to a ref
+    // that happens to share its name.
+    expect(ids(wrapper)).toEqual(['b', 'b-c0', 'b-c1', 'a', 'a-c0', 'a-c1'])
+  })
+
+  it('filters by verdict from the menu', async () => {
+    verdictRecord = { verdict: 'confirmed', evidence_level: 'msms' }
+    verdictPeakId = 'p-b'
+    const wrapper = await mountPane()
+    const options = wrapper.findAll('.view-menu-popover .select-option')
+
+    await options.find((o) => o.text() === 'Confirmed').trigger('click')
+
+    expect(wrapper.vm.verdictFilter).toBe('confirmed')
+    expect(ids(wrapper)).toEqual(['b'])
+  })
+
+  // Both refs live in the pane rather than in the menu, so closing it cannot
+  // discard a choice - the failure mode of holding view state inside an overlay
+  // whose content is destroyed every time it hides.
+  it('keeps both settings across an open/close cycle', async () => {
+    const wrapper = await mountPane()
+
+    await trigger(wrapper).trigger('click')
+    await wrapper.find('.view-menu-popover .iso-toggle').trigger('click')
+    const options = wrapper.findAll('.view-menu-popover .select-option')
+    await options.find((o) => o.text() === 'Unverified').trigger('click')
+
+    // Close, reopen.
+    await trigger(wrapper).trigger('click')
+    expect(trigger(wrapper).attributes('aria-expanded')).toBe('false')
+    await trigger(wrapper).trigger('click')
+
+    expect(wrapper.vm.showIsotopologues).toBe(true)
+    expect(wrapper.vm.verdictFilter).toBe('unverified')
+    expect(wrapper.find('.view-menu-popover .iso-toggle').text()).toBe('true')
+    expect(wrapper.find('.view-menu-popover .select-option.chosen').text()).toBe('Unverified')
+  })
+
+  it('offers no view options before there is a run to look at', async () => {
+    runList = []
+    const wrapper = await mountPane()
+
+    expect(trigger(wrapper).exists()).toBe(false)
   })
 })

@@ -7,6 +7,7 @@ import Dialog from 'primevue/dialog'
 import DataTable from 'primevue/datatable'
 import Column from 'primevue/column'
 import Message from 'primevue/message'
+import Popover from 'primevue/popover'
 import ProgressSpinner from 'primevue/progressspinner'
 import ToggleSwitch from 'primevue/toggleswitch'
 
@@ -14,7 +15,6 @@ import { getApiErrorMessage, isRefusedRequest } from '@/api/utils'
 import {
   BaseCopyableField,
   BaseLoadError,
-  BaseRunProvenance,
   BaseTabbedPanel,
   BaseTierTag,
   BaseVerdictBadge
@@ -26,7 +26,10 @@ import { tierBucket, tierRank } from '@/lib/tiers'
 import { prettyTrim } from '@/lib/utils'
 import { useApp } from '@/stores'
 
+import { useAssignmentLauncher } from './stores'
+
 const app = useApp()
+const launcher = useAssignmentLauncher()
 
 const runs = computed(() => app.data.peakAssignment.run)
 const assignments = computed(() => app.data.peakAssignment.peak)
@@ -71,35 +74,33 @@ const VERDICT_FILTERS = [
 ]
 const verdictFilter = ref('all')
 
-// --- Run selector -----------------------------------------------------------
+// --- View options menu ------------------------------------------------------
 
-// One dropdown option per run, labelled with its ordinal and status. The
-// ellipsis marks only runs still in flight - failed/cancelled runs are done,
-// just not completed (mirrors the backend's non-terminal statuses).
-const IN_FLIGHT_STATUSES = ['pending', 'running', 'importing']
-
-// Label a run from the run itself rather than from a property carried on the
-// option copy. The `#value` slot is handed the raw v-model value - the record
-// straight off the run store - not the matched option, so a label that lived
-// only on the option would render blank in the closed selector.
-function runLabel(run) {
-  if (!run) return ''
-  const list = runs.value.list
-  const index = list.findIndex((r) => r.peak_assignment_run_id === run.peak_assignment_run_id)
-  const ordinal = index === -1 ? '' : `#${list.length - index} · `
-  return `${ordinal}${run.status}${IN_FLIGHT_STATUSES.includes(run.status) ? '…' : ''}`
-}
-
-const runOptions = computed(() => runs.value.list.map((run) => ({ ...run, _label: runLabel(run) })))
-
-const selectedRun = computed({
-  get: () => runs.value.focused,
-  set: (run) => (run ? runs.value.focus(run) : runs.value.unfocus())
-})
+// The two controls above are the ledger's view options, and they used to sit
+// bare in the panel header beside the run selector and the launch button. Four
+// controls never fitted a browser column the user can drag to half a window, so
+// the two that only change how this one table reads went behind a button and
+// the two that outlive the table moved up into the switch bar.
+//
+// A Popover rather than a Menu: the isotopologue switch's only accessible name
+// is its `<label for>`, which plain markup keeps and a menu's item roles would
+// not. Both refs stay here, in the scope `rows` reads them from, so opening and
+// closing the menu cannot lose a choice made in it.
+const viewMenu = ref()
+const viewMenuOpen = ref(false)
+const toggleViewMenu = (event) => viewMenu.value?.toggle(event)
 
 // --- Launch a run -----------------------------------------------------------
 
-const configVisible = ref(false)
+// The button that opens this dialog is a row up, in the switch bar, so the flag
+// is shared through a store while everything the launch actually does stays
+// here - next to the ledger a refusal is about. Exposed as a plain writable
+// ref-alike so the dialog, the empty state and the watchers below read the same
+// way they did when the flag was local.
+const configVisible = computed({
+  get: () => launcher.configVisible,
+  set: (value) => (launcher.configVisible = value)
+})
 const submitting = ref(false)
 // A per-sample run is cheap and the user is looking at one spectrum, so the
 // untargeted stage starts on here - unlike a batch, where cost scales with the
@@ -491,8 +492,9 @@ const breadcrumb = computed(() => {
         </p>
         <p>
         Click a row to focus the peak in the spectrum and inspector. Use the
-        tier chips to filter by confidence, and <b>Assign peaks</b> to launch a
-        new run.
+        tier chips to filter by confidence, the view-options button for
+        isotopologue rows and the verdict filter, and <b>Assign peaks</b> in the
+        bar above to launch a new run.
         </p>`,
         { doc: app.ui.help.docUrl('how-it-works/peak-assignment/') }
       )
@@ -500,99 +502,88 @@ const breadcrumb = computed(() => {
   >
     <template #menu>
       <div class="menu-row">
-        <Select
-          v-if="runOptions.length"
-          v-model="selectedRun"
-          :options="runOptions"
-          optionLabel="_label"
-          dataKey="peak_assignment_run_id"
-          size="small"
-          placeholder="Select run"
-          style="min-width: 15rem"
-          :pt="
-            app.ui.help.bottom(
-              { title: 'Assignment Runs', helpKey: 'assignment-runs' },
-              { doc: app.ui.help.docUrl('how-it-works/peak-assignment/#assignment-runs') }
-            )
-          "
-        >
-          <!-- Which engine produced the run travels with the run itself, in
-               both the closed selector and the open list: a published run is
-               first-class and the ledger defaults to the newest completed run
-               whatever produced it, so the engine has to be visible wherever a
-               run is named rather than only after opening a menu. -->
-          <template #value="{ value, placeholder }">
-            <span v-if="value" class="run-option">
-              <span class="run-name">{{ runLabel(value) }}</span>
-              <BaseRunProvenance :run="value" compact />
-            </span>
-            <span v-else>{{ placeholder }}</span>
-          </template>
-          <template #option="{ option }">
-            <span class="run-option">
-              <span class="run-name">{{ option._label }}</span>
-              <BaseRunProvenance :run="option" />
-            </span>
-          </template>
-        </Select>
-        <div
-          v-if="runs.list.length"
-          class="unfold-toggle"
-          v-tooltip.top="'Show isotopologue peaks as indented rows under their compound'"
-          v-help.bottom="{
-            message: `
-              <h1>Isotopologue Rows</h1>
-              <p>
-              By default the ledger keeps one row per assigned formula, its
-              isotopologue peaks folded into the <b>+N</b> marker.
-              Toggle to unfold them as indented rows under their main peak (M0).
-              </p>`
-          }"
-        >
-          <ToggleSwitch v-model="showIsotopologues" inputId="unfold-iso" />
-          <label for="unfold-iso">Isotopologues</label>
-        </div>
-        <Select
-          v-if="runs.list.length"
-          v-model="verdictFilter"
-          :options="VERDICT_FILTERS"
-          optionLabel="label"
-          optionValue="value"
-          size="small"
-          style="min-width: 9rem"
-          v-tooltip.top="'Filter by verification verdict'"
-          :pt="
-            app.ui.help.bottom(
-              { title: 'Verification', helpKey: 'assignment-verification' },
-              { doc: app.ui.help.docUrl('how-it-works/peak-assignment/#verifying-assignments') }
-            )
-          "
-        />
-        <!-- Only when the empty state below is not carrying the call to action
-             itself: two identical buttons a few centimetres apart read as two
-             different things. The error state has no button of its own, so the
-             toolbar keeps one there - a failed run list must not also cost the
-             user the way to start a run. -->
         <Button
-          v-if="runs.list.length || runs.error"
-          label="Assign peaks"
-          icon="pi ph ph-magic-wand"
+          v-if="runs.list.length"
+          class="view-menu-button"
+          icon="pi ph ph-sliders-horizontal"
+          severity="secondary"
+          text
           size="small"
-          :disabled="!app.data.sample.focused"
-          @click="configVisible = true"
+          aria-label="Ledger view options"
+          aria-haspopup="dialog"
+          aria-controls="assignment-view-menu"
+          :aria-expanded="viewMenuOpen"
+          v-tooltip.bottom="'View options: isotopologue rows, verdict filter'"
+          @click="toggleViewMenu"
           :pt="
             app.ui.help.bottom(
               `
-              <h1>Assign Peaks</h1>
+              <h1>View Options</h1>
               <p>
-              Launches an assignment run for this sample: every peak is matched
-              against the known target library first, then optionally through the
-              untargeted composition search. Opens the run configuration.
+              How this ledger reads, rather than what it is reading: unfold each
+              compound's isotopologue peaks as indented rows, and narrow the
+              table to one verification verdict. Both keep their setting while
+              the menu is closed.
               </p>`,
-              { doc: app.ui.help.docUrl('how-it-works/peak-assignment/#the-two-stages') }
+              { doc: app.ui.help.docUrl('how-it-works/peak-assignment/') }
             )
           "
         />
+        <Popover
+          ref="viewMenu"
+          id="assignment-view-menu"
+          @show="viewMenuOpen = true"
+          @hide="viewMenuOpen = false"
+        >
+          <div class="view-menu">
+            <div
+              class="unfold-toggle"
+              v-tooltip.top="'Show isotopologue peaks as indented rows under their compound'"
+              v-help.bottom="{
+                message: `
+                  <h1>Isotopologue Rows</h1>
+                  <p>
+                  By default the ledger keeps one row per assigned formula, its
+                  isotopologue peaks folded into the <b>+N</b> marker.
+                  Toggle to unfold them as indented rows under their main peak (M0).
+                  </p>`
+              }"
+            >
+              <!-- autofocus on the switch itself, not on its wrapper: Popover
+                   moves focus only to a genuinely focusable `[autofocus]` child,
+                   and ToggleSwitch puts a fallthrough attribute on its root div.
+                   Without it the panel opens with nothing focused and, being
+                   teleported to the end of <body>, is unreachable by keyboard. -->
+              <ToggleSwitch
+                v-model="showIsotopologues"
+                inputId="unfold-iso"
+                :pt="{ input: { autofocus: true } }"
+              />
+              <label for="unfold-iso">Isotopologues</label>
+            </div>
+            <div class="verdict-filter">
+              <label for="verdict-filter">Verdict</label>
+              <Select
+                v-model="verdictFilter"
+                inputId="verdict-filter"
+                :options="VERDICT_FILTERS"
+                optionLabel="label"
+                optionValue="value"
+                size="small"
+                style="min-width: 9rem"
+                v-tooltip.top="'Filter by verification verdict'"
+                :pt="
+                  app.ui.help.bottom(
+                    { title: 'Verification', helpKey: 'assignment-verification' },
+                    {
+                      doc: app.ui.help.docUrl('how-it-works/peak-assignment/#verifying-assignments')
+                    }
+                  )
+                "
+              />
+            </div>
+          </div>
+        </Popover>
       </div>
     </template>
 
@@ -971,28 +962,34 @@ const breadcrumb = computed(() => {
   gap: 0.75rem;
 }
 
-/* Run label + its provenance chips, in the closed selector and the open list. */
-.run-option {
+/* The view-options panel: one labelled control per row, so each reads as a
+   setting rather than as a toolbar item that lost its toolbar. */
+.view-menu {
+  display: flex;
+  flex-direction: column;
+  gap: 0.7rem;
+  min-width: 13rem;
+}
+.unfold-toggle,
+.verdict-filter {
   display: flex;
   align-items: center;
-  gap: 0.45rem;
-  min-width: 0;
-}
-.run-name {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.unfold-toggle {
-  display: flex;
-  align-items: center;
-  gap: 0.4rem;
+  justify-content: space-between;
+  gap: 0.6rem;
   font-size: 0.8rem;
   white-space: nowrap;
 }
-.unfold-toggle label {
+.unfold-toggle label,
+.verdict-filter label {
   cursor: pointer;
   opacity: 0.75;
+}
+/* Label first, control last, matching the verdict row - the switch has to lead
+   with its text for `<label for>` to be the thing a reader clicks. Reversing
+   the row rather than reordering the markup keeps the switch as the panel's
+   first focusable child, which is where Popover sends focus on open. */
+.unfold-toggle {
+  flex-direction: row-reverse;
 }
 
 /* Unfolded isotopologue child row: indented substitution label under its M0. */
@@ -1009,20 +1006,5 @@ const breadcrumb = computed(() => {
   font-family: var(--font-mono, ui-monospace, monospace);
   font-size: 0.86rem;
   opacity: 0.8;
-}
-
-.toggle-row {
-  display: flex;
-  align-items: flex-start;
-  gap: 0.6rem;
-}
-.toggle-row label {
-  display: flex;
-  flex-direction: column;
-  font-size: 0.9rem;
-}
-.toggle-row small {
-  opacity: 0.6;
-  font-size: 0.75rem;
 }
 </style>

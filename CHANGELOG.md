@@ -29,7 +29,21 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
 
 ### Changed
 
-- **Computing batch peaks** now shows how far along it is. The backfill folds a
+- **The assignments browser header is one row again.** It had grown to four
+  controls - run selector, *Isotopologues* toggle, verdict filter and *Assign
+  peaks* - in a column the user can drag to half a window, so the last of them
+  were simply clipped off the edge of the pane and became unreachable at the
+  widths people actually work at. The two that describe the run rather than the
+  table, the **run selector** and **Assign peaks**, moved up into the switch bar
+  beside *Targets / Assignments*, where they sit for both assignment ledgers
+  instead of only the per-sample one. The two that only change how the table
+  reads, the **Isotopologues toggle** and the **verdict filter**, are behind a
+  single view-options button in the ledger header; both keep their setting while
+  the menu is closed, both keep their tooltips and help cards, and the switch
+  keeps the text label that names it to a screen reader. The bar wraps rather
+  than clips if the column is narrowed far enough. Nothing changes with
+  peak-centric assignment turned off, and there is still exactly one *Assign
+  peaks* button on screen at a time. The backfill folds a
   batch one sample at a time but reported only once the whole thing was done, so
   all the button could offer was a spinner - for minutes on a large batch, with
   no way to tell a slow run from a stuck one. It now fills the app's progress bar

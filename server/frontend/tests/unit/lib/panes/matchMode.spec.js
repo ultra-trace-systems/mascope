@@ -29,6 +29,13 @@ vi.mock('@/stores', () => ({ useApp: () => hold.makeApp() }))
 // The browser's four panes and the two charts are heavy and irrelevant here -
 // only which one rendered matters. (Inlined rather than built by a helper: a
 // vi.mock factory is hoisted above every top-level binding.)
+//
+// The run bar shares the switch bar with the control under test but reads the
+// assignment-run store, which this file's deliberately minimal app facade does
+// not carry; stubbed for the same reason the panes are.
+vi.mock('@/lib/panes/PaneBrowserMatch/AssignmentRunBar.vue', () => ({
+  default: { template: '<div class="assignment-run-bar" />' }
+}))
 vi.mock('@/lib/panes/PaneBrowserMatch/MatchCollectionTable.vue', () => ({
   default: { template: '<div class="match-collection-table" />' }
 }))
