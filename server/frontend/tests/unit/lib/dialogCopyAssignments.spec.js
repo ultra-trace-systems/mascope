@@ -27,7 +27,11 @@ const helpStub = {
 
 vi.mock('@/stores', () => ({
   useApp: () => ({
-    data: { peakAssignmentRun: { copyPreview, copyToBatch } },
+    // Mirrors the real nesting in stores/data/index.js: the run store is
+    // reached at data.peakAssignment.run, NOT data.peakAssignmentRun. A mock
+    // shaped to the accessor under test rather than to the app's own shape is
+    // how a wrong path passes here and throws in the browser.
+    data: { peakAssignment: { run: { copyPreview, copyToBatch } } },
     ui: { notification: { push }, help: helpStub }
   })
 }))
