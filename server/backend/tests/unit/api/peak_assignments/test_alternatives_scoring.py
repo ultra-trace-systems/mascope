@@ -24,6 +24,7 @@ import pytest
 
 from mascope_backend.api.lib.exceptions.api_exceptions import ApiException
 from mascope_backend.api.new.peak_assignments.alternatives_scoring import (
+    MAX_SCORED_FORMULAS,
     _blocked_reason,
     _m0_by_ion,
     _paired_to,
@@ -379,6 +380,36 @@ class TestScoring:
         assert entry["adducts_tried"] == 0
         # Nothing to seed, so the chain short-circuits rather than reading peaks.
         assert score_seeds.await_args.args[1] == set()
+
+    @pytest.mark.asyncio
+    async def test_reports_what_it_did_not_reach_rather_than_dropping_it(self):
+        # A run may be configured up to MAX_ALTERNATIVES_CEILING (50), and an
+        # imported run's alternatives are whatever the publishing client sent,
+        # so the cap is reachable without anything being malformed. What it
+        # drops must not read as "no adduct fits", which is a claim about the
+        # chemistry that nothing measured.
+        formulas = [f"C{n}H{n}O2" for n in range(1, MAX_SCORED_FORMULAS + 4)]
+        result, score_seeds = await _run(
+            [{"assigned_formula": formula} for formula in formulas],
+            ion_by_seed={},
+            fit_by_ion={},
+        )
+
+        assert len(result["data"]) == len(formulas)
+        seeded = {formula for formula, _ in score_seeds.await_args.args[1]}
+        assert len(seeded) == MAX_SCORED_FORMULAS
+
+        # The two populations say different things about themselves: one was
+        # measured and found nothing, the other was never looked at.
+        measured = result["data"][:MAX_SCORED_FORMULAS]
+        unreached = result["data"][MAX_SCORED_FORMULAS:]
+        assert all("was not reached" not in e["blocked_reason"] for e in measured)
+        assert all("was not reached" in e["blocked_reason"] for e in unreached)
+        # Every entry still names its own position in the stored list, so a
+        # client can line the answer up with what it is showing.
+        assert [e["alternative_index"] for e in result["data"]] == list(
+            range(len(formulas))
+        )
 
     @pytest.mark.asyncio
     async def test_refuses_an_assignment_that_is_not_this_samples(self):
