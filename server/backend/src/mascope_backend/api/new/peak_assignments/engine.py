@@ -513,6 +513,11 @@ def invert_matches_to_peak_assignments(
         confidence = winner_arbitrated.confidence
         is_tie = winner_arbitrated.is_tie
 
+        # The winner's evidence, rounded once here and used for both the tier and
+        # the provenance the ledger displays. Two roundings of one quantity is how
+        # a row ends up in the band below the percentage its own chip shows.
+        evidence = round(float(winner["_evidence"]), 4)
+
         # Calibrated P(correct) for the winner's evidence — only when this instrument
         # has a calibration; otherwise the assignment is honestly left uncalibrated.
         if calibration is not None:
@@ -572,8 +577,13 @@ def invert_matches_to_peak_assignments(
             # the same product that beat the runners-up above decides which band
             # the winner lands in, so a formula that only won because nothing more
             # plausible competed cannot also claim the top tier on mass fit.
+            #
+            # The ROUNDED value, which is also what provenance records and the
+            # ledger shows beside the tier. Tiering the full-precision product
+            # instead would put a row reading 0.7499996 into the band below the
+            # 75% its own chip displays.
             "tier": tier_for_evidence(
-                _float_or_none(winner["_evidence"]),
+                evidence,
                 candidate_threshold=candidate_threshold,
                 assigned_threshold=assigned_threshold,
             ),
@@ -590,7 +600,7 @@ def invert_matches_to_peak_assignments(
                 # was uncontested and the 1.0 above was won by default.
                 "n_candidates": int(len(arbitrated)),
                 "plausibility": round(float(winner["_plaus"]), 4),
-                "evidence": round(float(winner["_evidence"]), 4),
+                "evidence": evidence,
                 "is_tie": is_tie,
                 # The fit-score generation this evidence is on. Snapshotted here because
                 # a verification label is only interpretable against the scoring that

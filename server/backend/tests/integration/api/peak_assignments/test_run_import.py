@@ -1473,7 +1473,39 @@ class TestServerOwnedFieldsStayEmpty:
         async with async_session_factory() as session:
             row = (await _rows_of(session, run_id))[0]
 
-        assert row.provenance == {"notes": "the importer's own detail"}
+        # The importer's own detail survives; the three keys this server presents
+        # as its calibrated judgement do not. `evidence` is neither: the server
+        # writes its OWN, derived from the row's fit and the plausibility of the
+        # formula it commits (0.92 x 1.0 for the fixture's C6H12O6), because the
+        # ledger shows that number beside the tier it validated.
+        assert row.provenance == {
+            "notes": "the importer's own detail",
+            "evidence": 0.92,
+        }
+
+    @pytest.mark.asyncio
+    async def test_a_supplied_evidence_is_replaced_by_the_servers_own(
+        self, editor_client, import_sample, feature_enabled, async_session_factory
+    ):
+        """Evidence is derived, never asserted.
+
+        It is not merely stripped like the calibrated keys: the ledger renders it
+        beside the tier, so blanking it would leave every imported row showing a
+        band with no number to explain it. Recomputing is safe precisely because
+        plausibility is a pure function of the formula - there is nothing an
+        importer could tell us that we would rather believe than compute.
+        """
+        response = await _post(
+            editor_client,
+            import_sample,
+            _body([_row("peak-0", provenance={"evidence": 0.999})]),
+        )
+        run_id = response.json()["data"][0]["peak_assignment_run_id"]
+
+        async with async_session_factory() as session:
+            row = (await _rows_of(session, run_id))[0]
+
+        assert row.provenance == {"evidence": 0.92}
 
     @pytest.mark.asyncio
     async def test_the_ledger_renders_no_confidence_for_an_imported_row(
