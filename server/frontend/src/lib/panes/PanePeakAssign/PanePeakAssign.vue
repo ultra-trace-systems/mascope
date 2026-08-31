@@ -544,6 +544,18 @@ const demotedCount = computed(() => {
           >
           <span class="v">{{ formatFit(provenance.plausibility) }}</span>
         </div>
+        <!-- The product of the two above, and the number this row's tier was
+             read off. Shown here beside its factors rather than only on the
+             chip: when a tier looks surprising, "fit 95%, plausibility 40%" is
+             the answer, and the inspector is where a reader goes to find it. -->
+        <div class="ev" v-if="focusedAssignment.evidence != null">
+          <span
+            class="k"
+            v-tooltip.top="'Evidence (fit x plausibility) - what the tier is banded on'"
+            >evidence</span
+          >
+          <span class="v">{{ formatFit(focusedAssignment.evidence) }}</span>
+        </div>
         <div class="ev" v-if="provenance?.confidence != null">
           <span
             class="k"
