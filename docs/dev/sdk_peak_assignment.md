@@ -154,8 +154,17 @@ is done).
 null on a peak nothing explained), `fit_score`, `mz_error_ppm`, `abundance_error`, `tier`
 (`assigned`/`candidate`/`below_assignability`/`unassigned`), `target_compound_id`,
 `target_ion_id`, `owner_peak_assignment_id`, plus the flattened provenance scalars
-`p_correct` / `p_correct_provisional` / `corroboration_adducts`. The `alternatives`
-(JSON list) and `provenance` (JSON) blobs live on the per-assignment detail record:
+`evidence` / `p_correct` / `p_correct_provisional` / `corroboration_adducts`. The
+`alternatives` (JSON list) and `provenance` (JSON) blobs live on the per-assignment
+detail record:
+
+`fit_score` and `tier` are two different quantities and the ledger serves both.
+`fit_score` is the pure measurement - how well the isotope envelope matches - and is
+unchanged. The `tier` is not read off it: it is read off **`evidence`**, the fit
+weighted by the chemical plausibility of `assigned_formula`, which is the quantity
+both engine stages already arbitrate a contested peak in. `evidence` is flattened
+onto every row (out of `provenance.evidence`) because the tier chip displays it
+beside the tier it produced.
 
 > **Landed (#1725).** `alternatives` + `provenance` are ~74% of the payload (2.8 KB/row
 > vs 0.74 KB core) and are inspector-only. [#1725](https://github.com/ultra-trace-systems/mascope/issues/1725)
@@ -501,7 +510,7 @@ Request, top level:
 | `engine` | external engine name (e.g. `"peaky"`), stamped on the run - see the `engine` column below. Reserved values are rejected (422) |
 | `engine_version` | the external engine's version string (the existing `engine_version` column, `String(64)`) |
 | `config` | the engine's full run configuration, **opaque JSON**, stored **verbatim** - the server never reads it and never writes into it. Size-capped (below) |
-| `tier_bands` | the `assigned` / `candidate` fit-score thresholds the engine tiered with, **required** - a first-class run field, *not* buried in opaque `config`, because the server validates rows against it. The legacy key `identified` is accepted and normalised to `assigned` (see "Enum validity" in Validation) |
+| `tier_bands` | the `assigned` / `candidate` thresholds the engine tiered with, on the **evidence** scale (`fit_score` x chemical plausibility - see "Tier coherence" in Validation), **required** - a first-class run field, *not* buried in opaque `config`, because the server validates rows against it. Same two keys, same `{tier: threshold}` shape as before; only the scale the numbers are read on moved. The legacy key `identified` is accepted and normalised to `assigned` (see "Enum validity" in Validation) |
 | `calibration` | the client's calibration state, **required** - its own nullable JSON column on the run, *not* a reserved key inside `config` |
 | `rows` | assignment rows (below) |
 | `chunk` | assembly control: `{run_id, import_id, index, complete}`, **required** (`import_id` with it) - see "One logical import" |
@@ -519,8 +528,10 @@ targeted/untargeted equivalence - **except**:
 - **replaced by a row reference**: `owner_peak_assignment_id` becomes
   `owner_sample_peak_id` (below);
 - **server-owned, ignored if sent**: the flattened provenance scalars
-  `p_correct` / `p_correct_provisional` / `corroboration_adducts` (see
-  "Validation").
+  `evidence` / `p_correct` / `p_correct_provisional` / `corroboration_adducts`
+  (see "Validation"). `evidence` is server-owned for a different reason than the
+  other three: it is not withheld but **derived**, from the row's own
+  `fit_score` and `assigned_formula`, and written back onto the stored row.
 
 `ionization_mechanism_id` is **nullable** - an external engine names adducts by
 notation, not by a deployment's mechanism ids (§8.5.2) - but a *supplied* id
@@ -556,12 +567,23 @@ those columns - so the keys the server derives those values from are **reserved
 at the top level of an imported blob** and **stripped** there before the row is
 stored.
 
-Three keys, which are the ones `_provenance_scalars` reads and not the names of
-the columns it renders: `p_correct`, plus the two objects it reaches into -
-`calibration` (for `.provisional`) and `corroboration` (for `.n_adducts`). The
-rendered names `p_correct_provisional` and `corroboration_adducts` are *not*
-reserved, because nothing reads them out of the blob; sending them is harmless
-and they are simply never looked at.
+Three keys, which are the ones `_provenance_scalars` derives those confidence
+columns from and not the names of the columns it renders: `p_correct`, plus the
+two objects it reaches into - `calibration` (for `.provisional`) and
+`corroboration` (for `.n_adducts`). The rendered names `p_correct_provisional`
+and `corroboration_adducts` are *not* reserved, because nothing reads them out
+of the blob; sending them is harmless and they are simply never looked at.
+
+`_provenance_scalars` reads a fourth key, `evidence`, and that one is
+**overwritten rather than stripped**. It is the number the ledger shows beside
+the tier chip, and the tier was validated against the evidence the server
+derived (see "Tier coherence"), so the server writes its own derived value over
+whatever the payload carried under that name - and removes the key outright on a
+row with no `fit_score` to derive one from. Leaving the importer's figure there
+would put a number on screen that did not produce the tier next to it; dropping
+it would blank the column on every imported row. An engine that wants its own
+product kept keeps it the same way it keeps its own `p_correct`: under a name of
+its own, `provenance.engine_provenance` by this document's convention.
 
 Stripped rather than rejected. An external engine that shares this one's scoring
 lineage will plausibly use these names for its *own* numbers, so a payload
@@ -836,32 +858,67 @@ accept what is merely the importer's judgement.
   vocabulary keeps publishing without a version negotiation, and because the
   normalisation happens at the edge, nothing downstream ever sees two names for
   one tier.
-- **Tier coherence against declared bands.** The shared *scale* does not make
-  the shared *bands* automatic: in-app tiers are derived by thresholding
-  `fit_score` against `assigned_threshold` (0.8) and `candidate_threshold`
-  (0.5), which are **run config**, not engine constants. Since an import's
-  `config` is opaque, the bands are lifted out as the required `tier_bands`
-  field and each row's `tier` is checked against its `fit_score` under them; an
-  incoherent row is a 422. Otherwise an engine tiering at 0.6/0.3 publishes
-  `assigned` rows at `fit_score` 0.62 that sort and filter beside in-app
-  `assigned` rows meaning something stricter - and outrank them in the
-  cross-sample `TIER_RANK` roll-up in `compute_consensus`.
+- **Tier coherence against declared bands.** A shared fit scale does not make
+  the *bands* shared, and it is no longer even the scale the bands sit on. A
+  tier is read off the row's **evidence** - `fit_score` weighted by the chemical
+  plausibility of `assigned_formula` - which is the quantity both engine stages
+  already arbitrate a contested peak in, so the band a row lands in agrees with
+  the number that won the peak its formula. In-app tiers come from thresholding
+  that product against `assigned_threshold` and `candidate_threshold`, which are
+  **run config**, not engine constants. Those two keys are unchanged; only the
+  scale they are read on moved, and the in-app pair moved with it, from 0.8/0.5
+  on the bare fit to 0.75/0.45 on the evidence. Since an import's `config` is
+  opaque, the bands are lifted out as the required `tier_bands` field; the
+  server then derives each row's evidence itself -
+  `engine.evidence_for(fit_score, assigned_formula)` - and requires the row's
+  `tier` to be the one those declared bands put that evidence in. An incoherent
+  row is a 422, and it names both numbers, the
+  evidence the check used and the fit it came from, so an engine that tiered on
+  the bare fit can see exactly how far the plausibility moved it. Without the
+  check an engine tiering at 0.6/0.3 publishes `assigned` rows at 0.62 that sort
+  and filter beside in-app `assigned` rows meaning something stricter - and
+  outrank them in the cross-sample `TIER_RANK` roll-up in `compute_consensus`.
+
+  **This asks nothing new of an importer.** There is no new field: a row carries
+  the same columns it always did, `fit_score` and `assigned_formula` among them,
+  and the run declares the same `tier_bands` in the same shape. There is
+  deliberately no `evidence` field on a row and no declared-plausibility field
+  either, because plausibility is a pure function of the formula (the Seven
+  Golden Rules heuristics in `mascope_tools`) - so the server recomputes it from
+  `assigned_formula` on every row rather than trusting a number a payload could
+  assert, exactly as manual curation recomputes it. An engine holding only a fit
+  score therefore has nothing extra to compute: it declares its bands on the
+  evidence scale and is checked against a product the server can always rebuild.
+  The recomputation also fails open - a formula that is absent or that will not
+  parse leaves the evidence equal to the bare fit - so an unusual composition is
+  never refused for being unusual, and a formula whose plausibility is 1.0, the
+  common case, has evidence equal to its fit exactly.
+
+  **The number shown beside a tier is the number that was validated.**
+  `import_service._row_values` writes the server-derived evidence into the
+  stored row's `provenance["evidence"]`, over whatever the payload carried
+  there, and `_provenance_scalars` flattens it onto the ledger row as the
+  `evidence` column the tier chip renders (§3). So the pairing a reader sees is
+  the pairing the check enforced. `fit_score` is untouched by any of this: it is
+  stored and served exactly as supplied, as the pure measurement it always was.
 
   The rule has **one stated exemption, and it covers most of a complete
   ledger**: a null `fit_score` is not banded, and it admits **two** tiers,
-  because the in-app ledger writes both. `build_unassigned_assignments` writes
+  because the in-app ledger writes both. The exemption is still exactly the
+  null-fit case and has not widened - `evidence_for` returns None when, and only
+  when, there is no fit score to weigh. `build_unassigned_assignments` writes
   `tier='unassigned'` with a null score for a peak no stage explained; and
-  `tier_for_score(None, ...)` answers `below_assignability`, which the engine
+  `tier_for_evidence(None, ...)` answers `below_assignability`, which the engine
   pairs with a null `fit_score` on an *assigned* row whose score came back
-  non-finite (`_score_or_none` nulls it, `tier_for_score` bands it). Neither is
-  a claim about confidence, so neither is worth refusing.
+  non-finite (`_score_or_none` nulls it, `tier_for_evidence` bands it). Neither
+  is a claim about confidence, so neither is worth refusing.
 
   An earlier revision of this section called `below_assignability` "the wrong
   tier for such a row" and required `tier='unassigned'` for a null score. That
   was implemented and it was wrong in a specific, costly way: it refused rows
   Mascope's own engine produces, so an external engine that read a ledger
   through the SDK could not publish it back - the round trip this whole section
-  exists to enable. The check now delegates to `tier_for_score` rather than
+  exists to enable. The check now delegates to `tier_for_evidence` rather than
   restating it, so the two cannot drift again; a null score accepts
   `unassigned` or `below_assignability`, and every other row is banded.
 - **Provenance is inspector detail, never a server judgement.** The ledger
@@ -1174,14 +1231,28 @@ about at request time.
   a concrete use appears.
 - **`import_run(sample_id, df, *, engine, engine_version, config, tier_bands, calibration)`**
   - the SDK face of §8.2. Validates the DataFrame client-side (required
-  columns, enum values, tier/fit_score coherence against `tier_bands` including
-  the null-score exemption, owner references - fail fast before any bytes move),
+  columns, enum values, tier coherence against `tier_bands` including the
+  null-score exemption, owner references - fail fast before any bytes move),
   **chunks** the rows under the endpoint's per-request cap - by serialized bytes
   as well as row count, tracking the row offset `chunk.index` it resynchronises
   from - and returns the new run id. It warns when the frame covers
   materially fewer peaks than the sample's current latest-completed run, since
   the fold-in replaces rather than merges. The round trip is: `get_peaks` out,
   compute externally, `import_run` back, `get` to confirm.
+
+  **The local tier check is one-sided, deliberately.** The bands are on the
+  evidence scale and the SDK cannot compute the plausibility half of the
+  product: `formula_plausibility` lives in `mascope_tools`, and the SDK depends
+  on nothing beyond requests, loguru, pandas, tqdm and python-dotenv - the same
+  boundary that stops adduct resolution where §8.5.2 leaves it. What can be
+  checked without any chemistry is the direction that holds for every
+  plausibility: evidence is never *above* the fit, so a row claiming a tier its
+  bare `fit_score` already fails to reach cannot be coherent under any formula,
+  and `import_run` rejects it locally. A row that clears its band on the fit is
+  sent, and the server's derived evidence has the last word. Checking the other
+  direction locally would be worse than not checking: a legitimately demoted
+  row - strong fit, weak formula, correctly tiered low - would be refused
+  before it left the client for agreeing with the server.
 
   **Missing values are handled per column, not by a blanket NaN sweep.** A NaN
   cannot simply be shipped and nulled server-side: `requests` serializes the
@@ -1333,9 +1404,10 @@ Each step is its own PR, and each leaves the system shippable:
    engines on the same sample**, which needs no further backend work: both runs
    live in the same table, so `get(sample_id, run_id=...)` twice and a join on
    `sample_peak_id` puts them side by side. Per peak that yields where the
-   engines agree on a formula and where they do not, their `fit_score`s, their
-   tiers (interpretable against each run's declared `tier_bands` rather than
-   assumed to share thresholds), and this engine's `p_correct` beside the
+   engines agree on a formula and where they do not, their `fit_score`s beside
+   the `evidence` each tier was actually read off, their tiers (interpretable
+   against each run's declared evidence-scale `tier_bands` rather than assumed
+   to share thresholds), and this engine's `p_correct` beside the
    external one's under `provenance.engine_provenance`. This is the comparison
    the reserved-key rule exists to keep honest, and the notebook is where it is
    demonstrated.
@@ -1437,12 +1509,16 @@ document cites it.
    provenance)? Null is safe and loses no substance; auto-registration keeps the
    ledger joinable but lets imports grow a shared vocabulary table.
 3. **Admitting imported verifications to calibration.** *(Open.)* §8.2 excludes
-   imported-run verifications from the instrument recalibration pool because
-   `evidence` would then be an editor-supplied number on a superuser-gated
-   curve. Could they be admitted later under a declared-scale rule - the run's
-   `calibration` disclosure plus a stated evidence scale, or by having the
-   server recompute `evidence` from `fit_score` rather than trusting the
-   payload? Worth revisiting once real imported ledgers exist; not needed for
+   imported-run verifications from the instrument recalibration pool because the
+   `evidence` a verdict snapshots would then rest on an editor-supplied number,
+   on a superuser-gated curve. One of the two remedies this question offered has
+   since landed on its own account: the server no longer takes `evidence` from
+   the payload at all - it derives it from `fit_score` and `assigned_formula`
+   (§8.2, "Tier coherence") - so what stays editor-supplied is the fit
+   underneath, not the product, and the exclusion now stands on that alone. The
+   open half is the other remedy: could imported verdicts be admitted under a
+   declared-scale rule - the run's `calibration` disclosure plus a stated fit
+   scale? Worth revisiting once real imported ledgers exist; not needed for
    the loop.
 4. **The batch write contract.** *Resolved: the batch answers with the
    eligibility partition, and derives its refusal from per-sample run state.*
@@ -1553,16 +1629,19 @@ is retired in favour of the read surface (§6).
 
 v2 (§8) makes the ledger **writable from outside**. Its core is run import:
 `POST .../runs/import` accepts a complete externally computed run - engine name
-and version, verbatim opaque config, declared tier bands, a required calibration
-disclosure, and one `PeakAssignment`-shaped row per covered peak (the read
-record minus the server-owned fields, so the two lists cannot drift). It is
-gated like every other write on the feature flag and the editor role, but
-admission is a query on durable run state rather than the advisory claim, which
-cannot span a chunked upload; assembly runs under its own `importing` status
-with idempotent, index-checked chunks, because the SDK retries POSTs. Validation
-is strict-lite (single owner per peak, typed enums, tier/fit_score coherence,
-peak existence via the id-only read, blank-sample and at-least-one-row rules,
-per-request and total row caps; completeness deliberately not required) with one
+and version, verbatim opaque config, declared tier bands on the evidence scale,
+a required calibration disclosure, and one `PeakAssignment`-shaped row per
+covered peak (the read record minus the server-owned fields, so the two lists
+cannot drift). It is gated like every other write on the feature flag and the
+editor role, but admission is a query on durable run state rather than the
+advisory claim, which cannot span a chunked upload; assembly runs under its own
+`importing` status with idempotent, index-checked chunks, because the SDK
+retries POSTs. Validation is strict-lite (single owner per peak, typed enums,
+tier coherence against the declared bands - the server deriving each row's
+evidence from its `fit_score` and `assigned_formula`, so an importer declares no
+new field - peak existence via the id-only read, blank-sample and
+at-least-one-row rules, per-request and total row caps; completeness
+deliberately not required) with one
 firm line: an import may not write the ledger's calibrated P(correct) scalars,
 and verifications on imported runs stay out of the instrument recalibration
 pool. Retention keeps its newest-per-sample budget **per engine**, so publishing

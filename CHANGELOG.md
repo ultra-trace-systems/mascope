@@ -14,8 +14,8 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
   destination's own peaks on a calibration-corrected axis, their evidence
   (fit score, mass error, abundance error) is re-measured against each
   destination's data with the engine's own scorer, and the tier is recomputed
-  from the re-measured fit under the source run's thresholds - so a sibling
-  whose data supports a formula less shows that honestly instead of
+  from that re-measured evidence under the source run's thresholds - so a
+  sibling whose data supports a formula less shows that honestly instead of
   inheriting the source's confidence. Each destination gets a new,
   append-only run under the dedicated `mascope-copy` engine (the run
   selector renders it as "copy of" the source), published through the same
@@ -48,6 +48,42 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
   wraps rather than clips if the column is narrowed far enough. Nothing changes
   with peak-centric assignment turned off, and there is still exactly one
   *Assign peaks* button on screen at a time.
+- **An assignment's confidence tier now reflects the chemistry as well as the
+  fit.** A tier is meant to say how strong the case for a peak's formula is, but
+  it was read off the fit score alone - which measures only how well the
+  measured isotope pattern matches the prediction. A formula that matched the
+  mass beautifully while describing an unlikely molecule therefore took the
+  ledger's strongest word. The engine already weighed both when deciding which
+  formula wins a contested peak, so the two could disagree on the same row: a
+  formula could win on the combined evidence and then be tiered as though it had
+  fit cleanly. The tier now comes off that same combined measure - the fit
+  weighted by how chemically plausible the formula is - everywhere a tier is
+  decided: both engine stages, a hand-edited row, a row copied to another sample,
+  the composition search's preview, and the check an imported ledger is held to.
+  The fit score itself is untouched and is still shown as the pure measurement;
+  what changed is which number decides the band. The percentage on a tier chip is
+  now that combined measure rather than the fit, so the chip's number and its
+  label can no longer contradict each other. On the batch-peaks ledger the chip
+  shows no percentage at all: a batch peak's tier is a vote across the samples it
+  appears in, not a threshold on any one number, and pairing it with one sample's
+  figure implied an arithmetic that never existed.
+
+  Practically, most rows do not move. Chemical plausibility is 1.0 for the large
+  majority of real formulas, so for them the combined measure is just the fit. On
+  the published demo dataset - every sample assigned, 77,911 rows carrying a
+  formula - 92.8% score the maximum plausibility, and about 7% of rows change
+  tier, in both directions. What moves down is the chemically implausible; what
+  moves up is a clean, ordinary formula whose fit sat just under the old line.
+  The two thresholds keep their names and move onto the new scale (0.8/0.5 ->
+  0.75/0.45), chosen against that demo ledger as the pair that stays closest to
+  the split it replaces. They remain directional starting points rather than
+  calibrated truth, and per-instrument recalibration is still the open follow-up.
+
+  For anyone publishing a ledger into Mascope from another engine: nothing new
+  has to be sent. Declare the run's `tier_bands` on the new scale and keep
+  sending each row's `fit_score` and `assigned_formula` as before - plausibility
+  is computed from the formula, so the server derives each row's evidence itself
+  rather than taking a number on trust.
 
 - **Computing batch peaks** now shows how far along it is. The backfill folds a
   batch one sample at a time but reported only once the whole thing was done, so

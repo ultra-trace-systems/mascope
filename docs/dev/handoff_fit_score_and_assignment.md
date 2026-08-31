@@ -142,9 +142,11 @@ branch's shape, not a commit hash that goes stale within a day.*
    peak-assignment-tables head). Legacy `match_ion` / `match_isotope.match_score`
    deliberately untouched. **Applied to `mascope_demo` (dev postgres) end-to-end**; the
    live API serves `fit_score`.
-4. ✅ **Fit-scale tier bands (0.8 / 0.5).** `PeakAssignmentConfig.assigned_threshold`
-   (0.8) / `candidate_threshold` (0.5); Stage A/B tier against them instead of the legacy
-   `match_params` thresholds. Persisted on the run config; provisional (see below).
+4. ✅ **Engine-owned tier bands (0.75 / 0.45).** `PeakAssignmentConfig.assigned_threshold`
+   (0.75) / `candidate_threshold` (0.45); Stage A/B tier against them instead of the legacy
+   `match_params` thresholds. Persisted on the run config; provisional (see below). The two
+   key names are the original ones — only the scale they sit on moved, from the bare fit to
+   the evidence (item 10), which is why the numbers came down from 0.8 / 0.5.
 5. ✅ **Phase 3 P2 — candidate arbitration (core).**
    `mascope_tools.composition.arbitration.arbitrate_candidates`: competes a peak's
    candidates by **fit × plausibility**, emits a normalised confidence, flags ties
@@ -152,7 +154,9 @@ branch's shape, not a commit hash that goes stale within a day.*
 6. ✅ **Live end-to-end on real demo spectra.** Migrated `mascope_demo` to head and ran
    `assign_sample_peaks` over all 161 demo samples. `fit_score` median ≈ 0.95; tiers band
    cleanly; Stage A winners chosen by fit × plausibility with confidence/tie in
-   `provenance`. Data sits in `mascope_demo.peak_assignment` for the UI.
+   `provenance`. Data sits in `mascope_demo.peak_assignment` for the UI. *(The banding was
+   measured under fit-scale bands at 0.8 / 0.5, the split in force when the run was made;
+   tiers are read off the evidence now — item 10.)*
 7. ✅ **P2 confidence calibration (pipeline; data provisional).**
    `mascope_tools.composition.calibration`: `Calibration` (provenance-carrying),
    `fit_calibration` (Platt + held-out ECE, refuses too-little data), `apply_calibration`,
@@ -174,6 +178,38 @@ branch's shape, not a commit hash that goes stale within a day.*
    ~71% of Stage A rows), inherited its ion's tier, and blocked that peak's correct
    assignment. Out-of-tolerance pairings now fall through to Stage B / unassigned.
    Unit-tested.
+10. ✅ **Tiers derive from the evidence (fit × plausibility), not the fit alone.**
+    `engine.evidence_for(fit_score, formula)` weighs the fit by the formula's chemical
+    plausibility, and `engine.tier_for_evidence` — renamed from `tier_for_score`, bands now
+    **keyword-only** because they read in the opposite order to their names and a positional
+    call written in band order silently inverted them — buckets that product. The rationale
+    is that this is already the currency both stages arbitrate a contested peak in (item 5),
+    so the tier now agrees with the quantity that picked the winner, and a chemically
+    implausible formula can no longer hold the ledger's strongest word on mass accuracy.
+    Every derivation site moved together: both engine stages, manual curation and its
+    demote-restore fallback, the copy service's re-tier, the composition-search preview, and
+    the import tier-coherence check (`tier_coherence_error` gained a `formula` parameter).
+    Plausibility is always **recomputed from the formula**, never trusted from a payload —
+    it is a pure function of the formula, so an imported row can be checked without asking
+    its author to declare one; it fails open to the bare fit when the formula is absent or
+    unparseable. `fit_score` is **unchanged**: still stored and displayed as the pure
+    measurement, just no longer what buckets the row. `PEAK_ASSIGNMENT_ENGINE_VERSION`
+    0.2.0 → 0.3.0. The bands were re-fit by sweeping the pair over a real ledger — all 161
+    demo samples assigned, 213,146 rows, 77,911 of them tiered. Plausibility turned out to
+    be a spike at 1.0 with a thin tail (92.8% of tiered rows score exactly 1.0; Stage A
+    98.3%, Stage B 88.4%), so only 7.2% of rows move at all: 0.75/0.45 gives assigned
+    85.38% / candidate 11.73% / below_assignability 2.89% against 84.08% / 12.41% / 3.51%
+    under fit-tiering at 0.8/0.5, the closest pair in the sweep to the split it replaces,
+    with the 6.93% of tiered rows that change tier moving in both directions (2,717 up,
+    1,710 down) rather than draining one band. Known and deliberately not solved: Stage A's
+    fit is `ion_score_v2` and Stage B's is `score_pattern` (v1, no per-peak SNR), so one
+    band means slightly different things to each — on the sweep, holding the upper band at
+    0.80 would cost Stage B 5.3% of its assigned rows and Stage A only 0.5%. That
+    heterogeneity **predates** this binding (it was equally true under fit-tiering), and
+    per-stage bands were not introduced. This does **not** supersede the end state: binding
+    the tier to a calibrated P(correct) remains the documented destination, still gated on
+    universal calibration coverage (untargeted + all instruments) and still deferred. Item
+    4's bands are directional, not calibrated — see D7.
 
 ## 6a. Roadmap / next steps (priority order)
 
@@ -221,8 +257,10 @@ branch's shape, not a commit hash that goes stale within a day.*
   D9/V2 (`recalibrate_instrument`); *remaining:* the front-end "calibrate my instrument" trigger +
   the verification capture UI that feeds it — designed in
   [`verification_calibration_loop.md`](verification_calibration_loop.md).
-- **D7. Recalibrate the fit-scale tier bands** (currently the 0.8/0.5 estimates) per
-  instrument — a "what users see" decision.
+- **D7. Recalibrate the tier bands** (currently the 0.75/0.45 estimates) per instrument — a
+  "what users see" decision. Still open, and now a recalibration on the **evidence** scale:
+  because plausibility is ≤ 1, evidence ≤ fit for every row, so a given number is stricter
+  here than the same number was on the fit scale.
 - **D9. Interactive verification → calibration golden set.** Human-in-the-loop confirm/reject in
   the UI feeding `fit_calibration` per instrument. Designed in
   [`verification_calibration_loop.md`](verification_calibration_loop.md); the central risk is the

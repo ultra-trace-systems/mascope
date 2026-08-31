@@ -157,16 +157,32 @@ In practice:
 
 --8<-- "_help/assignment-tiers.md"
 
-The tiers are the product-facing summary of the confidence layer; the underlying score is
-the continuous fit quality. The long-term goal is to report a community-standard
-**identification level** ([Schymanski et al. 2014][sch14]; MSI reporting standards,
-[Sumner et al. 2007][sum07]) alongside the confidence, since that is how the field
-communicates identification certainty.
+The tiers are the product-facing summary of the confidence layer, and the quantity
+underneath them is the **evidence** — fit × plausibility, the same product the candidates
+were competed on, rather than the fit alone. A tier therefore reflects both how well the
+measured isotope pattern matches *and* how chemically plausible the formula is: a
+composition that fits the mass beautifully but describes an unlikely molecule no longer
+earns the top tier on the strength of the match. The band a row lands in is read off the
+same quantity that won it the peak in the first place, so the tier and the arbitration
+cannot disagree.
 
-> **Note.** The fit score is the headline number and a pure measurement. Chemistry,
-> spectral context and calibration are *layers on top* of it and are never folded back into
-> the score — this keeps the measurement reproducible while the confidence layers evolve.
-> The current tier thresholds are provisional and will be recalibrated per instrument.
+**The percentage on a tier chip is that combined evidence, not the match quality alone.**
+The fit score is unchanged — still recorded, still shown beside the assignment as the pure
+measurement — so the two stay visible apart. A *batch peak*'s chip carries no percentage
+at all: its consensus tier is a weighted vote over what the batch's samples each concluded
+about the peak, not a threshold on any single number.
+
+The long-term goal is to report a community-standard **identification level** ([Schymanski
+et al. 2014][sch14]; MSI reporting standards, [Sumner et al. 2007][sum07]) alongside the
+confidence, since that is how the field communicates identification certainty.
+
+> **Note.** The fit score is a pure measurement and stays one. Chemistry, spectral context
+> and calibration are *layers on top* of it and are never folded back into the score —
+> tiering reads the fit and the plausibility together, but the fit score itself is the
+> measurement alone, unchanged, which keeps it reproducible while the confidence layers
+> evolve. The current tier thresholds are provisional and will be recalibrated per
+> instrument; tying a tier to a calibrated probability of being correct is still where this
+> is heading, and still waits on calibration coverage across instruments.
 
 ## Assigning a peak yourself
 

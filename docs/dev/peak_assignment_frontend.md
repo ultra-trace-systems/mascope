@@ -173,9 +173,11 @@ person chose a formula for and the satellites the same act stripped. The chip re
 the second: nobody chose that row's formula, and it has none to show. It tells the two apart by the tier
 it is already displaying rather than by `provenance.manual.action` — the ledger serves slim rows with no
 provenance on them at all, so the action is unreadable on most of the surfaces the chip renders on, and
-the tier is exact here anyway, since both curation actions commit a formula and `tier_for_score` never
-returns `unassigned`. Three things the server owns rather than the caller: the **tier** is recomputed
-with `tier_for_score` under *the run's own* `tier_bands`; the engine's judgement of the displaced
+the tier is exact here anyway, since both curation actions commit a formula and `tier_for_evidence`
+never returns `unassigned`. Three things the server owns rather than the caller: the **tier** is
+recomputed with `tier_for_evidence` under *the run's own* `tier_bands`, and what it bands is the
+row's recomputed **evidence** — the committed fit weighted by the plausibility of the formula being
+committed (below) — not that fit on its own; the engine's judgement of the displaced
 winner — all nine `_ENGINE_JUDGEMENT_KEYS` (`p_correct`, `calibrated`, `calibration`, `corroboration`,
 `confidence`, `n_candidates`, `is_tie`, `evidence`, `reference_identities`), not merely the calibrated
 four — is archived with the winner it describes, and the curated row's provenance is rebuilt from the
@@ -268,9 +270,12 @@ verification (see [`sdk_peak_assignment.md`](sdk_peak_assignment.md), deferred `
 With the flag off the Match tab and its targeted visualization behave exactly as before the
 feature landed.
 
-**Open threads.** **Tier is fit-based** (`tier_for_score(fit_score, …)`); moving it onto
-`p_correct` needs universal calibration coverage (untargeted + all instruments) — backend/science, still
-deferred. Both `tier` and `P(correct)` are now shown side-by-side so the discrepancy is inspectable.
+**Open threads.** **Tier is evidence-based** (`tier_for_evidence(evidence, …)`, evidence being
+fit × chemical plausibility) — settled, at both engine stages and every other site that derives a tier;
+the chip's number moved with it (§3). What is still open is the step past it: binding the tier to a
+calibrated `p_correct` needs universal calibration coverage (untargeted + all instruments) —
+backend/science, still deferred, and evidence-tiering is a step toward it rather than its arrival. Both
+`tier` and `P(correct)` are now shown side-by-side so the discrepancy is inspectable.
 
 **Launching a run.** Two launchers share one form
 ([`PeakAssignConfigForm.vue`](../../server/frontend/src/lib/dialogs/PeakAssignConfigForm.vue)):
@@ -295,7 +300,7 @@ applies rather than a null overriding it.
 |---|---|
 | Match tab (spectrum + isotope timeseries) | **Keep it, rename to "Fit view".** It is the visual verification that a signal fit is good. |
 | Match **browser / ion table** (bottom-left) | Peak assignments go **here**. Coexist with the target/ion tables at first; **aim to retire** the `match_ion` table. |
-| Tier band recalibration | Real, but **backend work** (`tier_for_score`); the UI just renders whatever tier the API returns. |
+| Tier band recalibration | Real, but **backend work** (`tier_for_evidence`); the UI just renders whatever tier the API returns. |
 | `match_score` naming | UI labels say **"fit"** everywhere new. The `PeakAssignment` surface already carries `fit_score`. |
 
 ## 1. The backend contract (what we consume)
@@ -336,7 +341,7 @@ assigned_formula · ion_formula · ionization_mechanism_id · isotope_label · i
 fit_score · mz_error_ppm · abundance_error
 target_compound_id · target_ion_id        (nullable — set when the winner came from the library)
 owner_peak_assignment_id                   (an iso_child points at its M0)
-p_correct · p_correct_provisional · corroboration_adducts   (flattened for the ledger columns)
+evidence · p_correct · p_correct_provisional · corroboration_adducts   (flattened for the ledger columns)
 alternatives (JSON list) · provenance (JSON)    — detail endpoint only (~74% of a full row's bytes)
 ```
 
@@ -552,7 +557,7 @@ Layout is unchanged. Most work is reframing three existing panes + one new tag +
 | [`PanePeakAssign.vue`](../../server/frontend/src/lib/panes/PanePeakAssign/PanePeakAssign.vue) | The **inspector**. When the focused peak has an assignment, render committed winner + evidence + `alternatives` + known-compound; demote the existing on-demand `/cheminfo/mz/match` search to a **"Re-search"** action. (The whole current file becomes the fallback path.) | M |
 | [`ChartSampleSpectrum/data.js`](../../server/frontend/src/lib/charts/ChartSampleSpectrum/data.js) | **Annotated spectrum.** Split the single grey `Peak` trace into one trace per tier (color from `byPeakId`), plus a reagent/artifact trace. Focus/preview traces unchanged. Legend = trace names. | S |
 | [`PaneBrowserMatch.vue`](../../server/frontend/src/lib/panes/PaneBrowserMatch/PaneBrowserMatch.vue) | Add an **"Assignments"** tab beside the existing Targets/collections view: run selector + `tierCounts` histogram + a per-peak list backed by `usePeakAssignment`. Row click ⇒ `app.data.peak.focused = <matching peak>` (drives the Sample tab). Existing `MatchIonTable` stays under a "Targets" tab. | M |
-| `BaseTierTag.vue` **(new)** | 4-tier chip + `fit_score` + role icon. One shared component; keep `BaseMatchTag` for the legacy targeted view. | S |
+| `BaseTierTag.vue` **(new)** | 4-tier chip + `evidence` + role icon. The number is the **evidence** (fit × plausibility) the tier was banded off, not the raw `fit_score` — so the label and the number beside it cannot disagree; a caller whose tier came from no single quantity (the batch ledger's consensus vote over member tiers) passes none, and the chip shows the tier alone. One shared component; keep `BaseMatchTag` for the legacy targeted view. | S |
 | Run-config dialog **(new)** | `run_untargeted`, `mz_precision_ppm`, `formula_ranges`, `max_untargeted_peaks`, `peak_intensity_threshold`, `max_alternatives`. Reuse `SidebarMatchParams` patterns; submit ⇒ `run.assign(...)`. | S |
 | `Dashboard.vue` tab label | `"Match"` → `"Fit"` (see §4). Help text updated. | XS |
 
@@ -659,7 +664,9 @@ returns the same `{ match_ions, match_isotopes }` shape they consume today.
 
 ## 5. Labels
 
-- New surfaces say **"Fit"** / **"Fit score"**; the tag renders `fit_score`.
+- New surfaces say **"Fit"** / **"Fit score"** where the fit itself is shown, and `fit_score` is
+  unchanged as the stored measurement. The tier tag renders the **evidence** instead — the quantity its
+  band was read off — spelled out as "Evidence: NN% (fit x plausibility)" in its tooltip.
 - `BaseTierTag` replaces the 0/1/2 severity of `BaseMatchTag` with the 4 tiers; `BaseMatchTag` stays
   only where the legacy `match_category` is still shown (targeted view during coexistence).
 

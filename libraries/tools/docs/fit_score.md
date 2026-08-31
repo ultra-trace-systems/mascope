@@ -50,15 +50,30 @@ unconditionally, not via the legacy `MASCOPE_MATCH_SCORE_VERSION` switch:
   fit score `assign_compositions` already computes (`match_isotopic_pattern`), i.e. the fit
   score's **v1 degradation** — the untargeted path carries no SNR — instead of the crude
   single-peak term.
-- **Tier bands (landed):** the confidence-tier bands sit on the fit scale —
-  `assigned_threshold = 0.8` / `candidate_threshold = 0.5` on `PeakAssignmentConfig`
-  (`api/new/peak_assignments/config.py`), the v2 estimates rather than the legacy
-  `match_params` 0.8/0.7, because on the fit scale a lone mass-only match scores low by
-  design. The field also accepts its old name `identified_threshold` as a validation
-  alias: the config is built from the assign request body, so a client pinned to the
-  pre-rename name still tiers the run the way it asked instead of silently falling back
-  to the default. Still open: recalibrating those bands per instrument once verification
-  labels accumulate.
+- **Tier bands (landed):** the confidence-tier bands no longer sit on the fit scale. They
+  sit on **evidence** — fit × chemical plausibility, the product both stages already
+  arbitrate a contested peak in — at `assigned_threshold = 0.75` /
+  `candidate_threshold = 0.45` on `PeakAssignmentConfig`
+  (`api/new/peak_assignments/config.py`). Only the scale moved: the key names and the
+  shape of the `tier_bands` a run records are unchanged, and the fit is half of the
+  product rather than a casualty of it — it stays the stored pure measurement. The bands
+  sit below the legacy `match_params` 0.8/0.7 for the reason they always did (on the fit
+  scale a lone mass-only match scores low by design), and they came down further with the
+  multiplication, since plausibility ≤ 1 and weighting can only move a row down. How far
+  was settled by sweeping the pair over a real ledger of 77,911 tiered rows rather than by
+  taste: plausibility is a spike at 1.0 with a thin tail (92.8 % of tiered rows score
+  exactly 1.0), so 0.75/0.45 was the pair closest to the split it replaces — assigned
+  85.38 % against the 84.08 % fit-tiering at 0.8/0.5 gave, with 6.93 % of rows changing
+  tier in both directions. Directional, not calibrated. The upper field also accepts its
+  old name `identified_threshold` as a validation alias: the config is built from the
+  assign request body, so a client pinned to the pre-rename name still tiers the run the
+  way it asked instead of silently falling back to the default. One pair covers both
+  stages knowingly — Stage A's fit is `ion_score_v2` and Stage B's the v1 degradation
+  above, so a band means slightly different things to each (holding the upper band at 0.80
+  would cost Stage B 5.3 % of its assigned rows and Stage A only 0.5 %) — but that
+  heterogeneity predates this binding, was equally true under fit-tiering, and per-stage
+  bands were deliberately not introduced. Still open: recalibrating those bands per
+  instrument once verification labels accumulate.
 
 **Naming.** This is being renamed `match_score` → **`fit_score`** across the schema/API to
 say plainly that it measures *fit*, not identification.
@@ -242,7 +257,8 @@ proportionally less. The result is in $[0,1]$, equals $1$ only for a flawless fi
   effective ~0.6 ppm after the `PRED_SIGMA_PPM` quadrature). An ion whose peaks carry
   *genuinely larger* mass errors than the bulk — e.g. the demo's $\mathrm{Br_3^-}$ at
   ~0.7–0.9 ppm (its intensity pattern is flawless) — sits at ~1.3–1.6 $\sigma$ and the
-  Gaussian mass term drops to ~0.3–0.7, pulling the fit to ~0.6 (candidate tier).
+  Gaussian mass term drops to ~0.3–0.7, pulling the fit to ~0.6 — which no plausibility can
+  lift back to the assigned band, since evidence only weights the fit downward.
   A golden-set investigation (see the handoff roadmap, B3) showed **no distribution-level
   fix is warranted**: the mass-error core is m/z-flat (~0.13–0.18 ppm), there is **no
   m/z-dependent $\sigma$ growth**, **no m/z-dependent offset** ($\mathrm{Br_3^-}$'s region
