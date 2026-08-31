@@ -27,7 +27,48 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
   about one sample's evidence. Design note:
   `docs/dev/peak_assignment_copy.md`.
 
+- **The peak inspector now measures the alternatives it used to only list.**
+  Beside a peak's assignment the inspector shows its close alternatives, and
+  they came from two places that looked alike and were not. The formulas the
+  engine actually competed for the peak carry a fit, a mass error and the
+  adduct they were found under. The rest are the composition finder's
+  shortlist - every formula whose mass fits the peak, listed before the run
+  picked a winner - and they reached the card as a formula and a chemical
+  plausibility and nothing else, because measuring them during a run means one
+  isotope-envelope match per candidate for every peak of a sample. So they sat
+  there with no fit to compare them on and a permanently disabled *use this*:
+  visible, unrankable, and impossible to act on. For a single peak the same
+  measurement is cheap, so it is now made when somebody is actually looking at
+  that peak. Each such formula is seeded against every adduct the sample is
+  recorded under, and the one whose main peak lands on this peak with the
+  strongest evidence - the fit weighted by chemical plausibility, the same
+  measure a tier is read off - is reported with its fit, its mass error and
+  its adduct. That is enough to assign it, so *use this* works on it. A
+  formula no adduct places on the peak stays blocked and now says which of the
+  three reasons it is: the sample has no adducts recorded, the formula makes
+  no ion at all, or nothing landed within the mass tolerance. The measurement
+  belongs to the session, not to the run: it is never written onto the run's
+  rows, and committing one of these formulas is recorded as what it is - a
+  composition scored against the sample by hand, re-tiered under the run's own
+  thresholds - rather than as promoting something the engine had decided.
+
 ### Changed
+
+- **The "no adduct" explanations in the peak inspector are in plain
+  language.** Both said "No adduct:" and then described the machinery -
+  a candidate "the finder listed", a formula that "cannot be verified" - using
+  *verified* for committing an assignment, which in Mascope means something
+  else entirely: a verdict a person records about evidence. The first now says
+  the formula is not assignable to this peak and why, or, once the peak's
+  alternatives have been measured, gives the specific reason no adduct reached
+  it. The second is the one that mattered more: it appears on the assignment a
+  hand-made override replaced, where *use this* would normally undo the
+  change, and it has to explain that this particular undo cannot be done at
+  all because the replaced assignment named no adduct. It said so in a single
+  clause and then recommended re-searching, which reads like the undo. It now
+  says plainly that the undo is not available here, and that re-searching
+  assigns the formula again but as a new assignment - so the isotopologues the
+  override cleared stay cleared.
 
 - **The assignments browser header is one row again.** It had grown to four
   controls - run selector, *Isotopologues* toggle, verdict filter and *Assign

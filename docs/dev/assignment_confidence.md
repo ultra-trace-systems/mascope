@@ -391,7 +391,11 @@ no backend or DB, only `mascope_tools` + tests.
   the winner's share among the peak's full scored candidate set — because the finder's
   `other_candidates` shortlist is formula names only, with no per-candidate fit to take a
   share of (the plausibility shown against those entries is computed here from the
-  formula, not carried by the finder). A
+  formula, not carried by the finder). The inspector *can* now measure that shortlist for
+  one peak on request (`alternatives_scoring.py`), but that does not close this gap: a
+  confidence is a property of the run, and the reason the run does not measure the
+  shortlist is precisely that doing it for every peak of a sample is an isotope-envelope
+  match per candidate. Confidence stays deferred until the run itself can afford one. A
   P(correct) there would additionally mean applying the Stage A curve across the v1/v2 fit
   gap, which is the fabricated probability the calibration layer exists to refuse.
 
