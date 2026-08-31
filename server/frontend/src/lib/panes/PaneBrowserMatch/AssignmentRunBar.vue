@@ -126,19 +126,23 @@ const canAssign = computed(() => runs.value.list.length > 0 || Boolean(runs.valu
 </template>
 
 <style scoped>
+/* Takes the width the switch beside it does not, so the run - the thing this
+   whole paradigm is reading - gets the room rather than a gap in the middle of
+   the bar. */
 .run-bar {
   display: flex;
   align-items: center;
   gap: 0.5rem;
+  flex: 1 1 auto;
   min-width: 0;
 }
 
-/* Shrinkable rather than fixed: this row is as wide as the browser column,
-   which the user can drag narrow. The label ellipses inside (.run-name) so a
-   squeezed selector loses characters instead of pushing the button out of the
-   bar - which is what the ledger header used to do. */
+/* Grows into that room and shrinks out of it again: the browser column is
+   user-resizable, and the label ellipses inside (.run-name), so a squeezed
+   selector loses characters instead of pushing the button out of the bar -
+   which is what the ledger header used to do. */
 .run-select {
-  flex: 0 1 15rem;
+  flex: 1 1 auto;
   min-width: 7rem;
 }
 

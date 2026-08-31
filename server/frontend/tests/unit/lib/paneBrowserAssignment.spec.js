@@ -129,20 +129,6 @@ const GLOBAL_STUBS = {
     },
     template: '<div class="view-menu-popover"><slot /></div>'
   },
-  // The only Select left in this pane is the verdict filter, so the stub is
-  // shaped for it: one clickable option per verdict, reporting the choice the
-  // way PrimeVue does. (The run selector's slot-rendering stub went with it to
-  // assignmentRunBar.spec.js.)
-  Select: {
-    props: ['options', 'modelValue', 'optionValue'],
-    emits: ['update:modelValue'],
-    template:
-      '<div class="select">' +
-      '<button v-for="o in options" :key="o.value" class="select-option" ' +
-      ':class="{ chosen: o[optionValue] === modelValue }" ' +
-      '@click="$emit(\'update:modelValue\', o[optionValue])">{{ o.label }}</button>' +
-      '</div>'
-  },
   // Declared rather than auto-stubbed so the sizing tests can read what the
   // pane asked the table for and the sort tests can assert the rows are handed
   // over verbatim; the types match PrimeVue's, so bare attributes
@@ -1113,16 +1099,16 @@ describe('PaneBrowserAssignment view options menu', () => {
 
   const trigger = (wrapper) => wrapper.find('[aria-label="Ledger view options"]')
 
-  it('offers one button in the header, not four controls', async () => {
-    const wrapper = await mountPane()
-    const menuRow = wrapper.find('.menu-row')
+  const chips = (wrapper) => wrapper.findAll('.view-menu-popover .verdict-chip')
 
-    expect(trigger(wrapper).exists()).toBe(true)
-    // The header row itself holds the trigger and the popover it opens, and
-    // nothing else. Counted over direct children rather than descendants: the
-    // stub renders the panel inline, where the real one teleports it away.
-    const inTheRow = [...menuRow.element.children].filter((el) => el.tagName === 'BUTTON')
-    expect(inTheRow).toHaveLength(1)
+  // Everything that narrows the table is on one row: the tier chips first, the
+  // menu holding the other two filters at the end of it. The panel header keeps
+  // only the breadcrumb.
+  it('puts the menu at the end of the tier-chip row, and nothing in the header', async () => {
+    const wrapper = await mountPane()
+
+    expect(wrapper.find('.tier-strip .view-menu-button').exists()).toBe(true)
+    expect(wrapper.find('.menu-row').exists()).toBe(false)
     // The run selector and the launch button are a row up now.
     expect(wrapper.find('[label="Assign peaks"]').exists()).toBe(false)
     expect(wrapper.find('[placeholder="Select run"]').exists()).toBe(false)
@@ -1132,15 +1118,18 @@ describe('PaneBrowserAssignment view options menu', () => {
     const wrapper = await mountPane()
 
     expect(trigger(wrapper).attributes('aria-haspopup')).toBe('dialog')
-    expect(trigger(wrapper).attributes('aria-controls')).toBe('assignment-view-menu')
     expect(trigger(wrapper).attributes('aria-expanded')).toBe('false')
+    // The panel is destroyed while closed, so naming it here would be a
+    // dangling reference for the whole time the menu is shut.
+    expect(trigger(wrapper).attributes('aria-controls')).toBeUndefined()
 
     await trigger(wrapper).trigger('click')
 
     expect(trigger(wrapper).attributes('aria-expanded')).toBe('true')
+    expect(trigger(wrapper).attributes('aria-controls')).toBe('assignment-view-menu')
   })
 
-  // The switch's only accessible name is its `<label for>`; a menu that renders
+  // The switch's only accessible name is its `<label for>`; a menu that rendered
   // its items as menuitems would have taken that pairing away.
   it('keeps the isotopologue switch labelled by its own text', async () => {
     const wrapper = await mountPane()
@@ -1150,12 +1139,25 @@ describe('PaneBrowserAssignment view options menu', () => {
     expect(wrapper.find('.view-menu-popover .iso-toggle').exists()).toBe(true)
   })
 
-  it('gives the verdict filter a label of its own', async () => {
+  // Chips, not a Select. PrimeVue's Select calls stopPropagation() on Escape
+  // whether or not its list is open, and both of Popover's Escape handlers are
+  // on the bubble path - so a Select in here would swallow the only key that
+  // closes a panel whose focus trap Tab cannot leave either.
+  it('names the verdict filter and each of its choices', async () => {
     const wrapper = await mountPane()
+    const group = wrapper.find('.view-menu-popover .verdict-filter')
 
-    // It never had an accessible name - only a tooltip, which contributes
-    // nothing to the accessibility tree.
-    expect(wrapper.find('.view-menu-popover label[for="verdict-filter"]').text()).toBe('Verdict')
+    expect(group.attributes('role')).toBe('group')
+    expect(group.attributes('aria-label')).toBe('Filter by verification verdict')
+    expect(chips(wrapper).map((c) => c.text())).toEqual([
+      'All verdicts',
+      'Confirmed',
+      'Rejected',
+      'Unsure',
+      'Unverified'
+    ])
+    // Every choice is its own button, so each is a tab stop that names itself.
+    expect(chips(wrapper).every((c) => c.element.tagName === 'BUTTON')).toBe(true)
   })
 
   it('unfolds isotopologues from the menu, not just from the ref', async () => {
@@ -1173,11 +1175,12 @@ describe('PaneBrowserAssignment view options menu', () => {
     verdictRecord = { verdict: 'confirmed', evidence_level: 'msms' }
     verdictPeakId = 'p-b'
     const wrapper = await mountPane()
-    const options = wrapper.findAll('.view-menu-popover .select-option')
 
-    await options.find((o) => o.text() === 'Confirmed').trigger('click')
+    const confirmed = chips(wrapper).find((c) => c.text() === 'Confirmed')
+    await confirmed.trigger('click')
 
     expect(wrapper.vm.verdictFilter).toBe('confirmed')
+    expect(confirmed.attributes('aria-pressed')).toBe('true')
     expect(ids(wrapper)).toEqual(['b'])
   })
 
@@ -1189,8 +1192,9 @@ describe('PaneBrowserAssignment view options menu', () => {
 
     await trigger(wrapper).trigger('click')
     await wrapper.find('.view-menu-popover .iso-toggle').trigger('click')
-    const options = wrapper.findAll('.view-menu-popover .select-option')
-    await options.find((o) => o.text() === 'Unverified').trigger('click')
+    await chips(wrapper)
+      .find((c) => c.text() === 'Unverified')
+      .trigger('click')
 
     // Close, reopen.
     await trigger(wrapper).trigger('click')
@@ -1200,7 +1204,11 @@ describe('PaneBrowserAssignment view options menu', () => {
     expect(wrapper.vm.showIsotopologues).toBe(true)
     expect(wrapper.vm.verdictFilter).toBe('unverified')
     expect(wrapper.find('.view-menu-popover .iso-toggle').text()).toBe('true')
-    expect(wrapper.find('.view-menu-popover .select-option.chosen').text()).toBe('Unverified')
+    expect(
+      chips(wrapper)
+        .filter((c) => c.classes('active'))
+        .map((c) => c.text())
+    ).toEqual(['Unverified'])
   })
 
   it('offers no view options before there is a run to look at', async () => {
