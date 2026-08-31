@@ -382,12 +382,16 @@ no backend or DB, only `mascope_tools` + tests.
 
 - **Remaining P2 / next:** replace the provisional Orbitrap curve with a curated fit and add
   a TOF curve once a TOF golden set exists; the **persisted, user-refittable per-instrument
-  store** (a DB table — deferred); then full Stage B arbitration. Stage B already *tiers* on
+  store** (a DB table — deferred); then Stage B's confidence. Stage B already *tiers* on
   evidence — its contenders carry a fit and a plausibility and it records
   `provenance.evidence` for its winner, so the untargeted stage is not blind to chemistry.
-  What is still deferred is the arbitration proper: competing a peak's candidates against
-  each other and emitting a confidence, which needs comparable per-candidate fits
-  (`other_candidates` carries formulas and a plausibility, no per-candidate fit). A
+  It also already *competes* the candidates that land on one observed peak: they are
+  ranked by evidence, closest mass, then formula, and the losers are kept as
+  `alternatives` each with its own fit. What is still deferred is the **confidence** —
+  the winner's share among the peak's full scored candidate set — because the finder's
+  `other_candidates` shortlist is formula names only, with no per-candidate fit to take a
+  share of (the plausibility shown against those entries is computed here from the
+  formula, not carried by the finder). A
   P(correct) there would additionally mean applying the Stage A curve across the v1/v2 fit
   gap, which is the fabricated probability the calibration layer exists to refuse.
 

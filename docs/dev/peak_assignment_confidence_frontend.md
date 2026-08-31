@@ -15,7 +15,7 @@ flattened onto the record, because the tier chip displays it.
 
 | Quantity | What it means | Range | Field path | Shown today |
 |---|---|---|---|---|
-| **fit_score** | How well the *measurement* matches this ion — mass error + intensity + isotope envelope. Pure signal, and stored unchanged; it is just no longer what buckets the row. | 0–1 | `fit_score` (top-level) | ✅ inspector `fit` stat + alternatives; the tier tag shows `evidence` now |
+| **fit_score** | How well the *measurement* matches this ion — mass error + intensity + isotope envelope. Pure signal, and stored unchanged; it is just no longer what buckets the row. | 0–1 | `fit_score` (top-level) | ✅ inspector `fit` stat + alternatives, a sortable column in the composition search, and the batch ledger's `best_fit_score` sort; the tier tag shows `evidence` now |
 | **plausibility** | Chemistry sanity of the formula — the Seven Golden Rules (Kind & Fiehn 2007). Independent of the measurement. | 0–1 | `provenance.plausibility` | ✅ Plausibility column |
 | **evidence** | `fit x plausibility` — the score arbitration ranks candidates by, and the quantity the **tier is banded on**: `tier_for_evidence` reads assigned / candidate / below off this, not off the fit. | 0–1 | `provenance.evidence`, flattened to `evidence` | ✅ the number in the tier tag |
 | **p_correct** | **Calibrated probability the assignment is correct.** `evidence` mapped through a Platt curve to a real probability. | 0–1 | `provenance.p_correct` | ✅ inspector `P(correct)` + ledger column |
