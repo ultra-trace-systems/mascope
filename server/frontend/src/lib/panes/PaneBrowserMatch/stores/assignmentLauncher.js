@@ -17,9 +17,5 @@ import { defineStore } from 'pinia'
 export const useAssignmentLauncher = defineStore('browser.match.assignment.launcher', () => {
   const configVisible = ref(false)
 
-  const open = () => {
-    configVisible.value = true
-  }
-
-  return { configVisible, open }
+  return { configVisible }
 })
