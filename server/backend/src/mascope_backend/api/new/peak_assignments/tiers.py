@@ -1,11 +1,15 @@
 """The confidence-tier vocabulary of peak assignment, declared once.
 
 A tier records how strong the evidence behind a peak's formula is - a richer
-replacement for the targeted matcher's ``match_category`` 0/1/2:
+replacement for the targeted matcher's ``match_category`` 0/1/2. "Evidence" is
+meant literally: it is ``fit x chemical plausibility``, the quantity both engine
+stages already arbitrate a contested peak in, and the tier is read off that
+product rather than off the fit alone (see ``engine.tier_for_evidence``).
 
-- ``assigned`` - the fit clears the run's upper band; the formula is the one
-  the ledger commits to for that peak.
-- ``candidate`` - a plausible formula whose fit leaves real alternatives open.
+- ``assigned`` - the evidence clears the run's upper band; the formula is the
+  one the ledger commits to for that peak.
+- ``candidate`` - a plausible formula whose evidence leaves real alternatives
+  open.
 - ``below_assignability`` - a formula was considered and nothing reaches even
   the candidate band, so the peak is not assignable on this evidence.
 - ``unassigned`` - nothing was proposed for the peak at all.
@@ -89,7 +93,7 @@ def normalize_tier_bands(bands: dict | None) -> dict | None:
     database, where a row predating the data migration - or an import that was
     already in flight when it ran - still carries the old key.
 
-    :param bands: A tier-keyed mapping of fit-score thresholds, or None.
+    :param bands: A tier-keyed mapping of evidence thresholds, or None.
     :return: A new mapping under the current spellings, or None.
     """
     if bands is None:

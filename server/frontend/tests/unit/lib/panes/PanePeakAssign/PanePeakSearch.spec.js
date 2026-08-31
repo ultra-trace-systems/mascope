@@ -108,7 +108,7 @@ vi.mock('@/api', () => ({
 vi.mock('@/lib/features', () => ({ peakAssignmentEnabled: true }))
 
 vi.mock('@/lib/base', () => ({
-  BaseTierTag: { props: ['tier', 'fitScore', 'source'], template: '<span class="tier-tag" />' },
+  BaseTierTag: { props: ['tier', 'evidence', 'source'], template: '<span class="tier-tag" />' },
   BaseMatchTag: { props: ['matchScore'], template: '<span class="match-tag" />' }
 }))
 

@@ -208,15 +208,21 @@ class RunStillAssemblingException(CodedHTTPException):
 def _provenance_scalars(provenance: dict | None) -> dict:
     """Collapse a provenance blob into the scalars the ledger renders.
 
-    The ledger table shows a calibrated P(correct) column (with its provisional
-    marker) and an adduct-corroboration count on every row; everything else in
-    provenance is per-peak inspector detail served by
-    :func:`get_peak_assignment_detail`.
+    The ledger table shows the evidence its tier was read off, a calibrated
+    P(correct) column (with its provisional marker) and an adduct-corroboration
+    count on every row; everything else in provenance is per-peak inspector
+    detail served by :func:`get_peak_assignment_detail`.
+
+    ``evidence`` is here rather than in the inspector because it is what the tier
+    chip displays. The chip used to show ``fit_score``, which stopped being the
+    number that bucketed the row - and a tier beside a percentage that did not
+    produce it is the one pairing guaranteed to be read as a contradiction.
     """
     provenance = provenance or {}
     calibration = provenance.get("calibration") or {}
     corroboration = provenance.get("corroboration") or {}
     return {
+        "evidence": provenance.get("evidence"),
         "p_correct": provenance.get("p_correct"),
         "p_correct_provisional": calibration.get("provisional"),
         "corroboration_adducts": corroboration.get("n_adducts"),
@@ -1452,8 +1458,8 @@ async def _run_sample_assignment(
                 match_isotope_df,
                 sample_item_id=sample_item_id,
                 peak_assignment_run_id=run.peak_assignment_run_id,
-                possible_threshold=config.candidate_threshold,
-                probable_threshold=config.assigned_threshold,
+                candidate_threshold=config.candidate_threshold,
+                assigned_threshold=config.assigned_threshold,
                 max_alternatives=config.max_alternatives,
                 instrument=instrument,
                 calibration=calibration,
@@ -1527,8 +1533,8 @@ async def _run_sample_assignment(
                     peaks_df=search_peaks_df,
                     sample_item_id=sample_item_id,
                     peak_assignment_run_id=run.peak_assignment_run_id,
-                    possible_threshold=config.candidate_threshold,
-                    probable_threshold=config.assigned_threshold,
+                    candidate_threshold=config.candidate_threshold,
+                    assigned_threshold=config.assigned_threshold,
                     mechanism_id_by_notation=mechanism_id_by_notation,
                     formula_formatter=to_custom_element_format,
                     max_alternatives=config.max_alternatives,

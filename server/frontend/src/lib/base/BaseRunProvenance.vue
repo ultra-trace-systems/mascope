@@ -130,6 +130,9 @@ const band = (value) =>
 
 // "assigned" means nothing comparable across engines until the thresholds
 // that produced it are visible, so the bands travel with the engine name.
+// Named as evidence bands rather than bare thresholds: the same 80% means one
+// thing against a fit and another against fit x plausibility, and a run from an
+// engine that tiers on the fit alone is exactly what this line exists to expose.
 const tierBandsText = computed(() => {
   const bands = props.run?.tier_bands
   if (!bands || typeof bands !== 'object') return null
@@ -139,7 +142,7 @@ const tierBandsText = computed(() => {
     assigned ? `assigned \u2265 ${assigned}` : null,
     candidate ? `candidate \u2265 ${candidate}` : null
   ].filter(Boolean)
-  return parts.length ? `Tier bands: ${parts.join(' \u00b7 ')}` : null
+  return parts.length ? `Tier bands (evidence): ${parts.join(' \u00b7 ')}` : null
 })
 
 // --- Tooltips ----------------------------------------------------------------

@@ -482,7 +482,7 @@ const demotedCount = computed(() => {
         </div>
         <BaseTierTag
           :tier="focusedAssignment.tier"
-          :fit-score="focusedAssignment.fit_score"
+          :evidence="focusedAssignment.evidence"
           :role="focusedAssignment.role"
           :source="focusedAssignment.source"
           v-help.right="{

@@ -23,15 +23,16 @@ from mascope_backend.api.new.peak_assignments.engine import (
     TIER_CANDIDATE,
     TIER_UNASSIGNED,
     build_unassigned_assignments,
+    evidence_for,
     invert_matches_to_peak_assignments,
     score_ions_by_fit,
-    tier_for_score,
+    tier_for_evidence,
     untargeted_matches_to_peak_assignments,
 )
 
 
-POSSIBLE = 0.7
-PROBABLE = 0.8
+CANDIDATE = 0.7
+ASSIGNED = 0.8
 
 
 def _isotope_row(
@@ -81,33 +82,76 @@ def _isotope_row(
     }
 
 
-class TestTierForScore:
-    def test_probable_score_is_assigned(self):
-        assert tier_for_score(0.85, POSSIBLE, PROBABLE) == TIER_ASSIGNED
+def _tier(evidence: float | None) -> str:
+    """Tier this evidence under the module's bands."""
+    return tier_for_evidence(
+        evidence, candidate_threshold=CANDIDATE, assigned_threshold=ASSIGNED
+    )
+
+
+class TestTierForEvidence:
+    def test_high_evidence_is_assigned(self):
+        assert _tier(0.85) == TIER_ASSIGNED
 
     def test_threshold_boundaries_are_inclusive(self):
-        assert tier_for_score(PROBABLE, POSSIBLE, PROBABLE) == TIER_ASSIGNED
-        assert tier_for_score(POSSIBLE, POSSIBLE, PROBABLE) == TIER_CANDIDATE
+        assert _tier(ASSIGNED) == TIER_ASSIGNED
+        assert _tier(CANDIDATE) == TIER_CANDIDATE
 
-    def test_possible_score_is_candidate(self):
-        assert tier_for_score(0.75, POSSIBLE, PROBABLE) == TIER_CANDIDATE
+    def test_middling_evidence_is_candidate(self):
+        assert _tier(0.75) == TIER_CANDIDATE
 
-    def test_weak_score_is_below_assignability(self):
-        assert tier_for_score(0.3, POSSIBLE, PROBABLE) == TIER_BELOW_ASSIGNABILITY
+    def test_weak_evidence_is_below_assignability(self):
+        assert _tier(0.3) == TIER_BELOW_ASSIGNABILITY
 
-    def test_zero_and_missing_scores_are_below_assignability(self):
-        assert tier_for_score(0.0, POSSIBLE, PROBABLE) == TIER_BELOW_ASSIGNABILITY
-        assert tier_for_score(None, POSSIBLE, PROBABLE) == TIER_BELOW_ASSIGNABILITY
-        assert tier_for_score(float("nan"), POSSIBLE, PROBABLE) == (
-            TIER_BELOW_ASSIGNABILITY
-        )
+    def test_zero_and_missing_evidence_are_below_assignability(self):
+        assert _tier(0.0) == TIER_BELOW_ASSIGNABILITY
+        assert _tier(None) == TIER_BELOW_ASSIGNABILITY
+        assert _tier(float("nan")) == TIER_BELOW_ASSIGNABILITY
+
+    def test_the_bands_are_keyword_only(self):
+        # They read in the opposite order to the band names, which is exactly how
+        # a positional call written in band order used to invert them and tier a
+        # whole run wrong. Passing them positionally must now be impossible.
+        with pytest.raises(TypeError):
+            tier_for_evidence(0.85, CANDIDATE, ASSIGNED)
+
+
+class TestEvidenceFor:
+    """``evidence_for`` is what every caller holding a stored row tiers on."""
+
+    def test_a_plausible_formula_keeps_its_fit(self):
+        # The common case by a wide margin: a formula whose element ratios sit in
+        # the Seven Golden Rules' common range scores plausibility 1.0, so its
+        # evidence IS its fit and the row tiers exactly as it did before.
+        assert evidence_for(0.9, "C6H12O6") == pytest.approx(0.9)
+
+    def test_an_implausible_formula_is_weighed_down(self):
+        # Methanesulfonic acid: real, but three oxygens on one carbon puts its
+        # O/C ratio in the far tail, and the fit alone would have called this
+        # near-perfect match 'assigned'.
+        evidence = evidence_for(0.95, "CH4O3S")
+        assert evidence < 0.5
+        assert _tier(evidence) == TIER_BELOW_ASSIGNABILITY
+
+    def test_an_impossible_formula_has_no_evidence_however_well_it_fits(self):
+        # Senior-infeasible: more atoms than can be bonded. Plausibility is
+        # exactly 0, so no fit can rescue it.
+        assert evidence_for(1.0, "C6H17NO4") == 0.0
+
+    def test_no_fit_score_is_no_evidence(self):
+        assert evidence_for(None, "C6H12O6") is None
+
+    def test_an_unparseable_formula_fails_open_to_the_fit(self):
+        # Plausibility must never decide whether a write happens, so a formula
+        # this layer cannot read weighs nothing rather than zeroing the row.
+        assert evidence_for(0.9, "not a formula") == pytest.approx(0.9)
 
 
 class TestInvertMatches:
     def test_empty_input_yields_no_assignments(self):
         assert (
             invert_matches_to_peak_assignments(
-                pd.DataFrame(), "sample1", "run1", POSSIBLE, PROBABLE
+                pd.DataFrame(), "sample1", "run1", CANDIDATE, ASSIGNED
             )
             == []
         )
@@ -145,7 +189,7 @@ class TestInvertMatches:
         )
 
         assignments = invert_matches_to_peak_assignments(
-            match_df, "sample1", "run1", POSSIBLE, PROBABLE
+            match_df, "sample1", "run1", CANDIDATE, ASSIGNED
         )
 
         assert len(assignments) == 1
@@ -233,7 +277,7 @@ class TestInvertMatches:
         )
 
         assignments = invert_matches_to_peak_assignments(
-            match_df, "sample1", "run1", POSSIBLE, PROBABLE
+            match_df, "sample1", "run1", CANDIDATE, ASSIGNED
         )
         by_peak = {a["sample_peak_id"]: a for a in assignments}
 
@@ -298,8 +342,8 @@ class TestInvertMatches:
             df,
             sample_item_id="s1",
             peak_assignment_run_id="run1",
-            possible_threshold=POSSIBLE,
-            probable_threshold=PROBABLE,
+            candidate_threshold=CANDIDATE,
+            assigned_threshold=ASSIGNED,
         )
 
         assert assignment["assigned_formula"] == "C10H16O3"
@@ -340,8 +384,8 @@ class TestInvertMatches:
             df,
             sample_item_id="s1",
             peak_assignment_run_id="run1",
-            possible_threshold=POSSIBLE,
-            probable_threshold=PROBABLE,
+            candidate_threshold=CANDIDATE,
+            assigned_threshold=ASSIGNED,
         )
 
         assert assignment["alternatives"] is None
@@ -383,8 +427,8 @@ class TestInvertMatches:
             df,
             sample_item_id="s1",
             peak_assignment_run_id="run1",
-            possible_threshold=POSSIBLE,
-            probable_threshold=PROBABLE,
+            candidate_threshold=CANDIDATE,
+            assigned_threshold=ASSIGNED,
         )
 
         assert len(assignment["alternatives"]) == 1
@@ -434,8 +478,8 @@ class TestInvertMatches:
             df,
             sample_item_id="s1",
             peak_assignment_run_id="run1",
-            possible_threshold=POSSIBLE,
-            probable_threshold=PROBABLE,
+            candidate_threshold=CANDIDATE,
+            assigned_threshold=ASSIGNED,
             max_alternatives=1,
         )
 
@@ -473,7 +517,7 @@ class TestInvertMatches:
             ]
         )
         [winner] = invert_matches_to_peak_assignments(
-            match_df, "sample1", "run1", POSSIBLE, PROBABLE
+            match_df, "sample1", "run1", CANDIDATE, ASSIGNED
         )
         assert winner["assigned_formula"] == "C6H12O6"
         assert winner["fit_score"] == pytest.approx(0.85)  # its own pure fit
@@ -500,7 +544,7 @@ class TestInvertMatches:
             ]
         )
         [a] = invert_matches_to_peak_assignments(
-            match_df, "sample1", "run1", POSSIBLE, PROBABLE
+            match_df, "sample1", "run1", CANDIDATE, ASSIGNED
         )
         assert a["provenance"]["confidence"] == pytest.approx(1.0)
         assert a["provenance"]["is_tie"] is False
@@ -544,7 +588,7 @@ class TestInvertMatches:
             ]
         )
         [a] = invert_matches_to_peak_assignments(
-            match_df, "sample1", "run1", POSSIBLE, PROBABLE
+            match_df, "sample1", "run1", CANDIDATE, ASSIGNED
         )
         assert a["provenance"]["confidence"] == pytest.approx(1.0)
         assert a["provenance"]["is_tie"] is False
@@ -584,7 +628,7 @@ class TestInvertMatches:
             ]
         )
         [a] = invert_matches_to_peak_assignments(
-            match_df, "sample1", "run1", POSSIBLE, PROBABLE
+            match_df, "sample1", "run1", CANDIDATE, ASSIGNED
         )
         assert a["assigned_formula"] == "C6H12O6"
         assert a["provenance"]["is_tie"] is False
@@ -624,7 +668,7 @@ class TestInvertMatches:
             ]
         )
         [a] = invert_matches_to_peak_assignments(
-            match_df, "sample1", "run1", POSSIBLE, PROBABLE
+            match_df, "sample1", "run1", CANDIDATE, ASSIGNED
         )
         assert a["provenance"]["is_tie"] is True
 
@@ -651,7 +695,7 @@ class TestInvertMatches:
             ]
         )
         [a] = invert_matches_to_peak_assignments(
-            match_df, "sample1", "run1", POSSIBLE, PROBABLE
+            match_df, "sample1", "run1", CANDIDATE, ASSIGNED
         )
         assert a["provenance"]["confidence"] == pytest.approx(0.0)
         assert a["provenance"]["is_tie"] is True
@@ -674,7 +718,7 @@ class TestInvertMatches:
             ]
         )
         [a] = invert_matches_to_peak_assignments(
-            match_df, "sample1", "run1", POSSIBLE, PROBABLE, instrument="orbi"
+            match_df, "sample1", "run1", CANDIDATE, ASSIGNED, instrument="orbi"
         )
         prov = a["provenance"]
         assert prov["calibrated"] is True
@@ -718,7 +762,7 @@ class TestInvertMatches:
             ]
         )
         out = invert_matches_to_peak_assignments(
-            match_df, "sample1", "run1", POSSIBLE, PROBABLE, instrument="orbi"
+            match_df, "sample1", "run1", CANDIDATE, ASSIGNED, instrument="orbi"
         )
         by_peak = {a["sample_peak_id"]: a for a in out}
         prot, brom = by_peak["p1"], by_peak["p2"]
@@ -747,7 +791,7 @@ class TestInvertMatches:
             ]
         )
         [a] = invert_matches_to_peak_assignments(
-            match_df, "sample1", "run1", POSSIBLE, PROBABLE, instrument="orbi"
+            match_df, "sample1", "run1", CANDIDATE, ASSIGNED, instrument="orbi"
         )
         assert "corroboration" not in a["provenance"]
 
@@ -773,8 +817,8 @@ class TestInvertMatches:
             match_df,
             "sample1",
             "run1",
-            POSSIBLE,
-            PROBABLE,
+            CANDIDATE,
+            ASSIGNED,
             instrument="orbi",
             calibration=None,
         )
@@ -800,7 +844,7 @@ class TestInvertMatches:
             ]
         )
         [a] = invert_matches_to_peak_assignments(
-            match_df, "sample1", "run1", POSSIBLE, PROBABLE, instrument="tof"
+            match_df, "sample1", "run1", CANDIDATE, ASSIGNED, instrument="tof"
         )
         assert a["provenance"]["calibrated"] is False
         assert a["provenance"]["p_correct"] is None
@@ -835,7 +879,7 @@ class TestInvertMatches:
         )
 
         assignments = invert_matches_to_peak_assignments(
-            match_df, "sample1", "run1", POSSIBLE, PROBABLE
+            match_df, "sample1", "run1", CANDIDATE, ASSIGNED
         )
         by_peak = {a["sample_peak_id"]: a for a in assignments}
 
@@ -890,7 +934,7 @@ class TestInvertMatches:
         )
 
         assignments = invert_matches_to_peak_assignments(
-            match_df, "sample1", "run1", POSSIBLE, PROBABLE
+            match_df, "sample1", "run1", CANDIDATE, ASSIGNED
         )
         by_peak = {a["sample_peak_id"]: a for a in assignments}
 
@@ -919,7 +963,7 @@ class TestInvertMatches:
         )
         assert (
             invert_matches_to_peak_assignments(
-                match_df, "sample1", "run1", POSSIBLE, PROBABLE
+                match_df, "sample1", "run1", CANDIDATE, ASSIGNED
             )
             == []
         )
@@ -958,7 +1002,7 @@ class TestInvertMatches:
             ]
         )
         assignments = invert_matches_to_peak_assignments(
-            match_df, "sample1", "run1", POSSIBLE, PROBABLE
+            match_df, "sample1", "run1", CANDIDATE, ASSIGNED
         )
         peaks = {a["sample_peak_id"] for a in assignments}
         assert peaks == {"pGood"}  # the stolen peak is released, not owned
@@ -994,8 +1038,8 @@ class TestInvertMatches:
             pd.DataFrame(rows),
             "sample1",
             "run1",
-            POSSIBLE,
-            PROBABLE,
+            CANDIDATE,
+            ASSIGNED,
             max_alternatives=2,
         )
         assert len(assignments) == 1
@@ -1150,8 +1194,8 @@ class TestUntargetedMatches:
             self._one_peak_df("pA", 100.1, 5000.0),
             "sample1",
             "run1",
-            POSSIBLE,
-            PROBABLE,
+            CANDIDATE,
+            ASSIGNED,
         )
 
         [assignment] = assignments
@@ -1166,8 +1210,8 @@ class TestUntargetedMatches:
             self._one_peak_df("pA", 100.1, 5000.0),
             "sample1",
             "run1",
-            POSSIBLE,
-            PROBABLE,
+            CANDIDATE,
+            ASSIGNED,
         )
 
         assert assignments[0]["alternatives"] is None
@@ -1192,8 +1236,8 @@ class TestUntargetedMatches:
             self._one_peak_df("pA", 100.1, 5000.0),
             "sample1",
             "run1",
-            POSSIBLE,
-            PROBABLE,
+            CANDIDATE,
+            ASSIGNED,
         )
 
         [assignment] = assignments
@@ -1220,8 +1264,8 @@ class TestUntargetedMatches:
             self._one_peak_df("pA", 100.1, 5000.0),
             "sample1",
             "run1",
-            POSSIBLE,
-            PROBABLE,
+            CANDIDATE,
+            ASSIGNED,
         )
 
         [assignment] = assignments
@@ -1234,8 +1278,8 @@ class TestUntargetedMatches:
             self._peaks_df(),
             "sample1",
             "run1",
-            POSSIBLE,
-            PROBABLE,
+            CANDIDATE,
+            ASSIGNED,
             mechanism_id_by_notation={"+H+": "mech1"},
         )
 
@@ -1312,8 +1356,8 @@ class TestUntargetedMatches:
             self._one_peak_df("pA", 100.1, 5000.0),
             "sample1",
             "run1",
-            POSSIBLE,
-            PROBABLE,
+            CANDIDATE,
+            ASSIGNED,
             mechanism_id_by_notation={"+H+": "mech1", "+Na+": "mech2"},
         )
 
@@ -1350,8 +1394,8 @@ class TestUntargetedMatches:
             self._one_peak_df("pA", 100.1, 5000.0),
             "sample1",
             "run1",
-            POSSIBLE,
-            PROBABLE,
+            CANDIDATE,
+            ASSIGNED,
             mechanism_id_by_notation={"+H+": "mech1"},
         )
         assert len(assignments) == 1
@@ -1384,8 +1428,8 @@ class TestUntargetedMatches:
             self._one_peak_df("pA", 100.1, 5000.0),
             "sample1",
             "run1",
-            POSSIBLE,
-            PROBABLE,
+            CANDIDATE,
+            ASSIGNED,
             mechanism_id_by_notation={"+H+": "mech1"},
         )
         assert len(assignments) == 1
@@ -1418,8 +1462,8 @@ class TestUntargetedMatches:
             self._one_peak_df("pA", 100.1, 5000.0),
             "sample1",
             "run1",
-            POSSIBLE,
-            PROBABLE,
+            CANDIDATE,
+            ASSIGNED,
             mechanism_id_by_notation={"+H+": "mech1"},
         )
         assert len(assignments) == 1
@@ -1450,8 +1494,8 @@ class TestUntargetedMatches:
             self._one_peak_df("pA", 100.1, 5000.0),
             "sample1",
             "run1",
-            POSSIBLE,
-            PROBABLE,
+            CANDIDATE,
+            ASSIGNED,
             mechanism_id_by_notation={"+H+": "mech1"},
         )
         assert len(assignments) == 1
@@ -1464,8 +1508,8 @@ class TestUntargetedMatches:
             self._peaks_df(),
             "sample1",
             "run1",
-            POSSIBLE,
-            PROBABLE,
+            CANDIDATE,
+            ASSIGNED,
         )
         by_peak = {a["sample_peak_id"]: a for a in assignments}
         child = by_peak["pB"]
@@ -1480,8 +1524,8 @@ class TestUntargetedMatches:
             self._one_peak_df("pA", 100.1, 5000.0),
             "sample1",
             "run1",
-            POSSIBLE,
-            PROBABLE,
+            CANDIDATE,
+            ASSIGNED,
         )
         assert [a["sample_peak_id"] for a in assignments] == ["pA"]
 
@@ -1491,8 +1535,8 @@ class TestUntargetedMatches:
             self._peaks_df(),
             "sample1",
             "run1",
-            POSSIBLE,
-            PROBABLE,
+            CANDIDATE,
+            ASSIGNED,
             formula_formatter=lambda formula: f"fmt({formula})",
         )
         by_peak = {a["sample_peak_id"]: a for a in assignments}
@@ -1522,8 +1566,8 @@ class TestUntargetedMatches:
             self._one_peak_df("pA", 100.1, 5000.0),
             "sample1",
             "run1",
-            POSSIBLE,
-            PROBABLE,
+            CANDIDATE,
+            ASSIGNED,
             mechanism_id_by_notation={"+H+": "mech1"},
         )
         assert len(assignments) == 1
@@ -1553,8 +1597,8 @@ class TestUntargetedMatches:
             self._one_peak_df("pR", 19.018, 1000.0),
             "sample1",
             "run1",
-            POSSIBLE,
-            PROBABLE,
+            CANDIDATE,
+            ASSIGNED,
         )
         assert assignments == []
 
@@ -1624,8 +1668,8 @@ class TestReferenceStageAInversion:
             df,
             sample_item_id="s1",
             peak_assignment_run_id="run1",
-            possible_threshold=POSSIBLE,
-            probable_threshold=PROBABLE,
+            candidate_threshold=CANDIDATE,
+            assigned_threshold=ASSIGNED,
         )
         assert assignment["source"] == SOURCE_DATABASE
         assert assignment["assigned_formula"] == "C10H16O3"
@@ -1658,8 +1702,8 @@ class TestReferenceStageAInversion:
             df,
             sample_item_id="s1",
             peak_assignment_run_id="run1",
-            possible_threshold=POSSIBLE,
-            probable_threshold=PROBABLE,
+            candidate_threshold=CANDIDATE,
+            assigned_threshold=ASSIGNED,
         )
         assert assignment["target_compound_id"] == "cmp1"
         assert assignment["target_ion_id"] == "ion1"
@@ -1699,8 +1743,8 @@ class TestReferenceStageAInversion:
             df,
             sample_item_id="s1",
             peak_assignment_run_id="run1",
-            possible_threshold=POSSIBLE,
-            probable_threshold=PROBABLE,
+            candidate_threshold=CANDIDATE,
+            assigned_threshold=ASSIGNED,
         )
         # Higher-scoring reference candidate owns the peak, with identity.
         assert assignment["assigned_formula"] == "C10H16O3"
@@ -1751,8 +1795,8 @@ class TestReferenceStageAInversion:
             df,
             sample_item_id="s1",
             peak_assignment_run_id="run1",
-            possible_threshold=POSSIBLE,
-            probable_threshold=PROBABLE,
+            candidate_threshold=CANDIDATE,
+            assigned_threshold=ASSIGNED,
         )
         # Target owns the curated FK...
         assert assignment["target_compound_id"] == "cmp1"

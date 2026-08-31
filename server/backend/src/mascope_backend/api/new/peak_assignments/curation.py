@@ -14,7 +14,7 @@ peak rather than on a run, and survives re-runs by design.
 Three rules keep an edited row honest beside the engine's own:
 
 - **The tier is recomputed, never inherited or accepted.** It is derived here
-  with :func:`engine.tier_for_score` under the run's own ``tier_bands``, so a
+  with :func:`engine.tier_for_evidence` under the run's own ``tier_bands``, so a
   curated row sorts, filters and rolls up against the same yardstick as every
   other row of that run.
 - **The engine's reading of the old winner does not survive.** All nine keys
@@ -67,7 +67,8 @@ from mascope_backend.api.new.peak_assignments.engine import (
     SOURCE_DATABASE,
     SOURCE_MANUAL,
     SOURCE_UNTARGETED,
-    tier_for_score,
+    evidence_for,
+    tier_for_evidence,
 )
 from mascope_backend.api.new.peak_assignments.schemas import (
     PromoteAlternativeBody,
@@ -714,10 +715,10 @@ async def _restore(
     assigned_band, candidate_band = bands
     tier = normalize_tier(previous.get("tier"))
     if tier not in TIERS:
-        tier = tier_for_score(
-            fit_score,
-            possible_threshold=candidate_band,
-            probable_threshold=assigned_band,
+        tier = tier_for_evidence(
+            evidence_for(fit_score, state.get("assigned_formula")),
+            candidate_threshold=candidate_band,
+            assigned_threshold=assigned_band,
         )
     source = previous.get("source")
     restored_provenance = entry.get("provenance")
@@ -1130,14 +1131,18 @@ async def curate_assignment(
         assignment.target_ion_id = target_ion_id
         assignment.role = _role_for(chosen.get("isotope_label"))
         assignment.source = SOURCE_MANUAL
-        # Keyword arguments on purpose: `tier_for_score` takes the CANDIDATE
-        # band as `possible_threshold` and the ASSIGNED band as
-        # `probable_threshold`, so a positional call in band order inverts them
-        # silently.
-        assignment.tier = tier_for_score(
-            fit_score,
-            possible_threshold=candidate_band,
-            probable_threshold=assigned_band,
+        # Tiered on evidence, like both engine stages: the hand chooses the
+        # formula, but what tier that choice earns is still measured, and the
+        # plausibility of a formula a person picked counts exactly as much as
+        # that of one an engine picked. Routed through `evidence_for` rather than
+        # multiplying the `plausibility` above, so the fail-open case (a formula
+        # that will not parse) reads as the fit alone here as it does everywhere
+        # else, instead of collapsing to no evidence at all. `formula_plausibility`
+        # is memoized, so recomputing it costs nothing.
+        assignment.tier = tier_for_evidence(
+            evidence_for(fit_score, assigned),
+            candidate_threshold=candidate_band,
+            assigned_threshold=assigned_band,
         )
         # The curated row stands for its formula on its own: the run arbitrated
         # a family for the composition it replaced, not for this one, so there

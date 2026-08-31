@@ -73,19 +73,72 @@ UNTARGETED_NO_MATCH = "---"
 UNTARGETED_IONIZATION = "()"
 
 
-def tier_for_score(
-    score: float | None,
-    possible_threshold: float,
-    probable_threshold: float,
+def tier_for_evidence(
+    evidence: float | None,
+    *,
+    candidate_threshold: float,
+    assigned_threshold: float,
 ) -> str:
-    """Map a match score onto a confidence tier."""
-    if score is None or not np.isfinite(score) or score <= 0:
+    """Map a peak's evidence onto a confidence tier.
+
+    Evidence is ``fit x plausibility`` -- the measurement of how well the formula
+    explains the observed isotope envelope, weighted by how chemically plausible
+    that formula is at all. Tiering on the product rather than on the fit alone is
+    what stops a chemically implausible formula from holding the ledger's
+    strongest word on mass accuracy: it is already the currency both stages
+    arbitrate a contested peak in, so the tier now agrees with the quantity that
+    picked the winner in the first place.
+
+    ``fit_score`` remains stored and displayed as the pure measurement; it is just
+    no longer what buckets the row.
+
+    The bands are keyword-only. They were positional, in the opposite order to
+    their names, and every caller needed a comment saying so - a positional call
+    written in band order silently inverted them and tiered a whole run wrong.
+
+    :param evidence: The row's evidence, or None when it has none.
+    :param candidate_threshold: Evidence at or above which a row is 'candidate'.
+    :param assigned_threshold: Evidence at or above which a row is 'assigned'.
+    :return: The tier this evidence earns under these bands.
+    """
+    if evidence is None or not np.isfinite(evidence) or evidence <= 0:
         return TIER_BELOW_ASSIGNABILITY
-    if score >= probable_threshold:
+    if evidence >= assigned_threshold:
         return TIER_ASSIGNED
-    if score >= possible_threshold:
+    if evidence >= candidate_threshold:
         return TIER_CANDIDATE
     return TIER_BELOW_ASSIGNABILITY
+
+
+def evidence_for(fit_score: float | None, formula: str | None) -> float | None:
+    """Evidence for a committed formula: ``fit x plausibility``.
+
+    The one place the product is spelled out for callers that hold a stored row
+    rather than a live scoring frame - manual curation, the copy service, the
+    import check. Both engine stages compute it inline instead, because they
+    already carry the plausibility they arbitrated with and re-deriving it from
+    the formula string would be a second, divergeable source of the same number.
+
+    Plausibility is recomputed from the formula rather than read off whatever the
+    row carries: it is a pure function of the formula (Seven Golden Rules), so
+    there is nothing to gain from trusting a number a caller could have made up,
+    and an imported row can then be checked without asking its author to declare
+    one. It never decides whether a write happens, so a formula that cannot be
+    parsed fails open at plausibility 1.0 and the evidence is the fit alone.
+
+    :param fit_score: The row's fit score, or None.
+    :param formula: The committed neutral formula, or None.
+    :return: The evidence, or None when there is no fit score to weigh.
+    """
+    fit = _score_or_none(fit_score)
+    if fit is None:
+        return None
+    if not formula:
+        return fit
+    try:
+        return round(fit * float(formula_plausibility(formula)), 4)
+    except Exception:  # plausibility must never decide whether a write happens
+        return fit
 
 
 def _float_or_none(value) -> float | None:
@@ -167,12 +220,12 @@ def score_ions_by_fit(match_isotope_df: pd.DataFrame) -> pd.DataFrame:
     scored in `ion_score_v2`'s no-SNR mode. No-op (returns the frame
     unchanged) when empty or missing the required columns.
 
-    NOTE: the confidence-tier bands sit on the fit scale --
-    assigned/candidate = 0.8/0.5 on `PeakAssignmentConfig` (config.py), the v2
-    estimates rather than the legacy `match_params` 0.8/0.7, because a lone
-    mass-only match scores low by design on this scale. Per-instrument
-    recalibration of the bands is a follow-up once verification labels
-    accumulate.
+    NOTE: what this computes is the fit, which is NOT what the tier is read off.
+    The confidence-tier bands sit on the EVIDENCE scale (fit x plausibility) --
+    assigned/candidate = 0.75/0.45 on `PeakAssignmentConfig` (config.py). The fit
+    is half of that product and stays the pure measurement; see
+    `tier_for_evidence`. Per-instrument recalibration of the bands is a follow-up
+    once verification labels accumulate.
     """
     if match_isotope_df.empty or not _FIT_SCORE_COLS.issubset(match_isotope_df.columns):
         return match_isotope_df
@@ -300,8 +353,8 @@ def invert_matches_to_peak_assignments(
     match_isotope_df: pd.DataFrame,
     sample_item_id: str,
     peak_assignment_run_id: str,
-    possible_threshold: float,
-    probable_threshold: float,
+    candidate_threshold: float,
+    assigned_threshold: float,
     max_alternatives: int = 5,
     instrument: str | None = None,
     calibration: "Calibration | None | object" = _CALIBRATION_UNSET,
@@ -323,8 +376,8 @@ def invert_matches_to_peak_assignments(
         target_ion_formula, ionization_mechanism_id).
     :param sample_item_id: Sample the peaks belong to.
     :param peak_assignment_run_id: Run the assignments belong to.
-    :param possible_threshold: Score threshold for the 'candidate' tier.
-    :param probable_threshold: Score threshold for the 'assigned' tier.
+    :param candidate_threshold: Evidence threshold for the 'candidate' tier.
+    :param assigned_threshold: Evidence threshold for the 'assigned' tier.
     :param max_alternatives: Cap on stored runner-up candidates per peak.
     :param instrument: Instrument class; selects the in-code calibration when ``calibration``
         is not passed. ``None`` -> uncalibrated.
@@ -515,10 +568,14 @@ def invert_matches_to_peak_assignments(
             "fit_score": _score_or_none(winner["match_score"]),
             "mz_error_ppm": _float_or_none(winner["match_mz_error"]),
             "abundance_error": _float_or_none(winner["match_abundance_error"]),
-            "tier": tier_for_score(
-                _score_or_none(winner["match_score"]),
-                possible_threshold,
-                probable_threshold,
+            # Tiered on the evidence this peak was WON with, not on the fit alone:
+            # the same product that beat the runners-up above decides which band
+            # the winner lands in, so a formula that only won because nothing more
+            # plausible competed cannot also claim the top tier on mass fit.
+            "tier": tier_for_evidence(
+                _float_or_none(winner["_evidence"]),
+                candidate_threshold=candidate_threshold,
+                assigned_threshold=assigned_threshold,
             ),
             "target_compound_id": _str_or_none(winner.get("target_compound_id")),
             # A reference-row winner carries only a synthetic ion id (for in-run
@@ -688,8 +745,8 @@ def untargeted_matches_to_peak_assignments(
     peaks_df: pd.DataFrame,
     sample_item_id: str,
     peak_assignment_run_id: str,
-    possible_threshold: float,
-    probable_threshold: float,
+    candidate_threshold: float,
+    assigned_threshold: float,
     mechanism_id_by_notation: dict[str, str] | None = None,
     formula_formatter=None,
     max_alternatives: int = 5,
@@ -883,9 +940,10 @@ def untargeted_matches_to_peak_assignments(
         # score_pattern (v1 -- no per-peak SNR, no penalty for an absent isotopologue), a
         # different scale from the ion_score_v2 the curve was fit on. Borrowing it across
         # scales is the fabricated probability the calibration layer exists to refuse.
+        evidence = round(winner["fit"] * winner["plausibility"], 4)
         provenance = {
             "plausibility": winner["plausibility"],
-            "evidence": round(winner["fit"] * winner["plausibility"], 4),
+            "evidence": evidence,
             "score_version": SCORE_VERSION,
         }
         for key in ("neutral_mass", "unsaturation"):
@@ -911,8 +969,15 @@ def untargeted_matches_to_peak_assignments(
             "fit_score": _score_or_none(winner["score"]),
             "mz_error_ppm": winner["mz_error_ppm"],
             "abundance_error": winner["abundance_error"],
-            "tier": tier_for_score(
-                winner["score"], possible_threshold, probable_threshold
+            # The same evidence the contest above was settled on, so the tier and
+            # the arbitration agree. Note the stage heterogeneity this inherits:
+            # Stage B's fit is score_pattern (v1), Stage A's is ion_score_v2, so
+            # the two stages' evidence is not strictly on one scale - true under
+            # fit-tiering as well, and unchanged by this binding.
+            "tier": tier_for_evidence(
+                evidence,
+                candidate_threshold=candidate_threshold,
+                assigned_threshold=assigned_threshold,
             ),
             "target_compound_id": None,
             "target_ion_id": None,

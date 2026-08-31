@@ -74,6 +74,7 @@ from mascope_backend.api.new.peak_assignments.admission import (
     assignment_claim,
     in_flight_run_id,
 )
+from mascope_backend.api.new.peak_assignments.engine import evidence_for
 from mascope_backend.api.new.peak_assignments.import_validation import (
     OWNED_ROLE,
     chunk_offset_error,
@@ -317,7 +318,11 @@ def _validate_rows(rows, bands: dict, known_peak_ids: set[str]) -> None:
 
     for row in rows:
         if error := tier_coherence_error(
-            row.tier, row.fit_score, bands["assigned"], bands["candidate"]
+            row.tier,
+            row.fit_score,
+            row.assigned_formula,
+            bands["assigned"],
+            bands["candidate"],
         ):
             raise UnprocessableImportException(
                 f"row for peak '{row.sample_peak_id}': {error}"
@@ -365,11 +370,27 @@ def _row_values(row, run_id: str, sample_item_id: str) -> dict:
     foreign key is validated per row at insert, so the reference is staged on
     ``owner_sample_peak_id`` and resolved once the whole import has landed.
 
+    ``provenance.evidence`` is overwritten with the value the server derived
+    while checking this row's tier, rather than being either trusted or dropped.
+    It is the number the ledger shows beside the tier chip, and the tier was
+    validated against the derived product - so leaving the payload's own figure
+    there would put a number on screen that did not produce the tier next to it,
+    and dropping it would blank the column on every imported row. Recomputing is
+    free: ``formula_plausibility`` is memoized and the coherence check just called
+    it for this same formula.
+
     :param row: The validated payload row.
     :param run_id: The run being assembled.
     :param sample_item_id: The sample being imported into.
     :return: Column values for one ``PeakAssignment``.
     """
+    provenance = strip_server_owned_provenance(row.provenance)
+    evidence = evidence_for(row.fit_score, row.assigned_formula)
+    if evidence is not None:
+        provenance = {**(provenance or {}), "evidence": evidence}
+    elif provenance:
+        provenance.pop("evidence", None)
+        provenance = provenance or None
     return {
         "peak_assignment_id": gen_id(32),
         "peak_assignment_run_id": run_id,
@@ -394,7 +415,7 @@ def _row_values(row, run_id: str, sample_item_id: str) -> dict:
         "owner_peak_assignment_id": None,
         "owner_sample_peak_id": row.owner_sample_peak_id,
         "alternatives": row.alternatives,
-        "provenance": strip_server_owned_provenance(row.provenance),
+        "provenance": provenance,
     }
 
 

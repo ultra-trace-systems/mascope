@@ -20,7 +20,10 @@ from mascope_backend.api.new.peak_assignments.config import (
     MAX_IMPORT_JSON_BYTES,
     RESERVED_ENGINE_NAMES,
 )
-from mascope_backend.api.new.peak_assignments.engine import tier_for_score
+from mascope_backend.api.new.peak_assignments.engine import (
+    evidence_for,
+    tier_for_evidence,
+)
 
 
 # Provenance keys the server derives its own judgement from, stripped out of an
@@ -82,41 +85,45 @@ def json_size_error(field: str, value: Any) -> str | None:
 
 
 def coherent_tiers(
-    fit_score: float | None, assigned: float, candidate: float
+    evidence: float | None, assigned: float, candidate: float
 ) -> set[str]:
-    """The tiers a fit score may carry under the declared bands.
+    """The tiers a row's evidence may carry under the declared bands.
 
-    Delegates to :func:`engine.tier_for_score`, the in-app engine's own
+    Delegates to :func:`engine.tier_for_evidence`, the in-app engine's own
     thresholding, rather than restating it: an import that reproduces Mascope's
     tiering must not be refused for doing so. Restating it is what made an
     earlier version reject two shapes the in-app engine itself writes - a
-    ``None`` fit score (``tier_for_score`` maps that to 'below_assignability',
-    not 'unassigned') and a zero score under a zero ``candidate`` band (it is
-    'below_assignability' there too, on the ``score <= 0`` guard).
+    ``None`` evidence (``tier_for_evidence`` maps that to 'below_assignability',
+    not 'unassigned') and a zero value under a zero ``candidate`` band (it is
+    'below_assignability' there too, on the ``evidence <= 0`` guard).
 
-    A missing fit score admits two tiers, because the in-app ledger uses both:
+    Absent evidence admits two tiers, because the in-app ledger uses both:
     a peak nothing was assigned to is written 'unassigned', while an assigned
     row whose score came back non-finite is written 'below_assignability'.
     Neither is a claim about confidence, so neither is worth refusing.
 
-    :param fit_score: The row's fit score, or None when nothing was assigned.
-    :param assigned: Fit score at or above which a row is 'assigned'.
-    :param candidate: Fit score at or above which a row is 'candidate'.
-    :return: The tier names coherent with this score.
+    :param evidence: The row's evidence, or None when nothing was assigned.
+    :param assigned: Evidence at or above which a row is 'assigned'.
+    :param candidate: Evidence at or above which a row is 'candidate'.
+    :return: The tier names coherent with this evidence.
     """
-    if fit_score is None:
+    if evidence is None:
         return {"unassigned", "below_assignability"}
     return {
-        tier_for_score(
-            fit_score, possible_threshold=candidate, probable_threshold=assigned
+        tier_for_evidence(
+            evidence, candidate_threshold=candidate, assigned_threshold=assigned
         )
     }
 
 
 def tier_coherence_error(
-    tier: str, fit_score: float | None, assigned: float, candidate: float
+    tier: str,
+    fit_score: float | None,
+    formula: str | None,
+    assigned: float,
+    candidate: float,
 ) -> str | None:
-    """Check one row's tier against its fit score under the run's bands.
+    """Check one row's tier against its evidence under the run's bands.
 
     A shared fit-score scale does not make shared *bands* automatic: the in-app
     tiers come from thresholding a run-config pair, not from engine constants.
@@ -125,22 +132,39 @@ def tier_coherence_error(
     meaning something considerably stricter - and outrank them in the
     cross-sample tier ranking.
 
+    What an importer must declare is unchanged in shape and moved in meaning:
+    ``tier_bands`` is still one threshold per tier, but the numbers are now on
+    the EVIDENCE scale (fit x plausibility), and each row's tier must agree with
+    the evidence of the formula it commits. There is deliberately no new field to
+    supply. Plausibility is a pure function of the formula, so the server derives
+    the evidence itself from ``fit_score`` and ``assigned_formula`` rather than
+    trusting a number the payload could assert - the same reason manual curation
+    recomputes it. An importer that only has a fit score therefore has nothing
+    extra to compute either: it declares evidence-scale bands, and its tiers are
+    checked against a product the server can always reconstruct.
+
     :param tier: The tier the row claims.
     :param fit_score: The row's fit score.
-    :param assigned: The run's assigned threshold.
-    :param candidate: The run's candidate threshold.
+    :param formula: The row's assigned formula, whose plausibility weighs the fit.
+    :param assigned: The run's assigned threshold, on the evidence scale.
+    :param candidate: The run's candidate threshold, on the evidence scale.
     :return: An error message, or None when coherent.
     """
-    expected = coherent_tiers(fit_score, assigned, candidate)
+    evidence = evidence_for(fit_score, formula)
+    expected = coherent_tiers(evidence, assigned, candidate)
     if tier in expected:
         return None
     named = " or ".join(f"'{name}'" for name in sorted(expected))
-    if fit_score is None:
+    if evidence is None:
         return f"tier '{tier}' with no fit_score: such a row is {named}"
+    # The evidence is spelled out alongside the fit it came from: an importer that
+    # declared its bands correctly but tiered on the bare fit sees exactly which
+    # of the two numbers the check used, and how far the plausibility moved it.
     return (
-        f"tier '{tier}' is incoherent with fit_score {fit_score} under the "
-        f"declared tier_bands (assigned >= {assigned}, candidate >= "
-        f"{candidate}), which put it at {named}"
+        f"tier '{tier}' is incoherent with evidence {evidence} (fit_score "
+        f"{fit_score} weighted by the chemical plausibility of "
+        f"'{formula}') under the declared tier_bands (assigned >= {assigned}, "
+        f"candidate >= {candidate}), which put it at {named}"
     )
 
 

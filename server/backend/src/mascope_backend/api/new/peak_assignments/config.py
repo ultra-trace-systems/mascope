@@ -10,7 +10,7 @@ from mascope_backend.runtime import runtime
 
 # Bump when the assignment algorithm changes in a way that affects results.
 # Stored on every PeakAssignmentRun so runs stay reproducible and comparable.
-PEAK_ASSIGNMENT_ENGINE_VERSION = "0.2.0"
+PEAK_ASSIGNMENT_ENGINE_VERSION = "0.3.0"
 
 # The in-app engine's identity, stamped on every run this server computes. It is
 # reserved: an import that could stamp it would defeat the provenance badge that
@@ -192,10 +192,37 @@ class PeakAssignmentConfig(BaseModel):
         ),
     )
 
-    # Confidence-tier bands on the FIT-SCORE scale (score_pattern_v2), not the legacy
-    # match_params scale. The fit score demotes lone mass-only matches by design, so its
-    # bands sit lower than v1's 0.8/0.7; these are the DESIGN.md v2 estimates
-    # (assigned >= 0.8, candidate >= 0.5), pending per-instrument recalibration.
+    # Confidence-tier bands on the EVIDENCE scale -- fit x chemical plausibility, the
+    # same product both stages arbitrate a contested peak in (see
+    # `engine.tier_for_evidence`). They were on the bare fit scale at 0.8/0.5; the keys
+    # are unchanged and only their meaning moved, because a run records the pair it
+    # tiered with (`tier_bands`) and nothing else ever needed a second name for it.
+    #
+    # Why 0.75/0.45 and not the old 0.8/0.5: plausibility is <= 1, so multiplying it in
+    # can only move a row down, and the bands have to come down with it or the run
+    # silently tiers stricter than it used to. How far was settled by sweeping the pair
+    # over a real ledger - all 161 demo samples assigned, 77,911 tiered rows - rather
+    # than by taste. Plausibility turns out not to be a broad downshift but a spike at
+    # 1.0 with a thin tail: 92.8% of tiered rows score exactly 1.0 (Stage A 98.3%, Stage
+    # B 88.4%), so only 7.2% of rows move at all, and the bands need far less taken off
+    # them than "evidence <= fit" suggests. 0.75/0.45 was the closest pair in the sweep
+    # to the fit-tiered split it replaces: assigned 85.4% against 84.1% today, with the
+    # 6.9% of rows that change tier moving in both directions (2,717 up, 1,710 down)
+    # rather than draining one band.
+    #
+    # These are DIRECTIONAL, not calibrated truth - a defensible starting point that
+    # keeps the tier histogram close to what it was while letting the chemistry demote
+    # the implausible. Per-instrument recalibration against verification labels is the
+    # documented follow-up, and P(correct) is the eventual binding once calibration
+    # coverage allows it (docs/dev/assignment_confidence.md).
+    #
+    # One pair, both stages, knowingly: Stage A's fit is ion_score_v2 and Stage B's is
+    # score_pattern (v1), so a band means slightly different things to each - on the
+    # sweep, holding the upper band at 0.80 costs Stage B 5.3% of its assigned rows and
+    # Stage A only 0.5%. Per-stage bands would fit the data better and are deliberately
+    # not introduced: the heterogeneity predates this binding (it was there under
+    # fit-tiering too), and a second pair of knobs is more apparatus than a directional
+    # threshold is worth.
     #
     # The upper band still parses under its old name: this model is built from the
     # assign request body, so a client pinned to the pre-rename field would
@@ -203,17 +230,23 @@ class PeakAssignmentConfig(BaseModel):
     # way it asked. Only the current name is stored - model_dump() lands verbatim
     # in the run's config.
     assigned_threshold: float = Field(
-        0.8,
+        0.75,
         ge=0.0,
         le=1.0,
         validation_alias=AliasChoices("assigned_threshold", "identified_threshold"),
-        description="Fit score at or above which a peak is tiered 'assigned'.",
+        description=(
+            "Evidence (fit x plausibility) at or above which a peak is tiered "
+            "'assigned'."
+        ),
     )
     candidate_threshold: float = Field(
-        0.5,
+        0.45,
         ge=0.0,
         le=1.0,
-        description="Fit score at or above which a peak is tiered 'candidate'.",
+        description=(
+            "Evidence (fit x plausibility) at or above which a peak is tiered "
+            "'candidate'."
+        ),
     )
 
     @field_validator("formula_ranges")
