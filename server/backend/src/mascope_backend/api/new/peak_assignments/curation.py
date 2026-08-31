@@ -487,6 +487,7 @@ def _manual_provenance(
     previous: dict | None,
     plausibility: float | None,
     fit_score: float | None,
+    formula: str | None,
     at: str,
     reference_identities: list | None = None,
     demoted: list | None = None,
@@ -500,8 +501,9 @@ def _manual_provenance(
     it is honest for any winner however it was chosen, and ``evidence`` is the
     engine's own definition of it (fit x plausibility) computed from numbers
     that are on the record - the quantity a verification snapshots as its
-    calibration label. Everything the calibration layer *derives* is absent, so
-    a curated row is never mistaken for a calibrated one.
+    calibration label, and the one this row's tier was read off. Everything the
+    calibration layer *derives* is absent, so a curated row is never mistaken for
+    a calibrated one.
 
     :param at: When the edit happened. Passed in rather than read here so the
         row and the satellites it strips carry the same instant - the archive's
@@ -521,11 +523,13 @@ def _manual_provenance(
         is an undo that did not reach. All three are audit only - the rows
         themselves say what they are.
     """
-    evidence = (
-        round(fit_score * plausibility, 4)
-        if fit_score is not None and plausibility is not None
-        else None
-    )
+    # Through `evidence_for` rather than multiplying the two arguments, so this
+    # is byte-for-byte the number the row was TIERED on. The ledger shows it
+    # beside the tier, and the one case where the two definitions diverge - a
+    # formula the chemistry layer cannot parse, where `plausibility` is None but
+    # the tier falls open to the bare fit - is exactly the case where a null here
+    # would put a tier on screen with no number to explain it.
+    evidence = evidence_for(fit_score, formula)
     return _clean(
         {
             "plausibility": plausibility,
@@ -1112,6 +1116,7 @@ async def curate_assignment(
             previous=previous,
             plausibility=plausibility,
             fit_score=fit_score,
+            formula=assigned,
             at=at,
             reference_identities=chosen.get("reference_identities"),
             demoted=archive_now,

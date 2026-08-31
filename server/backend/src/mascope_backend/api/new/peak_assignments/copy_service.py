@@ -38,9 +38,13 @@ The three stages, and what each deliberately reuses:
   aggregate of ``/fit/aggregate``. Each copied row takes its ion's fit and
   the mass/abundance error of the isotopologue that paired to its destination
   peak, and is re-tiered with ``tier_for_evidence`` under the source run's
-  declared bands, so tier-fit coherence holds by construction. ``alternatives``
-  travel verbatim: they are curation context, and their embedded fits are
-  labeled by the run's copy provenance rather than re-scored.
+  declared bands, so tier-evidence coherence holds by construction: the copy
+  and the import validator that publishes it derive the number the same way,
+  through ``engine.evidence_for``. Only the fit is re-measured - plausibility
+  is a property of the formula, which is carried over rather than re-decided,
+  so it is the same on either sample. ``alternatives`` travel verbatim: they
+  are curation context, and their embedded fits are labeled by the run's copy
+  provenance rather than re-scored.
 
 - **Publish** (note section 5). Each destination gets a new run under the
   reserved ``mascope-copy`` engine, through ``import_assignment_run`` with the
