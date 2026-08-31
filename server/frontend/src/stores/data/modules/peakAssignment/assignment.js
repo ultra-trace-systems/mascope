@@ -7,7 +7,7 @@ import { peakAssignmentEnabled } from '@/lib/features'
 
 import { useSample } from '../sample'
 import { usePeakAssignmentRun } from './run'
-import { createDetailLoader } from './detail'
+import { createComputedLoader, createDetailLoader } from './detail'
 
 // Page size requested per call. A run has one row per detected peak, so a large
 // sample runs to tens of thousands of rows; the endpoint pages them.
@@ -156,9 +156,29 @@ export const usePeakAssignment = defineStore('app.data.peakAssignment', () => {
     return response?.data?.data?.[0] ?? null
   })
 
+  // Scores for the untargeted finder's formula-only alternatives, measured
+  // against the row's own peak when the inspector asks. Kept out of the detail
+  // fetch on purpose: that one is a database read behind every peak click,
+  // while this loads peaks and builds isotope envelopes, and most rows have no
+  // such alternatives to spend it on. Never persisted - the run records what
+  // the engine did, and this measurement is not something it did.
+  const altScores = createComputedLoader(async (assignment) => {
+    const response = await api.http.get(
+      `/peak-assignments/sample/${assignment.sample_item_id}` +
+        `/assignment/${assignment.peak_assignment_id}/alternative-scores`,
+      { type: 'load_alternative_scores' }
+    )
+    return response?.data?.data ?? []
+  })
+
   // A reload (sample/run switch, re-run) replaces the rows and their
-  // assignment ids, so any cached detail is stale with them.
-  watch(data.list, () => detail.clear())
+  // assignment ids, so any cached detail is stale with them - and so are the
+  // scores, which are keyed on the same ids and measured against the
+  // alternatives an override may have just rewritten.
+  watch(data.list, () => {
+    detail.clear()
+    altScores.clear()
+  })
 
   // Run metadata for the current view. The shared `read` handler unwraps the
   // response to its `data` field, dropping the {run, data} envelope's `run`, so
@@ -284,6 +304,9 @@ export const usePeakAssignment = defineStore('app.data.peakAssignment', () => {
     curate,
     tierCounts,
     detailOf: detail.detailOf,
-    loadDetail: detail.loadDetail
+    loadDetail: detail.loadDetail,
+    altScoresOf: altScores.resultOf,
+    altScoresPending: altScores.pendingFor,
+    loadAltScores: altScores.load
   }
 })

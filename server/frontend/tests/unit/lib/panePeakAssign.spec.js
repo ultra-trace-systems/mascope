@@ -16,6 +16,7 @@ const PEAK = { peak_id: 'p-1', mz: 200.12345, height: 12345, area: 999 }
 // runs afresh on every useApp() and would otherwise hand out a new one.
 const verify = vi.fn(() => Promise.resolve(null))
 const curate = vi.fn(() => Promise.resolve(null))
+const loadAltScores = vi.fn(() => Promise.resolve([]))
 
 let focusedPeak
 let focusedAssignment
@@ -25,6 +26,10 @@ let verdictRecord
 // one detail record the inspector fetches (for the focused assignment only).
 let familyRows
 let detailRecord
+// The on-demand measurement of the finder's formula-only shortlist: null until
+// it lands, and `scoringNow` stands in for the request still being in flight.
+let altScoreRecords
+let scoringNow
 
 const helpStub = {
   set: vi.fn(),
@@ -65,6 +70,12 @@ function makeApp() {
           m0Of: (row) =>
             row?.role === 'iso_child' ? (ledger.get(row.owner_peak_assignment_id) ?? row) : row,
           loadDetail: () => Promise.resolve(),
+          // The scores are keyed by assignment id like the detail is, and the
+          // pane must not read another row's measurement onto this one.
+          altScoresOf: (id) =>
+            id != null && id === focusedAssignment?.peak_assignment_id ? altScoreRecords : null,
+          altScoresPending: () => scoringNow,
+          loadAltScores,
           curate
         },
         verification: { forAssignment: () => verdictRecord, verify }
@@ -149,6 +160,8 @@ beforeEach(() => {
   verdictRecord = null
   familyRows = null
   detailRecord = null
+  altScoreRecords = null
+  scoringNow = false
 })
 afterEach(() => vi.clearAllMocks())
 
@@ -640,9 +653,9 @@ describe('PanePeakAssign manual curation', () => {
     // control only fades in on hover and is disabled, so a tooltip bound to it
     // alone would seldom be reachable.
     const reason = wrapper.vm.altTooltip(ALTERNATIVES[3])
-    expect(reason).toContain('No adduct')
-    expect(reason).toContain('Re-search this peak')
-    expect(wrapper.vm.altTooltip(ALTERNATIVES[0])).not.toContain('No adduct')
+    expect(reason).toContain('Not assignable to this peak')
+    expect(reason).toContain('Re-search the peak')
+    expect(wrapper.vm.altTooltip(ALTERNATIVES[0])).not.toContain('Not assignable')
   })
 
   it('accepts either the recorded mechanism or the target ion as the adduct', async () => {
@@ -1013,23 +1026,27 @@ describe('PanePeakAssign an override whose previous winner named no adduct', () 
     expect(curate).not.toHaveBeenCalled()
   })
 
-  // "This candidate is a composition the finder listed" is simply untrue of the
-  // undo entry, and re-searching does not put its family back.
-  it('does not describe the undo entry as something the finder listed', async () => {
+  // The undo entry is not a candidate the finder listed, and re-searching does
+  // not put its family back - so it says what it cannot do and what re-search
+  // gives instead, rather than wearing the ordinary shortlist wording.
+  it('says why the undo cannot be done here, and what re-search gives instead', async () => {
     const wrapper = await mountPane()
     const reason = wrapper.vm.altTooltip(PREVIOUS, 0)
 
-    expect(reason).toContain('the assignment this replaced named none itself')
-    expect(reason).toContain('does not bring back the satellites unassigned with it')
-    expect(reason).not.toContain('the finder listed')
+    expect(reason).toContain('Cannot be undone here')
+    expect(reason).toContain('The assignment this replaced named no adduct')
+    expect(reason).toContain('that is a new assignment')
+    expect(reason).toContain('stay cleared')
+    expect(reason).not.toContain('Not assignable to this peak')
   })
 
   it('still points a shortlist candidate on the same list at the search', async () => {
     const wrapper = await mountPane()
     const reason = wrapper.vm.altTooltip(SHORTLIST, 1)
 
-    expect(reason).toContain('this candidate is a composition the finder listed')
-    expect(reason).toContain('Re-search this peak and assign the hit instead')
+    expect(reason).toContain('Not assignable to this peak')
+    expect(reason).toContain('Re-search the peak to look wider than this shortlist')
+    expect(reason).not.toContain('Cannot be undone here')
   })
 
   // The undo wording is earned by being the archived winner, not by sitting
@@ -1039,7 +1056,7 @@ describe('PanePeakAssign an override whose previous winner named no adduct', () 
     detailRecord = { ...focusedAssignment, alternatives: [PREVIOUS, SHORTLIST] }
     const wrapper = await mountPane()
 
-    expect(wrapper.vm.altTooltip(PREVIOUS, 0)).toContain('a composition the finder listed')
+    expect(wrapper.vm.altTooltip(PREVIOUS, 0)).toContain('Not assignable to this peak')
   })
 
   it('does not promise an undo the card cannot perform', async () => {
@@ -1078,5 +1095,183 @@ describe('PanePeakAssign an override whose previous winner named no adduct', () 
     const wrapper = await mountPane()
 
     expect(wrapper.find('.manual-note').text()).toContain('on it to undo')
+  })
+})
+
+// The untargeted finder's shortlist reaches a row as formulas and chemical
+// plausibilities only: the run does not measure them, because doing it for
+// every peak of a sample is one isotope-envelope match per candidate. For a
+// single peak it is cheap, so the inspector asks the server to measure them
+// when it loads a row that has any - and an entry that comes back with an
+// adduct is assignable, where before it was permanently dead weight.
+describe('PanePeakAssign scoring the formula-only shortlist', () => {
+  // One entry the run scored and two it did not, so the measurement's effect is
+  // visible against a control that needed none.
+  const SCORED_RIVAL = {
+    assigned_formula: 'C7H16O5',
+    ionization_mechanism_id: 'im-h',
+    fit_score: 0.8,
+    mz_error_ppm: 0.4,
+    plausibility: 0.7,
+    source: 'untargeted'
+  }
+  const SHORTLIST_A = { assigned_formula: 'C4H8N2O3', plausibility: 0.44, source: 'untargeted' }
+  const SHORTLIST_B = { assigned_formula: 'C9H8', plausibility: 0.5, source: 'untargeted' }
+
+  /** What the server returns for a formula it could place on the peak. */
+  const measured = (formula, extra = {}) => ({
+    alternative_index: 1,
+    assigned_formula: formula,
+    plausibility: 0.44,
+    adducts_tried: 3,
+    adducts_matched: 1,
+    fit_score: 0.72,
+    mz_error_ppm: -0.9,
+    abundance_error: 0.05,
+    evidence: 0.32,
+    ionization_mechanism_id: 'im-nh4',
+    ionization_mechanism: '[M+NH4]+',
+    ion_formula: 'C4H12N3O3+',
+    isotope_label: 'M0',
+    ...extra
+  })
+
+  const useButtons = (wrapper) => wrapper.findAll('.alt .alt-use:not(.blocked)')
+  const blockedButtons = (wrapper) => wrapper.findAll('.alt .alt-use.blocked')
+
+  beforeEach(() => {
+    focusedAssignment = { ...assignment({ formula: 'C6H12O6', tier: 'assigned' }) }
+    detailRecord = {
+      ...focusedAssignment,
+      alternatives: [SCORED_RIVAL, SHORTLIST_A, SHORTLIST_B]
+    }
+  })
+
+  it('asks for a measurement only when the row has something to measure', async () => {
+    await mountPane()
+    expect(loadAltScores).toHaveBeenCalledTimes(1)
+
+    // A row whose every alternative already carries an adduct has nothing to
+    // gain, and the call loads peaks and builds isotope envelopes - so it is
+    // not made at all rather than made and discarded.
+    loadAltScores.mockClear()
+    detailRecord = { ...focusedAssignment, alternatives: [SCORED_RIVAL] }
+    await mountPane()
+    expect(loadAltScores).not.toHaveBeenCalled()
+  })
+
+  it('shows the measured fit and mass error on an entry that arrived with neither', async () => {
+    altScoreRecords = [measured('C4H8N2O3')]
+    const wrapper = await mountPane()
+    const rows = wrapper.findAll('.alt')
+
+    expect(rows[1].find('.s').text()).toContain('fit 72%')
+    expect(rows[1].find('.s').text()).toContain(`${num.mzError.format(-0.9)} ppm`)
+    // Untouched: the run measured this one, and its own numbers stand.
+    expect(rows[0].find('.s').text()).toContain('fit 80%')
+    // Not measured, so it still reads as the plausibility it arrived with.
+    expect(rows[2].find('.s').text()).toContain('plaus')
+  })
+
+  it('names the adduct the measurement found, which the entry never carried', async () => {
+    altScoreRecords = [measured('C4H8N2O3')]
+    const wrapper = await mountPane()
+
+    expect(wrapper.vm.altTooltip(wrapper.vm.alternatives[1], 1)).toContain('adduct: [M+NH4]+')
+    // The rival came with its own ion formula and needs no such line.
+    expect(wrapper.vm.altTooltip(wrapper.vm.alternatives[0], 0)).not.toContain('adduct:')
+  })
+
+  it('says it is measuring rather than reporting no fit while the call is out', async () => {
+    scoringNow = true
+    const wrapper = await mountPane()
+
+    expect(wrapper.findAll('.alt')[1].find('.s').text()).toContain('measuring')
+    expect(wrapper.vm.altTooltip(wrapper.vm.alternatives[1], 1)).toContain('measuring')
+    // The control is still disabled, but for a reason that will pass.
+    expect(blockedButtons(wrapper)).toHaveLength(2)
+    expect(wrapper.vm.noAdductHint(wrapper.vm.alternatives[1], 1)).toContain('One moment')
+  })
+
+  // A measured entry names both halves of an assignment, so the control the
+  // card used to disable permanently now works.
+  it('turns a measured entry into one that can be committed', async () => {
+    altScoreRecords = [measured('C4H8N2O3')]
+    const wrapper = await mountPane()
+
+    expect(useButtons(wrapper)).toHaveLength(2)
+    expect(blockedButtons(wrapper)).toHaveLength(1)
+  })
+
+  // The numbers are session data - measured per request, never written onto the
+  // run's rows - so they are declared to the server rather than promoted out of
+  // a stored list the server would read them from.
+  it('commits a measured entry as a composition search, not as a stored runner-up', async () => {
+    altScoreRecords = [measured('C4H8N2O3')]
+    const wrapper = await mountPane()
+
+    await useButtons(wrapper)[1].trigger('click')
+
+    expect(curate).toHaveBeenCalledWith('pa-1', {
+      action: 'set_assignment',
+      assigned_formula: 'C4H8N2O3',
+      ionization_mechanism_id: 'im-nh4',
+      ion_formula: 'C4H12N3O3+',
+      isotope_label: 'M0',
+      fit_score: 0.72,
+      mz_error_ppm: -0.9,
+      abundance_error: 0.05
+    })
+  })
+
+  // An entry the run scored still goes the other way: its numbers and its
+  // adduct are on the stored row, so nothing about that request is the
+  // client's word.
+  it('still promotes a run-scored rival out of the stored list', async () => {
+    altScoreRecords = [measured('C4H8N2O3')]
+    const wrapper = await mountPane()
+
+    await useButtons(wrapper)[0].trigger('click')
+
+    expect(curate).toHaveBeenCalledWith('pa-1', {
+      action: 'promote_alternative',
+      alternative_index: 0,
+      expected_formula: 'C7H16O5'
+    })
+  })
+
+  // Measured and placed on this peak by nothing: the honest answer is the
+  // server's own, which can tell this apart from a sample with no adducts at
+  // all and from a formula that will not make an ion.
+  it('gives the measurement its own reason when no adduct reaches the peak', async () => {
+    altScoreRecords = [
+      {
+        alternative_index: 1,
+        assigned_formula: 'C4H8N2O3',
+        plausibility: 0.44,
+        adducts_tried: 3,
+        blocked_reason:
+          "None of this sample's 3 adducts put this formula on this peak within the " +
+          "matcher's mass tolerance, so there is no measured fit to show and nothing " +
+          'to assign it under.'
+      }
+    ]
+    const wrapper = await mountPane()
+    const reason = wrapper.vm.noAdductHint(wrapper.vm.alternatives[1], 1)
+
+    expect(reason).toContain('None of this sample')
+    expect(reason).toContain('Re-search the peak to look wider than this shortlist')
+    expect(blockedButtons(wrapper)).toHaveLength(2)
+  })
+
+  // The rendered list is filtered and the server indexes the stored one, so
+  // position is not a safe join between them.
+  it('matches a measurement to its entry by formula, not by position', async () => {
+    altScoreRecords = [measured('C9H8', { alternative_index: 0 })]
+    const wrapper = await mountPane()
+
+    expect(wrapper.vm.alternatives[1].scored).toBeNull()
+    expect(wrapper.vm.alternatives[2].scored).toMatchObject({ assigned_formula: 'C9H8' })
+    expect(wrapper.findAll('.alt')[2].find('.s').text()).toContain('fit 72%')
   })
 })
