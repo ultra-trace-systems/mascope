@@ -41,10 +41,13 @@ from mascope_backend.db import PeakAssignment, async_session
 from mascope_tools.composition.heuristic_filter import formula_plausibility
 
 
-#: Ceiling on the formulas one call will score. The stored list is already
-#: capped at the run's ``max_alternatives`` (5 by default), so this only bounds
-#: an imported run, whose ``alternatives`` are whatever the publishing client
-#: sent and are not capped by anything this server ran.
+#: Ceiling on the formulas one call will score. Each one costs a seed per adduct
+#: of the sample, so the work is the product of two numbers a caller can raise:
+#: a run's ``max_alternatives`` goes to ``MAX_ALTERNATIVES_CEILING`` (50), and an
+#: imported run's ``alternatives`` are whatever the publishing client sent. The
+#: default run stores 5, so this bites only on a row deliberately configured -
+#: or published - well past it, and what it drops is REPORTED rather than
+#: silently missing: an unmeasured entry says it was not measured.
 MAX_SCORED_FORMULAS = 16
 
 
@@ -161,7 +164,9 @@ async def score_row_alternatives(
         alternatives = list(assignment.alternatives or [])
         sample_peak_id = assignment.sample_peak_id
 
-    wanted = unscorable_alternatives(alternatives)[:MAX_SCORED_FORMULAS]
+    selected = unscorable_alternatives(alternatives)
+    wanted = selected[:MAX_SCORED_FORMULAS]
+    over_cap = selected[MAX_SCORED_FORMULAS:]
     if not wanted:
         return {
             "status": "success",
@@ -245,6 +250,25 @@ async def score_row_alternatives(
         entry["isotope_label"] = "M0"
         entry["adducts_matched"] = len(candidates)
         data.append(entry)
+
+    # Anything past the cap is reported as unmeasured rather than left out of
+    # the response. Omitting it would reach the card as an ordinary blocked
+    # entry - "no adduct puts this on the peak" - which is a claim about the
+    # chemistry that nothing here actually checked.
+    for index, formula in over_cap:
+        data.append(
+            {
+                "alternative_index": index,
+                "assigned_formula": formula,
+                "plausibility": round(float(formula_plausibility(formula)), 4),
+                "adducts_tried": 0,
+                "blocked_reason": (
+                    f"This peak has more alternatives than one request measures "
+                    f"({MAX_SCORED_FORMULAS}), and this one was not reached, so "
+                    "nothing here says whether it fits."
+                ),
+            }
+        )
 
     scored = sum(1 for entry in data if "fit_score" in entry)
     return {
