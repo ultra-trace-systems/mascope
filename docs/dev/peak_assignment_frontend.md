@@ -54,11 +54,15 @@ is a 3-pane nested splitter:
 
 **The ledger** is the Match browser's **"Assignments"** tab
 ([`PaneBrowserAssignment.vue`](../../server/frontend/src/lib/panes/PaneBrowserMatch/PaneBrowserAssignment.vue)):
-a run selector that **auto-selects the latest completed run** (on load and sample switch), a clickable
-tier-histogram filter strip, and a virtual-scrolled table (m/z · intensity · formula `+N` · tier ·
-**P(correct)**). An **"Isotopologues" toggle** unfolds each compound's `iso_child` isotopologues as indented
-rows (children inherit the parent's tier rank so the stable sort keeps families grouped; rows stay
-fixed-height so virtual scrolling holds). The batch-peak ledger
+a clickable tier-histogram filter strip and a virtual-scrolled table (m/z · intensity · formula `+N` ·
+tier · **P(correct)** · verdict). Its two view options — an **"Isotopologues" toggle** that unfolds each
+compound's `iso_child` isotopologues as indented rows (children inherit the parent's tier rank so the
+stable sort keeps families grouped; rows stay fixed-height so virtual scrolling holds), and a **verdict
+filter** — sit behind one menu button in the panel header, a `Popover` rather than a `Menu` so the
+switch keeps its `<label for>` (its only accessible name). Both settings are refs in the pane, not in
+the overlay, so closing the menu cannot discard a choice made in it. The run selector and the
+**Assign peaks** button are not here at all: they belong to the paradigm rather than to one of its
+ledgers, and live a row up in the switch bar (below). The batch-peak ledger
 ([`PaneBrowserBatchPeaks.vue`](../../server/frontend/src/lib/panes/PaneBrowserMatch/PaneBrowserBatchPeaks.vue))
 mirrors that toggle under the same two constraints, with one difference: a batch peak is a bare m/z
 anchor, so the family link is **derived** (`isotopologue_of`, §5.4 of
@@ -71,8 +75,20 @@ own their sort (`lazy`) for the same reason; the batch one owns its column filte
 is not mounted **while the flag is on** — but it is still the Sample tab's ledger with the flag
 off, so it is live code, not dead. Retiring it depends on the feature becoming the default.
 
-**The switch.** One control picks the paradigm, app-wide: the centered switch bar above the
-browser ([`PaneBrowserMatch.vue`](../../server/frontend/src/lib/panes/PaneBrowserMatch/PaneBrowserMatch.vue)).
+**The switch bar** above the browser
+([`PaneBrowserMatch.vue`](../../server/frontend/src/lib/panes/PaneBrowserMatch/PaneBrowserMatch.vue))
+is one row holding everything that outlives a single ledger: the Targets/Assignments switch, and — in
+the assignments paradigm — the **run selector** (which **auto-selects the latest completed run**, on
+load and on sample switch) beside the **Assign peaks** button
+([`AssignmentRunBar.vue`](../../server/frontend/src/lib/panes/PaneBrowserMatch/AssignmentRunBar.vue)).
+The run bar renders *inside* the flag-gated bar rather than beside it, so the `peakAssignmentEnabled`
+gate and the column's height arithmetic (`.browser-switch > :not(.switch-bar)` takes what is left)
+keep covering it without a second rule each. The bar shows the launch button in exactly the states the
+ledger's empty state does not, so there is never a second copy of it a row below; the dialog it opens,
+the run configuration and any refusal stay with the ledger, sharing only an open/closed flag
+([`stores/assignmentLauncher.js`](../../server/frontend/src/lib/panes/PaneBrowserMatch/stores/assignmentLauncher.js)).
+
+**The switch.** One control picks the paradigm, app-wide.
 Its value is [`app.ui.matchMode`](../../server/frontend/src/stores/ui/matchMode.js) — a small
 persisted UI store (`localStorage` key `mascope.browserMatch.mode`, pinned to `targets` and not
 written while the flag is off) — and both the browser's panes and the **Batch** overview chart

@@ -6,6 +6,7 @@ import SelectButton from 'primevue/selectbutton'
 import { useApp } from '@/stores'
 import { peakAssignmentEnabled } from '@/lib/features'
 
+import AssignmentRunBar from './AssignmentRunBar.vue'
 import MatchCollectionTable from './MatchCollectionTable.vue'
 import MatchIonTable from './MatchIonTable.vue'
 import PaneBrowserAssignment from './PaneBrowserAssignment.vue'
@@ -18,6 +19,13 @@ const app = useApp()
 // This bar is the app's only Targets/Assignments control -- the choice lives in
 // `app.ui.matchMode` (persisted, and pinned to targets with the flag off), so
 // the batch overview chart plots the same paradigm the browser is showing.
+//
+// The bar also carries the run selector and the Assign-peaks button
+// (AssignmentRunBar): both apply to the assignment paradigm as a whole rather
+// than to whichever of its two ledgers is on screen, and both were being
+// squeezed out of the ledger's own header. They render INSIDE this bar rather
+// than as a row beside it, so the feature-flag gate above and the column's
+// height arithmetic below keep covering them without a second rule each.
 
 /**
  * Utility function to allow scrolling to matches in the watchers below
@@ -120,6 +128,7 @@ watch(
         aria-label="Targets or assignments"
         v-tooltip.bottom="'Switch between target matches and peak assignments'"
       />
+      <AssignmentRunBar v-if="app.ui.matchMode.mode === 'assignments'" />
     </div>
     <template v-if="app.ui.matchMode.mode === 'assignments'">
       <!-- Batch-level batch-peak ledger (selects what the Assignments chart plots)
@@ -145,9 +154,16 @@ watch(
   height: 100%;
   min-height: 0;
 }
+/* One row: the paradigm switch, then the run selector and the Assign-peaks
+   button when the assignment paradigm is showing. It wraps rather than
+   overflows - the browser column is user-resizable, and a header that clips its
+   own last control is the thing this row exists to replace. */
 .switch-bar {
   display: flex;
+  flex-flow: row wrap;
+  align-items: center;
   justify-content: center;
+  gap: 0.5rem;
   padding: 0.35rem;
 }
 .browser-switch > :not(.switch-bar) {

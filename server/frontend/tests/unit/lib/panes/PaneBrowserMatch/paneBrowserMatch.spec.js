@@ -56,6 +56,11 @@ vi.mock('@/stores', () => ({ useApp: () => makeApp() }))
 // Stubbed at the module boundary: the panes themselves are covered elsewhere,
 // and compiling them here would drag in the whole store and api tree.
 const paneStub = (name) => ({ default: { name, template: `<div class="${name}" />` } })
+// The run bar rides in the switch bar rather than being a pane, but it is
+// stubbed for the same reason: it reads the assignment-run store, which this
+// file's app facade does not carry. Its own behaviour is covered in
+// assignmentRunBar.spec.js; what matters here is where it renders.
+vi.mock('@/lib/panes/PaneBrowserMatch/AssignmentRunBar.vue', () => paneStub('AssignmentRunBar'))
 vi.mock('@/lib/panes/PaneBrowserMatch/MatchCollectionTable.vue', () =>
   paneStub('MatchCollectionTable')
 )
@@ -111,6 +116,34 @@ describe('PaneBrowserMatch', () => {
     expect(wrapper.find('.browser-switch').exists()).toBe(true)
     expect(wrapper.find('.MatchCollectionTable').exists()).toBe(true)
     expect(wrapper.find('.PaneBrowserBatchPeaks').exists()).toBe(false)
+  })
+
+  // The run selector and the Assign-peaks button sit in the bar rather than in
+  // the assignment ledger's own header. That only keeps the flag-off layout if
+  // they are INSIDE the flag-gated bar: a row of their own beside it would
+  // survive the v-if above and put assignment controls in the legacy view.
+  it('keeps the run bar inside the flag-gated switch bar', () => {
+    flagOn = false
+    initialMode = 'assignments'
+
+    expect(mountSwitch().find('.AssignmentRunBar').exists()).toBe(false)
+  })
+
+  it('offers the run bar only in the assignments paradigm', () => {
+    expect(mountSwitch().find('.AssignmentRunBar').exists()).toBe(false)
+
+    initialMode = 'assignments'
+    const wrapper = mountSwitch()
+    const bar = wrapper.find('.AssignmentRunBar')
+
+    expect(bar.exists()).toBe(true)
+    // One row, not two: the bar is a child of the switch bar, so the column
+    // still has exactly the bar and the pane in it and the pane keeps the rest
+    // of the height (`.browser-switch > :not(.switch-bar)` takes what is left).
+    expect(wrapper.find('.switch-bar').element.contains(bar.element)).toBe(true)
+    expect([...wrapper.find('.browser-switch').element.children].map((el) => el.className)).toEqual(
+      ['switch-bar', 'PaneBrowserBatchPeaks']
+    )
   })
 
   it('swaps to the assignment panes when the store mode says so', () => {
