@@ -49,7 +49,7 @@ async function loadPreview() {
   preview.value = null
   previewError.value = null
   try {
-    const data = await app.data.peakAssignmentRun.copyPreview(props.sample.sample_item_id)
+    const data = await app.data.peakAssignment.run.copyPreview(props.sample.sample_item_id)
     preview.value = data?.[0] ?? null
   } catch (error) {
     previewError.value = getApiErrorMessage(error, 'Could not read the batch for this sample.')
@@ -71,7 +71,7 @@ async function launch() {
   if (!props.sample?.sample_item_id) return
   submitting.value = true
   try {
-    await app.data.peakAssignmentRun.copyToBatch(props.sample.sample_item_id)
+    await app.data.peakAssignment.run.copyToBatch(props.sample.sample_item_id)
   } catch (error) {
     // The endpoint decides before it answers, so a refusal here is an answer
     // the user can act on ("assign its peaks first"), not a crash. Reported
