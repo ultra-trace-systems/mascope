@@ -72,8 +72,8 @@ ledgers, and live a row up in the switch bar (below). The ledger keeps one *Assi
 own, the call to action in its no-runs empty state, which is why the bar hides its copy in exactly that
 state. The batch-peak ledger
 ([`PaneBrowserBatchPeaks.vue`](../../server/frontend/src/lib/panes/PaneBrowserMatch/PaneBrowserBatchPeaks.vue))
-mirrors the isotopologue fold under the same two constraints — its own toggle is still inline in its
-panel header, not behind a cog — with one difference: a batch peak is a bare m/z
+mirrors the isotopologue fold under the same two constraints, and now behind the same cog at the end
+of its own tier strip — with one difference: a batch peak is a bare m/z
 anchor, so the family link is **derived** (`isotopologue_of`, §5.4 of
 [`peak_assignment_batch.md`](peak_assignment_batch.md)) rather than given, and it arrives ONE hop deep
 pointing into a list the pane does not control — so the pane flattens a chain onto its root and leaves a
@@ -86,16 +86,28 @@ off, so it is live code, not dead. Retiring it depends on the feature becoming t
 
 **The switch bar** above the browser
 ([`PaneBrowserMatch.vue`](../../server/frontend/src/lib/panes/PaneBrowserMatch/PaneBrowserMatch.vue))
-is one row holding everything that outlives a single ledger: the Targets/Assignments switch, and — in
-the assignments paradigm — the **run selector** (which **auto-selects the latest completed run**, on
-load and on sample switch) beside the **Assign peaks** button
-([`AssignmentRunBar.vue`](../../server/frontend/src/lib/panes/PaneBrowserMatch/AssignmentRunBar.vue)).
-The run bar renders *inside* the flag-gated bar rather than beside it, so the `peakAssignmentEnabled`
+is one row holding everything that outlives a single ledger: the Targets/Assignments switch, left-aligned,
+and — in the assignments paradigm — the action that fills whichever ledger is below it, pushed to the
+right. Which action that is swaps on the same `sample.focused` the ledgers themselves swap on, so the
+two are never both on screen: for a focused sample the **run selector** (which **auto-selects the latest
+completed run**, on load and on sample switch) beside the **Assign peaks** button
+([`AssignmentRunBar.vue`](../../server/frontend/src/lib/panes/PaneBrowserMatch/AssignmentRunBar.vue)),
+and at batch level **Compute batch peaks**
+([`BatchPeakComputeBar.vue`](../../server/frontend/src/lib/panes/PaneBrowserMatch/BatchPeakComputeBar.vue)).
+Both render *inside* the flag-gated bar rather than beside it, so the `peakAssignmentEnabled`
 gate and the column's height arithmetic (`.browser-switch > :not(.switch-bar)` takes what is left)
-keep covering it without a second rule each. The bar shows the launch button in exactly the states the
+keep covering them without a second rule each. The bar shows *Assign peaks* in exactly the states the
 ledger's empty state does not, so there is never a second copy of it a row below; the dialog it opens,
 the run configuration and any refusal stay with the ledger, sharing only an open/closed flag
 ([`stores/assignmentLauncher.js`](../../server/frontend/src/lib/panes/PaneBrowserMatch/stores/assignmentLauncher.js)).
+*Compute batch peaks* shares more, because it launches directly instead of opening a dialog: its
+disabled reason, its loading state and the refusal it can return live in
+([`stores/batchPeakCompute.js`](../../server/frontend/src/lib/panes/PaneBrowserMatch/stores/batchPeakCompute.js)),
+which the batch ledger reads to render that refusal below the table it is about. Registering the
+task's completion notification in that store rather than in a pane is also what lets a compute survive
+the user focusing a sample mid-run. It is imported by path rather than through the folder's `./stores`
+barrel: it is the only store there that reaches the HTTP client, and the barrel is imported by panes
+whose specs mount without one.
 
 **The switch.** One control picks the paradigm, app-wide.
 Its value is [`app.ui.matchMode`](../../server/frontend/src/stores/ui/matchMode.js) — a small

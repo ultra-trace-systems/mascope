@@ -1,22 +1,26 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { mount } from '@vue/test-utils'
 import { reactive } from 'vue'
+import { createPinia, setActivePinia } from 'pinia'
 
 import { MAX_SELECTED_BATCH_PEAKS } from '@/stores/data/modules/batchPeak/ledger'
 
-// The batch-peak ledger's menu button launches a background task, so the two
-// things it must get right are both about time: it may not offer an action that
-// cannot run, and it may not report "done" when all it has is an acknowledgement
-// that the work started. The tier strip and the tier column's sort are here too
-// - both read the confidence order out of @/lib/tiers, and both used to be
-// wrong in the same direction (alphabetical, worst tier first).
+// The tier strip and the tier column's sort: both read the confidence order out
+// of @/lib/tiers, and both used to be wrong in the same direction (alphabetical,
+// worst tier first). The button that builds the batch peaks is no longer here -
+// it moved to the browser's switch bar, and its own spec is
+// panes/PaneBrowserMatch/batchPeakComputeBar.spec.js - but the refusal it can
+// come back with is still rendered below this table, so what that leaves behind
+// is covered under "compute refusal" below.
 
 const post = vi.fn()
 
 vi.mock('@/api', () => ({ api: { http: { post: (...args) => post(...args) } } }))
 
 let app
-// Callbacks the pane registered through app.ui.notification.on, by type.
+// Callbacks the compute store registered through app.ui.notification.on, by
+// type. The pane registers none of its own any more; the entry is kept because
+// mounting it creates that store, which does.
 let notificationHandlers
 
 vi.mock('@/stores', () => ({ useApp: () => app }))
@@ -132,15 +136,25 @@ const ToggleSwitchStub = {
     '<button class="iso-toggle" @click="$emit(\'update:modelValue\', !modelValue)">{{ modelValue }}</button>'
 }
 
+// Rendered open, rather than stubbed away: the view menu's contents are the
+// point of the menu, and `Popover: true` would render no slot at all - so the
+// isotopologue toggle inside it would not exist to flip. Its own open/close is
+// PrimeVue's; what this file tests is that the toggle lives in there.
+const PopoverStub = {
+  name: 'Popover',
+  template: '<div class="view-popover"><slot /></div>'
+}
+
 const GLOBAL_STUBS = {
   Button: {
-    props: ['label', 'disabled', 'loading'],
+    props: ['label', 'disabled', 'loading', 'icon'],
     template:
-      '<button class="menu-button" :disabled="disabled" :data-loading="String(!!loading)">{{ label }}</button>'
+      '<button class="menu-button" :disabled="disabled" :data-icon="icon" :data-loading="String(!!loading)">{{ label }}</button>'
   },
   Message: { template: '<div class="pane-message"><slot /></div>' },
   DataTable: DataTableStub,
   Column: ColumnStub,
+  Popover: PopoverStub,
   ToggleSwitch: ToggleSwitchStub,
   InputText: true,
   Select: true
@@ -151,9 +165,14 @@ const GLOBAL_STUBS = {
 // first test it lands on that one test's clock.
 const { default: PaneBrowserBatchPeaks } =
   await import('@/lib/panes/PaneBrowserMatch/PaneBrowserBatchPeaks.vue')
+const { useBatchPeakCompute } =
+  await import('@/lib/panes/PaneBrowserMatch/stores/batchPeakCompute.js')
 
 async function mountPane(options = {}) {
+  // The app facade first: the compute store the pane reads its refusal off is
+  // created during that mount, and it reads the facade while being created.
   app = makeApp(options)
+  setActivePinia(createPinia())
   const wrapper = mount(PaneBrowserBatchPeaks, {
     global: {
       stubs: GLOBAL_STUBS,
@@ -163,10 +182,6 @@ async function mountPane(options = {}) {
   await wrapper.vm.$nextTick()
   return wrapper
 }
-
-/** Deliver a `compute_batch_peaks` packet the way the socket would. */
-const notify = (payload) =>
-  (notificationHandlers['compute_batch_peaks'] ?? []).forEach((cb) => cb(payload))
 
 /** An axios-shaped rejection carrying a server message. */
 const apiError = (status, message) => ({ response: { status, data: { error: message } } })
@@ -194,201 +209,38 @@ afterEach(() => {
   vi.clearAllMocks()
 })
 
-describe('PaneBrowserBatchPeaks compute button applicability', () => {
-  it('offers the action when the batch has samples and the user may write', async () => {
+describe('PaneBrowserBatchPeaks compute refusal', () => {
+  // The button is a row up, in the switch bar, but the refusal it comes back
+  // with is reported here - below the table it is about, rather than in a toast
+  // that has scrolled away by the time the user looks up.
+  it('reports a refused launch below the table', async () => {
+    post.mockRejectedValue(apiError(403, 'You do not have permission.'))
     wrapper = await mountPane()
 
-    expect(wrapper.vm.blockedReason).toBeNull()
-    expect(wrapper.find('button.menu-button').attributes('disabled')).toBeUndefined()
-  })
-
-  it('disables with a reason when no batch is focused', async () => {
-    // The pane mounts on "no sample focused" alone, so nothing-focused-at-all
-    // renders it - the state the old silent early return hid.
-    wrapper = await mountPane({ batch: null })
-
-    expect(wrapper.vm.blockedReason).toMatch(/select a batch/i)
-    expect(wrapper.find('button.menu-button').attributes('disabled')).toBeDefined()
-  })
-
-  it('disables with a reason when the batch has no samples', async () => {
-    wrapper = await mountPane({ samples: [] })
-
-    expect(wrapper.vm.blockedReason).toMatch(/no samples/i)
-  })
-
-  it('disables with a reason for a viewer, rather than letting them earn a 403', async () => {
-    wrapper = await mountPane({ workspace: { ...WORKSPACE, my_role: 'guest' } })
-
-    expect(wrapper.vm.blockedReason).toMatch(/editor role/i)
-  })
-
-  it('stays enabled while the batch samples are still loading', async () => {
-    // An empty list is not evidence of an empty batch until the load lands;
-    // reading it as one would disable the button on every batch switch.
-    wrapper = await mountPane({ samples: [] })
-    app.data.sample.pending = true
+    await useBatchPeakCompute().compute()
     await wrapper.vm.$nextTick()
 
-    expect(wrapper.vm.blockedReason).toBeNull()
-  })
-
-  it('shows the reason on the wrapper, which a disabled button cannot show itself', async () => {
-    wrapper = await mountPane({ batch: null })
-
-    expect(wrapper.find('.compute-button').classes()).toContain('blocked')
-    expect(wrapper.vm.computeTooltip).toBe(wrapper.vm.blockedReason)
-  })
-
-  it('does not fire the request while blocked', async () => {
-    wrapper = await mountPane({ samples: [] })
-
-    await wrapper.vm.computeBatchPeaks()
-
-    expect(post).not.toHaveBeenCalled()
-    expect(wrapper.vm.computing).toBe(false)
-  })
-})
-
-describe('PaneBrowserBatchPeaks compute button progress', () => {
-  it('stays loading after the acknowledgement, and stops on the task notification', async () => {
-    wrapper = await mountPane()
-
-    await wrapper.vm.computeBatchPeaks()
-
-    // The 202 says the work started, not that it finished.
-    expect(post).toHaveBeenCalledTimes(1)
-    expect(wrapper.vm.computing).toBe(true)
-
-    notify({ type: 'compute_batch_peaks', status: 'success', process_id: 'proc-1' })
-    expect(wrapper.vm.computing).toBe(false)
-  })
-
-  it('ignores another backfill of the same batch', async () => {
-    // The notification goes to the batch's room, so a second user's run of the
-    // same batch arrives here too - and it is not this button's to end.
-    wrapper = await mountPane()
-
-    await wrapper.vm.computeBatchPeaks()
-    notify({ type: 'compute_batch_peaks', status: 'success', process_id: 'someone-else' })
-
-    expect(wrapper.vm.computing).toBe(true)
-  })
-
-  it('stops loading when the task fails, not only when it succeeds', async () => {
-    // The reload event fires on success only, so a spinner keyed off that would
-    // never stop for a failed run.
-    wrapper = await mountPane()
-
-    await wrapper.vm.computeBatchPeaks()
-    notify({ type: 'compute_batch_peaks', status: 'error', process_id: 'proc-1' })
-
-    expect(wrapper.vm.computing).toBe(false)
-  })
-
-  it('ends on an unidentifiable packet rather than spinning forever', async () => {
-    post.mockResolvedValue({ headers: {} })
-    wrapper = await mountPane()
-
-    await wrapper.vm.computeBatchPeaks()
-    expect(wrapper.vm.computing).toBe(true)
-
-    notify({ type: 'compute_batch_peaks', status: 'success' })
-    expect(wrapper.vm.computing).toBe(false)
-  })
-
-  it('keeps waiting through the per-sample progress packets', async () => {
-    // The backfill reports as it folds each sample, on this same channel and
-    // under this same process id. Those packets drive the app's progress bar;
-    // the button is asking whether the run is still going, and while they
-    // arrive the answer is yes.
-    wrapper = await mountPane()
-
-    await wrapper.vm.computeBatchPeaks()
-
-    notify({ type: 'compute_batch_peaks', status: 'pending', process_id: 'proc-1', progress: 25 })
-    expect(wrapper.vm.computing).toBe(true)
-
-    notify({ type: 'compute_batch_peaks', status: 'pending', process_id: 'proc-1', progress: 75 })
-    expect(wrapper.vm.computing).toBe(true)
-
-    // ...and the terminal packet still ends it.
-    notify({ type: 'compute_batch_peaks', status: 'success', process_id: 'proc-1' })
-    expect(wrapper.vm.computing).toBe(false)
-  })
-
-  it('gives up after the timeout, so a dropped socket cannot strand the button', async () => {
-    wrapper = await mountPane()
-
-    await wrapper.vm.computeBatchPeaks()
-    expect(wrapper.vm.computing).toBe(true)
-
-    vi.advanceTimersByTime(5 * 60 * 1000)
-    expect(wrapper.vm.computing).toBe(false)
-  })
-
-  it('resets when the focused batch changes', async () => {
-    wrapper = await mountPane()
-    await wrapper.vm.computeBatchPeaks()
-
-    app.data.batch.focusedId = 'b-2'
-    await wrapper.vm.$nextTick()
-
-    expect(wrapper.vm.computing).toBe(false)
-  })
-})
-
-describe('PaneBrowserBatchPeaks failed launch', () => {
-  it('resets the button and shows the refusal once', async () => {
-    // 403 is the refusal this route issues - the editor-role check and the
-    // feature flag both answer with one - and what an editor role revoked
-    // mid-session looks like from here.
-    post.mockRejectedValue(
-      apiError(403, 'Access denied. You do not have permission to perform this action.')
-    )
-    wrapper = await mountPane()
-
-    await wrapper.vm.computeBatchPeaks()
-    await wrapper.vm.$nextTick()
-
-    expect(wrapper.vm.computing).toBe(false)
-    expect(wrapper.vm.launchRefused).toBe(true)
     expect(wrapper.findAll('.pane-message')).toHaveLength(1)
     expect(wrapper.find('.pane-message').text()).toContain('do not have permission')
   })
 
-  it('distinguishes a genuine failure from a refusal', async () => {
-    post.mockRejectedValue(apiError(500, 'Unexpected error (ref: abc12345).'))
-    wrapper = await mountPane()
-
-    await wrapper.vm.computeBatchPeaks()
-
-    expect(wrapper.vm.launchRefused).toBe(false)
-    expect(wrapper.vm.launchError).toContain('Unexpected error')
-  })
-
-  it('asks the interceptor to hold the toast it would duplicate', async () => {
-    // The message is rendered in the pane, so the global error toast would say
-    // the same thing twice. `errors: 'inline'` is what holds it back
-    // (src/api/http.js); the interceptor itself is mocked out here, so the
-    // option being sent is the whole of what this test can hold.
+  // Whatever was in flight or went wrong belonged to the previous batch. The
+  // pane owns this because it owns the rest of the per-batch reset beside it.
+  it('clears the launch state when the focused batch changes', async () => {
     post.mockRejectedValue(apiError(500, 'boom'))
     wrapper = await mountPane()
+    const compute = useBatchPeakCompute()
 
-    await wrapper.vm.computeBatchPeaks()
+    await compute.compute()
+    await wrapper.vm.$nextTick()
+    expect(wrapper.findAll('.pane-message')).toHaveLength(1)
 
-    expect(post.mock.calls[0][2]).toMatchObject({ errors: 'inline' })
-  })
+    app.data.batch.focusedId = 'b-2'
+    await wrapper.vm.$nextTick()
 
-  it('clears a previous failure when the next attempt starts', async () => {
-    post.mockRejectedValueOnce(apiError(500, 'boom')).mockResolvedValue(ack())
-    wrapper = await mountPane()
-
-    await wrapper.vm.computeBatchPeaks()
-    expect(wrapper.vm.launchError).toBe('boom')
-
-    await wrapper.vm.computeBatchPeaks()
-    expect(wrapper.vm.launchError).toBeNull()
+    expect(compute.launchError).toBeNull()
+    expect(compute.computing).toBe(false)
+    expect(wrapper.findAll('.pane-message')).toHaveLength(0)
   })
 })
 
@@ -1075,8 +927,15 @@ describe('PaneBrowserBatchPeaks selection across the fold', () => {
     expect(selectedIds()).toEqual(['bp-m0'])
   })
 
-  it('is toggled from the pane menu', async () => {
+  it('is toggled from the view menu on the tier row', async () => {
+    // Where the sample ledger keeps it: behind the cog at the end of the filter
+    // row, rather than on the panel header it used to share with the compute
+    // button. The toggle is inside the popover the cog opens.
     wrapper = await mountPane({ peaks: [M0, ISO] })
+
+    const cog = wrapper.find('.tier-strip .view-menu-button')
+    expect(cog.exists()).toBe(true)
+    expect(wrapper.find('.view-popover .iso-toggle').exists()).toBe(true)
 
     await wrapper.find('.iso-toggle').trigger('click')
 

@@ -7,6 +7,7 @@ import { useApp } from '@/stores'
 import { peakAssignmentEnabled } from '@/lib/features'
 
 import AssignmentRunBar from './AssignmentRunBar.vue'
+import BatchPeakComputeBar from './BatchPeakComputeBar.vue'
 import MatchCollectionTable from './MatchCollectionTable.vue'
 import MatchIonTable from './MatchIonTable.vue'
 import PaneBrowserAssignment from './PaneBrowserAssignment.vue'
@@ -20,12 +21,15 @@ const app = useApp()
 // `app.ui.matchMode` (persisted, and pinned to targets with the flag off), so
 // the batch overview chart plots the same paradigm the browser is showing.
 //
-// The bar also carries the run selector and the Assign-peaks button
-// (AssignmentRunBar): both apply to the assignment paradigm as a whole rather
-// than to whichever of its two ledgers is on screen, and both were being
-// squeezed out of the ledger's own header. They render INSIDE this bar rather
-// than as a row beside it, so the feature-flag gate above and the column's
-// height arithmetic below keep covering them without a second rule each.
+// The bar also carries the action that fills whichever assignment ledger is
+// showing: the run selector and Assign-peaks for a focused sample
+// (AssignmentRunBar), Compute-batch-peaks for the batch (BatchPeakComputeBar).
+// Both apply to the assignment paradigm as a whole rather than to a row of the
+// table below, and both were being squeezed out of a ledger header. They render
+// INSIDE this bar rather than as a row beside it, so the feature-flag gate above
+// and the column's height arithmetic below keep covering them without a second
+// rule each. Exactly one of the two is on screen, because they are gated on the
+// same `sample.focused` that swaps the ledger itself.
 
 /**
  * Utility function to allow scrolling to matches in the watchers below
@@ -128,7 +132,10 @@ watch(
         aria-label="Targets or assignments"
         v-tooltip.bottom="'Switch between target matches and peak assignments'"
       />
-      <AssignmentRunBar v-if="app.ui.matchMode.mode === 'assignments'" />
+      <template v-if="app.ui.matchMode.mode === 'assignments'">
+        <BatchPeakComputeBar v-if="!app.data.sample.focused" />
+        <AssignmentRunBar v-else />
+      </template>
     </div>
     <template v-if="app.ui.matchMode.mode === 'assignments'">
       <!-- Batch-level batch-peak ledger (selects what the Assignments chart plots)
@@ -154,15 +161,18 @@ watch(
   height: 100%;
   min-height: 0;
 }
-/* One row: the paradigm switch, then the run selector and the Assign-peaks
-   button when the assignment paradigm is showing. It wraps rather than
-   overflows - the browser column is user-resizable, and a header that clips its
-   own last control is the thing this row exists to replace. */
+/* One row: the paradigm switch on the left, then the ledger's own action - the
+   run selector and Assign-peaks, or Compute-batch-peaks - pushed to the right by
+   its own `flex: 1`. Left rather than centred, so the switch keeps its place
+   when the bar beside it is empty (the targets paradigm) instead of drifting to
+   the middle of the row. It wraps rather than overflows - the browser column is
+   user-resizable, and a header that clips its own last control is the thing this
+   row exists to replace. */
 .switch-bar {
   display: flex;
   flex-flow: row wrap;
   align-items: center;
-  justify-content: center;
+  justify-content: flex-start;
   gap: 0.5rem;
   padding: 0.35rem;
 }

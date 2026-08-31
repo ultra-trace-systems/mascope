@@ -48,6 +48,20 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
   wraps rather than clips if the column is narrowed far enough. Nothing changes
   with peak-centric assignment turned off, and there is still exactly one
   *Assign peaks* button on screen at a time.
+- **The batch-peak browser's header now matches the sample one.** The batch
+  ledger kept the layout the sample ledger had just moved away from, so
+  switching between a batch and one of its samples rearranged the header: the
+  *Targets / Assignments* switch sat centred over the batch ledger and to the
+  left over the sample one, the *Isotopologues* toggle was on the panel header
+  in one and behind the tier row's cog in the other, and *Compute batch peaks*
+  was in a corner *Assign peaks* had vacated. The two headers are now the same
+  shape. The switch is left-aligned in both. **Compute batch peaks** moved up
+  into the switch bar, in the corner and the style *Assign peaks* uses one
+  focus level down, so the action that fills the ledger is always in the same
+  place. The **Isotopologues toggle** is behind a cog at the end of the
+  tier-chip row, keeping its setting while the menu is closed and opening with
+  the switch focused, as its counterpart does. A refused or failed compute is
+  still reported below the table it is about.
 - **An assignment's confidence tier now reflects the chemistry as well as the
   fit.** A tier is meant to say how strong the case for a peak's formula is, but
   it was read off the fit score alone - which measures only how well the
