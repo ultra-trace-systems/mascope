@@ -695,7 +695,7 @@ def ineligible_reason(sample: Sample) -> str | None:
     return None
 
 
-async def _fetch_sample_mechanisms(
+async def fetch_sample_mechanisms(
     sample: Sample,
 ) -> tuple[list[str], list[SimpleNamespace]]:
     """Resolve the sample's ionization mechanisms once per run.
@@ -753,7 +753,7 @@ async def _fetch_known_target_isotopes(
     :param isotope_abundance_threshold: Minimum relative abundance for a
         target isotope to participate
     :param ionization_mechanism_ids: The sample's mechanism ids, resolved
-        once per run by :func:`_fetch_sample_mechanisms`
+        once per run by :func:`fetch_sample_mechanisms`
     :return: DataFrame of target isotopes with compound/ion metadata
     """
     async with async_session() as session:
@@ -943,7 +943,7 @@ async def _fetch_reference_known_isotopes(
     :param isotope_abundance_threshold: Minimum relative abundance for a
         reference isotope to participate.
     :param mechanisms: The sample's polarity-matching mechanisms, resolved
-        once per run by :func:`_fetch_sample_mechanisms`.
+        once per run by :func:`fetch_sample_mechanisms`.
     :return: DataFrame in the known-isotope shape, or empty.
     """
     if not mechanisms:
@@ -1034,7 +1034,7 @@ def _untargeted_ionization_notations(
     notation used by the composition finder.
 
     :param mechanisms: The sample's polarity-matching mechanisms, resolved
-        once per run by :func:`_fetch_sample_mechanisms`
+        once per run by :func:`fetch_sample_mechanisms`
     :return: (explicit notation strings, notation -> mechanism id mapping)
     """
     notations: list[str] = []
@@ -1417,7 +1417,7 @@ async def _run_sample_assignment(
 
         # -- Resolve the sample's mechanism set once; every stage below
         # consumes the same resolution.
-        mechanism_ids, mechanisms = await _fetch_sample_mechanisms(sample)
+        mechanism_ids, mechanisms = await fetch_sample_mechanisms(sample)
 
         # -- Stage A: database-first assignment from the known composition set:
         # the curated target library plus (when loaded) the reference mirror.

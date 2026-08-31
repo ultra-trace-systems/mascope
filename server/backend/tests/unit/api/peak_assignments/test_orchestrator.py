@@ -155,7 +155,7 @@ def _patches(
             f"{_MOD}.load_calibration", new_callable=AsyncMock, return_value=None
         ),
         "mechanisms": patch(
-            f"{_MOD}._fetch_sample_mechanisms",
+            f"{_MOD}.fetch_sample_mechanisms",
             new_callable=AsyncMock,
             return_value=(["im-1"], [MagicMock()]),
         ),
