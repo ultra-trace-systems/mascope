@@ -225,9 +225,6 @@ def scored_maps(
                 getattr(row, "match_abundance_error", None)
             ),
             "sample_peak_tof": tof if tof is not None and tof > 0 else None,
-            "relative_abundance": finite_or_none(
-                getattr(row, "relative_abundance", None)
-            ),
         }
     return fit_by_ion, errors
 
