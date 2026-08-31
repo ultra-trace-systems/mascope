@@ -75,10 +75,18 @@ it will mislead:
 ## Alternatives now carry plausibility too
 
 As of the latest engine change, each entry in `alternatives` (the runner-ups) carries its own
-`plausibility` (database runner-ups also carry `fit_score` + `mz_error_ppm`; untargeted runner-ups
-are formula-only + plausibility). So the inspector can rank and tooltip competitors by a real stat,
-consistently across both stages. `p_correct` is **not** on alternatives — it is a
+`plausibility`. Entries the engine *competed* for the peak — from either stage — also carry
+`fit_score` + `mz_error_ppm`; what carries neither is the untargeted finder's `other_candidates`
+shortlist, which is formula + plausibility only. So the inspector can rank and tooltip competitors by
+a real stat, consistently across both stages. `p_correct` is **not** on alternatives — it is a
 winner-only, arbitrated quantity.
+
+The shortlist entries are **measured on request** rather than left unscored: the inspector calls
+`GET .../assignment/{id}/alternative-scores`, which seeds each formula against every adduct of the
+sample and reports the fit, mass error and adduct of the one whose M0 lands on the peak (see
+[`peak_assignment_frontend.md`](peak_assignment_frontend.md)). Those numbers are per request and are
+never stored on the row, so they do not feed the confidence layer — Stage B confidence stays deferred
+for the reason below, which is about what the *run* can afford, not what the inspector can.
 
 ## Adduct corroboration — now folded into `p_correct` (shipped)
 

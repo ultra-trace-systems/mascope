@@ -214,13 +214,30 @@ at 32 entries.
 **A candidate with no adduct cannot be committed** — 422, symmetric with `set_assignment`, where
 `ionization_mechanism_id` is a required field. A stored alternative that names no mechanism falls back
 to the mechanism of its own target ion, so an engine runner-up from the database stage still promotes
-to a complete assignment; what cannot resolve one is the untargeted stage's `other_candidates`
+to a complete assignment; what stores none at all is the untargeted stage's `other_candidates`
 shortlist, whose entries carry a formula and a plausibility and nothing else. A formula without its
 adduct is half an assignment and cannot carry a verification identity (`sample_peak_id` +
-`assigned_formula` + `ionization_mechanism_id`), so the route to committing such a formula is the
-re-search hand button, which supplies one. A mechanism the client *does* name is checked for existence
-and against the sample's polarity (422 either way) — the engine only ever searches the sample's own
-adducts, so a hand-supplied id is the one way an opposite-polarity one could reach the column.
+`assigned_formula` + `ionization_mechanism_id`). A mechanism the client *does* name is checked for
+existence and against the sample's polarity (422 either way) — the engine only ever searches the
+sample's own adducts, so a hand-supplied id is the one way an opposite-polarity one could reach the
+column.
+
+**Those shortlist entries are measured on demand** (`GET .../assignment/{id}/alternative-scores`,
+`alternatives_scoring.py`). The inspector fires it when it loads a row that has any, and the server
+seeds every one of the sample's adducts against every such formula in one pass of the shared Stage-A
+chain (`seeded_scoring.py`, the same chain the copy service's re-score uses) — the adduct whose
+**monoisotopic** peak lands on this row's peak with the strongest evidence is reported, ranked on
+`fit x plausibility` and tie-broken by mass error. A formula no adduct places on the peak comes back
+with a `blocked_reason` saying which of the three cases it is in (the sample has no adducts recorded,
+the formula makes no ion, or nothing landed within tolerance), and the card says that instead of a fit.
+
+The scores are **session data, never written onto the run** — a run is the record of what the engine
+did, and this measurement is not something it did. So committing a measured entry is a
+`set_assignment`, not a `promote_alternative`: its numbers are the caller's declaration, they are
+re-tiered under the run's own bands, and provenance records `scored_by: composition_search`. An entry
+the run itself scored still promotes out of the stored list, where the server reads the numbers rather
+than being told them. Re-search remains the way past a blocked entry: it searches the peak's
+composition from scratch rather than measuring the formulas this shortlist happens to name.
 
 Store action: `peak.curate(id, action)`, which reloads the run — an override rewrites rows the caller
 never named. Deliberately **not** redirected to the family M0 the way `verify()` is: an alternative
