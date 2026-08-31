@@ -87,8 +87,11 @@ def _m0_by_ion(scored_df: pd.DataFrame) -> dict[str, pd.Series]:
     """
     if scored_df.empty or "target_ion_id" not in scored_df.columns:
         return {}
+    # Positionally off a sort rather than `.loc[idxmin()]`: the frame reaches
+    # here through a gate and a scorer, and a duplicated index would make that
+    # lookup hand back a frame where every caller expects one row.
     return {
-        str(ion_id): group.loc[group["mz"].idxmin()]
+        str(ion_id): group.sort_values("mz").iloc[0]
         for ion_id, group in scored_df.groupby("target_ion_id", sort=False)
     }
 
