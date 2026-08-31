@@ -1,6 +1,11 @@
-Each assignment lands in a confidence tier from its fit score:
+Each assignment lands in a confidence tier from its evidence &mdash; how well it
+fits the peak, weighted by how chemically plausible the formula is. A
+composition that matches the mass beautifully but describes an unlikely molecule
+does not reach the top tier on the strength of the match alone. The percentage
+on the tier chip is that combined evidence; the fit score on its own is shown
+beside the assignment.
 
-- **assigned** &mdash; a strong, corroborated fit: this formula is the call for
+- **assigned** &mdash; strong, corroborated evidence: this formula is the call for
   the peak, and you can build on it. It is a *composition*, not a confirmed
   compound &mdash; isomers share it, and telling them apart needs MS/MS or a
   reference standard.

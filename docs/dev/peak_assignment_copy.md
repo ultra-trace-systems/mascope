@@ -28,8 +28,8 @@ the import channel (`POST /peak-assignments/sample/{id}/runs/import`,
 — a fan-out of one new first-class run per destination, same tables, read
 model, and batch fold-in as an engine run. The channel already provides what a
 copy must not reinvent: append-only publishing, admission control, strict-lite
-validation (single owner per peak, peak existence, tier↔fit coherence under
-declared `tier_bands`), mandatory attribution, and per-(sample, engine)
+validation (single owner per peak, peak existence, tier↔evidence coherence
+under declared `tier_bands`), mandatory attribution, and per-(sample, engine)
 retention. A server-side copy calls the import service directly rather than
 looping HTTP requests.
 
@@ -96,19 +96,27 @@ defeating its purpose.
 
 Carry formulas, roles, families, alternatives, and curation markers; re-derive
 `fit_score`, `mz_error_ppm`, and `abundance_error` from the destination's own
-peaks; re-tier via `tier_for_score` under the source run's declared
-`tier_bands` — coherence then holds because the tier is computed from the
-imported fit, not asserted beside it. This is a bounded re-score of the seeded
-list: no candidate enumeration, no engine search, no re-arbitration. Winners
-stay the curated winners; only their evidence is re-measured.
+peaks; re-tier via `tier_for_evidence` under the source run's declared
+`tier_bands`, which are on the evidence scale — so what is thresholded is the
+destination's re-measured fit weighted by the chemical plausibility of the
+formula the copy carried across. Plausibility is a property of the formula
+alone, and the formula travels rather than being re-decided, so it is the same
+number on either sample: only the fit is re-measured. Coherence then holds
+because the tier is computed from that product, not asserted beside it — and it
+holds by construction, since the copy service and the import validator that
+publishes its rows both derive the number through the same
+`engine.evidence_for`. This is a bounded re-score of the seeded list: no
+candidate enumeration, no engine search, no re-arbitration. Winners stay the
+curated winners; only their evidence is re-measured.
 
 **Which scorer is honest.** Not `POST /sample/{id}/fit/aggregate`: despite its
 placement, it computes the legacy v1 aggregate and never calls the engine's
 scorer
 ([`visualization.py`](../../server/backend/src/mascope_backend/api/new/peak_assignments/visualization.py)).
-The persisted Stage-A (targeted-stage) `fit_score` — the scale the run's
-`tier_bands` (default 0.8/0.5) are declared on — is `score_pattern_v2`, so the
-honest source is the engine's own chain run server-side over a seeded frame:
+The persisted Stage-A (targeted-stage) `fit_score` — the fit half of the
+evidence the run's `tier_bands` (declared on the evidence scale, default
+0.75/0.45) threshold — is `score_pattern_v2`, so the honest source is the
+engine's own chain run server-side over a seeded frame:
 generate ions for the copied formula×mechanism list, one
 `compute_match_isotopes` pass (a single peak-file load covers every formula),
 `apply_match_params` to gate out-of-tolerance pairings exactly as Stage A

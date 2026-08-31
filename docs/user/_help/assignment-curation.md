@@ -13,8 +13,10 @@ verified; to commit that formula, re-search the peak and assign the hit, which
 names the adduct it was found under.
 
 The row's confidence is re-read for the new formula. Its tier is recalculated
-from the new assignment's own fit under this run's thresholds, so a hand
-assignment is tiered by the same yardstick as every other row in the ledger.
+from the new assignment's own evidence &mdash; how well it fits the peak,
+weighted by how chemically plausible the formula is &mdash; under this run's
+thresholds, so a hand assignment is tiered by the same yardstick as every other
+row in the ledger.
 Its calibrated **P(correct)** is dropped rather than carried over: that number
 was fitted to score the engine's own arbitration, and nothing has calibrated
 the formula you chose.

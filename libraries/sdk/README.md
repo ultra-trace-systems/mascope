@@ -332,8 +332,12 @@ Mascope's **peak-centric assignment** engine assigns a composition to *every*
 observed peak of a sample — database-known targets first (Stage A), then
 untargeted composition search (Stage B) — arbitrates a single owner per peak,
 and files each assignment into a confidence tier (`assigned` | `candidate` |
-`below_assignability` | `unassigned`). Runs are launched from the Mascope app
-and persisted; the SDK reads the results (it does not trigger runs).
+`below_assignability` | `unassigned`). The tier is read off the row's
+**evidence** — its `fit_score` weighted by the chemical plausibility of the
+assigned formula — under the run's `tier_bands`. `fit_score` is served
+alongside it, unchanged, as the pure fit measurement. Runs are launched from
+the Mascope app and persisted; the SDK reads the results (it does not trigger
+runs).
 
 The top tier used to be called `identified`. The API still accepts that
 spelling wherever a tier is sent and normalises it to `assigned`, so scripts
@@ -372,7 +376,7 @@ full = mascope.peak_assignments.detail(
 Key `get()` columns: `sample_peak_mz`, `sample_peak_intensity`, `role` (`M0` |
 `iso_child` | `reagent` | `artifact` | `unassigned`), `assigned_formula`,
 `ion_formula`, `isotope_formula`, `source` (`database` | `untargeted` |
-`manual`), `fit_score`, `mz_error_ppm`, `tier`, `p_correct`, and
+`manual`), `fit_score`, `evidence`, `mz_error_ppm`, `tier`, `p_correct`, and
 `target_compound_id`/`target_ion_id` for database-sourced assignments.
 
 ### Hand-curated rows (`source: manual`)
@@ -412,7 +416,7 @@ A run's ledger does not say who computed it — the run does. `list_runs` (and
 | --- | --- |
 | `engine` | `mascope` for a run this deployment computed, otherwise the external engine that published its ledger here. Never null, and `mascope` is reserved server-side so an import cannot claim it. |
 | `engine_version` | That engine's version string. |
-| `tier_bands` | The `assigned` / `candidate` fit-score thresholds the run tiered with. |
+| `tier_bands` | The `assigned` / `candidate` evidence thresholds the run tiered with. |
 | `calibration` | What an external engine disclosed about its calibration at import. Null for `mascope` runs, whose calibration state is the sample's own. |
 
 This matters because reads default to the **latest completed run whatever its

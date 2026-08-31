@@ -437,8 +437,10 @@ def invert_matches_to_peak_assignments(
 
     # Arbitration (P2): rank a peak's competing candidates by evidence =
     # fit x chemical plausibility, not fit alone, so a chemically implausible formula
-    # cannot win a peak on mass fit. The stored fit_score stays the pure measurement;
-    # evidence only drives the winner selection and the reported confidence.
+    # cannot win a peak on mass fit. The stored fit_score stays the pure measurement,
+    # but evidence now decides the winner, the reported confidence AND the tier - the
+    # three used to disagree, and a formula that won a peak on evidence could then be
+    # banded as though it had fit cleanly.
     formulas = matched["target_compound_formula"].astype(str)
     plaus_by_formula = {f: formula_plausibility(f) for f in formulas.unique()}
     matched["_plaus"] = formulas.map(plaus_by_formula)

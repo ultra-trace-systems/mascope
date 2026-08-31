@@ -114,10 +114,12 @@ class PeakAssignmentsResource(BaseResource):
                    ``failed`` | ``cancelled``; ``importing`` while an external
                    run is still being uploaded (its rows are not servable yet)
                  - ``config``: Run configuration (dict)
-                 - ``tier_bands``: The ``assigned`` / ``candidate``
-                   fit-score thresholds this run tiered with (dict). A tier is
-                   only comparable across engines under the bands that
-                   produced it. Null for runs predating the column.
+                 - ``tier_bands``: The ``assigned`` / ``candidate`` evidence
+                   thresholds this run tiered with (dict) - evidence being a
+                   row's ``fit_score`` weighted by the chemical plausibility
+                   of the formula it commits. A tier is only comparable across
+                   engines under the bands that produced it. Null for runs
+                   predating the column.
                  - ``calibration``: What an external engine disclosed about
                    its calibration at import (dict). Null for ``mascope``
                    runs, whose calibration state is the sample's own.
@@ -160,7 +162,7 @@ class PeakAssignmentsResource(BaseResource):
         :meth:`list_runs`) is attached on ``df.attrs["run"]`` as a dict.
 
         Rows are the slim ledger projection: per-peak scalars plus the
-        flattened calibration scalars (``p_correct``,
+        flattened provenance scalars (``evidence``, ``p_correct``,
         ``p_correct_provisional``, ``corroboration_adducts``). The
         inspector-detail JSON (``alternatives``, ``provenance``) of a single
         assignment is served by :meth:`detail`.
@@ -200,6 +202,11 @@ class PeakAssignmentsResource(BaseResource):
                    ``ionization_mechanism_id``
                  - ``isotope_label``, ``isotope_formula``
                  - ``fit_score``, ``mz_error_ppm``, ``abundance_error``
+                 - ``evidence``: ``fit_score`` weighted by the chemical
+                   plausibility of ``assigned_formula``, and the quantity the
+                   row's ``tier`` was read off under the run's ``tier_bands``.
+                   ``fit_score`` is unchanged beside it as the pure fit
+                   measurement.
                  - ``p_correct``, ``p_correct_provisional``,
                    ``corroboration_adducts``
                  - ``target_compound_id``, ``target_ion_id`` (set for
