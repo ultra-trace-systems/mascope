@@ -1087,6 +1087,82 @@ describe('PanePeakAssign an override whose previous winner named no adduct', () 
   // Nothing archived at all: an override written before the archive existed, or
   // the detail fetch still in flight. Guessing "unassignable" there would put a
   // refusal on the common case, so the wording stays the ordinary one.
+  // The measurement can find an adduct for the displaced winner as readily as
+  // for any other formula, and letting it enable the control would be the card
+  // contradicting its own note: the satellites this override cleared are put
+  // back by compound AND adduct, and were archived with none, so an adduct
+  // found now can never match. The undo stays refused, and stays explained.
+  it('will not let a measurement turn the undo entry into a working control', async () => {
+    focusedAssignment = CURATED
+    detailRecord = {
+      ...CURATED,
+      alternatives: [PREVIOUS, SHORTLIST],
+      provenance: override([{}])
+    }
+    altScoreRecords = [
+      {
+        alternative_index: 0,
+        assigned_formula: PREVIOUS.assigned_formula,
+        plausibility: 0.9,
+        adducts_tried: 3,
+        adducts_matched: 1,
+        fit_score: 0.93,
+        mz_error_ppm: 0.2,
+        ionization_mechanism_id: 'im-nh4',
+        ionization_mechanism: '[M+NH4]+',
+        isotope_label: 'M0'
+      }
+    ]
+    const wrapper = await mountPane()
+
+    expect(useButtons(wrapper)).toHaveLength(0)
+    expect(wrapper.vm.alternatives[0].scored).toBeNull()
+    expect(wrapper.vm.altTooltip(wrapper.vm.alternatives[0], 0)).toContain('Cannot be undone here')
+    // The note and the control still agree with each other.
+    expect(wrapper.find('.manual-note').text()).toContain('cannot be put back by hand')
+  })
+
+  // The same measurement on an ordinary shortlist entry lower down is used
+  // normally: it is the undo, not the measurement, that is impossible.
+  it('still uses a measurement on an ordinary entry of the same list', async () => {
+    focusedAssignment = CURATED
+    detailRecord = {
+      ...CURATED,
+      alternatives: [PREVIOUS, SHORTLIST],
+      provenance: override([{}])
+    }
+    altScoreRecords = [
+      {
+        alternative_index: 1,
+        assigned_formula: SHORTLIST.assigned_formula,
+        plausibility: 0.5,
+        adducts_tried: 3,
+        adducts_matched: 1,
+        fit_score: 0.71,
+        mz_error_ppm: -0.3,
+        abundance_error: 0.01,
+        ionization_mechanism_id: 'im-h',
+        ionization_mechanism: '[M+H]+',
+        ion_formula: 'C9H9+',
+        isotope_label: 'M0'
+      }
+    ]
+    const wrapper = await mountPane()
+
+    expect(useButtons(wrapper)).toHaveLength(1)
+    await useButtons(wrapper)[0].trigger('click')
+    expect(curate).toHaveBeenCalledWith('pa-1', {
+      action: 'set_assignment',
+      assigned_formula: 'C9H8',
+      ionization_mechanism_id: 'im-h',
+      ion_formula: 'C9H9+',
+      isotope_label: 'M0',
+      fit_score: 0.71,
+      mz_error_ppm: -0.3,
+      abundance_error: 0.01
+    })
+  })
+
   it('assumes the ordinary undo when nothing was archived', async () => {
     detailRecord = {
       ...CURATED,

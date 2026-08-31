@@ -204,10 +204,21 @@ const scoreByFormula = computed(() => {
 // Each entry with whatever the server measured for it hung off it. `scored` is
 // null for an entry the run already scored (it needs nothing) and for one the
 // measurement has not reached yet.
+//
+// And null for the undo entry, deliberately, however well it measures. That
+// row's control is the undo, and the undo is what a measurement cannot make
+// possible: the satellites this override cleared are restored by compound AND
+// adduct, and the archive recorded no adduct for them, so an adduct found now
+// will never match the one they were archived under. Committing it would put
+// the formula back on the M0 alone and leave its family unassigned - under a
+// note on this same card that says the assignment cannot be put back by hand.
 const alternatives = computed(() =>
-  storedAlternatives.value.map((alt) => ({
+  storedAlternatives.value.map((alt, index) => ({
     ...alt,
-    scored: alt?.assigned_formula ? (scoreByFormula.value.get(alt.assigned_formula) ?? null) : null
+    scored:
+      alt?.assigned_formula && !isUndoEntry(alt, index)
+        ? (scoreByFormula.value.get(alt.assigned_formula) ?? null)
+        : null
   }))
 )
 
