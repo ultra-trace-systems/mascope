@@ -10,6 +10,7 @@ import { mount } from '@vue/test-utils'
 
 let flagOn = true
 let initialMode = 'targets'
+let focusedSample = null
 
 vi.mock('@/lib/features', () => ({
   get peakAssignmentEnabled() {
@@ -31,7 +32,7 @@ const helpStub = {
 function makeApp() {
   return {
     data: {
-      sample: { focused: null },
+      sample: { focused: focusedSample },
       match: {
         collection: { focused: null },
         ion: { focused: null, unfocus: vi.fn() },
@@ -61,6 +62,11 @@ const paneStub = (name) => ({ default: { name, template: `<div class="${name}" /
 // file's app facade does not carry. Its own behaviour is covered in
 // assignmentRunBar.spec.js; what matters here is where it renders.
 vi.mock('@/lib/panes/PaneBrowserMatch/AssignmentRunBar.vue', () => paneStub('AssignmentRunBar'))
+// The batch-level counterpart, in the same corner of the bar: it reaches the
+// HTTP client through its compute store, which this file has no runtime for.
+vi.mock('@/lib/panes/PaneBrowserMatch/BatchPeakComputeBar.vue', () =>
+  paneStub('BatchPeakComputeBar')
+)
 vi.mock('@/lib/panes/PaneBrowserMatch/MatchCollectionTable.vue', () =>
   paneStub('MatchCollectionTable')
 )
@@ -88,6 +94,7 @@ describe('PaneBrowserMatch', () => {
   beforeEach(() => {
     flagOn = true
     initialMode = 'targets'
+    focusedSample = null
   })
 
   it('stacks the switch bar above the pane in one flex column', () => {
@@ -118,23 +125,29 @@ describe('PaneBrowserMatch', () => {
     expect(wrapper.find('.PaneBrowserBatchPeaks').exists()).toBe(false)
   })
 
-  // The run selector and the Assign-peaks button sit in the bar rather than in
-  // the assignment ledger's own header. That only keeps the flag-off layout if
-  // they are INSIDE the flag-gated bar: a row of their own beside it would
-  // survive the v-if above and put assignment controls in the legacy view.
-  it('keeps the run bar inside the flag-gated switch bar', () => {
+  // The ledger's own action - the run selector and Assign-peaks for a sample,
+  // Compute-batch-peaks for the batch - sits in the bar rather than in the
+  // ledger's header. That only keeps the flag-off layout if they are INSIDE the
+  // flag-gated bar: a row of their own beside it would survive the v-if above
+  // and put assignment controls in the legacy view.
+  it('keeps both action bars inside the flag-gated switch bar', () => {
     flagOn = false
     initialMode = 'assignments'
 
+    expect(mountSwitch().find('.BatchPeakComputeBar').exists()).toBe(false)
+
+    focusedSample = { sample_item_id: 1 }
     expect(mountSwitch().find('.AssignmentRunBar').exists()).toBe(false)
   })
 
-  it('offers the run bar only in the assignments paradigm', () => {
-    expect(mountSwitch().find('.AssignmentRunBar').exists()).toBe(false)
+  it('offers an action bar only in the assignments paradigm', () => {
+    const targets = mountSwitch()
+    expect(targets.find('.AssignmentRunBar').exists()).toBe(false)
+    expect(targets.find('.BatchPeakComputeBar').exists()).toBe(false)
 
     initialMode = 'assignments'
     const wrapper = mountSwitch()
-    const bar = wrapper.find('.AssignmentRunBar')
+    const bar = wrapper.find('.BatchPeakComputeBar')
 
     expect(bar.exists()).toBe(true)
     // One row, not two: the bar is a child of the switch bar, so the column
@@ -143,6 +156,21 @@ describe('PaneBrowserMatch', () => {
     expect(wrapper.find('.switch-bar').element.contains(bar.element)).toBe(true)
     expect([...wrapper.find('.browser-switch').element.children].map((el) => el.className)).toEqual(
       ['switch-bar', 'PaneBrowserBatchPeaks']
+    )
+  })
+
+  // The two bars swap on the same condition as the two ledgers, so the bar
+  // always offers the action that fills the table underneath it - and never
+  // both at once, which would put two launch buttons in one row.
+  it('swaps the batch action for the sample one when a sample is focused', () => {
+    initialMode = 'assignments'
+    focusedSample = { sample_item_id: 1 }
+    const wrapper = mountSwitch()
+
+    expect(wrapper.find('.AssignmentRunBar').exists()).toBe(true)
+    expect(wrapper.find('.BatchPeakComputeBar').exists()).toBe(false)
+    expect([...wrapper.find('.browser-switch').element.children].map((el) => el.className)).toEqual(
+      ['switch-bar', 'PaneBrowserAssignment']
     )
   })
 

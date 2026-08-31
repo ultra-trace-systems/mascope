@@ -1,24 +1,24 @@
 <script setup>
-import { ref, computed, watch, onScopeDispose } from 'vue'
+import { ref, computed, watch } from 'vue'
 
 import Button from 'primevue/button'
 import DataTable from 'primevue/datatable'
 import Column from 'primevue/column'
 import InputText from 'primevue/inputtext'
 import Message from 'primevue/message'
+import Popover from 'primevue/popover'
 import Select from 'primevue/select'
 import ToggleSwitch from 'primevue/toggleswitch'
 import { FilterMatchMode, FilterOperator, FilterService } from '@primevue/core/api'
 
-import { getApiErrorMessage, isRefusedRequest } from '@/api/utils'
 import { BaseTabbedPanel, BaseTierTag, BaseCopyableField } from '@/lib/base'
 import { num } from '@/lib/formatters'
-import { canEditWorkspace } from '@/lib/permissions'
 import { TIERS, TIER_META, countTiers, tierRank } from '@/lib/tiers'
 import { prettyTrim } from '@/lib/utils'
-import { api } from '@/api'
 import { useApp } from '@/stores'
 import { MAX_SELECTED_BATCH_PEAKS } from '@/stores/data/modules/batchPeak/ledger'
+
+import { useBatchPeakCompute } from './stores/batchPeakCompute.js'
 
 /**
  * Batch-peak ledger: the selection surface for the peak-centric batch overview.
@@ -27,9 +27,20 @@ import { MAX_SELECTED_BATCH_PEAKS } from '@/stores/data/modules/batchPeak/ledger
  * chart plots, so the chart never renders 1000+ traces at once.
  */
 const app = useApp()
-const computing = ref(false)
+
+// The button that launches this lives a row up, in the browser's switch bar
+// (BatchPeakComputeBar.vue), so the launch and its state are shared through a
+// store. Only the refusal is read back here, to be reported below the table it
+// is about rather than in a toast that has scrolled away.
+const compute = useBatchPeakCompute()
 
 const ledger = computed(() => app.data.batchPeak)
+
+// A Popover rather than a Menu, matching the sample ledger: a menu item cannot
+// hold a labelled switch, and the switch's only accessible name is its label.
+const viewMenu = ref()
+const viewMenuOpen = ref(false)
+const toggleViewMenu = (event) => viewMenu.value?.toggle(event)
 
 const filters = ref({
   consensus_formula: {
@@ -445,128 +456,16 @@ const intensityTooltip = computed(() => {
   )
 })
 
-// --- Compute batch peaks ----------------------------------------------------
-
-// Cleared on the notification the background task sends when it ends. A dropped
-// socket would otherwise strand the button in its loading state forever, which
-// is a worse failure than the premature reset this replaced, so the wait is
-// bounded. Generous: the backfill folds every sample of the batch in turn.
-const COMPUTE_TIMEOUT = 5 * 60 * 1000
-
-const pendingProcessId = ref(null)
-let computeTimer = null
-
-const launchError = ref(null)
-const launchRefused = ref(false)
-
-// Writing batch peaks needs the editor role on the batch's workspace, which is
-// the focused one - datasets, and so batches, load per focused workspace. The
-// helper answers "yes" while the account or the workspace is still loading, so
-// a slow load offers the button rather than hiding a capability the user has.
-const canCompute = computed(() => canEditWorkspace(app.data.workspace.focused, app.auth.user))
-
-// Why the button cannot run right now, or null when it can. One computed rather
-// than a chain of conditions on the button, so what is disabled and the reason
-// shown for it cannot disagree.
-//
-// "No completed assignment runs in this batch" is the condition that actually
-// matters and it is not knowable here - no loaded record carries a per-sample
-// run status - so the honest client-side stand-in is the batch having no
-// samples at all. A batch that has samples but no completed runs still reaches
-// the backend, which now reports folding nothing as a warning instead of
-// announcing it green.
-const blockedReason = computed(() => {
-  if (!app.data.batch.focusedId) return 'Select a batch to compute its batch peaks.'
-  if (!canCompute.value) {
-    return 'Computing batch peaks writes to the batch, so it needs the editor role in this workspace.'
-  }
-  if (!app.data.sample.pending && !app.data.sample.list.length) {
-    return 'This batch has no samples yet, so there is nothing to fold into batch peaks.'
-  }
-  return null
-})
-
-const computeTooltip = computed(
-  () => blockedReason.value ?? "Build / refresh batch peaks from this batch's assignments"
-)
-
-function endComputing() {
-  computing.value = false
-  pendingProcessId.value = null
-  clearTimeout(computeTimer)
-  computeTimer = null
-}
-
-/** Backfill batch peaks from this batch's existing assignments; the ledger and
- *  chart refresh on the peak_assignment_reload event the task emits. */
-async function computeBatchPeaks() {
-  const batchId = app.data.batch.focusedId
-  if (!batchId || computing.value || blockedReason.value) return
-  computing.value = true
-  launchError.value = null
-  clearTimeout(computeTimer)
-  computeTimer = setTimeout(endComputing, COMPUTE_TIMEOUT)
-  try {
-    // No `use` handler: the acknowledgement's process id rides on the
-    // `Process-ID` response header (the route pops it out of the body), and
-    // both the `read` and `process` handlers throw the raw response away. The
-    // id is what tells this pane's completion notification apart from someone
-    // else's backfill of the same batch, which lands in the same socket room.
-    const response = await api.http.post(
-      `/batch-peaks/batch/${batchId}/backfill`,
-      {},
-      // `errors: 'inline'` holds back the interceptor's toast: the failure is
-      // reported once, below the menu that caused it.
-      { type: 'backfill_batch_peaks', errors: 'inline' }
-    )
-    pendingProcessId.value = response?.headers?.['process-id'] ?? null
-  } catch (error) {
-    // The launch was refused or failed, so nothing is running and the button
-    // goes back to offering the action rather than pretending to perform it.
-    endComputing()
-    // A refusal is shown as a warning rather than an error: the server decided
-    // this on purpose and said why. 403 counts as one here on top of the shared
-    // helper's 409/422 - it is the refusal this route actually issues, from the
-    // editor-role check and the feature flag, and it is what a role revoked
-    // mid-session looks like. Anything else is a fault.
-    launchRefused.value = isRefusedRequest(error) || error?.response?.status === 403
-    launchError.value = getApiErrorMessage(error, 'Could not start the batch peak computation.')
-  }
-}
-
-// The task's own notification is the only signal that the work finished - the
-// 202 says only that it started. It is named for the controller that emits it
-// (compute_batch_peaks), not for the request that launched it, and it arrives
-// for a failure as well as a success, so the button leaves its loading state
-// either way. Registered in setup scope, so it unregisters with the pane.
-app.ui.notification.on('compute_batch_peaks', (notification) => {
-  if (!computing.value) return
-  // The task reports per sample as it folds the batch, and those packets say
-  // only how far along it is - the app's progress bar is what renders them.
-  // The button is asking a different question, "is it still running", and the
-  // answer to that is still yes.
-  if (notification?.status === 'pending') return
-  // A packet whose id we can read and that is not ours belongs to someone
-  // else's backfill of this batch. One we cannot identify is accepted rather
-  // than ignored: leaving the button spinning would be the worse guess.
-  const id = notification?.process_id
-  if (pendingProcessId.value && id && id !== pendingProcessId.value) return
-  endComputing()
-})
-
 // Whatever was in flight, went wrong, or was selected belonged to the previous
 // batch. The selection itself is reset by the ledger's own reload.
 watch(
   () => app.data.batch.focusedId,
   () => {
-    endComputing()
-    launchError.value = null
+    compute.reset()
     overflowFrom.value = 0
     selectionAtCapacity.value = false
   }
 )
-
-onScopeDispose(() => clearTimeout(computeTimer))
 </script>
 
 <template>
@@ -583,87 +482,31 @@ onScopeDispose(() => clearTimeout(computeTimer))
         Cross-sample m/z anchors for the batch: each row is a species seen
         across samples, with its consensus formula and tier, the number of
         samples it appears in, and the highest intensity it reaches in any of
-        them. Isotopologue peaks are folded under their main peak;
-        the Isotopologues toggle unfolds them.
+        them. Isotopologue peaks are folded under their main peak; the
+        view-options button on the tier row unfolds them.
         </p>
         <p>
         The rows selected here are what the Assignments chart plots &mdash;
         Ctrl+A selects all filtered rows, up to the
         ${MAX_SELECTED_BATCH_PEAKS} the chart draws at once. Filter first to
-        choose which ones. Focus a sample to switch to its per-sample
-        assignment ledger.
+        choose which ones, and <b>Compute batch peaks</b> in the bar above to
+        rebuild them. Focus a sample to switch to its per-sample assignment
+        ledger.
         </p>`,
         { doc: app.ui.help.docUrl('how-it-works/peak-assignment/#batch-peaks') }
       )
     "
   >
-    <template #menu>
-      <div
-        class="unfold-toggle"
-        v-tooltip.top="'Show isotopologue peaks as indented rows under their main peak'"
-        v-help.bottom="{
-          message: `
-            <h1>Isotopologue Rows</h1>
-            <p>
-            An isotopologue peak carries its family's formula, so left in the list
-            it reads as a second species. By default the ledger keeps one row
-            per species &mdash; the main peak (M0) &mdash; with its isotopologues
-            folded into the <b>+N</b> marker beside the formula. Toggle to
-            unfold them as indented rows underneath.
-            </p>
-            <p>
-            The link is derived: a batch peak is an m/z anchor and carries no
-            family of its own, so an isotopologue is one whose per-sample
-            assignments agree, across the batch, that it belongs to another
-            anchor's compound.
-            </p>`
-        }"
-      >
-        <ToggleSwitch v-model="showIsotopologues" inputId="unfold-batch-iso" />
-        <label for="unfold-batch-iso">Isotopologues</label>
-      </div>
-
-      <!-- The tooltip hangs off the wrapper, not the button: a disabled button
-           receives no mouse events, so a reason attached to it would be
-           readable only in the one state where it says nothing. -->
-      <span
-        class="compute-button"
-        :class="{ blocked: blockedReason !== null }"
-        v-tooltip.left="computeTooltip"
-      >
-        <Button
-          label="Compute batch peaks"
-          icon="ph ph-arrows-clockwise"
-          size="small"
-          severity="secondary"
-          :loading="computing"
-          :disabled="blockedReason !== null"
-          @click="computeBatchPeaks"
-          :pt="
-            app.ui.help.left(`
-              <h1>Compute Batch Peaks</h1>
-              <p>
-              Builds or refreshes the batch peaks from the assignment runs this
-              batch's samples already have &mdash; no new assignment work. New
-              runs fold in automatically; use this to populate a batch assigned
-              before batch peaks existed, or to refresh after an import.
-              </p>
-            `)
-          "
-        />
-      </span>
-    </template>
-
     <div class="col ledger" style="gap: 0.6rem; align-items: stretch">
       <!-- A launch that was refused or failed reports itself here rather than in
            a toast that has scrolled away by the time the user looks up. -->
       <Message
-        v-if="launchError"
-        :severity="launchRefused ? 'warn' : 'error'"
+        v-if="compute.launchError"
+        :severity="compute.launchRefused ? 'warn' : 'error'"
         closable
-        @close="launchError = null"
+        @close="compute.launchError = null"
       >
-        {{ launchError }}
+        {{ compute.launchError }}
       </Message>
 
       <!-- Said here, where the gesture was made, rather than left for the user
@@ -698,6 +541,79 @@ onScopeDispose(() => clearTimeout(computeTimer))
         >
           <b>{{ chip.count }}</b> {{ chip.label }}
         </button>
+
+        <!-- At the end of the filter row, because that is what it holds: the
+             tier chips beside it narrow the table by confidence, the menu
+             chooses whether isotopologues are their own rows. A cog, in the
+             corner the sample ledger and the sample and ion browsers already
+             put their table controls in. -->
+        <Button
+          class="view-menu-button"
+          icon="pi pi-cog"
+          severity="secondary"
+          text
+          size="small"
+          aria-label="Ledger view options"
+          aria-haspopup="dialog"
+          :aria-controls="viewMenuOpen ? 'batch-peak-view-menu' : undefined"
+          :aria-expanded="viewMenuOpen"
+          v-tooltip.top="'View options: isotopologue rows'"
+          @click="toggleViewMenu"
+          :pt="
+            app.ui.help.top(
+              `
+              <h1>View Options</h1>
+              <p>
+              How this ledger reads, rather than what it is reading.
+              <b>Isotopologues</b> unfolds each species' isotopologue peaks -
+              folded into the <b>+N</b> marker beside the formula by default -
+              as indented rows under their main peak (M0). An isotopologue peak
+              carries its family's formula, so left in the list it reads as a
+              second species.
+              </p>
+              <p>
+              The link is derived: a batch peak is an m/z anchor and carries no
+              family of its own, so an isotopologue is one whose per-sample
+              assignments agree, across the batch, that it belongs to another
+              anchor's compound.
+              </p>
+              <p>
+              The setting keeps while the menu is closed.
+              </p>`,
+              { doc: app.ui.help.docUrl('how-it-works/peak-assignment/#batch-peaks') }
+            )
+          "
+        />
+        <!-- Named, because Popover gives its panel role="dialog"
+             aria-modal="true" and nothing else: an unnamed dialog is announced
+             as just "dialog". Both attributes land on that root - Popover
+             merges fallthrough attrs into it via ptmi. -->
+        <Popover
+          ref="viewMenu"
+          id="batch-peak-view-menu"
+          aria-label="Ledger view options"
+          @show="viewMenuOpen = true"
+          @hide="viewMenuOpen = false"
+        >
+          <div class="view-menu">
+            <div
+              class="unfold-toggle"
+              v-tooltip.top="'Show isotopologue peaks as indented rows under their main peak'"
+            >
+              <!-- autofocus on the switch itself, not on its wrapper: Popover
+                   moves focus only to a genuinely focusable `[autofocus]` child,
+                   and ToggleSwitch puts a fallthrough attribute on its root div.
+                   Without it the panel opens with nothing focused and, being
+                   teleported to the end of <body>, is unreachable by keyboard. -->
+              <ToggleSwitch
+                v-model="showIsotopologues"
+                inputId="unfold-batch-iso"
+                :pt="{ input: { autofocus: true } }"
+              />
+              <label for="unfold-batch-iso">Isotopologues</label>
+            </div>
+          </div>
+        </Popover>
       </div>
 
       <DataTable
@@ -870,16 +786,33 @@ onScopeDispose(() => clearTimeout(computeTimer))
   font-variant-numeric: tabular-nums;
 }
 
-/* The toggle and the child-row treatment are the sample ledger's
+/* The view menu, its toggle and the child-row treatment are the sample ledger's
    (PaneBrowserAssignment.vue): the two ledgers sit in the same tab position and
-   fold the same thing, so a reader switching between them should recognize the
-   same control and the same indent. */
+   fold the same thing, so a reader switching between them should find the same
+   control in the same corner, and recognize the same indent under it. */
+.view-menu-button {
+  margin-left: auto;
+  align-self: center;
+}
+
+/* The view-options panel: one labelled setting per row. */
+.view-menu {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  min-width: 14rem;
+}
 .unfold-toggle {
   display: flex;
   align-items: center;
-  gap: 0.4rem;
+  justify-content: space-between;
+  gap: 0.6rem;
   font-size: 0.8rem;
   white-space: nowrap;
+  /* Label first, control last, as in the sample ledger's menu. Reversed here
+     rather than reordered in the markup so the switch stays the first element
+     in the panel, and so it is what the panel's autofocus lands on. */
+  flex-direction: row-reverse;
 }
 .unfold-toggle label {
   cursor: pointer;
@@ -917,15 +850,6 @@ onScopeDispose(() => clearTimeout(computeTimer))
    flex row puts the marker back against the formula. */
 .formula :deep(button) {
   order: 1;
-}
-
-/* Take the disabled button out of hit-testing so the wrapper above it receives
-   the hover that shows why it is disabled. */
-.compute-button {
-  display: inline-flex;
-}
-.compute-button.blocked :deep(.p-button) {
-  pointer-events: none;
 }
 
 /* Matches the sample ledger's strip (PaneBrowserAssignment.vue): the two sit in

@@ -1,5 +1,6 @@
 import { describe, it, expect, vi } from 'vitest'
 import { mount } from '@vue/test-utils'
+import { createPinia, setActivePinia } from 'pinia'
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 
@@ -153,6 +154,9 @@ const { default: MatchCollectionTable } =
 const { default: MatchIonTable } = await import('@/lib/panes/PaneBrowserMatch/MatchIonTable.vue')
 
 async function mountPane(component) {
+  // The batch-peak ledger reads the compute store for the refusal it renders,
+  // so a pinia has to exist even though nothing here launches anything.
+  setActivePinia(createPinia())
   const wrapper = mount(component, { global: GLOBAL })
   await wrapper.vm.$nextTick()
   return wrapper

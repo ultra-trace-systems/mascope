@@ -20,7 +20,9 @@ import { useAssignmentLauncher } from './stores'
  * itself, and both outlive whichever ledger happens to be on screen.
  *
  * Rendered inside PaneBrowserMatch's switch bar, so it inherits the bar's
- * feature-flag gate rather than carrying a second copy of it.
+ * feature-flag gate rather than carrying a second copy of it, and only for a
+ * focused sample: the batch level takes the same corner for its own action
+ * (BatchPeakComputeBar).
  */
 const app = useApp()
 const launcher = useAssignmentLauncher()
@@ -51,9 +53,10 @@ const selectedRun = computed({
   set: (run) => (run ? runs.value.focus(run) : runs.value.unfocus())
 })
 
-// The run store only loads for a focused sample, so at batch level there is
-// nothing to select and nothing to add to - the bar collapses to the switch
-// alone rather than offering a dead "Select run" box over the batch ledger.
+// The parent only renders this bar for a focused sample - the batch level gets
+// BatchPeakComputeBar in the same corner instead - so what is left to decide
+// here is the sample that has no runs yet: nothing to select and nothing to
+// show, rather than a dead "Select run" box over an empty ledger.
 //
 // The button outlives the selector by one state: a run list that failed to
 // load has no empty state to carry the call to action, and a failed load must
@@ -69,8 +72,8 @@ const canAssign = computed(() => runs.value.list.length > 0 || Boolean(runs.valu
 
 <template>
   <!-- Nothing at all rather than an empty box: this grows to fill the bar, so
-       at batch level an always-rendered wrapper would push the paradigm switch
-       off centre with a blank flex item beside it. -->
+       an always-rendered wrapper would sit there as a blank flex item, taking
+       the room from a switch it has nothing to show beside. -->
   <div v-if="runOptions.length || canAssign" class="run-bar">
     <Select
       v-if="runOptions.length"
