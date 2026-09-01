@@ -530,6 +530,9 @@ const breadcrumb = computed(() => {
         :onRetry="() => runs.load('retry')"
       />
     </div>
+    <div class="overlay" style="text-align: center" v-if="runs.pending">
+      <ProgressSpinner />
+    </div>
     <!-- The one state that carries its own call to action, and the reason
          AssignmentRunBar hides its copy of the button here: two identical
          buttons a few centimetres apart read as two different things. The four

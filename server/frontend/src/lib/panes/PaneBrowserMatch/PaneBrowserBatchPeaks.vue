@@ -7,6 +7,7 @@ import Column from 'primevue/column'
 import InputText from 'primevue/inputtext'
 import Message from 'primevue/message'
 import Popover from 'primevue/popover'
+import ProgressSpinner from 'primevue/progressspinner'
 import Select from 'primevue/select'
 import ToggleSwitch from 'primevue/toggleswitch'
 import { FilterMatchMode, FilterOperator, FilterService } from '@primevue/core/api'
@@ -518,6 +519,7 @@ watch(
       </Message>
 
       <div
+        v-if="ledger.list.length"
         class="tier-strip"
         v-help.top="{
           title: 'Confidence Tiers',
@@ -616,7 +618,12 @@ watch(
         </Popover>
       </div>
 
+      <div class="overlay" style="text-align: center" v-if="ledger.pending">
+        <ProgressSpinner />
+      </div>
+
       <DataTable
+        v-else
         :value="rows"
         dataKey="batch_peak_id"
         :selection="ledger.selected"
