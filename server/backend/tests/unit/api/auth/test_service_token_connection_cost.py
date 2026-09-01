@@ -1,22 +1,23 @@
-"""How many database connections one bearer-token validation holds.
+"""How many database connections one service-token validation holds.
 
-Every request from an agent, the file converter or the SDK runs
-``validate_service_access_token`` before anything else. It takes no
-admission-control permit - ``db_semaphore`` in :mod:`mascope_backend.db` guards
-only the dependency-injected session path - so nothing bounds how many of these
-run at once. Its per-call connection cost is therefore the thing that decides
-whether a bulk upload saturates the pool.
+``validate_service_access_token`` runs on every Socket.IO service-token path -
+the handshake and each file-converter event - and on the liveness probe every
+upload takes before storing anything. It takes no admission-control permit -
+``db_semaphore`` in :mod:`mascope_backend.db` guards only the
+dependency-injected session path - so nothing bounds how many of these run at
+once. Its per-call connection cost is therefore part of what decides whether a
+bulk upload saturates the pool.
 
-It did. Under a converter upload run this path held three connections per
-request, every waiter then blocked for ``pool_timeout`` (120 s), and the worker
-stopped serving anything at all for a minute - including unrelated requests,
-which failed with ``QueuePool limit ... reached``. The 401s that reached error
-monitoring were this: the token lookup could not get a connection, so a valid
-token was reported as a validation failure.
+It did. Under a converter upload run this path held three connections per call,
+every waiter then blocked for ``pool_timeout``, and the worker stopped serving
+anything at all for a minute - including unrelated requests, which failed with
+``QueuePool limit ... reached``. The 401s that reached error monitoring were
+this: the token lookup could not get a connection, so a valid token was
+reported as a validation failure.
 
 Backported from #1928, minus its assertions about a semaphore-sizing refactor
-that is not on this line. These tests are about connection accounting, not auth
-behaviour.
+that is not on this line, and minus its validation cache. These tests are about
+connection accounting, not auth behaviour.
 """
 
 import pytest
@@ -201,3 +202,17 @@ class TestOutcomesAreUnchanged:
     async def test_a_wrong_service_token_is_refused(self, ledger):
         with pytest.raises(Exception, match="not authorized for"):
             await validation_mod.validate_service_access_token(TOKEN, "other-service")
+
+
+class TestEveryCallPaysTheSameCost:
+    @pytest.mark.asyncio
+    async def test_repeats_are_not_reused(self, ledger):
+        # Nothing is cached: each validation reads the database again. Stated
+        # as a test because it is the property a cache would remove, and the
+        # trade that would come with it - a revoked token still authenticating
+        # for the length of the window - is not one this release line takes.
+        for _ in range(20):
+            await validation_mod.validate_service_access_token(TOKEN, SERVICE)
+
+        assert ledger.total == 20
+        assert ledger.peak == 1

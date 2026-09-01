@@ -13,12 +13,20 @@ async def validate_service_access_token(access_token: str, service_name: str):
     """
     Validate service access token and return associated user.
 
-    Every request from an agent, the file converter or the SDK runs this first,
-    and it takes no admission-control permit - the semaphore in
-    :mod:`mascope_backend.db` guards the injected-session path only. Its
-    per-call connection cost is therefore multiplied by however many bearer
-    requests are in flight, with nothing to cap it, which is what let a bulk
-    upload saturate a worker's pool and stall it for ``pool_timeout``.
+    This runs on every Socket.IO service-token path - the connection handshake
+    and each file-converter event, so once per progress report during a
+    conversion - and on the liveness probe in ``access_token.service`` that
+    every upload takes before it stores anything. None of them holds an
+    admission-control permit: the semaphore in :mod:`mascope_backend.db` guards
+    the injected-session path only, so nothing bounds how many of these run at
+    once. Its per-call connection cost is what decided whether a bulk upload
+    saturated a worker's pool and stalled it for ``pool_timeout``.
+
+    The HTTP bearer path does not come through here. It is authenticated by
+    ``get_enabled_backends``, which calls :func:`get_token_service` directly -
+    also without a permit, and also once per request, so a resumable upload
+    pays it once per chunk. That is why the query collapse in that function
+    matters on its own.
 
     So it holds exactly one session. The strategy and the user manager are used
     sequentially, never concurrently, so a session each bought nothing but a

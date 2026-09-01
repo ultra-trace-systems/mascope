@@ -10,17 +10,25 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
   compounded, and both are fixed here.
 
   A service-token validation held three database connections at once and
-  opened four. Every request from an agent, the file converter or the SDK runs
-  that validation first, and it takes no admission-control permit, so its cost
-  is multiplied by however many bearer requests are in flight with nothing to
-  cap it. A bulk upload saturated a worker's pool; every waiter then blocked
-  for the full `pool_timeout` and the worker served nothing at all for a
-  minute, including unrelated requests. The 401s this produced in error
-  monitoring were mislabelled: the token was valid, but the lookup could not
-  get a connection, so the failure surfaced as `Token validation failed`. The
-  validation now holds one connection and opens one - the strategy and user
-  manager share a session, and the service-name lookup runs on it instead of
-  checking out a third from inside the other two.
+  opened four. It runs on every Socket.IO service-token path - the handshake
+  and each file-converter event - and on the liveness probe every upload takes
+  before storing anything, and none of them holds an admission-control permit,
+  so nothing bounds how many run at once. A bulk upload saturated a worker's
+  pool; every waiter then blocked for the full `pool_timeout` and the worker
+  served nothing at all for a minute, including unrelated requests. The 401s
+  this produced in error monitoring were mislabelled: the token was valid, but
+  the lookup could not get a connection, so the failure surfaced as `Token
+  validation failed`. The validation now holds one connection and opens one -
+  the strategy and user manager share a session, and the service-name lookup
+  runs on it instead of checking out a third from inside the other two, which
+  is the shape that deadlocks a pool: a caller holding a connection blocking on
+  one only it could release.
+
+  The same service-name lookup authenticates every bearer request, once per
+  chunk of a resumable upload, and it made two round trips for one row that a
+  single query returns. It now makes one. Between them the two changes take a
+  twenty-chunk upload from roughly forty-five unpermitted sessions to
+  twenty-two.
 
   Separately, an uploaded file is now announced to the file converter *before*
   it is published. Both upload paths staged the bytes under a name the
