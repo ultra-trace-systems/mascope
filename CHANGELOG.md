@@ -4,6 +4,8 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
 
 ## [Unreleased]
 
+## [1.7.3] - 2026.09.01
+
 ### Fixed
 
 - **A bulk upload run no longer stalls a worker and drops files.** Two defects
