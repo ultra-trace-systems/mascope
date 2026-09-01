@@ -22,6 +22,7 @@ the tus pre_create hook instead.
 
 import asyncio
 import io
+import time
 from contextlib import contextmanager
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
@@ -245,14 +246,21 @@ async def test_concurrent_uploads_of_one_name_do_not_share_a_staging_file(
     staging = tmp_path_factory.mktemp("tus-staging")
     started = asyncio.Event()
     release = asyncio.Event()
+    real_move = sample_files_controller.shutil.move
 
-    async def _first_emit(*_args, **_kwargs):
-        # Hold the first upload open, staged but not yet published, while the
-        # second one runs start to finish underneath it.
-        started.set()
-        await release.wait()
+    def _move_then_hold(src, dst):
+        # Suspend the first upload with its bytes staged but not yet published,
+        # which is the window the two uploads used to share. Holding at the
+        # converter emit instead would prove nothing: before this fix that emit
+        # ran *after* the rename, so the staged file was already gone.
+        result = real_move(src, dst)
+        if not started.is_set():
+            started.set()
+            while not release.is_set():
+                time.sleep(0.01)
+        return result
 
-    async def _run(source: bytes, emit):
+    async def _run(source: bytes, hold: bool):
         # Same basename, different source directories: the destination name is
         # derived from the basename, so both uploads target one file in
         # filestreams - which is what makes their staging paths collide.
@@ -262,16 +270,26 @@ async def test_concurrent_uploads_of_one_name_do_not_share_a_staging_file(
         staged.write_bytes(source)
         with (
             patch(f"{_CTRL}.is_service_connected", new=AsyncMock(return_value=True)),
-            patch(f"{_CTRL}.event_emitter.emit", new=AsyncMock(side_effect=emit)),
+            patch(f"{_CTRL}.event_emitter.emit", new=AsyncMock()),
         ):
+            if hold:
+                with patch.object(
+                    sample_files_controller.shutil, "move", _move_then_hold
+                ):
+                    return await sample_files_controller.upload_sample_file(
+                        file_path=str(staged), user=_fake_user(), access_token="token"
+                    )
             return await sample_files_controller.upload_sample_file(
                 file_path=str(staged), user=_fake_user(), access_token="token"
             )
 
-    first = asyncio.create_task(_run(b"first upload", _first_emit))
-    await started.wait()
+    # The hold is a blocking sleep, so the first upload has to run off the event
+    # loop for the second to make progress against it.
+    first = asyncio.create_task(asyncio.to_thread(asyncio.run, _run(b"first", True)))
+    while not started.is_set():
+        await asyncio.sleep(0.01)
 
-    second = await _run(b"second upload", AsyncMock())
+    second = await _run(b"second upload", False)
     assert second["status"] == "success"
 
     release.set()
