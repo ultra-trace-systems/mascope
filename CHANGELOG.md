@@ -878,6 +878,29 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
 
 ### Fixed
 
+- **An uploaded file is now announced to the file converter before it is
+  published**, closing a race that quarantined finished uploads. Both upload
+  paths staged the bytes under a name the converter's watcher cannot match,
+  renamed them into place, and only then emitted the socket event carrying the
+  uploader's identity. The watcher queues a file once its size is stable across
+  two ~1 s polls, and that event is not local - it crosses Redis pub/sub to
+  whichever worker holds the converter's socket - so under load it could arrive
+  after the converter had already picked the file up. The converter then found
+  no context for it, raised, and moved it into `filestreams/failed_files`,
+  which nothing retries: the watcher globs `filestreams/*.raw` without
+  recursing, so a file that lost the race was ingested by nothing and reported
+  to no one. The identity is now registered while the bytes are still staged
+  and invisible to the watcher, so the context is always in place before the
+  file can be seen. A registration that fails now also fails the upload instead
+  of publishing a file that was certain to be quarantined.
+
+- **Two uploads of the same filename no longer corrupt each other.** The
+  staging name was a single `<final>.part` per destination, so a client
+  restarting an interrupted transfer could have two uploads writing the same
+  path: one overwrote the other's staged bytes, the first rename consumed them,
+  and the loser's rename failed with `FileNotFoundError` on a path that had
+  already been moved away. Staging names now carry a unique per-upload suffix.
+
 - The peak inspector's **close alternatives** no longer include the assignment
   the peak was actually given. The list is meant to be the runners-up a peak
   could have gone to instead, so the committed formula appearing in it - with
