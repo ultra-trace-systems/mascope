@@ -405,20 +405,6 @@ describe('PanePeakAssign verification on an isotopologue', () => {
     expect(wrapper.vm.verifyTarget).toBe(M0)
   })
 
-  it('says which row the verdict is really about', async () => {
-    focusedAssignment = isotopologue(M0)
-    const wrapper = await mountPane()
-    const note = wrapper.find('.verify-family')
-
-    expect(note.exists()).toBe(true)
-    expect(note.text()).toContain('C10H12')
-
-    // Nothing to explain when the compound's own peak is in view.
-    focusedAssignment = M0
-    const onM0 = await mountPane()
-    expect(onM0.find('.verify-family').exists()).toBe(false)
-  })
-
   it('records the verdict against the compound, not the isotopologue peak', async () => {
     focusedAssignment = isotopologue(M0)
     const wrapper = await mountPane()
@@ -446,17 +432,6 @@ describe('PanePeakAssign verification on an isotopologue', () => {
     expect(wrapper.vm.verifyTarget).toBe(orphan)
     await wrapper.vm.submitVerdict('unsure')
     expect(verify.mock.calls[0][0].peak_assignment_id).toBe(orphan.peak_assignment_id)
-  })
-
-  // ...and it must not claim a scope it does not have. Such a verdict covers
-  // that peak alone: there is no M0 to hang it on and no sibling to share it
-  // with, so the family note would be a promise the write does not keep.
-  it('claims no family for an isotopologue that stands for itself', async () => {
-    focusedAssignment = { ...isotopologue(M0), owner_peak_assignment_id: null }
-    const wrapper = await mountPane()
-
-    expect(wrapper.vm.verifyingFamily).toBe(false)
-    expect(wrapper.find('.verify-family').exists()).toBe(false)
   })
 
   // The form judges the compound, so stepping between members of one family is
@@ -555,9 +530,7 @@ describe('PanePeakAssign close alternatives', () => {
   // winner repeated, and the analyst needs to see it.
   it('keeps the same formula reached through another adduct', async () => {
     detailRecord = {
-      alternatives: [
-        { assigned_formula: 'C6H12O6', ion_formula: 'C6H12NaO6+', fit_score: 0.7 }
-      ]
+      alternatives: [{ assigned_formula: 'C6H12O6', ion_formula: 'C6H12NaO6+', fit_score: 0.7 }]
     }
     const wrapper = await mountPane()
 

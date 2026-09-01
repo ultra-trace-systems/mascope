@@ -69,6 +69,7 @@ function makeApp() {
       ionization: { mechanism: { list: [] } },
       peakAssignment: {
         run: {
+          pending: false,
           list: runList,
           error: runError,
           focused: runList[0] ?? null,
@@ -884,7 +885,6 @@ describe('PaneBrowserAssignment header and controls', () => {
     const wrapper = await mountPane()
 
     expect(wrapper.vm.breadcrumb.items.map((item) => item.label)).toEqual([
-      undefined,
       'Batch 1',
       'Sample 1',
       '6 peaks'

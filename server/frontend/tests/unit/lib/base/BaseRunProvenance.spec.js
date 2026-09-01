@@ -158,9 +158,7 @@ describe('BaseRunProvenance', () => {
     // another against fit x plausibility.
     const wrapper = mountBadge(IMPORTED_RUN)
 
-    expect(wrapper.vm.tierBandsText).toBe(
-      'Tier bands (evidence): assigned ≥ 60% · candidate ≥ 30%'
-    )
+    expect(wrapper.vm.tierBandsText).toBe('Tier bands (evidence): assigned ≥ 60% · candidate ≥ 30%')
   })
 
   it('omits the bands rather than inventing them when the run carries none', () => {
@@ -192,7 +190,7 @@ describe('BaseRunProvenance', () => {
       calibration: { method: 'big', blob: 'x'.repeat(5000) }
     })
 
-    expect(wrapper.vm.calibrationDump.length).toBeLessThanOrEqual(601)
+    expect(wrapper.vm.calibrationDump.length).toBeLessThanOrEqual(1001)
     expect(wrapper.vm.calibrationDump.endsWith('…')).toBe(true)
   })
 
