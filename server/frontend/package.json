@@ -42,7 +42,7 @@
     "@uppy/dashboard": "^5.1.1",
     "@uppy/drop-target": "^4.1.0",
     "@uppy/tus": "^5.1.1",
-    "@uppy/vue": "^3.2.0",
+    "@uppy/vue": "^4.0.0",
     "@vueuse/core": "^14.4.0",
     "axios": "^1.20.0",
     "chart.js": "^4.5.1",
