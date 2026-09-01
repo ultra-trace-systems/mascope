@@ -890,39 +890,6 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
 
 ### Fixed
 
-- **An uploaded file is now announced to the file converter before it is
-  published**, closing a race that quarantined finished uploads. Both upload
-  paths staged the bytes under a name the converter's watcher cannot match,
-  renamed them into place, and only then emitted the socket event carrying the
-  uploader's identity. The watcher queues a file once its size is stable across
-  two ~1 s polls, and that event is not local - it crosses Redis pub/sub to
-  whichever worker holds the converter's socket - so under load it could arrive
-  after the converter had already picked the file up. The converter then found
-  no context for it, raised, and moved it into `filestreams/failed_files`,
-  which nothing retries: the watcher globs `filestreams/*.raw` without
-  recursing, so a file that lost the race was ingested by nothing and reported
-  to no one. The identity is now registered before any of the bytes are
-  written, so the context is always in place before the file can be seen -
-  ahead of the staging write rather than between it and the rename, because
-  awaiting there would mean awaiting while the staged file is the only copy of
-  the upload, where a dropped connection takes it with it.
-
-  This fixes the ordering, not the delivery. The event emitter is
-  fire-and-forget - it logs a handler's failure and returns, and it reaches
-  nobody when no converter is connected - so a converter that drops between the
-  availability check and the emit still leaves a published file with no context
-  behind it, and `failed_files` still has nothing retrying it. Closing that
-  needs the context to outlive the emit, in Redis rather than in the
-  converter's process memory, or the converter to ask for a context it does not
-  recognise.
-
-- **Two uploads of the same filename no longer corrupt each other.** The
-  staging name was a single `<final>.part` per destination, so a client
-  restarting an interrupted transfer could have two uploads writing the same
-  path: one overwrote the other's staged bytes, the first rename consumed them,
-  and the loser's rename failed with `FileNotFoundError` on a path that had
-  already been moved away. Staging names now carry a unique per-upload suffix.
-
 - The peak inspector's **close alternatives** no longer include the assignment
   the peak was actually given. The list is meant to be the runners-up a peak
   could have gone to instead, so the committed formula appearing in it - with
@@ -1402,21 +1369,17 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
   break went unnoticed; the SDK's live contract tests now cover this surface,
   so it cannot break silently again.
 
-- A bulk upload run no longer makes the server stop answering. Every request
-  from an agent, the file converter or the SDK is checked against its access
-  token, and that check was opening five database connections and holding
-  three of them - so enough uploads at once used up the connections the rest
-  of the server needed, and unrelated requests waited on a pool that had
-  nothing left to give until they timed out. On one production server that
-  meant a worker serving nothing for a minute. The check now holds one
-  connection, reads the token row once, and reuses a successful validation for
-  a few seconds, so a resumable upload's chunks no longer re-run it once per
-  chunk. Reusing it means revoking a credential - unpairing a machine,
-  clearing an account's tokens - takes effect within those few seconds rather
-  than instantly, and a role change that a service connection reads inside
-  that window is kept for the life of that connection rather than the few
-  seconds. This makes the exhaustion far less likely rather than impossible;
-  a heavy enough run can still reach the limit.
+- A service token validated once is now reused for a few seconds, so a
+  resumable upload's chunks no longer re-check it once per chunk. This is the
+  remaining half of the bulk-upload stall; the other half - the check holding
+  one database connection instead of three - shipped in 1.7.3. Reusing a
+  validation means revoking a credential (unpairing a machine, clearing an
+  account's tokens) takes effect within those few seconds rather than
+  instantly, and a role change that a service connection reads inside that
+  window is kept for the life of that connection rather than the few seconds.
+  Deliberately not on the release line: 1.7.3 took the connection fix without
+  it, because the entry that earns the reuse there defers no revocation and
+  does not exist on that line.
 
 - Pressing Escape no longer throws away two-factor recovery codes. The last
   step of setup deliberately offers no close button, because the codes are
@@ -1646,6 +1609,57 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
   the flag is a settled configuration choice. The nightly assignment-prune
   timer passes both by design, so every server in a fleet was minting an
   error-monitoring event a night that no one could act on.
+
+## [1.7.3] - 2026.09.01
+
+Hotfix cut from `master`, so its two fixes are listed here rather than
+under Unreleased. The connection half of the bulk-upload stall shipped with
+them; the validation reuse above it did not.
+
+### Fixed
+
+- A bulk upload run no longer stops a worker answering. Every request from
+  an agent, the file converter or the SDK is checked against its access
+  token, and that check was opening four database connections and holding
+  three - so enough uploads at once used up the connections the rest of the
+  server needed, and unrelated requests waited on a pool with nothing left
+  to give until they timed out. On one production server that meant a worker
+  serving nothing for a minute. The check now holds one connection and reads
+  the token row once. This makes the exhaustion far less likely rather than
+  impossible; a heavy enough run can still reach the limit.
+
+- **An uploaded file is now announced to the file converter before it is
+  published**, closing a race that quarantined finished uploads. Both upload
+  paths staged the bytes under a name the converter's watcher cannot match,
+  renamed them into place, and only then emitted the socket event carrying the
+  uploader's identity. The watcher queues a file once its size is stable across
+  two ~1 s polls, and that event is not local - it crosses Redis pub/sub to
+  whichever worker holds the converter's socket - so under load it could arrive
+  after the converter had already picked the file up. The converter then found
+  no context for it, raised, and moved it into `filestreams/failed_files`,
+  which nothing retries: the watcher globs `filestreams/*.raw` without
+  recursing, so a file that lost the race was ingested by nothing and reported
+  to no one. The identity is now registered before any of the bytes are
+  written, so the context is always in place before the file can be seen -
+  ahead of the staging write rather than between it and the rename, because
+  awaiting there would mean awaiting while the staged file is the only copy of
+  the upload, where a dropped connection takes it with it.
+
+  This fixes the ordering, not the delivery. The event emitter is
+  fire-and-forget - it logs a handler's failure and returns, and it reaches
+  nobody when no converter is connected - so a converter that drops between the
+  availability check and the emit still leaves a published file with no context
+  behind it, and `failed_files` still has nothing retrying it. Closing that
+  needs the context to outlive the emit, in Redis rather than in the
+  converter's process memory, or the converter to ask for a context it does not
+  recognise.
+
+- **Two uploads of the same filename no longer corrupt each other.** The
+  staging name was a single `<final>.part` per destination, so a client
+  restarting an interrupted transfer could have two uploads writing the same
+  path: one overwrote the other's staged bytes, the first rename consumed them,
+  and the loser's rename failed with `FileNotFoundError` on a path that had
+  already been moved away. Staging names now carry a unique per-upload suffix.
 
 ## [1.7.2] - 2026.08.19
 
