@@ -2,6 +2,7 @@ import math
 import os
 import shutil
 from datetime import datetime
+from uuid import uuid4
 
 from fastapi import BackgroundTasks, HTTPException, UploadFile
 from sqlalchemy import (
@@ -78,6 +79,46 @@ async def ensure_converter_available() -> None:
             status_code=503,
             detail="File converter service is not available or not running.",
         )
+
+
+async def _register_file_with_converter(
+    filename: str,
+    user: User,
+    access_token: str,
+) -> None:
+    """Tell the converter who uploaded a file, before the file is stored.
+
+    Both upload paths call this before they move any bytes, so the context is
+    in place before the file can become visible to the converter's watcher.
+    Emitting after publication races the watcher's poll and strands the file in
+    ``failed_files``; emitting between staging and publication would put this
+    call's await where a cancellation destroys the only copy of the file. See
+    :func:`upload_sample_file` for both.
+
+    Ordering is all this buys. It is not a delivery guarantee and must not be
+    read as one: ``event_emitter.emit`` logs a handler's failure and returns,
+    and the socket emit under it reaches nobody when no converter is connected.
+    So this returning tells the caller only that the event was published, and
+    an upload whose converter drops between the availability check and this
+    call still lands with no context behind it.
+
+    :param filename: The file's final name in the filestreams folder.
+    :type filename: str
+    :param user: The authenticated user performing the upload.
+    :type user: User
+    :param access_token: Pre-validated access token for the converter.
+    :type access_token: str
+    """
+    await event_emitter.emit(
+        "file-converter.auth",
+        {
+            "filename": filename,
+            "user_id": user.id,
+            "username": user.username,
+            "role_id": user.role_id,
+            "access_token": access_token,
+        },
+    )
 
 
 # TODO_configuration Default sample file upload params
@@ -785,28 +826,34 @@ async def upload_sample_files(
             # its remaining bytes lost) if it lands under its final name, so
             # write to a temp name the watcher patterns cannot match and
             # publish with an atomic rename.
-            tmp_path = f"{file_path}.part"
+            #
+            # The staging name carries a unique suffix. It used to be a plain
+            # "<final>.part", which two uploads of the same filename share - and
+            # a client that restarts an interrupted transfer produces exactly
+            # that. The second mover then overwrote the first's staged bytes,
+            # the first's rename consumed them, and the second's rename failed
+            # on a path that was no longer there.
+            # Register the file with the converter before staging anything -
+            # see upload_sample_file for why the context has to be in place
+            # first, and why this belongs before the bytes move rather than
+            # between staging and publication.
+            await _register_file_with_converter(
+                filename=filename,
+                user=user,
+                access_token=access_token,
+            )
+
+            tmp_path = f"{file_path}.{uuid4().hex}.part"
             try:
                 # Write file in chunks to manage memory usage
                 with open(tmp_path, "wb") as f:
                     while chunk := file.file.read(FILE_UPLOAD_CHUNK_SIZE):
                         f.write(chunk)
+
                 os.replace(tmp_path, file_path)
             finally:
                 if os.path.exists(tmp_path):
                     os.remove(tmp_path)
-
-            # Emit event for file converter service to register the file
-            await event_emitter.emit(
-                "file-converter.auth",
-                {
-                    "filename": filename,
-                    "user_id": user.id,
-                    "username": user.username,
-                    "role_id": user.role_id,
-                    "access_token": access_token,
-                },
-            )
 
             successful_uploads.append(
                 {
@@ -913,30 +960,58 @@ async def upload_sample_file(
     filename = os.path.basename(file_path)
     dest_path = os.path.join(runtime.config.filestreams, filename)
 
-    # A cross-filesystem move degrades to a non-atomic copy, which the
-    # converter's polling watcher can pick up half-written under its final
-    # name. Stage under a temp name the watcher patterns cannot match, then
-    # publish with an atomic rename.
-    tmp_path = f"{dest_path}.part"
     try:
+        # Register the file with the converter BEFORE any of its bytes move.
+        #
+        # The converter learns who uploaded a file only from this event, and it
+        # keeps the context in memory keyed by filename. Its watcher queues a
+        # file once the size is stable across two ~1s polls, so an event
+        # emitted after the rename is racing that pickup. The emit is not local
+        # - it crosses Redis pub/sub to whichever worker holds the converter's
+        # socket - so under load it can land after the converter has already
+        # dequeued the file. _get_file_context then finds nothing, raises, and
+        # the file is quarantined into failed_files, where nothing retries it:
+        # the watcher globs filestreams/*.raw without recursing.
+        #
+        # It belongs here rather than between the staging move and the publish,
+        # even though the staged name is already invisible to the watcher's
+        # *.raw / *.h5 patterns. This is the only await on the path, and
+        # awaiting between those two steps means awaiting while the staged file
+        # is the only copy there is: the source has been moved away and nothing
+        # is published yet, so a cancellation at that await - a client dropping
+        # the connection, a worker shut down mid-request - runs the cleanup
+        # below on it. The emit is the slowest step here, and slowest under
+        # exactly the load this ordering exists for; tuspyserver has already
+        # marked the upload complete by the time this handler runs, so the
+        # client reads it as stored either way. Ahead of the move, staging and
+        # publication have no await between them and cannot be interrupted
+        # partway.
+        #
+        # The cost is that an upload which then fails to store leaves the
+        # converter holding a context for a file that never appears. That is
+        # harmless: the entry is overwritten by the next upload of that name,
+        # and cleared after processing.
+        await _register_file_with_converter(
+            filename=filename,
+            user=user,
+            access_token=access_token,
+        )
+
+        # A cross-filesystem move degrades to a non-atomic copy, which the
+        # converter's polling watcher can pick up half-written under its final
+        # name. Stage under a temp name the watcher patterns cannot match, then
+        # publish with an atomic rename.
+        #
+        # The staging name carries a unique suffix; see upload_sample_files for
+        # the collision a shared "<final>.part" causes when a client restarts
+        # an interrupted transfer.
+        tmp_path = f"{dest_path}.{uuid4().hex}.part"
         try:
             shutil.move(file_path, tmp_path)
             os.replace(tmp_path, dest_path)
         finally:
             if os.path.exists(tmp_path):
                 os.remove(tmp_path)
-
-        # Emit event for file converter service to register the file
-        await event_emitter.emit(
-            "file-converter.auth",
-            {
-                "filename": filename,
-                "user_id": user.id,
-                "username": user.username,
-                "role_id": user.role_id,
-                "access_token": access_token,
-            },
-        )
 
         runtime.logger.debug(f"Successfully uploaded file: {filename}")
 

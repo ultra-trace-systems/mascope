@@ -4,6 +4,63 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
 
 ## [Unreleased]
 
+## [1.7.3] - 2026.09.01
+
+### Fixed
+
+- **A bulk upload run no longer stalls a worker and drops files.** Two defects
+  compounded, and both are fixed here.
+
+  A service-token validation held three database connections at once and
+  opened four. It runs on every Socket.IO service-token path - the handshake
+  and each file-converter event - and on the liveness probe every upload takes
+  before storing anything, and none of them holds an admission-control permit,
+  so nothing bounds how many run at once. A bulk upload saturated a worker's
+  pool; every waiter then blocked for the full `pool_timeout` and the worker
+  served nothing at all for a minute, including unrelated requests. The 401s
+  this produced in error monitoring were mislabelled: the token was valid, but
+  the lookup could not get a connection, so the failure surfaced as `Token
+  validation failed`. The validation now holds one connection and opens one -
+  the strategy and user manager share a session, and the service-name lookup
+  runs on it instead of checking out a third from inside the other two, which
+  is the shape that deadlocks a pool: a caller holding a connection blocking on
+  one only it could release.
+
+  The same service-name lookup authenticates every bearer request, once per
+  chunk of a resumable upload, and it made two round trips for one row that a
+  single query returns. It now makes one. Between them the two changes take a
+  twenty-chunk upload from roughly forty-five unpermitted sessions to
+  twenty-two.
+
+  Separately, an uploaded file is now announced to the file converter *before*
+  it is published. Both upload paths staged the bytes under a name the
+  converter's watcher cannot match, renamed them into place, and only then
+  emitted the socket event carrying the uploader's identity. The watcher queues
+  a file once its size is stable across two ~1 s polls, and that event crosses
+  Redis pub/sub to whichever worker holds the converter's socket - so a stalled
+  worker could let the converter pick the file up first. It then found no
+  context, raised, and moved the file into `filestreams/failed_files`, which
+  nothing retries: the watcher globs `filestreams/*.raw` without recursing. The
+  upload was reported successful to the client while the file was ingested by
+  nothing, and live instrument data was lost this way alongside the backfill
+  that triggered it.
+
+  That fixes the ordering, not the delivery. The event emitter is
+  fire-and-forget - it logs a handler's failure and returns, and it reaches
+  nobody when no converter is connected - so a converter that drops between the
+  availability check and the emit still leaves a published file with no context
+  behind it, and `failed_files` still has nothing retrying it. Closing that
+  needs the context to outlive the emit, in Redis rather than in the
+  converter's process memory, or the converter to ask for a context it does not
+  recognise.
+
+- **Two uploads of the same filename no longer corrupt each other.** The
+  staging name was a single `<final>.part` per destination, so a client
+  restarting an interrupted transfer could have two uploads writing the same
+  path: one overwrote the other's staged bytes, the first rename consumed them,
+  and the loser's rename failed with `FileNotFoundError`. Staging names now
+  carry a unique per-upload suffix.
+
 ## [1.7.2] - 2026.08.19
 
 ### Added
