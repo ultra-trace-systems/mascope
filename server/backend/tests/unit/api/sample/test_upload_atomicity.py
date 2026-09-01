@@ -172,14 +172,21 @@ async def test_tus_completion_stores_the_file_without_regating_on_converter(
 
 
 @pytest.mark.asyncio
-async def test_multipart_upload_registers_context_before_publishing(filestreams):
-    """The converter must know the file before the watcher can see it.
+async def test_multipart_upload_registers_context_before_staging_anything(
+    filestreams,
+):
+    """The converter must know the file before any of its bytes are written.
 
     The watcher queues a file once its size is stable, and the converter reads
     the uploader's identity from an in-memory context keyed by filename. A
     context emitted after the rename is racing that poll across Redis pub/sub;
     losing the race quarantines the file in ``failed_files``, which nothing
-    retries. So at emit time no file may exist under the watched name.
+    retries.
+
+    Emitting between staging and publication would order it correctly against
+    the watcher but put the upload's only await where a cancellation destroys
+    the staged bytes, so the assertion is the stronger one: at emit time
+    nothing exists in the filestore at all.
     """
     seen_at_emit = []
 
@@ -197,25 +204,32 @@ async def test_multipart_upload_registers_context_before_publishing(filestreams)
         )
 
     assert result["status"] == "success"
-    # Exactly one emit, and the final name was not yet on disk when it happened.
+    # Exactly one emit, and nothing was on disk when it happened - not the
+    # final name, and not a staging file either.
     assert len(seen_at_emit) == 1
-    assert "sample.raw" not in seen_at_emit[0]
+    assert seen_at_emit[0] == []
     assert [p.name for p in filestreams.iterdir()] == ["sample.raw"]
 
 
 @pytest.mark.asyncio
-async def test_tus_completion_registers_context_before_publishing(
+async def test_tus_completion_registers_context_before_staging_anything(
     filestreams, tmp_path_factory
 ):
-    """Same ordering contract on the tus completion path."""
-    seen_at_emit = []
+    """Same ordering contract on the tus completion path.
 
-    async def _record(*_args, **_kwargs):
-        seen_at_emit.append(sorted(p.name for p in filestreams.iterdir()))
+    Here the source is the transferred upload rather than a request body, so
+    the emit must also come before the move that consumes it.
+    """
+    seen_at_emit = []
 
     staging = tmp_path_factory.mktemp("tus-staging")
     staged = staging / "sample.raw"
     staged.write_bytes(b"raw file bytes")
+
+    async def _record(*_args, **_kwargs):
+        seen_at_emit.append(
+            (sorted(p.name for p in filestreams.iterdir()), staged.exists())
+        )
 
     with (
         patch(f"{_CTRL}.is_service_connected", new=AsyncMock(return_value=True)),
@@ -227,8 +241,52 @@ async def test_tus_completion_registers_context_before_publishing(
 
     assert result["status"] == "success"
     assert len(seen_at_emit) == 1
-    assert "sample.raw" not in seen_at_emit[0]
+    # Nothing staged in the filestore yet, and the transferred file untouched.
+    assert seen_at_emit[0] == ([], True)
     assert (filestreams / "sample.raw").read_bytes() == b"raw file bytes"
+
+
+@pytest.mark.asyncio
+async def test_a_cancelled_registration_leaves_the_transferred_file_intact(
+    filestreams, tmp_path_factory
+):
+    """A cancellation at the registration must not consume the upload.
+
+    Registering is the only await on this path, and it is the slow one - it
+    crosses Redis pub/sub, and it is slowest under exactly the load the
+    ordering exists for. A request task can be cancelled at it: the client
+    drops the connection, or the worker is shut down mid-request.
+
+    Between the staging move and the publish, that cancellation would run the
+    cleanup on the only copy of the file - the source is gone, nothing is
+    published - and destroy it. tuspyserver marks the upload complete before it
+    runs this handler, so the client reads it as stored. That is the silent
+    loss this whole ordering exists to prevent, so it must not be reintroduced
+    by where the emit sits.
+    """
+    staging = tmp_path_factory.mktemp("tus-staging")
+    staged = staging / "sample.raw"
+    staged.write_bytes(b"raw file bytes")
+
+    # CancelledError, not a plain exception: it is what a dropped connection
+    # raises, and being a BaseException it passes straight through the
+    # controller's own error handling to the cleanup in the finally.
+    with (
+        patch(f"{_CTRL}.is_service_connected", new=AsyncMock(return_value=True)),
+        patch(
+            f"{_CTRL}.event_emitter.emit",
+            new=AsyncMock(side_effect=asyncio.CancelledError),
+        ),
+        pytest.raises(asyncio.CancelledError),
+    ):
+        await sample_files_controller.upload_sample_file(
+            file_path=str(staged), user=_fake_user(), access_token="token"
+        )
+
+    # The transferred file is still where tus left it, so nothing is lost:
+    # it is the source that has not been consumed, not a copy.
+    assert staged.read_bytes() == b"raw file bytes"
+    assert [p.name for p in filestreams.iterdir()] == []
 
 
 @pytest.mark.asyncio
