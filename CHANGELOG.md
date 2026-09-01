@@ -901,10 +901,13 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
   no context for it, raised, and moved it into `filestreams/failed_files`,
   which nothing retries: the watcher globs `filestreams/*.raw` without
   recursing, so a file that lost the race was ingested by nothing and reported
-  to no one. The identity is now registered while the bytes are still staged
-  and invisible to the watcher, so the context is always in place before the
-  file can be seen. A registration that fails now also fails the upload instead
-  of publishing a file that was certain to be quarantined.
+  to no one. The identity is now registered before any of the bytes are
+  written, so the context is always in place before the file can be seen -
+  ahead of the staging write rather than between it and the rename, because
+  awaiting there would mean awaiting while the staged file is the only copy of
+  the upload, where a dropped connection takes it with it. A registration that
+  fails now also fails the upload instead of publishing a file that was certain
+  to be quarantined.
 
 - **Two uploads of the same filename no longer corrupt each other.** The
   staging name was a single `<final>.part` per destination, so a client
