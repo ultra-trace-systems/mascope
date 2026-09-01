@@ -95,6 +95,13 @@ async def _register_file_with_converter(
     call's await where a cancellation destroys the only copy of the file. See
     :func:`upload_sample_file` for both.
 
+    Ordering is all this buys. It is not a delivery guarantee and must not be
+    read as one: ``event_emitter.emit`` logs a handler's failure and returns,
+    and the socket emit under it reaches nobody when no converter is connected.
+    So this returning tells the caller only that the event was published, and
+    an upload whose converter drops between the availability check and this
+    call still lands with no context behind it.
+
     :param filename: The file's final name in the filestreams folder.
     :type filename: str
     :param user: The authenticated user performing the upload.

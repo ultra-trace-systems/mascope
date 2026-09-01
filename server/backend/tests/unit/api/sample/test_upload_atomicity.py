@@ -22,6 +22,7 @@ the tus pre_create hook instead.
 
 import asyncio
 import io
+import threading
 import time
 from contextlib import contextmanager
 from types import SimpleNamespace
@@ -302,8 +303,12 @@ async def test_concurrent_uploads_of_one_name_do_not_share_a_staging_file(
     a path that had already been moved away.
     """
     staging = tmp_path_factory.mktemp("tus-staging")
-    started = asyncio.Event()
-    release = asyncio.Event()
+    # threading, not asyncio: these are set and waited on from two different
+    # threads, each running its own event loop, which an asyncio.Event does not
+    # support - it would only happen to work here because nothing ever awaits
+    # one of them.
+    started = threading.Event()
+    release = threading.Event()
     real_move = sample_files_controller.shutil.move
 
     def _move_then_hold(src, dst):
@@ -344,13 +349,20 @@ async def test_concurrent_uploads_of_one_name_do_not_share_a_staging_file(
     # The hold is a blocking sleep, so the first upload has to run off the event
     # loop for the second to make progress against it.
     first = asyncio.create_task(asyncio.to_thread(asyncio.run, _run(b"first", True)))
-    while not started.is_set():
-        await asyncio.sleep(0.01)
+    try:
+        while not started.is_set():
+            await asyncio.sleep(0.01)
 
-    second = await _run(b"second upload", False)
+        second = await _run(b"second upload", False)
+    finally:
+        # Always, even if the wait or the second upload raised. The held
+        # upload is blocking in a worker thread from the default executor,
+        # whose threads are non-daemon and joined at interpreter exit: leaving
+        # it spinning hangs the whole run, and it hangs during shutdown, so
+        # pytest never gets to report the failure that caused it.
+        release.set()
+
     assert second["status"] == "success"
-
-    release.set()
     assert (await first)["status"] == "success"
 
     # Both completed, and no staging litter survived either of them.

@@ -43,6 +43,15 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
   nothing, and live instrument data was lost this way alongside the backfill
   that triggered it.
 
+  That fixes the ordering, not the delivery. The event emitter is
+  fire-and-forget - it logs a handler's failure and returns, and it reaches
+  nobody when no converter is connected - so a converter that drops between the
+  availability check and the emit still leaves a published file with no context
+  behind it, and `failed_files` still has nothing retrying it. Closing that
+  needs the context to outlive the emit, in Redis rather than in the
+  converter's process memory, or the converter to ask for a context it does not
+  recognise.
+
 - **Two uploads of the same filename no longer corrupt each other.** The
   staging name was a single `<final>.part` per destination, so a client
   restarting an interrupted transfer could have two uploads writing the same
