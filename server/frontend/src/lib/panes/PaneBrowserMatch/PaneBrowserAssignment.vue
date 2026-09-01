@@ -530,7 +530,7 @@ const breadcrumb = computed(() => {
         :onRetry="() => runs.load('retry')"
       />
     </div>
-    <div class="overlay" style="text-align: center" v-if="runs.pending">
+    <div class="overlay" style="text-align: center" v-else-if="runs.pending">
       <ProgressSpinner />
     </div>
     <!-- The one state that carries its own call to action, and the reason
