@@ -454,18 +454,14 @@ const breadcrumb = computed(() => {
   const batch = app.data.batch.focused
   return {
     items: [
-      {
-        icon: 'pi ph ph-caret-left',
-        tooltip: 'Back to the batch peaks',
-        action: () => app.data.sample.unfocus()
-      },
       ...(batch
         ? [
             {
               icon: 'pi pi-hashtag',
-              label: prettyTrim(batch.sample_batch_name, 25),
-              disabled: true,
-              tooltip: `Batch: ${batch.sample_batch_name}`
+              label: prettyTrim(batch.sample_batch_name, 45),
+              disabled: false,
+              tooltip: `Batch: ${batch.sample_batch_name}`,
+              action: () => app.data.sample.unfocus()
             }
           ]
         : []),
