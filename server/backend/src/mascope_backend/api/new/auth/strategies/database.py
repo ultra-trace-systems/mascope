@@ -42,32 +42,53 @@ def get_database_strategy(
 
 
 @asynccontextmanager
-async def get_access_token_db_context():
+async def get_access_token_db_context(session: AsyncSession | None = None):
     """
     Context manager for access token database operations outside of HTTP requests.
 
     Used in scenarios like Socket.IO authentication where FastAPI's
     dependency injection is not available.
 
+    Pass ``session`` to reuse a session the caller already holds. A caller that
+    also builds a user manager needs both adapters at once, and opening one
+    session each means two connections held for the length of the call - on a
+    path that takes no admission-control permit (see ``mascope_backend.db``),
+    so nothing bounds how many requests do that concurrently.
+
+    Sharing has a price the caller owns: everything on one session is one
+    transaction, so a commit from any of them would commit whatever the others
+    have pending. The one caller that shares today puts three readers on it -
+    this adapter, the user manager's, and the token-context lookup - and none
+    of them writes.
+
+    :param session: Existing session to bind the adapter to; when None the
+        context manages its own.
+    :type session: AsyncSession | None
     :yield: Database adapter for access token operations
     :rtype: SQLAlchemyAccessTokenDatabase
     """
-    async with async_session() as session:
+    if session is not None:
         yield SQLAlchemyAccessTokenDatabase(session, AccessToken)
+        return
+    async with async_session() as own_session:
+        yield SQLAlchemyAccessTokenDatabase(own_session, AccessToken)
 
 
 @asynccontextmanager
-async def get_database_strategy_context():
+async def get_database_strategy_context(session: AsyncSession | None = None):
     """
     Context manager for database strategy outside of HTTP requests.
 
     Provides access token validation capabilities in non-HTTP contexts
     like Socket.IO authentication.
 
+    :param session: Existing session to bind the strategy's adapter to; see
+        :func:`get_access_token_db_context`.
+    :type session: AsyncSession | None
     :yield: Database strategy instance
     :rtype: DatabaseStrategy
     """
-    async with get_access_token_db_context() as access_token_db:
+    async with get_access_token_db_context(session) as access_token_db:
         strategy = DatabaseStrategy(
             access_token_db,
             lifetime_seconds=auth_settings.access_token.ACCESS_TOKEN_EXPIRATION_SECONDS,
