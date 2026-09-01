@@ -174,7 +174,7 @@ watchEffect(() => {
         :disabled="batchIndex <= 0"
       />
       <Button
-        icon="pi pi-tags"
+        icon="pi pi-hashtag"
         :label="batch.sample_batch_name"
         v-tooltip.bottom="
           `${batch?.sample_batch_description ?? 'No description'}
