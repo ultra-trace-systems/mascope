@@ -905,9 +905,16 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
   written, so the context is always in place before the file can be seen -
   ahead of the staging write rather than between it and the rename, because
   awaiting there would mean awaiting while the staged file is the only copy of
-  the upload, where a dropped connection takes it with it. A registration that
-  fails now also fails the upload instead of publishing a file that was certain
-  to be quarantined.
+  the upload, where a dropped connection takes it with it.
+
+  This fixes the ordering, not the delivery. The event emitter is
+  fire-and-forget - it logs a handler's failure and returns, and it reaches
+  nobody when no converter is connected - so a converter that drops between the
+  availability check and the emit still leaves a published file with no context
+  behind it, and `failed_files` still has nothing retrying it. Closing that
+  needs the context to outlive the emit, in Redis rather than in the
+  converter's process memory, or the converter to ask for a context it does not
+  recognise.
 
 - **Two uploads of the same filename no longer corrupt each other.** The
   staging name was a single `<final>.part` per destination, so a client
