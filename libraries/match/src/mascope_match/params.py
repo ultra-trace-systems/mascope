@@ -21,6 +21,13 @@ DEFAULT_POSSIBLE_MATCH_THRESHOLD = 0.7
 # ~0.92), so these tiers are fit-quality bands: strong fit >= 0.8 (probable), partial
 # fit >= 0.5 (possible), weak fit below (the no/contradicted-evidence floor). Instrument-
 # fair via the per-sample fitted mass sigma; revisit if the fit components are retuned.
+# Those two bands are the targeted matcher's own and are correct as they stand: they
+# are what splits match_category into 0/1/2. The peak-centric assignment engine tiers
+# a peak on evidence (fit x chemical plausibility) rather than on the fit alone, and
+# keeps its own bands with it, in
+# server/backend/src/mascope_backend/api/new/peak_assignments/config.py. That engine
+# once cut the same 0.8/0.5 off the bare fit, which is why the numbers still look
+# alike - history, not a link, so these must not be "synced" to the assignment bands.
 DEFAULT_PROBABLE_MATCH_THRESHOLD_V2 = 0.8
 DEFAULT_POSSIBLE_MATCH_THRESHOLD_V2 = 0.5
 
