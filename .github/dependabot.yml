@@ -42,6 +42,18 @@ updates:
       npm-minor-and-patch:
         update-types: ["minor", "patch"]
     ignore:
+      # PrimeVue 4.5.5 regresses DatePicker manual text input for 24-hour
+      # pickers, which is what the Min./Max. Datetime filters use (no
+      # hourFormat prop anywhere in the frontend, so every picker takes the
+      # "24" default). Its populateTime calls ampm.toLowerCase() guarded only
+      # by an hourFormat == "12" check, so in 24-hour mode ampm is undefined
+      # and the TypeError is swallowed by onInput's catch - a typed datetime
+      # silently never reaches the model. Upstream primefaces/primevue#8598
+      # and #8534 were closed as "resolved in version 5" with no 4.x backport,
+      # and 4.5.5 is the final v4 release, so this pin is permanent for the
+      # 4.x line. Caught by the demo-stack e2e upload spec - see PR #1938.
+      - dependency-name: "primevue"
+        versions: ["4.5.5"]
       # PrimeVue 5 relicensed from MIT to the commercial PrimeUI license: it
       # requires a license key, and the free Community tier only covers
       # organizations under its revenue, headcount and funding thresholds.
