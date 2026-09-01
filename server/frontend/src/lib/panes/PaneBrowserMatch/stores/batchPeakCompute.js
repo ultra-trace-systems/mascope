@@ -71,7 +71,7 @@ export const useBatchPeakCompute = defineStore('browser.match.batchPeaks.compute
   })
 
   const computeTooltip = computed(
-    () => blockedReason.value ?? 'Build / refresh batch peaks from this batch assignments'
+    () => blockedReason.value ?? 'Build / refresh batch peaks from assigned sample peaks.'
   )
 
   function endComputing() {

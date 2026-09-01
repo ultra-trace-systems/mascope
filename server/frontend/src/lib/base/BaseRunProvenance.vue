@@ -108,7 +108,7 @@ const calibrationLabel = computed(() =>
 
 // The full disclosure, pretty-printed for the tooltip. Bounded: an engine may
 // send an arbitrarily large object and a tooltip is not a JSON viewer.
-const MAX_DISCLOSURE_CHARS = 600
+const MAX_DISCLOSURE_CHARS = 1000
 const calibrationDump = computed(() => {
   if (!calibration.value) return null
   let text
@@ -230,7 +230,7 @@ const disclosureLabel = computed(() => {
       :icon="`pi ${calibration ? (isCopy ? 'pi-copy' : 'ph ph-crosshair') : 'ph ph-warning'}`"
       class="calibration"
       style="font-size: 11px"
-      v-tooltip.top="calibrationTooltip"
+      v-tooltip.right="calibrationTooltip"
     />
   </span>
 </template>
