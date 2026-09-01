@@ -4,6 +4,44 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
 
 ## [Unreleased]
 
+### Fixed
+
+- **A bulk upload run no longer stalls a worker and drops files.** Two defects
+  compounded, and both are fixed here.
+
+  A service-token validation held three database connections at once and
+  opened four. Every request from an agent, the file converter or the SDK runs
+  that validation first, and it takes no admission-control permit, so its cost
+  is multiplied by however many bearer requests are in flight with nothing to
+  cap it. A bulk upload saturated a worker's pool; every waiter then blocked
+  for the full `pool_timeout` and the worker served nothing at all for a
+  minute, including unrelated requests. The 401s this produced in error
+  monitoring were mislabelled: the token was valid, but the lookup could not
+  get a connection, so the failure surfaced as `Token validation failed`. The
+  validation now holds one connection and opens one - the strategy and user
+  manager share a session, and the service-name lookup runs on it instead of
+  checking out a third from inside the other two.
+
+  Separately, an uploaded file is now announced to the file converter *before*
+  it is published. Both upload paths staged the bytes under a name the
+  converter's watcher cannot match, renamed them into place, and only then
+  emitted the socket event carrying the uploader's identity. The watcher queues
+  a file once its size is stable across two ~1 s polls, and that event crosses
+  Redis pub/sub to whichever worker holds the converter's socket - so a stalled
+  worker could let the converter pick the file up first. It then found no
+  context, raised, and moved the file into `filestreams/failed_files`, which
+  nothing retries: the watcher globs `filestreams/*.raw` without recursing. The
+  upload was reported successful to the client while the file was ingested by
+  nothing, and live instrument data was lost this way alongside the backfill
+  that triggered it.
+
+- **Two uploads of the same filename no longer corrupt each other.** The
+  staging name was a single `<final>.part` per destination, so a client
+  restarting an interrupted transfer could have two uploads writing the same
+  path: one overwrote the other's staged bytes, the first rename consumed them,
+  and the loser's rename failed with `FileNotFoundError`. Staging names now
+  carry a unique per-upload suffix.
+
 ## [1.7.2] - 2026.08.19
 
 ### Added
