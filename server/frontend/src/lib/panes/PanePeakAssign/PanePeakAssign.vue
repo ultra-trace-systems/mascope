@@ -69,16 +69,6 @@ const verification = computed(() =>
 // reads and writes through the M0 whichever family member is in view.
 const verifyTarget = computed(() => app.data.peakAssignment.peak.m0Of(focusedAssignment.value))
 
-// Whether the card is judging a row other than the one it is showing - the one
-// case worth saying out loud (see the template). Keyed on whether the resolution
-// actually redirected, not on the role: an isotopologue whose ion lost its M0 peak
-// carries no owner, stands for itself, and gets a verdict covering nothing but
-// itself. Announcing a family there would promise a scope the write does not
-// have.
-const verifyingFamily = computed(
-  () => Boolean(verifyTarget.value) && verifyTarget.value !== focusedAssignment.value
-)
-
 // Only a real assignment can be judged. A formula-less row is a placeholder for
 // a peak nothing explained, so a verdict on it is an opinion about nothing: it
 // is stored and listed as a hand label, but carries no evidence for the
@@ -413,7 +403,9 @@ const curateDenied = ref(false) // 403: not an editor on this sample
 // entry that reached the row with none.
 const canPromote = (alt) =>
   Boolean(alt?.assigned_formula) &&
-  Boolean(alt?.ionization_mechanism_id || alt?.target_ion_id || alt?.scored?.ionization_mechanism_id)
+  Boolean(
+    alt?.ionization_mechanism_id || alt?.target_ion_id || alt?.scored?.ionization_mechanism_id
+  )
 
 // Entries that fail that test are the untargeted finder's shortlist, either
 // still being measured or measured and placed on this peak by no adduct at
@@ -846,11 +838,6 @@ const demotedCount = computed(() => {
         }"
       >
         <div class="alts-label">Verification</div>
-        <div v-if="verifyingFamily" class="verify-family">
-          <span class="pi ph ph-arrow-bend-up-left" />
-          One verdict per compound: recorded on the M0 ({{ verifyTarget.assigned_formula }}) and
-          shown on every isotopologue in this family.
-        </div>
         <div v-if="verification && !editing" class="verify-current">
           <BaseVerdictBadge :record="verification" />
           <Button
@@ -974,7 +961,7 @@ const demotedCount = computed(() => {
       </div>
       <div class="insp-actions">
         <Button
-          :label="showSearch ? 'Hide search' : 'Re-search'"
+          :label="showSearch ? 'Hide search' : 'Find more'"
           size="small"
           text
           :severity="showSearch ? 'primary' : 'secondary'"
@@ -1172,15 +1159,6 @@ const demotedCount = computed(() => {
 .verify-denied {
   display: inline-flex;
   align-items: center;
-  gap: 0.35rem;
-  font-size: 0.78rem;
-  opacity: 0.7;
-}
-/* Says which row a verdict captured from an isotopologue is really about. Quiet:
-   it explains the control rather than competing with it. */
-.verify-family {
-  display: flex;
-  align-items: baseline;
   gap: 0.35rem;
   font-size: 0.78rem;
   opacity: 0.7;

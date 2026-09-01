@@ -157,7 +157,7 @@ const canAssign = computed(() => runs.value.list.length > 0 || Boolean(runs.valu
    selector loses characters instead of pushing the button out of the bar -
    which is what the ledger header used to do. */
 .run-select {
-  flex: 1 1 auto;
+  flex: 0 1 auto;
   min-width: 7rem;
 }
 
