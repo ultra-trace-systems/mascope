@@ -20,10 +20,13 @@ complete, so it stores the file unconditionally and the gate lives up front in
 the tus pre_create hook instead.
 """
 
+import asyncio
 import io
+import time
 from contextlib import contextmanager
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
+from uuid import uuid4
 
 import pytest
 
@@ -166,3 +169,131 @@ async def test_tus_completion_stores_the_file_without_regating_on_converter(
     assert [p.name for p in filestreams.iterdir()] == ["sample.raw"]
     # Context is still emitted so a connected converter processes it at once.
     emit.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_multipart_upload_registers_context_before_publishing(filestreams):
+    """The converter must know the file before the watcher can see it.
+
+    The watcher queues a file once its size is stable, and the converter reads
+    the uploader's identity from an in-memory context keyed by filename. A
+    context emitted after the rename is racing that poll across Redis pub/sub;
+    losing the race quarantines the file in ``failed_files``, which nothing
+    retries. So at emit time no file may exist under the watched name.
+    """
+    seen_at_emit = []
+
+    async def _record(*_args, **_kwargs):
+        seen_at_emit.append(sorted(p.name for p in filestreams.iterdir()))
+
+    upload = _FakeUploadFile("sample.raw", io.BytesIO(b"raw file bytes"))
+
+    with (
+        patch(f"{_CTRL}.is_service_connected", new=AsyncMock(return_value=True)),
+        patch(f"{_CTRL}.event_emitter.emit", new=AsyncMock(side_effect=_record)),
+    ):
+        result = await sample_files_controller.upload_sample_files(
+            files=[upload], user=_fake_user(), access_token="token"
+        )
+
+    assert result["status"] == "success"
+    # Exactly one emit, and the final name was not yet on disk when it happened.
+    assert len(seen_at_emit) == 1
+    assert "sample.raw" not in seen_at_emit[0]
+    assert [p.name for p in filestreams.iterdir()] == ["sample.raw"]
+
+
+@pytest.mark.asyncio
+async def test_tus_completion_registers_context_before_publishing(
+    filestreams, tmp_path_factory
+):
+    """Same ordering contract on the tus completion path."""
+    seen_at_emit = []
+
+    async def _record(*_args, **_kwargs):
+        seen_at_emit.append(sorted(p.name for p in filestreams.iterdir()))
+
+    staging = tmp_path_factory.mktemp("tus-staging")
+    staged = staging / "sample.raw"
+    staged.write_bytes(b"raw file bytes")
+
+    with (
+        patch(f"{_CTRL}.is_service_connected", new=AsyncMock(return_value=True)),
+        patch(f"{_CTRL}.event_emitter.emit", new=AsyncMock(side_effect=_record)),
+    ):
+        result = await sample_files_controller.upload_sample_file(
+            file_path=str(staged), user=_fake_user(), access_token="token"
+        )
+
+    assert result["status"] == "success"
+    assert len(seen_at_emit) == 1
+    assert "sample.raw" not in seen_at_emit[0]
+    assert (filestreams / "sample.raw").read_bytes() == b"raw file bytes"
+
+
+@pytest.mark.asyncio
+async def test_concurrent_uploads_of_one_name_do_not_share_a_staging_file(
+    filestreams, tmp_path_factory
+):
+    """A restarted transfer must not corrupt the upload it overlaps.
+
+    Staging used a single "<final>.part" per destination, so two uploads of the
+    same filename - what a client does when it restarts an interrupted transfer
+    - wrote to the same path. One mover's bytes replaced the other's, one rename
+    consumed the shared file, and the loser's rename raised FileNotFoundError on
+    a path that had already been moved away.
+    """
+    staging = tmp_path_factory.mktemp("tus-staging")
+    started = asyncio.Event()
+    release = asyncio.Event()
+    real_move = sample_files_controller.shutil.move
+
+    def _move_then_hold(src, dst):
+        # Suspend the first upload with its bytes staged but not yet published,
+        # which is the window the two uploads used to share. Holding at the
+        # converter emit instead would prove nothing: before this fix that emit
+        # ran *after* the rename, so the staged file was already gone.
+        result = real_move(src, dst)
+        if not started.is_set():
+            started.set()
+            while not release.is_set():
+                time.sleep(0.01)
+        return result
+
+    async def _run(source: bytes, hold: bool):
+        # Same basename, different source directories: the destination name is
+        # derived from the basename, so both uploads target one file in
+        # filestreams - which is what makes their staging paths collide.
+        source_dir = staging / uuid4().hex
+        source_dir.mkdir()
+        staged = source_dir / "sample.raw"
+        staged.write_bytes(source)
+        with (
+            patch(f"{_CTRL}.is_service_connected", new=AsyncMock(return_value=True)),
+            patch(f"{_CTRL}.event_emitter.emit", new=AsyncMock()),
+        ):
+            if hold:
+                with patch.object(
+                    sample_files_controller.shutil, "move", _move_then_hold
+                ):
+                    return await sample_files_controller.upload_sample_file(
+                        file_path=str(staged), user=_fake_user(), access_token="token"
+                    )
+            return await sample_files_controller.upload_sample_file(
+                file_path=str(staged), user=_fake_user(), access_token="token"
+            )
+
+    # The hold is a blocking sleep, so the first upload has to run off the event
+    # loop for the second to make progress against it.
+    first = asyncio.create_task(asyncio.to_thread(asyncio.run, _run(b"first", True)))
+    while not started.is_set():
+        await asyncio.sleep(0.01)
+
+    second = await _run(b"second upload", False)
+    assert second["status"] == "success"
+
+    release.set()
+    assert (await first)["status"] == "success"
+
+    # Both completed, and no staging litter survived either of them.
+    assert [p.name for p in filestreams.iterdir()] == ["sample.raw"]
