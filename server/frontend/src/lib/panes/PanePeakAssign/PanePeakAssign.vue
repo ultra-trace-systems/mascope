@@ -788,59 +788,7 @@ const demotedCount = computed(() => {
           </div>
         </div>
       </div>
-      <div
-        v-if="alternatives.length"
-        class="alts"
-        v-help.right="{
-          title: 'Close Alternatives',
-          helpKey: 'assignment-curation',
-          doc: app.ui.help.docUrl('how-it-works/peak-assignment/#assigning-a-peak-yourself')
-        }"
-      >
-        <div class="alts-label">
-          Close alternatives
-          <span class="alts-count">{{ alternatives.length }}</span>
-        </div>
-        <div class="alts-list">
-          <div
-            v-for="(alt, i) in alternatives"
-            :key="i"
-            class="alt"
-            v-tooltip.left="altTooltip(alt, i)"
-          >
-            <span class="f">{{ alt.assigned_formula || alt.ion_formula || '?' }}</span>
-            <span class="s">
-              <span v-if="altFit(alt) != null"
-                >fit {{ formatFit(altFit(alt))
-                }}<span v-if="altMzError(alt) != null">
-                  &middot; {{ num.mzError.format(altMzError(alt)) }} ppm</span
-                ></span
-              >
-              <span v-else-if="scoring && !alt.scored" class="scoring">measuring&hellip;</span>
-              <span v-else-if="alt.plausibility != null"
-                >plaus {{ formatFit(alt.plausibility) }}</span
-              >
-              <span v-else class="no-stats"><span class="pi ph ph-info" /></span>
-            </span>
-            <Button
-              v-if="(canPromote(alt) || promoteBlocked(alt)) && !curateDenied"
-              :class="['alt-use', { busy: curating === i, blocked: promoteBlocked(alt) }]"
-              label="use this"
-              size="small"
-              text
-              severity="secondary"
-              icon="pi ph ph-hand-pointing"
-              :disabled="curating !== null || promoteBlocked(alt)"
-              :loading="curating === i"
-              v-tooltip.top="promoteBlocked(alt) ? noAdductHint(alt, i) : ''"
-              @click="promoteAlternative(alt, i)"
-            />
-          </div>
-        </div>
-        <div v-if="curateDenied" class="verify-denied">
-          <span class="pi ph ph-lock-simple" /> Editor access is required to change an assignment.
-        </div>
-      </div>
+
       <!-- A row the server stripped: it was never anyone's choice, so it says
            what happened to it and how to get it back, not what was picked. The
            eraser rather than the hand for the same reason the tier chip uses
@@ -907,7 +855,6 @@ const demotedCount = computed(() => {
           <BaseVerdictBadge :record="verification" />
           <Button
             v-if="!denied"
-            label="edit"
             size="small"
             text
             severity="secondary"
@@ -972,6 +919,59 @@ const demotedCount = computed(() => {
           <span class="pi ph ph-lock-simple" /> Editor access is required to verify.
         </div>
       </div>
+      <div
+        v-if="alternatives.length"
+        class="alts"
+        v-help.right="{
+          title: 'Close Alternatives',
+          helpKey: 'assignment-curation',
+          doc: app.ui.help.docUrl('how-it-works/peak-assignment/#assigning-a-peak-yourself')
+        }"
+      >
+        <div class="alts-label">
+          Close alternatives
+          <span class="alts-count">{{ alternatives.length }}</span>
+        </div>
+        <div class="alts-list">
+          <div
+            v-for="(alt, i) in alternatives"
+            :key="i"
+            class="alt"
+            v-tooltip.left="altTooltip(alt, i)"
+          >
+            <span class="f">{{ alt.assigned_formula || alt.ion_formula || '?' }}</span>
+            <span class="s">
+              <span v-if="altFit(alt) != null"
+                >fit {{ formatFit(altFit(alt))
+                }}<span v-if="altMzError(alt) != null">
+                  &middot; {{ num.mzError.format(altMzError(alt)) }} ppm</span
+                ></span
+              >
+              <span v-else-if="scoring && !alt.scored" class="scoring">measuring&hellip;</span>
+              <span v-else-if="alt.plausibility != null"
+                >plaus {{ formatFit(alt.plausibility) }}</span
+              >
+              <span v-else class="no-stats"><span class="pi ph ph-info" /></span>
+            </span>
+            <Button
+              v-if="(canPromote(alt) || promoteBlocked(alt)) && !curateDenied"
+              :class="['alt-use', { busy: curating === i, blocked: promoteBlocked(alt) }]"
+              label="use this"
+              size="small"
+              text
+              severity="secondary"
+              icon="pi ph ph-hand-pointing"
+              :disabled="curating !== null || promoteBlocked(alt)"
+              :loading="curating === i"
+              v-tooltip.top="promoteBlocked(alt) ? noAdductHint(alt, i) : ''"
+              @click="promoteAlternative(alt, i)"
+            />
+          </div>
+        </div>
+        <div v-if="curateDenied" class="verify-denied">
+          <span class="pi ph ph-lock-simple" /> Editor access is required to change an assignment.
+        </div>
+      </div>
       <div class="insp-actions">
         <Button
           :label="showSearch ? 'Hide search' : 'Re-search'"
@@ -990,17 +990,6 @@ const demotedCount = computed(() => {
         <BaseTierTag tier="unassigned" />
       </div>
       <div class="insp-sub">{{ peakSummary }}</div>
-      <div class="insp-actions">
-        <Button
-          :label="showSearch ? 'Hide search' : 'Re-search'"
-          size="small"
-          text
-          :severity="showSearch ? 'primary' : 'secondary'"
-          icon="pi ph ph-magnifying-glass"
-          v-tooltip.top="'Search compositions for this peak in the panel below'"
-          @click="showSearch = !showSearch"
-        />
-      </div>
     </section>
     <div v-else class="center no-peak">
       <div class="col" style="gap: 0.75rem; max-width: 40ch; text-align: center; opacity: 0.6">
