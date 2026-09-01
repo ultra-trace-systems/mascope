@@ -798,6 +798,7 @@ async def _copy_to_destination(
     destination_sample_item_id: str,
     rescore: bool,
     user_id: int | None,
+    report_progress=None,
 ) -> dict:
     """Remap, re-score and publish the source's rows onto one destination.
 
@@ -810,8 +811,18 @@ async def _copy_to_destination(
     :param rescore: True for the seeded re-score (B2); False for the internal
         literal mode (B1).
     :param user_id: The launching user.
+    :param report_progress: Optional ``async (fraction, phase) -> None`` the
+        fan-out passes to drive its progress bar through this destination's
+        phases. The fractions below are rough shares of the wall clock: the
+        re-score dominates (it opens the destination's peak file and expands
+        every copied formula), publishing is next, and the rest is arithmetic.
     :return: A per-destination outcome record for the fan-out report.
     """
+
+    async def _report(fraction: float, phase: str) -> None:
+        if report_progress is not None:
+            await report_progress(fraction, phase)
+
     destination = await fetch_sample(destination_sample_item_id)
     outcome = {
         "sample_item_id": destination_sample_item_id,
@@ -830,6 +841,7 @@ async def _copy_to_destination(
     if destination.instrument_function_id is None:
         return {**outcome, "status": "skipped", "reason": _REASON_BLANK}
 
+    await _report(0.05, "Reading peaks")
     dest_peaks_df = await asyncio.to_thread(load_sample_peaks, destination)
     if dest_peaks_df.empty:
         return {
@@ -840,6 +852,7 @@ async def _copy_to_destination(
 
     # -- Seeded re-score first: it needs no mapping, and its fitted offset is
     # what estimates a run-less destination's axis offset for the remap.
+    await _report(0.15, "Re-scoring the copied formulas")
     match_params = await default_match_params(destination_sample_item_id)
     ion_by_seed: dict[tuple[str, str], str] = {}
     fit_by_ion: dict[str, float | None] = {}
@@ -872,6 +885,7 @@ async def _copy_to_destination(
 
     # -- Remap: occurrence fast-path where both samples are folded, the
     # mu-corrected m/z match for everything else.
+    await _report(0.65, "Matching peaks")
     tol_fn = await _destination_tolerance_fn(destination.filename)
     dest_peak_ids = {str(peak_id) for peak_id in dest_peaks_df["sample_peak_id"]}
     source_mz_by_peak = {
@@ -962,6 +976,7 @@ async def _copy_to_destination(
         "source_peak_assignment_run_id": source_run.peak_assignment_run_id,
     }
 
+    await _report(0.8, "Publishing the copied run")
     run_id = await _publish_copied_run(
         destination_sample_item_id,
         copied_rows + placeholder_rows,
@@ -1258,6 +1273,21 @@ async def _run_copy_fanout(
         )
         await send_progress_user_notification(notification)
 
+        async def report(fraction: float, phase: str) -> None:
+            """Advance the bar within the destination being copied.
+
+            ``increment`` is the fraction of the CURRENT item that is done -
+            the helper turns it into ``(item_index + fraction) / total`` - so a
+            copy reports its phases rather than jumping a whole destination at
+            a time. On a two-sample batch that is the difference between a bar
+            that moves and one that sits at nothing until it finishes.
+            """
+            notification.message = (
+                f"{phase} for sample {index + 1}/{total} of the batch of "
+                f"'{source.sample_item_name}'."
+            )
+            await send_progress_user_notification(notification, fraction)
+
         if candidate.reason is not None:
             outcomes.append(
                 {
@@ -1279,6 +1309,7 @@ async def _run_copy_fanout(
                         destination_sample_item_id=candidate.sample_item_id,
                         rescore=rescore,
                         user_id=user_id,
+                        report_progress=report,
                     )
                 )
             except Exception as error:
@@ -1304,6 +1335,9 @@ async def _run_copy_fanout(
                     }
                 )
 
-        await send_progress_user_notification(notification, (index + 1) / total)
+        # 1.0 of *this* destination, not of the whole fan-out: the helper adds
+        # it to item_index and divides by the total. Passing the overall
+        # fraction here made the bar advance by a fraction of a fraction.
+        await send_progress_user_notification(notification, 1.0)
 
     return _fanout_result(source.sample_batch_id, source.sample_item_name, outcomes)

@@ -216,6 +216,18 @@ async def send_progress_user_notification(
                 f"Assigning peaks, processing sample {item_index + 1}/{total_samples}"
             )
 
+    # An assignment copy fans out over the batch's other samples, so it fills one
+    # bar the same way a batch assignment does. Unlike that one it reports
+    # WITHIN a destination too - reading its peaks, re-scoring the copied
+    # formulas against them, publishing the run - because a copy of a two-sample
+    # batch would otherwise sit at 0% through the slowest part and then finish.
+    # The message is left as the caller wrote it: it names the source sample and
+    # the phase, which is more than this function knows.
+    if notification_copy.type == "copy_assignments_to_batch":
+        if total_samples is not None and item_index is not None:
+            inc = increment if increment is not None else 0.0
+            notification_copy.progress = ((item_index + inc) / total_samples) * 100
+
     # A batch-peak backfill folds the batch's samples one at a time, and the
     # message it arrives with already names which one - so only the bar is
     # computed here. Same two ticks per sample as the batch assignment above:
