@@ -51,7 +51,7 @@ dependencies = [
     # 4.2.1 introduced the concat extension with a path traversal fixed
     # only later, and 4.2.2+ imports fcntl unconditionally, which breaks
     # the backend on native Windows dev runs.
-    "tuspyserver==4.2.0",
+    "tuspyserver==4.4.1",
     "openpyxl>=3.1.5",
     "asyncpg>=0.31.0",
     "alembic>=1.19.1,<2",
