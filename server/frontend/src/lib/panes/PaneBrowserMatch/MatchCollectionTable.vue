@@ -29,13 +29,13 @@ const breadcrumb = computed(() => {
   return {
     items: [
       {
-        icon: 'pi pi-tags',
+        icon: 'pi pi-hashtag',
         disabled: false,
         tooltip: 'Back to batch',
         action: () => app.data.sample.unfocus()
       },
       {
-        icon: app.data.sample.focused ? 'pi pi-tag' : 'pi pi-tags',
+        icon: app.data.sample.focused ? 'pi pi-tag' : 'pi pi-hashtag',
         label: `${prettyTrim(entityName, 25)}`,
         disabled: true,
         tooltip: app.data.sample.focused
@@ -69,7 +69,8 @@ const breadcrumb = computed(() => {
     :onRetry="() => app.data.match.collection.load('retry')"
     :contextMenu="contextMenu"
     :pt="
-      app.ui.help.right(`
+      app.ui.help.right(
+        `
         <h1>Match Browser: Collections</h1>
 
         <p>Shows the target collections associated
