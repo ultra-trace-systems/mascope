@@ -32,6 +32,7 @@ const helpStub = {
 function makeApp() {
   return {
     data: {
+      batch: { focused: 'test-batch' },
       sample: { focused: focusedSample },
       match: {
         collection: { focused: null },

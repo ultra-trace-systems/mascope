@@ -92,6 +92,7 @@ function makeApp() {
         ion: { focused: null, unfocus: vi.fn() },
         visualized: { clear: vi.fn() }
       },
+      batch: { focused: 'test-batch' },
       sample: { focused: null }
     }),
     ui: {
