@@ -253,7 +253,12 @@ async def test_concurrent_uploads_of_one_name_do_not_share_a_staging_file(
         await release.wait()
 
     async def _run(source: bytes, emit):
-        staged = staging / f"{uuid4().hex}-sample.raw"
+        # Same basename, different source directories: the destination name is
+        # derived from the basename, so both uploads target one file in
+        # filestreams - which is what makes their staging paths collide.
+        source_dir = staging / uuid4().hex
+        source_dir.mkdir()
+        staged = source_dir / "sample.raw"
         staged.write_bytes(source)
         with (
             patch(f"{_CTRL}.is_service_connected", new=AsyncMock(return_value=True)),
