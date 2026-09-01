@@ -132,12 +132,12 @@ watch(
         aria-label="Targets or assignments"
         v-tooltip.bottom="'Switch between target matches and peak assignments'"
       />
-      <template v-if="app.ui.matchMode.mode === 'assignments'">
+      <template v-if="app.ui.matchMode.mode === 'assignments' && app.data.batch.focused">
         <BatchPeakComputeBar v-if="!app.data.sample.focused" />
         <AssignmentRunBar v-else />
       </template>
     </div>
-    <template v-if="app.ui.matchMode.mode === 'assignments'">
+    <template v-if="app.ui.matchMode.mode === 'assignments' && app.data.batch.focused">
       <!-- Batch-level batch-peak ledger (selects what the Assignments chart plots)
            at batch level; the per-sample assignments ledger once a sample is
            focused - mirroring how targets swap collection -> ion by focus. -->
