@@ -113,6 +113,11 @@ class PeakAssignmentRecord(BaseModel):
     mz_error_ppm: float | None = None
     abundance_error: float | None = None
     tier: str
+    #: The tier the producing engine itself concluded, when it said so. Absent
+    #: on in-app rows, whose engine tier is ``tier``. Where the two differ, the
+    #: engines disagree about how much confidence the evidence supports - which
+    #: is what makes an imported run worth reading beside an in-app one.
+    engine_tier: str | None = None
     target_compound_id: str | None = None
     target_ion_id: str | None = None
     owner_peak_assignment_id: str | None = None
@@ -227,6 +232,24 @@ class PeakAssignmentQueryParams(BaseModel):
         None, description="Specific run to read; defaults to the latest completed run."
     )
     tier: AssignmentTier | None = Field(None, description="Filter by confidence tier.")
+    engine_tier: AssignmentTier | None = Field(
+        None,
+        description=(
+            "Filter by the tier the producing engine itself concluded. Only "
+            "imported runs carry one; an in-app run's engine tier is its `tier`."
+        ),
+    )
+    tier_disagrees: bool | None = Field(
+        None,
+        description=(
+            "Keep only rows where the engine's own tier differs from this "
+            "server's (`engine_tier` is set and not equal to `tier`), or with "
+            "false only rows where they agree. Rows carrying no engine tier are "
+            "excluded either way: absence is not agreement. This is the "
+            "comparison an imported run exists for, so it is a filter rather "
+            "than something to reconstruct client-side over a paged read."
+        ),
+    )
     role: AssignmentRole | None = Field(None, description="Filter by peak role.")
     source: AssignmentSource | None = Field(
         None, description="Filter by assignment source."
@@ -513,7 +536,35 @@ class ImportAssignmentRow(BaseModel):
     fit_score: float | None = Field(None, ge=0.0, le=1.0)
     mz_error_ppm: float | None = Field(None, allow_inf_nan=False)
     abundance_error: float | None = Field(None, allow_inf_nan=False)
-    tier: AssignmentTier
+    tier: AssignmentTier | None = Field(
+        None,
+        description=(
+            "This server's tier for the row. **Optional, and better omitted**: "
+            "it is a pure function of `fit_score`, `assigned_formula` and the "
+            "run's declared `tier_bands`, all of which the server already "
+            "holds, so when it is absent the server derives it with the same "
+            "call it would otherwise check it against. Sending it means "
+            "reproducing this deployment's chemical-plausibility function "
+            "exactly - a second implementation of one rule, which drifts, and "
+            "whose drift refuses the whole import. A supplied value is still "
+            "validated as before. To record a tier this engine reached its own "
+            "way, use `engine_tier` rather than this field."
+        ),
+    )
+    engine_tier: AssignmentTier | None = Field(
+        None,
+        description=(
+            "Optional: the tier THIS ENGINE concluded, when that is a different "
+            "judgement from `tier`. `tier` must agree with the evidence under "
+            "the run's declared bands and is refused otherwise, so an engine "
+            "that tiers by its own rules - arbitration, degeneracy, "
+            "composition heuristics - has no way to record a demotion those "
+            "rules produce. This field is that way: it is stored as supplied, "
+            "checked only against the tier vocabulary, and read by no roll-up. "
+            "Omit it where the engine stated no tier for the row; absence is "
+            "not agreement."
+        ),
+    )
     target_compound_id: str | None = Field(
         None,
         max_length=16,

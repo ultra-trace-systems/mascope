@@ -593,6 +593,18 @@ def build_copied_rows(
             sample_peak_tof = None
             tier = source_row["tier"]
 
+        # `engine_tier` is deliberately NOT carried across, and the omission is
+        # load-bearing rather than an oversight: `_source_run_and_rows` reads
+        # whole rows, so the source's value is right here in `source_row` and
+        # the next person copying "the remaining columns verbatim" will reach
+        # for it. It records the verdict an engine formed about a peak IT
+        # measured. This row is a different sample's peak, re-measured and
+        # re-tiered above, which that engine never saw - the same reason the
+        # copy re-measures `fit_score` instead of inheriting it. Copying it
+        # would put a permanent, unfalsifiable disagreement on a sample the
+        # external engine never touched. The engine that produced THIS row is
+        # 'mascope-copy', it formed exactly one verdict, and that verdict is
+        # `tier`.
         provenance = dict(source_row.get("provenance") or {})
         provenance["copied_from"] = {
             "sample_item_id": source_sample_item_id,

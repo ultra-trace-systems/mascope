@@ -23,6 +23,23 @@ const focusedAssignment = computed(() =>
   app.data.peakAssignment.peak.forPeak(app.data.peak.focused?.peak_id)
 )
 
+// Names the chip beside it, because two tier chips in a row are otherwise a
+// puzzle: they are not two readings of one scale but two different judgements,
+// and only one of them is this server's.
+const engineTierTooltip = computed(() => {
+  const tier = focusedAssignment.value?.engine_tier
+  if (!tier) return null
+  const agrees = tier === focusedAssignment.value?.tier
+  return (
+    `The producing engine's own tier: ${tier}\n` +
+    (agrees
+      ? 'It agrees with this server’s banding of the evidence.'
+      : 'It differs from this server’s banding of the evidence — the engine ' +
+        'reached this on its own terms (arbitration, corroboration, degeneracy), ' +
+        'which the tier beside it does not account for.')
+  )
+})
+
 // The ledger rows are a slim projection; the full record (alternatives +
 // provenance) is fetched per assignment when its peak is focused. Until it
 // arrives the inspector renders the slim fields and the detail sections fill
@@ -614,11 +631,24 @@ const demotedCount = computed(() => {
           :evidence="focusedAssignment.evidence"
           :role="focusedAssignment.role"
           :source="focusedAssignment.source"
+          :engine-tier="focusedAssignment.engine_tier"
           v-help.right="{
             title: 'Confidence Tiers',
             helpKey: 'assignment-tiers',
             doc: app.ui.help.docUrl('how-it-works/peak-assignment/#confidence-tiers')
           }"
+        />
+        <!-- The producing engine's own verdict, spelled out rather than left to
+             the marker on the chip above: this is the detail view, and the
+             disagreement is the reason to open an imported row at all.
+             `show-evidence` is off deliberately - the evidence is this server's
+             product and it did not produce this tier, so borrowing it here
+             would pair a number with a band it never put the row in. -->
+        <BaseTierTag
+          v-if="focusedAssignment.engine_tier"
+          :tier="focusedAssignment.engine_tier"
+          :show-evidence="false"
+          :tooltip="engineTierTooltip"
         />
       </div>
       <!-- With no formula the headline is the word "Unassigned" and the

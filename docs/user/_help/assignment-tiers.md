@@ -15,6 +15,15 @@ a vote across the samples the peak appears in, not a threshold on one number.
   the evidence is too weak to trust.
 - **unassigned** &mdash; no composition explained the peak.
 
+A run computed outside Mascope and imported can carry a second tier: the one the
+engine that produced it reached on its own terms. Mascope's tier is always its
+own reading of the evidence, so where the two differ the chip is marked with a
+scales icon and the hover text names the other verdict. A different engine can
+weigh things this one does not &mdash; how crowded the mass is, whether the
+isotope pattern was corroborated &mdash; so a disagreement is a peak worth
+looking at rather than an error. Only Mascope's own tier is used when peaks are
+rolled up across a batch.
+
 Orthogonal to its tier, a peak can carry a role: **reagent** and **artifact**
 peaks stem from the ionization chemistry or the instrument rather than the
 sample's compounds, and **isotopologue** peaks belong to another

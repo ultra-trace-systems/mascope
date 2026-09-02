@@ -879,9 +879,21 @@ accept what is merely the importer's judgement.
   and filter beside in-app `assigned` rows meaning something stricter - and
   outrank them in the cross-sample `TIER_RANK` roll-up in `compute_consensus`.
 
-  **This asks nothing new of an importer.** There is no new field: a row carries
-  the same columns it always did, `fit_score` and `assigned_formula` among them,
-  and the run declares the same `tier_bands` in the same shape. There is
+  **`tier` is optional, and better omitted.** Everything the check needs is
+  already server-side - the row's `fit_score` and `assigned_formula`, the run's
+  declared bands - and the server computes the answer anyway in order to check
+  a supplied one. So a row that states no tier gets the derived one, and the
+  invariant above holds *by construction* rather than by refusal. Sending a
+  tier means reproducing this deployment's `formula_plausibility` exactly; the
+  two implementations then drift, and the drift refuses a whole import over a
+  number the client had no reason to hold. A supplied tier is still accepted
+  and still checked, so nothing that worked before stops working - but the
+  documented advice is to leave it out. This is what makes the promise below
+  true rather than merely nearly true.
+
+  **This asks nothing new of an importer.** There is no new required field: a
+  row carries the same columns it always did, `fit_score` and `assigned_formula`
+  among them, and the run declares the same `tier_bands` in the same shape. There is
   deliberately no `evidence` field on a row and no declared-plausibility field
   either, because plausibility is a pure function of the formula (the Seven
   Golden Rules heuristics in `mascope_tools`) - so the server recomputes it from
@@ -912,6 +924,35 @@ accept what is merely the importer's judgement.
   pairs with a null `fit_score` on an *assigned* row whose score came back
   non-finite (`_score_or_none` nulls it, `tier_for_evidence` bands it). Neither
   is a claim about confidence, so neither is worth refusing.
+
+  **What the rule does NOT cover, and where that verdict goes.** The check binds
+  `tier` to a band function, so a tier an engine reached any other way has no
+  home in it - and a *demotion* is refused as firmly as an inflation, which is
+  the case that matters. peaky tiers mechanically: window uniqueness,
+  isotopologue corroboration, a mass-degeneracy audit, composition heuristics.
+  Every one of those can put a peak below what its evidence alone earns, and
+  none of them is expressible as a threshold on that evidence. Under this rule
+  alone such a run either loses its own judgement or is refused outright, which
+  defeats the point of putting two engines in one store.
+
+  So a row may also carry **`engine_tier`**: the tier the producing engine
+  concluded, stored as supplied, validated only against the tier vocabulary
+  (legacy `identified` included, so a rename cannot manufacture a
+  disagreement), and read by **nothing** - not `compute_consensus`, not
+  `TIER_RANK`, not the batch fold-in. That exemption is the field's whole
+  purpose and is not a loophole in the rule above: `tier` still means what the
+  declared bands say it means, and remains the only tier anything ranks on. The
+  pair reads as *what this server's banding says* beside *what the engine
+  concluded*, and a row where the two differ is the interesting one. Null means
+  the engine stated no tier for the row - which is the in-app case, the
+  `mascope-copy` case, and the usual case for rows an external engine leaves
+  untiered - and absence is not agreement: the ledger's `tier_disagrees` filter
+  excludes such rows from both answers.
+
+  Batch level is deliberately out: a batch peak's consensus is an
+  evidence-weighted vote over members whose runs may declare different bands
+  *and* different engines, so a second consensus over `engine_tier` would be a
+  vote over verdicts with no shared yardstick.
 
   An earlier revision of this section called `below_assignability` "the wrong
   tier for such a row" and required `tier='unassigned'` for a null score. That

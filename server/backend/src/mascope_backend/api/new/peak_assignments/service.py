@@ -236,6 +236,8 @@ async def get_peak_assignments(
     sample_item_id: str,
     peak_assignment_run_id: str | None = None,
     tier: str | None = None,
+    engine_tier: str | None = None,
+    tier_disagrees: bool | None = None,
     role: str | None = None,
     source: str | None = None,
     limit: int = DEFAULT_PAGE_LIMIT,
@@ -264,6 +266,10 @@ async def get_peak_assignments(
     :param peak_assignment_run_id: Specific run to read; defaults to the
         latest completed run
     :param tier: Optional filter by confidence tier
+    :param engine_tier: Optional filter by the producing engine's own tier
+    :param tier_disagrees: Optional filter on whether the engine's own tier
+        differs from this server's; rows carrying no engine tier match neither
+        answer
     :param role: Optional filter by peak role
     :param source: Optional filter by assignment source (database/untargeted)
     :param limit: Maximum rows to return in this page
@@ -314,6 +320,18 @@ async def get_peak_assignments(
         filters = [PeakAssignment.peak_assignment_run_id == run.peak_assignment_run_id]
         if tier:
             filters.append(PeakAssignment.tier == tier)
+        if engine_tier:
+            filters.append(PeakAssignment.engine_tier == engine_tier)
+        if tier_disagrees is not None:
+            # A row carrying no engine verdict is excluded from BOTH answers:
+            # silence is not agreement, and folding it into `False` would report
+            # every in-app row as an engine that concurred.
+            filters.append(PeakAssignment.engine_tier.is_not(None))
+            filters.append(
+                PeakAssignment.engine_tier != PeakAssignment.tier
+                if tier_disagrees
+                else PeakAssignment.engine_tier == PeakAssignment.tier
+            )
         if role:
             filters.append(PeakAssignment.role == role)
         if source:

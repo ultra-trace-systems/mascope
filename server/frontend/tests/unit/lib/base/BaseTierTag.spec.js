@@ -134,3 +134,51 @@ describe('BaseTierTag demoted mark', () => {
     }
   })
 })
+
+// An imported run carries a second tier: the one the engine that produced the
+// row reached on its own terms. `tier` stays this server's banding of the
+// evidence, so the pair only means something when it is clear which is which -
+// the mark says "these two disagree", and it is the only signal an imported row
+// gives that anything is worth a second look.
+describe('BaseTierTag engine-tier mark', () => {
+  it('marks a row the producing engine tiered differently', () => {
+    const wrapper = mountTag({ tier: 'assigned', engineTier: 'candidate' })
+
+    expect(wrapper.find('[data-testid="engine-tier-mark"]').exists()).toBe(true)
+  })
+
+  it('leaves an agreeing verdict unmarked', () => {
+    const wrapper = mountTag({ tier: 'assigned', engineTier: 'assigned' })
+
+    expect(wrapper.find('[data-testid="engine-tier-mark"]').exists()).toBe(false)
+  })
+
+  // The footgun this guard exists for: tierBucket(null) answers 'unassigned',
+  // so reading the engine tier through @/lib/tiers without checking for null
+  // first would mark every in-app row - which carries no engine tier at all -
+  // as an engine that said "unassigned" and disagreed.
+  it('marks nothing when no engine tier was supplied', () => {
+    for (const tier of ['assigned', 'candidate', 'below_assignability', 'unassigned']) {
+      const wrapper = mountTag({ tier })
+      expect(wrapper.find('[data-testid="engine-tier-mark"]').exists(), tier).toBe(false)
+    }
+  })
+
+  // Compared on the BUCKETED tier, like the demotion mark: a spelling this
+  // build does not know buckets to 'unassigned', and marking a disagreement
+  // against a label that reads the same word would contradict itself.
+  it('agrees with the label when a tier is one this build does not know', () => {
+    const wrapper = mountTag({ tier: 'unassigned', engineTier: 'identified_v0' })
+
+    expect(wrapper.find('[data-testid="engine-tier-mark"]').exists()).toBe(false)
+  })
+
+  // The mark is additional to the tier: this server's banding is still what the
+  // chip says, and the engine's verdict never replaces it.
+  it('keeps showing this server tier and evidence', () => {
+    const wrapper = mountTag({ tier: 'assigned', evidence: 0.91, engineTier: 'candidate' })
+
+    expect(wrapper.find('.tag').text()).toContain('assigned')
+    expect(wrapper.find('.tag').text()).toContain('91%')
+  })
+})

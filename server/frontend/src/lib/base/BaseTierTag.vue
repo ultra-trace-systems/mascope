@@ -46,6 +46,13 @@ const props = defineProps({
   tooltip: {
     type: String,
     default: null
+  },
+  // The tier the engine that produced this row reached on its own terms, when
+  // it stated one. Only an imported run carries it: an in-app row's engine tier
+  // IS `tier`, so it arrives null and nothing is marked.
+  engineTier: {
+    type: String,
+    default: null
   }
 })
 
@@ -128,6 +135,23 @@ const sourceLine = computed(() => {
   return props.source ? `Source: ${props.source}` : null
 })
 
+// The producing engine's own verdict, when it differs from this server's.
+//
+// Guarded on `engineTier != null` BEFORE anything from @/lib/tiers touches it:
+// tierBucket(null) answers 'unassigned', so an unguarded tierMeta() would give
+// every in-app row a confident "the engine said unassigned" it never said.
+//
+// An agreeing verdict is not news and is left unmarked - the mark means "these
+// two disagree", which is the whole reason the column exists. Compared on the
+// bucketed tier so the mark can never contradict the label beside it, the same
+// way `isDemoted` reads `meta.key` rather than the raw prop.
+const engineTierLabel = computed(() =>
+  props.engineTier != null ? tierMeta(props.engineTier) : null
+)
+const disagrees = computed(
+  () => engineTierLabel.value != null && engineTierLabel.value.key !== meta.value.key
+)
+
 const autoTooltip = computed(
   () =>
     props.tooltip ??
@@ -135,6 +159,10 @@ const autoTooltip = computed(
       `Tier: ${props.tier}`,
       props.evidence != null && !Number.isNaN(props.evidence)
         ? `Evidence: ${percentFormatter.format(props.evidence)} (fit x plausibility)`
+        : null,
+      disagrees.value
+        ? `The engine that produced this row called it ${engineTierLabel.value.label} ` +
+          'on its own terms; the tier above is this server’s banding of the evidence'
         : null,
       sourceLine.value,
       props.role ? `Role: ${props.role}` : null
@@ -154,6 +182,11 @@ const autoTooltip = computed(
       style="font-size: 11px"
     />
     <span v-if="roleIcon" :class="[roleIcon, 'role-icon']" />
+    <span
+      v-if="disagrees"
+      class="pi ph ph-scales engine-tier-icon"
+      data-testid="engine-tier-mark"
+    />
     <span v-if="isDemoted" class="pi ph ph-eraser demoted-icon" data-testid="demoted-mark" />
     <span
       v-else-if="isManual"
@@ -196,6 +229,15 @@ const autoTooltip = computed(
    It also sits beside the deliberately pale "unassigned" chip, which the full
    strength of the hand would fight. */
 .demoted-icon {
+  font-size: 12px;
+  opacity: 0.7;
+}
+
+/* Recessive, like the demotion mark: a disagreement between two engines is
+   context for the tier beside it rather than a claim about the row, and it
+   appears on whole stretches of an imported run at once - at full strength it
+   would read as a warning on every second row. */
+.engine-tier-icon {
   font-size: 12px;
   opacity: 0.7;
 }

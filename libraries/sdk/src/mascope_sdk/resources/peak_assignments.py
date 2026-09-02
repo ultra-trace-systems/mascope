@@ -198,6 +198,15 @@ class PeakAssignmentsResource(BaseResource):
                  - ``sample_peak_mz``, ``sample_peak_intensity``,
                    ``sample_peak_tof``
                  - ``role``, ``tier``, ``source``
+                 - ``engine_tier``: the tier the engine that produced the row
+                   reached on its own terms, when it stated one. Only an
+                   imported run carries it - an in-app row's engine tier IS its
+                   ``tier`` - so it is null on most frames. Where it differs
+                   from ``tier`` the two engines disagree about how much
+                   confidence the evidence supports, which is what makes an
+                   imported run worth reading beside an in-app one. Unlike
+                   ``tier`` it is checked against no bands and feeds no
+                   cross-sample roll-up.
                  - ``assigned_formula``, ``ion_formula``,
                    ``ionization_mechanism_id``
                  - ``isotope_label``, ``isotope_formula``
