@@ -320,12 +320,12 @@ onBeforeUnmount(() => {
   font-weight: 600;
 }
 .tier-stat.identified {
-  color: var(--p-green-600, #1f9d63);
-  background: color-mix(in srgb, var(--p-green-500, #22c55e) 15%, transparent);
+  color: var(--state-success);
+  background: color-mix(in srgb, var(--state-success) 15%, transparent);
 }
 .tier-stat.candidate {
-  color: var(--p-amber-600, #c9861f);
-  background: color-mix(in srgb, var(--p-amber-500, #f59e0b) 15%, transparent);
+  color: var(--state-warning);
+  background: color-mix(in srgb, var(--state-warning) 15%, transparent);
 }
 .tier-stat.below {
   color: var(--p-surface-500, #6f7889);

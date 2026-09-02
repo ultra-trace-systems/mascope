@@ -290,23 +290,42 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
 
 ### Changed
 
-- **The orange accent is quieter, and the selection wash is finally a wash.**
-  The interface palette is swept from the brand safety orange into eleven
-  shades, and that sweep used to carry the seed's full colourfulness to every
-  shade. Almost none of them could be shown that way on a normal screen, so
-  each one was quietly flattened on its way to the display, arriving off its
-  intended brightness and off its intended hue - the pale end as a vivid peach
-  rather than a tint, the dark end as maroon rather than orange. The sweep now
-  asks how much colour the screen can actually hold at each shade and stays
-  inside that, at 80% strength. What you see: selected rows in the peak and
-  match tables are washed in a soft cream instead of banded in orange, and
-  buttons, tabs, focus rings and panel labels settle to a warmer, less
-  insistent orange in both themes. Nothing moves in the layout, and the brand
-  seed is unchanged - only how it is swept. Text contrast is held or improved
-  everywhere; text on a selected row improves markedly. Status colours that
-  are deliberately their own - the amber for calibration drift, an unsure
-  verdict, or a provisional assignment - do not follow this accent and are
-  unchanged, so they now stand out a little more against it. A composition is assigned to every
+- **The interface follows the updated brand guidelines.** Three changes land
+  together, all of them appearance only - nothing moves and nothing behaves
+  differently.
+
+  *The orange accent is quieter, and the selection wash is finally a wash.* The
+  accent is swept from the brand safety orange into eleven shades, and that
+  sweep used to carry the seed's full colorfulness to every shade. Almost none
+  of them could be shown that way on a normal screen, so each was quietly
+  flattened on its way to the display, arriving off its intended brightness and
+  off its intended hue - the pale end as a vivid peach rather than a tint, the
+  dark end as maroon rather than orange. Every shade now takes the most color
+  the screen can actually hold at its brightness, which is how the guidelines
+  build their own oranges. Selected rows in the peak and match tables are
+  washed in a soft cream instead of banded in orange. On a light theme the
+  accent also steps down to the deeper orange the guidelines reserve for
+  buttons, links and text on light backgrounds - quieter, and the first version
+  of it to carry a white label at full WCAG AA. The dark theme keeps safety
+  orange itself, the background it was drawn for.
+
+  *Formulas and m/z values are set in IBM Plex Mono.* The guidelines treat the
+  mono face as part of the identity rather than a fallback, and the code labels
+  throughout the assignment views had been asking for it all along - they had
+  nothing to resolve to, so they rendered in whatever monospace face the system
+  happened to offer. It is self-hosted alongside Plex Sans; no font is fetched
+  from a third-party CDN.
+
+  *Status colors now have a value per theme.* Success, warning, error and
+  information each carry their own color on light and on dark, taken from the
+  guidelines. One value used to serve both themes, which left the light theme
+  badly short - a warning read at 1.9:1 against the page, far under the 4.5:1
+  that text needs. Every status color improves, most of them substantially.
+  Orange no longer signals anything: the guidelines keep it as the brand
+  accent, and the flags that had borrowed it - poor isotope match, tied
+  candidates, provisional assignment - are warnings and now say so.
+
+- **Peak assignment is now on by default.** A composition is assigned to every
   peak of a sample as it is processed (the fast database stage only - the
   untargeted search stays something you launch deliberately), the assignment
   views are present, and the `/api/peak-assignments` write routes accept work

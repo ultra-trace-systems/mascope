@@ -123,7 +123,7 @@ const invalid = computed(() =>
       <template v-else>
         <p v-if="info.message">{{ info.message }}</p>
         <template v-else>
-          <p v-if="info.initial?.is_system" style="color: var(--p-red-400); font-weight: bold">
+          <p v-if="info.initial?.is_system" style="color: var(--state-error); font-weight: bold">
             Warning: This is a system workspace. Deleting it will remove all associated acquisition
             datasets and sample data. This action cannot be undone.
           </p>

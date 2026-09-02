@@ -21,6 +21,31 @@
     font-family: 'IBM Plex Sans', sans-serif;
   }
 
+  /* Formulas, m/z values and index labels are set in Plex Mono, which the brand
+     guidelines treat as part of the identity rather than a fallback for Sans.
+     Components ask for it through this variable. */
+  :root {
+    --font-mono: 'IBM Plex Mono', ui-monospace, monospace;
+  }
+
+  /* Semantic states, from the brand guidelines. Each state has a separate value
+     for each theme - the light ones are darkened so they carry text on a light
+     ground. The guidelines keep orange as a brand color and never use it to
+     signal state, so nothing here is orange. */
+  :root {
+    --state-success: #1f7a46;
+    --state-warning: #8a6200;
+    --state-error: #b0281a;
+    --state-info: #0b7e8e;
+  }
+
+  :root.darkmode {
+    --state-success: #3fa96b;
+    --state-warning: #e9b33b;
+    --state-error: #e2503f;
+    --state-info: #16b0c4;
+  }
+
   * {
     --p-listbox-background: var(--p-panel-background);
     /* form input */
@@ -176,11 +201,11 @@
      calibrated but the file arrived with acquisition drift (instrument needs
      retuning), green = calibrated, grey = unverified. */
   .browser .calibration-failed {
-    color: var(--p-red-500, #ef4444);
+    color: var(--state-error);
   }
 
   .browser .calibration-drifted {
-    color: var(--p-amber-500, #f59e0b);
+    color: var(--state-warning);
   }
 
   .browser .calibration-unverified {
@@ -195,7 +220,7 @@
   .browser .calibration-ok {
     /* Green, not grey: grey reads as "no value", while this is a positive
        "calibrated" signal. Slightly dimmed so a full column stays calm. */
-    color: var(--p-green-600, #1f9d63);
+    color: var(--state-success);
     opacity: 0.75;
   }
 

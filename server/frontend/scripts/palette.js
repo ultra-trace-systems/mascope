@@ -16,13 +16,14 @@ const colors = {
   offwhite: '#F5F5F2'
 }
 
-// How saturated a sweep is allowed to run, as a share of the most chroma sRGB
-// can actually show at that lightness. A color listed here is swept against the
-// gamut instead of against its own chroma; anything left out keeps the seed's
-// chroma the whole way up, which is what the near-neutral surfaces want.
-const strengths = {
-  safetyorange: 0.8
-}
+// Colors swept against the sRGB gamut rather than against their own chroma, so
+// every shade takes the most color the screen can hold at its lightness. This
+// is the brand guidelines' own construction - the four oranges it names (Tint,
+// Safety Orange, Deep, Shadow) each sit exactly on the gamut boundary at their
+// lightness, so a ramp built this way passes through the same family. Colors
+// left out keep the seed's chroma the whole way up, which is what the
+// near-neutral surfaces want.
+const gamutFitted = new Set(['safetyorange'])
 
 // shades
 const shades = [
@@ -46,7 +47,6 @@ const records = []
 // iterate through the main colors
 for (const [color, hexcode] of Object.entries(colors)) {
   const [l, chroma, hue] = convert(hexcode).lch()
-  const strength = strengths[color]
   const mainLightness = getClosestShade(l).lightness
   if (Math.abs(l - mainLightness) > 1) {
     console.warn(
@@ -56,7 +56,7 @@ for (const [color, hexcode] of Object.entries(colors)) {
   // iterate through the shades
   for (const { lightness, shade } of shades) {
     // create the lch triplet
-    const shadeChroma = strength ? gamutChroma(lightness, hue, chroma) * strength : chroma
+    const shadeChroma = gamutFitted.has(color) ? gamutChroma(lightness, hue) : chroma
     const lch = [lightness, shadeChroma, hue]
     // compute color systems
     const rgb = convert
@@ -96,9 +96,9 @@ prettier
 // vivid peach rather than a wash, and the dark ones as maroon rather than
 // orange. Asking the gamut first keeps every shade on the lightness and hue it
 // was given.
-function gamutChroma(lightness, hue, ceiling) {
+function gamutChroma(lightness, hue) {
   let low = 0
-  let high = ceiling
+  let high = 150
   while (high - low > 0.01) {
     const middle = (low + high) / 2
     if (convert.lch(lightness, middle, hue).clipped()) high = middle
