@@ -59,6 +59,7 @@ def _start(sample_ids, fold=None):
         "progress": patch(
             f"{_MOD}.send_progress_user_notification", new_callable=AsyncMock
         ),
+        "recompute": patch(f"{_MOD}.recompute_batch_consensus", new_callable=AsyncMock),
     }
     mocks = {key: p.start() for key, p in patches.items()}
     mocks["async_session"].return_value = _session_returning(sample_ids)
@@ -216,6 +217,44 @@ async def test_a_large_batch_is_sampled_rather_than_reported_per_sample():
     assert [item_index for item_index, _, _ in ticks] == sorted(
         item_index for item_index, _, _ in ticks
     )
+
+
+@pytest.mark.asyncio
+async def test_the_consensus_is_recomputed_once_after_every_sample_folded():
+    """Each fold defers its consensus and the batch is recomputed once at the
+    end - the per-sample recompute was O(samples x anchors) and every
+    intermediate result was overwritten by the next sample's."""
+    from mascope_backend.api.new.peak_assignments.batch_peaks_controller import (
+        backfill_sample_batch_peaks,
+    )
+
+    order = []
+    mocks = _start(["si-0", "si-1", "si-2"])
+    mocks["fold"].side_effect = lambda *args, **kwargs: order.append("fold") or "sb-1"
+    mocks["recompute"].side_effect = lambda *args, **kwargs: order.append("recompute")
+
+    await backfill_sample_batch_peaks("sb-1")
+
+    assert order == ["fold", "fold", "fold", "recompute"]
+    for call in mocks["fold"].await_args_list:
+        assert call.kwargs == {"recompute_consensus": False}
+    mocks["recompute"].assert_awaited_once_with("sb-1")
+
+
+@pytest.mark.asyncio
+async def test_the_consensus_pass_runs_even_when_a_fold_raised():
+    """A sample whose fold raised is skipped; the anchors the others touched
+    still need their consensus, so the pass is unconditional."""
+    from mascope_backend.api.new.peak_assignments.batch_peaks_controller import (
+        backfill_sample_batch_peaks,
+    )
+
+    mocks = _start(["si-0", "si-1"], fold=[RuntimeError("fold blew up"), "sb-1"])
+
+    folded, failed = await backfill_sample_batch_peaks("sb-1")
+
+    assert (folded, failed) == (1, 1)
+    mocks["recompute"].assert_awaited_once_with("sb-1")
 
 
 @pytest.mark.asyncio

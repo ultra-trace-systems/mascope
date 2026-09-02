@@ -181,7 +181,8 @@ Two tables, mirroring the `PeakAssignmentRun` / `PeakAssignment` reproducibility
 **`BatchPeakOccurrence`** — the sparse per-sample matrix and source of truth:
 
 `(batch_peak_id FK, sample_item_id FK, sample_peak_id, intensity, tier, fit_score,
-assigned_formula, peak_assignment_id FK)`, unique on `(batch_peak_id, sample_item_id)`.
+assigned_formula, peak_assignment_id FK)`, keyed on `(batch_peak_id, sample_item_id)` - that pair
+is the primary key; there is no surrogate id.
 
 At ~thousands of peaks × thousands of samples this is ~10–25M rows — **stored sparse only;
 the dense P×N matrix (1–2 GB) is never materialized.** `BatchPeak` carries the materialized
@@ -210,7 +211,11 @@ recompute consensus for the TOUCHED batch peaks only
 ```
 
 Cost is **O(P·log A)** per sample (P peaks, A anchors) — bounded per arrival, not the
-O(N²) full re-bin the Zarr path would incur. No global re-cluster, no cache wipe. The hard
+O(N²) full re-bin the Zarr path would incur. No global re-cluster, no cache wipe. A backfill
+(`backfill_sample_batch_peaks`) folds every sample with that recompute deferred and recomputes each
+anchor once at the end (`recompute_batch_consensus`) — per-sample recomputes there are O(N·A) writes
+for a result the last one determines — and any recompute writes an anchor only when its consensus
+actually changed. The hard
 "virtual lock mass present in every sample" requirement of the VLM aligner is **dropped** for
 the live path (it is a single point of failure that worsens as the batch grows); the per-sample
 μ replaces it, and VLM stays only as an optional offline refinement.
@@ -389,12 +394,12 @@ tier · agreement/QC), the batch analog of the sample-view Assignments tab.
   gate remains open as an orthogonal default for *which* peaks the ledger offers first.
 - **Indexes.** `ix_batch_peak_sample_batch_id_mz` over
   `BatchPeak(sample_batch_id, ionization_mode_id, mz)` for the fold-in range scan (hot path);
-  `BatchPeakOccurrence(batch_peak_id)` for series fan-out and `(sample_item_id)` for the
-  single-sample slice fetch. Model after
+  the occurrence primary key `(batch_peak_id, sample_item_id)` for series fan-out and
+  `(sample_item_id)` for the single-sample slice fetch. Model after
   `ix_match_ion_target_ion_id_match_score` (models.py:983). Chunk series requests at 100 batch
   peaks (reuse the existing 100-ion chunking).
   *Shipped differently:* the occurrence map is bidirectional but its index support is not.
-  The forward hop rides the unique `(batch_peak_id, sample_item_id)` index; the backward one
+  The forward hop rides the `(batch_peak_id, sample_item_id)` primary key; the backward one
   (counterpart, §6) rides `(sample_item_id)` alone and filters `sample_peak_id` off the heap,
   because that column carries no index. That is one indexed scan of a single sample's occurrences
   per sample switch — fine at this rate. A composite `(sample_item_id, sample_peak_id)` index is

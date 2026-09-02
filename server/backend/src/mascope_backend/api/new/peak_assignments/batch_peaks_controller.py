@@ -5,13 +5,16 @@ overview. :func:`fold_sample_into_batch_peaks` runs on the arrival path right
 after Stage-A assignment (the assignments are already committed by then), snapping
 the sample's peaks into the batch's frozen, append-only anchors and recomputing the
 consensus of every touched batch peak. :func:`backfill_sample_batch_peaks` folds a
-whole batch's existing runs in time order, reporting progress per sample.
+whole batch's existing runs in time order, reporting progress per sample, and
+recomputes each anchor's consensus once at the end
+(:func:`recompute_batch_consensus`) rather than once per sample.
 
 Design: ``docs/dev/peak_assignment_batch.md``.
 """
 
 from __future__ import annotations
 
+import json
 import statistics
 from collections import defaultdict
 from datetime import datetime, timezone
@@ -25,6 +28,7 @@ from mascope_backend.api.new.peak_assignments.batch_peaks import (
     ROLE_ISO_CHILD,
     Anchor,
     AnchorSet,
+    Consensus,
     compute_consensus,
     fold_in_sample,
     resolution_adaptive_tol_ppm,
@@ -144,7 +148,9 @@ def _tolerance_fn(resolution_func):
     return tol_fn
 
 
-async def fold_sample_into_batch_peaks(sample_item_id: str) -> str | None:
+async def fold_sample_into_batch_peaks(
+    sample_item_id: str, *, recompute_consensus: bool = True
+) -> str | None:
     """Fold a sample's latest completed assignment into its batch's batch peaks.
 
     Append-only: each observed peak joins the nearest frozen anchor within its
@@ -153,6 +159,13 @@ async def fold_sample_into_batch_peaks(sample_item_id: str) -> str | None:
     its members' per-sample assignments. Idempotent -- re-folding a sample replaces
     its prior occurrences and re-derives the affected consensus.
 
+    :param sample_item_id: The sample to fold.
+    :param recompute_consensus: ``False`` folds the occurrences only and leaves
+        the touched anchors' consensus to a later :func:`recompute_batch_consensus`.
+        That is the backfill's mode: recomputing per sample there costs
+        O(samples x anchors), and every intermediate result is overwritten by the
+        next sample's. Until that pass runs, a touched anchor's consensus columns
+        describe the members it had before this fold.
     :returns: the ``sample_batch_id`` (for the caller's reload event) or ``None``
         when there is nothing to fold (unknown sample / no completed run).
     """
@@ -303,7 +316,6 @@ async def fold_sample_into_batch_peaks(sample_item_id: str) -> str | None:
             r = f.peak["row"]
             session.add(
                 BatchPeakOccurrence(
-                    batch_peak_occurrence_id=gen_id(32),
                     batch_peak_id=f.batch_peak_id,
                     sample_item_id=sample_item_id,
                     sample_peak_id=r.sample_peak_id,
@@ -318,7 +330,8 @@ async def fold_sample_into_batch_peaks(sample_item_id: str) -> str | None:
             touched.add(f.batch_peak_id)
 
         await session.flush()  # make occurrences visible to the consensus recompute
-        await _recompute_consensus(session, touched, now)
+        if recompute_consensus:
+            await _recompute_consensus(session, touched, now)
         await session.commit()
 
     return sample_batch_id
@@ -425,28 +438,121 @@ async def _recompute_consensus(
             }
         )
 
-    for bp_id in id_list:
-        bp = await session.get(BatchPeak, bp_id)
-        if bp is None:
-            continue
-        members = members_by_peak.get(bp_id, [])
+    # One read for the anchors rather than one `get` per anchor: a whole-batch
+    # recompute walks thousands of them.
+    anchors = (
+        (
+            await session.execute(
+                select(BatchPeak).where(BatchPeak.batch_peak_id.in_(id_list))
+            )
+        )
+        .scalars()
+        .all()
+    )
+    for bp in anchors:
+        members = members_by_peak.get(bp.batch_peak_id, [])
         if not members:
             await session.delete(bp)
             continue
-        c = compute_consensus(members, batch_peak_id=bp_id)
-        bp.consensus_formula = c.consensus_formula
-        bp.consensus_ion_formula = c.consensus_ion_formula
-        bp.ionization_mechanism_id = c.ionization_mechanism_id
-        bp.consensus_tier = c.consensus_tier
-        bp.best_fit_score = c.best_fit_score
-        bp.support_fraction = c.support_fraction
-        bp.n_present = c.n_present
-        bp.is_ambiguous = int(c.is_ambiguous)
-        bp.max_intensity = c.max_intensity
-        bp.isotopologue_of = c.isotopologue_of
-        bp.alternatives = c.alternatives
-        bp.provenance = c.provenance
-        bp.batch_peak_utc_modified = now
+        _apply_consensus(
+            bp, compute_consensus(members, batch_peak_id=bp.batch_peak_id), now
+        )
+
+
+def _json_shape(value):
+    """``value`` as a JSON column hands it back, so a freshly computed list or
+    dict compares equal to the stored one (tuples become lists, keys strings)."""
+    return json.loads(json.dumps(value))
+
+
+def _apply_consensus(bp: BatchPeak, consensus: Consensus, now: datetime) -> bool:
+    """Write ``consensus`` onto the anchor row, if it differs from what is there.
+
+    Every fold recomputes every anchor its sample touched, and most of those
+    recomputes reach the answer the last one did - a species already seen in
+    thirty samples does not change formula because a thirty-first agrees.
+    Writing the row regardless, which stamping ``batch_peak_utc_modified``
+    unconditionally did, turned every fold into a rewrite of most of the batch:
+    on a 32-sample batch that was 44k updates for 1,700 anchors and a heap
+    eighteen times its compacted size. So the row is compared first and left
+    alone when nothing moved; the modified stamp then means what it says.
+
+    :param bp: The anchor row, as loaded in the caller's session.
+    :param consensus: The freshly computed consensus for it.
+    :param now: The stamp to record if something changed.
+    :return: Whether anything was written.
+    """
+    values = {
+        "consensus_formula": consensus.consensus_formula,
+        "consensus_ion_formula": consensus.consensus_ion_formula,
+        "ionization_mechanism_id": consensus.ionization_mechanism_id,
+        "consensus_tier": consensus.consensus_tier,
+        "best_fit_score": consensus.best_fit_score,
+        "support_fraction": consensus.support_fraction,
+        "n_present": consensus.n_present,
+        "is_ambiguous": int(consensus.is_ambiguous),
+        "max_intensity": consensus.max_intensity,
+        "isotopologue_of": consensus.isotopologue_of,
+        "alternatives": _json_shape(consensus.alternatives),
+        "provenance": _json_shape(consensus.provenance),
+    }
+    changed = {
+        column: value
+        for column, value in values.items()
+        if getattr(bp, column) != value
+    }
+    if not changed:
+        return False
+    for column, value in changed.items():
+        setattr(bp, column, value)
+    bp.batch_peak_utc_modified = now
+    return True
+
+
+#: Anchors per statement in a whole-batch recompute. The member read behind
+#: each is one IN over the chunk, so this bounds both its bind parameters and
+#: the rows one statement materializes (members x chunk), whatever the batch.
+_CONSENSUS_CHUNK = 500
+
+
+async def recompute_batch_consensus(sample_batch_id: str) -> int:
+    """Recompute the consensus of every anchor of a batch, once each.
+
+    The per-arrival fold recomputes the anchors its sample touched, which is
+    right for one sample and wrong for a backfill: folding N samples that way
+    recomputes each anchor up to N times, rewrites it as often, and the member
+    read behind each recompute grows with the samples already folded - O(N x
+    anchors) work for a result the last pass alone determines. The backfill
+    folds every sample with the recompute deferred and then calls this.
+
+    Chunked, and each chunk is its own transaction under the fold lock, so a
+    fold arriving mid-way waits for a chunk rather than for the whole batch.
+    The two cannot disagree: an arriving fold recomputes its own anchors, and a
+    chunk that runs after it recomputes them again from the same members.
+
+    :param sample_batch_id: The batch whose anchors are recomputed.
+    :return: How many anchors were walked.
+    """
+    async with async_session() as session:
+        anchor_ids = (
+            (
+                await session.execute(
+                    select(BatchPeak.batch_peak_id).where(
+                        BatchPeak.sample_batch_id == sample_batch_id
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+    now = datetime.now(timezone.utc)
+    for start in range(0, len(anchor_ids), _CONSENSUS_CHUNK):
+        chunk = set(anchor_ids[start : start + _CONSENSUS_CHUNK])
+        async with async_session() as session:
+            await _acquire_batch_fold_lock(session, sample_batch_id)
+            await _recompute_consensus(session, chunk, now)
+            await session.commit()
+    return len(anchor_ids)
 
 
 #: Roughly how many points along a batch report progress, whatever its size.
@@ -575,7 +681,12 @@ async def backfill_sample_batch_peaks(
             await send_progress_user_notification(notification)
 
         try:
-            if await fold_sample_into_batch_peaks(sample_item_id) is not None:
+            if (
+                await fold_sample_into_batch_peaks(
+                    sample_item_id, recompute_consensus=False
+                )
+                is not None
+            ):
                 folded += 1
         except IntegrityError:
             # Its own branch as a tripwire, not because the cause is known: the
@@ -607,6 +718,13 @@ async def backfill_sample_batch_peaks(
         # copies, so this is the same object the pre-fold tick was built from.
         if notification is not None:
             await send_progress_user_notification(notification, 1.0)
+
+    # One consensus pass over the whole batch instead of one per sample (see
+    # recompute_batch_consensus). Unconditional: it is also what leaves a
+    # partially failed backfill consistent - every anchor a successful fold
+    # touched is recomputed here - and what removes the anchors a batch whose
+    # runs were pruned since its last fold no longer has members for.
+    await recompute_batch_consensus(sample_batch_id)
 
     return folded, failed
 

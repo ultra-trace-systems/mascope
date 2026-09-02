@@ -247,6 +247,29 @@ async def test_refold_is_idempotent(async_session_factory, seeded):
     assert len({o.sample_item_id for o in occ}) == 2
 
 
+async def test_refold_with_unchanged_members_leaves_the_anchors_unwritten(
+    async_session_factory, seeded
+):
+    """Re-folding a sample reaches the consensus it reached before, so no anchor
+    is rewritten and no modified stamp moves. This is what keeps a fold from
+    rewriting most of the batch every time a sample arrives."""
+    batch, samples = seeded
+    await fold_sample_into_batch_peaks(samples["A"])
+    await fold_sample_into_batch_peaks(samples["B"])
+    before = {
+        p.batch_peak_id: p.batch_peak_utc_modified
+        for p in await _batch_peaks(async_session_factory, batch)
+    }
+
+    await fold_sample_into_batch_peaks(samples["A"])  # re-fold A, nothing changes
+
+    after = {
+        p.batch_peak_id: p.batch_peak_utc_modified
+        for p in await _batch_peaks(async_session_factory, batch)
+    }
+    assert after == before
+
+
 async def test_series_full_load_applies_occupancy_filter(async_session_factory, seeded):
     batch, samples = seeded
     await fold_sample_into_batch_peaks(samples["A"])

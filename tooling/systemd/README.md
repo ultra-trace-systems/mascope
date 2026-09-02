@@ -83,7 +83,7 @@ operator docs: [docs/maintaining.md](../../docs/maintaining.md) -> Disk space.
 Peak assignment writes one ledger row per observed peak per run and never
 supersedes old runs on its own, so `peak_assignment` grows without bound
 wherever assignment is re-run. The retention timer is therefore **enabled by
-default**: nightly it keeps the newest 3 completed runs per sample and drops
+default**: nightly it keeps the newest 2 completed runs per sample and drops
 the rest, plus terminal failed runs past a 24 h grace (in-flight runs are
 protected by a longer, floored grace). It deletes only superseded derived data
 - assignments are recomputable by re-running assignment - and runs whether or

@@ -61,20 +61,24 @@ from mascope_backend.db import PeakAssignment, PeakAssignmentRun, async_session
 from mascope_backend.runtime import runtime
 
 
-# Newest completed runs kept per (sample, engine). More than one so a user can
-# still compare a re-run against what it replaced; small enough that the table
-# stays proportional to the dataset rather than to how often assignment is
-# re-run.
-DEFAULT_KEEP_PER_SAMPLE = 3
+# Newest completed runs kept per (sample, engine). Two: the current result and
+# the one it replaced, which is all "compare a re-run against what it replaced"
+# needs - and each kept run is a whole ledger, one row per detected peak at
+# about half a kilobyte each, so a third copy was a third of the re-run cost
+# for a comparison nobody makes. Note what this does NOT bound: ingest writes
+# one run per sample and never a second, so on a deployment that only ever
+# assigns at ingest the pass finds nothing to reclaim. It bounds re-run churn,
+# not the ledger.
+DEFAULT_KEEP_PER_SAMPLE = 2
 
 # Newest completed runs kept per sample across *all* engines. The per-engine
 # quota above cannot bound the table on its own: `engine` is free text a client
 # supplies, so one that varies per build or per release mints a fresh quota on
 # every import. This is the outer bound that makes the total finite again.
 #
-# Four engines' worth, so a deployment publishing from a couple of external
-# engines beside the in-app one never meets it, while a client cycling engine
-# names does.
+# Six engines' worth at the per-engine default, so a deployment publishing
+# from a couple of external engines beside the in-app one never meets it, while
+# a client cycling engine names does.
 DEFAULT_KEEP_PER_SAMPLE_TOTAL = 12
 
 # Grace on terminal non-completed runs, so a failure stays inspectable for a day.

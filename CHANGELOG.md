@@ -500,6 +500,33 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
 
 ### Changed
 
+- **The assignment tables cost less disk, and ingest-time assignment can be
+  bounded.** Assignment at ingest writes one ledger row and one batch-peak
+  occurrence per detected peak - about 1 KB per peak, or 2-8 MB per typical
+  sample, growing with everything a deployment acquires. Measured on real
+  ledgers, a third to a half of that was index, and the batch-peak table stood
+  at eighteen times its compacted size because every fold rewrote every anchor
+  it touched. This release trims what it can without changing the data:
+  `peak_assignment` loses two redundant indexes (the run-id one duplicated the
+  unique constraint, the peak-id one was never used) and indexes its four
+  nullable references only where they are set, **12 % off the table**;
+  `batch_peak_occurrence` is keyed by (batch peak, sample) instead of a random
+  surrogate id nothing read, **27 % off that table**; the batch-peak consensus
+  is written only when it changed, a backfill recomputes each anchor once at
+  the end instead of once per sample, and the three tables get autovacuum
+  thresholds sized for their churn (plus a fill factor on `batch_peak` for
+  in-place updates). The retention pass now keeps the newest **2** completed
+  runs per sample and engine (was 3) - the current result and the one it
+  replaced - and the docs say what it reclaims: re-runs only, never a sample's
+  ingest run, which is its only run until someone re-assigns it. Two new
+  `[meta]` settings bound the ingest-time cost without switching the feature
+  off: `peak_assignment_on_ingest = false` assigns on demand only, for
+  high-throughput instruments where ingest ledgers run to tens of gigabytes a
+  month; `peak_assignment_ingest_max_peaks` (default 100000, 0 disables) skips
+  a single very dense acquisition at ingest, logs it, and leaves the sample
+  assignable explicitly. One migration, run before the stack serves; the API
+  and UI are unchanged.
+
 - **The "no adduct" explanations in the peak inspector are in plain
   language.** Both said "No adduct:" and then described the machinery -
   a candidate "the finder listed", a formula that "cannot be verified" - using

@@ -8,7 +8,7 @@ engine and drops the rest, plus non-completed runs past a short grace period.
 Deleting a run cascades to its assignment rows.
 
 Set MASCOPE_PRUNE_DRY_RUN=1 to report what would be deleted without deleting.
-Override the policy with MASCOPE_PRUNE_KEEP_PER_SAMPLE (default 3, per sample
+Override the policy with MASCOPE_PRUNE_KEEP_PER_SAMPLE (default 2, per sample
 AND engine), MASCOPE_PRUNE_KEEP_PER_SAMPLE_TOTAL (default 12, the bound across
 all engines that keeps a client-chosen engine name from minting unlimited
 quotas; the in-app engine is exempt from it),

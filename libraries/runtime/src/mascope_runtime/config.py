@@ -51,6 +51,20 @@ class MetaConfig(BaseModel):
     # a deployment on the pre-assignment behaviour: no assignment at sample
     # ingest, no assignment views, and the API write routes answering 403.
     peak_assignment: bool = True
+    # Whether a newly processed sample is assigned as it arrives (the database
+    # stage only). Subordinate to `peak_assignment`: with the feature off nothing
+    # assigns at ingest whatever this says. Off, the feature stays available -
+    # views, on-demand runs, imports - without the per-sample cost of assigning
+    # everything the instrument acquires: one ledger row and one batch-peak
+    # occurrence per detected peak, about 1 KB per peak, which the retention
+    # pass never reclaims. Read by the backend via `peak_assignment_on_ingest()`.
+    peak_assignment_on_ingest: bool = True
+    # Ceiling on the detected-peak count of a sample assigned at ingest. A
+    # denser sample is logged and left for an explicit run: at about 1 KB per
+    # peak, one very dense acquisition is hundreds of megabytes of ledger
+    # written unasked. 0 disables the ceiling. Read by the backend via
+    # `peak_assignment_ingest_max_peaks()`.
+    peak_assignment_ingest_max_peaks: int = Field(default=100_000, ge=0)
     # Size cap (in gigabytes) for a single resumable (tus) upload, advertised
     # to clients as Tus-Max-Size and enforced at upload creation. Applies per
     # upload: it does not limit how many files a client may transfer, only how

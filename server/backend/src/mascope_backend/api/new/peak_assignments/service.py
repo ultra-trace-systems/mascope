@@ -62,6 +62,8 @@ from mascope_backend.api.new.peak_assignments.config import (
     PEAK_ASSIGNMENT_ENGINE_VERSION,
     PeakAssignmentConfig,
     peak_assignment_enabled,
+    peak_assignment_ingest_max_peaks,
+    peak_assignment_on_ingest,
 )
 from mascope_backend.api.new.peak_assignments.engine import (
     REFERENCE_IDENTITIES_COL,
@@ -1074,6 +1076,30 @@ def load_sample_peaks(sample: Sample) -> pd.DataFrame:
     return peaks_df
 
 
+def count_sample_peaks(sample: Sample) -> int:
+    """How many peaks the sample's peak file holds.
+
+    The id-only read the import validator uses, not the engine's own
+    :func:`load_sample_peaks`: that one also opens the raw data source to
+    average intensities, and the ingest ceiling needs only the count - and
+    needs it before any run row exists. Blocking file I/O; call it off the
+    event loop.
+
+    :param sample: Sample model object
+    :return: The number of detected peaks
+    """
+    peak_data = extract_peaks(
+        sample.filename,
+        sample.polarity,
+        sample.t0,
+        sample.t1,
+        areas=False,
+        heights=False,
+        average=False,
+    )
+    return len(peak_data.peak_ids)
+
+
 #: The state a run is created in when the request that asked for it answers
 #: before the engine starts. It is a durable "this sample is taken" marker from
 #: the moment the caller learns the run id, which is what lets the 202 name a run
@@ -1662,13 +1688,39 @@ async def auto_assign_sample_peaks(
     processes samples exactly as it did before the feature landed. An explicit
     sample or batch run stays available regardless.
 
+    Two further settings bound what ingest writes without switching the feature
+    off - see :func:`peak_assignment_on_ingest` and
+    :func:`peak_assignment_ingest_max_peaks`. A sample they leave unassigned is
+    logged and stays assignable explicitly; the peak count behind the ceiling is
+    read from the peak file before any run row exists, so a skipped sample
+    leaves nothing behind.
+
     :param sample_item_id: ID of the sample item to assign
     :param user_id: Current user triggered operation (for user notifications)
     :param parent_id: Parent process identifier for progress nesting
     """
     if not peak_assignment_enabled():
         return
+    if not peak_assignment_on_ingest():
+        runtime.logger.debug(
+            f"Ingest-time peak assignment is off; sample '{sample_item_id}' is "
+            "left for an explicit run."
+        )
+        return
     try:
+        ceiling = peak_assignment_ingest_max_peaks()
+        if ceiling:
+            sample = await fetch_sample(sample_item_id)
+            n_peaks = await asyncio.to_thread(count_sample_peaks, sample)
+            if n_peaks > ceiling:
+                runtime.logger.warning(
+                    f"Skipping ingest-time peak assignment for sample "
+                    f"'{sample.sample_item_name}': {n_peaks} detected peaks exceed "
+                    f"the ingest ceiling of {ceiling} "
+                    "(peak_assignment_ingest_max_peaks). The sample can still be "
+                    "assigned with an explicit run."
+                )
+                return
         # assign_sample_peaks folds the completed run into the batch peaks itself,
         # so the batch overview stays current as samples arrive.
         await assign_sample_peaks(

@@ -134,6 +134,53 @@ def peak_assignment_enabled() -> bool:
     return bool(getattr(runtime.meta, "peak_assignment", True))
 
 
+# The ingest ceiling's default, matching MetaConfig's, for the same reason the
+# flag's fallback matches its own. Generous on purpose: it is there to catch a
+# pathological acquisition, not a dense instrument.
+DEFAULT_INGEST_MAX_PEAKS = 100_000
+
+
+def peak_assignment_on_ingest() -> bool:
+    """Whether a newly processed sample is assigned as it arrives.
+
+    Subordinate to :func:`peak_assignment_enabled`: with the feature off nothing
+    assigns at ingest whatever this says. It exists for deployments that want
+    the feature - the views, the on-demand runs, imports - without the
+    per-sample cost of assigning everything they acquire. An ingest-time run is
+    the database stage only, and it writes one ledger row and one batch-peak
+    occurrence per detected peak (about 1 KB per peak in all) that the
+    retention pass never reclaims; on a high-throughput instrument that is tens
+    of gigabytes a month of rows nobody asked for. Off, a sample is assigned
+    when someone launches a run on it or on its batch.
+
+    Read from ``peak_assignment_on_ingest`` in the runtime ``[meta]`` config.
+
+    :return: True when ingest assigns automatically (the default).
+    """
+    return bool(getattr(runtime.meta, "peak_assignment_on_ingest", True))
+
+
+def peak_assignment_ingest_max_peaks() -> int:
+    """Ceiling on the detected-peak count of a sample assigned at ingest.
+
+    A sample above it is logged and left for an explicit run rather than
+    assigned as it arrives: at about 1 KB per detected peak, one very dense
+    acquisition - a few hundred thousand peaks happens - is hundreds of
+    megabytes of ledger written unasked, for a spectrum the untargeted stage
+    could not be run over anyway. ``0`` disables the ceiling.
+
+    Read from ``peak_assignment_ingest_max_peaks`` in the runtime ``[meta]``
+    config.
+
+    :return: The ceiling, or 0 for none.
+    """
+    return int(
+        getattr(
+            runtime.meta, "peak_assignment_ingest_max_peaks", DEFAULT_INGEST_MAX_PEAKS
+        )
+    )
+
+
 class PeakAssignmentConfig(BaseModel):
     """User-tunable configuration for one peak assignment run.
 
