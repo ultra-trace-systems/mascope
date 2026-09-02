@@ -289,6 +289,12 @@ const rows = computed(() => {
     .map((row) => ({
       ...row,
       tierRank: tierRank(row.tier),
+      // Null where the producing engine stated no tier, and null rather than a
+      // rank so `compareBy` sorts those rows last in both directions - "this
+      // engine said nothing" is not a position on the scale. Guarded because
+      // tierRank(null) would answer with the 'unassigned' rank and put every
+      // in-app row at one end of a column it has no opinion in.
+      engineTierRank: row.engine_tier != null ? tierRank(row.engine_tier) : null,
       // The calibrated probability for the sortable P(correct) column; null for
       // untargeted / uncalibrated (rendered as "-", never 0%). The ledger rows
       // carry it flattened (`p_correct`); the `provenance` fallback covers rows
@@ -321,6 +327,7 @@ const rows = computed(() => {
         return {
           ...child,
           tierRank: parent.tierRank,
+          engineTierRank: child.engine_tier != null ? tierRank(child.engine_tier) : null,
           pCorrect: child.p_correct ?? child.provenance?.p_correct ?? null,
           pProvisional:
             child.p_correct_provisional ?? child.provenance?.calibration?.provisional ?? false,
@@ -435,6 +442,22 @@ const selectedRow = computed({
     else app.data.peak.unfocus()
   }
 })
+
+// Whether this run carries a tier of its producing engine's own. Only an
+// imported run does - an in-app row's engine tier IS its `tier` - so the column
+// is absent from every in-app ledger rather than sitting there empty. Read off
+// the loaded rows rather than the run's engine, because "peaky published this"
+// and "peaky stated a tier on these rows" are different claims: an engine may
+// publish without tiering anything.
+const hasEngineTiers = computed(() => assignments.value.list.some((row) => row.engine_tier != null))
+
+// Says which of the two tiers this chip is, and whether it agrees. Without it
+// two chips on one row read as one claim rendered twice.
+const engineTierTooltip = (row) =>
+  row.engine_tier === row.tier
+    ? `The producing engine's own tier: ${row.engine_tier} (agrees with this server's)`
+    : `The producing engine's own tier: ${row.engine_tier}, where this server's ` +
+      `banding of the evidence says ${row.tier}`
 
 // Isotopologues folded under a formula's M0.
 const isoCount = (row) => assignments.value.childrenOf(row.peak_assignment_id).length
@@ -773,6 +796,29 @@ const breadcrumb = computed(() => {
             />
           </template>
         </Column>
+        <!-- The producing engine's own verdict, beside this server's rather
+             than instead of it. Both are real and they answer different
+             questions: `tier` is the evidence banded against the run's declared
+             thresholds - and is what this table sorts, filters and rolls up on -
+             while this one is what the engine concluded on its own terms. A row
+             where they differ is the one worth opening. -->
+        <Column
+          v-if="hasEngineTiers"
+          field="engineTierRank"
+          header="engine tier"
+          sortable
+          style="min-width: 7rem"
+        >
+          <template #body="{ data }">
+            <BaseTierTag
+              v-if="data.engine_tier"
+              :tier="data.engine_tier"
+              :show-evidence="false"
+              :tooltip="engineTierTooltip(data)"
+            />
+            <span v-else class="no-engine-tier">&mdash;</span>
+          </template>
+        </Column>
         <Column field="pCorrect" sortable style="min-width: 6.5rem">
           <template #header>
             <span
@@ -838,6 +884,14 @@ const breadcrumb = computed(() => {
 </template>
 
 <style scoped>
+/* A row the producing engine stated no tier on. Recessive, because it is the
+   majority of the column on most runs - an engine typically tiers only the
+   peaks it committed a formula to - and a column of full-strength dashes would
+   read as missing data rather than as "no opinion here". */
+.no-engine-tier {
+  opacity: 0.4;
+}
+
 /* The panel body is a column: the launch-error banner and the tier strip take
    their natural height and the ledger takes the rest, so whatever is shown
    above the table shortens it instead of pushing it past the pane. */

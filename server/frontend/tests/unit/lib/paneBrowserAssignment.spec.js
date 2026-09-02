@@ -10,6 +10,7 @@ import BaseVerdictBadge from '@/lib/base/BaseVerdictBadge.vue'
 // The real store, not a stub: it is the whole channel between the Assign-peaks
 // button in the switch bar and the dialog this pane owns.
 import { useAssignmentLauncher } from '@/lib/panes/PaneBrowserMatch/stores'
+import { tierRank } from '@/lib/tiers'
 
 // The per-sample launcher's job after the assign endpoint became synchronous:
 // a run that is refused (409) or a sample that cannot be assigned (422) arrives
@@ -1250,5 +1251,68 @@ describe('PaneBrowserAssignment view options menu', () => {
     const wrapper = await mountPane()
 
     expect(trigger(wrapper).exists()).toBe(false)
+  })
+})
+
+// An imported run carries a second tier: the one its producing engine reached on
+// its own terms. It sits BESIDE this server's rather than replacing it, because
+// `tier` is what the table sorts, filters and rolls up on - and because an
+// engine typically tiers only the peaks it committed a formula to, so replacing
+// would blank the column on the rest.
+describe('PaneBrowserAssignment engine tier column', () => {
+  it('is absent from a run with no engine tiers', async () => {
+    seed(family({ id: 'a', mz: 100, intensity: 10, formula: 'C6H6' }))
+    const wrapper = await mountPane()
+
+    expect(wrapper.vm.hasEngineTiers).toBe(false)
+  })
+
+  it('appears once any row carries one', async () => {
+    seed(
+      family({ id: 'a', mz: 100, intensity: 10, formula: 'C6H6' }),
+      family({ id: 'b', mz: 200, intensity: 20, formula: 'C7H8' })
+    )
+    assignmentList[0].engine_tier = 'candidate'
+    const wrapper = await mountPane()
+
+    expect(wrapper.vm.hasEngineTiers).toBe(true)
+  })
+
+  // Null, not a rank: `compareBy` sorts blanks last in both directions, which is
+  // the right place for "this engine said nothing". tierRank(null) would answer
+  // with the 'unassigned' rank and bury such rows at one end of a column they
+  // have no opinion in.
+  it('ranks a row with no engine tier as null so it sorts last', async () => {
+    seed(family({ id: 'a', mz: 100, intensity: 10, formula: 'C6H6' }))
+    const wrapper = await mountPane()
+
+    expect(wrapper.vm.rows[0].engineTierRank).toBeNull()
+  })
+
+  it('ranks a row that has one', async () => {
+    seed(family({ id: 'a', mz: 100, intensity: 10, formula: 'C6H6' }))
+    assignmentList[0].engine_tier = 'candidate'
+    const wrapper = await mountPane()
+
+    expect(wrapper.vm.rows[0].engineTierRank).toBe(tierRank('candidate'))
+  })
+
+  // Two tier chips on one row are a puzzle unless each says which it is.
+  it('names both tiers in the chip tooltip when they differ', async () => {
+    seed(family({ id: 'a', mz: 100, intensity: 10, formula: 'C6H6' }))
+    const wrapper = await mountPane()
+    const text = wrapper.vm.engineTierTooltip({ tier: 'assigned', engine_tier: 'candidate' })
+
+    expect(text).toContain('candidate')
+    expect(text).toContain('assigned')
+  })
+
+  it('says so when they agree', async () => {
+    seed(family({ id: 'a', mz: 100, intensity: 10, formula: 'C6H6' }))
+    const wrapper = await mountPane()
+
+    expect(wrapper.vm.engineTierTooltip({ tier: 'assigned', engine_tier: 'assigned' })).toContain(
+      'agrees'
+    )
   })
 })
