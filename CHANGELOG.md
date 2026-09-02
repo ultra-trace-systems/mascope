@@ -6,6 +6,33 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
 
 ### Added
 
+- **Batch peaks: one ledger for a whole batch.** A batch peak is a frozen m/z
+  anchor shared across a batch's samples, carrying an evidence-weighted
+  consensus of the per-sample assignments that folded into it - so a species can
+  be read once for the batch instead of sample by sample. Every observed peak of
+  every sample folds into exactly one batch peak, assigned or not, as its
+  assignment run completes. The **Batch peaks** ledger and the batch
+  **Assignments** overview present them, *Compute batch peaks* backfills a batch
+  whose samples were assigned before the feature existed, and
+  `GET /api/batch-peaks/batch/{sample_batch_id}` plus
+  `POST /api/batch-peaks/batch/{sample_batch_id}/backfill` serve them to
+  clients. Two new tables, `batch_peak` and `batch_peak_occurrence` (migration
+  `f3b9c7a1e2d4`). Note that the occurrences are the larger of the two by far -
+  one row per observed peak per sample - and the assignment retention pass does
+  not reclaim them.
+
+- Isotope matches now persist their **signal-to-noise ratio**, and the v2 fit
+  score uses it. Real per-peak SNR was already computed on the matching path but
+  thrown away before it reached the database, so scores read back from a stored
+  match were computed without it. The column is now written (migration
+  `355643cd265e`, nullable, no backfill), and the score's detectability gate
+  keys on it. **What changes for you:** rows written before the upgrade keep a
+  NULL, which is scored honestly as "no SNR for this row" rather than guessed at,
+  so a targeted match score can move when a sample is re-processed under this
+  release - not at migration time, and not for anything left alone. This is the
+  one change here that alters already-released behaviour outside the peak
+  assignment flag.
+
 - A curated sample's assignments can now be **copied to the batch's other
   samples** (*Process → Copy assignments to batch…* in the sample's context
   menu). One sample gets the full treatment - an engine run, inspection,
@@ -52,144 +79,6 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
   composition scored against the sample by hand, re-tiered under the run's own
   thresholds - rather than as promoting something the engine had decided.
 
-### Changed
-
-- **The "no adduct" explanations in the peak inspector are in plain
-  language.** Both said "No adduct:" and then described the machinery -
-  a candidate "the finder listed", a formula that "cannot be verified" - using
-  *verified* for committing an assignment, which in Mascope means something
-  else entirely: a verdict a person records about evidence. The first now says
-  the formula is not assignable to this peak and why, or, once the peak's
-  alternatives have been measured, gives the specific reason no adduct reached
-  it. The second is the one that mattered more: it appears on the assignment a
-  hand-made override replaced, where *use this* would normally undo the
-  change, and it has to explain that this particular undo cannot be done at
-  all because the replaced assignment named no adduct. It said so in a single
-  clause and then recommended re-searching, which reads like the undo. It now
-  says plainly that the undo is not available here, and that re-searching
-  assigns the formula again but as a new assignment - so the isotopologues the
-  override cleared stay cleared.
-
-- **The assignments browser header is one row again.** It had grown to four
-  controls - run selector, *Isotopologues* toggle, verdict filter and *Assign
-  peaks* - in a column the user can drag to half a window, so the last of them
-  were simply clipped off the edge of the pane and became unreachable at the
-  widths people actually work at. The two that describe the run rather than the
-  table, the **run selector** and **Assign peaks**, moved up into the switch bar
-  beside *Targets / Assignments*, one row above the ledger they used to sit
-  inside; the selector takes whatever width the switch leaves it. The two that
-  only change how the table reads, the
-  **Isotopologues toggle** and the **verdict filter**, are behind a cog at the
-  end of the tier-chip row, so everything that narrows the table is on one row
-  and the cog is the same table-controls affordance the sample and ion browsers
-  already use. Both keep their setting while the menu is closed. The verdict
-  filter is now a chip strip rather than a dropdown, which is what makes the
-  menu usable from the keyboard at all: a dropdown inside it swallowed the
-  Escape key that closes the menu, in a panel Tab cannot leave either. The bar
-  wraps rather than clips if the column is narrowed far enough. Nothing changes
-  with peak-centric assignment turned off, and there is still exactly one
-  *Assign peaks* button on screen at a time.
-- **The batch-peak browser's header now matches the sample one.** The batch
-  ledger kept the layout the sample ledger had just moved away from, so
-  switching between a batch and one of its samples rearranged the header: the
-  *Targets / Assignments* switch sat centred over the batch ledger and to the
-  left over the sample one, the *Isotopologues* toggle was on the panel header
-  in one and behind the tier row's cog in the other, and *Compute batch peaks*
-  was in a corner *Assign peaks* had vacated. The two headers are now the same
-  shape. The switch is left-aligned in both. **Compute batch peaks** moved up
-  into the switch bar, in the corner and the style *Assign peaks* uses one
-  focus level down, so the action that fills the ledger is always in the same
-  place. The **Isotopologues toggle** is behind a cog at the end of the
-  tier-chip row, keeping its setting while the menu is closed and opening with
-  the switch focused, as its counterpart does. A refused or failed compute is
-  still reported below the table it is about.
-- **An assignment's confidence tier now reflects the chemistry as well as the
-  fit.** A tier is meant to say how strong the case for a peak's formula is, but
-  it was read off the fit score alone - which measures only how well the
-  measured isotope pattern matches the prediction. A formula that matched the
-  mass beautifully while describing an unlikely molecule therefore took the
-  ledger's strongest word. The engine already weighed both when deciding which
-  formula wins a contested peak, so the two could disagree on the same row: a
-  formula could win on the combined evidence and then be tiered as though it had
-  fit cleanly. The tier now comes off that same combined measure - the fit
-  weighted by how chemically plausible the formula is - everywhere a tier is
-  decided: both engine stages, a hand-edited row, a row copied to another sample,
-  the composition search's preview, and the check an imported ledger is held to.
-  The fit score itself is untouched and is still shown as the pure measurement;
-  what changed is which number decides the band. The percentage on a tier chip is
-  now that combined measure rather than the fit, so the chip's number and its
-  label can no longer contradict each other. On the batch-peaks ledger the chip
-  shows no percentage at all: a batch peak's tier is a vote across the samples it
-  appears in, not a threshold on any one number, and pairing it with one sample's
-  figure implied an arithmetic that never existed.
-
-  Practically, most rows do not move. Chemical plausibility is 1.0 for the large
-  majority of real formulas, so for them the combined measure is just the fit. On
-  the published demo dataset - every sample assigned, 77,911 rows carrying a
-  formula - 92.8% score the maximum plausibility, and about 7% of rows change
-  tier, in both directions. What moves down is the chemically implausible; what
-  moves up is a clean, ordinary formula whose fit sat just under the old line.
-  The two thresholds keep their names and move onto the new scale (0.8/0.5 ->
-  0.75/0.45), chosen against that demo ledger as the pair that stays closest to
-  the split it replaces. They remain directional starting points rather than
-  calibrated truth, and per-instrument recalibration is still the open follow-up.
-
-  For anyone publishing a ledger into Mascope from another engine: nothing new
-  has to be sent. Declare the run's `tier_bands` on the new scale and keep
-  sending each row's `fit_score` and `assigned_formula` as before - plausibility
-  is computed from the formula, so the server derives each row's evidence itself
-  rather than taking a number on trust.
-
-- **Computing batch peaks** now shows how far along it is. The backfill folds a
-  batch one sample at a time but reported only once the whole thing was done, so
-  all the button could offer was a spinner - for minutes on a large batch, with
-  no way to tell a slow run from a stuck one. It now fills the app's progress bar
-  as it walks the batch. The button stops spinning on the same packet as before,
-  the one that says the run ended, so a run that failed still releases it. The
-  bar counts samples looked at rather than samples folded, so on a batch where
-  nothing has been assigned yet it fills and then reports that there was nothing
-  to compute - that batch's state, not a contradiction.
-
-- Selecting **every** batch peak no longer locks up the app. The *Batch peaks*
-  ledger lists every anchor in the batch, singletons included, so on a large
-  batch "select all" is tens of thousands of rows - and everything downstream
-  was priced per row: a chart trace and a legend entry each, one series request
-  per hundred rows issued strictly one after the next, and, in the shared
-  selection plumbing, a log line and a scan of the whole selection per record.
-  The tab locked up before the first trace appeared. The ledger now selects at
-  most 300 batch peaks at a time, and says so where the gesture was made rather
-  than leaving it to be inferred from a chart drawing fewer traces than the
-  ledger shows ticked. The list itself is unchanged - every batch peak is still
-  there to be selected - and the tier chips and the Formula column's filter are
-  how you choose which 300: filter first, then select. The chart's series
-  requests now go out together instead of in turn, and changing the selection
-  while they are still in flight cancels them, so a plot can no longer be
-  assembled from two different selections.
-
-- The strongest assignment tier is now called **assigned** rather than
-  *identified*. In mass spectrometry an identification is read as MS2- or
-  reference-standard-level evidence, and what the engine actually does is
-  assign a molecular formula from accurate mass and an isotope pattern - real
-  evidence, but not that. The tier now claims what it can support, and matches
-  the vocabulary of the external assignment engine the app interoperates with.
-  The other three tiers - *candidate*, *below assignability*, *unassigned* -
-  are unchanged.
-
-  Nothing published needs to be re-imported. The API still accepts the old
-  spelling wherever a client can send one: as a tier on an imported ledger row,
-  as a `tier_bands` key, as the `tier` filter on the per-sample assignment
-  ledger and on the batch-peak ledger, and as the run-config key
-  `identified_threshold` (now `assigned_threshold`). Each is
-  normalised on the way in, so a ledger exported before the rename imports
-  unchanged and an SDK client pinned to the old vocabulary keeps working - but
-  nothing is ever stored under the old name again. A data migration rewrites the
-  tier wherever it is already stored: on the per-sample ledger, on batch peaks
-  and their per-sample occurrences, and in the two JSON columns whose keys carry
-  the name. On any deployment it should rewrite nothing, since none has the
-  workflow enabled yet; it is there for databases developers already have, where
-  an unrecognised tier would otherwise be quietly counted as *unassigned*.
-
-### Added
 
 - The **Batch peaks** ledger now has an **Intensity** column and folds
   isotopologues under the peak they belong to. The intensity is the
@@ -611,6 +500,144 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
 
 ### Changed
 
+- **The "no adduct" explanations in the peak inspector are in plain
+  language.** Both said "No adduct:" and then described the machinery -
+  a candidate "the finder listed", a formula that "cannot be verified" - using
+  *verified* for committing an assignment, which in Mascope means something
+  else entirely: a verdict a person records about evidence. The first now says
+  the formula is not assignable to this peak and why, or, once the peak's
+  alternatives have been measured, gives the specific reason no adduct reached
+  it. The second is the one that mattered more: it appears on the assignment a
+  hand-made override replaced, where *use this* would normally undo the
+  change, and it has to explain that this particular undo cannot be done at
+  all because the replaced assignment named no adduct. It said so in a single
+  clause and then recommended re-searching, which reads like the undo. It now
+  says plainly that the undo is not available here, and that re-searching
+  assigns the formula again but as a new assignment - so the isotopologues the
+  override cleared stay cleared.
+
+- **The assignments browser header is one row again.** It had grown to four
+  controls - run selector, *Isotopologues* toggle, verdict filter and *Assign
+  peaks* - in a column the user can drag to half a window, so the last of them
+  were simply clipped off the edge of the pane and became unreachable at the
+  widths people actually work at. The two that describe the run rather than the
+  table, the **run selector** and **Assign peaks**, moved up into the switch bar
+  beside *Targets / Assignments*, one row above the ledger they used to sit
+  inside; the selector takes whatever width the switch leaves it. The two that
+  only change how the table reads, the
+  **Isotopologues toggle** and the **verdict filter**, are behind a cog at the
+  end of the tier-chip row, so everything that narrows the table is on one row
+  and the cog is the same table-controls affordance the sample and ion browsers
+  already use. Both keep their setting while the menu is closed. The verdict
+  filter is now a chip strip rather than a dropdown, which is what makes the
+  menu usable from the keyboard at all: a dropdown inside it swallowed the
+  Escape key that closes the menu, in a panel Tab cannot leave either. The bar
+  wraps rather than clips if the column is narrowed far enough. Nothing changes
+  with peak-centric assignment turned off, and there is still exactly one
+  *Assign peaks* button on screen at a time.
+- **The batch-peak browser's header now matches the sample one.** The batch
+  ledger kept the layout the sample ledger had just moved away from, so
+  switching between a batch and one of its samples rearranged the header: the
+  *Targets / Assignments* switch sat centred over the batch ledger and to the
+  left over the sample one, the *Isotopologues* toggle was on the panel header
+  in one and behind the tier row's cog in the other, and *Compute batch peaks*
+  was in a corner *Assign peaks* had vacated. The two headers are now the same
+  shape. The switch is left-aligned in both. **Compute batch peaks** moved up
+  into the switch bar, in the corner and the style *Assign peaks* uses one
+  focus level down, so the action that fills the ledger is always in the same
+  place. The **Isotopologues toggle** is behind a cog at the end of the
+  tier-chip row, keeping its setting while the menu is closed and opening with
+  the switch focused, as its counterpart does. A refused or failed compute is
+  still reported below the table it is about.
+- **An assignment's confidence tier now reflects the chemistry as well as the
+  fit.** A tier is meant to say how strong the case for a peak's formula is, but
+  it was read off the fit score alone - which measures only how well the
+  measured isotope pattern matches the prediction. A formula that matched the
+  mass beautifully while describing an unlikely molecule therefore took the
+  ledger's strongest word. The engine already weighed both when deciding which
+  formula wins a contested peak, so the two could disagree on the same row: a
+  formula could win on the combined evidence and then be tiered as though it had
+  fit cleanly. The tier now comes off that same combined measure - the fit
+  weighted by how chemically plausible the formula is - everywhere a tier is
+  decided: both engine stages, a hand-edited row, a row copied to another sample,
+  the composition search's preview, and the check an imported ledger is held to.
+  The fit score itself is untouched and is still shown as the pure measurement;
+  what changed is which number decides the band. The percentage on a tier chip is
+  now that combined measure rather than the fit, so the chip's number and its
+  label can no longer contradict each other. On the batch-peaks ledger the chip
+  shows no percentage at all: a batch peak's tier is a vote across the samples it
+  appears in, not a threshold on any one number, and pairing it with one sample's
+  figure implied an arithmetic that never existed.
+
+  Practically, most rows do not move. Chemical plausibility is 1.0 for the large
+  majority of real formulas, so for them the combined measure is just the fit. On
+  the published demo dataset - every sample assigned, 77,911 rows carrying a
+  formula - 92.8% score the maximum plausibility, and about 7% of rows change
+  tier, in both directions. What moves down is the chemically implausible; what
+  moves up is a clean, ordinary formula whose fit sat just under the old line.
+  The two thresholds keep their names and move onto the new scale (0.8/0.5 ->
+  0.75/0.45), chosen against that demo ledger as the pair that stays closest to
+  the split it replaces. They remain directional starting points rather than
+  calibrated truth, and per-instrument recalibration is still the open follow-up.
+
+  For anyone publishing a ledger into Mascope from another engine: nothing new
+  has to be sent. Declare the run's `tier_bands` on the new scale and keep
+  sending each row's `fit_score` and `assigned_formula` as before - plausibility
+  is computed from the formula, so the server derives each row's evidence itself
+  rather than taking a number on trust.
+
+- **Computing batch peaks** now shows how far along it is. The backfill folds a
+  batch one sample at a time but reported only once the whole thing was done, so
+  all the button could offer was a spinner - for minutes on a large batch, with
+  no way to tell a slow run from a stuck one. It now fills the app's progress bar
+  as it walks the batch. The button stops spinning on the same packet as before,
+  the one that says the run ended, so a run that failed still releases it. The
+  bar counts samples looked at rather than samples folded, so on a batch where
+  nothing has been assigned yet it fills and then reports that there was nothing
+  to compute - that batch's state, not a contradiction.
+
+- Selecting **every** batch peak no longer locks up the app. The *Batch peaks*
+  ledger lists every anchor in the batch, singletons included, so on a large
+  batch "select all" is tens of thousands of rows - and everything downstream
+  was priced per row: a chart trace and a legend entry each, one series request
+  per hundred rows issued strictly one after the next, and, in the shared
+  selection plumbing, a log line and a scan of the whole selection per record.
+  The tab locked up before the first trace appeared. The ledger now selects at
+  most 300 batch peaks at a time, and says so where the gesture was made rather
+  than leaving it to be inferred from a chart drawing fewer traces than the
+  ledger shows ticked. The list itself is unchanged - every batch peak is still
+  there to be selected - and the tier chips and the Formula column's filter are
+  how you choose which 300: filter first, then select. The chart's series
+  requests now go out together instead of in turn, and changing the selection
+  while they are still in flight cancels them, so a plot can no longer be
+  assembled from two different selections.
+
+- The strongest assignment tier is now called **assigned** rather than
+  *identified*. In mass spectrometry an identification is read as MS2- or
+  reference-standard-level evidence, and what the engine actually does is
+  assign a molecular formula from accurate mass and an isotope pattern - real
+  evidence, but not that. The tier now claims what it can support, and matches
+  the vocabulary of the external assignment engine the app interoperates with.
+  The other three tiers - *candidate*, *below assignability*, *unassigned* -
+  are unchanged.
+
+  Nothing published needs to be re-imported. The API still accepts the old
+  spelling wherever a client can send one: as a tier on an imported ledger row,
+  as a `tier_bands` key, as the `tier` filter on the per-sample assignment
+  ledger and on the batch-peak ledger, and as the run-config key
+  `identified_threshold` (now `assigned_threshold`). Each is
+  normalised on the way in, so a ledger exported before the rename imports
+  unchanged and an SDK client pinned to the old vocabulary keeps working - but
+  nothing is ever stored under the old name again. **Responses carry the new
+  spelling**: a client that matches on the literal `"identified"` in a tier it
+  reads back has to be updated, since the compatibility runs inbound only. A data migration rewrites the
+  tier wherever it is already stored: on the per-sample ledger, on batch peaks
+  and their per-sample occurrences, and in the two JSON columns whose keys carry
+  the name. On any deployment it should rewrite nothing, since none has the
+  workflow enabled yet; it is there for databases developers already have, where
+  an unrecognised tier would otherwise be quietly counted as *unassigned*.
+
+
 - **The orange accent is quieter, and the selection wash is finally a wash.**
   The interface palette is swept from the brand safety orange into eleven
   shades, and that sweep used to carry the seed's full colourfulness to every
@@ -627,7 +654,7 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
   everywhere; text on a selected row improves markedly. Status colours that
   are deliberately their own - the amber for calibration drift, an unsure
   verdict, or a provisional assignment - do not follow this accent and are
-  unchanged, so they now stand out a little more against it. A composition is assigned to every
+  unchanged, so they now stand out a little more against it.
 - **One *Targets* / *Assignments* switch.** The switch above the browser is the
   only one, and it decides both what the browser lists and what the *Batch*
   overview plots, so the two can never sit on different sides. That pairing
@@ -650,17 +677,31 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
   tab does not. The two views answer different questions and are meant to be
   used together: Match reads one target ion across the batch, the Sample tab
   reads every peak of one sample.
-  **What an upgrade changes for you.** Processing a sample now also writes an
-  assignment run and one row per detected peak, so it takes a little longer and
-  uses more database space. A host provisioned with `tooling/ubuntu.sh` already
-  runs the nightly retention timer that reclaims it (keeping the newest runs per
-  sample); a deployment set up another way should schedule
-  `prune_peak_assignment_runs` itself - see `docs/maintaining.md`. Samples
-  processed before the upgrade are not assigned retroactively. To stop it,
-  set `peak_assignment = false` under `[meta]` in the env config (or
-  `MASCOPE_PEAK_ASSIGNMENT=0`) and restart: that ends the ingest work, closes the
-  write routes, and removes the assignment views. One restart is the whole
-  procedure now - see the entry below.
+  **What an upgrade changes for you.** An env config written before this
+  release names no `peak_assignment`, so it takes the new default; a deployment
+  that already set it to `false` is unaffected. Processing a sample now also
+  writes an assignment run and one row per detected peak, so it takes a little
+  longer and uses more database space - permanently. That ledger is the
+  baseline cost of the feature and nothing reclaims it: the nightly retention
+  timer a `tooling/ubuntu.sh` host runs bounds *re-assignment* of the same
+  sample, keeping the newest runs per sample, so on a deployment that only
+  assigns at ingest it has nothing to delete. Batch peaks add a second row per
+  observed peak per sample, and the retention pass does not touch those at all.
+  Budget disk accordingly - see `docs/maintaining.md`. Samples processed before
+  the upgrade are not assigned retroactively.
+
+  To stop it, set `peak_assignment = false` under `[meta]` in the env config:
+
+  ```toml
+  [meta]
+  peak_assignment = false
+  ```
+
+  Then `mascope prod up`. That ends the ingest work, closes the write routes,
+  and removes the assignment views - one restart is the whole procedure now, see
+  the entry below. (`MASCOPE_PEAK_ASSIGNMENT=0` moves the backend only and is a
+  development knob: the web app reads the `[meta]` value, so the assignment
+  views would stay on screen over write routes answering 403.)
 
 - **The web app reads the config the server is running on, not the one its image
   was built with.** `[meta]` reached the frontend only as a JSON blob compiled
@@ -846,15 +887,6 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
   a refusal where it was asked for - the sample pane shows the reason inline, the
   batch launcher as a notification carrying the server's own wording - instead of
   a generic error toast over a dialog that would not close.
-- With the opt-in peak-centric assignment feature enabled, the legacy Match
-  tab (briefly renamed "Fit" under the flag) is retired: the Sample view
-  already carries the spectrum-envelope and time-series duties it duplicated,
-  so the tab and every navigation into it (ion-table visualize, batch-chart
-  click-through, shared links) are hidden behind the flag. Deployments that
-  have not opted in see no change - the Match tab and its targeted
-  visualization work exactly as before. The composition-fit endpoints
-  (`POST /api/peak-assignments/sample/{id}/fit/aggregate` and
-  `.../fit/visualize`) remain available as API/SDK surface.
 - Creating an account no longer asks the administrator to invent a temporary
   password. The server generates one and shows it once, the same way a password
   reset already worked. The new user had to replace it at first sign-in either
