@@ -8,6 +8,7 @@ so they are tested here without a database or a peak file; the parts that need
 either live in the integration suite.
 """
 
+import inspect
 from types import SimpleNamespace
 
 import pytest
@@ -18,6 +19,7 @@ from mascope_backend.api.new.peak_assignments.config import (
     MAX_IMPORT_JSON_BYTES,
 )
 from mascope_backend.api.new.peak_assignments.engine import tier_for_evidence
+from mascope_backend.api.new.peak_assignments.import_service import _resolved_tier
 from mascope_backend.api.new.peak_assignments.import_validation import (
     chunk_offset_error,
     coherent_tiers,
@@ -89,8 +91,156 @@ PLAUSIBLE = "C6H12O6"
 IMPLAUSIBLE = "CH4O3S"
 
 
+#: The bands most of these cases declare, matching the in-app engine's own.
+BANDS = {"assigned": 0.8, "candidate": 0.5}
+
+
+def _import_row(**overrides):
+    """A payload row, defaulted to the shape the coherence rules care about."""
+    return ImportAssignmentRow.model_validate(
+        {
+            "sample_peak_id": "peak-0",
+            "sample_peak_mz": 181.0707,
+            "sample_peak_intensity": 5000.0,
+            "role": "M0",
+            **overrides,
+        }
+    )
+
+
+class TestTheServerDerivesAnOmittedTier:
+    """A row need not state a tier, and is better off not stating one.
+
+    The tier is a pure function of ``fit_score``, ``assigned_formula`` and the
+    run's declared bands - every input already server-side - and the server
+    computes it anyway to check a supplied value. Asking a client for the answer
+    asks it to reimplement this deployment's chemical plausibility; when the two
+    implementations drift, the whole import is refused over a number the client
+    had no reason to hold. Deriving removes the failure rather than reporting it.
+    """
+
+    def test_an_omitted_tier_is_derived_from_the_evidence(self):
+        assert (
+            _resolved_tier(
+                _import_row(fit_score=0.91, assigned_formula=PLAUSIBLE), BANDS
+            )
+            == "assigned"
+        )
+        assert (
+            _resolved_tier(
+                _import_row(fit_score=0.62, assigned_formula=PLAUSIBLE), BANDS
+            )
+            == "candidate"
+        )
+        assert (
+            _resolved_tier(
+                _import_row(fit_score=0.10, assigned_formula=PLAUSIBLE), BANDS
+            )
+            == "below_assignability"
+        )
+
+    def test_the_plausibility_weighting_is_applied(self):
+        """The case an importer cannot get right without this deployment's
+        chemistry: a fit that would earn 'assigned' on its own, demoted by the
+        formula it commits."""
+        assert (
+            _resolved_tier(
+                _import_row(fit_score=0.95, assigned_formula=IMPLAUSIBLE), BANDS
+            )
+            != "assigned"
+        )
+        assert (
+            _resolved_tier(
+                _import_row(fit_score=0.95, assigned_formula=PLAUSIBLE), BANDS
+            )
+            == "assigned"
+        )
+
+    def test_a_supplied_tier_is_taken_as_given(self):
+        """Deriving is the default, not a rewrite: a stated tier still stands
+        (and is still checked by `tier_coherence_error` on the way in)."""
+        row = _import_row(tier="candidate", fit_score=0.62, assigned_formula=PLAUSIBLE)
+        assert _resolved_tier(row, BANDS) == "candidate"
+
+    def test_an_unscored_row_splits_on_whether_a_formula_was_committed(self):
+        """The one case the banding cannot answer alone, split the way the
+        in-app ledger writes it: a peak nothing was proposed for is
+        'unassigned', while a committed formula whose score came back
+        non-finite was considered and found wanting."""
+        assert (
+            _resolved_tier(_import_row(assigned_formula=PLAUSIBLE), BANDS)
+            == "below_assignability"
+        )
+        assert _resolved_tier(_import_row(), BANDS) == "unassigned"
+
+    def test_every_derived_tier_passes_the_coherence_check(self):
+        """The invariant the check used to enforce by refusal now holds by
+        construction - which is the whole argument for deriving."""
+        for fit in (None, 0.0, 0.1, 0.49, 0.5, 0.62, 0.79, 0.8, 0.95, 1.0):
+            for formula in (None, PLAUSIBLE, IMPLAUSIBLE):
+                row = _import_row(fit_score=fit, assigned_formula=formula)
+                derived = _resolved_tier(row, BANDS)
+                assert (
+                    tier_coherence_error(
+                        derived, fit, formula, BANDS["assigned"], BANDS["candidate"]
+                    )
+                    is None
+                ), f"derived {derived!r} for fit={fit} formula={formula}"
+
+
+class TestTheEnginesOwnTierIsCheckedByNothing:
+    """`engine_tier` records the verdict the producing engine reached its own
+    way, so it is exempt from the coherence rule by design.
+
+    An engine that arbitrates on window uniqueness, corroboration or mass
+    degeneracy can demote a peak below what its evidence alone earns. Checking
+    that verdict against the bands would refuse exactly the disagreement the
+    field exists to record. Nothing downstream ranks on it: consensus and
+    TIER_RANK stay on `tier`.
+    """
+
+    def test_the_coherence_check_takes_no_engine_tier(self):
+        """Pins the signature, because the natural next edit is to add one."""
+        assert "engine_tier" not in inspect.signature(tier_coherence_error).parameters
+
+    def test_an_engine_tier_the_bands_would_refuse_is_accepted(self):
+        row = _import_row(
+            fit_score=0.95,
+            assigned_formula=PLAUSIBLE,
+            engine_tier="below_assignability",
+        )
+        assert row.engine_tier == "below_assignability"
+        # ...while the same value as `tier` would be refused outright.
+        assert (
+            tier_coherence_error(
+                "below_assignability",
+                0.95,
+                PLAUSIBLE,
+                BANDS["assigned"],
+                BANDS["candidate"],
+            )
+            is not None
+        )
+
+    def test_the_legacy_spelling_reaches_the_new_column_too(self):
+        """Otherwise a rename would manufacture a disagreement out of nothing."""
+        assert _import_row(engine_tier="identified").engine_tier == "assigned"
+
+    def test_the_vocabulary_is_still_closed(self):
+        with pytest.raises(ValidationError):
+            _import_row(engine_tier="nonsense")
+
+    def test_absence_is_the_default(self):
+        assert _import_row().engine_tier is None
+
+
 class TestTierCoherence:
     """A tier must mean what the run's declared bands say it means.
+
+    Only ``tier`` is held to this. ``engine_tier`` is the producing engine's own
+    verdict and is checked by nothing - see
+    :class:`TestTheEnginesOwnTierIsCheckedByNothing`, and do not add a case for
+    it here.
 
     The two engines share an EVIDENCE scale (fit x chemical plausibility), but
     the bands are run config, not engine constants. Without this check an engine
@@ -230,7 +380,7 @@ class TestRowFieldBoundsMatchTheColumns:
 
     #: Fields a closed vocabulary bounds instead of a length: the Literal is
     #: already narrower than the column, so a max_length would add nothing.
-    VOCABULARY_BOUNDED = {"role", "source", "tier"}
+    VOCABULARY_BOUNDED = {"role", "source", "tier", "engine_tier"}
 
     @pytest.mark.parametrize("poison", [float("inf"), float("-inf"), float("nan")])
     def test_no_float_field_accepts_a_non_finite_value(self, poison):

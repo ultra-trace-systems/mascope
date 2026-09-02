@@ -1553,6 +1553,19 @@ class PeakAssignment(Base):
     # abundance as observed_rel / (1 + abundance_error) - keep it signed.
     abundance_error: Mapped[Optional[float]] = mapped_column(Float)
     tier: Mapped[str] = mapped_column(String(24), server_default=text("'unassigned'"))
+    # The tier the ENGINE that produced this row concluded, when that is a
+    # different judgement from `tier`. `tier` is always this server's banding of
+    # the row's evidence against the run's declared thresholds - an import is
+    # refused if it disagrees - which is what makes tiers comparable between
+    # engines but leaves an engine that tiers some other way (peaky arbitrates
+    # on window uniqueness, corroboration and mass degeneracy, any of which can
+    # demote a peak below what its evidence earns) with nowhere to say so.
+    # Exempt from the coherence check and read by NO roll-up: consensus and
+    # TIER_RANK stay on `tier`, so a foreign notion of confidence can never
+    # outrank a Mascope-derived one. NULL means the engine stated no tier here,
+    # which is the in-app case (its tier IS `tier`) and the usual case for the
+    # rows an external engine leaves untiered.
+    engine_tier: Mapped[Optional[str]] = mapped_column(String(24))
     # The three below are indexed only where set - see __table_args__.
     target_compound_id: Mapped[Optional[str]] = mapped_column(
         String(16),

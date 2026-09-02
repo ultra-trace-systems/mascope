@@ -74,7 +74,10 @@ from mascope_backend.api.new.peak_assignments.admission import (
     assignment_claim,
     in_flight_run_id,
 )
-from mascope_backend.api.new.peak_assignments.engine import evidence_for
+from mascope_backend.api.new.peak_assignments.engine import (
+    evidence_for,
+    tier_for_evidence,
+)
 from mascope_backend.api.new.peak_assignments.import_validation import (
     OWNED_ROLE,
     chunk_offset_error,
@@ -89,7 +92,11 @@ from mascope_backend.api.new.peak_assignments.import_validation import (
     unknown_peak_ids,
     unresolved_owner_error,
 )
-from mascope_backend.api.new.peak_assignments.tiers import normalize_tier_bands
+from mascope_backend.api.new.peak_assignments.tiers import (
+    TIER_BELOW_ASSIGNABILITY,
+    TIER_UNASSIGNED,
+    normalize_tier_bands,
+)
 from mascope_backend.db import (
     IonizationMechanism,
     PeakAssignment,
@@ -317,6 +324,19 @@ def _validate_rows(rows, bands: dict, known_peak_ids: set[str]) -> None:
         raise UnprocessableImportException(owner_errors[0])
 
     for row in rows:
+        # A row that states no tier has nothing to be incoherent with: the
+        # server derives it below from the same evidence this check would have
+        # used, so the invariant holds by construction instead of by refusal.
+        #
+        # `row.engine_tier` is deliberately NOT checked here, and that is the
+        # point of the field rather than an oversight. It carries the tier the
+        # producing engine reached its own way - peaky arbitrates on window
+        # uniqueness, corroboration and mass degeneracy, any of which can demote
+        # a peak below what its evidence alone earns - so checking it against
+        # the bands would refuse exactly the disagreement it exists to record.
+        # Nothing downstream ranks on it (see the column comment on the model).
+        if row.tier is None:
+            continue
         if error := tier_coherence_error(
             row.tier,
             row.fit_score,
@@ -362,7 +382,43 @@ def _resolved_bands(body, run: PeakAssignmentRun | None) -> dict:
     return bands
 
 
-def _row_values(row, run_id: str, sample_item_id: str) -> dict:
+def _resolved_tier(row, bands: dict) -> str:
+    """This server's tier for an imported row: the one supplied, or derived.
+
+    Deriving it is the preferred path, and the reason is where the rule lives.
+    The tier is a pure function of ``fit_score``, ``assigned_formula`` and the
+    run's declared bands - all of which this server already holds - and it
+    computes that function anyway to check a supplied value. Asking a client for
+    the answer therefore asks it to reimplement this deployment's chemical
+    plausibility, which is a second copy of one rule; when the copies drift, the
+    whole import is refused over a number the client had no reason to hold.
+    Omitting the tier removes the class of failure rather than reporting it.
+
+    A row with no evidence to band is the one case ``tier_for_evidence`` cannot
+    answer alone: it maps a null to 'below_assignability', while the in-app
+    ledger writes 'unassigned' for a peak nothing was proposed for. Those are
+    the two tiers ``coherent_tiers`` admits, and the formula is what tells them
+    apart - a row that committed one and could not score it was considered and
+    found wanting; a row with no formula was never a claim at all. Deriving on
+    the same split keeps an imported ledger the same shape as an in-app one.
+
+    :param row: The validated payload row.
+    :param bands: The run's declared tier bands.
+    :return: The tier to store.
+    """
+    if row.tier is not None:
+        return row.tier
+    evidence = evidence_for(row.fit_score, row.assigned_formula)
+    if evidence is None:
+        return TIER_BELOW_ASSIGNABILITY if row.assigned_formula else TIER_UNASSIGNED
+    return tier_for_evidence(
+        evidence,
+        candidate_threshold=bands["candidate"],
+        assigned_threshold=bands["assigned"],
+    )
+
+
+def _row_values(row, run_id: str, sample_item_id: str, bands: dict) -> dict:
     """Shape one imported row for the bulk insert.
 
     The ids are minted here and the owner link is left unresolved: a child can
@@ -379,9 +435,16 @@ def _row_values(row, run_id: str, sample_item_id: str) -> dict:
     free: ``formula_plausibility`` is memoized and the coherence check just called
     it for this same formula.
 
+    Three fields are handled by three different rules, and stating them together
+    is what keeps a later reader from "fixing" the inconsistency: ``provenance``
+    loses the keys the server presents as its own judgement, ``tier`` is the
+    server's (supplied and checked, or derived here), and ``engine_tier`` is
+    taken verbatim - a value this server neither owns nor derives, only records.
+
     :param row: The validated payload row.
     :param run_id: The run being assembled.
     :param sample_item_id: The sample being imported into.
+    :param bands: The run's declared tier bands, for a row that omitted its tier.
     :return: Column values for one ``PeakAssignment``.
     """
     provenance = strip_server_owned_provenance(row.provenance)
@@ -409,7 +472,8 @@ def _row_values(row, run_id: str, sample_item_id: str) -> dict:
         "fit_score": row.fit_score,
         "mz_error_ppm": row.mz_error_ppm,
         "abundance_error": row.abundance_error,
-        "tier": row.tier,
+        "tier": _resolved_tier(row, bands),
+        "engine_tier": row.engine_tier,
         "target_compound_id": row.target_compound_id,
         "target_ion_id": row.target_ion_id,
         "owner_peak_assignment_id": None,
@@ -848,7 +912,9 @@ async def _import_chunk(
     # what keeps a refusal the database raises from stranding an 'importing'
     # run with no rows in it, blocking the sample; on a follow-up it is just
     # the insert.
-    values = [_row_values(row, run_id, sample.sample_item_id) for row in body.rows]
+    values = [
+        _row_values(row, run_id, sample.sample_item_id, bands) for row in body.rows
+    ]
     if new_run is not None or values:
         try:
             async with async_session() as session:

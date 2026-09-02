@@ -32,6 +32,47 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
   release - not at migration time, and not for anything left alone. This is the
   one change here that alters already-released behaviour outside the peak
   assignment flag.
+- **An imported assignment run can now record the tier its own engine
+  reached**, so a run computed outside Mascope no longer has to be flattened
+  into Mascope's reading of it before it can be stored. An imported row's
+  `tier` is checked against the run's declared bands and must be the tier its
+  evidence earns - which is what lets tiers from two engines sort, filter and
+  roll up against one yardstick, and is unchanged. But that also refused a
+  *demotion*, and demotions are exactly what a second engine contributes: peaky
+  tiers on window uniqueness, isotopologue corroboration and a mass-degeneracy
+  audit, none of which is a threshold on evidence. Such a run previously either
+  lost its judgement or was refused outright. Rows now carry an optional
+  `engine_tier` beside `tier`, exempt from the coherence check, served on the
+  ledger and the SDK frame, and filterable both directly and through
+  `tier_disagrees` - which excludes rows carrying no engine tier from both
+  answers, since silence is not agreement. Nothing ranks on it: the batch
+  consensus and `TIER_RANK` stay on `tier`. The tier chip marks a disagreeing
+  row and names the other verdict on hover; the peak inspector shows both.
+  Curation archives the engine's verdict with the winner it judged and restores
+  it on an undo, the same rule the engine's other judgement keys already
+  follow, so a hand-edited row never keeps a verdict about a formula it no
+  longer holds; a copied run carries none, because the engine that judged the
+  source peak never saw the destination's.
+
+- **`mascope-tools` 2026.9.2** exports `formula_plausibility` and
+  `chemical_plausibility` from `mascope_tools.composition`. `formula_plausibility`
+  is the second factor in the evidence a peak assignment is tiered on
+  (`fit x plausibility`), so anything reproducing or predicting a tier needs it -
+  including an external engine publishing a run into Mascope. It has existed
+  since the graded-plausibility work but only inside `composition.heuristic_filter`,
+  which is an uncurated path no outside caller had a promise about, and no
+  published release carried it at all. This is also the first tools release since
+  2026.6.25.
+
+- **An imported row's `tier` is now optional.** It is a pure function of
+  `fit_score`, `assigned_formula` and the run's declared bands - all of which
+  the server already holds, and all of which it already computed to check a
+  supplied value - so when the field is omitted the server derives it. Sending
+  it meant reproducing the deployment's chemical-plausibility function exactly,
+  a second implementation of one rule whose drift refused the whole import over
+  a number the client had no reason to hold. The invariant now holds by
+  construction rather than by refusal. A supplied tier is still accepted and
+  still checked.
 
 - A curated sample's assignments can now be **copied to the batch's other
   samples** (*Process → Copy assignments to batch…* in the sample's context

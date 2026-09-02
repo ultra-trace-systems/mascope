@@ -197,6 +197,13 @@ def _previous_winner(assignment: PeakAssignment) -> dict | None:
             "target_ion_id": assignment.target_ion_id,
             "role": assignment.role,
             "tier": assignment.tier,
+            # The producing engine's own verdict is archived with the winner it
+            # judged, for the same reason the nine `engine_judgement` keys are:
+            # it describes the formula being displaced, not the one a person is
+            # committing. Left on the curated row it would report an engine
+            # disagreeing about a formula that engine never saw - and it would
+            # do so on exactly the rows someone looked at hardest.
+            "engine_tier": assignment.engine_tier,
             "source": assignment.source,
             # The engine's own reading of this winner, kept with it rather than
             # on the curated row: it describes an arbitration that is no longer
@@ -627,6 +634,9 @@ def _demote(
     )
     child.role = ROLE_UNASSIGNED
     child.tier = TIER_UNASSIGNED
+    # Archived with the formula it judged (see `_previous_state`); a verdict
+    # about a displaced winner is not a verdict about an unassigned peak.
+    child.engine_tier = None
     child.source = SOURCE_MANUAL
     child.assigned_formula = None
     child.ion_formula = None
@@ -733,6 +743,12 @@ async def _restore(
     )
     child.role = ROLE_ISO_CHILD
     child.tier = tier
+    # Restored with the winner it judged. Unrecognised values are dropped the
+    # way the `tier` restore above drops them: a snapshot is client-shaped data
+    # once it has been through an export, and a bad tier must not reach a column
+    # every filter and roll-up reads.
+    restored_engine_tier = normalize_tier(previous.get("engine_tier"))
+    child.engine_tier = restored_engine_tier if restored_engine_tier in TIERS else None
     child.source = source if source in _ENGINE_SOURCES else None
     child.assigned_formula = state.get("assigned_formula")
     child.ion_formula = state.get("ion_formula")
@@ -1149,6 +1165,9 @@ async def curate_assignment(
             candidate_threshold=candidate_band,
             assigned_threshold=assigned_band,
         )
+        # No engine judged the formula a person just committed, so the row
+        # carries no engine verdict. The displaced winner's is archived with it.
+        assignment.engine_tier = None
         # The curated row stands for its formula on its own: the run arbitrated
         # a family for the composition it replaced, not for this one, so there
         # is no owner here that was ever competed for.

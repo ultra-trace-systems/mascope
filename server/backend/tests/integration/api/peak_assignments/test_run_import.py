@@ -2249,3 +2249,173 @@ class TestAnAssemblingRunIsNotServedByExplicitId:
 
         assert response.status_code == 200
         assert response.json()["total"] == 0
+
+
+class TestTheEnginesOwnTierIsRecorded:
+    """An imported run can say what ITS engine concluded, not only what this
+    server's bands make of the evidence.
+
+    `tier` is checked against the declared bands and is unchanged - that is what
+    makes tiers from two engines comparable. But the check binds `tier` to a
+    band function, so a verdict reached any other way had nowhere to go, and a
+    DEMOTION was refused as firmly as an inflation. Demotions are exactly what a
+    second engine contributes: peaky tiers on window uniqueness, corroboration
+    and mass degeneracy, none of them a threshold on evidence.
+    """
+
+    @pytest.mark.asyncio
+    async def test_an_engine_tier_the_bands_would_refuse_is_stored(
+        self, editor_client, import_sample, feature_enabled, async_session_factory
+    ):
+        """The motivating case: a strong fit the engine nonetheless demoted.
+
+        As `tier` this is a 422 (`test_a_demoted_tier_is_rejected_too` in the
+        unit suite). As `engine_tier` it is the point of the field.
+        """
+        response = await _post(
+            editor_client,
+            import_sample,
+            _body([_row("peak-0", fit_score=0.92, engine_tier="below_assignability")]),
+        )
+
+        assert response.status_code == 200
+        run_id = response.json()["data"][0]["peak_assignment_run_id"]
+        async with async_session_factory() as session:
+            rows = await _rows_of(session, run_id)
+        assert [(r.tier, r.engine_tier) for r in rows] == [
+            ("assigned", "below_assignability")
+        ]
+
+    @pytest.mark.asyncio
+    async def test_it_is_not_a_way_past_the_coherence_rule(
+        self, editor_client, import_sample, feature_enabled
+    ):
+        """The exemption is one-directional: `tier` is still held to the bands
+        however coherent the engine's own verdict is."""
+        response = await _post(
+            editor_client,
+            import_sample,
+            _body(
+                [
+                    _row(
+                        "peak-0",
+                        tier="assigned",
+                        fit_score=0.62,
+                        engine_tier="candidate",
+                    )
+                ]
+            ),
+        )
+
+        assert response.status_code == 422
+
+    @pytest.mark.asyncio
+    async def test_the_legacy_spelling_reaches_the_new_column(
+        self, editor_client, import_sample, feature_enabled, async_session_factory
+    ):
+        """Otherwise a rename manufactures a disagreement out of nothing."""
+        response = await _post(
+            editor_client,
+            import_sample,
+            _body([_row("peak-0", engine_tier="identified")]),
+        )
+
+        assert response.status_code == 200
+        run_id = response.json()["data"][0]["peak_assignment_run_id"]
+        async with async_session_factory() as session:
+            rows = await _rows_of(session, run_id)
+        assert rows[0].engine_tier == "assigned"
+
+    @pytest.mark.asyncio
+    async def test_an_unknown_verdict_is_refused(
+        self, editor_client, import_sample, feature_enabled
+    ):
+        response = await _post(
+            editor_client,
+            import_sample,
+            _body([_row("peak-0", engine_tier="splendid")]),
+        )
+
+        assert response.status_code == 422
+
+    @pytest.mark.asyncio
+    async def test_absence_is_the_default(
+        self, editor_client, import_sample, feature_enabled, async_session_factory
+    ):
+        response = await _post(editor_client, import_sample, _body([_row("peak-0")]))
+
+        assert response.status_code == 200
+        run_id = response.json()["data"][0]["peak_assignment_run_id"]
+        async with async_session_factory() as session:
+            rows = await _rows_of(session, run_id)
+        assert rows[0].engine_tier is None
+
+
+class TestTheServerDerivesAnOmittedTier:
+    """A row need not state a tier, and the documented advice is not to.
+
+    Every input is already server-side, and the server computes the answer
+    anyway to check a supplied one. Sending it means reproducing this
+    deployment's chemical plausibility; the copies drift, and the drift refuses
+    a whole import over a number the client had no reason to hold.
+    """
+
+    @pytest.mark.asyncio
+    async def test_an_omitted_tier_is_derived_under_the_declared_bands(
+        self, editor_client, import_sample, feature_enabled, async_session_factory
+    ):
+        rows = [
+            _row("peak-0", fit_score=0.92, tier=None),
+            _row("peak-1", fit_score=0.62, tier=None),
+            _row("peak-2", fit_score=0.10, tier=None),
+        ]
+        response = await _post(editor_client, import_sample, _body(rows))
+
+        assert response.status_code == 200
+        run_id = response.json()["data"][0]["peak_assignment_run_id"]
+        async with async_session_factory() as session:
+            stored = await _rows_of(session, run_id)
+        assert {r.sample_peak_id: r.tier for r in stored} == {
+            "peak-0": "assigned",
+            "peak-1": "candidate",
+            "peak-2": "below_assignability",
+        }
+
+    @pytest.mark.asyncio
+    async def test_an_unscored_row_splits_on_whether_a_formula_was_committed(
+        self, editor_client, import_sample, feature_enabled, async_session_factory
+    ):
+        """The two tiers `coherent_tiers` admits, told apart the way the in-app
+        ledger writes them."""
+        rows = [
+            _row("peak-0", fit_score=None, tier=None),
+            _row("peak-1", fit_score=None, tier=None, assigned_formula=None),
+        ]
+        response = await _post(editor_client, import_sample, _body(rows))
+
+        assert response.status_code == 200
+        run_id = response.json()["data"][0]["peak_assignment_run_id"]
+        async with async_session_factory() as session:
+            stored = await _rows_of(session, run_id)
+        assert {r.sample_peak_id: r.tier for r in stored} == {
+            "peak-0": "below_assignability",
+            "peak-1": "unassigned",
+        }
+
+    @pytest.mark.asyncio
+    async def test_a_supplied_tier_is_still_honoured(
+        self, editor_client, import_sample, feature_enabled, async_session_factory
+    ):
+        """Deriving is a default, not a rewrite - nothing that worked before
+        stops working."""
+        response = await _post(
+            editor_client,
+            import_sample,
+            _body([_row("peak-0", tier="candidate", fit_score=0.62)]),
+        )
+
+        assert response.status_code == 200
+        run_id = response.json()["data"][0]["peak_assignment_run_id"]
+        async with async_session_factory() as session:
+            stored = await _rows_of(session, run_id)
+        assert stored[0].tier == "candidate"
