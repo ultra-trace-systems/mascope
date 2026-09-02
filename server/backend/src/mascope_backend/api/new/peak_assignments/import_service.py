@@ -107,6 +107,7 @@ from mascope_backend.db import (
 )
 from mascope_backend.db.id import gen_id
 from mascope_backend.runtime import runtime
+from mascope_tools.composition import formula_plausibility
 
 
 class UnprocessableImportException(HTTPException):
@@ -382,6 +383,24 @@ def _resolved_bands(body, run: PeakAssignmentRun | None) -> dict:
     return bands
 
 
+def _plausibility_of(formula: str | None) -> float | None:
+    """This server's chemical plausibility for a committed formula.
+
+    Fails open to None the way ``evidence_for`` fails open to the bare fit: a
+    formula that will not parse is unusual, not disqualifying, and the inspector
+    showing no plausibility is the honest rendering of "could not read it".
+
+    :param formula: The row's committed neutral formula, or None.
+    :return: The plausibility, or None when there is no formula to weigh.
+    """
+    if not formula:
+        return None
+    try:
+        return round(float(formula_plausibility(formula)), 4)
+    except Exception:  # chemistry must never decide whether a row is stored
+        return None
+
+
 def _resolved_tier(row, bands: dict) -> str:
     """This server's tier for an imported row: the one supplied, or derived.
 
@@ -453,6 +472,22 @@ def _row_values(row, run_id: str, sample_item_id: str, bands: dict) -> dict:
         provenance = {**(provenance or {}), "evidence": evidence}
     elif provenance:
         provenance.pop("evidence", None)
+        provenance = provenance or None
+    # `plausibility` is the other half of the product above and is treated the
+    # same way: derived here and written over whatever the payload carried,
+    # never taken from it. The peak inspector renders it as this server's
+    # reading of the formula's chemistry, so an importer's own figure under that
+    # name would be presented as ours - the hazard the reserved-key rule exists
+    # for, in a key that rule does not cover because nothing flattens it onto a
+    # column. Deriving it costs nothing: `formula_plausibility` is memoized and
+    # `evidence_for` just called it for this same formula. Without it an
+    # imported row shows a tier, an evidence and a blank where the number that
+    # moved the one to the other should be.
+    plausibility = _plausibility_of(row.assigned_formula)
+    if plausibility is not None:
+        provenance = {**(provenance or {}), "plausibility": plausibility}
+    elif provenance:
+        provenance.pop("plausibility", None)
         provenance = provenance or None
     return {
         "peak_assignment_id": gen_id(32),

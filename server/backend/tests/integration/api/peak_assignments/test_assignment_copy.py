@@ -648,7 +648,15 @@ class TestFanOut:
         row = next(row for row in rows if row.sample_peak_id == "dst-1")
 
         assert row.alternatives == [{"assigned_formula": "C7H16O5", "fit_score": 0.4}]
-        assert row.provenance["plausibility"] == 0.9
+        # The blob travels (the alternatives above are the source's), but the
+        # numbers this server DERIVES do not ride along: `evidence` was already
+        # recomputed by the import pipeline the copy publishes through, and
+        # `plausibility` now is too. The fixture asserts 0.9, a value the real
+        # chemistry never returns for this formula - keeping it would have left
+        # a stored plausibility that disagrees with the evidence beside it and
+        # with the tier both produced. Plausibility is a pure function of the
+        # formula, and the copy carries the formula over unchanged.
+        assert row.provenance["plausibility"] == 1.0
         assert row.provenance["copied_from"] == {
             "sample_item_id": copy_batch["source"],
             "sample_peak_id": "src-1",
