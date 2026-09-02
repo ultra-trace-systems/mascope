@@ -1481,6 +1481,7 @@ class TestServerOwnedFieldsStayEmpty:
         assert row.provenance == {
             "notes": "the importer's own detail",
             "evidence": 0.92,
+            "plausibility": 1.0,
         }
 
     @pytest.mark.asyncio
@@ -1505,7 +1506,7 @@ class TestServerOwnedFieldsStayEmpty:
         async with async_session_factory() as session:
             row = (await _rows_of(session, run_id))[0]
 
-        assert row.provenance == {"evidence": 0.92}
+        assert row.provenance == {"evidence": 0.92, "plausibility": 1.0}
 
     @pytest.mark.asyncio
     async def test_the_ledger_renders_no_confidence_for_an_imported_row(
@@ -2419,3 +2420,73 @@ class TestTheServerDerivesAnOmittedTier:
         async with async_session_factory() as session:
             stored = await _rows_of(session, run_id)
         assert stored[0].tier == "candidate"
+
+
+class TestTheChemistryTheServerReadsIsWrittenBack:
+    """An imported row carries this server's reading of its formula, not the
+    importer's - and carries it at all.
+
+    `plausibility` is the factor that turns a fit into the evidence a tier is
+    read off. The peak inspector renders it as this server's judgement of the
+    chemistry, so leaving it absent showed an imported row with a tier, an
+    evidence, and a blank where the number connecting them belongs.
+    """
+
+    @pytest.mark.asyncio
+    async def test_the_servers_plausibility_is_written(
+        self, editor_client, import_sample, feature_enabled, async_session_factory
+    ):
+        response = await _post(editor_client, import_sample, _body([_row("peak-0")]))
+        run_id = response.json()["data"][0]["peak_assignment_run_id"]
+
+        async with async_session_factory() as session:
+            row = (await _rows_of(session, run_id))[0]
+
+        # C6H12O6 sits in the common element-ratio range, so it weighs nothing
+        # and the evidence is the bare fit.
+        assert row.provenance["plausibility"] == 1.0
+        assert row.provenance["evidence"] == 0.92
+
+    @pytest.mark.asyncio
+    async def test_an_importers_own_plausibility_is_overwritten(
+        self, editor_client, import_sample, feature_enabled, async_session_factory
+    ):
+        """Derived, never asserted - the same rule as `evidence`, and for the
+        same reason: the inspector presents it as this server's reading."""
+        response = await _post(
+            editor_client,
+            import_sample,
+            _body([_row("peak-0", provenance={"plausibility": 0.01})]),
+        )
+        run_id = response.json()["data"][0]["peak_assignment_run_id"]
+
+        async with async_session_factory() as session:
+            row = (await _rows_of(session, run_id))[0]
+
+        assert row.provenance["plausibility"] == 1.0
+
+    @pytest.mark.asyncio
+    async def test_a_row_with_no_formula_carries_no_plausibility(
+        self, editor_client, import_sample, feature_enabled, async_session_factory
+    ):
+        """There is nothing to weigh, and a dash is the honest rendering."""
+        response = await _post(
+            editor_client,
+            import_sample,
+            _body(
+                [
+                    _row(
+                        "peak-0",
+                        assigned_formula=None,
+                        fit_score=None,
+                        tier="unassigned",
+                    )
+                ]
+            ),
+        )
+        run_id = response.json()["data"][0]["peak_assignment_run_id"]
+
+        async with async_session_factory() as session:
+            row = (await _rows_of(session, run_id))[0]
+
+        assert row.provenance is None or "plausibility" not in row.provenance
