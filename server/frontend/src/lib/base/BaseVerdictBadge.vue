@@ -77,12 +77,12 @@ const tooltip = computed(() => {
   cursor: default;
 }
 .verdict-icon.confirmed {
-  color: var(--p-green-600, #1f9d63);
+  color: var(--state-success);
 }
 .verdict-icon.rejected {
-  color: var(--p-red-500, #ef4444);
+  color: var(--state-error);
 }
 .verdict-icon.unsure {
-  color: var(--p-amber-500, #f59e0b);
+  color: var(--state-warning);
 }
 </style>
