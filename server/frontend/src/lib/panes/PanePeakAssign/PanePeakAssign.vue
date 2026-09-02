@@ -1226,17 +1226,17 @@ const demotedCount = computed(() => {
   color: var(--p-surface-400, #9aa2b1);
 }
 .poor-icon {
-  color: var(--p-orange-500, #f59e0b);
+  color: var(--state-warning);
   font-size: 0.68rem;
   margin-right: 0.2rem;
 }
 .tie-flag {
-  color: var(--p-orange-500, #f59e0b);
+  color: var(--state-warning);
   font-weight: 600;
   font-size: 0.72rem;
 }
 .prov-flag {
-  color: var(--p-orange-500, #f59e0b);
+  color: var(--state-warning);
   font-size: 0.66rem;
 }
 /* Adduct-corroboration badge: a real compound seen via several adducts. */
@@ -1248,9 +1248,9 @@ const demotedCount = computed(() => {
   font-size: 0.74rem;
   padding: 0.12rem 0.55rem;
   border-radius: 100px;
-  color: var(--p-teal-600, #0d9488);
-  background: color-mix(in srgb, var(--p-teal-500, #14b8a6) 12%, transparent);
-  border: 1px solid color-mix(in srgb, var(--p-teal-500, #14b8a6) 32%, transparent);
+  color: var(--state-info);
+  background: color-mix(in srgb, var(--state-info) 12%, transparent);
+  border: 1px solid color-mix(in srgb, var(--state-info) 32%, transparent);
   cursor: default;
 }
 .corroboration .pi {

@@ -898,10 +898,10 @@ watch(
   font-weight: 700;
 }
 .tier-stat.assigned b {
-  color: var(--p-green-600, #1f9d63);
+  color: var(--state-success);
 }
 .tier-stat.candidate b {
-  color: var(--p-amber-600, #c9861f);
+  color: var(--state-warning);
 }
 .tier-stat.below_assignability b,
 .tier-stat.unassigned b {

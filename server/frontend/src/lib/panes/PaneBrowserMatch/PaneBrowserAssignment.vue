@@ -910,10 +910,10 @@ const breadcrumb = computed(() => {
   font-weight: 700;
 }
 .tier-stat.assigned b {
-  color: var(--p-green-600, #1f9d63);
+  color: var(--state-success);
 }
 .tier-stat.candidate b {
-  color: var(--p-amber-600, #c9861f);
+  color: var(--state-warning);
 }
 .tier-stat.reagent b {
   color: #8a5ed0;
@@ -958,7 +958,7 @@ const breadcrumb = computed(() => {
   opacity: 0.45;
 }
 .pcorrect .prov {
-  color: var(--p-orange-500, #f59e0b);
+  color: var(--state-warning);
   margin-left: 0.05rem;
 }
 /* Adduct-corroboration marker beside P(correct). */
@@ -969,7 +969,7 @@ const breadcrumb = computed(() => {
   margin-left: 0.4rem;
   font-size: 0.7rem;
   font-variant-numeric: tabular-nums;
-  color: var(--p-teal-600, #0d9488);
+  color: var(--state-info);
 }
 .corrob-mark .pi {
   font-size: 0.75rem;
