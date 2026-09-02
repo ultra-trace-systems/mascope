@@ -16,9 +16,12 @@ a vote across the samples the peak appears in, not a threshold on one number.
 - **unassigned** &mdash; no composition explained the peak.
 
 A run computed outside Mascope and imported can carry a second tier: the one the
-engine that produced it reached on its own terms. Mascope's tier is always its
-own reading of the evidence, so where the two differ the chip is marked with a
-scales icon and the hover text names the other verdict. A different engine can
+engine that produced it reached on its own terms. Such a run shows it in its own
+**engine tier** column beside Mascope's, and Mascope's tier is always its own
+reading of the evidence &mdash; so where the two differ the chip is also marked
+with a scales icon and the hover text names the other verdict. A dash in the
+engine-tier column means that engine stated no tier for the peak, which is
+usual: an engine typically tiers only the peaks it committed a formula to. A different engine can
 weigh things this one does not &mdash; how crowded the mass is, whether the
 isotope pattern was corroborated &mdash; so a disagreement is a peak worth
 looking at rather than an error. Only Mascope's own tier is used when peaks are
