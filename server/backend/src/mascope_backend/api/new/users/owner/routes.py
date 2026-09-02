@@ -131,8 +131,9 @@ async def owner_require_password_change_route(
             f"{data['flagged_count']} of {data['total_users']} user accounts must "
             "now set a new password - including your own. Everyone keeps signing "
             "in with their current password until they change it. Changing it "
-            "revokes that user's API access tokens (SDK, notebooks, instrument "
-            "agents), which must be regenerated or re-paired."
+            "revokes that user's API access tokens (SDK, notebooks), which must "
+            "be regenerated. Paired instrument agents authenticate as their own "
+            "machine accounts and are not affected."
         ),
         "data": data,
     }

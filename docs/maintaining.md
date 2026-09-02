@@ -233,7 +233,36 @@ Each run:
 
 An applied update also moves the deployment checkout to the release it
 deployed, so a reboot redeploys that same release and `mascope prod doctor`
-stays clean. The move is deliberately cautious - it never discards local
+stays clean.
+
+!!! warning "Reinstall the CLI after an unattended update"
+
+    The updater deliberately never reinstalls itself - a self-reinstall
+    mid-run is risky, more so unattended - but it *does* move the checkout,
+    which installs the new release's `docker-compose.yaml` beside the **old**
+    CLI. `prod doctor` will not catch this: it compares the image tag the
+    checkout would deploy against the running containers, and both are already
+    on the new release, so it reports clean.
+
+    The next `mascope prod up` - a restart, or a reboot - then drives the new
+    compose file with the old CLI. If the release added a compose secret, as
+    2.0.0 does with `mfa_encryption_key`, compose refuses to create the backend
+    *after* stopping the running one, and the server comes up with no backend.
+
+    So when the timer reports a release applied, reinstall the CLI from the
+    checkout before the next restart:
+
+    ```sh
+    cd "$(mascope path)"
+    CFLAGS="-std=c17" uv tool install --force --reinstall --python 3.12 .       --with-executables-from mascope-cli
+    ```
+
+    For a release with migrations this is worth doing deliberately rather than
+    leaving to the timer - see [Rolling out a release across several
+    servers](#rolling-out-a-release-across-several-servers), which puts the CLI
+    first by design.
+
+The checkout move is deliberately cautious - it never discards local
 changes - so on a checkout with modifications (or one whose `origin` cannot
 be reached to fetch the tag) the update still succeeds with a warning, and
 doctor reports the gap as DRIFT until the checkout is aligned by hand:
@@ -500,13 +529,56 @@ instead.
 ### Effect on API access tokens
 
 When a user changes their password, that user's access tokens are revoked. The
-file-converter token is reissued automatically, but **SDK and notebook tokens and
-instrument-agent pairings are not** - their holders must regenerate or re-pair
-them. Across a whole deployment that adds up, so schedule a deployment-wide
-requirement outside acquisition hours.
+file-converter token is reissued automatically, but **SDK and notebook tokens are
+not** - their holders must regenerate them.
+
+A **paired instrument agent is not affected**: its credential belongs to the
+machine account the pairing created, not to the person who approved it, so no
+password change touches it. The exception is an agent still running on a
+pre-registry token issued to a human before it was re-paired - that token sits on
+the person's row and is revoked with the rest. Re-pair those machines before a
+deployment-wide password requirement, not after.
 
 Requiring the change does not revoke anything by itself; tokens are revoked per
 user, as each one complies.
+
+### Paired instrument machines
+
+An instrument agent authenticates as a **device**: approving a pairing request
+creates a registered device named after the machine, a dedicated machine account
+the agent signs in as, and a device-bound token. **Paired machines** under
+Settings lists them with their service and when each was last seen, and lets you
+rename or revoke one machine on its own.
+
+Two consequences worth knowing before an upgrade:
+
+- **Revoking is per machine.** Revoking a device deactivates its machine account
+  and clears its tokens, stopping that machine and nothing else. *Regenerate* -
+  which replaces the tokens issued to **you** - no longer affects a paired agent,
+  because the credential is not yours.
+- **The Settings list is scoped to the devices you sponsor.** Reviewing or
+  revoking someone else's device is an API call, not a click:
+  `GET /api/auth/devices/all` and `DELETE /api/auth/devices/{id}`, within the
+  usual user-management role ceiling.
+
+#### Requiring paired credentials
+
+Agent tokens issued before the device registry existed keep working, so a
+deployment upgrading into this does not have to re-pair every machine the same
+day. Once every agent machine **has** been re-paired, close that door:
+
+```toml
+[backend]
+require_device_tokens = true
+```
+
+then `mascope prod up`. Any `file-agent`, `tof-agent` or `export-agent` bearer
+token with no device behind it is then refused with a message telling the
+operator to re-pair, instead of being accepted as a person's token. It ships
+**off**, and turning it on before a machine is re-paired stops that machine's
+uploads - so treat it as the last step of the rollout, not the first. Personal
+and SDK tokens are unaffected either way: the rule applies only to agent
+services.
 
 ### Two-factor authentication
 
@@ -614,29 +686,46 @@ Unset or `0` (the default) keeps the errors-only behavior; values outside
 GlitchTip's Postgres growth on the monitoring box before raising it -
 transactions are far more numerous than errors.
 
-## Optional features
+## Feature settings
+
+### Peak assignment
 
 **Peak assignment** (assign a chemical composition to every peak - see
 [the user docs](user/how-it-works/peak-assignment.md)) ships **on**. What that
 costs a server is one database-stage assignment run per newly processed sample:
-some extra processing time, and one database row per detected peak per run, so
-watch disk (see [Disk space](#disk-space)) and keep the reclaim timer below in
-place. Targeted matching is unaffected - assignment is an addition, not a
+some extra processing time, and one database row per detected peak per run.
+Targeted matching is unaffected - assignment is an addition, not a
 replacement - and samples processed before the upgrade are not assigned
 retroactively; run assignment explicitly from the UI for those.
 
-To switch it off, set it in the env's config toml:
+That per-sample ledger is a **permanent** cost, not a temporary one. The
+retention pass described under [Reclaiming assignment
+runs](#reclaiming-assignment-runs) bounds *re-assignment* of the same sample; a
+server that only assigns at ingest produces one run per sample, which the pass
+never evicts. Batch peaks add a second row per observed peak per sample, and the
+pass does not touch those at all. Size the database for the ledger you are
+keeping, not for what the timer might reclaim - see [Disk space](#disk-space).
+
+#### Turning peak assignment off
+
+Set it in the env's config toml (see [Where a deployment's settings
+live](#where-a-deployments-settings-live)):
 
 ```toml
 [meta]
 peak_assignment = false
 ```
 
-and restart the stack (`mascope prod up`), or set `MASCOPE_PEAK_ASSIGNMENT=0` in
-`/etc/environment` to flip the backend without editing the toml (remember host
-env vars apply at login - start the stack from a fresh shell). Samples stop
-being assigned at ingest, the write routes return 403 again, and the assignment
-views disappear from the UI.
+and restart the stack (`mascope prod up`). Samples stop being assigned at
+ingest, the write routes return 403 again, and the assignment views disappear
+from the UI.
+
+There is also a `MASCOPE_PEAK_ASSIGNMENT` environment variable, but it is a
+**development knob, not an operator switch**: it is read by the backend only,
+and it is not forwarded into the backend container by the production compose
+file. Setting it does not move the web app, which reads the `[meta]` value - so
+on a stack it would at best leave the assignment views on screen over write
+routes answering 403. Use the toml.
 
 !!! note "One switch, both halves - no image rebuild"
 
@@ -679,10 +768,15 @@ out still age out and an empty table costs one cheap query. Tune the policy in
 `/etc/mascope/prune.env` with `MASCOPE_PRUNE_KEEP_PER_SAMPLE` (default 3),
 `MASCOPE_PRUNE_KEEP_PER_SAMPLE_TOTAL` (default 12),
 `MASCOPE_PRUNE_KEEP_FAILED_HOURS` (default 24),
-`MASCOPE_PRUNE_KEEP_RUNNING_HOURS` (default 72, floored at 12 so runs that may
+`MASCOPE_PRUNE_KEEP_RUNNING_HOURS` (default 72, minimum 12 so runs that may
 still be executing cannot be pruned out from under a worker) and
-`MASCOPE_PRUNE_KEEP_IMPORTING_HOURS` (default 24, floored at 1); disable it
+`MASCOPE_PRUNE_KEEP_IMPORTING_HOURS` (default 24, minimum 1); disable it
 entirely with `sudo systemctl disable --now mascope-assignment-prune.timer`.
+A value **below** one of those minimums is rejected rather than raised to it:
+the pass exits non-zero and prunes nothing that night, so check
+`journalctl -u mascope-assignment-prune.service` after changing one. Leaving a
+variable unset, or setting it to something that is not an integer, uses the
+default.
 
 The keep-newest budget counts **per sample and engine**, which matters on a
 server where assignment runs are also published from an external engine rather

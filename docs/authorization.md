@@ -155,5 +155,5 @@ Each user can generate a personal **access token** for programmatic access (e.g.
 | Delete a workspace                           | Owner of that workspace                             |
 | Register new user accounts                   | Global admin (guests/editors) or owner (any role)   |
 | Manage instrument configs / ionization modes | Global editor role or higher                        |
-| Run calibration                              | Global admin role or higher                         |
+| Run calibration                              | Admin in the instrument's workspace                 |
 | Access data via Jupyter / SDK                | Access token + same permissions as the user account |

@@ -173,9 +173,9 @@ const user = {
       message:
         'Every Mascope account - including your own - will be asked to set a new password. ' +
         'Everyone keeps signing in with their current password until they change it. Once a ' +
-        'user changes theirs, their API access tokens (SDK, notebooks, instrument agents) stop ' +
-        'working and must be regenerated or re-paired. You will be asked to set yours ' +
-        'immediately. Only a server administrator can reverse this.',
+        'user changes theirs, their API access tokens (SDK, notebooks) stop working and must ' +
+        'be regenerated. Paired instrument agents are not affected. You will be asked to set ' +
+        'yours immediately. Only a server administrator can reverse this.',
       accept: async () => {
         // PrimeVue does not await this callback, so a rejection here would be
         // unhandled - and the dialog would sit open with nothing explaining
