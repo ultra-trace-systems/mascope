@@ -458,8 +458,11 @@ class UserManager(IntegerIDMixin, BaseUserManager[User, int]):
             # Uploads need the file-converter token, and it is otherwise only
             # minted at login or on promotion to editor, so the wipe above would
             # leave editor+ users unable to upload until their next sign-in. SDK
-            # and instrument-agent tokens stay revoked on purpose: those are
-            # handed out explicitly and their holders re-pair.
+            # tokens stay revoked on purpose: those are handed out explicitly
+            # and their holders regenerate them. A paired agent is untouched
+            # either way - its token belongs to the device's machine account,
+            # not to this user - except for a pre-registry token still issued to
+            # the person, which is revoked with the rest.
             editor_level = auth_settings.ROLE_ACCESS_LEVELS.get("editor")
             if user.role_id is not None and user.role_id >= editor_level:
                 await regenerate_access_token(user=user, service_name="file-converter")

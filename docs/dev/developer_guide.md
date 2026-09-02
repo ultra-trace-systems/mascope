@@ -702,12 +702,16 @@ now a stack restart, not an image rebuild.
 
 | Flag | Default | What it gates |
 |---|---|---|
-| `peak_assignment` | `true` | [Peak-centric assignment](peak_assignment_paradigm.md): assignment on sample ingest, the rescored composition search, and the `/api/peak-assignments` write routes (403 while off; reads stay open). It **adds** the assignment views; the targeted workflow, the Match tab included, renders either way. Env override: `MASCOPE_PEAK_ASSIGNMENT=0` to switch it off, `=1` to force it on. |
+| `peak_assignment` | `true` | [Peak-centric assignment](peak_assignment_paradigm.md): assignment on sample ingest, the rescored composition search, and the `/api/peak-assignments` write routes (403 while off; reads stay open). It **adds** the assignment views; the targeted workflow, the Match tab included, renders either way. `MASCOPE_PEAK_ASSIGNMENT=0`/`=1` overrides it **for the backend only**, and is not forwarded by the production compose file - a development knob, not a deployment switch. |
 
 Read it via `peak_assignment_enabled()`
 (`api/new/peak_assignments/config.py`) on the backend and `peakAssignmentEnabled`
 (`src/lib/features.js`) on the frontend rather than touching `runtime.meta` directly, so
-the env override and the default both apply in one place.
+the default applies in one place per half. Note the two halves are not symmetric: the
+backend helper consults `MASCOPE_PEAK_ASSIGNMENT` first, while `features.js` reads only
+the published `[meta]` value - the frontend has no env override and cannot have one, since
+it runs in a browser. Setting the variable alone therefore splits the two, which is why
+the toml is the deployment switch.
 
 ### Mode-Specific Defaults
 

@@ -15,8 +15,8 @@ Each peak gets exactly one assignment per run, together with a **fit score** and
     composition search reports assignment confidence.
 
     A deployment that would rather not assign at ingest can switch it off: set
-    `peak_assignment = false` under `[meta]` in the environment's config toml (or export
-    `MASCOPE_PEAK_ASSIGNMENT=0`) and restart the stack — that is the whole procedure. With
+    `peak_assignment = false` under `[meta]` in the environment's config toml and
+    restart the stack — that is the whole procedure. With
     it off nothing is assigned when a sample is processed, the composition search
     reports the familiar match score, the Sample tab keeps its peak ledger, and the API
     refuses to launch assignment runs (the write routes return 403; reads stay open, so

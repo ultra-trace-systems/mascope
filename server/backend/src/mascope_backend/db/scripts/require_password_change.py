@@ -147,9 +147,9 @@ async def run_require_password_change() -> None:
         "refused; this script sends no live notification."
     )
     runtime.logger.info(
-        "Each user's API access tokens (SDK, notebooks, instrument agents) are "
-        "revoked once they change their password, and must be regenerated or "
-        "re-paired."
+        "Each user's API access tokens (SDK, notebooks) are revoked once they "
+        "change their password, and must be regenerated. Paired instrument "
+        "agents authenticate as their own machine accounts and are not affected."
     )
     runtime.logger.info("=" * 80)
 
