@@ -693,10 +693,12 @@ transactions are far more numerous than errors.
 **Peak assignment** (assign a chemical composition to every peak - see
 [the user docs](user/how-it-works/peak-assignment.md)) ships **on**. What that
 costs a server is one database-stage assignment run per newly processed sample:
-some extra processing time, and one database row per detected peak per run.
-Targeted matching is unaffected - assignment is an addition, not a
-replacement - and samples processed before the upgrade are not assigned
-retroactively; run assignment explicitly from the UI for those.
+some extra processing time, and **about 1 KB of database per detected peak** -
+one ledger row plus one batch-peak occurrence, so roughly 2-8 MB for a typical
+sample of 2,000-8,000 peaks, which on most instruments is comparable to the raw
+data the sample itself brings. Targeted matching is unaffected - assignment is
+an addition, not a replacement - and samples processed before the upgrade are
+not assigned retroactively; run assignment explicitly from the UI for those.
 
 That per-sample ledger is a **permanent** cost, not a temporary one. The
 retention pass described under [Reclaiming assignment
@@ -705,6 +707,23 @@ server that only assigns at ingest produces one run per sample, which the pass
 never evicts. Batch peaks add a second row per observed peak per sample, and the
 pass does not touch those at all. Size the database for the ledger you are
 keeping, not for what the timer might reclaim - see [Disk space](#disk-space).
+
+Two `[meta]` settings bound the ingest-time cost without switching the feature
+off - the views, on-demand runs and imports keep working either way:
+
+```toml
+[meta]
+peak_assignment_on_ingest = false          # assign on demand only (default true)
+peak_assignment_ingest_max_peaks = 20000   # skip denser samples at ingest (default 100000; 0 = no ceiling)
+```
+
+`peak_assignment_on_ingest = false` is the setting for a high-throughput
+instrument: at tens of thousands of samples a month, ingest-time ledgers - the
+database stage only, mostly peaks it could not assign - are tens of gigabytes a
+month written for nobody in particular. The ceiling guards the other end: one
+very dense acquisition (hundreds of thousands of peaks) is hundreds of
+megabytes of ledger, so a sample above it is logged and left for an explicit
+run. Both take effect on the next stack restart.
 
 #### Turning peak assignment off
 
@@ -756,6 +775,15 @@ complete - and re-assigning a sample adds a whole new run beside the old one,
 so on a server where assignment is re-run routinely `peak_assignment` grows
 without bound.
 
+That re-run growth is all the pass below bounds. A sample's ingest run is its
+only run until someone re-assigns it, and one run per sample is never
+superseded, so the baseline ledger described under
+[Peak assignment](#peak-assignment) stays whatever was acquired. Batch-peak
+occurrences (`batch_peak_occurrence`, one per peak per sample for the latest
+run) are bounded the same way - replaced when a sample is re-folded, never
+accumulated - and the prune does not touch them either: a pruned run leaves
+its occurrences in place with their assignment link set to NULL.
+
 A deployment provisioned by `tooling/ubuntu.sh` handles this automatically:
 `mascope-assignment-prune.timer` runs a retention pass nightly at 03:30 and is
 **enabled by default**. Each pass keeps the newest few completed runs per
@@ -765,7 +793,7 @@ deleting a run cascades to its rows. It deletes only superseded derived data -
 assignments are recomputable by re-running assignment - and it runs whether or
 not the `peak_assignment` flag is enabled, since ledgers written before opting
 out still age out and an empty table costs one cheap query. Tune the policy in
-`/etc/mascope/prune.env` with `MASCOPE_PRUNE_KEEP_PER_SAMPLE` (default 3),
+`/etc/mascope/prune.env` with `MASCOPE_PRUNE_KEEP_PER_SAMPLE` (default 2),
 `MASCOPE_PRUNE_KEEP_PER_SAMPLE_TOTAL` (default 12),
 `MASCOPE_PRUNE_KEEP_FAILED_HOURS` (default 24),
 `MASCOPE_PRUNE_KEEP_RUNNING_HOURS` (default 72, minimum 12 so runs that may

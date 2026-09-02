@@ -1494,33 +1494,41 @@ class PeakAssignment(Base):
     __tablename__ = "peak_assignment"
 
     peak_assignment_id: Mapped[str] = mapped_column(String(32), primary_key=True)
+    # No index of its own: the (run, peak) unique constraint below leads with
+    # this column, so every lookup by run - the ledger read, the batch fold,
+    # the run-delete cascade - already has one. A second index here cost
+    # 1.5 MB per 200k rows for nothing.
     peak_assignment_run_id: Mapped[str] = mapped_column(
         String(16),
         ForeignKey(
             "peak_assignment_run.peak_assignment_run_id",
             ondelete="CASCADE",
         ),
-        index=True,
     )
     sample_item_id: Mapped[str] = mapped_column(
         String(16),
         ForeignKey("sample_item.sample_item_id", ondelete="CASCADE"),
         index=True,
     )
-    sample_peak_id: Mapped[str] = mapped_column(String(20), index=True)
+    # Not indexed on its own either. Nothing queries the ledger by a bare peak
+    # id - verification identity, occurrence and import lookups filter other
+    # tables or go through the run-scoped constraint - and an index over a
+    # 20-char random string on every row was the third-largest structure on
+    # the table.
+    sample_peak_id: Mapped[str] = mapped_column(String(20))
     sample_peak_mz: Mapped[float] = mapped_column(Float)
     sample_peak_intensity: Mapped[float] = mapped_column(Float)
     sample_peak_tof: Mapped[Optional[float]] = mapped_column(Float)
     role: Mapped[str] = mapped_column(String(16), server_default=text("'unassigned'"))
     assigned_formula: Mapped[Optional[str]] = mapped_column(String(256))
     ion_formula: Mapped[Optional[str]] = mapped_column(String(4096))
+    # Indexed only where set - see the partial indexes in __table_args__.
     ionization_mechanism_id: Mapped[Optional[str]] = mapped_column(
         String(16),
         ForeignKey(
             "ionization_mechanism.ionization_mechanism_id",
             ondelete="SET NULL",
         ),
-        index=True,
     )
     isotope_label: Mapped[Optional[str]] = mapped_column(String(64))
     # Full isotopologue formula of the matched isotope (e.g. "[15N]CH5BrNO+"),
@@ -1545,20 +1553,18 @@ class PeakAssignment(Base):
     # abundance as observed_rel / (1 + abundance_error) - keep it signed.
     abundance_error: Mapped[Optional[float]] = mapped_column(Float)
     tier: Mapped[str] = mapped_column(String(24), server_default=text("'unassigned'"))
+    # The three below are indexed only where set - see __table_args__.
     target_compound_id: Mapped[Optional[str]] = mapped_column(
         String(16),
         ForeignKey("target_compound.target_compound_id", ondelete="SET NULL"),
-        index=True,
     )
     target_ion_id: Mapped[Optional[str]] = mapped_column(
         String(16),
         ForeignKey("target_ion.target_ion_id", ondelete="SET NULL"),
-        index=True,
     )
     owner_peak_assignment_id: Mapped[Optional[str]] = mapped_column(
         String(32),
         ForeignKey("peak_assignment.peak_assignment_id", ondelete="SET NULL"),
-        index=True,
     )
     # The owner reference as an imported row expressed it: the owning row's
     # sample_peak_id, which identifies it uniquely within a run. A client cannot
@@ -1585,6 +1591,34 @@ class PeakAssignment(Base):
         CheckConstraint(
             "fit_score IS NULL OR fit_score BETWEEN 0 AND 1",
             name="fit_score_range",
+        ),
+        # The four nullable references, indexed only where they are set. They
+        # exist for the foreign keys' SET NULL actions and the family/target
+        # lookups, none of which ever asks for a NULL - while most of a
+        # ledger's rows carry one (every unassigned peak, every peak that is
+        # not an isotopologue), so indexing the NULLs too made each index two
+        # to six times the size for entries no query can use. A strict
+        # `col = $1` implies `col IS NOT NULL`, so the planner - and the
+        # referential-action queries - still reach these.
+        Index(
+            "ix_peak_assignment_ionization_mechanism_id",
+            "ionization_mechanism_id",
+            postgresql_where=text("ionization_mechanism_id IS NOT NULL"),
+        ),
+        Index(
+            "ix_peak_assignment_target_compound_id",
+            "target_compound_id",
+            postgresql_where=text("target_compound_id IS NOT NULL"),
+        ),
+        Index(
+            "ix_peak_assignment_target_ion_id",
+            "target_ion_id",
+            postgresql_where=text("target_ion_id IS NOT NULL"),
+        ),
+        Index(
+            "ix_peak_assignment_owner_peak_assignment_id",
+            "owner_peak_assignment_id",
+            postgresql_where=text("owner_peak_assignment_id IS NOT NULL"),
         ),
     )
 
@@ -1707,22 +1741,28 @@ class BatchPeakOccurrence(Base):
 
     Membership is captured append-only at fold-in time. ``sample_peak_id`` equals
     ``PeakAssignment.sample_peak_id``, so a member's per-sample assignment joins
-    for free (``peak_assignment_id`` records the specific row folded in). Unique
-    on (batch_peak_id, sample_item_id): a batch peak has at most one member per
-    sample -- one y-value per trace per sample.
+    for free (``peak_assignment_id`` records the specific row folded in). Keyed
+    on (batch_peak_id, sample_item_id) - a member's identity, and the only key
+    the row needs: a batch peak has at most one member per sample, one y-value
+    per trace per sample, and nothing addresses an occurrence any other way.
     """
 
     __tablename__ = "batch_peak_occurrence"
 
-    batch_peak_occurrence_id: Mapped[str] = mapped_column(String(32), primary_key=True)
+    # A composite key rather than a surrogate: a 32-char random id cost a
+    # primary-key index the size of the unique constraint it duplicated plus
+    # 33 bytes on every row, and nothing ever read it. Leading with the anchor,
+    # the key also serves the series fan-out (batch_peak_id -> points), which
+    # used to need an index of its own.
     batch_peak_id: Mapped[str] = mapped_column(
         String(16),
         ForeignKey("batch_peak.batch_peak_id", ondelete="CASCADE"),
-        index=True,
+        primary_key=True,
     )
     sample_item_id: Mapped[str] = mapped_column(
         String(16),
         ForeignKey("sample_item.sample_item_id", ondelete="CASCADE"),
+        primary_key=True,
         index=True,
     )
     sample_peak_id: Mapped[str] = mapped_column(String(20))
@@ -1743,14 +1783,6 @@ class BatchPeakOccurrence(Base):
     # Relationships
     batch_peak = relationship("BatchPeak", back_populates="batch_peak_occurrence")
     sample_item = relationship("SampleItem", back_populates="batch_peak_occurrence")
-
-    __table_args__ = (
-        UniqueConstraint(
-            "batch_peak_id",
-            "sample_item_id",
-            name="uq_batch_peak_occurrence_batch_peak_id_sample_item_id",
-        ),
-    )
 
 
 class AttributeTemplate(Base):

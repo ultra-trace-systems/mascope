@@ -19,10 +19,22 @@ filestore = './filestore'
 # it was on remain inspectable). Both sides read this same value at start, so
 # changing it takes a stack restart and nothing more (prod restarts the
 # frontend container too; in dev, restart the dev server).
-# Ledger rows are reclaimed with the prune_peak_assignment_runs script; a host
-# provisioned with tooling/ubuntu.sh runs it nightly on a timer, and any other
-# deployment should schedule it itself (docs/maintaining.md).
+# Superseded re-runs are reclaimed with the prune_peak_assignment_runs script
+# (a host provisioned with tooling/ubuntu.sh runs it nightly on a timer; any
+# other deployment should schedule it itself). A sample's ingest run is never
+# superseded, so that pass does not bound the ledger itself - the two settings
+# below do (docs/maintaining.md).
 peak_assignment = true
+# Ingest-time assignment can be bounded without switching the feature off -
+# the views, on-demand runs and imports keep working either way. Assignment at
+# ingest writes one ledger row and one batch-peak occurrence per detected peak
+# (about 1 KB per peak, 2-8 MB for a typical sample), permanently.
+# `peak_assignment_on_ingest = false` assigns on demand only (what a
+# high-throughput instrument wants); `peak_assignment_ingest_max_peaks` skips
+# (and logs) a sample denser than this at ingest, 0 meaning no ceiling. Both
+# take effect on restart.
+peak_assignment_on_ingest = true
+peak_assignment_ingest_max_peaks = 100000
 # Uploads: size cap (GB) for a single resumable (tus) upload, enforced by the
 # backend and used by the web uploader to size its own client-side limit (see
 # docs/maintaining.md). It lives here rather than in [backend] because both
