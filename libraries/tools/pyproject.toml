@@ -1,7 +1,7 @@
 [project]
 name = "mascope_tools"
 # CalVer without zero-padding (PEP 440 normalizes 06 -> 6 anyway).
-version = "2026.6.25"
+version = "2026.9.2"
 description = "Mascope's public library, containing tools for spectra postprocessing."
 classifiers = [
     "Topic :: Scientific/Engineering :: Atmospheric Science",
