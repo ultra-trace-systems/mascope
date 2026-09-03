@@ -99,43 +99,9 @@ export const usePeakAssignmentRun = defineStore('app.data.peakAssignment.run', (
       }
     )
 
-  // What copying this sample's assignments to its batch would do: the source
-  // run and every other sample of the batch with its eligibility. Read on
-  // demand by the copy dialog rather than held in the store - it is a staging
-  // question about one sample at one moment, not app state, and it is the
-  // partition the POST executes, so re-reading it is the point.
-  const copyPreview = (sampleItemId) =>
-    api.http.get(`/peak-assignments/sample/${sampleItemId}/copy-to-batch`, {
-      use: 'read',
-      type: 'preview_assignment_copy',
-      errors: 'inline'
-    })
-
-  // Copy this sample's assignments onto the batch's other samples. Resolves
-  // when the fan-out has been accepted; per-destination outcomes arrive as the
-  // copy_assignments_to_batch notification, and the ledgers refresh on the
-  // peak_assignment_reload the task emits when it finishes.
-  //
-  // `errors: 'inline'` for the same reason as `assign` above: the endpoint
-  // decides before it answers, so its 422 carries a reason the user can act on
-  // ("no completed run to copy") and the dialog shows that where the user
-  // asked, instead of the interceptor's generic failure toast.
-  const copyToBatch = (sampleItemId) =>
-    api.http.post(
-      `/peak-assignments/sample/${sampleItemId}/copy-to-batch`,
-      {},
-      {
-        use: 'process',
-        type: 'copy_assignments_to_batch',
-        errors: 'inline'
-      }
-    )
-
   return {
     ...data,
     latestCompleted,
-    assign,
-    copyPreview,
-    copyToBatch
+    assign
   }
 })

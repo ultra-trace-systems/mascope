@@ -46,10 +46,10 @@ def normalize_engine(
 
     :param engine: The engine name from the payload.
     :param allow_reserved: One reserved name this caller is trusted to stamp.
-        Only server-side callers pass it - the copy service publishes under its
-        reserved identity through the same import pipeline external clients use,
-        and this is the seam that lets it through. The HTTP route never forwards
-        it, so the reservation stays absolute at the API boundary.
+        Only server-side callers pass it - a server-side publisher of runs under a
+        reserved identity goes through the same import pipeline external clients
+        use, and this is the seam that lets it through. The HTTP route never
+        forwards it, so the reservation stays absolute at the API boundary.
     :return: ``(normalized_name, None)`` when acceptable, else ``(None, error)``.
     """
     name = (engine or "").strip()
