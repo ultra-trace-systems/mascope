@@ -13,6 +13,10 @@ from __future__ import annotations
 from sqlalchemy import select
 
 from mascope_backend.api.lib.api_features import api_controller
+from mascope_backend.api.new.peak_assignments.batch_peaks import (
+    mz_from_delta,
+    tier_name,
+)
 from mascope_backend.db import BatchPeak, BatchPeakOccurrence, async_session
 
 
@@ -135,7 +139,7 @@ async def get_batch_peak_series(
                 series["sample_item_ids"].append(sample_item_id)
                 series["sample_peak_ids"].append(sample_peak_id)
                 series["intensities"].append(intensity)
-                series["tiers"].append(occ_tier)
+                series["tiers"].append(tier_name(occ_tier))
 
         data = [
             {
@@ -246,10 +250,15 @@ async def get_batch_peak_counterpart(
                     BatchPeakOccurrence.batch_peak_id,
                     BatchPeakOccurrence.sample_item_id,
                     BatchPeakOccurrence.sample_peak_id,
-                    BatchPeakOccurrence.sample_peak_mz,
+                    BatchPeak.mz,
+                    BatchPeakOccurrence.mz_delta_ppm,
                     BatchPeakOccurrence.intensity,
                     BatchPeakOccurrence.tier,
                     BatchPeakOccurrence.peak_assignment_id,
+                )
+                .join(
+                    BatchPeak,
+                    BatchPeak.batch_peak_id == BatchPeakOccurrence.batch_peak_id,
                 )
                 .where(
                     BatchPeakOccurrence.batch_peak_id.in_(anchor),
@@ -260,7 +269,23 @@ async def get_batch_peak_counterpart(
             )
         ).first()
 
-    data = [dict(row._mapping)] if row is not None else []
+    # The member stores its m/z as an offset from the anchor and its tier as a
+    # code; the wire keeps the absolute m/z and the tier name it always had.
+    data = (
+        [
+            {
+                "batch_peak_id": row.batch_peak_id,
+                "sample_item_id": row.sample_item_id,
+                "sample_peak_id": row.sample_peak_id,
+                "sample_peak_mz": mz_from_delta(row.mz, row.mz_delta_ppm),
+                "intensity": row.intensity,
+                "tier": tier_name(row.tier),
+                "peak_assignment_id": row.peak_assignment_id,
+            }
+        ]
+        if row is not None
+        else []
+    )
     message = (
         f"Resolved peak '{sample_peak_id}' into sample '{target_sample_item_id}'"
         if data

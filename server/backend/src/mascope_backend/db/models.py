@@ -17,6 +17,7 @@ from fastapi_users_db_sqlalchemy.access_token import (
 )
 from sqlalchemy import (
     JSON,
+    REAL,
     TIMESTAMP,
     BigInteger,
     Boolean,
@@ -1943,34 +1944,39 @@ class BatchPeakOccurrence(Base):
         index=True,
     )
     sample_peak_id: Mapped[str] = mapped_column(String(20))
+    # The ledger row this member was folded from, when one exists: a member
+    # folded at ingest without a run links to none, so the index is partial.
     peak_assignment_id: Mapped[Optional[str]] = mapped_column(
         String(32),
         ForeignKey("peak_assignment.peak_assignment_id", ondelete="SET NULL"),
-        index=True,
     )
-    # Denormalized member fields (as MatchIsotope / PeakAssignment do): the peak's
-    # own m/z in this sample (for jitter/QC), its intensity (the chart y-value),
-    # and its per-sample assignment tier / fit / formula folded in.
-    sample_peak_mz: Mapped[float] = mapped_column(Float)
-    intensity: Mapped[Optional[float]] = mapped_column(Float)
-    tier: Mapped[Optional[str]] = mapped_column(String(24))
-    fit_score: Mapped[Optional[float]] = mapped_column(Float)
-    assigned_formula: Mapped[Optional[str]] = mapped_column(String(256))
+    # The member's own fields, in the smallest type that holds each: the row is
+    # written once per detected peak per sample, so its bytes are the batch
+    # ledger's cost. The peak's m/z is stored as its offset from the anchor's
+    # frozen m/z in ppm (``batch_peaks.mz_from_delta`` recovers it), the
+    # intensity (the chart y-value), fit and probability in single precision,
+    # and the tier and role as codes (``batch_peaks.TIER_CODES`` - the tier's
+    # rank - and ``ROLE_CODES``). The formula is not copied: ``candidate``
+    # names it in the anchor's registry.
+    mz_delta_ppm: Mapped[Optional[float]] = mapped_column(REAL)
+    intensity: Mapped[Optional[float]] = mapped_column(REAL)
+    tier: Mapped[Optional[int]] = mapped_column(SmallInteger)
+    fit_score: Mapped[Optional[float]] = mapped_column(REAL)
     # Which entry of the anchor's ``candidates`` this member's assignment is;
     # NULL for an unassigned member.
     candidate: Mapped[Optional[int]] = mapped_column(SmallInteger)
-    # The member's per-sample role ('M0', 'iso_child', ...) and, for an
-    # isotopologue, the anchor its owning peak folded into in the same sample.
-    # NULL when the owner is unknown or folded nowhere, in which case the member
-    # abstains from the family vote; SET NULL when the owner anchor goes.
-    role: Mapped[Optional[str]] = mapped_column(String(16))
+    # The member's per-sample role and, for an isotopologue, the anchor its
+    # owning peak folded into in the same sample. NULL when the owner is unknown
+    # or folded nowhere, in which case the member abstains from the family vote;
+    # SET NULL when the owner anchor goes.
+    role: Mapped[Optional[int]] = mapped_column(SmallInteger)
     owner_batch_peak_id: Mapped[Optional[str]] = mapped_column(
         String(16),
         ForeignKey("batch_peak.batch_peak_id", ondelete="SET NULL"),
     )
     # The member's calibrated probability, as its assignment's provenance
     # recorded it; NULL when uncalibrated.
-    p_correct: Mapped[Optional[float]] = mapped_column(Float)
+    p_correct: Mapped[Optional[float]] = mapped_column(REAL)
 
     # Relationships. Two foreign keys point at batch_peak (membership and the
     # family link), so the membership relationship names its own.
@@ -1989,6 +1995,11 @@ class BatchPeakOccurrence(Base):
             "ix_batch_peak_occurrence_owner_batch_peak_id",
             "owner_batch_peak_id",
             postgresql_where=text("owner_batch_peak_id IS NOT NULL"),
+        ),
+        Index(
+            "ix_batch_peak_occurrence_peak_assignment_id",
+            "peak_assignment_id",
+            postgresql_where=text("peak_assignment_id IS NOT NULL"),
         ),
     )
 

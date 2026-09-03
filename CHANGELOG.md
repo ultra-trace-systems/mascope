@@ -578,6 +578,23 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
 
 ### Changed
 
+- **The batch ledger's member row stores only what a trace point and a vote
+  need.** A member (one row per detected peak per sample in the batch ledger)
+  stored its peak's absolute m/z, its formula as text and its tier and role as
+  strings, all in double precision. It now stores the m/z as an offset from its
+  anchor, the tier and role as small integer codes, intensity, fit and
+  probability in single precision, and no formula copy - the anchor's candidate
+  registry names it. Measured on a real 32-sample batch whose members are all
+  linked to ledger rows: the member tuple went from 165 to 136 bytes and the
+  table from 303 to 274 bytes per member with its indexes; a member folded at
+  ingest without a run carries no ledger link and no index entry for it, about
+  200 bytes in all against the roughly 1,000 a ledger row and its occurrence
+  cost before this epic. The m/z recovered from the offset matched the ledger
+  row's own to nine decimals on every one of the batch's 28,810 members.
+  Nothing changes on the wire: the series, counterpart and derived-ledger reads
+  return the same absolute m/z and tier names they always did. One migration,
+  converting in place.
+
 - **Ingest can fold a sample into the batch ledger without writing a run.** A
   new `[meta]` setting, `peak_assignment_ingest_ledger`, chooses what an
   ingest-time assignment writes: `"sample"` (the default, unchanged) writes a
