@@ -11,6 +11,8 @@ These pin both, including the rows that never had the pair and the rows written
 before the move that still carry their own.
 """
 
+import pytest
+
 from mascope_backend.api.new.peak_assignments.service import (
     _provenance_scalars,
     provenance_with_calibration,
@@ -20,6 +22,32 @@ from mascope_backend.api.new.peak_assignments.service import (
 _CURVE = {"instrument": "orbi", "provisional": True, "source": "demo goldens"}
 _DATABASE_ROW = {"confidence": 1.0, "evidence": 0.85, "p_correct": 0.91}
 _UNTARGETED_ROW = {"plausibility": 1.0, "evidence": 0.42}
+
+#: Every provenance shape the column can hold, for the agreement test below.
+_SHAPES = {
+    "a row written after the move": {"p_correct": 0.91},
+    "a row carrying its own block": {
+        **_DATABASE_ROW,
+        "calibrated": True,
+        "calibration": {"provisional": False},
+    },
+    "a row carrying calibrated alone": {**_DATABASE_ROW, "calibrated": False},
+    "a row carrying calibration alone": {
+        **_DATABASE_ROW,
+        "calibration": {"provisional": False},
+    },
+    "an uncalibrated legacy row": {
+        "p_correct": None,
+        "calibrated": False,
+        "calibration": None,
+    },
+    "an untargeted row": _UNTARGETED_ROW,
+    "an imported row with the client's own calibrated": {
+        "engine_note": "external",
+        "calibrated": True,
+    },
+    "an empty blob": {},
+}
 
 
 class TestProvenanceWithCalibration:
@@ -82,3 +110,21 @@ class TestProvenanceScalars:
         scalars = _provenance_scalars(row, _CURVE)
         assert scalars["evidence"] == 0.85
         assert scalars["corroboration_adducts"] == 2
+
+
+@pytest.mark.parametrize("provenance", _SHAPES.values(), ids=list(_SHAPES))
+def test_the_detail_fold_and_the_ledger_scalars_agree(provenance):
+    """One row, two readers, one answer.
+
+    The detail response carries both: the folded `provenance` the inspector
+    reads its provisional marker out of, and the flattened
+    `p_correct_provisional` the ledger column renders. They are produced by
+    different functions on adjacent lines, so a row they resolve differently
+    makes a single response contradict itself - `calibrated: false` beside a
+    provisional flag read off the run. Both go through `_row_calibration`,
+    and this is what says they still do.
+    """
+    folded = provenance_with_calibration(dict(provenance), _CURVE)
+    detail_curve = folded.get("calibration") if isinstance(folded, dict) else None
+    ledger = _provenance_scalars(dict(provenance), _CURVE)
+    assert (detail_curve or {}).get("provisional") == ledger["p_correct_provisional"]

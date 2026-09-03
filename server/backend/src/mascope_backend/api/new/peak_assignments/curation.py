@@ -75,6 +75,9 @@ from mascope_backend.api.new.peak_assignments.schemas import (
     PromoteAlternativeBody,
     SetAssignmentBody,
 )
+from mascope_backend.api.new.peak_assignments.service import (
+    provenance_with_calibration,
+)
 from mascope_backend.api.new.peak_assignments.tiers import (
     TIER_UNASSIGNED,
     TIERS,
@@ -1186,9 +1189,18 @@ async def curate_assignment(
         # would be the alternative, and an expired attribute read on an async
         # session is a lazy load - which raises rather than reloading.
         sample_peak_id = assignment.sample_peak_id
-        records = [assignment.to_dict()] + [
-            child.to_dict() for child in [*displaced, *restored]
-        ]
+        # The run's confidence calibration folded back in, exactly as the
+        # assignment detail read does it: these are full detail records, and a
+        # row restored from its archive carries a `p_correct` whose curve lives
+        # on the run. Without this the same row reads differently here and from
+        # the detail endpoint a request later.
+        records = []
+        for row in [assignment, *displaced, *restored]:
+            record = row.to_dict()
+            record["provenance"] = provenance_with_calibration(
+                record.get("provenance"), run.confidence_calibration
+            )
+            records.append(record)
 
         await session.commit()
 

@@ -1498,6 +1498,17 @@ _FORMULA_ONLY_KEYS = frozenset({"assigned_formula", "plausibility", "source"})
 _FORMULA_ONLY_SOURCE = "untargeted"
 
 
+def _is_plausibility(value) -> bool:
+    """Whether a value is a chemical plausibility: a JSON number, or null.
+
+    ``bool`` is excluded although it is an ``int`` in Python, so that a stored
+    ``true`` never reads back as a plausibility of 1.
+    """
+    return value is None or (
+        isinstance(value, (int, float)) and not isinstance(value, bool)
+    )
+
+
 def pack_alternative(entry):
     """Store a formula-only alternative as ``[formula, plausibility]``.
 
@@ -1505,8 +1516,12 @@ def pack_alternative(entry):
     a formula, a chemical plausibility and ``"source": "untargeted"`` - 99 % of
     every stored entry, at about 70 bytes each for 16 bytes of payload.
     Positionally they are a fifth of that. Anything else is stored as the dict
-    it is, so the packed form is unambiguous: a stored entry is a list exactly
-    when it was formula-only.
+    it is.
+
+    The value types are checked, not just the keys, so that the packed form is
+    exactly the domain :func:`unpack_alternative` claims: a two-element list of
+    a string and a number-or-null. Without that the two are not inverses, and
+    an entry could come back out of the column as something it never was.
 
     :param entry: One element of a row's ``alternatives`` list.
     :return: The two-element list, or ``entry`` itself when it is not the
@@ -1517,6 +1532,7 @@ def pack_alternative(entry):
         and set(entry) == _FORMULA_ONLY_KEYS
         and entry["source"] == _FORMULA_ONLY_SOURCE
         and isinstance(entry["assigned_formula"], str)
+        and _is_plausibility(entry["plausibility"])
     ):
         return [entry["assigned_formula"], entry["plausibility"]]
     return entry
@@ -1525,10 +1541,24 @@ def pack_alternative(entry):
 def unpack_alternative(entry):
     """The stored form back to the dict every reader expects.
 
+    Claims exactly what :func:`pack_alternative` produces and nothing else.
+    ``alternatives`` is unvalidated JSON on an imported row - "whatever the
+    publishing client sent" - so a stored entry can be a list this column never
+    wrote; anything but a string paired with a number or null is left alone
+    rather than read as chemistry the client did not state. An entry that *is*
+    that pair is indistinguishable from a packed one and is expanded, which
+    costs nothing: it round-trips back to the same two elements on the next
+    write.
+
     :param entry: One stored element of a row's ``alternatives`` list.
     :return: The formula-only dict for a packed entry; anything else as it is.
     """
-    if isinstance(entry, list) and len(entry) == 2:
+    if (
+        isinstance(entry, list)
+        and len(entry) == 2
+        and isinstance(entry[0], str)
+        and _is_plausibility(entry[1])
+    ):
         return {
             "assigned_formula": entry[0],
             "plausibility": entry[1],
@@ -1543,15 +1573,39 @@ class CompactAlternatives(TypeDecorator):
 
     Every writer (the engine's bulk insert, an import's, curation's attribute
     writes) and every reader goes through the column type, so the rest of the
-    code keeps seeing dicts. The read side accepts both forms: rows written
-    before the packing hold dicts until the migration that introduced this
-    type rewrote them, and it rewrote in SQL exactly what :func:`pack_alternative`
-    packs. ``None`` passes through both ways, so the JSON-null convention of the
-    other blobs is unchanged.
+    code keeps seeing dicts. The read side accepts both forms, since a row
+    written before the packing holds dicts until a migration rewrites it.
+
+    A ``TypeDecorator`` inherits the *behaviour* of its impl but not these
+    three flags, so each is restated. Left at the values ``TypeEngine`` supplies
+    they are all silently wrong for a JSON column:
+
+    - ``should_evaluate_none``: :class:`~sqlalchemy.types.JSON` declares it as a
+      property over ``none_as_null``, which the plain class attribute on
+      ``TypeEngine`` shadows. At the inherited ``False`` a ``None`` is not "a
+      value this type handles" but an absent one, so the ORM omits the column
+      from the INSERT entirely - storing SQL NULL where every other blob on the
+      row stores the JSON literal ``null``, and, because a bulk insert batches
+      only rows that name the same columns, splitting the ledger's single
+      ``executemany`` into one statement per run of rows that agree.
+    - ``hashable``: ``JSON`` sets it ``False`` because its values are lists and
+      dicts. At the inherited ``True``, uniquing a result that selects this
+      column raises a bare ``TypeError: unhashable type`` instead of the error
+      that names the column and the type.
+    - ``coerce_compared_value``: without it an indexed comparison
+      (``alternatives[0] == x``) coerces the right-hand side to *this* type
+      rather than the string an index key is, JSON-encoding it and casting it
+      ``::JSON`` - for which Postgres has no equality operator, so the query
+      fails at execution rather than at review.
     """
 
     impl = JSON
     cache_ok = True
+    should_evaluate_none = True
+    hashable = False
+
+    def coerce_compared_value(self, op, value):
+        return self.impl.coerce_compared_value(op, value)
 
     def process_bind_param(self, value, dialect):
         if not isinstance(value, list):
