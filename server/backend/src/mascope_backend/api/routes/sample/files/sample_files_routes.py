@@ -50,6 +50,7 @@ from mascope_backend.api.models.sample.files.sample_file_pydantic_model import (
 )
 from mascope_backend.api.new.auth.access_token.service import get_access_token
 from mascope_backend.api.new.auth.dependencies import current_active_user
+from mascope_backend.api.new.auth.devices.service import record_reported_instrument
 from mascope_backend.api.new.workspaces.dependencies import (
     accessible_acquisition_instruments,
     check_instrument_workspace_access,
@@ -512,6 +513,18 @@ def get_upload_handler(
             device_id=_request_device_id(request),
             instrument_timezone=metadata.get("timezone"),
         )
+        # The instrument the agent says it watches, kept on its device row
+        # when the row has none yet. It is not what routes this upload - the
+        # instrument above still comes from the file name - and attribution
+        # must never fail an ingest, so a failure here is logged, not raised.
+        try:
+            await record_reported_instrument(
+                _request_device_id(request), metadata.get("instrument")
+            )
+        except Exception:
+            runtime.logger.exception(
+                "Could not record the instrument reported by the uploading device"
+            )
 
     return handler
 

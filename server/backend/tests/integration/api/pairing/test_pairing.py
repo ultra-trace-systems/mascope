@@ -75,10 +75,11 @@ async def clean_file_agent_tokens(async_session_factory):
         await session.commit()
 
 
-async def _start(public_client, machine_name="ORBI-PC"):
+async def _start(public_client, machine_name="ORBI-PC", **reported):
+    """Start a pairing; ``reported`` carries what the agent says about itself."""
     resp = await public_client.post(
         "/api/auth/pairing/start",
-        json={"service_name": "file-agent", "machine_name": machine_name},
+        json={"service_name": "file-agent", "machine_name": machine_name, **reported},
     )
     assert resp.status_code == 200, resp.text
     return resp.json()
@@ -108,6 +109,8 @@ async def test_full_pairing_flow(
     approved = resp.json()
     assert approved["service_name"] == "file-agent"
     assert approved["machine_name"] == "ORBI-PC"
+    # An agent that reports no instrument leaves the field empty, not absent.
+    assert approved["instrument"] is None
 
     # Agent polls: receives the token exactly once
     resp = await public_client.post(
@@ -134,6 +137,9 @@ async def test_full_pairing_flow(
     assert device.service_name == "file-agent"
     assert device.sponsor_user_id is not None  # the approving editor
     assert device.revoked_at is None
+    # Nothing reported, nothing recorded: older agents send neither field.
+    assert device.instrument is None
+    assert device.last_seen_version is None
     # The device authenticates as its own machine account, sponsored by the
     # approver but not owned by them.
     assert device.machine_user_id == token_user.id
@@ -243,6 +249,70 @@ async def test_poll_unknown_device_code_is_expired(fake_redis, public_client):
     )
     assert resp.status_code == 200
     assert resp.json()["status"] == "expired"
+
+
+@pytest.mark.asyncio
+async def test_pairing_keeps_the_reported_instrument_and_version(
+    fake_redis, public_client, editor_client, async_session_factory
+):
+    # What the agent said about itself when it asked to pair lands on the
+    # device row at approval, and the instrument is echoed to the approver.
+    started = await _start(
+        public_client,
+        machine_name="LAB-PC",
+        instrument="Orbi-Lab2",
+        agent_version="v2.0.0",
+    )
+    resp = await editor_client.post(
+        "/api/auth/pairing/approve", json={"user_code": started["user_code"]}
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["instrument"] == "Orbi-Lab2"
+
+    async with async_session_factory() as session:
+        device = (
+            await session.execute(
+                select(AgentDevice).where(AgentDevice.name == "LAB-PC")
+            )
+        ).scalar_one()
+    assert device.instrument == "Orbi-Lab2"
+    assert device.last_seen_version == "v2.0.0"
+
+
+@pytest.mark.asyncio
+async def test_pairing_refuses_an_instrument_the_server_cannot_file(
+    fake_redis, public_client
+):
+    # The same rule as the instrument segment of a file name: letters, digits
+    # and hyphens. Anything else is refused at the door rather than stored and
+    # rejected the day routing starts reading it.
+    resp = await public_client.post(
+        "/api/auth/pairing/start",
+        json={"service_name": "file-agent", "instrument": "orbi lab"},
+    )
+    assert resp.status_code == 422, resp.text
+
+
+@pytest.mark.asyncio
+async def test_blank_reported_fields_are_stored_as_nothing(
+    fake_redis, public_client, editor_client, async_session_factory
+):
+    started = await _start(
+        public_client, machine_name="BLANK-PC", instrument="  ", agent_version=" "
+    )
+    resp = await editor_client.post(
+        "/api/auth/pairing/approve", json={"user_code": started["user_code"]}
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["instrument"] is None
+    async with async_session_factory() as session:
+        device = (
+            await session.execute(
+                select(AgentDevice).where(AgentDevice.name == "BLANK-PC")
+            )
+        ).scalar_one()
+    assert device.instrument is None
+    assert device.last_seen_version is None
 
 
 @pytest.mark.asyncio

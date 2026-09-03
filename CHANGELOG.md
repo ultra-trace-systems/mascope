@@ -20,6 +20,15 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
   were reordered so the local ones come first and pairing, which needs a second
   person at a browser, comes last. `instrument` is a new `[file-agent]` setting;
   leaving it empty keeps today's behaviour exactly.
+- **Paired machines shows what each agent watches and which release it runs.**
+  A paired device now records the instrument its agent reported when pairing
+  (or, for a machine paired before the server knew the field, with the first
+  upload that names one) and the agent release last seen, taken from the
+  `X-Agent-Version` header the File Agent sends on every request and from the
+  pairing request. Both appear under Paired machines, and the pairing approval
+  message names the instrument. They are what the agent reported, not verified,
+  and routing still reads an upload's instrument from the file name. Migration
+  `8e5f0b3a2d71`, two nullable columns, no backfill.
 
 - **Batch peaks: one ledger for a whole batch.** A batch peak is a frozen m/z
   anchor shared across a batch's samples, carrying an evidence-weighted

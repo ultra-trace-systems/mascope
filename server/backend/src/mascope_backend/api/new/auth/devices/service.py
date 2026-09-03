@@ -18,7 +18,10 @@ from mascope_backend.api.lib.api_features import api_controller
 from mascope_backend.api.lib.exceptions.api_exceptions import NotFoundException
 from mascope_backend.api.new.auth.access_token.service import create_access_token
 from mascope_backend.api.new.auth.config import auth_settings
-from mascope_backend.api.new.auth.devices.schemas import DeviceRead
+from mascope_backend.api.new.auth.devices.schemas import (
+    INSTRUMENT_NAME_RE,
+    DeviceRead,
+)
 from mascope_backend.api.new.auth.exceptions import (
     ForbiddenAccessException,
     InvalidTokenException,
@@ -43,12 +46,51 @@ def _to_device_read(device: AgentDevice, username: str | None, tokens: int) -> d
         device_id=device.device_id,
         name=device.name,
         service_name=device.service_name,
+        instrument=device.instrument,
         sponsor_username=username,
         created_at=device.created_at,
         last_seen_at=device.last_seen_at,
+        last_seen_version=device.last_seen_version,
         revoked_at=device.revoked_at,
         token_count=tokens,
     ).model_dump()
+
+
+async def record_reported_instrument(
+    device_id: int | None, instrument: str | None
+) -> None:
+    """
+    Keep the instrument an upload reports, on a device that has none yet.
+
+    Backfills a device paired before the server knew the field, or whose
+    pairing request carried none. A value already on the row is kept: the row
+    is what Paired machines shows and a sponsor may rely on, so one upload
+    must not move it. The name is reported, not verified, and an invalid one
+    is dropped with a log line rather than raised - attribution never fails
+    an ingest.
+
+    :param device_id: The device behind the upload, None when there is none.
+    :type device_id: int | None
+    :param instrument: The instrument the upload's metadata named, if any.
+    :type instrument: str | None
+    """
+    if device_id is None or not instrument:
+        return
+    instrument = instrument.strip()
+    if not INSTRUMENT_NAME_RE.match(instrument):
+        runtime.logger.info(
+            f"Ignoring the instrument name device {device_id} reported with an "
+            f"upload, which is not one the server files under: {instrument!r}"
+        )
+        return
+    async with async_session() as session:
+        await session.execute(
+            update(AgentDevice)
+            .where(AgentDevice.device_id == device_id)
+            .where(AgentDevice.instrument.is_(None))
+            .values(instrument=instrument)
+        )
+        await session.commit()
 
 
 @api_controller()

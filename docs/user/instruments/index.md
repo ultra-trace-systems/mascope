@@ -62,6 +62,12 @@ server as it starts, and offers to pair again when the credential is no
 longer accepted. It makes the same offer if a credential is refused while it
 is running.
 
+Under **Paired machines** (Home menu → Settings → API Access Tokens) each
+machine shows the instrument its agent reports watching and the agent release
+it last connected with, next to when it was last seen — so an upgrade across
+several instrument PCs can be followed from the web app. A machine paired by an
+older agent shows neither until it runs one that reports them.
+
 Setup also asks whether to **verify the server's TLS certificate**. Leave
 this on for a normal Mascope server; answer No only for a self-signed or
 development server (recorded as `verify_tls` in the configuration).

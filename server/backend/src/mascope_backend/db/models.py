@@ -437,6 +437,11 @@ class AgentDevice(Base):
     device_id: Mapped[int] = mapped_column(Integer, primary_key=True)
     name: Mapped[str] = mapped_column(String(100), nullable=False)
     service_name: Mapped[str] = mapped_column(String(50), nullable=False)
+    # The instrument the agent reports it watches: from the pairing request,
+    # or from the first upload carrying one when the device was paired before
+    # the server knew the field. Reported, not verified, and not read by
+    # routing, which still takes an upload's instrument from the file name.
+    instrument: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
     # The person who approved the pairing and vouches for this machine.
     sponsor_user_id: Mapped[Optional[int]] = mapped_column(
         ForeignKey("user.id", ondelete="SET NULL"), nullable=True, index=True
@@ -457,6 +462,10 @@ class AgentDevice(Base):
     last_seen_at: Mapped[Optional[dt]] = mapped_column(
         TIMESTAMP(timezone=True), nullable=True
     )
+    # The agent release last seen on this device, from the X-Agent-Version
+    # header, written together with last_seen_at; set at approval from the
+    # pairing request. NULL while the agent reports none.
+    last_seen_version: Mapped[Optional[str]] = mapped_column(String(32), nullable=True)
     revoked_at: Mapped[Optional[dt]] = mapped_column(
         TIMESTAMP(timezone=True), nullable=True
     )

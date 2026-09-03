@@ -93,6 +93,7 @@ const onReauthVerified = onVerified(showApprovalError)
       <Message icon="pi pi-check-circle" severity="success">
         Paired {{ SERVICE_LABELS[approved.service_name] || approved.service_name
         }}<template v-if="approved.machine_name"> on {{ approved.machine_name }}</template
+        ><template v-if="approved.instrument">, watching {{ approved.instrument }}</template
         >. The agent will receive its token within a few seconds.
       </Message>
     </section>

@@ -547,8 +547,11 @@ user, as each one complies.
 An instrument agent authenticates as a **device**: approving a pairing request
 creates a registered device named after the machine, a dedicated machine account
 the agent signs in as, and a device-bound token. **Paired machines** under
-Settings lists them with their service and when each was last seen, and lets you
-rename or revoke one machine on its own.
+Settings lists them with their service, the instrument each agent reports
+watching, the agent release last seen and when each was last seen, and lets you
+rename or revoke one machine on its own. The instrument and the release are
+what the agent reported; a machine running an agent that predates them shows
+neither, which is also how far an agent upgrade has got.
 
 Two consequences worth knowing before an upgrade:
 

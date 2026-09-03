@@ -184,6 +184,19 @@ const lastSeenLabel = (device) =>
     ? `last seen ${new Date(device.last_seen_at).toLocaleString()}`
     : 'never seen'
 
+// What the machine says about itself: the instrument its agent watches and
+// the agent release last seen. Both are absent until an agent that reports
+// them has paired or uploaded, so the label simply leaves them out.
+const deviceMetaLabel = (device) =>
+  [
+    serviceLabel(device.service_name),
+    device.instrument,
+    device.last_seen_version,
+    lastSeenLabel(device)
+  ]
+    .filter(Boolean)
+    .join(' · ')
+
 // Clear state when closing drawer
 const clear = () => {
   token.value = null
@@ -292,8 +305,10 @@ const vHelpLayer = app.ui.help.directive(layer)
         'Pair an agent'.
       </p>
       <p>
-        Machines you have paired appear under 'Paired machines', where each can be
-        renamed or revoked on its own. A paired machine holds its own credential,
+        Machines you have paired appear under 'Paired machines', with the instrument
+        each one reports watching and the agent release it last connected with,
+        where each can be renamed or revoked on its own. A paired machine holds its
+        own credential,
         so Regenerate does not affect it: Regenerate replaces the tokens issued to
         you, and revoking a machine is what stops that machine.
       </p>
@@ -355,9 +370,7 @@ const vHelpLayer = app.ui.help.directive(layer)
               :field="device.name"
               :save="(name) => renameDevice(device, name)"
             />
-            <span class="device-meta">
-              {{ serviceLabel(device.service_name) }} · {{ lastSeenLabel(device) }}
-            </span>
+            <span class="device-meta">{{ deviceMetaLabel(device) }}</span>
             <Button
               :label="confirmRevokeId === device.device_id ? 'Confirm revoke' : 'Revoke'"
               icon="pi pi-ban"

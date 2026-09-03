@@ -1,5 +1,6 @@
 """Access token validation."""
 
+import re
 import time
 from datetime import datetime as dt
 from datetime import timedelta, timezone
@@ -25,6 +26,28 @@ from mascope_backend.runtime import runtime
 # minute precision, so a busy agent (a resumable upload is one request per
 # chunk) costs one write per window instead of one per request.
 DEVICE_LAST_SEEN_THROTTLE_S = 60
+
+#: Longest agent version kept, matching the column it is written to.
+AGENT_VERSION_MAX_LENGTH = 32
+
+
+def agent_version_from_header(value: str | None) -> str | None:
+    """
+    The agent release a request reports, fit for storing and showing.
+
+    The header is free text from a client, so control characters are
+    stripped and the value is cut to the column's width; an absent or blank
+    header is None, which leaves the stored version untouched.
+
+    :param value: The raw ``X-Agent-Version`` header, if the request sent one.
+    :type value: str | None
+    :return: The cleaned version, or None.
+    :rtype: str | None
+    """
+    if not value:
+        return None
+    cleaned = re.sub(r"[\x00-\x1f\x7f]", "", value).strip()
+    return cleaned[:AGENT_VERSION_MAX_LENGTH] or None
 
 
 def ensure_device_bound(service_name: str, device_id: int | None) -> None:
@@ -144,9 +167,17 @@ def _release_last_seen_mark(device_id: int, stamp: float) -> None:
         del _last_seen_written_at[device_id]
 
 
-async def touch_device_last_seen(device_id: int) -> None:
+async def touch_device_last_seen(
+    device_id: int, agent_version: str | None = None
+) -> None:
     """
     Record that a device authenticated, at most once per throttle window.
+
+    The agent's reported version rides on the same write when the request
+    carried one, so recording it costs no extra round trip; it is therefore
+    also refreshed at most once per window, which is plenty for a value that
+    changes only at an upgrade. A request without one leaves the stored
+    version as it is.
 
     Two gates, doing different jobs. The in-process claim keeps this worker to
     one write per device per window and, because it is taken before the await,
@@ -166,8 +197,13 @@ async def touch_device_last_seen(device_id: int) -> None:
 
     :param device_id: The authenticated device.
     :type device_id: int
+    :param agent_version: The release the agent reported, already cleaned.
+    :type agent_version: str | None
     """
     now = dt.now(timezone.utc)
+    values = {"last_seen_at": now}
+    if agent_version:
+        values["last_seen_version"] = agent_version
     if not _is_due_for_last_seen_write(device_id):
         # Skips the round trip entirely. Without it this costs a session, a
         # connection and a commit on every request - once per chunk for an
@@ -187,7 +223,7 @@ async def touch_device_last_seen(device_id: int) -> None:
                         AgentDevice.last_seen_at < cutoff,
                     )
                 )
-                .values(last_seen_at=now)
+                .values(**values)
             )
             await session.commit()
             # Re-stamp from the commit rather than the attempt, and here rather
