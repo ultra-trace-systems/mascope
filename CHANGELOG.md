@@ -6,6 +6,17 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
 
 ### Added
 
+- **The batch ledger in the SDK, and as a CSV.** `mascope.load_batch_ledger(dataset,
+  batches=...)` loads a batch's ledger as one flat DataFrame - one row per member
+  peak, the batch peak's consensus (formula, tier, support, prevalence, curation)
+  beside the sample's own reading (formula, source, tier, role, fit) - with the
+  species table on `df.attrs["batch_peaks"]`, or the species table alone with
+  `members=False`; per batch, `mascope.batch_peaks.list()`, `.members()` and
+  `.verdicts()`. Behind them, `GET /api/batch-peaks/batch/{id}/members` serves the
+  ledger as paged flat rows. In the app, *Export ledger (CSV)* in the Batch peaks
+  pane's view menu writes the same rows to a CSV the browser downloads
+  (`POST /api/batch-peaks/batch/{id}/export`, a background task).
+
 - **Curating a species for the whole batch.** In a sample served from the batch
   ledger, *use this* on a close alternative in the inspector now acts on the batch
   peak: the chosen identity - one the batch's samples have carried at that peak -

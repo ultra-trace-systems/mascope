@@ -1,6 +1,6 @@
 """Batch-peak read routes -- the batch overview's peak-centric data feed."""
 
-from fastapi import APIRouter, BackgroundTasks, Depends
+from fastapi import APIRouter, BackgroundTasks, Depends, Query
 from pydantic import BaseModel, Field, model_validator
 
 from mascope_backend.api.controllers.sample.lib.sample_batches_fetch import (
@@ -13,6 +13,11 @@ from mascope_backend.api.new.peak_assignments.batch_curation import (
     curate_batch_peak,
     release_batch_peak_curation,
     validate_curation,
+)
+from mascope_backend.api.new.peak_assignments.batch_export import (
+    MEMBER_PAGE_CAP,
+    export_batch_ledger,
+    get_batch_peak_members,
 )
 from mascope_backend.api.new.peak_assignments.batch_peak_verification import (
     get_anchor_context,
@@ -95,6 +100,18 @@ class BatchPeakSeriesBody(RequestBodyModel):
         if self.sample_item_ids is not None and len(self.sample_item_ids) == 0:
             raise ValueError("sample_item_ids cannot be empty if provided.")
         return self
+
+
+class BatchPeakMembersResponse(BaseModel):
+    """One page of a batch's ledger as flat member rows."""
+
+    status: str = Field(description="Response status")
+    message: str = Field(description="Response message")
+    results: int = Field(description="Rows on this page")
+    total: int = Field(description="Rows matching the query across every page")
+    limit: int = Field(description="Page size applied")
+    offset: int = Field(description="Rows skipped")
+    data: list[dict] = Field(description="Member rows, batch_export.COLUMNS each")
 
 
 class BatchPeakRecordsResponse(BaseModel):
@@ -493,3 +510,78 @@ async def release_batch_peak_curation_route(
         sample_batch_id=sample_batch_id, batch_peak_id=body.batch_peak_id
     )
     return BatchPeakRecordsResponse.model_validate(result)
+
+
+@batch_peaks_router.get(
+    "/batch/{sample_batch_id}/members",
+    response_model=BatchPeakMembersResponse,
+)
+@api_route()
+async def get_batch_peak_members_route(
+    sample_batch_id: str,
+    sample_item_id: str | None = None,
+    limit: int = Query(1000, ge=1, le=MEMBER_PAGE_CAP),
+    offset: int = Query(0, ge=0),
+    user: User = Depends(current_active_user),
+) -> BatchPeakMembersResponse:
+    """One page of a batch's ledger as flat rows: one per member, the anchor's
+    consensus beside the member's own reading. ``total`` says how many rows
+    match, so a client pages until it has the whole ledger - the SDK's
+    ``batch_peaks.members`` does exactly that.
+
+    :param sample_batch_id: The unique identifier of the sample batch.
+    :param sample_item_id: Only this sample's members.
+    :param limit: Page size, at most the members page cap.
+    :param offset: Rows to skip.
+    :param user: The current authenticated user. Requires workspace guest role.
+    :return: The page, with ``total``.
+    """
+    await check_batch_access(sample_batch_id, user, "guest")
+    if sample_item_id:
+        await check_sample_access(sample_item_id, user, "guest")
+    result = await get_batch_peak_members(
+        sample_batch_id=sample_batch_id,
+        sample_item_id=sample_item_id,
+        limit=limit,
+        offset=offset,
+    )
+    return BatchPeakMembersResponse.model_validate(result)
+
+
+@batch_peaks_router.post("/batch/{sample_batch_id}/export")
+@api_route(status_code=202, token_access=True)
+async def export_batch_ledger_route(
+    sample_batch_id: str,
+    background_tasks: BackgroundTasks,
+    user: User = Depends(current_active_user),
+) -> dict:
+    """Export a batch's ledger to a CSV: every batch peak with every sample's
+    member, one row per member, the anchor's consensus beside the member's own
+    reading. A background task; the file lands in the user's temp store and the
+    completion notification carries its name, which the browser downloads.
+
+    A read, so it is open to every role that can read the batch and is not
+    behind the feature flag: a ledger built while the feature was on stays
+    exportable after opting out.
+
+    :param sample_batch_id: The unique identifier of the sample batch.
+    :param user: The current authenticated user. Requires workspace guest role.
+    :return: Acknowledgement message with the background process id.
+    """
+    await check_batch_access(sample_batch_id, user, "guest")
+    sample_batch = await fetch_sample_batch(sample_batch_id)
+    process_id = gen_id(8)
+    background_tasks.add_task(
+        export_batch_ledger,
+        sample_batch_id=sample_batch_id,
+        independent_transaction=True,
+        user_id=user.id,
+        process_id=process_id,
+    )
+    return {
+        "message": (
+            f"Exporting the batch ledger of '{sample_batch.sample_batch_name}', "
+            "please wait."
+        ),
+        "process_id": process_id,
+    }
