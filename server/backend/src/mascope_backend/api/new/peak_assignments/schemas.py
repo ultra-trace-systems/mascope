@@ -63,6 +63,9 @@ class PeakAssignmentRunRecord(BaseModel):
     #: that published its ledger here. Never null - existing rows were
     #: backfilled to the in-app identity - so a reader can compare it without
     #: handling a sentinel. The run selector's provenance badge renders this.
+    #: ``batch`` is the ledger derived from the batch peaks for a sample that
+    #: has no run of its own - listed after the real runs, always completed,
+    #: and what the ledger read falls back to (see ``fold_view``).
     engine: str
     engine_version: str
     status: str
@@ -138,6 +141,9 @@ class PeakAssignmentRecord(BaseModel):
     #: Number of adducts corroborating the compound (provenance.corroboration),
     #: flattened for the ledger's corroboration marker.
     corroboration_adducts: int | None = None
+    #: The batch peak this row's peak is a member of, on a row derived from the
+    #: batch ledger (``fold_view``); absent on a row of an assignment run.
+    batch_peak_id: str | None = None
 
 
 class PeakAssignmentDetailRecord(PeakAssignmentRecord):

@@ -592,6 +592,22 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
 
 ### Changed
 
+- **A sample the batch ledger knows but no run describes still has a Sample
+  view.** Deleting or pruning a sample's assignment runs used to leave its
+  Sample tab empty - grey spectrum, no ledger - although its peaks were still
+  in the batch ledger. The runs listing now carries one derived run per such
+  sample (engine `batch`, listed after the real runs), and the ledger and
+  inspector reads answer for it from the batch peaks: formula, ion formula,
+  mechanism, tier, fit, P(correct), role and isotopologue family come from the
+  member rows and their anchor's candidate registry, and the inspector's close
+  alternatives are what the rest of the batch saw at that m/z. Derived rows
+  carry no mass or abundance error, isotope label, source or target link -
+  those are a run's numbers - and cannot be curated (the server answers 409
+  and the inspector withholds the controls), but a verdict can be recorded
+  against them. An imported run can no longer claim the `batch` engine name.
+  This is the read model the next step, ingest folding a sample without
+  writing a run, will serve.
+
 - **The batch ledger stands without the per-sample ledger.** A batch peak's
   consensus used to be recomputed by joining every member back to its
   `peak_assignment` row for the ion formula, the mechanism, the calibrated

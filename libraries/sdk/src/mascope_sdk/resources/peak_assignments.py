@@ -108,7 +108,10 @@ class PeakAssignmentsResource(BaseResource):
                    :meth:`~mascope_sdk.MascopeClient.peak_assignments`). Never
                    null: rows predating the column were backfilled to
                    ``mascope``, and the name is reserved server-side so an
-                   import cannot claim it.
+                   import cannot claim it. ``batch`` is the ledger derived
+                   from the batch peaks for a sample that has no run of its
+                   own - listed after the real runs, always ``completed``,
+                   and what :meth:`get` falls back to for such a sample.
                  - ``engine_version``: Assignment engine version
                  - ``status``: ``pending`` -> ``running`` -> ``completed`` |
                    ``failed`` | ``cancelled``; ``importing`` while an external

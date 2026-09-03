@@ -71,6 +71,10 @@ from mascope_backend.api.new.peak_assignments.engine import (
     plausibility_for,
     tier_for_evidence,
 )
+from mascope_backend.api.new.peak_assignments.fold_view import (
+    DerivedAssignmentReadOnlyException,
+    is_fold_id,
+)
 from mascope_backend.api.new.peak_assignments.schemas import (
     PromoteAlternativeBody,
     SetAssignmentBody,
@@ -957,6 +961,12 @@ async def curate_assignment(
         actions refuse alike.
     """
     sample = await fetch_sample(sample_item_id)
+    if is_fold_id(peak_assignment_id):
+        # Derived from the batch peaks: there is no row to edit. A 409 rather
+        # than a 404, because the id is not stale - the sample has no run.
+        raise DerivedAssignmentReadOnlyException(
+            peak_assignment_id, sample.sample_item_name, "curated"
+        )
 
     async with async_session() as session:
         # Locked for the duration: two curators clicking the same row would
