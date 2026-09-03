@@ -369,6 +369,7 @@ async def fold_sample_into_batch_peaks(
                     r.assigned_formula,
                     r.ion_formula,
                     r.ionization_mechanism_id,
+                    source=getattr(r, "source", None),
                 )
             provenance = r.provenance if isinstance(r.provenance, dict) else {}
             session.add(

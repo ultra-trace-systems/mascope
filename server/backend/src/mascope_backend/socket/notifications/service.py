@@ -239,6 +239,13 @@ async def send_progress_user_notification(
         if total_samples and item_index is not None:
             inc = increment if increment is not None else 0.0
             notification_copy.progress = ((item_index + inc) / total_samples) * 100
+    # The per-anchor untargeted search reports per sample too, over its two
+    # passes (the search, then the seeded re-score), with the message naming
+    # the pass - so, as for the backfill, only the bar is computed here.
+    if notification_copy.type == "search_batch_untargeted":
+        if total_samples and item_index is not None:
+            inc = increment if increment is not None else 0.0
+            notification_copy.progress = ((item_index + inc) / total_samples) * 100
 
     # Emit to all specified rooms with optional smart routing
     for room_id in room_ids:
