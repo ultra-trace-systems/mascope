@@ -20,7 +20,8 @@ the spectrum colouring, the inspector and the SDK need no second code path:
   409 rather than a 404 that would read as a stale id.
 
 Derived rows are a lossy view of a run: no mass or abundance error, no isotope
-label, no source, no target ids, no evidence. Those are per-sample numbers a
+label, no target ids, no evidence (the source is the registry entry's, where
+the member that brought the identity recorded one). Those are per-sample numbers a
 run computes and a member does not carry; the design note leaves them to an
 on-demand re-score.
 """
@@ -146,7 +147,7 @@ def member_row(member: Any, anchor: Any) -> dict:
         "ionization_mechanism_id": identity.get("ionization_mechanism_id"),
         "isotope_label": None,
         "isotope_formula": None,
-        "source": None,
+        "source": identity.get("source"),
         "fit_score": member.fit_score,
         "mz_error_ppm": None,
         "abundance_error": None,

@@ -474,3 +474,20 @@ def test_resolve_candidate_returns_the_entry_or_nothing():
     assert resolve_candidate(None, 0) == {}
     assert resolve_candidate([], 0) == {}
     assert resolve_candidate(["not-a-dict"], 0) == {}
+
+
+def test_candidate_index_records_a_source_on_a_new_entry_only():
+    registry: list = []
+    assert candidate_index(registry, "A", "A+", "m", source="database") == 0
+    # The same identity from elsewhere neither duplicates nor rewrites the entry.
+    assert candidate_index(registry, "A", "A+", "m", source="untargeted") == 0
+    assert registry == [
+        {
+            "formula": "A",
+            "ion_formula": "A+",
+            "ionization_mechanism_id": "m",
+            "source": "database",
+        }
+    ]
+    assert candidate_index(registry, "B", "B+", "m") == 1
+    assert "source" not in registry[1]

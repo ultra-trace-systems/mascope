@@ -906,6 +906,7 @@ async def test_members_name_their_identity_in_the_anchors_registry(
             "formula": "C6H12O6",
             "ion_formula": "C6H13O6+",
             "ionization_mechanism_id": None,
+            "source": "database",
         }
     ]
     bare = next(p for p in anchors if p.consensus_formula is None)

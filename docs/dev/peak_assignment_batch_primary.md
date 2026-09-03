@@ -281,6 +281,13 @@ the disagreement is visible per member exactly as it is now.
 
 ### 5.3 Stage B runs once per anchor
 
+> *Status:* shipped as the fifth implementation step (`batch_untargeted.py`, route
+> `POST /api/batch-peaks/batch/{id}/search-untargeted`, the *Search untargeted* button). The
+> finder gained a `targets` parameter so only the representatives are enumerated while the
+> isotope pattern is scored against the whole spectrum; propagation runs the seeded chain per
+> sample and leaves a member the envelope does not reach unassigned. Registry entries now
+> record the `source` of the identity they hold.
+
 Untargeted assignment is where the compute cost is: it is off for batches today because it
 multiplies by the sample count. Per anchor it is bounded by the number of unassigned
 anchors — 1,232 on the 32-sample batch against ~23,400 unassigned member peaks, about 19x

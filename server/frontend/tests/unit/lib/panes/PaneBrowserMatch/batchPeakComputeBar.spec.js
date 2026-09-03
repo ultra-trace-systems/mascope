@@ -318,3 +318,38 @@ describe('BatchPeakComputeBar failed launch', () => {
     expect(compute.launchError).toBeNull()
   })
 })
+
+describe('BatchPeakComputeBar untargeted search', () => {
+  it('offers the search beside the compute, under the same gate', () => {
+    mountBar()
+    const buttons = wrapper.findAll('.compute-button')
+    expect(buttons.map((b) => b.text())).toEqual(['Compute batch peaks', 'Search untargeted'])
+    expect(buttons[1].attributes('disabled')).toBeUndefined()
+  })
+
+  it('disables the search with the compute when no batch is focused', () => {
+    mountBar({ batch: null })
+    expect(wrapper.findAll('.compute-button')[1].attributes('disabled')).toBeDefined()
+  })
+
+  it('posts to the search route and waits for the task notification', async () => {
+    mountBar()
+    post.mockResolvedValueOnce({ headers: { 'process-id': 'proc-s' } })
+    await wrapper.findAll('.compute-button')[1].trigger('click')
+    await Promise.resolve()
+    expect(post).toHaveBeenCalledWith(
+      '/batch-peaks/batch/b-1/search-untargeted',
+      {},
+      expect.objectContaining({ type: 'search_batch_untargeted' })
+    )
+    expect(compute.searching).toBe(true)
+    for (const handler of notificationHandlers['search_batch_untargeted'] ?? []) {
+      handler({ status: 'pending', process_id: 'proc-s' })
+    }
+    expect(compute.searching).toBe(true)
+    for (const handler of notificationHandlers['search_batch_untargeted'] ?? []) {
+      handler({ status: 'success', process_id: 'proc-s' })
+    }
+    expect(compute.searching).toBe(false)
+  })
+})
