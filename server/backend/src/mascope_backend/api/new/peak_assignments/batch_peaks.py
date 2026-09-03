@@ -43,6 +43,7 @@ from mascope_backend.api.new.peak_assignments.tiers import (
     TIER_ASSIGNED,
     TIER_BELOW_ASSIGNABILITY,
     TIER_CANDIDATE,
+    TIER_RANK,
     TIER_UNASSIGNED,
 )
 
@@ -69,6 +70,63 @@ AMBIGUOUS_SUPPORT = 0.5
 #: the assignment engine: this module is pure, and the engine pulls in pandas,
 #: numpy and the database id helper. A unit test holds the two spellings in step.
 ROLE_ISO_CHILD = "iso_child"
+ROLE_M0 = "M0"
+ROLE_UNASSIGNED = "unassigned"
+ROLE_REAGENT = "reagent"
+ROLE_ARTIFACT = "artifact"
+
+
+# --- the member row's codes -----------------------------------------------------
+
+#: A member stores its tier as a ``smallint``: the tier's rank, so the code
+#: compares the way the engine compares tiers (higher is more confident).
+TIER_CODES: dict[str, int] = dict(TIER_RANK)
+TIER_NAMES: dict[int, str] = {code: tier for tier, code in TIER_CODES.items()}
+
+#: A member stores its per-sample role as a ``smallint`` too. Order is
+#: arbitrary but fixed: a code, once written, means one role for good.
+ROLE_CODES: dict[str, int] = {
+    ROLE_UNASSIGNED: 0,
+    ROLE_M0: 1,
+    ROLE_ISO_CHILD: 2,
+    ROLE_REAGENT: 3,
+    ROLE_ARTIFACT: 4,
+}
+ROLE_NAMES: dict[int, str] = {code: role for role, code in ROLE_CODES.items()}
+
+
+def tier_code(tier: Optional[str]) -> Optional[int]:
+    """The stored code of a tier name; ``None`` for no tier or an unknown one."""
+    return TIER_CODES.get(tier) if tier is not None else None
+
+
+def tier_name(code: Optional[int]) -> Optional[str]:
+    """The tier name a stored code means; ``None`` for no code or an unknown one."""
+    return TIER_NAMES.get(code) if code is not None else None
+
+
+def role_code(role: Optional[str]) -> Optional[int]:
+    """The stored code of a role name; ``None`` for no role or an unknown one."""
+    return ROLE_CODES.get(role) if role is not None else None
+
+
+def role_name(code: Optional[int]) -> Optional[str]:
+    """The role name a stored code means; ``None`` for no code or an unknown one."""
+    return ROLE_NAMES.get(code) if code is not None else None
+
+
+def mz_delta_ppm(mz: float, anchor_mz: float) -> float:
+    """A member's offset from its anchor's frozen m/z, in ppm - what the member
+    stores in place of its absolute m/z. Single precision suffices: an offset
+    of tens of ppm carried to seven significant digits places the peak to well
+    below the precision the peak file itself carries."""
+    return (mz - anchor_mz) / anchor_mz * 1e6
+
+
+def mz_from_delta(anchor_mz: float, delta_ppm: Optional[float]) -> float:
+    """The absolute m/z a member's stored offset recovers to; the anchor's own
+    m/z when the member carries none."""
+    return anchor_mz * (1.0 + (delta_ppm or 0.0) / 1e6)
 
 
 def resolution_adaptive_tol_ppm(

@@ -39,8 +39,13 @@ from mascope_backend.api.new.peak_assignments.batch_peaks import (
     candidate_index,
     compute_consensus,
     fold_in_sample,
+    mz_delta_ppm,
     resolution_adaptive_tol_ppm,
     resolve_candidate,
+    role_code,
+    role_name,
+    tier_code,
+    tier_name,
 )
 from mascope_backend.db import (
     BatchPeak,
@@ -372,13 +377,14 @@ async def fold_sample_into_batch_peaks(
                     sample_item_id=sample_item_id,
                     sample_peak_id=r.sample_peak_id,
                     peak_assignment_id=r.peak_assignment_id if persisted else None,
-                    sample_peak_mz=f.peak["raw_mz"],
+                    mz_delta_ppm=mz_delta_ppm(
+                        f.peak["raw_mz"], anchors_by_id[f.batch_peak_id].mz
+                    ),
                     intensity=r.sample_peak_intensity,
-                    tier=r.tier,
+                    tier=tier_code(r.tier),
                     fit_score=r.fit_score,
-                    assigned_formula=r.assigned_formula,
                     candidate=candidate,
-                    role=r.role,
+                    role=role_code(r.role),
                     owner_batch_peak_id=(
                         anchor_of_assignment.get(r.owner_peak_assignment_id)
                         if r.role == ROLE_ISO_CHILD and r.owner_peak_assignment_id
@@ -454,8 +460,9 @@ async def _recompute_consensus_chunk(
     """One statement's worth of :func:`_recompute_consensus`.
 
     Reads the anchors first and the members second, and nothing else: a
-    member's ion formula and mechanism are the registry entry its ``candidate``
-    index names on its own anchor, and its role, family link and P(correct) are
+    member's formula, ion formula and mechanism are the registry entry its
+    ``candidate`` index names on its own anchor, its tier and role are codes
+    (``tier_name``, ``role_name``), and its family link and P(correct) are
     columns of its own. The per-sample ledger is not consulted, so a member
     whose ledger row has since been pruned or deleted votes exactly as it did
     the day it was folded.
@@ -479,7 +486,6 @@ async def _recompute_consensus_chunk(
         await session.execute(
             select(
                 BatchPeakOccurrence.batch_peak_id,
-                BatchPeakOccurrence.assigned_formula,
                 BatchPeakOccurrence.tier,
                 BatchPeakOccurrence.fit_score,
                 BatchPeakOccurrence.intensity,
@@ -496,14 +502,14 @@ async def _recompute_consensus_chunk(
         identity = resolve_candidate(registries.get(r.batch_peak_id), r.candidate)
         members_by_peak[r.batch_peak_id].append(
             {
-                "assigned_formula": r.assigned_formula,
+                "assigned_formula": identity.get("formula"),
                 "ion_formula": identity.get("ion_formula"),
                 "ionization_mechanism_id": identity.get("ionization_mechanism_id"),
-                "tier": r.tier,
+                "tier": tier_name(r.tier),
                 "fit_score": r.fit_score,
                 "intensity": r.intensity,
                 "p_correct": r.p_correct,
-                "role": r.role,
+                "role": role_name(r.role),
                 "owner_batch_peak_id": r.owner_batch_peak_id,
             }
         )
