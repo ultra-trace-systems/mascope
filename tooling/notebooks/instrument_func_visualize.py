@@ -1,11 +1,20 @@
+"""Plotly figure for the instrument-function notebooks.
+
+Used by `voila_instrument_functions.ipynb`, which is the only caller. This lives
+here rather than in `mascope_signal` so that the library does not carry plotly:
+it was the one module in `libraries/signal` importing it, and plotly is declared
+only in the root dev group, so `mascope_signal` could not import this module in a
+production install anyway.
+
+Its companion `update_chosen_peak` is not here: both instrument-function
+notebooks define their own inline, so the library copy had no callers.
+"""
+
 from functools import partial
 
 import numpy as np
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
-from xarray import DataArray
-
-from mascope_signal.fitting import gen_peak
 
 
 subtitles = ("FWHM", "Chosen peak", "Resolution function")
@@ -149,111 +158,5 @@ def visualize(
     fig.update_layout(
         height=450, width=1000, margin=go.layout.Margin(l=30, r=30, b=30, t=30)
     )
-
-    return fig
-
-
-def update_chosen_peak(
-    points: dict,
-    fig: go.Figure,
-    sum_signal: DataArray,
-    fit_poss: np.ndarray,
-    fit_heis: np.ndarray,
-    res_fun: partial,
-    ps: dict,
-) -> go.Figure:
-    """Update the chosen peak window.
-
-    :param points: Click data points from the interactive plot.
-    :type points: dict
-    :param fig: Plotly figure to update.
-    :type fig: go.Figure
-    :param sum_signal: Sum signal xarray.
-    :type sum_signal: DataArray
-    :param fit_poss: Array of fitted peak positions.
-    :type fit_poss: np.ndarray
-    :param fit_heis: Array of fitted peak heights.
-    :type fit_heis: np.ndarray
-    :param res_fun: Function to calculate the resolution based on m/z values.
-    :type res_fun: partial
-    :param ps: Peak shape.
-    :type ps: dict
-    :return: Updated Plotly figure.
-    :rtype: go.Figure
-    """
-    if points["x"]:
-        # Clear peak shapes from the figure
-        fig.layout.shapes = []
-
-        # Clean annotations
-        fig.layout.annotations = [
-            i for i in fig.layout.annotations if i.text in subtitles
-        ]
-
-        # Get chosen m/z value
-        chosen_peak_val = points["x"]
-
-        # Calculate chosen peak window width
-        dmz = 3 * chosen_peak_val / res_fun(chosen_peak_val)
-
-        # Filter spectra window to plot
-        chosen_peak = sum_signal.sel(
-            mz=slice(chosen_peak_val - dmz, chosen_peak_val + dmz)
-        )
-        mz_window_x = chosen_peak.mz.values
-        mz_window_y = chosen_peak.values
-
-        # Fitted peak mask
-        fit_peak_mask = (chosen_peak_val - dmz < fit_poss) & (
-            fit_poss < chosen_peak_val + dmz
-        )
-        fit_poss_filt = fit_poss[fit_peak_mask]
-        fit_heis_filt = fit_heis[fit_peak_mask]
-
-        fit_y = np.zeros_like(mz_window_x)
-        for i, mz_val in enumerate(fit_poss_filt):
-            # Add fitted peak to fit_y, plot its position and m/z value
-            fit_y += gen_peak(
-                mz_window_x,
-                mz_val,
-                fit_heis_filt[i],
-                pres=res_fun(mz_val),
-                ps=ps,
-            )
-            fig.add_shape(
-                type="line",
-                x0=mz_val,
-                x1=mz_val,
-                y0=0,
-                y1=fit_heis_filt[i],
-                line=dict(width=2),
-                xref="x2",
-                yref="y2",
-            )
-            fig.add_annotation(
-                x=mz_val,
-                y=fit_heis_filt[i],
-                text=f"{mz_val:.3f}",
-                showarrow=False,
-                xref="x2",
-                yref="y2",
-                yshift=10,
-            )
-
-        residuals = mz_window_y - fit_y
-
-        # Update traces in the chosen peak window
-        fig.update_traces(
-            {"x": mz_window_x, "y": mz_window_y},
-            selector=lambda trace: trace.name == "Chosen peak",
-        )
-        fig.update_traces(
-            {"x": mz_window_x, "y": fit_y},
-            selector=lambda trace: trace.name == "Fitted signal",
-        )
-        fig.update_traces(
-            {"x": mz_window_x, "y": residuals},
-            selector=lambda trace: trace.name == "Residuals",
-        )
 
     return fig
