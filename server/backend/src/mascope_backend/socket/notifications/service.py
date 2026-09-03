@@ -246,6 +246,12 @@ async def send_progress_user_notification(
         if total_samples and item_index is not None:
             inc = increment if increment is not None else 0.0
             notification_copy.progress = ((item_index + inc) / total_samples) * 100
+    # A batch peak's manual curation measures the pinned identity in every
+    # sample holding the peak, one message per sample - the bar only, again.
+    if notification_copy.type == "curate_batch_peak":
+        if total_samples and item_index is not None:
+            inc = increment if increment is not None else 0.0
+            notification_copy.progress = ((item_index + inc) / total_samples) * 100
 
     # Emit to all specified rooms with optional smart routing
     for room_id in room_ids:

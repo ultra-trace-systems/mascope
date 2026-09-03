@@ -203,6 +203,19 @@ it. Verifications are the layer built to outlive a run &mdash; keyed on the peak
 and ionization mechanism rather than on a run &mdash; which is why they carry over a
 re-assignment and an override does not.
 
+### Curating a species for the whole batch
+
+In a sample served from the batch ledger (its runs list shows *Batch ledger*), the
+inspector's close alternatives are the other identities the batch has seen at that
+peak, each with the share of the batch's evidence behind it. *Use this* on one of them
+acts on the batch peak rather than on the sample: the chosen identity is pinned as the
+species for the whole batch, then measured in every sample that holds the peak. A sample
+where it can be measured now reads it with a fit of its own; one where it cannot keeps
+what it had. The batch peak claims the pinned formula whatever the samples' vote says -
+and says so when the two disagree - and a hand icon beside the formula in the *Batch
+peaks* ledger marks it. *Release*, in the inspector's note, undoes it: the samples that
+were re-measured go back to what they read before, and the batch decides again.
+
 ## Verifying assignments
 
 --8<-- "_help/assignment-verification.md"
