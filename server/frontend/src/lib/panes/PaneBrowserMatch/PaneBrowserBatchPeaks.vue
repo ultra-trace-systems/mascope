@@ -669,6 +669,23 @@ watch(
               />
               <label for="unfold-batch-iso">Isotopologues</label>
             </div>
+            <!-- The whole ledger as a CSV: every batch peak with every
+                 sample's member, one row per member. A background task; the
+                 browser downloads the file when it is ready. -->
+            <Button
+              class="export-ledger"
+              label="Export ledger (CSV)"
+              icon="pi ph ph-download-simple"
+              size="small"
+              text
+              severity="secondary"
+              :disabled="!parents.length || compute.exporting"
+              :loading="compute.exporting"
+              v-tooltip.top="
+                'Download the whole ledger as CSV: one row per member peak, with the batch peak it folded into'
+              "
+              @click="compute.exportLedger()"
+            />
           </div>
         </Popover>
       </div>

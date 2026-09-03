@@ -91,6 +91,8 @@ class MascopeClient:
     :vartype cheminfo: ChemInfoResource
     :ivar peak_assignments: Resource for reading peak-centric assignment results.
     :vartype peak_assignments: PeakAssignmentsResource
+    :ivar batch_peaks: Resource for reading a batch's batch ledger.
+    :vartype batch_peaks: BatchPeaksResource
 
     Example::
 
@@ -251,6 +253,7 @@ class MascopeClient:
         self._cheminfo: Any = None
         self._ionization: Any = None
         self._peak_assignments: Any = None
+        self._batch_peaks: Any = None
 
         # Resolve workspace (fetch list, then resolve or auto-select)
         self._workspace_id, self._workspace_name = self._resolve_workspace(workspace)
@@ -346,6 +349,16 @@ class MascopeClient:
 
             self._peak_assignments = PeakAssignmentsResource(self)
         return self._peak_assignments
+
+    @property
+    def batch_peaks(self) -> "BatchPeaksResource":
+        """Resource for reading a batch's batch ledger: its batch peaks and
+        their members."""
+        if self._batch_peaks is None:
+            from .resources.batch_peaks import BatchPeaksResource
+
+            self._batch_peaks = BatchPeaksResource(self)
+        return self._batch_peaks
 
     def _resolve_workspace(self, workspace: str | None) -> tuple[str, str]:
         """Resolve workspace argument to a workspace ID and name.
@@ -674,6 +687,65 @@ class MascopeClient:
             max_workers=max_workers,
         )
 
+    def load_batch_ledger(
+        self,
+        dataset: "str | re.Pattern",
+        batches: "str | re.Pattern | None" = None,
+        *,
+        exact: bool = False,
+        members: bool = True,
+    ) -> pd.DataFrame | None:
+        """Load the batch ledger of one or more batches into a single DataFrame.
+
+        The batch-primary counterpart of :meth:`load_assignments`: rather than
+        one run per sample, a batch's assignment lives in its **batch ledger** -
+        one batch peak per species across the batch's samples, with the
+        consensus formula and tier the samples vote for, and one member per
+        sample the species was seen in. Every processed sample folds in as it
+        arrives, so the ledger is the complete record of a batch.
+
+        With ``members`` (the default) the result is the whole ledger as flat
+        rows - one per member, the anchor's consensus beside the member's own
+        reading - which is one line from CSV or any other format, and the
+        species table (one row per batch peak) rides on
+        ``df.attrs["batch_peaks"]``. With ``members=False`` the result is the
+        species table alone.
+
+        :param dataset: Dataset name or literal substring (or ID); pass a
+                        compiled ``re.Pattern`` to match by regex.
+        :type dataset: str | re.Pattern
+        :param batches: Optional case-insensitive filter on batch names. A
+                        string is a literal substring; pass a compiled
+                        ``re.Pattern`` to match by regex. If not provided, all
+                        batches in the dataset are loaded.
+        :type batches: str | re.Pattern, optional
+        :param exact: Match a string ``batches`` against the whole name instead
+                      of as a substring. Defaults to False.
+        :type exact: bool
+        :param members: Return the member rows (default) rather than the
+                        species table.
+        :type members: bool
+        :return: A DataFrame with ``sample_batch_name`` first, then the columns
+                 of :meth:`~mascope_sdk.resources.batch_peaks.BatchPeaksResource.members`
+                 (or of
+                 :meth:`~mascope_sdk.resources.batch_peaks.BatchPeaksResource.list`
+                 with ``members=False``). Returns None if no batch has a ledger.
+        :rtype: pd.DataFrame | None
+        :raises ValueError: If the dataset cannot be resolved.
+
+        Example::
+
+            ledger = mascope.load_batch_ledger(dataset="My Dataset", batches="Uronium")
+            ledger.to_csv("ledger.csv", index=False)
+
+            # The species table, one row per batch peak
+            species = ledger.attrs["batch_peaks"]
+            species.groupby("sample_batch_name")["consensus_tier"].value_counts()
+        """
+        from ._loaders import load_batch_ledger
+
+        return load_batch_ledger(self, dataset, batches, exact=exact, members=members)
+
     def load_assignments(
         self,
         dataset: "str | re.Pattern",
@@ -812,6 +884,7 @@ from typing import TYPE_CHECKING  # noqa: E402
 
 
 if TYPE_CHECKING:
+    from .resources.batch_peaks import BatchPeaksResource
     from .resources.batches import BatchesResource
     from .resources.cheminfo import ChemInfoResource
     from .resources.datasets import DatasetsResource

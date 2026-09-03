@@ -15,32 +15,13 @@ import pandas as pd
 from loguru import logger
 
 from .._http import http_get
-from ._base import BaseResource, _coerce_datetime_columns
+from ._base import BaseResource, _coerce_datetime_columns, _coerce_utc_columns
 
 
 #: Rows requested per page when reading a run. The list endpoint caps a page
 #: at 5000 rows (its own default is 1000); the SDK asks for the cap to
 #: minimise round trips and pages until it has ``total`` rows.
 PAGE_LIMIT = 5000
-
-
-def _coerce_utc_columns(df: pd.DataFrame) -> pd.DataFrame:
-    """Convert ``*_utc_*`` audit columns to timezone-aware datetimes.
-
-    The run and assignment records name their timestamps
-    ``peak_assignment_run_utc_created`` / ``..._utc_completed``, which the
-    shared ``_coerce_datetime_columns`` (keyed on ``datetime`` in the column
-    name) does not catch.
-    """
-    for col in df.columns:
-        if "_utc" not in col or pd.api.types.is_datetime64_any_dtype(df[col]):
-            continue
-        try:
-            df[col] = pd.to_datetime(df[col], utc=True)
-        except Exception as e:
-            # INFO: fires per column per DataFrame on odd data
-            logger.info(f"Failed to convert column {col} to datetime: {e}")
-    return df
 
 
 class PeakAssignmentsResource(BaseResource):

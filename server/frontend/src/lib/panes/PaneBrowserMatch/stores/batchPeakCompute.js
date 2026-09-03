@@ -96,6 +96,43 @@ export const useBatchPeakCompute = defineStore('browser.match.batchPeaks.compute
     computeTimer = null
   }
 
+  // The ledger export: a background task whose completion notification
+  // carries the file the browser then downloads (App.vue), so this only
+  // keeps the control busy for as long as the task runs.
+  const exporting = ref(false)
+  const pendingExportId = ref(null)
+  let exportTimer = null
+  function endExporting() {
+    exporting.value = false
+    pendingExportId.value = null
+    clearTimeout(exportTimer)
+    exportTimer = null
+  }
+  async function exportLedger() {
+    const batchId = app.data.batch.focusedId
+    if (!batchId || exporting.value) return
+    exporting.value = true
+    clearTimeout(exportTimer)
+    exportTimer = setTimeout(endExporting, COMPUTE_TIMEOUT)
+    try {
+      const response = await api.http.post(
+        `/batch-peaks/batch/${batchId}/export`,
+        {},
+        { use: 'process', type: 'export_batch_ledger' }
+      )
+      pendingExportId.value = response?.headers?.['process-id'] ?? null
+    } catch {
+      endExporting()
+    }
+  }
+  app.ui.notification.on('export_batch_ledger', (notification) => {
+    if (!exporting.value) return
+    if (notification?.status === 'pending') return
+    const id = notification?.process_id
+    if (pendingExportId.value && id && id !== pendingExportId.value) return
+    endExporting()
+  })
+
   function endSearching() {
     searching.value = false
     pendingSearchId.value = null
@@ -198,6 +235,7 @@ export const useBatchPeakCompute = defineStore('browser.match.batchPeaks.compute
   function reset() {
     endComputing()
     endSearching()
+    endExporting()
     launchError.value = null
     launchRefused.value = false
   }
@@ -212,6 +250,8 @@ export const useBatchPeakCompute = defineStore('browser.match.batchPeaks.compute
     searching,
     searchTooltip,
     searchUntargeted,
+    exporting,
+    exportLedger,
     reset
   }
 })
