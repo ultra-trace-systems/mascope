@@ -277,7 +277,8 @@ async def test_a_sample_without_a_run_is_served_from_the_batch_ledger(
     assert m0["sample_peak_intensity"] == pytest.approx(5000.0)
     # A run's numbers, which a member does not carry.
     assert m0["mz_error_ppm"] is None
-    assert m0["source"] is None
+    # The source is the identity's, recorded when its first member brought it.
+    assert m0["source"] == "database"
     assert m0["evidence"] is None
 
     iso = rows["p2"]

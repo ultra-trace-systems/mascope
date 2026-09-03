@@ -27,20 +27,17 @@ const compute = useBatchPeakCompute()
   <!-- The tooltip hangs off the wrapper, not the button: a disabled button
        receives no mouse events, so a reason attached to it would be readable
        only in the one state where it says nothing. -->
-  <span
-    class="compute-bar"
-    :class="{ blocked: compute.blockedReason !== null }"
-    v-tooltip.left="compute.computeTooltip"
-  >
-    <Button
-      label="Compute batch peaks"
-      icon="pi ph ph-arrows-clockwise"
-      size="small"
-      :loading="compute.computing"
-      :disabled="compute.blockedReason !== null"
-      @click="compute.compute()"
-      :pt="
-        app.ui.help.left(`
+  <span class="compute-bar" :class="{ blocked: compute.blockedReason !== null }">
+    <span v-tooltip.left="compute.computeTooltip">
+      <Button
+        label="Compute batch peaks"
+        icon="pi ph ph-arrows-clockwise"
+        size="small"
+        :loading="compute.computing"
+        :disabled="compute.blockedReason !== null"
+        @click="compute.compute()"
+        :pt="
+          app.ui.help.left(`
           <h1>Compute Batch Peaks</h1>
           <p>
           Builds or refreshes the batch peaks from the assignment runs this
@@ -49,8 +46,36 @@ const compute = useBatchPeakCompute()
           before batch peaks existed, or to refresh after an import.
           </p>
         `)
-      "
-    />
+        "
+      />
+    </span>
+    <!-- The untargeted search, once per species: the batch counterpart of the
+         untargeted stage a per-sample run offers. Same gate as the compute, and
+         held while a compute is in flight. -->
+    <span v-tooltip.left="compute.searchTooltip">
+      <Button
+        label="Search untargeted"
+        icon="pi ph ph-magnifying-glass"
+        size="small"
+        severity="secondary"
+        :loading="compute.searching"
+        :disabled="compute.blockedReason !== null || compute.computing"
+        @click="compute.searchUntargeted()"
+        :pt="
+          app.ui.help.left(`
+            <h1>Search Untargeted</h1>
+            <p>
+            Runs the untargeted composition search once per batch peak that
+            nothing has assigned yet &mdash; on its brightest peak, in that
+            sample's own spectrum &mdash; and then measures the composition it
+            found against every other sample the species was seen in. It
+            writes no per-sample runs; the results appear in this ledger and
+            in each sample's view.
+            </p>
+          `)
+        "
+      />
+    </span>
   </span>
 </template>
 
@@ -60,6 +85,7 @@ const compute = useBatchPeakCompute()
 .compute-bar {
   display: inline-flex;
   justify-content: flex-end;
+  gap: 0.35rem;
   flex: 1 1 auto;
   min-width: 0;
 }
