@@ -367,6 +367,9 @@ const assignTarget = computed(() =>
 
 const assigning = ref(null) // key of the hit being committed
 const assignDenied = ref(false) // 403: not an editor on this sample
+// A ledger derived from the batch peaks (run engine 'batch') has no rows to
+// commit a composition onto; the server answers 409, so the hand is withheld.
+const derivedRun = computed(() => app.data.peakAssignment.peak.run?.engine === 'batch')
 
 // The results outlive the peak they were found for, so the write has to be
 // pinned to that peak rather than to whatever is focused now. Focus moves the
@@ -393,6 +396,9 @@ const resultsMatchTarget = computed(
 
 const assignTooltip = computed(() => {
   if (!assignTarget.value) return 'No assignment run covers this peak yet - assign the sample first'
+  if (derivedRun.value) {
+    return 'This ledger is derived from the batch peaks - assign the sample to edit it'
+  }
   if (!resultsMatchTarget.value)
     return 'These results are for the previously selected peak - the search for this one is still coming'
   return 'Assign this composition to the selected peak, as a manual assignment'
@@ -685,7 +691,7 @@ watch(
                 size="small"
                 text
                 severity="secondary"
-                :disabled="!assignTarget || !resultsMatchTarget || assigning !== null"
+                :disabled="!assignTarget || !resultsMatchTarget || assigning !== null || derivedRun"
                 :loading="assigning === hitKey(data)"
                 :aria-label="`Assign ${data.target_compound_formula} to the selected peak`"
                 @click="assignToPeak(data)"
