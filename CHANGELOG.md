@@ -60,15 +60,17 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
   longer holds; a copied run carries none, because the engine that judged the
   source peak never saw the destination's.
 
-- **`mascope-tools` 2026.9.2** exports `formula_plausibility` and
-  `chemical_plausibility` from `mascope_tools.composition`. `formula_plausibility`
-  is the second factor in the evidence a peak assignment is tiered on
-  (`fit x plausibility`), so anything reproducing or predicting a tier needs it -
-  including an external engine publishing a run into Mascope. It has existed
-  since the graded-plausibility work but only inside `composition.heuristic_filter`,
-  which is an uncurated path no outside caller had a promise about, and no
-  published release carried it at all. This is also the first tools release since
-  2026.6.25.
+- **`mascope-tools` 2026.9.2** exports `formula_plausibility` from
+  `mascope_tools.composition`. It is the second factor in the evidence a peak
+  assignment is tiered on (`fit x plausibility`), so anything reproducing or
+  predicting a tier needs it - including an external engine publishing a run
+  into Mascope. It has existed since the graded-plausibility work but only
+  inside `composition.heuristic_filter`, which is an uncurated path no outside
+  caller had a promise about, and no published release carried it at all. Its
+  vectorised sibling `chemical_plausibility` stays unexported: that one is a
+  filter stage, shaped to slot into `apply_heuristic_rules` beside four other
+  rules that are equally unexported, and bulk scoring is a comprehension over
+  the memoized scalar. This is also the first tools release since 2026.6.25.
 
 - **An imported row's `tier` is now optional.** It is a pure function of
   `fit_score`, `assigned_formula` and the run's declared bands - all of which
