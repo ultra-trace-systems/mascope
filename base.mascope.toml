@@ -35,12 +35,13 @@ peak_assignment = true
 # take effect on restart.
 peak_assignment_on_ingest = true
 peak_assignment_ingest_max_peaks = 100000
-# Which ledger an ingest-time assignment writes: "sample" writes a per-sample
-# run and folds it into the batch peaks (the default); "batch" folds the sample
-# into the batch peaks and writes no run, so the per-sample rows are never
-# written and the Sample view is served from the batch ledger. An explicit run
-# on the sample still writes one. Takes effect on restart.
-peak_assignment_ingest_ledger = "sample"
+# Which ledger an ingest-time assignment writes: "batch" (the default) folds the
+# sample into the batch peaks and writes no per-sample run - one member row of
+# some 200 bytes per detected peak, the Sample view served from the batch
+# ledger; "sample" writes a per-sample run as well and folds it, about a
+# kilobyte per detected peak. An explicit run on a sample always writes one.
+# Takes effect on restart.
+peak_assignment_ingest_ledger = "batch"
 # Uploads: size cap (GB) for a single resumable (tus) upload, enforced by the
 # backend and used by the web uploader to size its own client-side limit (see
 # docs/maintaining.md). It lives here rather than in [backend] because both
