@@ -151,7 +151,7 @@ class TestTokenLookupIsReused:
 
 
 def _record(sink):
-    async def _touch(device_id):
+    async def _touch(device_id, **kwargs):
         sink.append(device_id)
 
     return _touch

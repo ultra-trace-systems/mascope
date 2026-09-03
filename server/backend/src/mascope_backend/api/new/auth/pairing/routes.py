@@ -37,6 +37,8 @@ async def pairing_start_route(
     return await start_pairing(
         service_name=pairing_start_request.service_name,
         machine_name=pairing_start_request.machine_name,
+        instrument=pairing_start_request.instrument,
+        agent_version=pairing_start_request.agent_version,
     )
 
 

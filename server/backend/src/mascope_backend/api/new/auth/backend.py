@@ -16,6 +16,7 @@ from mascope_backend.api.new.auth.access_token.util import (
     resolve_token_context,
 )
 from mascope_backend.api.new.auth.access_token.validation import (
+    agent_version_from_header,
     ensure_device_bound,
     ensure_device_token_fresh,
     touch_device_last_seen,
@@ -129,7 +130,12 @@ async def get_enabled_backends(request: Request) -> list[AuthenticationBackend]:
         ensure_device_bound(token_service_name, token_device_id)
         ensure_device_token_fresh(token_service_name, token_device_id, token_created_at)
         if token_device_id is not None:
-            await touch_device_last_seen(token_device_id)
+            await touch_device_last_seen(
+                token_device_id,
+                agent_version=agent_version_from_header(
+                    request.headers.get("x-agent-version")
+                ),
+            )
 
         # The authenticated device binding, for routes that attribute an action
         # to the machine behind it. Recorded here so they read the value this
