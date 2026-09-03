@@ -348,6 +348,15 @@ already read anchors and occurrences only. They change by column types, not by s
 
 ### 6.3 Curation and verification move to the anchor
 
+> **Status (2026-09-03): anchor verdicts shipped in the epic.** `batch_peak_verification`
+> is the continuity note's record (its section 4) as specified: claim-pinned, append-only
+> with the live row marked, no foreign key to the anchor, structurally outside the
+> calibration pool, with `verify`, `retract`, `verdicts` and `anchor-context` routes under
+> `/api/batch-peaks`. Precedence follows that note's section 5 rather than the sentence
+> below: a per-sample verdict wins where one exists - it is the exception - and the anchor
+> verdict overlays every other member whose own claim is the one judged. The per-sample
+> verdict filter now runs on the effective verdict. Anchor curation is still to come.
+
 Manual curation today is run-local
 ([`curation.py`](../../server/backend/src/mascope_backend/api/new/peak_assignments/curation.py)):
 it edits one row of one run, and a later run supersedes it. On the anchor it is batch-wide:

@@ -558,6 +558,13 @@ collapsing it into a two-way one.
 
 ## 4. The anchor verdict record
 
+> **Status (2026-09-03): implemented** in the batch-primary epic
+> (`epic/batch-primary-assignment`), as specified here, with three notes. The `context`
+> snapshot carries the consensus (tier, best fit, support fraction, `n_present`,
+> ambiguity, m/z) but no continuity grade, since sections 1-3 are not built. `retract` is
+> kept. `expected_formula` on the verify route is mandatory for `confirmed` and
+> `rejected`, and section 5's filter-semantics change shipped with it, release-noted.
+
 A new record kind — `batch_peak_verification` — not rows in
 `assignment_verification`, and never N fabricated per-sample verdicts.
 

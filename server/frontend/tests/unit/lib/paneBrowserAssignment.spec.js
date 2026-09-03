@@ -31,6 +31,12 @@ const peakUnfocus = vi.fn()
 const forAssignment = vi.fn((row) =>
   verdictPeakId && row?.sample_peak_id !== verdictPeakId ? null : verdictRecord
 )
+// The batch-level verdict reaching a row with none of its own: null unless a
+// test sets one, on the M0 whose peak id it names.
+let overlayRecord = null
+const overlayFor = vi.fn((row) =>
+  overlayRecord && row?.sample_peak_id === overlayRecord.sample_peak_id ? overlayRecord : null
+)
 
 const SAMPLE = { sample_item_id: 'si-1', sample_item_name: 'Sample 1' }
 const BATCH = { sample_batch_id: 'sb-1', sample_batch_name: 'Batch 1' }
@@ -90,7 +96,8 @@ function makeApp() {
             row?.role === 'iso_child' ? (byId.get(row.owner_peak_assignment_id) ?? row) : row,
           forPeak: () => null
         },
-        verification: { forAssignment }
+        verification: { forAssignment },
+        anchorContext: { overlayFor }
       }
     },
     ui: { tab: { active: 'sample' }, help: helpStub }
@@ -307,6 +314,7 @@ beforeEach(() => {
   runError = null
   verdictRecord = null
   verdictPeakId = null
+  overlayRecord = null
   seed()
 })
 
@@ -1314,5 +1322,72 @@ describe('PaneBrowserAssignment engine tier column', () => {
     expect(wrapper.vm.engineTierTooltip({ tier: 'assigned', engine_tier: 'assigned' })).toContain(
       'agrees'
     )
+  })
+})
+
+describe('PaneBrowserAssignment batch-level verdict overlay', () => {
+  // The two default families, as the describes above seed them.
+  beforeEach(() => {
+    seed(FAMILY_A, FAMILY_B)
+  })
+
+  /** A batch-level verdict reaching B's M0 (peak `p-b`). */
+  const OVERLAY = {
+    batch_peak_verification_id: 'bv1',
+    batch_peak_id: 'bp-b',
+    sample_peak_id: 'p-b',
+    assigned_formula: 'C2H6',
+    ionization_mechanism_id: null,
+    verdict: 'confirmed',
+    evidence_level: 'pattern'
+  }
+
+  it('shows a batch-level verdict as borrowed on a row with none of its own', async () => {
+    overlayRecord = OVERLAY
+    const wrapper = await mountPane()
+
+    const rowsById = new Map(wrapper.vm.rows.map((row) => [row.peak_assignment_id, row]))
+    expect(wrapper.vm.verdictFor(rowsById.get('b'))).toBeNull()
+    expect(wrapper.vm.overlayFor(rowsById.get('b'))).toEqual(OVERLAY)
+    expect(wrapper.vm.effectiveVerdictFor(rowsById.get('b'))).toEqual(OVERLAY)
+    // A's peak is not the one the verdict reaches.
+    expect(wrapper.vm.overlayFor(rowsById.get('a'))).toBeNull()
+    // The overlay resolves through the M0 the same way the owned verdict does.
+    expect(overlayFor).toHaveBeenCalledWith(rowsById.get('b'))
+  })
+
+  it('lets the row keep its own verdict over the batch-level one, and names the disagreement', async () => {
+    verdictRecord = { verdict: 'rejected', evidence_level: null }
+    verdictPeakId = 'p-b'
+    overlayRecord = OVERLAY
+    const wrapper = await mountPane()
+
+    const rowsById = new Map(wrapper.vm.rows.map((row) => [row.peak_assignment_id, row]))
+    expect(wrapper.vm.effectiveVerdictFor(rowsById.get('b'))).toEqual(verdictRecord)
+    expect(wrapper.vm.conflictFor(rowsById.get('b'))).toEqual(OVERLAY)
+  })
+
+  it('names no disagreement when the two agree', async () => {
+    verdictRecord = { verdict: 'confirmed', evidence_level: 'msms' }
+    verdictPeakId = 'p-b'
+    overlayRecord = OVERLAY
+    const wrapper = await mountPane()
+
+    const rowsById = new Map(wrapper.vm.rows.map((row) => [row.peak_assignment_id, row]))
+    expect(wrapper.vm.conflictFor(rowsById.get('b'))).toBeNull()
+  })
+
+  it('filters on the verdict a row visibly carries, borrowed or not', async () => {
+    overlayRecord = OVERLAY
+    const wrapper = await mountPane()
+
+    wrapper.vm.verdictFilter = 'confirmed'
+    await wrapper.vm.$nextTick()
+    expect(ids(wrapper)).toEqual(['b'])
+
+    // "Unverified" lists only rows that show no badge at all.
+    wrapper.vm.verdictFilter = 'unverified'
+    await wrapper.vm.$nextTick()
+    expect(ids(wrapper)).toEqual(['a'])
   })
 })
