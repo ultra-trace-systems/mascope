@@ -46,12 +46,12 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
   ledger and the SDK frame, and filterable both directly and through
   `tier_disagrees` - which excludes rows carrying no engine tier from both
   answers, since silence is not agreement. Nothing ranks on it: the batch
-  consensus and `TIER_RANK` stay on `tier`. The tier chip marks a disagreeing
-  row and names the other verdict on hover; the peak inspector shows both.
+  consensus and `TIER_RANK` stay on `tier`. The ledger gives it its own column
+  and the peak inspector its own chip.
   The ledger shows the engine's verdict in its own sortable **engine tier**
   column beside Mascope's, on runs that carry one and nowhere else, so the two
-  read side by side rather than one behind a hover; the chip keeps its
-  disagreement marker for the peak inspector and for when the column is hidden.
+  read side by side rather than one behind a hover, and the peak inspector
+  shows both as chips.
   Rows the engine did not tier show a dash, which is most of them - an engine
   typically tiers only the peaks it committed a formula to - and they sort last
   rather than under the 'unassigned' rank they never claimed.
