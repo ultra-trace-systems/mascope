@@ -31,6 +31,7 @@ from mascope_backend.api.lib.api_features import api_controller
 from mascope_backend.api.lib.exceptions.api_exceptions import NotFoundException
 from mascope_backend.api.new.match.params import default_match_params
 from mascope_backend.api.new.peak_assignments.engine import evidence_for
+from mascope_backend.api.new.peak_assignments.fold_view import is_fold_id
 from mascope_backend.api.new.peak_assignments.seeded_scoring import (
     finite_or_none,
     score_or_none,
@@ -154,6 +155,19 @@ async def score_row_alternatives(
         alternative, each either scored or blocked with a reason.
     :raises NotFoundException: The assignment is not this sample's.
     """
+    if is_fold_id(peak_assignment_id):
+        # A derived row has no formula-only shortlist of its own: its
+        # alternatives are the other identities its anchor's members carried,
+        # each already scored in the sample it came from.
+        return {
+            "status": "success",
+            "message": (
+                f"Assignment '{peak_assignment_id}' is derived from the batch "
+                "ledger; it has no formula-only alternatives to measure."
+            ),
+            "results": 0,
+            "data": [],
+        }
     async with async_session() as session:
         assignment = await session.get(PeakAssignment, peak_assignment_id)
         if assignment is None or assignment.sample_item_id != sample_item_id:
