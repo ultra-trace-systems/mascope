@@ -6,6 +6,20 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
 
 ### Added
 
+- **Curating a species for the whole batch.** In a sample served from the batch
+  ledger, *use this* on a close alternative in the inspector now acts on the batch
+  peak: the chosen identity - one the batch's samples have carried at that peak -
+  is pinned as the species for the whole batch, measured in every sample that
+  holds the peak (a sample where it can be measured reads it with a fit of its
+  own; one where it cannot keeps what it had), and the batch peak is recomputed.
+  The batch peak claims the pinned formula whatever the samples' vote says, keeps
+  the vote's own winner beside it and reads as ambiguous when the two disagree;
+  a hand icon marks it in the Batch peaks ledger. *Release*, in the inspector's
+  note, undoes it: the re-measured samples go back to what they read before and
+  the batch decides again. Routes `POST /api/batch-peaks/batch/{id}/curate`
+  (background task) and `.../release-curation`, editor-gated behind the feature
+  flag.
+
 - **Batch-level verdicts.** A species can be judged once for a whole batch from the
   new *Verdict* column of the Batch peaks ledger: confirm, reject or unsure with an
   evidence level and a note, re-judge, or retract. The verdict is about the batch

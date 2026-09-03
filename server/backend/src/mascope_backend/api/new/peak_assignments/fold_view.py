@@ -196,6 +196,8 @@ def member_detail(member: Any, anchor: Any) -> dict:
                 "source": FOLD_ENGINE,
                 "evidence_share": share.get("evidence_share"),
                 "n_members": share.get("n"),
+                # The registry index: what a batch-level curation names.
+                "candidate": index,
             }
         )
     provenance = anchor.provenance if isinstance(anchor.provenance, dict) else {}

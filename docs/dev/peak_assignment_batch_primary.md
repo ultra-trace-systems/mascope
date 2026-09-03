@@ -355,7 +355,13 @@ already read anchors and occurrences only. They change by column types, not by s
 > `/api/batch-peaks`. Precedence follows that note's section 5 rather than the sentence
 > below: a per-sample verdict wins where one exists - it is the exception - and the anchor
 > verdict overlays every other member whose own claim is the one judged. The per-sample
-> verdict filter now runs on the effective verdict. Anchor curation is still to come.
+> verdict filter now runs on the effective verdict. **Anchor curation shipped next:**
+> a pin under the anchor's `provenance.manual` that every recompute honours
+> (`compute_consensus(..., manual=)`), propagated to the members by measurement
+> through the untargeted search's seeded chain, with each re-pointed member's prior
+> state archived on the pin so release is a true undo. The registry made "rewriting
+> the head of the candidate list" unnecessary: members address identities by index,
+> so the pin names an index and nothing else moves.
 
 Manual curation today is run-local
 ([`curation.py`](../../server/backend/src/mascope_backend/api/new/peak_assignments/curation.py)):
