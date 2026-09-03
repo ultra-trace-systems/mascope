@@ -14,6 +14,7 @@ from sqlalchemy import select
 
 from mascope_backend.api.lib.api_features import api_controller
 from mascope_backend.api.new.peak_assignments.batch_peaks import (
+    manual_pin_of,
     mz_from_delta,
     tier_name,
 )
@@ -55,6 +56,8 @@ def _batch_peak_meta(bp) -> dict:
         "intensity_variable": bp.intensity_variable,
         "max_intensity": bp.max_intensity,
         "isotopologue_of": bp.isotopologue_of,
+        # Pinned by hand for the whole batch (batch_curation.py).
+        "curated": manual_pin_of(bp) is not None,
     }
 
 

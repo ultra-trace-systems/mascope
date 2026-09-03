@@ -752,6 +752,11 @@ watch(
               :field="data.consensus_formula"
             >
               <span
+                v-if="data.curated"
+                class="pi ph ph-hand-pointing curated"
+                v-tooltip.top="'Curated by hand for the whole batch'"
+              />
+              <span
                 v-if="isotopologueCount(data)"
                 class="iso-count"
                 v-tooltip.top="
@@ -966,6 +971,11 @@ watch(
 .child-label {
   font-family: var(--font-mono, ui-monospace, monospace);
   font-size: 0.86rem;
+  opacity: 0.8;
+}
+.curated {
+  font-size: 0.8rem;
+  margin-right: 0.25rem;
   opacity: 0.8;
 }
 .iso-count {

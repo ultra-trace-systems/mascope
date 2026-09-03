@@ -839,6 +839,34 @@ class BatchPeakVerificationsResponse(BaseModel):
     data: list[BatchPeakVerificationRecord]
 
 
+class CurateBatchPeakBody(BaseModel):
+    """Request body to pin one of a batch peak's identities as its species, batch-wide."""
+
+    batch_peak_id: str = Field(description="The batch peak (anchor) being curated.")
+    candidate: int = Field(
+        ge=0,
+        description=(
+            "Index into the batch peak's identity registry - the `candidate` an "
+            "alternative of a derived row carries. The identities a batch peak can be "
+            "assigned are the ones its members have carried."
+        ),
+    )
+    expected_formula: str | None = Field(
+        None,
+        description=(
+            "The consensus formula the user saw. A mismatch is refused (409): the "
+            "claim can move under another sample's fold between the row being read "
+            "and this request landing."
+        ),
+    )
+
+
+class ReleaseBatchPeakCurationBody(BaseModel):
+    """Request body to undo a batch peak's manual curation."""
+
+    batch_peak_id: str = Field(description="The batch peak whose curation to release.")
+
+
 class RecalibrateResponse(BaseModel):
     """Outcome of refitting an instrument's calibration from verification labels (V2)."""
 
