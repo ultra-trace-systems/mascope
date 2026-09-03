@@ -46,8 +46,7 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
   ledger and the SDK frame, and filterable both directly and through
   `tier_disagrees` - which excludes rows carrying no engine tier from both
   answers, since silence is not agreement. Nothing ranks on it: the batch
-  consensus and `TIER_RANK` stay on `tier`. The ledger gives it its own column
-  and the peak inspector its own chip.
+  consensus and `TIER_RANK` stay on `tier`.
   The ledger shows the engine's verdict in its own sortable **engine tier**
   column beside Mascope's, on runs that carry one and nowhere else, so the two
   read side by side rather than one behind a hover, and the peak inspector
@@ -79,7 +78,10 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
   a second implementation of one rule whose drift refused the whole import over
   a number the client had no reason to hold. The invariant now holds by
   construction rather than by refusal. A supplied tier is still accepted and
-  still checked.
+  still checked. A row that names no `assigned_formula` is 'unassigned'
+  whatever fit score rides along, and may not claim otherwise: a fit weighs
+  nothing without a formula to weigh it against, which is what the in-app
+  ledger has always said.
 
 - A curated sample's assignments can now be **copied to the batch's other
   samples** (*Process → Copy assignments to batch…* in the sample's context

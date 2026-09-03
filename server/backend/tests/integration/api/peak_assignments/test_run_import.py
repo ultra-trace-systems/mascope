@@ -2404,6 +2404,58 @@ class TestTheServerDerivesAnOmittedTier:
         }
 
     @pytest.mark.asyncio
+    async def test_a_scored_row_with_no_formula_is_unassigned(
+        self, editor_client, import_sample, feature_enabled, async_session_factory
+    ):
+        """A fit score is not on its own a claim about a peak.
+
+        The regression this guards: banded on the bare fit, this row derived
+        'assigned' and the ledger showed an assigned chip beside an empty
+        formula cell - a row the in-app engine cannot produce.
+        """
+        response = await _post(
+            editor_client,
+            import_sample,
+            _body([_row("peak-0", fit_score=0.92, tier=None, assigned_formula=None)]),
+        )
+
+        assert response.status_code == 200
+        run_id = response.json()["data"][0]["peak_assignment_run_id"]
+        async with async_session_factory() as session:
+            stored = await _rows_of(session, run_id)
+        assert stored[0].tier == "unassigned"
+        # And no evidence beside it: the chip shows the number the tier was
+        # read off, so "unassigned - 92%" would be the same mistake wearing
+        # the right tier.
+        assert "evidence" not in (stored[0].provenance or {})
+
+    @pytest.mark.asyncio
+    async def test_the_same_row_cannot_CLAIM_a_tier_either(
+        self, editor_client, import_sample, feature_enabled
+    ):
+        """Derive and check are one rule, so the refusal moves with it."""
+        response = await _post(
+            editor_client,
+            import_sample,
+            _body(
+                [
+                    _row(
+                        "peak-0",
+                        fit_score=0.92,
+                        tier="assigned",
+                        assigned_formula=None,
+                    )
+                ]
+            ),
+        )
+
+        # The endpoint genericizes a 422 body to an error id, so the wording is
+        # pinned against the validator directly in the unit suite
+        # (`test_a_fit_score_with_no_formula_is_not_evidence`); here the refusal
+        # itself is what matters.
+        assert response.status_code == 422
+
+    @pytest.mark.asyncio
     async def test_a_supplied_tier_is_still_honoured(
         self, editor_client, import_sample, feature_enabled, async_session_factory
     ):
@@ -2437,6 +2489,7 @@ class TestTheChemistryTheServerReadsIsWrittenBack:
         self, editor_client, import_sample, feature_enabled, async_session_factory
     ):
         response = await _post(editor_client, import_sample, _body([_row("peak-0")]))
+        assert response.status_code == 200
         run_id = response.json()["data"][0]["peak_assignment_run_id"]
 
         async with async_session_factory() as session:
@@ -2458,6 +2511,7 @@ class TestTheChemistryTheServerReadsIsWrittenBack:
             import_sample,
             _body([_row("peak-0", provenance={"plausibility": 0.01})]),
         )
+        assert response.status_code == 200
         run_id = response.json()["data"][0]["peak_assignment_run_id"]
 
         async with async_session_factory() as session:
@@ -2478,15 +2532,143 @@ class TestTheChemistryTheServerReadsIsWrittenBack:
                     _row(
                         "peak-0",
                         assigned_formula=None,
+                        ion_formula=None,
                         fit_score=None,
                         tier="unassigned",
                     )
                 ]
             ),
         )
+        assert response.status_code == 200
         run_id = response.json()["data"][0]["peak_assignment_run_id"]
 
         async with async_session_factory() as session:
             row = (await _rows_of(session, run_id))[0]
 
         assert row.provenance is None or "plausibility" not in row.provenance
+
+    @pytest.mark.asyncio
+    async def test_a_formula_this_server_cannot_read_carries_none_either(
+        self, editor_client, import_sample, feature_enabled, async_session_factory
+    ):
+        """`formula_plausibility` fails open to 1.0 so an unreadable formula
+        never demotes a row - right for weighing a fit, wrong for storing, where
+        it would assert perfect chemistry for a string nothing could parse. The
+        evidence beside it is still the bare fit, as everywhere else."""
+        response = await _post(
+            editor_client,
+            import_sample,
+            _body(
+                [
+                    _row(
+                        "peak-0",
+                        assigned_formula="not a formula",
+                        ion_formula=None,
+                        fit_score=0.92,
+                        tier=None,
+                    )
+                ]
+            ),
+        )
+
+        assert response.status_code == 200
+        run_id = response.json()["data"][0]["peak_assignment_run_id"]
+
+        async with async_session_factory() as session:
+            row = (await _rows_of(session, run_id))[0]
+
+        assert "plausibility" not in (row.provenance or {})
+        assert row.provenance["evidence"] == 0.92
+
+
+class TestTheLedgerFiltersOnTheEnginesOwnTier:
+    """The comparison an imported run exists for, served rather than
+    reconstructed.
+
+    The subtle half is `tier_disagrees=false`: a row carrying NO engine tier is
+    excluded from both answers, because silence is not agreement. Folding those
+    into `false` would report every in-app row as an engine that concurred - and
+    a later simplification to a plain `engine_tier != tier` would do exactly
+    that while still passing a `true`-only test, since SQL `NULL != 'assigned'`
+    is UNKNOWN rather than true.
+    """
+
+    @staticmethod
+    async def _import_mixed(client, sample):
+        """Three rows: one disagreeing, one agreeing, one with no verdict."""
+        return await _post(
+            client,
+            sample,
+            _body(
+                [
+                    _row("peak-0", engine_tier="candidate"),
+                    _row("peak-1", engine_tier="assigned"),
+                    _row("peak-2"),
+                ]
+            ),
+        )
+
+    @staticmethod
+    def _peaks(response):
+        return {row["sample_peak_id"] for row in response.json()["data"]}
+
+    @pytest.mark.asyncio
+    async def test_it_filters_on_the_engine_tier_directly(
+        self, editor_client, import_sample, feature_enabled
+    ):
+        assert (await self._import_mixed(editor_client, import_sample)).status_code == (
+            200
+        )
+
+        response = await editor_client.get(
+            f"/api/peak-assignments/sample/{import_sample}",
+            params={"engine_tier": "candidate"},
+        )
+
+        assert response.status_code == 200
+        assert self._peaks(response) == {"peak-0"}
+
+    @pytest.mark.asyncio
+    async def test_disagreement_is_the_rows_where_the_two_differ(
+        self, editor_client, import_sample, feature_enabled
+    ):
+        await self._import_mixed(editor_client, import_sample)
+
+        response = await editor_client.get(
+            f"/api/peak-assignments/sample/{import_sample}",
+            params={"tier_disagrees": "true"},
+        )
+
+        assert response.status_code == 200
+        assert self._peaks(response) == {"peak-0"}
+
+    @pytest.mark.asyncio
+    async def test_agreement_excludes_the_rows_that_said_nothing(
+        self, editor_client, import_sample, feature_enabled
+    ):
+        """peak-2 stated no tier, so it is in neither answer."""
+        await self._import_mixed(editor_client, import_sample)
+
+        response = await editor_client.get(
+            f"/api/peak-assignments/sample/{import_sample}",
+            params={"tier_disagrees": "false"},
+        )
+
+        assert response.status_code == 200
+        assert self._peaks(response) == {"peak-1"}
+
+    @pytest.mark.asyncio
+    async def test_an_unfiltered_read_still_carries_the_whole_run(
+        self, editor_client, import_sample, feature_enabled
+    ):
+        """And serves the column, which nothing had to be taught to project."""
+        await self._import_mixed(editor_client, import_sample)
+
+        response = await editor_client.get(
+            f"/api/peak-assignments/sample/{import_sample}"
+        )
+
+        assert response.status_code == 200
+        by_peak = {row["sample_peak_id"]: row for row in response.json()["data"]}
+        assert by_peak["peak-0"]["engine_tier"] == "candidate"
+        assert by_peak["peak-2"]["engine_tier"] is None

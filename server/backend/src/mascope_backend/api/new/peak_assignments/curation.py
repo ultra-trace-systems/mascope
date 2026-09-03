@@ -68,6 +68,7 @@ from mascope_backend.api.new.peak_assignments.engine import (
     SOURCE_MANUAL,
     SOURCE_UNTARGETED,
     evidence_for,
+    plausibility_for,
     tier_for_evidence,
 )
 from mascope_backend.api.new.peak_assignments.schemas import (
@@ -88,10 +89,7 @@ from mascope_backend.db import (
     TargetIon,
     async_session,
 )
-from mascope_tools.composition.heuristic_filter import (
-    SCORE_VERSION,
-    formula_plausibility,
-)
+from mascope_tools.composition.heuristic_filter import SCORE_VERSION
 
 
 #: Run status a row may be curated in. A run that is still being computed or
@@ -136,20 +134,6 @@ MAX_DEMOTED_ARCHIVE = 32
 #: a row that still reads exactly like this, so the value is compared, not just
 #: written - see :func:`_restore_demoted`.
 ACTION_DEMOTE_SATELLITE = "demote_satellite"
-
-
-def _plausibility_of(formula: str | None) -> float | None:
-    """Graded chemical plausibility of a formula, or None when it has none.
-
-    Fails open exactly as the engine's own use does: an unparseable formula
-    scores 1.0 rather than raising, so this is never a validation gate.
-    """
-    if not formula:
-        return None
-    try:
-        return round(float(formula_plausibility(formula)), 4)
-    except Exception:  # plausibility must never decide whether a write happens
-        return None
 
 
 def _clean(mapping: dict) -> dict:
@@ -634,7 +618,7 @@ def _demote(
     )
     child.role = ROLE_UNASSIGNED
     child.tier = TIER_UNASSIGNED
-    # Archived with the formula it judged (see `_previous_state`); a verdict
+    # Archived with the formula it judged (see `_previous_winner`); a verdict
     # about a displaced winner is not a verdict about an unassigned peak.
     child.engine_tier = None
     child.source = SOURCE_MANUAL
@@ -1002,6 +986,15 @@ async def curate_assignment(
             chosen = _chosen_from_alternative(
                 assignment, body.alternative_index, body.expected_formula
             )
+            # Read before `_validated_candidate` narrows `chosen` to the fields
+            # that may reach a column - `engine_tier` is not one of them, so it
+            # would be gone by then. Only an entry :func:`_previous_winner`
+            # archived carries one, which is exactly the entry that should put
+            # it back: a verdict the engine formed about that winner, promoted
+            # back with the winner it was about. An engine's own close
+            # alternative carries none, and rightly - the engine tiered its
+            # winner, not the runner-up.
+            promoted_engine_tier = normalize_tier(chosen.get("engine_tier"))
             scored_by = SCORED_BY_ALTERNATIVE
             # The promoted entry leaves the list; the displaced winner takes a
             # place at its head, so the row's candidate set is conserved.
@@ -1023,6 +1016,7 @@ async def curate_assignment(
                     "abundance_error": body.abundance_error,
                 }
             )
+            promoted_engine_tier = None
             scored_by = SCORED_BY_SEARCH
             remaining = list(assignment.alternatives or [])
 
@@ -1086,7 +1080,7 @@ async def curate_assignment(
         # Plausibility of the committed formula, computed here rather than
         # trusted: it is a pure function of the formula, so there is no reason
         # to carry a number a caller could have made up.
-        plausibility = _plausibility_of(assigned)
+        plausibility = plausibility_for(assigned)
         fit_score = chosen.get("fit_score")
         assigned_band, candidate_band = _run_bands(run)
         # The compound is what a satellite is a satellite OF, and a compound is
@@ -1165,9 +1159,24 @@ async def curate_assignment(
             candidate_threshold=candidate_band,
             assigned_threshold=assigned_band,
         )
-        # No engine judged the formula a person just committed, so the row
-        # carries no engine verdict. The displaced winner's is archived with it.
-        assignment.engine_tier = None
+        # The engine's verdict is about a FORMULA, not about a row, so it
+        # survives exactly as long as the row still holds the formula it judged.
+        # Three cases, and only the last is "no engine judged this":
+        #
+        # - the same composition re-committed leaves it standing, for the same
+        #   reason `same_compound` leaves the family standing - nothing the
+        #   engine said has been displaced;
+        # - promoting the archived winner back restores it, which is what makes
+        #   the inspector's "use this to undo" an undo rather than a fresh
+        #   assignment wearing the old formula;
+        # - anything else drops it, because no engine ever saw the formula a
+        #   person has just chosen. The displaced winner's verdict is not lost:
+        #   `_previous_winner` archived it with the winner, which is where the
+        #   promote above reads it back from.
+        if not same_compound:
+            assignment.engine_tier = (
+                promoted_engine_tier if promoted_engine_tier in TIERS else None
+            )
         # The curated row stands for its formula on its own: the run arbitrated
         # a family for the composition it replaced, not for this one, so there
         # is no owner here that was ever competed for.

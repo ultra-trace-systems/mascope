@@ -25,6 +25,7 @@ from mascope_backend.api.new.peak_assignments.engine import (
     build_unassigned_assignments,
     evidence_for,
     invert_matches_to_peak_assignments,
+    plausibility_for,
     score_ions_by_fit,
     tier_for_evidence,
     untargeted_matches_to_peak_assignments,
@@ -145,6 +146,48 @@ class TestEvidenceFor:
         # Plausibility must never decide whether a write happens, so a formula
         # this layer cannot read weighs nothing rather than zeroing the row.
         assert evidence_for(0.9, "not a formula") == pytest.approx(0.9)
+
+
+class TestPlausibilityFor:
+    """The other factor of the product, which is STORED rather than multiplied.
+
+    ``evidence_for`` and this one fail open in opposite directions on the same
+    input, and that is the point rather than an inconsistency: an unreadable
+    formula must not demote a row (so it weighs 1.0 in the product) and must not
+    be presented as chemistry this server vouches for (so it is shown as
+    nothing). The inspector renders it under "Chemical plausibility (Seven
+    Golden Rules)", which is a claim, not a weighting.
+    """
+
+    def test_a_plausible_formula_scores_one(self):
+        assert plausibility_for("C6H12O6") == pytest.approx(1.0)
+
+    def test_an_implausible_formula_is_graded_down(self):
+        assert plausibility_for("CH4O3S") < 0.5
+
+    def test_an_impossible_formula_scores_zero(self):
+        assert plausibility_for("C6H17NO4") == 0.0
+
+    def test_no_formula_has_no_plausibility(self):
+        assert plausibility_for(None) is None
+        assert plausibility_for("") is None
+
+    def test_an_unparseable_formula_has_no_plausibility_rather_than_one(self):
+        # The case the underlying `formula_plausibility` answers 1.0 to, because
+        # for WEIGHING a fit that is the fail-open answer. Stored and rendered
+        # it would read as this server asserting perfect chemistry for a string
+        # nothing could parse, so it is None here and the inspector shows a dash
+        # while the evidence beside it stays the bare fit.
+        assert plausibility_for("not a formula") is None
+        assert evidence_for(0.9, "not a formula") == pytest.approx(0.9)
+
+    def test_an_unfamiliar_ELEMENT_still_scores(self):
+        # The line is "could this be read", not "is every element one we hold
+        # valence data for". `Xx99` parses to 99 atoms of an element outside
+        # `_VALENCE_STATES`, and the Seven Golden Rules deliberately fail open
+        # there rather than call a rare element implausible - so this is a real
+        # 1.0, not the unreadable case above, and it is right to store it.
+        assert plausibility_for("Xx99") == pytest.approx(1.0)
 
 
 class TestInvertMatches:

@@ -297,7 +297,15 @@ async def copy_batch(async_session_factory, pa_test_data):
                         assignment_ids["src-1"] if role == "iso_child" else None
                     ),
                     alternatives=[{"assigned_formula": "C7H16O5", "fit_score": 0.4}],
-                    provenance={"plausibility": 0.9, "evidence": 0.87},
+                    # `score_version` is the tell: the only key here the server
+                    # neither derives nor strips, so it is the one that proves
+                    # the source's own blob travels. Both others are rewritten
+                    # by the import pipeline the copy publishes through.
+                    provenance={
+                        "plausibility": 0.9,
+                        "evidence": 0.87,
+                        "score_version": "v2-test",
+                    },
                 )
             )
         # An unassigned placeholder on the source: it must NOT be copied - the
@@ -657,6 +665,11 @@ class TestFanOut:
         # with the tier both produced. Plausibility is a pure function of the
         # formula, and the copy carries the formula over unchanged.
         assert row.provenance["plausibility"] == 1.0
+        # The key the server has no opinion about is what makes this test about
+        # provenance travelling at all: `copied_from` below is minted by the
+        # copy, and the two numbers above are derived, so without this one the
+        # whole source blob could stop travelling with nothing going red.
+        assert row.provenance["score_version"] == "v2-test"
         assert row.provenance["copied_from"] == {
             "sample_item_id": copy_batch["source"],
             "sample_peak_id": "src-1",

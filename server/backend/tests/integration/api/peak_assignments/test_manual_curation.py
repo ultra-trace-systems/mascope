@@ -130,6 +130,11 @@ async def curated_run(async_session_factory, pa_test_data):
                 mz_error_ppm=1.2,
                 abundance_error=0.05,
                 tier="assigned",
+                # As if this run had been published by an outside engine that
+                # tiered it lower than this server's bands do - the disagreement
+                # `engine_tier` exists to record, on the row every curation test
+                # here edits.
+                engine_tier="candidate",
                 alternatives=[_alternative(mechanism_id)],
                 provenance={
                     "plausibility": 0.9,
@@ -158,6 +163,7 @@ async def curated_run(async_session_factory, pa_test_data):
                 source="database",
                 fit_score=0.88,
                 tier="assigned",
+                engine_tier="below_assignability",
                 owner_peak_assignment_id=m0_id,
                 # A satellite carries provenance of its own, and no column
                 # holds it - so a restore that only put the columns back would
@@ -1826,3 +1832,147 @@ async def test_an_existing_verdict_stays_with_the_formula_it_judged(
     # Still against C6H12O6 - the formula it was recorded on, not the new one.
     assert records[0]["assigned_formula"] == "C6H12O6"
     assert records[0]["verdict"] == "confirmed"
+
+
+# ---------------------------------------------------------------------------
+# The producing engine's own tier, through a hand edit
+# ---------------------------------------------------------------------------
+
+
+class TestTheEnginesOwnTierSurvivesExactlyItsOwnFormula:
+    """`engine_tier` is a verdict about a FORMULA, not about a row.
+
+    Which is the whole rule: it stands while the row still holds the formula
+    that engine judged, is archived with that formula when a person displaces
+    it, and comes back with it. Left on a curated row it would report an engine
+    disagreeing about a formula that engine never saw - and would do so on
+    exactly the rows someone looked at hardest.
+    """
+
+    @pytest.mark.asyncio
+    async def test_a_new_formula_clears_it_and_archives_it_with_the_old_one(
+        self, editor_client, curated_run, async_session_factory
+    ):
+        response = await editor_client.patch(
+            _url(curated_run, curated_run["m0_id"]),
+            json={
+                "action": "set_assignment",
+                "assigned_formula": "C3H8O3",
+                "ionization_mechanism_id": curated_run["mechanism_id"],
+                "fit_score": 0.95,
+            },
+        )
+        assert response.status_code == 200
+
+        row = await _row(async_session_factory, curated_run["m0_id"])
+        assert row.engine_tier is None
+        # Not lost - archived on the winner it was a verdict about, which is
+        # where the undo below reads it back from.
+        assert row.alternatives[0]["assigned_formula"] == "C6H12O6"
+        assert row.alternatives[0]["engine_tier"] == "candidate"
+
+    @pytest.mark.asyncio
+    async def test_the_undo_puts_it_back(
+        self, editor_client, curated_run, async_session_factory
+    ):
+        """The inspector's "use this to undo" has to be an undo.
+
+        Without this the round trip is lossy on exactly one field: the formula,
+        adduct, fit and targets all come back, the row drops out of
+        `?tier_disagrees=true` forever, and the archived entry has been consumed
+        off the head of `alternatives` - so the verdict is gone from both the
+        column and the archive.
+        """
+        await editor_client.patch(
+            _url(curated_run, curated_run["m0_id"]),
+            json={
+                "action": "set_assignment",
+                "assigned_formula": "C3H8O3",
+                "ionization_mechanism_id": curated_run["mechanism_id"],
+                "fit_score": 0.95,
+            },
+        )
+        response = await editor_client.patch(
+            _url(curated_run, curated_run["m0_id"]),
+            json={"action": "promote_alternative", "alternative_index": 0},
+        )
+        assert response.status_code == 200
+
+        row = await _row(async_session_factory, curated_run["m0_id"])
+        assert row.assigned_formula == "C6H12O6"
+        assert row.engine_tier == "candidate"
+
+    @pytest.mark.asyncio
+    async def test_re_committing_the_same_composition_leaves_it_standing(
+        self, editor_client, curated_run, async_session_factory
+    ):
+        """Nothing the engine said has been displaced.
+
+        The same reason `same_compound` leaves the isotopologue family standing:
+        the row holds the formula it held, under the adduct it held, so the
+        verdict about that formula is still a verdict about this row.
+        """
+        response = await editor_client.patch(
+            _url(curated_run, curated_run["m0_id"]),
+            json={
+                "action": "set_assignment",
+                "assigned_formula": "C6H12O6",
+                "ionization_mechanism_id": curated_run["mechanism_id"],
+                "fit_score": 0.91,
+            },
+        )
+        assert response.status_code == 200
+
+        row = await _row(async_session_factory, curated_run["m0_id"])
+        assert row.assigned_formula == "C6H12O6"
+        assert row.engine_tier == "candidate"
+
+    @pytest.mark.asyncio
+    async def test_an_engine_alternative_promoted_carries_no_verdict(
+        self, editor_client, curated_run, async_session_factory
+    ):
+        """The engine tiered its winner, not its runner-up.
+
+        The stock alternative is one the engine considered and did not commit,
+        so it carries no `engine_tier` key - and the promotion must not inherit
+        the displaced winner's.
+        """
+        response = await editor_client.patch(
+            _url(curated_run, curated_run["m0_id"]),
+            json={"action": "promote_alternative", "alternative_index": 0},
+        )
+        assert response.status_code == 200
+
+        row = await _row(async_session_factory, curated_run["m0_id"])
+        assert row.assigned_formula != "C6H12O6"
+        assert row.engine_tier is None
+
+    @pytest.mark.asyncio
+    async def test_a_demoted_satellite_loses_it_and_gets_it_back(
+        self, editor_client, curated_run, async_session_factory
+    ):
+        """The satellite path, which archives and restores the same way."""
+        await editor_client.patch(
+            _url(curated_run, curated_run["m0_id"]),
+            json={
+                "action": "set_assignment",
+                "assigned_formula": "C3H8O3",
+                "ionization_mechanism_id": curated_run["mechanism_id"],
+                "fit_score": 0.95,
+            },
+        )
+        demoted = await _row(async_session_factory, curated_run["child_id"])
+        assert demoted.engine_tier is None
+
+        await editor_client.patch(
+            _url(curated_run, curated_run["m0_id"]),
+            json={
+                "action": "set_assignment",
+                "assigned_formula": "C6H12O6",
+                "ionization_mechanism_id": curated_run["mechanism_id"],
+                "fit_score": 0.95,
+            },
+        )
+        restored = await _row(async_session_factory, curated_run["child_id"])
+        assert restored.role == "iso_child"
+        assert restored.engine_tier == "below_assignability"

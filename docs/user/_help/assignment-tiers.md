@@ -24,11 +24,7 @@ whether the isotope pattern was corroborated, so a disagreement is a peak to
 examine rather than an error. A dash in that column means the engine stated no
 tier for the peak, which is usual: an engine typically tiers only the peaks it
 committed a formula to. Only Mascope's own tier is used when peaks are rolled up
-across a batch. A different engine can
-weigh things this one does not &mdash; how crowded the mass is, whether the
-isotope pattern was corroborated &mdash; so a disagreement is a peak worth
-looking at rather than an error. Only Mascope's own tier is used when peaks are
-rolled up across a batch.
+across a batch.
 
 Orthogonal to its tier, a peak can carry a role: **reagent** and **artifact**
 peaks stem from the ionization chemistry or the instrument rather than the

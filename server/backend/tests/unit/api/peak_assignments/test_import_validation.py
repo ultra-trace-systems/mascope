@@ -173,6 +173,20 @@ class TestTheServerDerivesAnOmittedTier:
         )
         assert _resolved_tier(_import_row(), BANDS) == "unassigned"
 
+    def test_a_scored_row_with_no_formula_is_still_unassigned(self):
+        """A fit score does not make a row an assignment.
+
+        The split above is on the FORMULA, and it has to stay reachable when a
+        fit rides along: `evidence_for` answers with the bare fit where there is
+        no formula to weigh, so banding on it would put 'assigned' on a peak
+        this ledger says nothing was proposed for - which the in-app engine
+        never writes (`build_unassigned_assignments` tiers every formula-less
+        peak 'unassigned'). `row_evidence` is what keeps the two the same shape.
+        """
+        for fit in (0.0, 0.49, 0.62, 0.92, 1.0):
+            row = _import_row(fit_score=fit, assigned_formula=None)
+            assert _resolved_tier(row, BANDS) == "unassigned", f"fit={fit}"
+
     def test_every_derived_tier_passes_the_coherence_check(self):
         """The invariant the check used to enforce by refusal now holds by
         construction - which is the whole argument for deriving."""
@@ -330,6 +344,20 @@ class TestTierCoherence:
         error = tier_coherence_error("assigned", None, None, 0.8, 0.5)
         assert error is not None
         assert "no fit_score" in error
+
+    def test_a_fit_score_with_no_formula_is_not_evidence(self):
+        """The number is real; what it is a fit TO is missing.
+
+        Banding such a row on the bare fit admitted 'assigned' onto a peak with
+        no formula - a row the in-app ledger cannot produce, rendered as an
+        assigned chip beside an empty formula cell. Both no-evidence tiers stay
+        open, because that is what the row has: no evidence.
+        """
+        assert tier_coherence_error("unassigned", 0.92, None, 0.8, 0.5) is None
+        assert tier_coherence_error("below_assignability", 0.92, None, 0.8, 0.5) is None
+        error = tier_coherence_error("assigned", 0.92, None, 0.8, 0.5)
+        assert error is not None
+        assert "no assigned_formula" in error
 
     # --- the chemistry half of the rule ------------------------------------
 
