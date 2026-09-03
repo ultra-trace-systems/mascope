@@ -78,12 +78,16 @@ function makeApp() {
           loadAltScores,
           curate
         },
-        verification: { forAssignment: () => verdictRecord, verify }
+        verification: { forAssignment: () => verdictRecord, verify },
+        anchorContext: { overlayFor: () => anchorVerdictRecord }
       }
     },
     ui: { help: helpStub }
   }
 }
+
+// The batch-level verdict reaching the focused peak; null unless a test sets one.
+let anchorVerdictRecord = null
 
 vi.mock('@/stores', () => ({ useApp: () => makeApp() }))
 
@@ -1322,5 +1326,65 @@ describe('PanePeakAssign scoring the formula-only shortlist', () => {
     expect(wrapper.vm.alternatives[1].scored).toBeNull()
     expect(wrapper.vm.alternatives[2].scored).toMatchObject({ assigned_formula: 'C9H8' })
     expect(wrapper.findAll('.alt')[2].find('.s').text()).toContain('fit 72%')
+  })
+})
+
+describe('PanePeakAssign batch-level verdict overlay', () => {
+  const ANCHOR_VERDICT = {
+    batch_peak_verification_id: 'bv1',
+    batch_peak_id: 'bp-1',
+    sample_peak_id: 'p-1',
+    assigned_formula: 'C10H12',
+    ionization_mechanism_id: null,
+    verdict: 'confirmed',
+    evidence_level: 'pattern',
+    verified_by: 3,
+    verified_utc: '2026-09-04T10:00:00Z'
+  }
+
+  afterEach(() => {
+    anchorVerdictRecord = null
+  })
+
+  it('shows a batch-level verdict as borrowed when the peak has none of its own', async () => {
+    focusedAssignment = assignment({ formula: 'C10H12', tier: 'assigned' })
+    anchorVerdictRecord = ANCHOR_VERDICT
+    const wrapper = await mountPane()
+
+    const pill = wrapper.find('.anchor-verdict')
+    expect(pill.exists()).toBe(true)
+    expect(pill.text()).toContain('Confirmed at batch level')
+    expect(pill.text()).toContain('records a per-sample exception')
+    expect(wrapper.vm.anchorVerdictTooltip).toContain('Batch-level verdict on C10H12, by user #3')
+    // The form still offers the exception.
+    expect(wrapper.vm.showVerifyForm).toBe(true)
+    expect(wrapper.text()).toContain('Confirm')
+  })
+
+  it("lets the peak's own verdict win, and hands the disagreement to its badge", async () => {
+    focusedAssignment = assignment({ formula: 'C10H12', tier: 'assigned' })
+    verdictRecord = VERDICT
+    anchorVerdictRecord = { ...ANCHOR_VERDICT, verdict: 'rejected' }
+    const wrapper = await mountPane()
+
+    expect(wrapper.find('.anchor-verdict').exists()).toBe(false)
+    expect(wrapper.find('.verdict-badge').exists()).toBe(true)
+    expect(wrapper.vm.anchorConflict).toEqual(anchorVerdictRecord)
+  })
+
+  it('names no disagreement when the two agree', async () => {
+    focusedAssignment = assignment({ formula: 'C10H12', tier: 'assigned' })
+    verdictRecord = VERDICT
+    anchorVerdictRecord = ANCHOR_VERDICT
+    const wrapper = await mountPane()
+
+    expect(wrapper.vm.anchorConflict).toBeNull()
+  })
+
+  it('shows nothing borrowed when no batch-level verdict reaches the peak', async () => {
+    focusedAssignment = assignment({ formula: 'C10H12', tier: 'assigned' })
+    const wrapper = await mountPane()
+
+    expect(wrapper.find('.anchor-verdict').exists()).toBe(false)
   })
 })
