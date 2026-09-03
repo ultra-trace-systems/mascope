@@ -9,6 +9,12 @@ This module holds the PURE logic (no DB, no I/O) behind the batch overview:
   is a stable cross-sample identity under incremental sample arrival -- the property
   the batch-overview chart needs to draw one durable trace per species.
 
+- **Candidates** (:func:`candidate_index`, :func:`resolve_candidate`): the
+  anchor's append-only registry of the assignment identities its members have
+  carried - neutral formula, ion formula, ionization mechanism - which a member
+  row names by index instead of repeating. What makes the batch ledger stand
+  without the per-sample ledger it was folded from.
+
 - **Consensus** (:func:`compute_consensus`): roll the members' *per-sample*
   ``PeakAssignment`` results up into the batch peak's formula/tier. The vote is
   **evidence-weighted** (a high-fit, high-signal member outweighs low-SNR flips),
@@ -192,6 +198,67 @@ def fold_in_sample(
                 anchor.batch_peak_id, p, is_new, d
             )
     return list(claimed.values())
+
+
+# --- candidates ---------------------------------------------------------------
+
+#: Keys of one entry in ``BatchPeak.candidates``: the identity of an assignment
+#: a member can point at, and nothing that varies per member (fit, tier and
+#: intensity stay on the member row, where the vote reads them).
+CANDIDATE_KEYS = ("formula", "ion_formula", "ionization_mechanism_id")
+
+
+def candidate_index(
+    candidates: list[dict],
+    formula: str,
+    ion_formula: Optional[str],
+    ionization_mechanism_id: Optional[str],
+) -> int:
+    """Index of the candidate (``formula``, ``ion_formula``, mechanism) in
+    ``candidates``, appending it when absent.
+
+    The list is the anchor's registry of every assignment identity its members
+    have carried, and member rows reference it by position - so it is
+    **append-only**: an entry is never removed or reordered while a member may
+    point at it, and a re-fold that no longer needs an entry leaves it in
+    place. ``candidates`` is extended in place; the caller persists it.
+
+    :param candidates: The anchor's registry, in stored order.
+    :param formula: The member's neutral formula.
+    :param ion_formula: The member's ion formula, or None.
+    :param ionization_mechanism_id: The member's mechanism, or None.
+    :return: The position the member's row should name.
+    """
+    for index, entry in enumerate(candidates):
+        if (
+            entry.get("formula") == formula
+            and entry.get("ion_formula") == ion_formula
+            and entry.get("ionization_mechanism_id") == ionization_mechanism_id
+        ):
+            return index
+    candidates.append(
+        {
+            "formula": formula,
+            "ion_formula": ion_formula,
+            "ionization_mechanism_id": ionization_mechanism_id,
+        }
+    )
+    return len(candidates) - 1
+
+
+def resolve_candidate(candidates: Optional[list], index: Optional[int]) -> dict:
+    """The registry entry a member's index names, or ``{}`` when it names none:
+    an unassigned member, an anchor with no registry, or an index the list does
+    not reach.
+
+    :param candidates: The anchor's registry, as stored (may be None).
+    :param index: The member's ``candidate`` column (may be None).
+    :return: The entry, or an empty dict.
+    """
+    if index is None or not candidates or index < 0 or index >= len(candidates):
+        return {}
+    entry = candidates[index]
+    return entry if isinstance(entry, dict) else {}
 
 
 # --- consensus ----------------------------------------------------------------
