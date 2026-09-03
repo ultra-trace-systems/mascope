@@ -9,6 +9,12 @@ from mascope_backend.api.controllers.sample.lib.sample_batches_fetch import (
 from mascope_backend.api.lib.api_features import api_route
 from mascope_backend.api.models.base_pydantic_model import RequestBodyModel
 from mascope_backend.api.new.auth.dependencies import current_active_user
+from mascope_backend.api.new.peak_assignments.batch_peak_verification import (
+    get_anchor_context,
+    get_batch_peak_verdicts,
+    retract_batch_peak_verdict,
+    verify_batch_peak,
+)
 from mascope_backend.api.new.peak_assignments.batch_peaks_controller import (
     compute_batch_peaks,
 )
@@ -27,6 +33,9 @@ from mascope_backend.api.new.peak_assignments.routes import (
 from mascope_backend.api.new.peak_assignments.schemas import (
     AssignmentTier,
     AssignSamplePeaksBody,
+    BatchPeakVerificationsResponse,
+    RetractBatchPeakVerdictBody,
+    VerifyBatchPeakBody,
 )
 from mascope_backend.api.new.workspaces.dependencies import (
     check_batch_access,
@@ -279,3 +288,119 @@ async def search_untargeted_batch_peaks_route(
         ),
         "process_id": process_id,
     }
+
+
+@batch_peaks_router.get(
+    "/batch/{sample_batch_id}/verdicts",
+    response_model=BatchPeakVerificationsResponse,
+)
+@api_route()
+async def get_batch_peak_verdicts_route(
+    sample_batch_id: str,
+    user: User = Depends(current_active_user),
+) -> BatchPeakVerificationsResponse:
+    """Every batch-level verdict recorded on the batch's batch peaks, newest first,
+    superseded ones included so the history stays inspectable. Each row carries the
+    anchor's present claim and a ``stale`` flag for a live verdict about a formula
+    the consensus has since left.
+
+    :param sample_batch_id: The unique identifier of the sample batch.
+    :param user: The current authenticated user. Requires workspace guest role.
+    :return: The verdicts.
+    """
+    await check_batch_access(sample_batch_id, user, "guest")
+    result = await get_batch_peak_verdicts(sample_batch_id=sample_batch_id)
+    return BatchPeakVerificationsResponse.model_validate(result)
+
+
+@batch_peaks_router.get(
+    "/sample/{sample_item_id}/anchor-context",
+    response_model=BatchPeakVerificationsResponse,
+)
+@api_route()
+async def get_anchor_context_route(
+    sample_item_id: str,
+    user: User = Depends(current_active_user),
+) -> BatchPeakVerificationsResponse:
+    """The batch-level verdicts that reach a sample: for each of its peaks whose
+    batch peak carries a live verdict, that verdict with the peak's id on it.
+    Sparse, one query; the per-sample ledger and the inspector both read it.
+    Whether a verdict applies to a row is the reader's call - it does when the
+    row's own formula and mechanism are the ones judged.
+
+    :param sample_item_id: The unique identifier of the sample.
+    :param user: The current authenticated user. Requires workspace guest role.
+    :return: The verdicts reaching the sample.
+    """
+    await check_sample_access(sample_item_id, user, "guest")
+    result = await get_anchor_context(sample_item_id=sample_item_id)
+    return BatchPeakVerificationsResponse.model_validate(result)
+
+
+@batch_peaks_router.post(
+    "/batch/{sample_batch_id}/verify",
+    response_model=BatchPeakVerificationsResponse,
+    # A write, gated on the feature flag like the other batch writes.
+    dependencies=[Depends(require_peak_assignment_enabled)],
+)
+@api_route(status_code=201, token_access=True)
+async def verify_batch_peak_route(
+    sample_batch_id: str,
+    body: VerifyBatchPeakBody,
+    user: User = Depends(current_active_user),
+    membership=Depends(require_batch_role("editor")),
+) -> BatchPeakVerificationsResponse:
+    """Record a batch-level verdict on a batch peak's species claim: one judgment
+    per species at this anchor, covering every sample in the batch whose peak
+    folded into it and that has no verdict of its own. The claim is snapshotted
+    from the anchor's current consensus, never taken from the client;
+    ``expected_formula`` is the guard that the user judged that consensus (409 on
+    a mismatch), and an unassigned anchor has no claim to judge (422). The
+    verdict this replaces is stamped superseded in the same transaction.
+
+    :param sample_batch_id: The unique identifier of the sample batch.
+    :param body: The verdict, its evidence and the formula judged.
+    :param user: The current authenticated user. Requires workspace editor role.
+    :return: The created verdict.
+    """
+    result = await verify_batch_peak(
+        sample_batch_id=sample_batch_id,
+        batch_peak_id=body.batch_peak_id,
+        verdict=body.verdict,
+        expected_formula=body.expected_formula,
+        evidence_level=body.evidence_level,
+        note=body.note,
+        user_id=user.id,
+    )
+    return BatchPeakVerificationsResponse.model_validate(result)
+
+
+@batch_peaks_router.post(
+    "/batch/{sample_batch_id}/retract",
+    response_model=BatchPeakRecordsResponse,
+    dependencies=[Depends(require_peak_assignment_enabled)],
+)
+@api_route(token_access=True)
+async def retract_batch_peak_verdict_route(
+    sample_batch_id: str,
+    body: RetractBatchPeakVerdictBody,
+    user: User = Depends(current_active_user),
+    membership=Depends(require_batch_role("editor")),
+) -> BatchPeakRecordsResponse:
+    """Withdraw the live batch-level verdict(s) on a batch peak, returning the
+    species to unverified in every sample it covered. History is kept: the rows
+    are stamped superseded, not deleted. Retracting where nothing is live is not
+    an error and reports zero.
+
+    :param sample_batch_id: The unique identifier of the sample batch.
+    :param body: The batch peak, and optionally the one claim, to retract.
+    :param user: The current authenticated user. Requires workspace editor role.
+    :return: The ids of the verdicts retracted.
+    """
+    result = await retract_batch_peak_verdict(
+        sample_batch_id=sample_batch_id,
+        batch_peak_id=body.batch_peak_id,
+        assigned_formula=body.assigned_formula,
+        ionization_mechanism_id=body.ionization_mechanism_id,
+    )
+    return BatchPeakRecordsResponse.model_validate(result)
