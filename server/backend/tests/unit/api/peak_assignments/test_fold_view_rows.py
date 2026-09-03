@@ -90,13 +90,12 @@ def _member(**overrides):
         batch_peak_id="bp-1",
         sample_item_id="si-1",
         sample_peak_id="p1",
-        sample_peak_mz=181.0706,
+        mz_delta_ppm=-0.5524,
         intensity=5000.0,
-        tier="assigned",
+        tier=3,  # assigned
         fit_score=0.91,
-        assigned_formula="C6H12O6",
         candidate=0,
-        role="M0",
+        role=1,  # M0
         owner_batch_peak_id=None,
         p_correct=0.9,
     )
@@ -110,7 +109,9 @@ def test_a_member_row_carries_what_the_member_has_and_names_its_anchor():
     assert row["peak_assignment_run_id"] == "fold-si-1"
     assert row["batch_peak_id"] == "bp-1"
     assert (row["sample_item_id"], row["sample_peak_id"]) == ("si-1", "p1")
-    assert (row["sample_peak_mz"], row["sample_peak_intensity"]) == (181.0706, 5000.0)
+    # The m/z is recovered from the anchor and the member's offset.
+    assert row["sample_peak_mz"] == pytest.approx(181.0707 * (1 - 0.5524e-6))
+    assert row["sample_peak_intensity"] == 5000.0
     assert row["assigned_formula"] == "C6H12O6"
     # The ion formula and mechanism are the registry entry the member names.
     assert row["ion_formula"] == "C6H13O6+"
@@ -141,7 +142,7 @@ def test_what_only_a_run_computes_is_absent_rather_than_invented():
 
 def test_an_isotopologue_member_names_its_owner_by_the_owners_derived_id():
     row = member_row(
-        _member(sample_peak_id="p2", role="iso_child", owner_batch_peak_id="bp-0"),
+        _member(sample_peak_id="p2", role=2, owner_batch_peak_id="bp-0"),
         _anchor(),
     )
     assert row["role"] == "iso_child"
@@ -149,22 +150,25 @@ def test_an_isotopologue_member_names_its_owner_by_the_owners_derived_id():
 
 
 def test_a_member_with_no_role_tier_or_intensity_reads_as_unassigned():
-    """Rows written before members carried a role or tier, and members whose
-    peak had no intensity: the defaults the record schema needs, not nulls."""
+    """A member with no tier or role code, and none of the fields a formula
+    brings: the defaults the record schema needs, not nulls."""
     row = member_row(
         _member(
-            assigned_formula=None, candidate=None, role=None, tier=None, intensity=None
+            candidate=None, role=None, tier=None, intensity=None, mz_delta_ppm=None
         ),
         _anchor(),
     )
     assert (row["role"], row["tier"]) == ("unassigned", "unassigned")
     assert row["sample_peak_intensity"] == 0.0
+    assert row["assigned_formula"] is None
     assert row["ion_formula"] is None and row["ionization_mechanism_id"] is None
+    # No offset stored: the member sits at its anchor's m/z.
+    assert row["sample_peak_mz"] == 181.0707
 
 
-def test_a_member_pointing_past_the_registry_carries_no_ion_formula():
+def test_a_member_pointing_past_the_registry_carries_no_formula_at_all():
     row = member_row(_member(candidate=7), _anchor())
-    assert row["assigned_formula"] == "C6H12O6"
+    assert row["assigned_formula"] is None
     assert row["ion_formula"] is None
 
 
@@ -196,7 +200,7 @@ def test_the_detail_provenance_is_the_anchors_with_this_members_probability():
 
 def test_an_unassigned_member_lists_every_identity_and_no_provenance_surprises():
     detail = member_detail(
-        _member(assigned_formula=None, candidate=None, tier="unassigned"),
+        _member(candidate=None, tier=0),
         _anchor(provenance=None, alternatives=None),
     )
     assert [a["assigned_formula"] for a in detail["alternatives"]] == [
@@ -225,3 +229,24 @@ def test_a_verdict_against_a_derived_row_snapshots_the_member_and_links_no_row()
 def test_a_verdict_target_without_a_registry_entry_has_no_mechanism(candidate):
     target = verification_target(_member(candidate=candidate), _anchor())
     assert target.ionization_mechanism_id is None
+
+
+def test_tier_and_role_codes_round_trip_and_unknown_codes_read_as_unassigned():
+    from mascope_backend.api.new.peak_assignments.batch_peaks import (
+        ROLE_CODES,
+        TIER_CODES,
+        role_code,
+        role_name,
+        tier_code,
+        tier_name,
+    )
+
+    for tier, code in TIER_CODES.items():
+        assert tier_code(tier) == code and tier_name(code) == tier
+    for role, code in ROLE_CODES.items():
+        assert role_code(role) == code and role_name(code) == role
+    assert tier_code(None) is None and role_code(None) is None
+    assert tier_name(None) is None and role_name(None) is None
+    assert tier_name(99) is None and role_name(99) is None
+    row = member_row(_member(tier=99, role=99), _anchor())
+    assert (row["tier"], row["role"]) == ("unassigned", "unassigned")

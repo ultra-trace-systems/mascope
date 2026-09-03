@@ -34,7 +34,14 @@ from fastapi import status
 from sqlalchemy import func, select
 
 from mascope_backend.api.lib.exceptions.api_exceptions import CodedHTTPException
-from mascope_backend.api.new.peak_assignments.batch_peaks import resolve_candidate
+from mascope_backend.api.new.peak_assignments.batch_peaks import (
+    mz_from_delta,
+    resolve_candidate,
+    role_code,
+    role_name,
+    tier_code,
+    tier_name,
+)
 from mascope_backend.api.new.peak_assignments.config import (
     FOLD_ENGINE,
     PEAK_ASSIGNMENT_ENGINE_VERSION,
@@ -110,9 +117,11 @@ class DerivedAssignmentReadOnlyException(CodedHTTPException):
 def member_row(member: Any, anchor: Any) -> dict:
     """One derived ledger row, in the shape of ``schemas.PeakAssignmentRecord``.
 
-    Everything a member carries is passed through; everything only a run
-    computes is ``None``. A member written before it carried a role or a tier
-    reads as unassigned, which is what a member with no assignment is.
+    Everything a member carries is passed through - its m/z recovered from the
+    offset it stores, its tier and role from their codes, its formula from the
+    registry entry it names; everything only a run computes is ``None``. A
+    member with no tier or role reads as unassigned, which is what a member
+    with no assignment is.
 
     :param member: The sample's ``BatchPeakOccurrence`` (or anything carrying
         its attributes).
@@ -126,13 +135,13 @@ def member_row(member: Any, anchor: Any) -> dict:
         "peak_assignment_run_id": fold_run_id(member.sample_item_id),
         "sample_item_id": member.sample_item_id,
         "sample_peak_id": member.sample_peak_id,
-        "sample_peak_mz": member.sample_peak_mz,
+        "sample_peak_mz": mz_from_delta(anchor.mz, member.mz_delta_ppm),
         "sample_peak_intensity": (
             member.intensity if member.intensity is not None else 0.0
         ),
         "sample_peak_tof": None,
-        "role": member.role or ROLE_UNASSIGNED,
-        "assigned_formula": member.assigned_formula,
+        "role": role_name(member.role) or ROLE_UNASSIGNED,
+        "assigned_formula": identity.get("formula"),
         "ion_formula": identity.get("ion_formula"),
         "ionization_mechanism_id": identity.get("ionization_mechanism_id"),
         "isotope_label": None,
@@ -141,7 +150,7 @@ def member_row(member: Any, anchor: Any) -> dict:
         "fit_score": member.fit_score,
         "mz_error_ppm": None,
         "abundance_error": None,
-        "tier": member.tier or TIER_UNASSIGNED,
+        "tier": tier_name(member.tier) or TIER_UNASSIGNED,
         "engine_tier": None,
         "target_compound_id": None,
         "target_ion_id": None,
@@ -234,7 +243,7 @@ def verification_target(member: Any, anchor: Any) -> VerificationTarget:
     return VerificationTarget(
         sample_item_id=member.sample_item_id,
         sample_peak_id=member.sample_peak_id,
-        assigned_formula=member.assigned_formula,
+        assigned_formula=identity.get("formula"),
         ionization_mechanism_id=identity.get("ionization_mechanism_id"),
         fit_score=member.fit_score,
         provenance={"p_correct": member.p_correct, "evidence": None},
@@ -323,7 +332,7 @@ async def fold_member(session, sample_item_id: str, batch_peak_id: str):
 
 
 def _plain(value: Any) -> Any:
-    """A filter value as the column stores it: an enum member's value, else itself."""
+    """A filter value as it was named: an enum member's value, else itself."""
     return getattr(value, "value", value)
 
 
@@ -359,13 +368,19 @@ async def derived_ledger(
         total, rows = 0, []
     else:
         conditions = []
+        # The member stores codes; a filter names a tier or a role. An unknown
+        # name matches nothing, and a member with no code reads as unassigned.
         if tier:
+            code = tier_code(_plain(tier))
             conditions.append(
-                func.coalesce(BatchPeakOccurrence.tier, TIER_UNASSIGNED) == _plain(tier)
+                func.coalesce(BatchPeakOccurrence.tier, tier_code(TIER_UNASSIGNED))
+                == (code if code is not None else -1)
             )
         if role:
+            code = role_code(_plain(role))
             conditions.append(
-                func.coalesce(BatchPeakOccurrence.role, ROLE_UNASSIGNED) == _plain(role)
+                func.coalesce(BatchPeakOccurrence.role, role_code(ROLE_UNASSIGNED))
+                == (code if code is not None else -1)
             )
         total = (
             await session.execute(
@@ -377,14 +392,16 @@ async def derived_ledger(
                 )
             )
         ).scalar_one()
-        # Ordered by m/z with the anchor id as a tiebreak, as the run-backed
-        # read orders by m/z and row id: two peaks can share an m/z.
+        # Ordered by the member's m/z - the anchor's plus its offset - with the
+        # anchor id as a tiebreak, as the run-backed read orders by m/z and row
+        # id: two peaks can share an m/z.
         members = (
             await session.execute(
                 _members_of(sample.sample_item_id)
                 .where(*conditions)
                 .order_by(
-                    BatchPeakOccurrence.sample_peak_mz,
+                    BatchPeak.mz
+                    * (1 + func.coalesce(BatchPeakOccurrence.mz_delta_ppm, 0) / 1e6),
                     BatchPeakOccurrence.batch_peak_id,
                 )
                 .offset(offset)

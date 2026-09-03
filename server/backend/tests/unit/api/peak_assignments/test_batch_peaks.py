@@ -20,6 +20,8 @@ from mascope_backend.api.new.peak_assignments.batch_peaks import (
     compute_consensus,
     fold_in_sample,
     max_intensity,
+    mz_delta_ppm,
+    mz_from_delta,
     resolution_adaptive_tol_ppm,
     resolve_candidate,
     resolve_isotopologue_of,
@@ -319,11 +321,32 @@ def _m0(formula="A", **extra):
 
 def test_role_constant_matches_the_assignment_engine():
     # batch_peaks is pure and cannot import the engine (pandas, numpy, the id
-    # helper), so the role it compares against is spelled twice. This is the
-    # tripwire that keeps the two spellings one value.
-    from mascope_backend.api.new.peak_assignments import engine
+    # helper), so the roles it compares against are spelled twice. This is the
+    # tripwire that keeps the spellings one value each.
+    from mascope_backend.api.new.peak_assignments import batch_peaks, engine
 
     assert ROLE_ISO_CHILD == engine.ROLE_ISO_CHILD
+    assert batch_peaks.ROLE_M0 == engine.ROLE_M0
+    assert batch_peaks.ROLE_UNASSIGNED == engine.ROLE_UNASSIGNED
+
+
+def test_the_tier_codes_are_the_tier_ranks():
+    from mascope_backend.api.new.peak_assignments.batch_peaks import TIER_CODES
+    from mascope_backend.api.new.peak_assignments.tiers import TIER_RANK
+
+    assert TIER_CODES == TIER_RANK
+
+
+def test_the_mz_offset_round_trips_within_single_precision():
+    import struct
+
+    anchor, mz = 500.123456, 500.1256
+    delta = mz_delta_ppm(mz, anchor)
+    assert delta == pytest.approx((mz - anchor) / anchor * 1e6)
+    # Stored as a REAL: round the offset to float32 and recover the m/z.
+    stored = struct.unpack("f", struct.pack("f", delta))[0]
+    assert mz_from_delta(anchor, stored) == pytest.approx(mz, abs=1e-7)
+    assert mz_from_delta(anchor, None) == anchor
 
 
 def test_a_majority_of_assigned_members_makes_it_an_isotopologue():
