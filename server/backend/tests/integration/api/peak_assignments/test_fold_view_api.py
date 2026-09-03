@@ -9,6 +9,7 @@ and reads them back over HTTP. See ``fold_view.py``.
 """
 
 from datetime import datetime, timedelta, timezone
+from types import SimpleNamespace
 
 import pytest
 import pytest_asyncio
@@ -423,3 +424,104 @@ async def test_a_derived_row_can_carry_a_verdict(
     )
     assert listing.status_code == 200
     assert [v["sample_peak_id"] for v in listing.json()["data"]] == ["p1"]
+
+
+# --- the run-less ingest path -----------------------------------------------------
+
+
+def _memory_rows(sample_item_id, spec):
+    """Stage A's output as the run-less ingest fold hands it over: ledger-shaped
+    rows that were never written, stamped with the derived run's id."""
+    ids = {pid: gen_id(32) for pid, *_ in spec}
+    return [
+        SimpleNamespace(
+            peak_assignment_id=ids[pid],
+            peak_assignment_run_id=fold_run_id(sample_item_id),
+            sample_item_id=sample_item_id,
+            sample_peak_id=pid,
+            sample_peak_mz=mz,
+            sample_peak_intensity=intensity,
+            role=role,
+            assigned_formula=formula,
+            ion_formula=ion,
+            ionization_mechanism_id=None,
+            tier=tier,
+            fit_score=fit,
+            mz_error_ppm=(1.0 if formula else None),
+            owner_peak_assignment_id=(ids[owner] if owner else None),
+            provenance=({"p_correct": p_correct} if p_correct is not None else None),
+        )
+        for pid, mz, formula, ion, role, tier, fit, intensity, owner, p_correct in spec
+    ]
+
+
+async def test_a_sample_folded_without_any_run_is_served(
+    guest_client, async_session_factory, pa_test_data
+):
+    """The ingest path that writes no run: the sample never had one, and its
+    Sample view comes from the batch ledger from the first read."""
+    now = datetime.now(timezone.utc)
+    batch_id = gen_id()
+    sample_file_id, sample_item_id = gen_id(), gen_id()
+    async with async_session_factory() as session:
+        dataset_id = (
+            await session.execute(
+                select(SampleBatch.dataset_id).where(
+                    SampleBatch.sample_batch_id == pa_test_data["sample_batch_id"]
+                )
+            )
+        ).scalar_one()
+        session.add(
+            SampleBatch(
+                sample_batch_id=batch_id,
+                dataset_id=dataset_id,
+                sample_batch_name=f"Fold view runless {batch_id}",
+                sample_batch_utc_created=now,
+            )
+        )
+        session.add(
+            SampleFile(
+                sample_file_id=sample_file_id,
+                filename=f"orbi-fold-view-runless-{sample_file_id}.zarr",
+                instrument="orbi-test",
+                datetime=datetime(2026, 7, 4, 12, 0, 0),
+                datetime_utc=now,
+                length=60.0,
+                range=[50.0, 500.0],
+                polarity="+",
+            )
+        )
+        session.add(
+            SampleItem(
+                sample_item_id=sample_item_id,
+                sample_batch_id=batch_id,
+                sample_file_id=sample_file_id,
+                sample_item_name="Fold view runless",
+                sample_item_type="sample",
+                polarity="+",
+                sample_item_utc_created=now,
+            )
+        )
+        await session.commit()
+
+    rows = _memory_rows(sample_item_id, _ROWS["S1"])
+    assert (
+        await fold_sample_into_batch_peaks(sample_item_id, rows=rows, persisted=False)
+        == batch_id
+    )
+
+    runs = (
+        await guest_client.get(f"/api/peak-assignments/sample/{sample_item_id}/runs")
+    ).json()["data"]
+    assert [run["engine"] for run in runs] == ["batch"]
+
+    body = await _ledger(guest_client, sample_item_id)
+    assert body["total"] == 3
+    by_peak = {row["sample_peak_id"]: row for row in body["data"]}
+    assert by_peak["p1"]["assigned_formula"] == "C6H12O6"
+    assert by_peak["p1"]["ion_formula"] == "C6H13O6+"
+    assert by_peak["p1"]["p_correct"] == pytest.approx(0.91)
+    assert (
+        by_peak["p2"]["owner_peak_assignment_id"] == by_peak["p1"]["peak_assignment_id"]
+    )
+    assert by_peak["p3"]["tier"] == "unassigned"
