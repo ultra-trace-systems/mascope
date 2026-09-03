@@ -65,14 +65,14 @@ class MetaConfig(BaseModel):
     # written unasked. 0 disables the ceiling. Read by the backend via
     # `peak_assignment_ingest_max_peaks()`.
     peak_assignment_ingest_max_peaks: int = Field(default=100_000, ge=0)
-    # Which ledger an ingest-time assignment writes. "sample" (the default)
-    # writes a per-sample run and folds it into the batch peaks; "batch" folds
-    # the sample into the batch peaks and writes no run, so the per-sample rows
-    # - about half of the per-peak cost, most of it placeholders for peaks
-    # nothing assigned - are never written, and the Sample view is served from
-    # the batch ledger. An explicit run on the sample still writes one. Read
-    # by the backend via `peak_assignment_ingest_ledger()`.
-    peak_assignment_ingest_ledger: Literal["sample", "batch"] = "sample"
+    # Which ledger an ingest-time assignment writes. "batch" (the default) folds
+    # the sample into the batch peaks and writes no per-sample run: one member
+    # row of some 200 bytes per detected peak, and the Sample view is served
+    # from the batch ledger. "sample" writes a per-sample run as well and folds
+    # it - about a kilobyte per detected peak, most of it placeholders for
+    # peaks nothing assigned - which is what an explicit run on a sample
+    # writes anyway. Read by the backend via `peak_assignment_ingest_ledger()`.
+    peak_assignment_ingest_ledger: Literal["sample", "batch"] = "batch"
     # Size cap (in gigabytes) for a single resumable (tus) upload, advertised
     # to clients as Tus-Max-Size and enforced at upload creation. Applies per
     # upload: it does not limit how many files a client may transfer, only how
