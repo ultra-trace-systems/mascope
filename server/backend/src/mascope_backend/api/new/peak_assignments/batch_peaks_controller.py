@@ -39,6 +39,7 @@ from mascope_backend.api.new.peak_assignments.batch_peaks import (
     candidate_index,
     compute_consensus,
     fold_in_sample,
+    manual_pin_of,
     mz_delta_ppm,
     resolution_adaptive_tol_ppm,
     resolve_candidate,
@@ -521,7 +522,11 @@ async def _recompute_consensus_chunk(
             await session.delete(bp)
             continue
         _apply_consensus(
-            bp, compute_consensus(members, batch_peak_id=bp.batch_peak_id), now
+            bp,
+            compute_consensus(
+                members, batch_peak_id=bp.batch_peak_id, manual=manual_pin_of(bp)
+            ),
+            now,
         )
 
 

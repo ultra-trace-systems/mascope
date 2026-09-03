@@ -10,8 +10,10 @@ import { BaseTierTag, BaseVerdictBadge } from '@/lib/base'
 import { num } from '@/lib/formatters'
 import { formatIsotopeFormula } from '@/lib/chem'
 import { EVIDENCE_LEVELS, VERDICT_META } from '@/lib/verification'
+import { useBatchPeakCuration } from './stores/batchPeakCuration.js'
 
 const app = useApp()
+const curation = useBatchPeakCuration()
 
 // Toggles the Sample view's bottom pane between the time series (default) and
 // the Re-search panel. Owned by the parent (PaneTabSample); the inspector only
@@ -561,12 +563,25 @@ const promoteBody = (alt, index) =>
 
 async function promoteAlternative(alt, index) {
   if (!canPromote(alt) || curating.value !== null) return
+  if (derivedRun.value && alt.candidate == null) return
   curating.value = index
   try {
-    await app.data.peakAssignment.peak.curate(
-      focusedAssignment.value.peak_assignment_id,
-      promoteBody(alt, index)
-    )
+    if (derivedRun.value) {
+      // A derived row has no row of its own to edit: "use this" here pins the
+      // identity on the batch peak and measures it in every sample of the
+      // batch. The guard is the consensus the card shows, not this member's
+      // own formula, which is what the server compares against.
+      await curation.curate({
+        batch_peak_id: focusedAssignment.value.batch_peak_id,
+        candidate: alt.candidate,
+        expected_formula: provenance.value?.batch_peak?.consensus_formula ?? null
+      })
+    } else {
+      await app.data.peakAssignment.peak.curate(
+        focusedAssignment.value.peak_assignment_id,
+        promoteBody(alt, index)
+      )
+    }
   } catch (error) {
     // The http layer already toasts; only 403 changes the UI (hide the control).
     if (error?.response?.status === 403) curateDenied.value = true
@@ -578,6 +593,28 @@ async function promoteAlternative(alt, index) {
 // What an override says about itself. `source` is on the slim ledger row, so
 // the note appears at once; the formula it replaced arrives with the detail.
 const manualOverride = computed(() => provenance.value?.manual ?? null)
+
+// A derived row's provenance is the anchor's, so `manual` there is a
+// batch-level pin: the species chosen by hand for the whole batch. Its own
+// note and its own undo - release, which puts the re-measured samples back
+// and lets the batch decide again.
+const batchOverride = computed(() =>
+  derivedRun.value && provenance.value?.manual?.action === 'promote_identity'
+    ? provenance.value.manual
+    : null
+)
+const releasing = ref(false)
+async function releaseOverride() {
+  if (releasing.value || !focusedAssignment.value?.batch_peak_id) return
+  releasing.value = true
+  try {
+    await curation.release({ batch_peak_id: focusedAssignment.value.batch_peak_id })
+  } catch (error) {
+    if (error?.response?.status === 403) curateDenied.value = true
+  } finally {
+    releasing.value = false
+  }
+}
 
 // Whether the assignment this override replaced could be committed again at
 // all. The archive keeps that winner in the alternatives shape, so the same
@@ -902,6 +939,29 @@ const demotedCount = computed(() => {
           change; record a verification to keep the judgement.
         </span>
       </div>
+      <div v-if="batchOverride" class="manual-note">
+        <span class="pi ph ph-hand-pointing manual-icon" />
+        <span>
+          Curated by hand for the whole batch<template
+            v-if="batchOverride.previous?.consensus_formula"
+          >
+            in place of {{ batchOverride.previous.consensus_formula }}</template
+          >: every sample in the batch reads this identity where it could be measured.
+          <Button
+            label="release"
+            size="small"
+            text
+            severity="secondary"
+            class="release-link"
+            :disabled="releasing || curateDenied"
+            :loading="releasing"
+            v-tooltip.top="
+              'Let the batch decide again: the samples measured for this identity go back to what they read before'
+            "
+            @click="releaseOverride"
+          />
+        </span>
+      </div>
       <div
         v-if="verifiable"
         class="verify"
@@ -1028,7 +1088,7 @@ const demotedCount = computed(() => {
               <span v-else class="no-stats"><span class="pi ph ph-info" /></span>
             </span>
             <Button
-              v-if="(canPromote(alt) || promoteBlocked(alt)) && !curateDenied && !derivedRun"
+              v-if="(canPromote(alt) || promoteBlocked(alt)) && !curateDenied"
               :class="['alt-use', { busy: curating === i, blocked: promoteBlocked(alt) }]"
               label="use this"
               size="small"
@@ -1043,8 +1103,8 @@ const demotedCount = computed(() => {
           </div>
         </div>
         <div v-if="derivedRun && !curateDenied" class="verify-denied">
-          <span class="pi ph ph-info" /> Derived from the batch ledger; assign the sample to change
-          an assignment.
+          <span class="pi ph ph-info" /> Derived from the batch ledger: "use this" pins the identity
+          on the batch peak for the whole batch and measures it in every sample.
         </div>
         <div v-if="curateDenied" class="verify-denied">
           <span class="pi ph ph-lock-simple" /> Editor access is required to change an assignment.
@@ -1208,6 +1268,11 @@ const demotedCount = computed(() => {
   font-size: 0.78rem;
   line-height: 1.35;
   opacity: 0.75;
+}
+.manual-note .release-link {
+  padding: 0 0.3rem;
+  font-size: inherit;
+  vertical-align: baseline;
 }
 .manual-note > .pi {
   margin-top: 0.1rem;
