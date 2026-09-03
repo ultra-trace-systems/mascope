@@ -21,6 +21,26 @@ from mascope_signal.peak import filter_peaks, get_peaks
 
 # TODO_configuration shift traces color
 COLOR_OFFSET = 5
+
+
+def _css_rgb(color: tuple[float, float, float]) -> tuple[int, int, int]:
+    """Scale a colorcet colour to the 0-255 components CSS expects.
+
+    `colorcet.glasbey_hv` yields float triples in 0-1, which is not what an
+    `rgb()` string means: CSS reads the components as 0-255, so an unscaled
+    `rgb(0.188235,0.635294,0.854902)` is black. plotly.js used to paper over
+    this - TinyColor treated 0-1 fractions as fractions of 255 - but plotly.js
+    4 parses colours with culori, which follows the spec, so the scaling has to
+    happen here.
+
+    :param color: Colour as 0-1 floats, as colorcet supplies it
+    :type color: tuple[float, float, float]
+    :return: The same colour as 0-255 integer components
+    :rtype: tuple[int, int, int]
+    """
+    return tuple(round(component * 255) for component in color)
+
+
 DMZ_TOF = 0.5
 DMZ_ORBI = 0.01
 UNITS = "counts/s"
@@ -411,7 +431,7 @@ def _process_isotope(
         )
 
     # Add spectrum trace for the isotope
-    iso_color = colormap[ctx.index + ctx.color_offset]
+    iso_color = _css_rgb(colormap[ctx.index + ctx.color_offset])
     isotope_result.spectrum_traces.append(
         {
             "name": "{:d}".format(round(iso.mz)),
@@ -503,7 +523,7 @@ def _process_isotope(
         timeseries_time = match_timeseries.time.values.astype(np.float32)
         timeseries_y = match_timeseries.values.astype(np.float32)
 
-        timeseries_rgb = colormap[ctx.index + ctx.color_offset]
+        timeseries_rgb = _css_rgb(colormap[ctx.index + ctx.color_offset])
         timeseries_trace = {
             "name": "{:.6f}".format(iso.mz),
             "type": "scatter",
