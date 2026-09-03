@@ -1,9 +1,9 @@
 name: Mascope Tests
-run-name: Running tests for PR to develop or master
+run-name: Running tests for PR to develop, master or an epic branch
 
 on:
   pull_request:
-    branches: [develop, master]
+    branches: [develop, master, "epic/**"]
     types: [opened, synchronize, reopened]
 
 # Least privilege: this workflow only checks out code and runs tests.
