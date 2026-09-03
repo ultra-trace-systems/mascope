@@ -62,6 +62,21 @@ def test_uploads_via_tus(monkeypatch, sample_file):
 
     assert len(tus_calls) == 1
     assert tus_calls[0]["filepath"] == sample_file
+    # Nothing configured: no instrument is reported, and the server keeps
+    # reading it from the file name.
+    assert tus_calls[0]["instrument"] is None
+
+
+def test_reports_the_configured_instrument(monkeypatch, sample_file):
+    tus_calls = []
+    monkeypatch.setattr(
+        main, "api_post_file_tus", lambda **kwargs: tus_calls.append(kwargs)
+    )
+    monkeypatch.setattr(main, "_instrument", "Orbi-Lab2")
+
+    main.upload_sample_file(sample_file)
+
+    assert tus_calls[0]["instrument"] == "Orbi-Lab2"
 
 
 def test_uploads_with_the_live_token_not_the_config_snapshot(monkeypatch, sample_file):

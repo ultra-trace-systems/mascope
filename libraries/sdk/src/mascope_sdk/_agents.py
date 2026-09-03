@@ -41,6 +41,17 @@ SERVICE_NAME = "mascope_sdk"
 # agent can set it after import, exactly like SERVICE_NAME.
 VERIFY_TLS = True
 
+#: Version of the agent making the requests, sent as the ``X-Agent-Version``
+#: header on every request so the server can show which release each paired
+#: machine runs. None, the SDK's own default, sends no header. An agent sets it
+#: at the package level exactly like SERVICE_NAME:
+#: ``mascope_sdk.AGENT_VERSION = "1.2.3"``. A server that does not know the
+#: header ignores it.
+AGENT_VERSION = None
+
+#: Name of the request header that carries AGENT_VERSION.
+AGENT_VERSION_HEADER = "X-Agent-Version"
+
 #: Path of the device-token renewal endpoint, relative to /api/.
 RENEW_TOKEN_PATH = "auth/devices/token"
 
@@ -83,6 +94,30 @@ def _get_verify():
     if pkg is not None:
         return getattr(pkg, "VERIFY_TLS", VERIFY_TLS)
     return VERIFY_TLS
+
+
+def _get_agent_version() -> str | None:
+    """Return the current AGENT_VERSION from the package namespace."""
+    pkg = sys.modules.get("mascope_sdk")
+    if pkg is not None:
+        return getattr(pkg, "AGENT_VERSION", AGENT_VERSION)
+    return AGENT_VERSION
+
+
+def _agent_headers(access_token: str) -> dict:
+    """The headers every authenticated agent request carries.
+
+    The bearer token, the service name the token must be scoped to, and the
+    agent's version when one is set.
+    """
+    headers = {
+        "Authorization": f"Bearer {access_token}",
+        "X-Service-Name": _get_service_name(),
+    }
+    version = _get_agent_version()
+    if version:
+        headers[AGENT_VERSION_HEADER] = str(version)
+    return headers
 
 
 def _sanitize_upload_filename(upload_filename: str) -> str:
@@ -136,10 +171,7 @@ def api_post_file(
         act on it (e.g. not retry on a rejected token).
     """
     full_url = url + "/api/" + path
-    headers = {
-        "Authorization": f"Bearer {access_token}",
-        "X-Service-Name": _get_service_name(),
-    }
+    headers = _agent_headers(access_token)
     with open(filepath, "rb") as file:
         if upload_filename:
             files = [("files", (_sanitize_upload_filename(upload_filename), file))]
@@ -179,11 +211,7 @@ def api_post_file(
 
 def _tus_headers(access_token: str) -> dict:
     """Common headers for every TUS request."""
-    return {
-        "Authorization": f"Bearer {access_token}",
-        "X-Service-Name": _get_service_name(),
-        "Tus-Resumable": "1.0.0",
-    }
+    return {**_agent_headers(access_token), "Tus-Resumable": "1.0.0"}
 
 
 def _tus_offset(upload_url: str, access_token: str) -> int | None:
@@ -250,10 +278,7 @@ def api_renew_agent_token(url: str, access_token: str) -> tuple[str, int]:
     :raises MascopeAPIError: on any other error response.
     """
     full_url = f"{url}/api/{RENEW_TOKEN_PATH}"
-    headers = {
-        "Authorization": f"Bearer {access_token}",
-        "X-Service-Name": _get_service_name(),
-    }
+    headers = _agent_headers(access_token)
     try:
         resp = requests.post(
             full_url, headers=headers, verify=_get_verify(), timeout=30
@@ -298,6 +323,7 @@ def api_post_file_tus(
     upload_filename: str | None = None,
     chunk_size: int = TUS_CHUNK_SIZE,
     timezone: str | None = None,
+    instrument: str | None = None,
 ) -> None:
     """Upload a file with the resumable TUS protocol.
 
@@ -323,6 +349,10 @@ def api_post_file_tus(
         the converter to resolve the acquisition time to UTC. Omitted when the
         machine could not name its zone; the server then falls back to its own.
     :type timezone: str, optional
+    :param instrument: Optional name of the instrument the agent is configured
+        to file uploads under. Sent as upload metadata next to the on-disk file
+        name; a server that does not read it ignores it.
+    :type instrument: str, optional
     :raises ValueError: if ``upload_filename`` contains path components.
     :raises AuthenticationError: if the credential is rejected (401), e.g. a
         revoked device, an expired device token, or a deployment that accepts
@@ -354,6 +384,13 @@ def api_post_file_tus(
     ]
     if timezone:
         metadata.append(f"timezone {b64(timezone)}")
+    # The name on disk before any configured prefix or suffix, and the
+    # instrument the agent is configured to file uploads under. A current
+    # server reads neither and ignores them; a later one can route on them
+    # instead of on the file name.
+    metadata.append(f"source_filename {b64(os.path.basename(filepath))}")
+    if instrument:
+        metadata.append(f"instrument {b64(instrument)}")
     create_url = f"{url}/api/{TUS_UPLOAD_PATH}/"
     create_headers = {
         **_tus_headers(access_token),

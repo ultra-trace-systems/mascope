@@ -6,6 +6,21 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
 
 ### Added
 
+- **The File Agent reports which instrument it watches, and its version.** Its
+  guided setup now asks for the instrument name (letters, digits and hyphens,
+  e.g. `Orbi-Lab2`), offering the name the watched folder's files already start
+  with as the default, and the agent sends it when pairing and as metadata with
+  every upload, next to the file's on-disk name, plus an `X-Agent-Version`
+  header on every request. A current server ignores all of it; a later one can
+  file uploads under the reported instrument instead of reading it from the
+  file name, and show which release each paired machine runs. When the files in
+  the watched folder do not start with an instrument name the server reads,
+  setup offers to add the instrument name in front of every uploaded name - the
+  `filename_prefix` such sites had to set by hand before. The setup's questions
+  were reordered so the local ones come first and pairing, which needs a second
+  person at a browser, comes last. `instrument` is a new `[file-agent]` setting;
+  leaving it empty keeps today's behaviour exactly.
+
 - **Batch peaks: one ledger for a whole batch.** A batch peak is a frozen m/z
   anchor shared across a batch's samples, carrying an evidence-weighted
   consensus of the per-sample assignments that folded into it - so a species can

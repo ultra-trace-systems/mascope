@@ -74,7 +74,9 @@ def agent(monkeypatch, tmp_path):
 def test_offers_to_pair_and_retries_the_file(monkeypatch, agent):
     """Accepting the offer swaps the credential and the upload is retried."""
     monkeypatch.setattr("builtins.input", lambda _: "y")
-    monkeypatch.setattr(main, "run_pairing", lambda host, verify: "fresh-token")
+    monkeypatch.setattr(
+        main, "run_pairing", lambda host, verify, instrument=None: "fresh-token"
+    )
 
     attempts = []
 
@@ -100,7 +102,9 @@ def test_declining_stops_asking(monkeypatch, agent):
 
     monkeypatch.setattr("builtins.input", answer)
     monkeypatch.setattr(
-        main, "run_pairing", lambda host, verify: pytest.fail("must not pair")
+        main,
+        "run_pairing",
+        lambda host, verify, instrument=None: pytest.fail("must not pair"),
     )
     monkeypatch.setattr(
         main,
@@ -151,7 +155,9 @@ def test_startup_offers_to_pair_when_the_credential_is_refused(monkeypatch, agen
         lambda host, token, verify: (CREDENTIAL_REJECTED, "refused"),
     )
     monkeypatch.setattr("builtins.input", lambda _: "y")
-    monkeypatch.setattr(main, "run_pairing", lambda host, verify: "fresh-token")
+    monkeypatch.setattr(
+        main, "run_pairing", lambda host, verify, instrument=None: "fresh-token"
+    )
 
     main._check_credential_at_start()
 
@@ -173,7 +179,9 @@ def test_startup_does_not_prompt_when_the_server_is_unreachable(monkeypatch, age
         "builtins.input", lambda _: pytest.fail("must not prompt when unreachable")
     )
     monkeypatch.setattr(
-        main, "run_pairing", lambda host, verify: pytest.fail("must not pair")
+        main,
+        "run_pairing",
+        lambda host, verify, instrument=None: pytest.fail("must not pair"),
     )
 
     main._check_credential_at_start()

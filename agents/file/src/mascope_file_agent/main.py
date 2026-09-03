@@ -26,6 +26,9 @@ from mascope_runtime import Runtime
 
 
 mascope_sdk.SERVICE_NAME = "file-agent"
+# Sent as a header on every request, so the server can show which release each
+# paired machine runs; a server that does not know the header ignores it.
+mascope_sdk.AGENT_VERSION = __version__
 from mascope_sdk import (  # noqa: E402  (needs SERVICE_NAME set first)
     api_post_file_tus,
     api_renew_agent_token,
@@ -53,6 +56,11 @@ _access_token = None
 # IANA timezone reported with each upload, resolved once at start (see
 # resolve_timezone). None when this machine could not name its zone.
 _timezone = None
+
+# Name of the instrument this machine watches, reported when pairing and with
+# each upload. None when the setting is empty; the server then keeps reading
+# the instrument from the file name.
+_instrument = None
 
 # Set in prod mode so the renewal loop can persist a rotated token to the
 # user-facing config.toml (None in dev, where the CLI owns the config).
@@ -311,7 +319,11 @@ def _offer_repair(token_used: str, reason: str) -> bool:
             print(REPAIR_DECLINED_NOTE)
             return False
 
-        token = run_pairing(HOST, verify=getattr(runtime.config, "verify_tls", True))
+        token = run_pairing(
+            HOST,
+            verify=getattr(runtime.config, "verify_tls", True),
+            instrument=_instrument,
+        )
         if not token:
             _repair_declined = True
             return False
@@ -494,6 +506,7 @@ def upload_sample_file(filepath: str) -> None:
         filepath=filepath,
         upload_filename=upload_filename,
         timezone=_timezone,
+        instrument=_instrument,
     )
     runtime.logger.info(f"File upload of file {os.path.basename(filepath)} succeeded!")
 
@@ -529,7 +542,8 @@ def resolve_settings(mascope_path: str, env_path: str) -> dict:
     :return: Complete, validated settings dict
     :rtype: dict
     :raises ConfigError: When settings are missing and the wizard cannot run,
-        or the watched folder does not exist
+        the watched folder does not exist, or the instrument name is not one
+        the server accepts
     """
     config_path = os.path.join(mascope_path, agent_config.CONFIG_FILENAME)
     if os.path.exists(config_path):
@@ -558,6 +572,16 @@ def resolve_settings(mascope_path: str, env_path: str) -> dict:
             f"The watched folder does not exist: {settings['source']}\n"
             f"Update 'source' in {config_path}, or restart the agent "
             "with --setup to run the guided setup again."
+        )
+    instrument = (settings.get("instrument") or "").strip()
+    if instrument and not agent_config.is_valid_instrument(instrument):
+        # Checked here rather than left for the server: the name only rides
+        # along as metadata today, so a bad one would be accepted in silence
+        # and refused the day the server starts filing uploads under it.
+        raise ConfigError(
+            f"The instrument name is not valid: {instrument!r}\n"
+            "Use letters, digits and hyphens only (for example Orbi-Lab2), or "
+            f"leave 'instrument' empty in {config_path}."
         )
     return settings
 
@@ -848,6 +872,11 @@ def run() -> None:
             "can resolve, so it was ignored. Use an IANA name such as "
             "'Europe/Helsinki'."
         )
+    global _instrument
+    _instrument = (getattr(runtime.config, "instrument", "") or "").strip() or None
+    if _instrument:
+        runtime.logger.info(f"Reporting instrument: {_instrument}")
+
     if _timezone:
         runtime.logger.info(f"Reporting acquisition timezone: {_timezone}")
     else:

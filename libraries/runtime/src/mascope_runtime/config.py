@@ -486,6 +486,10 @@ class FileAgentConfig(ModuleConfig):
     # than a city, so a machine can resolve to a neighbouring city whose
     # historical DST rules differ.
     timezone: str = ""
+    # Name of the instrument this machine watches, reported at pairing and
+    # with each upload. Letters, digits and hyphens. Empty means unset: the
+    # server then keeps reading the instrument from the file name.
+    instrument: str = ""
     host: str  # URL of the backend
     access_token: str  # API access token
     filename_prefix: str | None = (
