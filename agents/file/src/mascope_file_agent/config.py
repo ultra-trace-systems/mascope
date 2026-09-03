@@ -11,6 +11,7 @@ instead of requiring a config reset.
 
 import contextlib
 import os
+import re
 import tempfile
 import time
 import tomllib
@@ -18,6 +19,11 @@ from urllib.parse import urlsplit
 
 
 CONFIG_FILENAME = "config.toml"
+
+#: What the server accepts as an instrument name: letters, digits and hyphens,
+#: at most 64 of them. The name is the first underscore-separated segment of
+#: an uploaded file name, so an underscore would end it early.
+INSTRUMENT_RE = re.compile(r"^[A-Za-z0-9-]{1,64}$")
 
 #: Windows keeps a file locked while another process has it open, so the
 #: atomic replace in write_user_config retries briefly before giving up.
@@ -40,6 +46,10 @@ DEFAULT_SETTINGS = {
     # converter can resolve the acquisition time to UTC. Empty means
     # auto-detect from the operating system.
     "timezone": "",
+    # Name of the instrument this machine watches, reported when pairing and
+    # with each upload so the server can file uploads under it without
+    # reading it from the file name. Empty means unset.
+    "instrument": "",
     "filename_prefix": "",
     "filename_suffix": "",
 }
@@ -65,6 +75,14 @@ USER_CONFIG_HEADER = """\
 #                  in UTC correctly. Leave empty to detect it automatically;
 #                  set it when detection is wrong, which happens because
 #                  Windows names a group of zones rather than a city
+#   instrument   - name of the instrument this machine watches, e.g.
+#                  "Orbi-Lab2" (letters, digits and hyphens). Reported when
+#                  pairing and with each upload. Leave empty to keep the
+#                  server reading the instrument from the file name alone
+#   filename_prefix / filename_suffix
+#                - optional text added to each file name on upload; the
+#                  guided setup offers a prefix when the file names do not
+#                  start with an instrument name the server can read
 #
 # Restart the agent after changing this file. To re-run the guided setup,
 # start the agent with the --setup flag.
@@ -93,6 +111,17 @@ def toml_str(value: str) -> str:
     for char, escape in (("\n", "\\n"), ("\r", "\\r"), ("\t", "\\t")):
         escaped = escaped.replace(char, escape)
     return f'"{escaped}"'
+
+
+def is_valid_instrument(value: str) -> bool:
+    """Whether ``value`` is an instrument name the server will accept.
+
+    :param value: The candidate name
+    :type value: str
+    :return: True for letters, digits and hyphens only, up to 64 characters
+    :rtype: bool
+    """
+    return bool(INSTRUMENT_RE.match(value))
 
 
 def normalize_host(raw: str) -> str:
@@ -232,7 +261,7 @@ def write_user_config(config_path: str, settings: dict) -> None:
         f"verify_tls = {'true' if settings.get('verify_tls', True) else 'false'}",
         f"timeout = {settings['timeout']}",
     ]
-    for key in ("timezone", "filename_prefix", "filename_suffix"):
+    for key in ("instrument", "timezone", "filename_prefix", "filename_suffix"):
         if settings.get(key):
             lines.append(f"{key} = {toml_str(settings[key])}")
         else:
@@ -315,7 +344,7 @@ def write_runtime_config(env_path: str, settings: dict, mascope_path: str) -> No
     # config.toml, so anything the user can set has to be carried across here
     # too - a key written to config.toml but missing from this list is silently
     # inert.
-    for key in ("timezone", "filename_prefix", "filename_suffix"):
+    for key in ("instrument", "timezone", "filename_prefix", "filename_suffix"):
         if settings.get(key):
             lines.append(f"{key} = {toml_str(settings[key])}")
     runtime_config_path = os.path.join(env_path, "prod.mascope.toml")

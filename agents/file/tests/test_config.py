@@ -64,6 +64,25 @@ def test_toml_str_roundtrip(value):
     assert parsed["key"] == value
 
 
+# --- is_valid_instrument ---
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [
+        ("Orbi-Lab2", True),
+        ("tof3", True),
+        ("orbi lab", False),
+        ("orbi_lab", False),  # an underscore would end the name early
+        ("", False),
+        ("a" * 64, True),
+        ("a" * 65, False),
+    ],
+)
+def test_is_valid_instrument(value, expected):
+    assert config.is_valid_instrument(value) is expected
+
+
 # --- merge_settings / missing_settings ---
 
 
@@ -96,6 +115,7 @@ def test_write_and_load_user_config_roundtrip(tmp_path):
             "source": r"C:\Xcalibur\Data",
             "mask": "*.raw",
             "recursive": True,
+            "instrument": "Orbi-Lab2",
             "filename_suffix": "_lab1",
         }
     )
@@ -187,6 +207,7 @@ def test_runtime_config_carries_every_user_settable_key(tmp_path):
             "access_token": "tok",
             "source": str(tmp_path),
             "timezone": "Europe/Helsinki",
+            "instrument": "Orbi-Lab2",
             "filename_prefix": "pre_",
             "filename_suffix": "_post",
         }
@@ -206,6 +227,7 @@ def test_runtime_config_carries_every_user_settable_key(tmp_path):
         assert key in generated, f"{key} is settable but never reaches the agent"
 
     assert generated["timezone"] == "Europe/Helsinki"
+    assert generated["instrument"] == "Orbi-Lab2"
 
 
 def test_write_user_config_retries_a_locked_replace(tmp_path, monkeypatch):

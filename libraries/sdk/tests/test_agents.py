@@ -206,6 +206,87 @@ def test_tus_upload_chunks_whole_file(monkeypatch, upload_file):
     assert b"".join(data for _, data in chunks) == b"raw-bytes"
 
 
+def _decode_metadata(header: str) -> dict:
+    out = {}
+    for item in header.split(","):
+        key, value = item.split(" ", 1)
+        out[key] = base64.b64decode(value).decode()
+    return out
+
+
+def test_tus_upload_reports_the_source_name_and_instrument(monkeypatch, upload_file):
+    created: dict = {}
+    monkeypatch.setattr(_agents.requests, "post", _fake_create(created))
+    monkeypatch.setattr(_agents.requests, "patch", lambda *a, **k: _fake_response(204))
+
+    _agents.api_post_file_tus(
+        "http://testserver",
+        "tok",
+        upload_file,
+        upload_filename="Orbi-Lab2_sample.raw",
+        instrument="Orbi-Lab2",
+    )
+
+    meta = _decode_metadata(created["headers"]["Upload-Metadata"])
+    # The name the server files today, the name on disk before the prefix,
+    # and the instrument the agent is configured for - the last two are what
+    # a later server routes on instead of the file name.
+    assert meta["filename"] == "Orbi-Lab2_sample.raw"
+    assert meta["source_filename"] == "sample.raw"
+    assert meta["instrument"] == "Orbi-Lab2"
+
+
+def test_tus_upload_omits_the_instrument_when_unset(monkeypatch, upload_file):
+    created: dict = {}
+    monkeypatch.setattr(_agents.requests, "post", _fake_create(created))
+    monkeypatch.setattr(_agents.requests, "patch", lambda *a, **k: _fake_response(204))
+
+    _agents.api_post_file_tus("http://testserver", "tok", upload_file)
+
+    meta = _decode_metadata(created["headers"]["Upload-Metadata"])
+    assert meta["source_filename"] == "sample.raw"
+    assert "instrument" not in meta
+
+
+def test_agent_version_header_rides_on_every_request(monkeypatch, upload_file):
+    import mascope_sdk
+
+    # Agents set the version at the package level, like SERVICE_NAME.
+    monkeypatch.setattr(mascope_sdk, "AGENT_VERSION", "v9.9.9")
+    created: dict = {}
+    monkeypatch.setattr(_agents.requests, "post", _fake_create(created))
+    monkeypatch.setattr(_agents.requests, "patch", lambda *a, **k: _fake_response(204))
+
+    _agents.api_post_file_tus("http://testserver", "tok", upload_file)
+    assert created["headers"]["X-Agent-Version"] == "v9.9.9"
+
+    renew: dict = {}
+
+    def fake_renew(url, headers, verify, timeout):
+        renew.update(headers=headers)
+        return _fake_response(200, {"data": {"access_token": "fresh", "expires_in": 1}})
+
+    monkeypatch.setattr(_agents.requests, "post", fake_renew)
+    _agents.api_renew_agent_token("http://testserver", "current")
+    assert renew["headers"]["X-Agent-Version"] == "v9.9.9"
+
+
+def test_no_version_header_without_a_version(monkeypatch):
+    import mascope_sdk
+
+    # The SDK's own default: a notebook client is not an agent and sends none.
+    monkeypatch.setattr(mascope_sdk, "AGENT_VERSION", None)
+    captured: dict = {}
+
+    def fake_post(url, headers, verify, timeout):
+        captured.update(headers=headers)
+        return _fake_response(200, {"data": {"access_token": "fresh", "expires_in": 1}})
+
+    monkeypatch.setattr(_agents.requests, "post", fake_post)
+    _agents.api_renew_agent_token("http://testserver", "current")
+    assert "X-Agent-Version" not in captured["headers"]
+
+
 def test_tus_upload_addresses_chunks_via_own_base_url(monkeypatch, upload_file):
     # The Location header points at whatever host/scheme the proxy chain
     # reported; only the upload id may be trusted.
@@ -467,7 +548,8 @@ def test_tus_create_carries_the_timezone_in_upload_metadata(monkeypatch, upload_
 
     metadata = captured["headers"]["Upload-Metadata"]
     pairs = dict(part.split(" ", 1) for part in metadata.split(","))
-    assert set(pairs) == {"filename", "filetype", "timezone"}
+    # source_filename always rides along: the on-disk name before any prefix.
+    assert set(pairs) == {"filename", "filetype", "timezone", "source_filename"}
     assert base64.b64decode(pairs["timezone"]).decode() == "Europe/Helsinki"
 
 

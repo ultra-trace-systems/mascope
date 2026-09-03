@@ -15,6 +15,8 @@ __version__ = version("mascope_sdk")
 
 # Agent-internal helpers (used by file-agent)
 from ._agents import (  # noqa: F401
+    AGENT_VERSION,
+    AGENT_VERSION_HEADER,
     SERVICE_NAME,
     VERIFY_TLS,
     api_post_file,

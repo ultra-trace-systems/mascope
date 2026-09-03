@@ -27,19 +27,27 @@ uploads them to your Mascope server automatically.
 3. When the agent first starts, a guided setup runs in the console window.
    It asks for the **Mascope server address** (for example
    `mascope.example.com`) and whether to verify the server's TLS
-   certificate (answer *no* only for a self-signed test server), then
-   pairs the agent with your account:
+   certificate (answer *no* only for a self-signed test server), then for
+   the **folder to watch** for new data files (any folder on the PC — where
+   the agent is installed does not matter), whether to **also watch its
+   subfolders**, and the **file pattern** to upload (default `*.raw`).
+
+4. Next it asks for the **instrument name** this machine watches, for
+   example `Orbi-Lab2` (letters, digits and hyphens). The agent reports it
+   when pairing and with every upload, so the server can file uploads under
+   it. If the watched folder already holds files whose names start with an
+   instrument name, that name is offered as the default. When the file
+   names do not start with one, the setup offers to add the instrument name
+   in front of every uploaded name, which is what the server needs today to
+   file them. Leave the name empty to skip this.
+
+5. Finally the setup pairs the agent with your account:
    1. The agent shows a short pairing code, for example `BCD-234`.
    2. Log in to Mascope in your browser (*editor* role or higher), open
       the **Home menu** (house icon, top-left) **Settings** tab, and under
       **API Access Tokens** click **Pair an agent**.
    3. Enter the code and approve — the agent picks up its access token
       automatically within a few seconds.
-
-4. Finally the setup asks for the **folder to watch** for new data files
-   (any folder on the PC — where the agent is installed does not matter),
-   whether to **also watch its subfolders**, and the **file pattern** to
-   upload (default `*.raw`).
 
 The setup checks the server connection and the token immediately, so a typo
 is caught before any data acquisition depends on it. After setup completes,
@@ -77,6 +85,7 @@ All settings live in one file on the instrument PC:
 | `recursive`       | `true` to also watch subfolders of `source` (default `false`)      |
 | `verify_tls`      | `true` to verify the server's TLS certificate (default `true`)     |
 | `timezone`        | IANA timezone of this machine, e.g. `Europe/Helsinki` (auto-detected when empty) |
+| `instrument`      | Name of the instrument this machine watches, e.g. `Orbi-Lab2` (letters, digits and hyphens); reported when pairing and with each upload |
 | `mask`            | Pattern of the files to upload, e.g. `*.raw`                       |
 | `timeout`         | Seconds a file must be idle before it is uploaded                  |
 | `filename_prefix` | Optional prefix added to the filename on upload                    |
@@ -140,9 +149,12 @@ The agent prints its version when it starts, and uninstalling (Windows
   the first underscore — `Orbion_2026.05.03…` is instrument `Orbion` — and it
   must be one this deployment knows. Either name the files that way in the
   acquisition software, or set `filename_prefix` in the configuration to add
-  it, including the underscore (`filename_prefix = 'Orbion_'`). The agent does
-  not retry these: the server has understood the name and refused it, so the
-  file is set aside in `failed_uploads` immediately.
+  it, including the underscore (`filename_prefix = 'Orbion_'`). The guided
+  setup offers to set that prefix for you when the files in the watched
+  folder do not start with an instrument name: start the agent with
+  `--setup`. The agent does not retry these: the server has understood the
+  name and refused it, so the file is set aside in `failed_uploads`
+  immediately.
 - *"The server rejected the access token"* or *"This agent credential has
   expired"*: the machine's token has lapsed or its device was revoked.
   Answer the prompt the agent shows in its window, or close it and start
