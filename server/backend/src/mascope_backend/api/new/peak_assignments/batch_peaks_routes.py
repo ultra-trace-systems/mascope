@@ -9,6 +9,11 @@ from mascope_backend.api.controllers.sample.lib.sample_batches_fetch import (
 from mascope_backend.api.lib.api_features import api_route
 from mascope_backend.api.models.base_pydantic_model import RequestBodyModel
 from mascope_backend.api.new.auth.dependencies import current_active_user
+from mascope_backend.api.new.peak_assignments.batch_curation import (
+    curate_batch_peak,
+    release_batch_peak_curation,
+    validate_curation,
+)
 from mascope_backend.api.new.peak_assignments.batch_peak_verification import (
     get_anchor_context,
     get_batch_peak_verdicts,
@@ -34,6 +39,8 @@ from mascope_backend.api.new.peak_assignments.schemas import (
     AssignmentTier,
     AssignSamplePeaksBody,
     BatchPeakVerificationsResponse,
+    CurateBatchPeakBody,
+    ReleaseBatchPeakCurationBody,
     RetractBatchPeakVerdictBody,
     VerifyBatchPeakBody,
 )
@@ -402,5 +409,87 @@ async def retract_batch_peak_verdict_route(
         batch_peak_id=body.batch_peak_id,
         assigned_formula=body.assigned_formula,
         ionization_mechanism_id=body.ionization_mechanism_id,
+    )
+    return BatchPeakRecordsResponse.model_validate(result)
+
+
+@batch_peaks_router.post(
+    "/batch/{sample_batch_id}/curate",
+    dependencies=[Depends(require_peak_assignment_enabled)],
+)
+@api_route(status_code=202, token_access=True)
+async def curate_batch_peak_route(
+    sample_batch_id: str,
+    body: CurateBatchPeakBody,
+    background_tasks: BackgroundTasks,
+    user: User = Depends(current_active_user),
+    membership=Depends(require_batch_role("editor")),
+) -> dict:
+    """Pin one of a batch peak's identities as its species for the whole batch.
+
+    The identity is one the batch peak's members have carried (a registry index,
+    as the alternatives of a derived row name them); it is pinned on the anchor,
+    measured in every sample holding the peak - a sample where it can be measured
+    now reads it with a fit of its own, one where it cannot keeps what it had -
+    and the anchor is recomputed. ``expected_formula`` guards the claim the user
+    saw (409 on a mismatch); an unknown index is a 422. Runs as a background
+    task on the ``curate_batch_peak`` channel and emits ``peak_assignment_reload``
+    on completion.
+
+    :param sample_batch_id: The unique identifier of the sample batch.
+    :param body: The batch peak, the identity to pin and the formula seen.
+    :param user: The current authenticated user. Requires workspace editor role.
+    :return: Acknowledgement message with the background process id.
+    """
+    checked = await validate_curation(
+        sample_batch_id=sample_batch_id,
+        batch_peak_id=body.batch_peak_id,
+        candidate=body.candidate,
+        expected_formula=body.expected_formula,
+    )
+    process_id = gen_id(8)
+    background_tasks.add_task(
+        curate_batch_peak,
+        sample_batch_id=sample_batch_id,
+        batch_peak_id=body.batch_peak_id,
+        candidate=body.candidate,
+        expected_formula=body.expected_formula,
+        independent_transaction=True,
+        user_id=user.id,
+        process_id=process_id,
+    )
+    return {
+        "message": (
+            f"Pinning {checked['formula']} on the batch peak at m/z "
+            f"{checked['mz']:.4f} and measuring it across the batch, please wait."
+        ),
+        "process_id": process_id,
+    }
+
+
+@batch_peaks_router.post(
+    "/batch/{sample_batch_id}/release-curation",
+    response_model=BatchPeakRecordsResponse,
+    dependencies=[Depends(require_peak_assignment_enabled)],
+)
+@api_route(token_access=True)
+async def release_batch_peak_curation_route(
+    sample_batch_id: str,
+    body: ReleaseBatchPeakCurationBody,
+    user: User = Depends(current_active_user),
+    membership=Depends(require_batch_role("editor")),
+) -> BatchPeakRecordsResponse:
+    """Undo a batch peak's manual curation: the samples re-measured for the pinned
+    identity go back to what they read before where nobody has changed them
+    since, the pin is dropped and the batch's vote decides again. A batch peak
+    without a curation is a 409.
+
+    :param sample_batch_id: The unique identifier of the sample batch.
+    :param body: The batch peak.
+    :param user: The current authenticated user. Requires workspace editor role.
+    :return: How many samples were put back and how many left as since changed.
+    """
+    result = await release_batch_peak_curation(
+        sample_batch_id=sample_batch_id, batch_peak_id=body.batch_peak_id
     )
     return BatchPeakRecordsResponse.model_validate(result)

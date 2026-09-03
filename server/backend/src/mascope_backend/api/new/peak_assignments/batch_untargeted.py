@@ -41,6 +41,7 @@ from mascope_backend.api.new.match.params import default_match_params
 from mascope_backend.api.new.peak_assignments.batch_peaks import (
     ROLE_ISO_CHILD,
     candidate_index,
+    member_state,
     role_code,
     tier_code,
 )
@@ -327,6 +328,11 @@ async def _propagate_to_sample(
     sample_item_id: str,
     annotations: dict[str, Annotation],
     config: PeakAssignmentConfig,
+    *,
+    only_unassigned: bool = True,
+    source: str = SOURCE_UNTARGETED,
+    skip_candidate: Optional[dict[str, int]] = None,
+    displaced: Optional[list] = None,
 ) -> int:
     """Measure the annotated anchors' formulas against one other sample and
     write the result onto its members of those anchors.
@@ -335,6 +341,13 @@ async def _propagate_to_sample(
     sample's own peaks. A member whose peak the ion's envelope paired to takes
     the ion's fit, tiered under the search's own bands; a member the envelope
     did not reach stays unassigned. Runs outside the fold lock, writes inside.
+
+    The batch curation measures a pinned identity the same way, over every
+    member rather than the unassigned ones (``only_unassigned=False``),
+    skipping members that already carry it (``skip_candidate``, anchor id ->
+    registry index) and archiving what each re-pointed member read before
+    (``displaced``, appended to). ``source`` is recorded on a registry entry
+    this write creates.
 
     :return: How many members were assigned.
     """
@@ -353,19 +366,17 @@ async def _propagate_to_sample(
     if not ion_by_seed:
         return 0
 
+    conditions = [
+        BatchPeakOccurrence.sample_item_id == sample_item_id,
+        BatchPeakOccurrence.batch_peak_id.in_(list(annotations)),
+    ]
+    if only_unassigned:
+        conditions.append(BatchPeakOccurrence.candidate.is_(None))
     assigned = 0
     async with async_session() as session:
         await _acquire_batch_fold_lock(session, sample_batch_id)
         members = (
-            (
-                await session.execute(
-                    select(BatchPeakOccurrence).where(
-                        BatchPeakOccurrence.sample_item_id == sample_item_id,
-                        BatchPeakOccurrence.batch_peak_id.in_(list(annotations)),
-                        BatchPeakOccurrence.candidate.is_(None),
-                    )
-                )
-            )
+            (await session.execute(select(BatchPeakOccurrence).where(*conditions)))
             .scalars()
             .all()
         )
@@ -385,6 +396,11 @@ async def _propagate_to_sample(
         }
         for member in members:
             annotation = annotations[member.batch_peak_id]
+            if (
+                skip_candidate
+                and skip_candidate.get(member.batch_peak_id) == member.candidate
+            ):
+                continue
             ion_id = ion_by_seed.get(
                 (annotation.formula, annotation.ionization_mechanism_id)
             )
@@ -397,6 +413,8 @@ async def _propagate_to_sample(
             evidence = evidence_for(fit, annotation.formula)
             if fit is None or evidence is None:
                 continue
+            if displaced is not None:
+                displaced.append(member_state(member))
             anchor = anchors[member.batch_peak_id]
             registry = list(anchor.candidates or [])
             index = candidate_index(
@@ -404,7 +422,7 @@ async def _propagate_to_sample(
                 annotation.formula,
                 annotation.ion_formula,
                 annotation.ionization_mechanism_id,
-                source=SOURCE_UNTARGETED,
+                source=source,
             )
             if len(registry) != len(anchor.candidates or []):
                 anchor.candidates = registry

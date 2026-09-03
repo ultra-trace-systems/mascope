@@ -26,6 +26,8 @@ let verdictRecord
 // one detail record the inspector fetches (for the focused assignment only).
 let familyRows
 let detailRecord
+// The focused sample's run record; `{ engine: 'batch' }` is a derived ledger.
+let runRecord
 // The on-demand measurement of the finder's formula-only shortlist: null until
 // it lands, and `scoringNow` stands in for the request still being in flight.
 let altScoreRecords
@@ -63,6 +65,7 @@ function makeApp() {
           detailOf: (id) =>
             id != null && id === focusedAssignment?.peak_assignment_id ? detailRecord : null,
           familyOf: () => familyRows ?? (focusedAssignment ? [focusedAssignment] : []),
+          run: runRecord,
           // Stands in for the store's family resolution over whatever `ledger`
           // holds. The rule itself is pinned against the real implementation in
           // stores/data/modules/peakAssignment/assignment.spec.js; what matters
@@ -90,6 +93,13 @@ function makeApp() {
 let anchorVerdictRecord = null
 
 vi.mock('@/stores', () => ({ useApp: () => makeApp() }))
+
+// The batch curation a derived row's "use this" goes through.
+const batchCurate = vi.fn()
+const batchRelease = vi.fn()
+vi.mock('@/lib/panes/PanePeakAssign/stores/batchPeakCuration.js', () => ({
+  useBatchPeakCuration: () => ({ curating: false, curate: batchCurate, release: batchRelease })
+}))
 
 // Stubbed rather than auto-stubbed: the badge renders nothing of its own for a
 // null record, which would make "no badge" pass even with the block still there.
@@ -163,6 +173,7 @@ beforeEach(() => {
   ledger = new Map()
   verdictRecord = null
   familyRows = null
+  runRecord = null
   detailRecord = null
   altScoreRecords = null
   scoringNow = false
@@ -1386,5 +1397,89 @@ describe('PanePeakAssign batch-level verdict overlay', () => {
     const wrapper = await mountPane()
 
     expect(wrapper.find('.anchor-verdict').exists()).toBe(false)
+  })
+})
+
+describe('PanePeakAssign batch curation on a derived row', () => {
+  // What member_detail serves for a derived row: the anchor's other identity,
+  // naming its registry index.
+  const DERIVED_ALTERNATIVES = [
+    {
+      assigned_formula: 'C7H14O7',
+      ion_formula: 'C7H15O7+',
+      ionization_mechanism_id: 'm1',
+      source: 'batch',
+      evidence_share: 0.2,
+      n_members: 1,
+      candidate: 1
+    }
+  ]
+
+  beforeEach(() => {
+    runRecord = { engine: 'batch' }
+    focusedAssignment = {
+      ...assignment({ formula: 'C6H12O6', tier: 'assigned' }),
+      batch_peak_id: 'bp-1'
+    }
+    detailRecord = {
+      ...focusedAssignment,
+      alternatives: DERIVED_ALTERNATIVES,
+      provenance: { batch_peak: { consensus_formula: 'C6H12O6' } }
+    }
+    batchCurate.mockReset()
+    batchRelease.mockReset()
+    batchCurate.mockResolvedValue(null)
+    batchRelease.mockResolvedValue(null)
+  })
+
+  const settle = async (wrapper) => {
+    await wrapper.vm.$nextTick()
+    await wrapper.vm.$nextTick()
+  }
+
+  it('offers use this on a derived row and pins the identity on the batch peak', async () => {
+    const wrapper = await mountPane()
+
+    const buttons = wrapper.findAll('.alt .alt-use:not(.blocked)')
+    expect(buttons).toHaveLength(1)
+    expect(wrapper.text()).toContain('pins the identity on the batch peak')
+
+    await buttons[0].trigger('click')
+    await settle(wrapper)
+
+    // The guard is the consensus the card shows, and the candidate is the
+    // registry index the alternative carries.
+    expect(batchCurate).toHaveBeenCalledWith({
+      batch_peak_id: 'bp-1',
+      candidate: 1,
+      expected_formula: 'C6H12O6'
+    })
+  })
+
+  it('shows the batch curation note and releases it from there', async () => {
+    detailRecord.provenance.manual = {
+      action: 'promote_identity',
+      candidate: 1,
+      formula: 'C7H14O7',
+      previous: { consensus_formula: 'C6H12O6' }
+    }
+    const wrapper = await mountPane()
+
+    const note = wrapper.find('.manual-note')
+    expect(note.exists()).toBe(true)
+    expect(note.text()).toContain('Curated by hand for the whole batch')
+    expect(note.text()).toContain('in place of C6H12O6')
+
+    await note.find('.release-link').trigger('click')
+    await settle(wrapper)
+    expect(batchRelease).toHaveBeenCalledWith({ batch_peak_id: 'bp-1' })
+  })
+
+  it('reads a pin on a run-backed row as nothing of its own', async () => {
+    runRecord = { engine: 'mascope' }
+    detailRecord.provenance.manual = { action: 'promote_identity', formula: 'C7H14O7' }
+    const wrapper = await mountPane()
+
+    expect(wrapper.text()).not.toContain('Curated by hand for the whole batch')
   })
 })
