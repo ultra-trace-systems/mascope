@@ -25,6 +25,7 @@ from sqlalchemy import (
     Index,
     Integer,
     MetaData,
+    SmallInteger,
     String,
     Text,
     TypeDecorator,
@@ -1858,6 +1859,13 @@ class BatchPeak(Base):
         ForeignKey("batch_peak.batch_peak_id", ondelete="SET NULL"),
         index=True,
     )
+    # The anchor's registry of the assignment identities its members have
+    # carried: ``[{formula, ion_formula, ionization_mechanism_id}, ...]`` in the
+    # order they were first seen. A member names its own identity by index
+    # (``BatchPeakOccurrence.candidate``), so the list is APPEND-ONLY - an entry
+    # is never removed or reordered while a member may point at it. NULL on an
+    # anchor written before the registry existed and never re-folded since.
+    candidates: Mapped[Optional[list]] = mapped_column(JSON)
     alternatives: Mapped[Optional[list]] = mapped_column(JSON)
     provenance: Mapped[Optional[dict]] = mapped_column(JSON)
     batch_peak_utc_created: Mapped[Optional[dt]] = mapped_column(
@@ -1872,6 +1880,9 @@ class BatchPeak(Base):
     batch_peak_occurrence = relationship(
         "BatchPeakOccurrence",
         back_populates="batch_peak",
+        # Two foreign keys point here from the occurrence (membership and the
+        # family link); this relationship is the membership.
+        foreign_keys="[BatchPeakOccurrence.batch_peak_id]",
         cascade="all, delete, delete-orphan",
         passive_deletes=True,
     )
@@ -1902,6 +1913,15 @@ class BatchPeakOccurrence(Base):
     on (batch_peak_id, sample_item_id) - a member's identity, and the only key
     the row needs: a batch peak has at most one member per sample, one y-value
     per trace per sample, and nothing addresses an occurrence any other way.
+
+    A member carries everything the consensus reads - formula, tier, fit,
+    intensity, P(correct), its per-sample role, the anchor its owner folded into
+    when it is an isotopologue, and an index into its anchor's candidate
+    registry for the ion formula and mechanism - so the batch ledger stands
+    without the ledger rows it was folded from. ``peak_assignment_id`` is a
+    back-reference for a reader that wants the row, not something the batch
+    level depends on: a run pruned or deleted afterwards leaves it NULL and
+    changes no consensus. Design: ``docs/dev/peak_assignment_batch_primary.md``.
     """
 
     __tablename__ = "batch_peak_occurrence"
@@ -1936,10 +1956,41 @@ class BatchPeakOccurrence(Base):
     tier: Mapped[Optional[str]] = mapped_column(String(24))
     fit_score: Mapped[Optional[float]] = mapped_column(Float)
     assigned_formula: Mapped[Optional[str]] = mapped_column(String(256))
+    # Which entry of the anchor's ``candidates`` this member's assignment is;
+    # NULL for an unassigned member.
+    candidate: Mapped[Optional[int]] = mapped_column(SmallInteger)
+    # The member's per-sample role ('M0', 'iso_child', ...) and, for an
+    # isotopologue, the anchor its owning peak folded into in the same sample.
+    # NULL when the owner is unknown or folded nowhere, in which case the member
+    # abstains from the family vote; SET NULL when the owner anchor goes.
+    role: Mapped[Optional[str]] = mapped_column(String(16))
+    owner_batch_peak_id: Mapped[Optional[str]] = mapped_column(
+        String(16),
+        ForeignKey("batch_peak.batch_peak_id", ondelete="SET NULL"),
+    )
+    # The member's calibrated probability, as its assignment's provenance
+    # recorded it; NULL when uncalibrated.
+    p_correct: Mapped[Optional[float]] = mapped_column(Float)
 
-    # Relationships
-    batch_peak = relationship("BatchPeak", back_populates="batch_peak_occurrence")
+    # Relationships. Two foreign keys point at batch_peak (membership and the
+    # family link), so the membership relationship names its own.
+    batch_peak = relationship(
+        "BatchPeak",
+        back_populates="batch_peak_occurrence",
+        foreign_keys="[BatchPeakOccurrence.batch_peak_id]",
+    )
     sample_item = relationship("SampleItem", back_populates="batch_peak_occurrence")
+
+    __table_args__ = (
+        # Partial, as the ledger's nullable references are: most members are
+        # not isotopologues, and the SET NULL action is served by `= $1`, which
+        # implies IS NOT NULL.
+        Index(
+            "ix_batch_peak_occurrence_owner_batch_peak_id",
+            "owner_batch_peak_id",
+            postgresql_where=text("owner_batch_peak_id IS NOT NULL"),
+        ),
+    )
 
 
 class AttributeTemplate(Base):
