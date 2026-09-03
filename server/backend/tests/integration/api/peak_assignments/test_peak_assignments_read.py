@@ -7,6 +7,10 @@ handling, and the editor-role requirement on the assign endpoint.
 """
 
 import pytest
+from sqlalchemy import text, update
+
+from mascope_backend.db import PeakAssignment, PeakAssignmentRun
+from mascope_backend.db.id import gen_id
 
 
 @pytest.mark.asyncio
@@ -225,6 +229,142 @@ async def test_detail_returns_the_full_assignment(guest_client, pa_test_data):
     assert record["p_correct"] == pytest.approx(0.93)
     assert record["p_correct_provisional"] is True
     assert record["corroboration_adducts"] == 2
+
+
+@pytest.mark.asyncio
+async def test_the_run_calibration_is_folded_back_into_the_row(
+    guest_client, pa_test_data, async_session_factory
+):
+    """The engine records the curve once per run and only `p_correct` per row;
+    both reads serve the row as if it still carried the pair - the detail with
+    `calibrated` / `calibration`, the list with the provisional flag - and the
+    runs endpoint shows the record itself."""
+    curve = {"instrument": "orbi", "provisional": False, "source": "curated set"}
+    run_id = pa_test_data["completed_run_id"]
+    sample_id = pa_test_data["sample_item_id"]
+    row_id = gen_id(32)
+    async with async_session_factory() as session:
+        await session.execute(
+            update(PeakAssignmentRun)
+            .where(PeakAssignmentRun.peak_assignment_run_id == run_id)
+            .values(confidence_calibration=curve)
+        )
+        session.add(
+            PeakAssignment(
+                peak_assignment_id=row_id,
+                peak_assignment_run_id=run_id,
+                sample_item_id=sample_id,
+                sample_peak_id="peak-cal",
+                sample_peak_mz=333.3,
+                sample_peak_intensity=10.0,
+                role="M0",
+                assigned_formula="C9H8O4",
+                source="database",
+                fit_score=0.8,
+                tier="assigned",
+                provenance={"evidence": 0.8, "p_correct": 0.77, "score_version": 2},
+            )
+        )
+        await session.commit()
+    try:
+        detail = await guest_client.get(
+            f"/api/peak-assignments/sample/{sample_id}/assignment/{row_id}"
+        )
+        assert detail.status_code == 200
+        (record,) = detail.json()["data"]
+        assert record["provenance"]["p_correct"] == pytest.approx(0.77)
+        assert record["provenance"]["calibrated"] is True
+        assert record["provenance"]["calibration"] == curve
+        assert record["p_correct_provisional"] is False
+
+        listing = await guest_client.get(f"/api/peak-assignments/sample/{sample_id}")
+        by_peak = {row["sample_peak_id"]: row for row in listing.json()["data"]}
+        assert by_peak["peak-cal"]["p_correct"] == pytest.approx(0.77)
+        assert by_peak["peak-cal"]["p_correct_provisional"] is False
+        # A row that still carries its own block (the fixture's) reads that block.
+        assert by_peak["peak-1"]["p_correct_provisional"] is True
+
+        runs = await guest_client.get(f"/api/peak-assignments/sample/{sample_id}/runs")
+        by_run = {run["peak_assignment_run_id"]: run for run in runs.json()["data"]}
+        assert by_run[run_id]["confidence_calibration"] == curve
+    finally:
+        async with async_session_factory() as session:
+            row = await session.get(PeakAssignment, row_id)
+            if row is not None:
+                await session.delete(row)
+            await session.execute(
+                update(PeakAssignmentRun)
+                .where(PeakAssignmentRun.peak_assignment_run_id == run_id)
+                .values(confidence_calibration=None)
+            )
+            await session.commit()
+
+
+@pytest.mark.asyncio
+async def test_formula_only_alternatives_are_stored_packed_and_served_whole(
+    guest_client, pa_test_data, async_session_factory
+):
+    """The finder's shortlist entries are two-element lists on disk and the
+    dicts every reader expects on the way out, in the order they were written."""
+    run_id = pa_test_data["completed_run_id"]
+    sample_id = pa_test_data["sample_item_id"]
+    row_id = gen_id(32)
+    formula_only = {
+        "assigned_formula": "C10H14O8",
+        "plausibility": 1.0,
+        "source": "untargeted",
+    }
+    scored = {
+        "assigned_formula": "C8H12O4",
+        "ion_formula": "C8H12BrO4-",
+        "fit_score": 0.27,
+        "plausibility": 1.0,
+        "source": "database",
+    }
+    async with async_session_factory() as session:
+        session.add(
+            PeakAssignment(
+                peak_assignment_id=row_id,
+                peak_assignment_run_id=run_id,
+                sample_item_id=sample_id,
+                sample_peak_id="peak-packed",
+                sample_peak_mz=444.4,
+                sample_peak_intensity=10.0,
+                role="M0",
+                assigned_formula="C10H16O8",
+                source="untargeted",
+                fit_score=0.6,
+                tier="candidate",
+                alternatives=[formula_only, scored, formula_only],
+                provenance={"evidence": 0.5},
+            )
+        )
+        await session.commit()
+    try:
+        async with async_session_factory() as session:
+            stored = (
+                await session.execute(
+                    text(
+                        "SELECT alternatives::text FROM peak_assignment"
+                        " WHERE peak_assignment_id = :id"
+                    ),
+                    {"id": row_id},
+                )
+            ).scalar_one()
+        assert stored.startswith('[["C10H14O8", 1.0], {')
+
+        detail = await guest_client.get(
+            f"/api/peak-assignments/sample/{sample_id}/assignment/{row_id}"
+        )
+        assert detail.status_code == 200
+        (record,) = detail.json()["data"]
+        assert record["alternatives"] == [formula_only, scored, formula_only]
+    finally:
+        async with async_session_factory() as session:
+            row = await session.get(PeakAssignment, row_id)
+            if row is not None:
+                await session.delete(row)
+            await session.commit()
 
 
 @pytest.mark.asyncio

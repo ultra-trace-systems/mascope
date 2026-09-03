@@ -562,6 +562,20 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
 
 ### Changed
 
+- **The assignment ledger stores its JSON leaner, without changing what it
+  serves.** Two of the ledger's largest costs were repetition rather than
+  information. Every database-sourced row repeated the confidence calibration
+  its `p_correct` was read off (instrument, provisional flag, source - 90
+  bytes a row) although one curve serves a whole run; it is now recorded once
+  per run as `confidence_calibration`, served on the runs endpoint, and folded
+  back into each row by the assignment detail read, so the inspector and the
+  SDK see the same `provenance.calibrated` / `provenance.calibration` they
+  always did. And the untargeted finder's formula-only alternatives - 99 % of
+  all stored alternatives, about 70 bytes each for 16 bytes of content - are
+  stored as `[formula, plausibility]` and expanded on read, so every API and
+  SDK consumer keeps receiving the dict. Together about 13 % off the ledger on
+  a measured Stage A+B run; one migration rewrites the rows already stored.
+
 - **The assignment tables cost less disk, and ingest-time assignment can be
   bounded.** Assignment at ingest writes one ledger row and one batch-peak
   occurrence per detected peak - about 1 KB per peak, or 2-8 MB per typical

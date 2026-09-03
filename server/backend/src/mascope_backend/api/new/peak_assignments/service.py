@@ -68,6 +68,7 @@ from mascope_backend.api.new.peak_assignments.config import (
 from mascope_backend.api.new.peak_assignments.engine import (
     REFERENCE_IDENTITIES_COL,
     build_unassigned_assignments,
+    calibration_meta,
     invert_matches_to_peak_assignments,
     score_ions_by_fit,
     untargeted_matches_to_peak_assignments,
@@ -207,7 +208,9 @@ class RunStillAssemblingException(CodedHTTPException):
         )
 
 
-def _provenance_scalars(provenance: dict | None) -> dict:
+def _provenance_scalars(
+    provenance: dict | None, run_calibration: dict | None = None
+) -> dict:
     """Collapse a provenance blob into the scalars the ledger renders.
 
     The ledger table shows the evidence its tier was read off, a calibrated
@@ -219,15 +222,53 @@ def _provenance_scalars(provenance: dict | None) -> dict:
     chip displays. The chip used to show ``fit_score``, which stopped being the
     number that bucketed the row - and a tier beside a percentage that did not
     produce it is the one pairing guaranteed to be read as a contradiction.
+
+    ``run_calibration`` is the run's ``confidence_calibration``: the curve a
+    calibrated row's ``p_correct`` was read off, recorded once per run rather
+    than in every row. It speaks only for rows that carry a ``p_correct`` - the
+    database stage's - and a row that still carries its own ``calibration``
+    block (written before the move, or seeded that way) is read as it is.
     """
     provenance = provenance or {}
-    calibration = provenance.get("calibration") or {}
+    if "calibration" in provenance:
+        calibration = provenance.get("calibration") or {}
+    elif "p_correct" in provenance:
+        calibration = run_calibration or {}
+    else:
+        calibration = {}
     corroboration = provenance.get("corroboration") or {}
     return {
         "evidence": provenance.get("evidence"),
         "p_correct": provenance.get("p_correct"),
         "p_correct_provisional": calibration.get("provisional"),
         "corroboration_adducts": corroboration.get("n_adducts"),
+    }
+
+
+def provenance_with_calibration(
+    provenance: dict | None, run_calibration: dict | None
+) -> dict | None:
+    """Fold the run's confidence calibration back into a row's provenance.
+
+    The engine records ``p_correct`` per row and the curve it came from once per
+    run (``PeakAssignmentRun.confidence_calibration``); the detail row is served
+    with ``calibrated`` and ``calibration`` beside ``p_correct`` all the same,
+    because that is the shape the inspector and the SDK read. Only rows that
+    carry a ``p_correct`` key ever had the pair - the database stage's - and a
+    row that still carries its own is left as it is.
+
+    :param provenance: The row's stored provenance.
+    :param run_calibration: The run's ``confidence_calibration``, or None.
+    :return: The provenance to serve; a new dict when the pair was folded in.
+    """
+    if not isinstance(provenance, dict) or "p_correct" not in provenance:
+        return provenance
+    if "calibration" in provenance or "calibrated" in provenance:
+        return provenance
+    return {
+        **provenance,
+        "calibrated": run_calibration is not None,
+        "calibration": run_calibration,
     }
 
 
@@ -358,7 +399,11 @@ async def get_peak_assignments(
     data = []
     for row in rows:
         record = row._asdict()
-        record.update(_provenance_scalars(record.pop("provenance", None)))
+        record.update(
+            _provenance_scalars(
+                record.pop("provenance", None), run.confidence_calibration
+            )
+        )
         data.append(record)
     return {
         "status": "success",
@@ -399,10 +444,18 @@ async def get_peak_assignment_detail(
                 f"'{sample.sample_item_name}'"
             )
         record = assignment.to_dict()
+        run = await session.get(PeakAssignmentRun, assignment.peak_assignment_run_id)
+        run_calibration = run.confidence_calibration if run is not None else None
 
-    # The detail row is a superset of the list row, so the flattened scalars
-    # are carried here too and a client can treat it as a drop-in replacement.
-    record.update(_provenance_scalars(record.get("provenance")))
+    # The calibration the run applied is recorded once on the run; fold it back
+    # into the row so the provenance keeps the shape the inspector and the SDK
+    # read. The detail row is a superset of the list row, so the flattened
+    # scalars are carried here too and a client can treat it as a drop-in
+    # replacement.
+    record["provenance"] = provenance_with_calibration(
+        record.get("provenance"), run_calibration
+    )
+    record.update(_provenance_scalars(record["provenance"], run_calibration))
     return {
         "status": "success",
         "message": (
@@ -1235,18 +1288,31 @@ async def _adopt_run(peak_assignment_run_id: str) -> PeakAssignmentRun:
 
 
 async def _finalize_run(
-    peak_assignment_run_id: str, status: str, error: str | None = None
+    peak_assignment_run_id: str,
+    status: str,
+    error: str | None = None,
+    *,
+    confidence_calibration: dict | None = None,
 ) -> None:
-    """Mark a run completed/failed with its completion timestamp."""
+    """Mark a run completed/failed with its completion timestamp.
+
+    A completed run also records the confidence calibration its ledger was
+    scored with (see :func:`engine.calibration_meta`); None means the run was
+    uncalibrated. A run that failed records nothing - its ledger, if any, is
+    never served.
+    """
+    values: dict = {
+        "status": status,
+        "error": error,
+        "peak_assignment_run_utc_completed": dt.now(timezone.utc),
+    }
+    if status == "completed":
+        values["confidence_calibration"] = confidence_calibration
     async with async_session() as session:
         await session.execute(
             update(PeakAssignmentRun)
             .where(PeakAssignmentRun.peak_assignment_run_id == peak_assignment_run_id)
-            .values(
-                status=status,
-                error=error,
-                peak_assignment_run_utc_completed=dt.now(timezone.utc),
-            )
+            .values(**values)
         )
         await session.commit()
 
@@ -1466,6 +1532,9 @@ async def _run_sample_assignment(
         # -- Stage A: database-first assignment from the known composition set:
         # the curated target library plus (when loaded) the reference mirror.
         stage_a_assignments: list[dict] = []
+        # What the run records about the curve its P(correct) values came from;
+        # stays None when Stage A never ran or the instrument has no curve.
+        confidence_calibration: dict | None = None
         target_isotopes_df = await _fetch_known_target_isotopes(
             sample, match_params.isotope_abundance_threshold, mechanism_ids
         )
@@ -1498,6 +1567,7 @@ async def _run_sample_assignment(
             # else the in-code provisional curve, else None -> uncalibrated). Passing it in keeps
             # the engine DB-free; its corroboration_weights drive the P3 adduct fold-in.
             calibration = await load_calibration(instrument, SCORE_VERSION)
+            confidence_calibration = calibration_meta(calibration)
             stage_a_assignments = invert_matches_to_peak_assignments(
                 match_isotope_df,
                 sample_item_id=sample_item_id,
@@ -1613,7 +1683,11 @@ async def _run_sample_assignment(
                 await session.execute(insert(PeakAssignment), all_assignments)
                 await session.commit()
 
-        await _finalize_run(run.peak_assignment_run_id, "completed")
+        await _finalize_run(
+            run.peak_assignment_run_id,
+            "completed",
+            confidence_calibration=confidence_calibration,
+        )
         await send_progress_user_notification(notification, 1.0)
 
         # Fold this completed run into the batch peaks so the batch overview
