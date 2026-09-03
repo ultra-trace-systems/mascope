@@ -187,9 +187,9 @@ def peak_assignment_ingest_max_peaks() -> int:
     )
 
 
-#: Values of ``peak_assignment_ingest_ledger``: write a per-sample run at ingest
-#: and fold it (the behaviour before the setting existed), or fold the sample
-#: into the batch ledger and write no run.
+#: Values of ``peak_assignment_ingest_ledger``: fold the sample into the batch
+#: ledger and write no run (the default), or write a per-sample run at ingest
+#: and fold it (the behaviour before the batch ledger became the durable object).
 INGEST_LEDGER_SAMPLE = "sample"
 INGEST_LEDGER_BATCH = "batch"
 
@@ -197,23 +197,22 @@ INGEST_LEDGER_BATCH = "batch"
 def peak_assignment_ingest_ledger() -> str:
     """Which ledger an ingest-time assignment writes.
 
-    ``"sample"`` (the default) writes a per-sample run and folds it into the
-    batch peaks, as an explicit run does. ``"batch"`` folds the sample into the
-    batch peaks and writes no run: the members carry what the Sample view needs
-    (``fold_view``), and the per-sample rows - about half of the per-peak cost,
-    most of it placeholders for peaks nothing assigned - are never written. An
-    explicit run on such a sample still writes one, and restores what only a
-    run keeps.
+    ``"batch"`` (the default) folds the sample into the batch peaks and writes no
+    run: the members carry what the Sample view needs (``fold_view``), and the
+    per-sample rows - about a kilobyte per detected peak, most of it
+    placeholders for peaks nothing assigned - are never written. ``"sample"``
+    writes a per-sample run as well and folds it, as an explicit run does; an
+    explicit run on a sample writes one whatever this says.
 
     Read from ``peak_assignment_ingest_ledger`` in the runtime ``[meta]`` config;
     anything but the two values reads as the default.
 
-    :return: :data:`INGEST_LEDGER_SAMPLE` or :data:`INGEST_LEDGER_BATCH`.
+    :return: :data:`INGEST_LEDGER_BATCH` or :data:`INGEST_LEDGER_SAMPLE`.
     """
-    value = getattr(runtime.meta, "peak_assignment_ingest_ledger", INGEST_LEDGER_SAMPLE)
-    if str(value).strip().lower() == INGEST_LEDGER_BATCH:
-        return INGEST_LEDGER_BATCH
-    return INGEST_LEDGER_SAMPLE
+    value = getattr(runtime.meta, "peak_assignment_ingest_ledger", INGEST_LEDGER_BATCH)
+    if str(value).strip().lower() == INGEST_LEDGER_SAMPLE:
+        return INGEST_LEDGER_SAMPLE
+    return INGEST_LEDGER_BATCH
 
 
 class PeakAssignmentConfig(BaseModel):
