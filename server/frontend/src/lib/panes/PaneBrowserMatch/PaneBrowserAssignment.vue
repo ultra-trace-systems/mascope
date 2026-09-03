@@ -63,6 +63,24 @@ const verdictFor = (row) => {
   return m0?.assigned_formula ? app.data.peakAssignment.verification.forAssignment(m0) : null
 }
 
+// The batch-level verdict that reaches a row with no verdict of its own: the
+// family M0's peak folded into a judged batch peak, and the judgment is about the
+// M0's own formula and mechanism - a dissenting row gets no overlay from a verdict
+// about another formula. A per-sample verdict always wins; where both exist and
+// disagree, the per-sample badge says so in its tooltip.
+const overlayFor = (row) => {
+  const m0 = assignments.value.m0Of(row)
+  return m0?.assigned_formula ? app.data.peakAssignment.anchorContext.overlayFor(m0) : null
+}
+const conflictFor = (row) => {
+  const own = verdictFor(row)
+  const overlay = own ? overlayFor(row) : null
+  return overlay && overlay.verdict !== own.verdict ? overlay : null
+}
+// What the row visibly carries, its own verdict first. The filter runs on this,
+// so "Unverified" never lists a row that shows a badge.
+const effectiveVerdictFor = (row) => verdictFor(row) ?? overlayFor(row)
+
 // Verdict filter (single-select). "unverified" = no current verdict.
 const VERDICT_FILTERS = [
   { value: 'all', label: 'All verdicts' },
@@ -284,7 +302,7 @@ const rows = computed(() => {
     .filter(
       (row) =>
         verdictFilter.value === 'all' ||
-        (verdictFor(row)?.verdict ?? 'unverified') === verdictFilter.value
+        (effectiveVerdictFor(row)?.verdict ?? 'unverified') === verdictFilter.value
     )
     .map((row) => ({
       ...row,
@@ -871,7 +889,13 @@ const breadcrumb = computed(() => {
             />
           </template>
           <template #body="{ data }">
-            <BaseVerdictBadge :record="verdictFor(data)" compact />
+            <BaseVerdictBadge
+              v-if="verdictFor(data)"
+              :record="verdictFor(data)"
+              :conflict="conflictFor(data)"
+              compact
+            />
+            <BaseVerdictBadge v-else :record="overlayFor(data)" inherited compact />
           </template>
         </Column>
       </DataTable>

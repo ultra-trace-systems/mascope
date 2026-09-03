@@ -213,6 +213,26 @@ and each weaker level is worth correspondingly less as a label. Verdicts deliber
 capture the *evidence* behind a judgment rather than echoing the model's own score,
 so the labelled record stays informative for recalibration.
 
+### Batch-level verdicts
+
+--8<-- "_help/batch-peak-verdicts.md"
+
+The *Verdict* column of the *Batch peaks* ledger is where a batch-level verdict is
+recorded: click the cell to judge the species, change the verdict or retract it. The
+samples it covers show it as a borrowed badge - in parentheses in the assignment
+ledger, as a dashed pill in the inspector - and the assignment ledger's verdict filter
+counts them under it, so *Unverified* lists only rows that show no badge at all. A
+per-sample verdict always wins: verifying one of those samples yourself records an
+exception, and where the two disagree the per-sample badge says so.
+
+Confirming or rejecting names the formula you judged. If the consensus has moved since
+the ledger was read - another sample's fold can move it - the verdict is refused and the
+row reloads, so you never confirm a formula you did not see. A verdict whose formula the
+consensus has since left stays on record, outlined as stale, until you judge the new
+formula or retract it. Batch-level verdicts are kept apart from the labelled record that
+confidence calibration is fit on: one judgment fanned out over a batch would count as
+many correlated labels, so it counts as none.
+
 ## Assignment runs
 
 --8<-- "_help/assignment-runs.md"
@@ -257,6 +277,10 @@ against every other sample the species was seen in, so each carries a fit of its
 It writes no per-sample runs: the results appear in the batch ledger and in each
 sample's view, marked as untargeted. An assignment run on a sample still takes
 precedence for that sample.
+
+The *Verdict* column, last in the ledger, records and shows a
+[batch-level verdict](#batch-level-verdicts) on the species: one judgment that covers
+every sample in the batch without a verdict of its own.
 
 The rows you tick in the *Batch peaks* ledger are what the batch chart draws, one
 trace per batch peak. The ledger lists every anchor in the batch, which on a large

@@ -1,5 +1,5 @@
 <script setup>
-import { ref, computed, watch } from 'vue'
+import { ref, computed, watch, nextTick } from 'vue'
 
 import Button from 'primevue/button'
 import DataTable from 'primevue/datatable'
@@ -12,14 +12,16 @@ import Select from 'primevue/select'
 import ToggleSwitch from 'primevue/toggleswitch'
 import { FilterMatchMode, FilterOperator, FilterService } from '@primevue/core/api'
 
-import { BaseTabbedPanel, BaseTierTag, BaseCopyableField } from '@/lib/base'
+import { BaseTabbedPanel, BaseTierTag, BaseCopyableField, BaseVerdictBadge } from '@/lib/base'
 import { num } from '@/lib/formatters'
 import { TIERS, TIER_META, countTiers, tierRank } from '@/lib/tiers'
+import { VERDICT_META } from '@/lib/verification'
 import { prettyTrim } from '@/lib/utils'
 import { useApp } from '@/stores'
 import { MAX_SELECTED_BATCH_PEAKS } from '@/stores/data/modules/batchPeak/ledger'
 
 import { useBatchPeakCompute } from './stores/batchPeakCompute.js'
+import BatchPeakVerdictPopover from './BatchPeakVerdictPopover.vue'
 
 /**
  * Batch-peak ledger: the selection surface for the peak-centric batch overview.
@@ -36,6 +38,35 @@ const app = useApp()
 const compute = useBatchPeakCompute()
 
 const ledger = computed(() => app.data.batchPeak)
+const verdicts = computed(() => app.data.batchPeakVerification)
+
+// --- Batch-level verdicts ----------------------------------------------------
+// One judgment per species at a batch peak, recorded from the Verdict column's
+// popover. A row's badge is the live verdict on its present claim, or - stale -
+// the latest live one on a claim the consensus has since left; the projection
+// carries a rank for the column to sort on, confirmed first and unjudged last,
+// the way the tier column sorts on `tierRank`.
+const VERDICT_RANK = { confirmed: 0, rejected: 1, unsure: 2 }
+const verdictFor = (row) => verdicts.value.forAnchor(row)
+const verdictStale = (row) => {
+  const record = verdictFor(row)
+  return Boolean(record && verdicts.value.isStale(record, row))
+}
+const verdictRank = (row) => {
+  const record = verdictFor(row)
+  return record ? (VERDICT_RANK[record.verdict] ?? 3) : null
+}
+// The cell's own tooltip covers the two states the badge has none for: no
+// verdict yet, and a stale one. A current badge speaks for itself.
+const verdictTooltip = (row) => {
+  const record = verdictFor(row)
+  if (!record) return 'Record a batch-level verdict'
+  if (!verdicts.value.isStale(record, row)) return ''
+  const label = VERDICT_META[record.verdict]?.label ?? record.verdict
+  return `${label} as ${record.assigned_formula} - the consensus is now ${
+    row.consensus_formula ?? 'unassigned'
+  }. Re-judge or retract.`
+}
 
 // A Popover rather than a Menu, matching the sample ledger: a menu item cannot
 // hold a labelled switch, and the switch's only accessible name is its label.
@@ -126,6 +157,7 @@ const decorated = computed(() => {
   return ledger.value.list.map((batchPeak) => ({
     ...batchPeak,
     tierRank: tierRank(batchPeak.consensus_tier),
+    verdictRank: verdictRank(batchPeak),
     parentId: rootParentId(batchPeak, index)
   }))
 })
@@ -150,6 +182,29 @@ const childrenByParent = computed(() => {
 // shows at top level, folded or not - the toggle decides only whether the
 // isotopologues are drawn underneath.
 const parents = computed(() => decorated.value.filter((row) => !row.parentId))
+
+// One verdict popover for the table, pointed at the row whose cell opened it -
+// the live row, so a reload under an open popover (the consensus moved, say)
+// shows the row as it now is. Clicking the open row's cell again closes it;
+// another row's cell moves it there.
+const verdictMenu = ref()
+const verdictRowId = ref(null)
+const verdictTarget = computed(() =>
+  verdictRowId.value
+    ? (decorated.value.find((row) => row.batch_peak_id === verdictRowId.value) ?? null)
+    : null
+)
+function openVerdict(event, row) {
+  const menu = verdictMenu.value
+  if (!menu) return
+  if (verdictRowId.value === row.batch_peak_id) {
+    menu.toggle(event)
+    return
+  }
+  verdictRowId.value = row.batch_peak_id
+  menu.hide()
+  nextTick(() => menu.show(event))
+}
 
 const isotopologueCount = (row) => childrenByParent.value.get(row.batch_peak_id)?.length ?? 0
 
@@ -778,12 +833,84 @@ watch(
         >
           <template #body="{ data }">{{ data.n_present }}</template>
         </Column>
+
+        <!-- Batch-level verdict: one judgment per species at this batch peak,
+             covering every sample in the batch without a verdict of its own. The
+             cell is a button whichever state it is in, so an unjudged row is
+             judged from the same place a judged one is re-judged. Sorts through
+             `compareBy` on the rank the projection carries - confirmed first,
+             unjudged last - as the tier column does. -->
+        <Column field="verdictRank" sortable style="min-width: 4rem">
+          <template #header>
+            <span
+              class="pi ph ph-seal-check"
+              v-tooltip.top="'Batch-level verdict'"
+              v-help.top="{
+                title: 'Batch-Level Verdicts',
+                helpKey: 'batch-peak-verdicts',
+                doc: app.ui.help.docUrl('how-it-works/peak-assignment/#batch-level-verdicts')
+              }"
+            />
+          </template>
+          <template #body="{ data }">
+            <button
+              type="button"
+              class="verdict-cell"
+              :class="{ stale: verdictStale(data), empty: !verdictFor(data) }"
+              :aria-label="
+                verdictFor(data) ? 'Batch-level verdict' : 'Record a batch-level verdict'
+              "
+              v-tooltip.top="verdictTooltip(data)"
+              @click.stop="openVerdict($event, data)"
+            >
+              <BaseVerdictBadge v-if="verdictFor(data)" :record="verdictFor(data)" compact />
+              <span v-else class="pi ph ph-seal-check" />
+            </button>
+          </template>
+        </Column>
       </DataTable>
+
+      <Popover ref="verdictMenu" aria-label="Batch-level verdict">
+        <BatchPeakVerdictPopover
+          v-if="verdictTarget"
+          :row="verdictTarget"
+          :record="verdictFor(verdictTarget)"
+          :stale="verdictStale(verdictTarget)"
+          @done="verdictMenu?.hide()"
+        />
+      </Popover>
     </div>
   </BaseTabbedPanel>
 </template>
 
 <style scoped>
+/* The verdict cell is a button so an empty cell opens the popover too; the badge
+   - or the faint seal for "none yet" - is its whole content. Stale: the judgment
+   is about a formula the consensus has since left, outlined in the warning
+   colour until re-judged or retracted. */
+.verdict-cell {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0.1rem 0.3rem;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+}
+.verdict-cell.empty .pi {
+  opacity: 0.25;
+}
+.verdict-cell:hover {
+  background: var(--p-content-hover-background);
+}
+.verdict-cell.stale {
+  border-color: var(--state-warning);
+  border-style: dashed;
+}
+
 .unassigned {
   color: var(--p-text-muted-color, #888);
   font-style: italic;

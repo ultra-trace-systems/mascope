@@ -9,7 +9,7 @@ import { useApp } from '@/stores'
 import { BaseTierTag, BaseVerdictBadge } from '@/lib/base'
 import { num } from '@/lib/formatters'
 import { formatIsotopeFormula } from '@/lib/chem'
-import { EVIDENCE_LEVELS } from '@/lib/verification'
+import { EVIDENCE_LEVELS, VERDICT_META } from '@/lib/verification'
 
 const app = useApp()
 
@@ -85,6 +85,40 @@ const verification = computed(() =>
 // its M0 is not a thing a chemist does - it is the same compound - so the form
 // reads and writes through the M0 whichever family member is in view.
 const verifyTarget = computed(() => app.data.peakAssignment.peak.m0Of(focusedAssignment.value))
+
+// The batch-level verdict on the species this peak folded into, when the
+// judgment is about this peak's own claim. Shown as borrowed evidence above the
+// capture controls: a verdict recorded here is a per-sample exception to it.
+const anchorVerdict = computed(() =>
+  verifyTarget.value ? app.data.peakAssignment.anchorContext.overlayFor(verifyTarget.value) : null
+)
+const anchorConflict = computed(() =>
+  anchorVerdict.value &&
+  verification.value &&
+  anchorVerdict.value.verdict !== verification.value.verdict
+    ? anchorVerdict.value
+    : null
+)
+const anchorVerdictLabel = computed(() =>
+  anchorVerdict.value
+    ? (VERDICT_META[anchorVerdict.value.verdict]?.label ?? anchorVerdict.value.verdict)
+    : ''
+)
+const anchorVerdictTooltip = computed(() => {
+  const record = anchorVerdict.value
+  if (!record) return ''
+  const who =
+    record.verified_by && app.auth?.user?.id === record.verified_by
+      ? 'you'
+      : record.verified_by
+        ? `user #${record.verified_by}`
+        : 'unknown'
+  const when = record.verified_utc ? new Date(record.verified_utc).toLocaleString() : ''
+  return [
+    `Batch-level verdict on ${record.assigned_formula}, by ${who}${when ? ` · ${when}` : ''}`,
+    'It covers every sample in this batch that has no verdict of its own.'
+  ].join('\n')
+})
 
 // Only a real assignment can be judged. A formula-less row is a placeholder for
 // a peak nothing explained, so a verdict on it is an opinion about nothing: it
@@ -878,8 +912,21 @@ const demotedCount = computed(() => {
         }"
       >
         <div class="alts-label">Verification</div>
+        <!-- Borrowed from the batch level: the dashed pill is this pane's grammar
+             for evidence read off another row, as on the inherited corroboration. -->
+        <div
+          v-if="anchorVerdict && !verification"
+          class="anchor-verdict"
+          v-tooltip.top="anchorVerdictTooltip"
+        >
+          <span :class="['pi', VERDICT_META[anchorVerdict.verdict].icon]" />
+          <span
+            >{{ anchorVerdictLabel }} at batch level &mdash; a verdict here records a per-sample
+            exception</span
+          >
+        </div>
         <div v-if="verification && !editing" class="verify-current">
-          <BaseVerdictBadge :record="verification" />
+          <BaseVerdictBadge :record="verification" :conflict="anchorConflict" />
           <Button
             v-if="!denied"
             size="small"
@@ -1195,6 +1242,22 @@ const demotedCount = computed(() => {
   display: flex;
   align-items: center;
   gap: 0.5rem;
+}
+.anchor-verdict {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  align-self: flex-start;
+  font-size: 0.78rem;
+  padding: 0.12rem 0.55rem;
+  border-radius: 100px;
+  color: var(--state-info);
+  background: color-mix(in srgb, var(--state-info) 12%, transparent);
+  border: 1px dashed color-mix(in srgb, var(--state-info) 45%, transparent);
+  cursor: default;
+}
+.anchor-verdict .pi {
+  font-size: 0.8rem;
 }
 .verify-buttons {
   display: flex;
