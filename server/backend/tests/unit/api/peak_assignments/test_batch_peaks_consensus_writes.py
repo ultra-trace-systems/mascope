@@ -16,8 +16,21 @@ from types import SimpleNamespace
 
 from mascope_backend.api.new.peak_assignments.batch_peaks import Consensus
 from mascope_backend.api.new.peak_assignments.batch_peaks_controller import (
+    _CONSENSUS_CHUNK,
     _apply_consensus,
 )
+
+
+#: asyncpg's hard limit, at protocol/prepared_stmt.pyx: a query carrying more
+#: arguments than this is refused before it is sent.
+_ASYNCPG_MAX_BIND_PARAMS = 32767
+
+
+def test_the_consensus_chunk_stays_under_the_drivers_bind_limit():
+    """The chunk is what keeps the recompute's IN lists bindable, so raising it
+    past the driver's cap would reintroduce the failure it exists to prevent -
+    and only on the dense samples nobody tests with."""
+    assert 0 < _CONSENSUS_CHUNK < _ASYNCPG_MAX_BIND_PARAMS
 
 
 _NOW = datetime(2026, 9, 3, 12, 0, tzinfo=timezone.utc)
