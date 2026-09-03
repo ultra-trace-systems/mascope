@@ -1058,3 +1058,34 @@ describe('PaneBrowserBatchPeaks batch-level verdicts', () => {
     expect(wrapper.vm.verdictTarget.verdictRank).toBe(0)
   })
 })
+
+describe('PaneBrowserBatchPeaks ledger export', () => {
+  it('offers the export from the view menu and launches it', async () => {
+    wrapper = await mountPane({ peaks: [peak('bp-1', 'assigned', 0.9)] })
+
+    const button = wrapper.find('.view-popover .export-ledger')
+    expect(button.exists()).toBe(true)
+    expect(button.attributes('disabled')).toBeUndefined()
+
+    await button.trigger('click')
+    await wrapper.vm.$nextTick()
+    expect(post).toHaveBeenCalledWith(
+      '/batch-peaks/batch/b-1/export',
+      {},
+      expect.objectContaining({ type: 'export_batch_ledger' })
+    )
+    // Busy until the task's own notification says it ended.
+    expect(useBatchPeakCompute().exporting).toBe(true)
+    notificationHandlers.export_batch_ledger?.forEach((cb) =>
+      cb({ status: 'success', process_id: 'proc-1' })
+    )
+    expect(useBatchPeakCompute().exporting).toBe(false)
+  })
+
+  it('offers no export on an empty ledger', async () => {
+    // The view menu hangs off the tier strip, which an empty ledger does not
+    // draw - so there is no control to disable.
+    wrapper = await mountPane({ peaks: [] })
+    expect(wrapper.find('.export-ledger').exists()).toBe(false)
+  })
+})
