@@ -245,9 +245,10 @@ A whole batch can be assigned in one launch: the same engine runs over every eli
 sample with one shared configuration (blank samples and samples whose m/z calibration
 is not verified are skipped, and the run continues in the background). The untargeted
 stage is off by default for batches — its cost multiplies by the number of samples.
-Every completed assignment run folds into the batch peaks automatically; a batch whose
-runs predate the batch overview can be backfilled from them without any new
-assignment work.
+Every processed sample folds into the batch peaks as it arrives - assigned from the
+known compositions, without a per-sample run of its own - and so does every completed
+assignment run; a batch whose samples predate the batch overview can be backfilled
+from their runs without any new assignment work.
 
 The rows you tick in the *Batch peaks* ledger are what the batch chart draws, one
 trace per batch peak. The ledger lists every anchor in the batch, which on a large
