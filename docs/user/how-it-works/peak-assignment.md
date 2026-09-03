@@ -228,6 +228,15 @@ recorded against an imported run are kept and shown, but stay out of the
 instrument-wide confidence calibration, whose labels come only from runs this
 server computed.
 
+A sample whose peaks are in the batch ledger but that has no run of its own &mdash; its
+runs were deleted or pruned, or it was folded into the batch without one &mdash; is shown
+from the batch ledger instead. The run selector lists it as **Batch ledger**; the
+ledger carries what the batch knows about each peak (formula, adduct, tier, fit,
+probability and isotopologue family), and the inspector's close alternatives are what
+the rest of the batch saw at that m/z. It carries no mass error or isotope label, and
+it cannot be edited by hand &mdash; assign the sample for a ledger of its own. Verdicts
+can still be recorded against it.
+
 ## Batch peaks
 
 --8<-- "_help/batch-peaks.md"

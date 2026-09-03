@@ -73,6 +73,15 @@ from mascope_backend.api.new.peak_assignments.engine import (
     score_ions_by_fit,
     untargeted_matches_to_peak_assignments,
 )
+from mascope_backend.api.new.peak_assignments.fold_view import (
+    derived_ledger,
+    fold_id_target,
+    fold_member,
+    fold_run_record,
+    is_fold_id,
+    member_detail,
+    verification_target,
+)
 from mascope_backend.api.new.peak_assignments.schemas import DEFAULT_PAGE_LIMIT
 from mascope_backend.db import (
     AssignmentVerification,
@@ -132,8 +141,15 @@ async def get_peak_assignment_runs(sample_item_id: str) -> dict:
             .scalars()
             .all()
         )
+        # The ledger derived from the batch peaks, for a sample the fold knows.
+        # Listed LAST: the UI and the SDK take the first completed run, so a
+        # real run keeps winning wherever one exists and the derived one is
+        # the fallback for a sample that has none.
+        derived = await fold_run_record(session, sample)
 
     data = [run.to_dict() for run in runs]
+    if derived is not None:
+        data.append(derived)
     return {
         "status": "success",
         "message": (
@@ -349,7 +365,29 @@ async def get_peak_assignments(
     """
     sample = await fetch_sample(sample_item_id)
 
+    derived_filters = dict(
+        tier=tier,
+        engine_tier=engine_tier,
+        tier_disagrees=tier_disagrees,
+        role=role,
+        source=source,
+        limit=limit,
+        offset=offset,
+    )
     async with async_session() as session:
+        if is_fold_id(peak_assignment_run_id):
+            # The derived run's id names the sample it is derived for.
+            derived = (
+                await derived_ledger(session, sample, **derived_filters)
+                if fold_id_target(peak_assignment_run_id) == sample_item_id
+                else None
+            )
+            if derived is None:
+                raise NotFoundException(
+                    f"Peak assignment run '{peak_assignment_run_id}' not found "
+                    f"for sample '{sample.sample_item_name}'"
+                )
+            return derived
         if peak_assignment_run_id is not None:
             run = await session.get(PeakAssignmentRun, peak_assignment_run_id)
             if run is None or run.sample_item_id != sample_item_id:
@@ -375,6 +413,10 @@ async def get_peak_assignments(
             ).scalar_one_or_none()
 
         if run is None:
+            # No run - but the batch ledger may still know the sample.
+            derived = await derived_ledger(session, sample, **derived_filters)
+            if derived is not None:
+                return derived
             return {
                 "status": "success",
                 "message": (
@@ -467,6 +509,24 @@ async def get_peak_assignment_detail(
     sample = await fetch_sample(sample_item_id)
 
     async with async_session() as session:
+        if is_fold_id(peak_assignment_id):
+            found = await fold_member(
+                session, sample_item_id, fold_id_target(peak_assignment_id)
+            )
+            if found is None:
+                raise NotFoundException(
+                    f"Assignment '{peak_assignment_id}' not found for sample "
+                    f"'{sample.sample_item_name}'"
+                )
+            return {
+                "status": "success",
+                "message": (
+                    f"Retrieved batch-derived assignment '{peak_assignment_id}' "
+                    f"for sample '{sample.sample_item_name}'"
+                ),
+                "results": 1,
+                "data": [member_detail(*found)],
+            }
         assignment = await session.get(PeakAssignment, peak_assignment_id)
         if assignment is None or assignment.sample_item_id != sample_item_id:
             raise NotFoundException(
@@ -535,7 +595,16 @@ async def create_verification(
     """
     sample = await fetch_sample(sample_item_id)
     async with async_session() as session:
-        assignment = await session.get(PeakAssignment, peak_assignment_id)
+        if is_fold_id(peak_assignment_id):
+            # A derived row: the member carries the identity and the score the
+            # snapshot needs, and the row-level links stay NULL - as they do
+            # for a verdict whose run was pruned afterwards.
+            found = await fold_member(
+                session, sample_item_id, fold_id_target(peak_assignment_id)
+            )
+            assignment = verification_target(*found) if found else None
+        else:
+            assignment = await session.get(PeakAssignment, peak_assignment_id)
         if assignment is None or assignment.sample_item_id != sample_item_id:
             raise NotFoundException(
                 f"Assignment '{peak_assignment_id}' not found for sample "

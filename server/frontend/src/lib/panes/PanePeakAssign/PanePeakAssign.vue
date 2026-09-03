@@ -408,6 +408,10 @@ const altTooltip = (alt, index) => {
 // showing.
 const curating = ref(null) // index of the alternative being committed
 const curateDenied = ref(false) // 403: not an editor on this sample
+// A ledger derived from the batch peaks (run engine 'batch') has no rows of its
+// own: curation edits a peak_assignment row, and there is none behind these.
+// The server answers 409; the control is withheld rather than offered to fail.
+const derivedRun = computed(() => app.data.peakAssignment.peak.run?.engine === 'batch')
 
 // A candidate can only be committed when it names both halves of an
 // assignment: the formula and the adduct it was found under. The server
@@ -977,7 +981,7 @@ const demotedCount = computed(() => {
               <span v-else class="no-stats"><span class="pi ph ph-info" /></span>
             </span>
             <Button
-              v-if="(canPromote(alt) || promoteBlocked(alt)) && !curateDenied"
+              v-if="(canPromote(alt) || promoteBlocked(alt)) && !curateDenied && !derivedRun"
               :class="['alt-use', { busy: curating === i, blocked: promoteBlocked(alt) }]"
               label="use this"
               size="small"
@@ -990,6 +994,10 @@ const demotedCount = computed(() => {
               @click="promoteAlternative(alt, i)"
             />
           </div>
+        </div>
+        <div v-if="derivedRun && !curateDenied" class="verify-denied">
+          <span class="pi ph ph-info" /> Derived from the batch ledger; assign the sample to change
+          an assignment.
         </div>
         <div v-if="curateDenied" class="verify-denied">
           <span class="pi ph ph-lock-simple" /> Editor access is required to change an assignment.

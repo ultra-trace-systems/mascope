@@ -43,11 +43,17 @@ const IN_APP_ENGINE = 'mascope'
 // still reaches the ledger through the import channel, so it carries a
 // disclosure (the copy manifest) and no calibrated P(correct), like any import.
 const COPY_ENGINE = 'mascope-copy'
+// The identity of a ledger derived from the batch peaks for a sample that has
+// no run of its own (backend fold_view.py). Reserved server-side like the two
+// above. The fold ran on this deployment, so it is presented as first-party -
+// named for what it is rather than as an engine.
+const FOLD_ENGINE = 'batch'
 
 const engine = computed(() => props.run?.engine ?? null)
 const engineKey = computed(() => engine.value?.trim().toLowerCase() ?? null)
 
 const isCopy = computed(() => engineKey.value === COPY_ENGINE)
+const isDerived = computed(() => engineKey.value === FOLD_ENGINE)
 
 // Runs predating the engine column were backfilled to the in-app identity, so a
 // missing engine means an old row rather than an unknown producer - read it as
@@ -55,7 +61,7 @@ const isCopy = computed(() => engineKey.value === COPY_ENGINE)
 // work too, so it is not external either, even though it was published through
 // the import channel.
 const isExternal = computed(
-  () => !!engineKey.value && engineKey.value !== IN_APP_ENGINE && !isCopy.value
+  () => !!engineKey.value && engineKey.value !== IN_APP_ENGINE && !isCopy.value && !isDerived.value
 )
 
 // The sample a copied run was copied from, named in the manifest the copy
@@ -73,6 +79,7 @@ const copySource = computed(() => {
 const engineLabel = computed(() => {
   if (!props.run) return ''
   if (isCopy.value) return 'Copy'
+  if (isDerived.value) return 'Batch ledger'
   if (!isExternal.value) return 'Mascope'
   return engine.value
 })
@@ -152,6 +159,13 @@ function engineOrigin() {
     return copySource.value
       ? `Copied from sample ${copySource.value} by this Mascope deployment`
       : 'Copied from another sample of this batch by this Mascope deployment'
+  }
+  if (isDerived.value) {
+    return (
+      "Derived from the batch ledger: this sample's peaks were folded into the " +
+      "batch's anchors and are read back from there. No assignment run was " +
+      'written for the sample; assign it for a ledger of its own.'
+    )
   }
   return isExternal.value
     ? `Published into Mascope by an external engine: ${engine.value}`

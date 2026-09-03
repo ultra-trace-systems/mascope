@@ -667,3 +667,13 @@ def test_an_unresolvable_owner_report_is_bounded():
     message = unresolved_owner_error([f"g{index}" for index in range(20)], limit=2)
 
     assert "18 more" in message
+
+
+def test_the_derived_ledger_engine_name_is_reserved():
+    """The runs listing presents the batch-derived ledger under this name and
+    the UI badges it as first-party, so an import may not claim it."""
+    from mascope_backend.api.new.peak_assignments.config import FOLD_ENGINE
+
+    name, error = normalize_engine(FOLD_ENGINE)
+    assert name is None
+    assert "reserved" in error
