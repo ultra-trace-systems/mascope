@@ -57,6 +57,13 @@ def _start(sample_ids, fold=None):
     patches = {
         "async_session": patch(f"{_MOD}.async_session"),
         "fold": patch(f"{_MOD}.fold_sample_into_batch_peaks", new_callable=AsyncMock),
+        # A sample the run fold answers None for is handed to the no-run fold,
+        # which the rebuild reaches through the service; nothing there either.
+        "fold_no_run": patch(
+            "mascope_backend.api.new.peak_assignments.service"
+            ".fold_sample_peaks_without_run",
+            new_callable=AsyncMock,
+        ),
         "progress": patch(
             f"{_MOD}.send_progress_user_notification", new_callable=AsyncMock
         ),
@@ -64,6 +71,7 @@ def _start(sample_ids, fold=None):
     }
     mocks = {key: p.start() for key, p in patches.items()}
     mocks["async_session"].return_value = _session_returning(sample_ids)
+    mocks["fold_no_run"].return_value = None
     if isinstance(fold, list):
         mocks["fold"].side_effect = fold
     else:
@@ -178,9 +186,9 @@ async def test_a_sample_whose_fold_raised_still_advances_the_bar():
 
 @pytest.mark.asyncio
 async def test_a_sample_with_nothing_to_fold_still_advances_the_bar():
-    """A sample with no completed run folds nothing and returns None. It is
-    still one of the N the bar counts through - the whole point of the button is
-    a batch mostly made of those."""
+    """A sample with no completed run, and nothing for the no-run fold to fold
+    either (a blank, say), returns None. It is still one of the N the bar counts
+    through."""
     from mascope_backend.api.new.peak_assignments.batch_peaks_controller import (
         backfill_sample_batch_peaks,
     )

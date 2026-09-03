@@ -1,14 +1,10 @@
 """
-Integration tests for the synchronous outcomes of the assign endpoints.
+Integration tests for the synchronous outcomes of the assign endpoint.
 
-Both endpoints decide before they answer, so what a caller learns is a response
-body rather than a socket notification a headless client cannot receive:
-
-- the per-sample endpoint answers 202 with the run it created (and the engine
-  adopts that run), 409 naming the run already in flight, or 422 naming why the
-  sample cannot be assigned;
-- the batch endpoint answers 202 with the eligibility partition it will execute -
-  and no run ids, because it creates no runs - or 409 naming the samples held up.
+The endpoint decides before it answers, so what a caller learns is a response
+body rather than a socket notification a headless client cannot receive: 202
+with the run it created (and the engine adopts that run), 409 naming the run
+already in flight, or 422 naming why the sample cannot be assigned.
 
 These bodies have to survive the app's error sanitizer, which is why the refusal
 tests assert the *content* of `detail`, not just the status code.
@@ -24,14 +20,9 @@ import pytest
 import pytest_asyncio
 from sqlalchemy import delete, select, update
 
-from mascope_backend.api.new.peak_assignments import batch as batch_module
 from mascope_backend.api.new.peak_assignments import routes as routes_module
 from mascope_backend.api.new.peak_assignments import service as service_module
 from mascope_backend.api.new.peak_assignments.admission import in_flight_run_id
-from mascope_backend.api.new.peak_assignments.batch import (
-    assign_sample_batch_peaks,
-    partition_batch_samples,
-)
 from mascope_backend.api.new.peak_assignments.service import (
     assign_sample_peaks,
     create_pending_run,
@@ -59,10 +50,6 @@ def feature_enabled(monkeypatch):
 
 def _sample_url(sample_item_id: str) -> str:
     return f"/api/peak-assignments/sample/{sample_item_id}/assign"
-
-
-def _batch_url(sample_batch_id: str) -> str:
-    return f"/api/peak-assignments/batch/{sample_batch_id}/assign"
 
 
 async def _add_run(session_factory, sample_item_id: str, status: str) -> str:
@@ -242,19 +229,6 @@ def launched_samples(monkeypatch):
         return {"status": "success", "message": "stubbed"}
 
     monkeypatch.setattr(routes_module, "assign_sample_peaks", _assign)
-    return calls
-
-
-@pytest.fixture
-def launched_batches(monkeypatch):
-    """Record the batch background task, capturing the partition handed to it."""
-    calls: list[dict] = []
-
-    async def _assign_batch(**kwargs):
-        calls.append(kwargs)
-        return {"status": "success", "message": "stubbed"}
-
-    monkeypatch.setattr(routes_module, "assign_sample_batch_peaks", _assign_batch)
     return calls
 
 
@@ -474,177 +448,6 @@ class TestAdoptedRunAdmission:
         assert result["status"] == "skipped"
         assert result["data"]["peak_assignment_run_id"] == other_run_id
         assert reached == []
-
-
-class TestBatchPartition:
-    """The batch answers with what it will do, and creates no runs doing so."""
-
-    @pytest.mark.asyncio
-    async def test_the_response_carries_the_eligibility_partition(
-        self, editor_client, assign_batch, feature_enabled, launched_batches
-    ):
-        response = await editor_client.post(_batch_url(assign_batch["sample_batch_id"]))
-
-        assert response.status_code == 202
-        record = response.json()["data"][0]
-        assert record["sample_batch_id"] == assign_batch["sample_batch_id"]
-        assert record["admitted"] == [assign_batch["measured"]]
-        assert record["skipped"] == [
-            {"sample_item_id": assign_batch["blank"], "reason": BLANK_REASON}
-        ]
-
-    @pytest.mark.asyncio
-    async def test_no_runs_are_created_up_front(
-        self,
-        editor_client,
-        assign_batch,
-        feature_enabled,
-        launched_batches,
-        async_session_factory,
-    ):
-        """A pre-created run would block the very sample it was meant to assign.
-
-        Durable admission refuses a sample that already has a non-terminal run,
-        and a batch that stops early would leave one such row behind per sample
-        it never reached. Runs are created as the batch reaches each sample.
-        """
-        await editor_client.post(_batch_url(assign_batch["sample_batch_id"]))
-
-        runs = await _runs_of(
-            async_session_factory, [assign_batch["measured"], assign_batch["blank"]]
-        )
-        assert runs == []
-
-    @pytest.mark.asyncio
-    async def test_the_task_receives_the_reported_partition(
-        self, editor_client, assign_batch, feature_enabled, launched_batches
-    ):
-        response = await editor_client.post(_batch_url(assign_batch["sample_batch_id"]))
-
-        record = response.json()["data"][0]
-        partition = launched_batches[0]["partition"]
-        assert list(partition.admitted) == record["admitted"]
-        assert partition.skipped_payload() == record["skipped"]
-
-    @pytest.mark.asyncio
-    async def test_the_task_assigns_exactly_the_reported_partition(
-        self,
-        editor_client,
-        assign_batch,
-        feature_enabled,
-        launched_batches,
-        monkeypatch,
-    ):
-        """Sharing the value, not the rule, is what makes the two agree.
-
-        A sample that becomes eligible after the response would join a
-        recomputed partition - and be assigned by a run the caller was told
-        would not happen. Executing the reported partition rules that out.
-        """
-        response = await editor_client.post(_batch_url(assign_batch["sample_batch_id"]))
-        reported = response.json()["data"][0]
-
-        # The skipped blank turns into a measured sample behind the response.
-        async with batch_module.async_session() as session:
-            await session.execute(
-                update(SampleFile)
-                .where(SampleFile.sample_file_id == assign_batch["blank_file_id"])
-                .values(instrument_function_id=assign_batch["instrument_function_id"])
-            )
-            await session.commit()
-        assert list(
-            (await partition_batch_samples(assign_batch["sample_batch_id"])).admitted
-        ) == [assign_batch["measured"], assign_batch["blank"]]
-
-        visited: list[str] = []
-
-        async def _assign(**kwargs):
-            visited.append(kwargs["sample_item_id"])
-            return {"status": "success", "message": "stubbed"}
-
-        async def _progress(*args, **kwargs):
-            return None
-
-        monkeypatch.setattr(batch_module, "assign_sample_peaks", _assign)
-        monkeypatch.setattr(batch_module, "send_progress_user_notification", _progress)
-
-        await assign_sample_batch_peaks(**launched_batches[0])
-
-        assert visited == reported["admitted"]
-
-    @pytest.mark.asyncio
-    async def test_a_batch_with_nothing_to_assign_still_reports_its_skips(
-        self,
-        editor_client,
-        assign_batch,
-        feature_enabled,
-        launched_batches,
-        async_session_factory,
-    ):
-        """Zero admitted is data, not a refusal - the caller has to tell them apart."""
-        async with async_session_factory() as session:
-            await session.execute(
-                delete(SampleItem).where(
-                    SampleItem.sample_item_id == assign_batch["measured"]
-                )
-            )
-            await session.commit()
-
-        response = await editor_client.post(_batch_url(assign_batch["sample_batch_id"]))
-
-        assert response.status_code == 202
-        record = response.json()["data"][0]
-        assert record["admitted"] == []
-        assert record["skipped"] == [
-            {"sample_item_id": assign_batch["blank"], "reason": BLANK_REASON}
-        ]
-
-
-class TestBatchRefused:
-    """409 names the samples that hold the batch up, not just the fact."""
-
-    @pytest.mark.asyncio
-    async def test_an_admitted_sample_in_flight_refuses_the_batch(
-        self,
-        editor_client,
-        assign_batch,
-        feature_enabled,
-        launched_batches,
-        async_session_factory,
-    ):
-        run_id = await _add_run(
-            async_session_factory, assign_batch["measured"], "running"
-        )
-
-        response = await editor_client.post(_batch_url(assign_batch["sample_batch_id"]))
-
-        assert response.status_code == 409
-        detail = response.json()["detail"]
-        assert detail["sample_batch_id"] == assign_batch["sample_batch_id"]
-        assert detail["blocked"] == [
-            {
-                "sample_item_id": assign_batch["measured"],
-                "peak_assignment_run_id": run_id,
-            }
-        ]
-        assert len(launched_batches) == 0
-
-    @pytest.mark.asyncio
-    async def test_a_skipped_sample_in_flight_does_not_refuse_the_batch(
-        self,
-        editor_client,
-        assign_batch,
-        feature_enabled,
-        launched_batches,
-        async_session_factory,
-    ):
-        """Admission is asked about the samples that will actually run."""
-        await _add_run(async_session_factory, assign_batch["blank"], "importing")
-
-        response = await editor_client.post(_batch_url(assign_batch["sample_batch_id"]))
-
-        assert response.status_code == 202
-        assert response.json()["data"][0]["admitted"] == [assign_batch["measured"]]
 
 
 class TestReclamation:
