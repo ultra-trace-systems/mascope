@@ -274,16 +274,17 @@ can still be recorded against it.
 
 --8<-- "_help/batch-peaks.md"
 
-A whole batch can be assigned in one launch: the same engine runs over every eligible
-sample with one shared configuration (blank samples and samples whose m/z calibration
-is not verified are skipped, and the run continues in the background). The untargeted
-stage is off by default for batches — its cost multiplies by the number of samples.
 Every processed sample folds into the batch peaks as it arrives - assigned from the
 known compositions, without a per-sample run of its own - and so does every completed
-assignment run; a batch whose samples predate the batch overview can be backfilled
-from their runs without any new assignment work.
+assignment run. *Rebuild batch ledger* does the same for a whole batch on demand: a
+sample with an assignment run folds from it, one without is assigned from the known
+compositions and folded without a run (a blank, or a sample whose m/z calibration is
+not verified, is skipped). Use it to populate a batch that predates the ledger or was
+never assigned, or to refresh after an import. There is no batch-wide assignment run:
+the untargeted search runs once per batch peak instead (below), and a species is
+curated once at its batch peak rather than sample by sample.
 
-*Search untargeted*, beside *Compute batch peaks*, runs the untargeted composition search
+*Search untargeted*, beside *Rebuild batch ledger*, runs the untargeted composition search
 for the batch peaks nothing has assigned yet &mdash; once per species, on its brightest
 peak in that sample's own spectrum &mdash; and then measures the composition it found
 against every other sample the species was seen in, so each carries a fit of its own.

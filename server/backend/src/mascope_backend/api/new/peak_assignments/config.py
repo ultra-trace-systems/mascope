@@ -18,18 +18,13 @@ PEAK_ASSIGNMENT_ENGINE_VERSION = "0.3.0"
 # recalibration pool filters on.
 IN_APP_ENGINE = "mascope"
 
-# The identity of runs the server-side copy service publishes (assignments
-# copied from a curated sample onto its batch's other samples, re-scored per
-# destination - docs/dev/peak_assignment_copy.md). Reserved for the same reason
-# the in-app name is: the UI presents this value as a first-party copy, so an
-# external import that could stamp it would forge that presentation. The copy
-# service itself passes the reservation through a trusted server-side parameter
-# on the import entry point that the HTTP route never forwards.
+# The identity of the runs the retired assignment-copy service published
+# (docs/dev/peak_assignment_copy.md). Still reserved: runs stamped with it may
+# exist, the UI presents the value as first-party, and an external import that
+# could stamp it would forge that presentation. Server-side callers pass a
+# reservation through a trusted parameter on the import entry point that the
+# HTTP route never forwards; nothing passes this one any more.
 COPY_ENGINE = "mascope-copy"
-
-# Bump when the copy pipeline changes in a way that affects results (mapping
-# tolerance, re-scoring, drop rules). Stamped as engine_version on copied runs.
-COPY_ENGINE_VERSION = "0.1.0"
 
 # The identity of the ledger derived from the batch peaks for a sample that has
 # no run of its own (fold_view.py). The runs listing presents it as a completed

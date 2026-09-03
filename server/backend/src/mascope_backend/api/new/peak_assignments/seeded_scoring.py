@@ -1,7 +1,8 @@
 """The engine's Stage-A scoring chain, run over a seeded formula x mechanism list.
 
-Scoring a composition that no target ion exists for - the copy service's
-destination rows, the inspector's untargeted shortlist - is the same four steps
+Scoring a composition that no target ion exists for - the batch ledger's
+propagation of a found or curated identity to the samples holding the peak, the
+inspector's untargeted shortlist - is the same four steps
 every time: generate the ions and their isotopologues in memory, match them
 against the sample's peaks in ONE ``compute_match_isotopes`` pass, gate the
 frame with ``apply_match_params``, and fit-score it with ``score_ions_by_fit``.

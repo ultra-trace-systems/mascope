@@ -652,6 +652,16 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
 
 ### Removed
 
+- **Copy assignments to batch, and the batch-wide assignment run.** With the batch
+  ledger primary they had nothing left to do: every processed sample folds into
+  the ledger without a run, the untargeted search runs once per batch peak, and
+  a species is curated once at its batch peak. The sample context menu's *Copy
+  assignments to batch...* and the batch context menu's *Assign peaks* are gone,
+  with their routes (`GET`/`POST /api/peak-assignments/sample/{id}/copy-to-batch`,
+  `POST /api/peak-assignments/batch/{id}/assign`). The reserved `mascope-copy`
+  engine name stays reserved, so an import still cannot forge it. The copy
+  design note is marked retired.
+
 - SDK: the `09_composition_assignment.ipynb` tutorial is retired. It rolled
   its own untargeted composition assignment client-side, predating the
   server-side assignment engine; next to the engine's persisted, arbitrated,
@@ -689,6 +699,13 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
   (`tooling/notebooks/ms2_analysis`) selects a group rather than a precursor -
   its dropdowns, fragment table, CSV export and charts now carry one entry per
   step, labelled with its activation.
+- **Compute batch peaks is now Rebuild batch ledger**, and it folds every sample
+  of the batch: from its assignment run where it has one, otherwise assigned
+  from the known compositions and folded without a run, the way ingest does. A
+  batch that predates the ledger, or was never assigned, gets one from this
+  button alone; the outcome messages say what was folded and why a sample is
+  skipped.
+
 - **Ingest folds a sample into the batch ledger without writing a run, by
   default.** `peak_assignment_ingest_ledger` now defaults to `"batch"`: a
   newly processed sample is assigned from the known compositions and folded

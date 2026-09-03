@@ -25,7 +25,7 @@ def test_folding_samples_is_a_success_naming_the_count():
     result = backfill_outcome(3, 0, "batch-1")
 
     assert notification_status(result) == "success"
-    assert "3 assigned sample(s)" in result["message"]
+    assert "3 sample(s)" in result["message"]
     assert result["data"] == {"samples_folded": 3, "samples_failed": 0}
 
 
@@ -41,8 +41,8 @@ def test_folding_nothing_says_what_to_do_about_it():
     # that reports a background task's result - so it has to name the cause.
     message = backfill_outcome(0, 0, "batch-1")["message"]
 
-    assert "assignment run" in message
-    assert "Assign the batch" in message
+    assert "could be folded" in message
+    assert "blank" in message
 
 
 def test_every_fold_failing_is_an_error_not_advice_to_assign_the_batch():
@@ -53,7 +53,7 @@ def test_every_fold_failing_is_an_error_not_advice_to_assign_the_batch():
 
     assert notification_status(result) == "error"
     assert "4 sample(s) failed" in result["message"]
-    assert "Assign the batch" not in result["message"]
+    assert "could be folded" not in result["message"]
     assert result["data"] == {"samples_folded": 0, "samples_failed": 4}
 
 
@@ -63,7 +63,7 @@ def test_a_partly_failed_fold_is_a_warning_naming_both_counts():
     result = backfill_outcome(4, 1, "batch-1")
 
     assert notification_status(result) == "warning"
-    assert "4 assigned sample(s)" in result["message"]
+    assert "4 sample(s)" in result["message"]
     assert "1 sample(s) failed" in result["message"]
     assert result["data"] == {"samples_folded": 4, "samples_failed": 1}
 

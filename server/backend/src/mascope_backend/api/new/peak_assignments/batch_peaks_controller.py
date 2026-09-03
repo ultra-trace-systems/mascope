@@ -662,7 +662,9 @@ def _backfill_progress_notification(
         parent_id=parent_id,
         type="compute_batch_peaks",
         status="pending",
-        message=f"Computing batch peaks, folding sample {item_index + 1}/{total_samples}.",
+        message=(
+            f"Rebuilding the batch ledger, folding sample {item_index + 1}/{total_samples}."
+        ),
         data={
             "sample_batch_id": sample_batch_id,
             "_room_ids": [sample_batch_id],
@@ -679,9 +681,11 @@ async def backfill_sample_batch_peaks(
     process_id: str | None = None,
     parent_id: str | None = None,
 ) -> tuple[int, int]:
-    """Fold every sample of a batch (that has a completed run) into the batch
-    peaks, in acquisition-time order. Used to seed batch peaks for batches assigned
-    before this feature.
+    """Fold every sample of a batch into the batch peaks, in acquisition-time
+    order: from its latest completed assignment run where it has one, otherwise
+    from a fresh Stage A pass over its peaks with no run written - the way
+    ingest folds a sample. The Rebuild batch ledger button, and what populates
+    a batch that predates the ledger, was never assigned, or was imported.
 
     Returns the number of samples folded and the number whose fold raised. The
     two are counted apart because they mean opposite things to whoever asked:
@@ -711,6 +715,12 @@ async def backfill_sample_batch_peaks(
     :return: ``(folded, failed)`` sample counts.
     :rtype: tuple[int, int]
     """
+    # Imported here, as the service imports this module's fold: the two lean on
+    # each other and neither can be the other's module-level import.
+    from mascope_backend.api.new.peak_assignments.service import (
+        fold_sample_peaks_without_run,
+    )
+
     async with async_session() as session:
         sample_ids = (
             (
@@ -759,8 +769,15 @@ async def backfill_sample_batch_peaks(
                 await send_progress_user_notification(notification)
 
             try:
+                # The run fold answers None for a sample with no completed run;
+                # Stage A then folds it as ingest would, skipping a blank or an
+                # unverified calibration the same way.
                 if (
                     await fold_sample_into_batch_peaks(
+                        sample_item_id, defer_consensus_to=touched
+                    )
+                    is not None
+                    or await fold_sample_peaks_without_run(
                         sample_item_id, defer_consensus_to=touched
                     )
                     is not None
@@ -850,16 +867,16 @@ async def backfill_sample_batch_peaks(
 def backfill_outcome(folded: int, failed: int, sample_batch_id: str) -> dict:
     """Report a backfill outcome, distinguishing "folded nothing" from success.
 
-    Folding zero samples is what a batch with no completed assignment runs looks
-    like, and it is the outcome the person who clicked most needs to hear: the
-    request was accepted and did nothing. Announced green as "Computed batch
-    peaks from 0 assigned sample(s)" it reads as done, which is how a user
-    arrives back at an empty ledger with no idea why.
+    Folding zero samples is what a batch of blanks, or of samples not yet
+    calibrated or peak-detected, looks like, and it is the outcome the person
+    who clicked most needs to hear: the request was accepted and did nothing.
+    Announced green as "Rebuilt the batch ledger from 0 sample(s)" it reads as
+    done, which is how a user arrives back at an empty ledger with no idea why.
 
     Which of the four things happened is not a count's to say, so the failures
     are carried separately. Nothing folded and nothing raised is the batch's
     state and the message names it; nothing folded because every fold raised is
-    a fault, and telling that user to "assign the batch first" would be advice
+    a fault, and telling that user why a sample is skipped would be advice
     that cannot help. A run that folded some and dropped others is neither, and
     saying only how many succeeded hides a sample missing from the ledger.
 
@@ -881,8 +898,9 @@ def backfill_outcome(folded: int, failed: int, sample_batch_id: str) -> dict:
         return {
             "status": "partial",
             "message": (
-                "No batch peaks were computed: none of this batch's samples "
-                "has a completed assignment run yet. Assign the batch first."
+                "The batch ledger is empty: none of this batch's samples could "
+                "be folded. A sample is skipped when it is a blank, when its m/z "
+                "calibration is not verified, or when it has no detected peaks yet."
             ),
             "data": counts,
             "_notification_data": notification_data,
@@ -891,7 +909,7 @@ def backfill_outcome(folded: int, failed: int, sample_batch_id: str) -> dict:
         return {
             "status": "failed",
             "message": (
-                f"No batch peaks were computed: all {failed} sample(s) failed "
+                f"The batch ledger was not rebuilt: all {failed} sample(s) failed "
                 "to fold. See the server log for the reason."
             ),
             "data": counts,
@@ -901,7 +919,7 @@ def backfill_outcome(folded: int, failed: int, sample_batch_id: str) -> dict:
         return {
             "status": "partial",
             "message": (
-                f"Computed batch peaks from {folded} assigned sample(s); "
+                f"Rebuilt the batch ledger from {folded} sample(s); "
                 f"{failed} sample(s) failed to fold and are missing from the "
                 "result. See the server log for the reason."
             ),
@@ -910,7 +928,7 @@ def backfill_outcome(folded: int, failed: int, sample_batch_id: str) -> dict:
         }
     return {
         "status": "success",
-        "message": f"Computed batch peaks from {folded} assigned sample(s).",
+        "message": f"Rebuilt the batch ledger from {folded} sample(s).",
         "data": counts,
         "_notification_data": notification_data,
     }
@@ -928,11 +946,12 @@ async def compute_batch_peaks(
     process_id: str | None = None,
     parent_id: str | None = None,
 ) -> dict:
-    """Backfill a batch's batch peaks from its samples' existing completed
-    assignment runs, without re-running assignment.
+    """Rebuild a batch's batch peaks from every one of its samples - from a
+    completed assignment run where there is one, otherwise from a fresh Stage A
+    pass with no run written.
 
-    This is how a batch assigned before batch peaks existed (or after a bulk
-    import) gets populated into the batch overview. Idempotent -- re-running
+    This is how a batch that predates the ledger, was never assigned, or was
+    imported gets populated into the batch overview. Idempotent -- re-running
     re-folds each sample. Emits ``peak_assignment_reload`` so the Assignments
     chart refreshes, including when nothing was folded: the ledger is then
     correct in being empty, and the notification says why.

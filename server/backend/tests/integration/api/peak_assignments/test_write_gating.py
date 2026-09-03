@@ -40,19 +40,6 @@ async def test_assign_rejected_when_feature_disabled(
 
 
 @pytest.mark.asyncio
-async def test_batch_assign_rejected_when_feature_disabled(
-    editor_client, pa_test_data, feature_disabled
-):
-    response = await editor_client.post(
-        f"/api/peak-assignments/batch/{pa_test_data['sample_batch_id']}/assign"
-    )
-    # The app's exception handler sanitizes error bodies to an error_id;
-    # the feature-gate origin of the 403 is proven by the flag-on tests below,
-    # which succeed for the same client with only the env override changed.
-    assert response.status_code == 403
-
-
-@pytest.mark.asyncio
 async def test_verify_rejected_when_feature_disabled(
     editor_client, pa_test_data, feature_disabled
 ):
@@ -156,25 +143,6 @@ async def test_assign_passes_the_gate_when_feature_enabled(
     )
     assert response.status_code == 422
     assert response.json()["detail"]["reason"] == "blank sample (no peaks)"
-
-
-@pytest.mark.asyncio
-async def test_batch_assign_accepted_when_feature_enabled(
-    editor_client, pa_test_data, feature_enabled, monkeypatch
-):
-    async def _noop_assign(**kwargs):
-        return None
-
-    monkeypatch.setattr(
-        "mascope_backend.api.new.peak_assignments.routes.assign_sample_batch_peaks",
-        _noop_assign,
-    )
-    response = await editor_client.post(
-        f"/api/peak-assignments/batch/{pa_test_data['sample_batch_id']}/assign"
-    )
-    assert response.status_code == 202
-    # api_route moves process_id from the body into the Process-ID header.
-    assert response.headers["Process-ID"]
 
 
 @pytest.mark.asyncio

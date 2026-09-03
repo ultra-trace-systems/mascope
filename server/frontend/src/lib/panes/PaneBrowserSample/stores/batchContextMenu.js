@@ -6,7 +6,6 @@ import { useConfirm } from 'primevue/useconfirm'
 import { useApp } from '@/stores'
 import { useBatchDeleteDialog } from '@/lib/dialogs'
 import { generateCopyName } from '@/api/utils'
-import { peakAssignmentEnabled } from '@/lib/features'
 import { batchInstruments, canCalibrateInstruments } from '@/lib/permissions'
 
 import { useSampleContextMenu } from './sampleContextMenu.js'
@@ -29,8 +28,7 @@ export const useBatchContextMenu = defineStore('browser.sample.batchCtxMenu', ()
   const dialog = reactive({
     op: null,
     delete: useBatchDeleteDialog(),
-    calibration: false,
-    assign: false
+    calibration: false
   })
 
   // actions
@@ -233,21 +231,6 @@ export const useBatchContextMenu = defineStore('browser.sample.batchCtxMenu', ()
             })
           },
           visible: row.value !== null
-        },
-        {
-          label: `Assign peaks`,
-          icon: 'pi ph ph-atom',
-          command: () => {
-            // Batch assignment is the most expensive thing this menu can start:
-            // one run per sample, each writing a row per detected peak, with no
-            // way to stop it once it is going. The dialog states that and lets
-            // the run be configured, rather than committing on a single click.
-            dialog.assign = true
-          },
-          // Gated with the rest of the peak-assignment surfaces: without the
-          // feature there is no assignment UI to view the results in, so the
-          // entry would only offer a way to start expensive invisible work.
-          visible: peakAssignmentEnabled && row.value !== null
         }
       ]
     }

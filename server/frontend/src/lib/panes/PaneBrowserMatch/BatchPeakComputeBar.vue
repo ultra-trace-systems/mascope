@@ -6,7 +6,7 @@ import { useApp } from '@/stores'
 import { useBatchPeakCompute } from './stores/batchPeakCompute.js'
 
 /**
- * The way to build or refresh the batch peaks, at batch level.
+ * The way to build or refresh the batch ledger, at batch level.
  *
  * The batch counterpart of AssignmentRunBar: it takes the same corner of
  * PaneBrowserMatch's switch bar that "Assign peaks" takes once a sample is
@@ -30,7 +30,7 @@ const compute = useBatchPeakCompute()
   <span class="compute-bar" :class="{ blocked: compute.blockedReason !== null }">
     <span v-tooltip.left="compute.computeTooltip">
       <Button
-        label="Compute batch peaks"
+        label="Rebuild batch ledger"
         icon="pi ph ph-arrows-clockwise"
         size="small"
         :loading="compute.computing"
@@ -38,12 +38,14 @@ const compute = useBatchPeakCompute()
         @click="compute.compute()"
         :pt="
           app.ui.help.left(`
-          <h1>Compute Batch Peaks</h1>
+          <h1>Rebuild Batch Ledger</h1>
           <p>
-          Builds or refreshes the batch peaks from the assignment runs this
-          batch's samples already have &mdash; no new assignment work. New
-          runs fold in automatically; use this to populate a batch assigned
-          before batch peaks existed, or to refresh after an import.
+          Folds every sample of the batch into the batch peaks: a sample with
+          an assignment run folds from it, one without is assigned from the
+          known compositions and folded without a run, the way a new sample
+          is. New samples fold in automatically; use this to populate a batch
+          that predates the ledger or was never assigned, or to refresh after
+          an import.
           </p>
         `)
         "

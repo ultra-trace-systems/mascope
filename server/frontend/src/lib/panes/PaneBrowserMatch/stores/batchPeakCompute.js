@@ -60,18 +60,20 @@ export const useBatchPeakCompute = defineStore('browser.match.batchPeaks.compute
   // the backend, which now reports folding nothing as a warning instead of
   // announcing it green.
   const blockedReason = computed(() => {
-    if (!app.data.batch.focusedId) return 'Select a batch to compute its batch peaks.'
+    if (!app.data.batch.focusedId) return 'Select a batch to rebuild its ledger.'
     if (!canCompute.value) {
-      return 'Computing batch peaks writes to the batch, so it needs the editor role in this workspace.'
+      return 'Rebuilding the batch ledger writes to the batch, so it needs the editor role in this workspace.'
     }
     if (!app.data.sample.pending && !app.data.sample.list.length) {
-      return 'This batch has no samples yet, so there is nothing to fold into batch peaks.'
+      return 'This batch has no samples yet, so there is nothing to fold into the ledger.'
     }
     return null
   })
 
   const computeTooltip = computed(
-    () => blockedReason.value ?? 'Build / refresh batch peaks from assigned sample peaks.'
+    () =>
+      blockedReason.value ??
+      'Rebuild the batch ledger from every sample of the batch - from its assignment run where it has one, otherwise assigned from the known compositions.'
   )
 
   // The untargeted search over the batch peaks nothing has assigned yet: once
@@ -155,7 +157,7 @@ export const useBatchPeakCompute = defineStore('browser.match.batchPeaks.compute
       // editor-role check and the feature flag, and it is what a role revoked
       // mid-session looks like. Anything else is a fault.
       launchRefused.value = isRefusedRequest(error) || error?.response?.status === 403
-      launchError.value = getApiErrorMessage(error, 'Could not start the batch peak computation.')
+      launchError.value = getApiErrorMessage(error, 'Could not start the batch ledger rebuild.')
     }
   }
 
