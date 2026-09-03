@@ -753,6 +753,92 @@ class AssignmentVerificationsResponse(BaseModel):
     data: list[AssignmentVerificationRecord]
 
 
+class VerifyBatchPeakBody(BaseModel):
+    """Request body to record a batch-level verdict on a batch peak's species claim."""
+
+    batch_peak_id: str = Field(description="The batch peak (anchor) being judged.")
+    verdict: Verdict = Field(
+        description="confirmed | rejected | unsure - one judgment per species at this anchor."
+    )
+    evidence_level: EvidenceLevel | None = Field(
+        None,
+        description=(
+            "Why the user is confident, as for a per-sample verification. Required for "
+            "'confirmed'."
+        ),
+    )
+    note: str | None = Field(None, description="Optional free-text note.")
+    expected_formula: str | None = Field(
+        None,
+        description=(
+            "The consensus formula the user judged. Required to confirm or reject: an "
+            "anchor's claim can change under another sample's fold between the row being "
+            "read and this request landing, and a mismatch is refused (409) rather than "
+            "recorded against a formula the user never saw."
+        ),
+    )
+
+    @model_validator(mode="after")
+    def _guards(self) -> "VerifyBatchPeakBody":
+        if self.verdict == "confirmed" and self.evidence_level is None:
+            raise ValueError("evidence_level is required when verdict is 'confirmed'")
+        if self.verdict in ("confirmed", "rejected") and not self.expected_formula:
+            raise ValueError(
+                "expected_formula is required when verdict is 'confirmed' or 'rejected'"
+            )
+        return self
+
+
+class RetractBatchPeakVerdictBody(BaseModel):
+    """Request body to withdraw the live batch-level verdict(s) on a batch peak."""
+
+    batch_peak_id: str = Field(description="The batch peak whose verdict to retract.")
+    assigned_formula: str | None = Field(
+        None,
+        description=(
+            "Retract only the live verdict on this claim; omit to retract every live "
+            "verdict on the batch peak, stale ones included."
+        ),
+    )
+    ionization_mechanism_id: str | None = Field(
+        None, description="The claim's mechanism, with assigned_formula."
+    )
+
+
+class BatchPeakVerificationRecord(BaseModel):
+    """One batch-level verdict, with the anchor's present claim beside the one judged."""
+
+    batch_peak_verification_id: str
+    sample_batch_id: str
+    batch_peak_id: str
+    assigned_formula: str
+    ionization_mechanism_id: str | None = None
+    verdict: str
+    evidence_level: str | None = None
+    note: str | None = None
+    context: dict | None = None
+    verified_by: int | None = None
+    verified_utc: datetime | None = None
+    superseded_utc: datetime | None = None
+    #: The anchor's consensus now; null when the anchor is gone.
+    current_formula: str | None = None
+    current_ionization_mechanism_id: str | None = None
+    anchor_present: bool
+    #: A live verdict about a claim the anchor no longer makes, or whose anchor is gone.
+    stale: bool
+    #: On anchor-context rows: the focused sample's peak the verdict reaches.
+    sample_peak_id: str | None = None
+
+
+class BatchPeakVerificationsResponse(BaseModel):
+    """Batch-level verdicts, newest first; superseded ones included where listed."""
+
+    status: str = "success"
+    message: str
+    results: int
+    data: list[BatchPeakVerificationRecord]
+
+
 class RecalibrateResponse(BaseModel):
     """Outcome of refitting an instrument's calibration from verification labels (V2)."""
 
