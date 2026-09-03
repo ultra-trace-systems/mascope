@@ -74,11 +74,52 @@ export const useBatchPeakCompute = defineStore('browser.match.batchPeaks.compute
     () => blockedReason.value ?? 'Build / refresh batch peaks from assigned sample peaks.'
   )
 
+  // The untargeted search over the batch peaks nothing has assigned yet: once
+  // per species, on its brightest peak, then measured against every other
+  // sample the species was seen in. Same gate as the compute, same shape of
+  // wait: an acknowledgement is not completion, the task's own notification is.
+  const searching = ref(false)
+  const pendingSearchId = ref(null)
+  let searchTimer = null
+  const searchTooltip = computed(
+    () =>
+      blockedReason.value ??
+      'Search untargeted compositions for the batch peaks nothing has assigned yet - once per species, on its brightest peak.'
+  )
+
   function endComputing() {
     computing.value = false
     pendingProcessId.value = null
     clearTimeout(computeTimer)
     computeTimer = null
+  }
+
+  function endSearching() {
+    searching.value = false
+    pendingSearchId.value = null
+    clearTimeout(searchTimer)
+    searchTimer = null
+  }
+
+  async function searchUntargeted() {
+    const batchId = app.data.batch.focusedId
+    if (!batchId || searching.value || blockedReason.value) return
+    searching.value = true
+    launchError.value = null
+    clearTimeout(searchTimer)
+    searchTimer = setTimeout(endSearching, COMPUTE_TIMEOUT)
+    try {
+      const response = await api.http.post(
+        `/batch-peaks/batch/${batchId}/search-untargeted`,
+        {},
+        { type: 'search_batch_untargeted', errors: 'inline' }
+      )
+      pendingSearchId.value = response?.headers?.['process-id'] ?? null
+    } catch (error) {
+      endSearching()
+      launchRefused.value = isRefusedRequest(error) || error?.response?.status === 403
+      launchError.value = getApiErrorMessage(error, 'Could not start the untargeted search.')
+    }
   }
 
   /** Backfill batch peaks from this batch's existing assignments; the ledger and
@@ -144,8 +185,17 @@ export const useBatchPeakCompute = defineStore('browser.match.batchPeaks.compute
   })
 
   /** Whatever was in flight or went wrong belonged to the previous batch. */
+  app.ui.notification.on('search_batch_untargeted', (notification) => {
+    if (!searching.value) return
+    if (notification?.status === 'pending') return
+    const id = notification?.process_id
+    if (pendingSearchId.value && id && id !== pendingSearchId.value) return
+    endSearching()
+  })
+
   function reset() {
     endComputing()
+    endSearching()
     launchError.value = null
     launchRefused.value = false
   }
@@ -157,6 +207,9 @@ export const useBatchPeakCompute = defineStore('browser.match.batchPeaks.compute
     launchError,
     launchRefused,
     compute,
+    searching,
+    searchTooltip,
+    searchUntargeted,
     reset
   }
 })

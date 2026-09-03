@@ -271,6 +271,7 @@ def candidate_index(
     formula: str,
     ion_formula: Optional[str],
     ionization_mechanism_id: Optional[str],
+    source: Optional[str] = None,
 ) -> int:
     """Index of the candidate (``formula``, ``ion_formula``, mechanism) in
     ``candidates``, appending it when absent.
@@ -285,6 +286,10 @@ def candidate_index(
     :param formula: The member's neutral formula.
     :param ion_formula: The member's ion formula, or None.
     :param ionization_mechanism_id: The member's mechanism, or None.
+    :param source: Where the identity came from (``database``, ``untargeted``,
+        ``manual``), recorded on a NEW entry only - the first member to bring
+        an identity names its source, and a later member with the same
+        identity from elsewhere does not rewrite it. Not part of the match.
     :return: The position the member's row should name.
     """
     for index, entry in enumerate(candidates):
@@ -294,13 +299,14 @@ def candidate_index(
             and entry.get("ionization_mechanism_id") == ionization_mechanism_id
         ):
             return index
-    candidates.append(
-        {
-            "formula": formula,
-            "ion_formula": ion_formula,
-            "ionization_mechanism_id": ionization_mechanism_id,
-        }
-    )
+    entry = {
+        "formula": formula,
+        "ion_formula": ion_formula,
+        "ionization_mechanism_id": ionization_mechanism_id,
+    }
+    if source is not None:
+        entry["source"] = source
+    candidates.append(entry)
     return len(candidates) - 1
 
 

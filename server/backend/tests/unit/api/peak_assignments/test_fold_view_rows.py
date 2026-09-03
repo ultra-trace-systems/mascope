@@ -128,7 +128,6 @@ def test_what_only_a_run_computes_is_absent_rather_than_invented():
         "abundance_error",
         "isotope_label",
         "isotope_formula",
-        "source",
         "engine_tier",
         "target_compound_id",
         "target_ion_id",
@@ -250,3 +249,16 @@ def test_tier_and_role_codes_round_trip_and_unknown_codes_read_as_unassigned():
     assert tier_name(99) is None and role_name(99) is None
     row = member_row(_member(tier=99, role=99), _anchor())
     assert (row["tier"], row["role"]) == ("unassigned", "unassigned")
+
+
+def test_the_source_is_the_registry_entrys_where_one_was_recorded():
+    """The member that brought an identity names where it came from; a row
+    derived from another member of the same identity reports that source, and
+    an entry recorded without one reports none."""
+    anchor = _anchor()
+    anchor.candidates = [
+        {**_REGISTRY[0], "source": "untargeted"},
+        dict(_REGISTRY[1]),
+    ]
+    assert member_row(_member(candidate=0), anchor)["source"] == "untargeted"
+    assert member_row(_member(candidate=1), anchor)["source"] is None

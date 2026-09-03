@@ -250,6 +250,14 @@ known compositions, without a per-sample run of its own - and so does every comp
 assignment run; a batch whose samples predate the batch overview can be backfilled
 from their runs without any new assignment work.
 
+*Search untargeted*, beside *Compute batch peaks*, runs the untargeted composition search
+for the batch peaks nothing has assigned yet &mdash; once per species, on its brightest
+peak in that sample's own spectrum &mdash; and then measures the composition it found
+against every other sample the species was seen in, so each carries a fit of its own.
+It writes no per-sample runs: the results appear in the batch ledger and in each
+sample's view, marked as untargeted. An assignment run on a sample still takes
+precedence for that sample.
+
 The rows you tick in the *Batch peaks* ledger are what the batch chart draws, one
 trace per batch peak. The ledger lists every anchor in the batch, which on a large
 batch is far more than a chart can usefully show, so a selection is capped at 300 —
