@@ -1228,9 +1228,9 @@ def load_sample_peaks(sample: Sample) -> pd.DataFrame:
     Uses peak heights for Orbitrap files and peak areas for TOF files,
     mirroring the targeted matcher. Public because it defines the engine's
     peak read - id set, m/z axis, and the instrument-correct intensity
-    quantity - and the copy service must see a destination sample through
-    exactly the same read (``copy_service``), or its remapped rows would
-    carry a different intensity quantity than an engine run's.
+    quantity - and the batch ledger's propagation must see a sample through
+    exactly the same read, or the members it re-measures would carry a
+    different intensity quantity than an engine run's.
 
     :param sample: Sample model object
     :return: DataFrame with sample_peak_id, mz, and intensity columns
@@ -1901,7 +1901,9 @@ async def _run_sample_assignment(
         raise
 
 
-async def fold_sample_peaks_without_run(sample_item_id: str) -> str | None:
+async def fold_sample_peaks_without_run(
+    sample_item_id: str, *, defer_consensus_to: set[str] | None = None
+) -> str | None:
     """Assign a newly processed sample database-first and fold the result straight
     into its batch's batch peaks, writing no per-sample run.
 
@@ -1918,6 +1920,8 @@ async def fold_sample_peaks_without_run(sample_item_id: str) -> str | None:
     calibration) is skipped with a log line and nothing is written.
 
     :param sample_item_id: The sample to fold.
+    :param defer_consensus_to: As for ``fold_sample_into_batch_peaks``: a
+        whole-batch walk collects the anchors touched and recomputes once.
     :return: The batch folded into, or None when the sample was skipped.
     """
     sample = await fetch_sample(sample_item_id)
@@ -1955,6 +1959,7 @@ async def fold_sample_peaks_without_run(sample_item_id: str) -> str | None:
         sample_item_id,
         rows=[SimpleNamespace(**row) for row in stage_a + unassigned],
         persisted=False,
+        defer_consensus_to=defer_consensus_to,
     )
 
 

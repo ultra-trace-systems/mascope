@@ -818,9 +818,9 @@ async def import_assignment_run(
     :param body: The import request body.
     :param user_id: The importing user, for the log line.
     :param allow_reserved_engine: A reserved engine name this caller may stamp.
-        The trusted entry for the server-side copy service, which publishes
-        under its reserved identity through this same pipeline; the HTTP route
-        never forwards it, so an external client cannot reach it.
+        The trusted entry for a server-side publisher of runs under a reserved
+        identity, through this same pipeline; the HTTP route never forwards it,
+        so an external client cannot reach it.
     :return: Status envelope with the run id, its status, and its row count.
     """
     sample = await fetch_sample(sample_item_id)

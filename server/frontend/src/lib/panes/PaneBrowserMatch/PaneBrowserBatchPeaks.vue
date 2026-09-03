@@ -706,9 +706,7 @@ watch(
           )
         "
       >
-        <template #empty>
-          No batch peaks yet - run "Compute batch peaks" (or assign the batch) to populate.
-        </template>
+        <template #empty> No batch peaks yet - run "Rebuild batch ledger" to populate. </template>
 
         <Column selectionMode="multiple" style="width: 3rem" />
 
