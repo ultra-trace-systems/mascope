@@ -326,6 +326,8 @@
   background-color: transparent !important;
 }
 
+/* The modal is sized here: the Dashboard plugin's own width/height options
+   only apply when it is used inline, and this one is used as a modal. */
 .uppy-Dashboard-inner,
 .uppy-Dashboard--modal {
   border: 1px solid var(--p-panel-border-color) !important;

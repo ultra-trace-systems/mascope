@@ -47,8 +47,6 @@ onMounted(() => {
     .use(Dashboard, {
       trigger: '#uppy-upload-trigger',
       inline: false,
-      height: 600,
-      showProgressDetails: true,
       theme: app.ui.darkmode.active ? 'dark' : 'light',
       closeModalOnClickOutside: true,
       closeAfterFinish: true,
