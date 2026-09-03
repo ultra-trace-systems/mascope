@@ -592,6 +592,21 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
 
 ### Changed
 
+- **The batch ledger stands without the per-sample ledger.** A batch peak's
+  consensus used to be recomputed by joining every member back to its
+  `peak_assignment` row for the ion formula, the mechanism, the calibrated
+  probability, the member's role and its isotopologue link - so a run deleted
+  or pruned afterwards left members that contributed nothing to those, and a
+  later recompute could blank an anchor's ion formula, mechanism and family
+  link for good. Each member now carries those fields itself and names its ion
+  formula and mechanism by index into its anchor's new append-only candidate
+  registry (`batch_peak.candidates`). One migration adds the columns and
+  backfills them from the ledger rows still linked; a member whose row is
+  already gone keeps its formula and gets an entry with no ion formula behind
+  it, which is what a recompute could recover for it before. Nothing changes
+  in the API or the UI. First step of the batch-primary design note
+  (`docs/dev/peak_assignment_batch_primary.md`).
+
 - **The assignment ledger stores its JSON leaner, without changing what it
   serves.** Two of the ledger's largest costs were repetition rather than
   information. Every database-sourced row repeated the confidence calibration

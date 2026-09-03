@@ -16,10 +16,12 @@ from mascope_backend.api.new.peak_assignments.batch_peaks import (
     ROLE_ISO_CHILD,
     Anchor,
     AnchorSet,
+    candidate_index,
     compute_consensus,
     fold_in_sample,
     max_intensity,
     resolution_adaptive_tol_ppm,
+    resolve_candidate,
     resolve_isotopologue_of,
 )
 
@@ -398,3 +400,54 @@ def test_consensus_carries_the_family_link_alongside_the_formula():
     # duplicate row until it is folded.
     assert c.consensus_formula == "A"
     assert c.max_intensity == pytest.approx(1e4)
+
+
+# --- candidates ---------------------------------------------------------------
+
+
+def test_candidate_index_appends_a_new_identity_and_finds_it_again():
+    registry: list = []
+    assert candidate_index(registry, "C6H12O6", "C6H13O6+", "mech-1") == 0
+    assert candidate_index(registry, "C6H12O6", "C6H13O6+", "mech-1") == 0
+    assert candidate_index(registry, "C6H12O6", "C6H12O6Na+", "mech-2") == 1
+    assert registry == [
+        {
+            "formula": "C6H12O6",
+            "ion_formula": "C6H13O6+",
+            "ionization_mechanism_id": "mech-1",
+        },
+        {
+            "formula": "C6H12O6",
+            "ion_formula": "C6H12O6Na+",
+            "ionization_mechanism_id": "mech-2",
+        },
+    ]
+
+
+def test_candidate_index_is_append_only():
+    """Members name entries by position, so an entry once handed out keeps it
+    whatever arrives after it."""
+    registry = [{"formula": "A", "ion_formula": "A+", "ionization_mechanism_id": None}]
+    assert candidate_index(registry, "B", "B+", None) == 1
+    assert candidate_index(registry, "A", "A+", None) == 0
+    assert [c["formula"] for c in registry] == ["A", "B"]
+
+
+def test_candidate_index_tells_a_missing_ion_formula_from_a_known_one():
+    """A dead-linked member's formula, with no ion formula behind it, is an
+    identity of its own rather than a match for the fully known one - the
+    consensus must not borrow an ion formula the member never carried."""
+    registry: list = []
+    assert candidate_index(registry, "A", "A+", "mech-1") == 0
+    assert candidate_index(registry, "A", None, None) == 1
+
+
+def test_resolve_candidate_returns_the_entry_or_nothing():
+    registry = [{"formula": "A", "ion_formula": "A+", "ionization_mechanism_id": "m"}]
+    assert resolve_candidate(registry, 0) == registry[0]
+    assert resolve_candidate(registry, None) == {}
+    assert resolve_candidate(registry, 1) == {}
+    assert resolve_candidate(registry, -1) == {}
+    assert resolve_candidate(None, 0) == {}
+    assert resolve_candidate([], 0) == {}
+    assert resolve_candidate(["not-a-dict"], 0) == {}

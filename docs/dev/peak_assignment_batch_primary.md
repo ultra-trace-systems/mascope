@@ -196,6 +196,10 @@ Curation and verification move here too (§6.3).
 
 ### 4.2 `batch_peak_occurrence` becomes slim
 
+> *Status:* the new member fields (`candidate`, `role`, `owner_batch_peak_id`, `p_correct`) and
+> the anchor's `candidates` registry shipped as the first implementation step (migration
+> `c4d2e8a1b7f3`), additively: the existing columns and their types are unchanged until phase 4.
+
 | column | today | proposed |
 | --- | --- | --- |
 | `batch_peak_id`, `sample_item_id` | primary key (since #2029) | unchanged |
@@ -401,7 +405,9 @@ Each phase ships on its own and is useful on its own.
 2. **Read model first: derive the Sample view from members + anchors.** The per-sample read
    serves a fold-only sample; the consensus recompute stops joining the ledger (the five
    fields move); the SDK read and the UI tier counts follow. Nothing changes for a sample
-   that has a run. This is the prerequisite for everything after it, and it can ship dark.
+   that has a run. This is the prerequisite for everything after it, and it can ship dark. *The
+   consensus half - members carry the five fields, the recompute no longer joins the ledger -
+   shipped as migration `c4d2e8a1b7f3`.*
 3. **Ingest folds without a run** (§5.1). The big cut, ~-65 %. Behind a setting, so a
    deployment can go back to writing ingest runs while the derived Sample view is being
    proven. User docs and `docs/maintaining.md` follow: "every completed run folds into the
