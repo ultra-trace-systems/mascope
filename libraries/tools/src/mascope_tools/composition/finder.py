@@ -3,7 +3,7 @@
 import re
 import warnings
 from math import ceil, floor
-from typing import Iterator
+from typing import Iterator, Sequence
 
 import pandas as pd
 import polars as pl
@@ -68,6 +68,7 @@ def assign_compositions(
     peaks: pd.DataFrame,
     config: CompositionSearchConfig,
     heuristics: HeuristicFilterConfig | None = None,
+    targets: Sequence[float] | None = None,
 ) -> tuple[pd.DataFrame, dict[float, list[str]]]:
     """Assign molecular compositions to a set of peaks.
 
@@ -77,6 +78,13 @@ def assign_compositions(
     :type config: CompositionSearchConfig
     :param heuristics: Optional heuristic filter configuration.
     :type heuristics: HeuristicFilterConfig, optional
+    :param targets: When given, only peaks whose m/z is in this list have
+        compositions enumerated for them; every peak in ``peaks`` still
+        serves as isotope-pattern context, and every peak still gets a row
+        in the result. Values must be the frame's own m/z values. This is
+        what lets a caller search a few peaks of a spectrum at the cost of
+        those few, with the pattern scored against the whole spectrum.
+    :type targets: Sequence[float], optional
     :return: A DataFrame with assigned compositions and related information.
     :rtype: tuple[pd.DataFrame, dict[float, list[str]]]
     """
@@ -100,6 +108,11 @@ def assign_compositions(
 
     peaks_to_match = peaks_to_match.sort("mz")
 
+    # Every peak above the threshold gets a row; the targets, when given, are
+    # what is enumerated, not what is reported.
+    reported_mzs = peaks_to_match["mz"].to_numpy()
+    if targets is not None:
+        peaks_to_match = peaks_to_match.filter(pl.col("mz").is_in(list(targets)))
     mzs = peaks_to_match["mz"].to_numpy()
     results_per_peak, assigned_mzs, mass_log_messages = [], set(), {}
 
@@ -153,7 +166,7 @@ def assign_compositions(
                 results_per_peak.append(main_candidate)
                 assigned_mzs.add(main_candidate["mz"])
 
-    unmatched_peaks = set(mzs) - assigned_mzs
+    unmatched_peaks = set(reported_mzs) - assigned_mzs
     for mz in unmatched_peaks:
         results_per_peak.append(
             {
