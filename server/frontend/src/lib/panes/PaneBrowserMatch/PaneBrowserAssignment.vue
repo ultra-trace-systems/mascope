@@ -792,7 +792,6 @@ const breadcrumb = computed(() => {
               :evidence="data.evidence"
               :role="data.role"
               :source="data.source"
-              :engine-tier="data.engine_tier"
             />
           </template>
         </Column>

@@ -631,7 +631,6 @@ const demotedCount = computed(() => {
           :evidence="focusedAssignment.evidence"
           :role="focusedAssignment.role"
           :source="focusedAssignment.source"
-          :engine-tier="focusedAssignment.engine_tier"
           v-help.right="{
             title: 'Confidence Tiers',
             helpKey: 'assignment-tiers',
