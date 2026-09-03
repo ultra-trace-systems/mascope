@@ -36,6 +36,7 @@ from mascope_tools.composition.calibration import (
 )
 from mascope_tools.composition.heuristic_filter import (
     SCORE_VERSION,
+    element_counts,
     formula_plausibility,
 )
 
@@ -139,6 +140,36 @@ def evidence_for(fit_score: float | None, formula: str | None) -> float | None:
         return round(fit * float(formula_plausibility(formula)), 4)
     except Exception:  # plausibility must never decide whether a write happens
         return fit
+
+
+def plausibility_for(formula: str | None) -> float | None:
+    """This server's chemical plausibility for a committed formula, for storing.
+
+    The other half of the product :func:`evidence_for` returns, spelled out for
+    the same callers and for the same reason: manual curation and the import
+    path both write it into ``provenance.plausibility``, which the peak
+    inspector renders as this server's reading of the chemistry.
+
+    Answers ``None`` where there is nothing this server can honestly claim - no
+    formula, or one it could not parse. That second case needs stating, because
+    ``formula_plausibility`` does not raise on it: it fails open to 1.0, which
+    is the right answer for *weighing* a fit (an unreadable formula must not
+    demote a row) and the wrong one for *displaying*, where it would assert
+    perfect chemistry for a string nothing could read. Evidence therefore still
+    comes out as the bare fit while the plausibility beside it reads as a dash,
+    which is the honest rendering of "could not read it".
+
+    :param formula: The row's committed neutral formula, or None.
+    :return: The plausibility, or None when there is none to state.
+    """
+    if not formula:
+        return None
+    try:
+        if element_counts(formula) is None:
+            return None
+        return round(float(formula_plausibility(formula)), 4)
+    except Exception:  # chemistry must never decide whether a row is stored
+        return None
 
 
 def _float_or_none(value) -> float | None:

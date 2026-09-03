@@ -327,7 +327,12 @@ const rows = computed(() => {
         return {
           ...child,
           tierRank: parent.tierRank,
-          engineTierRank: child.engine_tier != null ? tierRank(child.engine_tier) : null,
+          // No `engineTierRank` here on purpose. Only the parents are sorted -
+          // children are spliced in under whichever parent they belong to,
+          // whatever the sort - so a rank on a child would never be read, and
+          // one derived from the child's OWN tier would contradict the line
+          // above it, which exists precisely so a family sorts as one block.
+          // The chip in the column body renders `engine_tier` directly.
           pCorrect: child.p_correct ?? child.provenance?.p_correct ?? null,
           pProvisional:
             child.p_correct_provisional ?? child.provenance?.calibration?.provisional ?? false,

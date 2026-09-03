@@ -37,9 +37,13 @@ answer for the rows an external engine leaves untiered -- peaky, for instance,
 tiers only its committed M0 rows and says nothing about isotopologue children
 or the unexplained residual.
 
-The width matches ``tier`` (String(24)) because it holds the same vocabulary;
-``test_row_field_bounds_match_the_columns`` fails if the payload bound and the
-column drift apart.
+The width matches ``tier`` (String(24)) because it holds the same vocabulary.
+What keeps a value inside it is the closed ``AssignmentTier`` literal on the
+payload field, not a length check: ``test_row_field_bounds_match_the_columns``
+lists this field under ``VOCABULARY_BOUNDED`` and skips it, exactly as it skips
+``role``, ``source`` and ``tier``. So a *widened vocabulary* is what this column
+would have to follow, and nothing fails if it does not - keep the two in step by
+hand when a tier name is added.
 
 Revision ID: d4b8f2c60a13
 Revises: 97c42c48e011

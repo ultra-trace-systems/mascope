@@ -149,6 +149,8 @@ class PeakAssignmentsResource(BaseResource):
         *,
         run_id: str | None = None,
         tier: str | None = None,
+        engine_tier: str | None = None,
+        tier_disagrees: bool | None = None,
         role: str | None = None,
         source: str | None = None,
     ) -> pd.DataFrame | None:
@@ -177,6 +179,21 @@ class PeakAssignmentsResource(BaseResource):
                      still accepts the legacy spelling ``identified`` for
                      ``assigned``, so older scripts keep working.
         :type tier: str, optional
+        :param engine_tier: Filter by the tier the producing engine itself
+                            concluded. Only an imported run carries one - an
+                            in-app row's engine tier IS its ``tier`` - so this
+                            matches nothing on an in-app run.
+        :type engine_tier: str, optional
+        :param tier_disagrees: With ``True``, keep only the rows where the
+                               engine's own tier differs from this server's;
+                               with ``False``, only those where they agree.
+                               Rows carrying no engine tier are excluded either
+                               way, since absence is not agreement. Done
+                               server-side rather than over the returned frame
+                               because the endpoint is paged: the disagreements
+                               on a dense run are a handful of rows out of tens
+                               of thousands.
+        :type tier_disagrees: bool, optional
         :param role: Filter by peak role: ``M0`` | ``iso_child`` | ``reagent``
                      | ``artifact`` | ``unassigned``.
         :type role: str, optional
@@ -249,6 +266,12 @@ class PeakAssignmentsResource(BaseResource):
             curated = mascope.peak_assignments.get(
                 "sample-123", source="manual"
             )
+
+            # Where an imported run's engine and this server disagree
+            disputed = mascope.peak_assignments.get(
+                "sample-123", tier_disagrees=True
+            )
+            disputed[["sample_peak_mz", "assigned_formula", "tier", "engine_tier"]]
         """
         # Resolve the run client-side (the ledger response carries no run
         # object), so the call is deterministic and the run metadata can be
@@ -280,9 +303,20 @@ class PeakAssignmentsResource(BaseResource):
             "limit": PAGE_LIMIT,
             "offset": 0,
         }
-        for key, value in (("tier", tier), ("role", role), ("source", source)):
+        # `tier_disagrees` is included on `False` too - it is a tri-state, and
+        # False is a real query (rows whose engine agreed), not "unset".
+        for key, value in (
+            ("tier", tier),
+            ("engine_tier", engine_tier),
+            ("tier_disagrees", tier_disagrees),
+            ("role", role),
+            ("source", source),
+        ):
             if value is not None:
-                params[key] = value
+                # Lower-cased rather than left to `str(True)`: the server parses
+                # the query string, and "true" is the spelling every HTTP client
+                # and every reader of a request log expects.
+                params[key] = str(value).lower() if isinstance(value, bool) else value
 
         # Page until we have `total` rows. Ordering is stable server-side
         # (m/z with the primary key as tiebreak), so paging never drops or

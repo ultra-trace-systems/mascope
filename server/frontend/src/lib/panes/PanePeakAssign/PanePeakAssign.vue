@@ -626,29 +626,36 @@ const demotedCount = computed(() => {
         <div class="insp-formula">
           {{ focusedAssignment.assigned_formula || 'Unassigned' }}
         </div>
-        <BaseTierTag
-          :tier="focusedAssignment.tier"
-          :evidence="focusedAssignment.evidence"
-          :role="focusedAssignment.role"
-          :source="focusedAssignment.source"
-          v-help.right="{
-            title: 'Confidence Tiers',
-            helpKey: 'assignment-tiers',
-            doc: app.ui.help.docUrl('how-it-works/peak-assignment/#confidence-tiers')
-          }"
-        />
-        <!-- The producing engine's own verdict, spelled out rather than left to
-             the marker on the chip above: this is the detail view, and the
-             disagreement is the reason to open an imported row at all.
-             `show-evidence` is off deliberately - the evidence is this server's
-             product and it did not produce this tier, so borrowing it here
-             would pair a number with a band it never put the row in. -->
-        <BaseTierTag
-          v-if="focusedAssignment.engine_tier"
-          :tier="focusedAssignment.engine_tier"
-          :show-evidence="false"
-          :tooltip="engineTierTooltip"
-        />
+        <!-- Both chips in one box, because the head is `space-between`: a third
+             child of it would put this server's tier in the middle of the row
+             and the engine's at the far edge, which reads as two unrelated
+             marks rather than the pair they are. The pairing is the whole
+             point - the tooltips say "the chip beside it". -->
+        <div class="insp-tiers">
+          <BaseTierTag
+            :tier="focusedAssignment.tier"
+            :evidence="focusedAssignment.evidence"
+            :role="focusedAssignment.role"
+            :source="focusedAssignment.source"
+            v-help.right="{
+              title: 'Confidence Tiers',
+              helpKey: 'assignment-tiers',
+              doc: app.ui.help.docUrl('how-it-works/peak-assignment/#confidence-tiers')
+            }"
+          />
+          <!-- The producing engine's own verdict, spelled out rather than left to
+               the marker on the chip above: this is the detail view, and the
+               disagreement is the reason to open an imported row at all.
+               `show-evidence` is off deliberately - the evidence is this server's
+               product and it did not produce this tier, so borrowing it here
+               would pair a number with a band it never put the row in. -->
+          <BaseTierTag
+            v-if="focusedAssignment.engine_tier"
+            :tier="focusedAssignment.engine_tier"
+            :show-evidence="false"
+            :tooltip="engineTierTooltip"
+          />
+        </div>
       </div>
       <!-- With no formula the headline is the word "Unassigned" and the
            evidence grid below is empty, so the peak itself has to name the
@@ -1043,6 +1050,13 @@ const demotedCount = computed(() => {
   font-family: var(--font-mono, ui-monospace, monospace);
   font-size: 1.35rem;
   font-weight: 700;
+}
+/* This server's tier and the producing engine's, kept adjacent at the right
+   edge instead of being spread apart by the head's `space-between`. */
+.insp-tiers {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
 }
 .insp-sub {
   font-family: var(--font-mono, ui-monospace, monospace);

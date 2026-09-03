@@ -84,6 +84,30 @@ def json_size_error(field: str, value: Any) -> str | None:
     return None
 
 
+def row_evidence(fit_score: float | None, formula: str | None) -> float | None:
+    """The evidence one imported row's tier is read off.
+
+    ``engine.evidence_for`` answers with the bare fit when there is no formula,
+    which is right for its own callers - they hold a row that committed one and
+    only the plausibility is in doubt. An imported row is the case where the
+    formula itself may be absent, and there a fit score weighs nothing: it is a
+    measurement against something the row does not name, not evidence for an
+    assignment. Banding it as though it were is what let 'assigned' onto a peak
+    with no formula at all.
+
+    Stated here, and here only, because the tier a row may CARRY
+    (:func:`tier_coherence_error`) and the tier the server DERIVES for a row
+    that states none (``import_service._resolved_tier``) have to be the same
+    rule - deriving is only safe because it produces what the check would have
+    demanded.
+
+    :param fit_score: The row's fit score, or None.
+    :param formula: The row's committed neutral formula, or None.
+    :return: The evidence, or None when the row has none to band.
+    """
+    return evidence_for(fit_score, formula) if formula else None
+
+
 def coherent_tiers(
     evidence: float | None, assigned: float, candidate: float
 ) -> set[str]:
@@ -150,12 +174,22 @@ def tier_coherence_error(
     :param candidate: The run's candidate threshold, on the evidence scale.
     :return: An error message, or None when coherent.
     """
-    evidence = evidence_for(fit_score, formula)
+    evidence = row_evidence(fit_score, formula)
     expected = coherent_tiers(evidence, assigned, candidate)
     if tier in expected:
         return None
     named = " or ".join(f"'{name}'" for name in sorted(expected))
     if evidence is None:
+        # Two ways to have no evidence, and they need different messages: a row
+        # with no usable fit reads the way it always did, while a row that HAS
+        # one and names no formula has to be told that the number is not the
+        # problem - there is nothing for it to be a fit to.
+        if not formula and evidence_for(fit_score, None) is not None:
+            return (
+                f"tier '{tier}' on a row that names no assigned_formula: a fit "
+                f"score weighs nothing without a formula to weigh it against, "
+                f"so such a row is {named}"
+            )
         return f"tier '{tier}' with no fit_score: such a row is {named}"
     # The evidence is spelled out alongside the fit it came from: an importer that
     # declared its bands correctly but tiered on the bare fit sees exactly which

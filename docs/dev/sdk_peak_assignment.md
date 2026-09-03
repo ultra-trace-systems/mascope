@@ -124,7 +124,7 @@ All under prefix `/api/peak-assignments`, token-accessible (SDK-reachable):
 
 | Endpoint | SDK | Purpose |
 | --- | --- | --- |
-| `GET /sample/{id}` | **v1** | peaks-with-assignments (one row/peak); **paginated** (`limit` default 1000 / max 5000, `offset`; response carries `total`); filters `peak_assignment_run_id`, `tier`, `role`, `source` (typed enums - a bad value is a 422). Envelope standardized per §4.1 |
+| `GET /sample/{id}` | **v1** | peaks-with-assignments (one row/peak); **paginated** (`limit` default 1000 / max 5000, `offset`; response carries `total`); filters `peak_assignment_run_id`, `tier`, `engine_tier`, `role`, `source` (typed enums - a bad value is a 422) and `tier_disagrees` (bool; rows carrying no `engine_tier` are excluded from both answers). Envelope standardized per §4.1 |
 | `GET /sample/{id}/assignment/{assignment_id}` | **v1** | one assignment in full (`alternatives` + `provenance`), the detail fetch #1725 split out of the list |
 | `GET /sample/{id}/runs` | **v1** | run history (status, engine_version, config), newest first |
 | `GET /sample/{id}/verifications` | **v2** (§8.3) | recorded verdicts (read-only) |
@@ -152,7 +152,9 @@ is done).
 `ionization_mechanism_id`, `isotope_label`, `isotope_formula`, `source`
 (`database`/`untargeted`/`manual` - the last for a row a person assigned by hand;
 null on a peak nothing explained), `fit_score`, `mz_error_ppm`, `abundance_error`, `tier`
-(`assigned`/`candidate`/`below_assignability`/`unassigned`), `target_compound_id`,
+(`assigned`/`candidate`/`below_assignability`/`unassigned`), `engine_tier` (the same
+vocabulary or null - the producing engine's own verdict, on imported runs only),
+`target_compound_id`,
 `target_ion_id`, `owner_peak_assignment_id`, plus the flattened provenance scalars
 `evidence` / `p_correct` / `p_correct_provisional` / `corroboration_adducts`. The
 `alternatives` (JSON list) and `provenance` (JSON) blobs live on the per-assignment
@@ -574,16 +576,25 @@ two objects it reaches into - `calibration` (for `.provisional`) and
 and `corroboration_adducts` are *not* reserved, because nothing reads them out
 of the blob; sending them is harmless and they are simply never looked at.
 
-`_provenance_scalars` reads a fourth key, `evidence`, and that one is
-**overwritten rather than stripped**. It is the number the ledger shows beside
-the tier chip, and the tier was validated against the evidence the server
-derived (see "Tier coherence"), so the server writes its own derived value over
-whatever the payload carried under that name - and removes the key outright on a
-row with no `fit_score` to derive one from. Leaving the importer's figure there
-would put a number on screen that did not produce the tier next to it; dropping
-it would blank the column on every imported row. An engine that wants its own
-product kept keeps it the same way it keeps its own `p_correct`: under a name of
-its own, `provenance.engine_provenance` by this document's convention.
+Two further keys are **overwritten rather than stripped**, and they are the two
+factors of one product. `_provenance_scalars` reads `evidence`: it is the number
+the ledger shows beside the tier chip, and the tier was validated against the
+evidence the server derived (see "Tier coherence"), so the server writes its own
+derived value over whatever the payload carried under that name - and removes
+the key outright on a row with no `fit_score` to derive one from. `plausibility`
+is the other factor, and is treated identically: the peak inspector renders it
+as *this server's* reading of the formula's chemistry, right beside the fit and
+the evidence, so an importer's own figure under that name would be presented as
+ours. It is derived from `assigned_formula` and written over the payload's, and
+is absent on a row with no formula or one this server could not parse - a dash
+being the honest rendering of "could not read it", where 1.0 would assert
+perfect chemistry for a string nothing could read.
+
+Leaving an importer's figures there would put numbers on screen that did not
+produce the tier next to them; dropping them would blank the columns on every
+imported row. An engine that wants its own product kept keeps it the same way it
+keeps its own `p_correct`: under a name of its own, `provenance.engine_provenance`
+by this document's convention.
 
 Stripped rather than rejected. An external engine that shares this one's scoring
 lineage will plausibly use these names for its *own* numbers, so a payload
@@ -1272,14 +1283,22 @@ about at request time.
   a concrete use appears.
 - **`import_run(sample_id, df, *, engine, engine_version, config, tier_bands, calibration)`**
   - the SDK face of §8.2. Validates the DataFrame client-side (required
-  columns, enum values, tier coherence against `tier_bands` including the
-  null-score exemption, owner references - fail fast before any bytes move),
+  columns, enum values, owner references, and - only where the frame carries a
+  `tier` column at all - tier coherence against `tier_bands` including the
+  null-score exemption: fail fast before any bytes move),
   **chunks** the rows under the endpoint's per-request cap - by serialized bytes
   as well as row count, tracking the row offset `chunk.index` it resynchronises
   from - and returns the new run id. It warns when the frame covers
   materially fewer peaks than the sample's current latest-completed run, since
   the fold-in replaces rather than merges. The round trip is: `get_peaks` out,
   compute externally, `import_run` back, `get` to confirm.
+
+  **A frame with no `tier` column is the preferred shape**, and the local check
+  simply does not run on one: the server derives each row's tier from
+  `fit_score`, `assigned_formula` and the declared bands (see "Tier coherence"),
+  which is the whole reason the field became optional. The check below is for a
+  frame that does carry one - a re-import of an exported ledger, or an engine
+  that wants its own banding stated and refused if it disagrees.
 
   **The local tier check is one-sided, deliberately.** The bands are on the
   evidence scale and the SDK cannot compute the plausibility half of the

@@ -75,7 +75,7 @@ from mascope_backend.api.new.peak_assignments.admission import (
     in_flight_run_id,
 )
 from mascope_backend.api.new.peak_assignments.engine import (
-    evidence_for,
+    plausibility_for,
     tier_for_evidence,
 )
 from mascope_backend.api.new.peak_assignments.import_validation import (
@@ -87,6 +87,7 @@ from mascope_backend.api.new.peak_assignments.import_validation import (
     normalize_engine,
     owner_link_errors,
     owner_of_owner_error,
+    row_evidence,
     strip_server_owned_provenance,
     tier_coherence_error,
     unknown_peak_ids,
@@ -107,7 +108,6 @@ from mascope_backend.db import (
 )
 from mascope_backend.db.id import gen_id
 from mascope_backend.runtime import runtime
-from mascope_tools.composition import formula_plausibility
 
 
 class UnprocessableImportException(HTTPException):
@@ -383,24 +383,6 @@ def _resolved_bands(body, run: PeakAssignmentRun | None) -> dict:
     return bands
 
 
-def _plausibility_of(formula: str | None) -> float | None:
-    """This server's chemical plausibility for a committed formula.
-
-    Fails open to None the way ``evidence_for`` fails open to the bare fit: a
-    formula that will not parse is unusual, not disqualifying, and the inspector
-    showing no plausibility is the honest rendering of "could not read it".
-
-    :param formula: The row's committed neutral formula, or None.
-    :return: The plausibility, or None when there is no formula to weigh.
-    """
-    if not formula:
-        return None
-    try:
-        return round(float(formula_plausibility(formula)), 4)
-    except Exception:  # chemistry must never decide whether a row is stored
-        return None
-
-
 def _resolved_tier(row, bands: dict) -> str:
     """This server's tier for an imported row: the one supplied, or derived.
 
@@ -421,13 +403,20 @@ def _resolved_tier(row, bands: dict) -> str:
     found wanting; a row with no formula was never a claim at all. Deriving on
     the same split keeps an imported ledger the same shape as an in-app one.
 
+    The evidence comes from ``row_evidence`` rather than ``evidence_for``, and
+    that is what makes the split above reachable: ``evidence_for`` answers with
+    the bare fit when the formula is absent, so a row carrying a fit score and
+    no formula would never take the null branch at all and would be banded as
+    an assignment. Same function as the coherence check uses, so a derived tier
+    is by construction one that check would have admitted.
+
     :param row: The validated payload row.
     :param bands: The run's declared tier bands.
     :return: The tier to store.
     """
     if row.tier is not None:
         return row.tier
-    evidence = evidence_for(row.fit_score, row.assigned_formula)
+    evidence = row_evidence(row.fit_score, row.assigned_formula)
     if evidence is None:
         return TIER_BELOW_ASSIGNABILITY if row.assigned_formula else TIER_UNASSIGNED
     return tier_for_evidence(
@@ -467,7 +456,12 @@ def _row_values(row, run_id: str, sample_item_id: str, bands: dict) -> dict:
     :return: Column values for one ``PeakAssignment``.
     """
     provenance = strip_server_owned_provenance(row.provenance)
-    evidence = evidence_for(row.fit_score, row.assigned_formula)
+    # `row_evidence`, not `evidence_for`, and for the reason the tier uses it:
+    # the number stored here is the one the tier chip displays, so it has to be
+    # the number the tier was read off. A row with a fit and no formula has no
+    # evidence, and pairing 'unassigned' with a percentage is exactly the
+    # contradiction this key exists to prevent.
+    evidence = row_evidence(row.fit_score, row.assigned_formula)
     if evidence is not None:
         provenance = {**(provenance or {}), "evidence": evidence}
     elif provenance:
@@ -480,10 +474,10 @@ def _row_values(row, run_id: str, sample_item_id: str, bands: dict) -> dict:
     # name would be presented as ours - the hazard the reserved-key rule exists
     # for, in a key that rule does not cover because nothing flattens it onto a
     # column. Deriving it costs nothing: `formula_plausibility` is memoized and
-    # `evidence_for` just called it for this same formula. Without it an
+    # `row_evidence` just called it for this same formula. Without it an
     # imported row shows a tier, an evidence and a blank where the number that
     # moved the one to the other should be.
-    plausibility = _plausibility_of(row.assigned_formula)
+    plausibility = plausibility_for(row.assigned_formula)
     if plausibility is not None:
         provenance = {**(provenance or {}), "plausibility": plausibility}
     elif provenance:
