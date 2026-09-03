@@ -17,10 +17,17 @@ from mascope_backend.api.new.peak_assignments.batch_peaks_records import (
     get_batch_peak_ledger,
     get_batch_peak_series,
 )
+from mascope_backend.api.new.peak_assignments.batch_untargeted import (
+    search_batch_untargeted,
+)
+from mascope_backend.api.new.peak_assignments.config import PeakAssignmentConfig
 from mascope_backend.api.new.peak_assignments.routes import (
     require_peak_assignment_enabled,
 )
-from mascope_backend.api.new.peak_assignments.schemas import AssignmentTier
+from mascope_backend.api.new.peak_assignments.schemas import (
+    AssignmentTier,
+    AssignSamplePeaksBody,
+)
 from mascope_backend.api.new.workspaces.dependencies import (
     check_batch_access,
     check_sample_access,
@@ -219,6 +226,56 @@ async def backfill_batch_peaks_route(
         "message": (
             f"Computing batch peaks for '{sample_batch.sample_batch_name}', "
             "please wait."
+        ),
+        "process_id": process_id,
+    }
+
+
+@batch_peaks_router.post(
+    "/batch/{sample_batch_id}/search-untargeted",
+    # A write into the batch ledger, gated exactly like the backfill above.
+    dependencies=[Depends(require_peak_assignment_enabled)],
+)
+@api_route(status_code=202, token_access=True)
+async def search_untargeted_batch_peaks_route(
+    sample_batch_id: str,
+    background_tasks: BackgroundTasks,
+    body: AssignSamplePeaksBody | None = None,
+    user: User = Depends(current_active_user),
+    membership=Depends(require_batch_role("editor")),
+) -> dict:
+    """Run the untargeted composition search once per unassigned batch peak of a
+    batch - on each anchor's brightest member's real spectrum - and measure the
+    result against the anchor's other members, so every sample the species was
+    seen in carries a fit of its own.
+
+    Writes no per-sample run: results live on the batch ledger and reach each
+    sample's derived view. An explicit run on a sample still supersedes them
+    for that sample. Runs as a background task and emits
+    ``peak_assignment_reload`` on completion.
+
+    :param sample_batch_id: The unique identifier of the sample batch.
+    :param body: Optional search settings (formula ranges, tolerance, tier
+        bands, the per-sample cap on peaks enumerated); engine defaults when
+        omitted. ``run_untargeted`` is implied.
+    :param user: The current authenticated user. Requires workspace editor role.
+    :return: Acknowledgement message with the background process id.
+    """
+    sample_batch = await fetch_sample_batch(sample_batch_id)
+    config = body.config if body is not None and body.config else PeakAssignmentConfig()
+    process_id = gen_id(8)
+    background_tasks.add_task(
+        search_batch_untargeted,
+        sample_batch_id=sample_batch_id,
+        config=config,
+        independent_transaction=True,
+        user_id=user.id,
+        process_id=process_id,
+    )
+    return {
+        "message": (
+            "Searching untargeted compositions for the unassigned batch peaks of "
+            f"'{sample_batch.sample_batch_name}', please wait."
         ),
         "process_id": process_id,
     }

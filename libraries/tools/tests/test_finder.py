@@ -211,3 +211,29 @@ def test_other_candidates_keeps_every_composition_when_none_was_chosen():
 def test_other_candidates_is_empty_when_the_winner_stood_alone():
     assert _other_candidate_formulas([{"formula": "C5H10O2"}], "C5H10O2") == ""
     assert _other_candidate_formulas([]) == ""
+
+
+def test_assign_compositions_enumerates_only_the_targets(monkeypatch):
+    """With ``targets`` given, compositions are enumerated for those peaks alone
+    while every peak still gets a result row - the rest as unmatched."""
+    from mascope_tools.composition import finder
+
+    enumerated = []
+
+    def fake_find_compositions(target_mz, config):
+        enumerated.append(target_mz)
+        return []
+
+    monkeypatch.setattr(finder, "find_compositions", fake_find_compositions)
+    peaks = pd.DataFrame(
+        {"mz": [100.0, 200.0, 300.0], "intensity": [100.0, 100.0, 100.0]}
+    )
+    config = CompositionSearchConfig(
+        ionizations="H+", element_count_ranges="C0-2 H0-2", mass_range_ppm=5.0
+    )
+
+    matches, _ = finder.assign_compositions(peaks, config, targets=[200.0])
+
+    assert enumerated == [200.0]
+    assert len(matches) == 3
+    assert (matches["formula"] == "---").all()

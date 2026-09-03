@@ -6,6 +6,21 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
 
 ### Added
 
+- **The untargeted composition search runs once per batch peak.** *Search
+  untargeted*, beside *Compute batch peaks* in the Batch peaks pane, searches
+  every batch peak nothing has assigned yet on its brightest member's real
+  spectrum - enumerating compositions for that one peak while the isotope
+  pattern is scored against the whole sample - and then measures the
+  composition it found against every other sample the species was seen in,
+  so each carries a fit of its own and a sample the envelope does not reach
+  stays unassigned. On a 32-sample batch that is about nineteen times fewer
+  enumerations than the untargeted stage of a per-sample batch assignment. It
+  writes no per-sample runs; the results appear in the batch ledger and in
+  each sample's derived view, marked as untargeted, and an explicit run on a
+  sample still supersedes them there. Route
+  `POST /api/batch-peaks/batch/{id}/search-untargeted`, editor-gated behind
+  the feature flag like the other batch writes.
+
 - Design note: **batch-primary peak assignment**
   (`docs/dev/peak_assignment_batch_primary.md`). Ingest-time assignment writes
   a per-sample ledger for every processed sample - about 0.84 KB per detected
