@@ -6,6 +6,22 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
 
 ### Added
 
+- Design note: **batch-primary peak assignment**
+  (`docs/dev/peak_assignment_batch_primary.md`). Ingest-time assignment writes
+  a per-sample ledger for every processed sample - about 0.84 KB per detected
+  peak after the index trim, most of it placeholder rows - and derives the
+  batch ledger from it afterwards. Measured on a real batch, the batch ledger's
+  anchors are about six percent of its member rows while membership itself is
+  dense (half the anchors recur in most samples, and most recurring anchors
+  are unassigned), so the note proposes inverting the two: the batch peak
+  becomes the object that carries the assignment, its evidence, curation and
+  verification; ingest folds a sample in as slim member rows without writing a
+  per-sample run; the per-sample run stays as an opt-in deep dive and the
+  import target; and the untargeted stage runs once per anchor instead of once
+  per sample. Estimated at about a fifth of today's growth per peak, below the
+  raw data the samples bring. A design document only; no behaviour changes
+  until it is signed off and implemented.
+
 - **Batch peaks: one ledger for a whole batch.** A batch peak is a frozen m/z
   anchor shared across a batch's samples, carrying an evidence-weighted
   consensus of the per-sample assignments that folded into it - so a species can
