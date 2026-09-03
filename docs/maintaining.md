@@ -700,8 +700,7 @@ permanent, in the database's volume, and grows with everything you acquire;
 on most instruments it is a fraction of the raw data the sample itself
 brings. Targeted matching is unaffected - assignment is an addition, not a
 replacement - and samples processed before the upgrade are not assigned
-retroactively; use *Compute batch peaks* on their batch, or run assignment
-explicitly, for those.
+retroactively; use *Rebuild batch ledger* on their batch for those.
 
 An **explicit** assignment run - *Assign peaks* on a sample, or an import from
 an external engine - writes a per-sample ledger as well: one row per detected
