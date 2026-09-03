@@ -161,11 +161,12 @@ branch's shape, not a commit hash that goes stale within a day.*
    `mascope_tools.composition.calibration`: `Calibration` (provenance-carrying),
    `fit_calibration` (Platt + held-out ECE, refuses too-little data), `apply_calibration`,
    `calibration_error`, per-instrument `calibration_for`. **Honest fallback:** no curve for
-   an instrument → `p_correct=null, calibrated=false` (TOF today); one **provisional
+   an instrument → `p_correct=null` and no curve on the run (TOF today); one **provisional
    Orbitrap** curve (a=5.74, b=-3.36, held-out ECE 0.029) fit from the demo bundle via
    `arbitration_eval.py --fit-calibration` (untracked scratch alongside the
-   `tooling/score_eval` harness). Wired into the engine → `provenance.p_correct /
-   calibrated / calibration`. Labels = reference-confirmed identities (Schymanski L1) vs
+   `tooling/score_eval` harness). Wired into the engine → `provenance.p_correct` per row,
+   with the curve recorded once per run (`confidence_calibration`) and folded back into the
+   detail row as `calibrated` / `calibration`. Labels = reference-confirmed identities (Schymanski L1) vs
    decoys — the reference-dataset link + basis for future user self-calibration. See
    `assignment_confidence.md` §4 + `how-it-works/peak-assignment.md`.
 8. ✅ **How-it-works docs** — new user-facing `how-it-works/peak-assignment.md` (fit score,

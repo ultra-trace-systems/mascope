@@ -293,6 +293,27 @@ def _row_reference_identities(row) -> list | None:
     return value if isinstance(value, list) and value else None
 
 
+def calibration_meta(calibration) -> dict | None:
+    """What a run records about the confidence calibration it applied.
+
+    The instrument class, whether the curve is provisional, and what it was fit
+    from - the three fields every database-sourced row used to repeat in its
+    provenance, now recorded once per run (``PeakAssignmentRun.confidence_calibration``)
+    and folded back into each row by the detail read. ``None`` when the run was
+    uncalibrated, which is what a reader takes to mean "no curve".
+
+    :param calibration: The calibration the run applied, or None.
+    :return: The record for the run row, or None.
+    """
+    if calibration is None:
+        return None
+    return {
+        "instrument": calibration.instrument,
+        "provisional": calibration.provisional,
+        "source": calibration.source,
+    }
+
+
 def _alternative_dict(
     row,
     reference_identities_by_formula: dict,
@@ -551,20 +572,15 @@ def invert_matches_to_peak_assignments(
         # a row ends up in the band below the percentage its own chip shows.
         evidence = round(float(winner["_evidence"]), 4)
 
-        # Calibrated P(correct) for the winner's evidence — only when this instrument
+        # Calibrated P(correct) for the winner's evidence - only when this instrument
         # has a calibration; otherwise the assignment is honestly left uncalibrated.
-        if calibration is not None:
-            p_correct = round(
-                float(apply_calibration(float(winner["_evidence"]), calibration)), 4
-            )
-            calibration_meta = {
-                "instrument": calibration.instrument,
-                "provisional": calibration.provisional,
-                "source": calibration.source,
-            }
-        else:
-            p_correct = None
-            calibration_meta = None
+        # Which curve it was is the run's to record (`calibration_meta`), not each
+        # row's: one curve serves a whole run.
+        p_correct = (
+            round(float(apply_calibration(float(winner["_evidence"]), calibration)), 4)
+            if calibration is not None
+            else None
+        )
         alternatives = [
             _alternative_dict(
                 row, reference_identities_by_formula, main_isotope_ids, main_mz_by_ion
@@ -641,9 +657,9 @@ def invert_matches_to_peak_assignments(
                 "score_version": SCORE_VERSION,
                 # P(correct) is the calibrated probability; null when uncalibrated,
                 # so the UI can show "uncalibrated" instead of a fabricated number.
+                # The curve it was read off is on the run; the detail read folds
+                # it back in here as `calibrated` / `calibration`.
                 "p_correct": p_correct,
-                "calibrated": calibration is not None,
-                "calibration": calibration_meta,
                 # One-to-many known-compound identities for a database-sourced peak
                 # whose formula is in the reference mirror (name/source/license),
                 # attached whether the target library or the reference set won it.

@@ -562,7 +562,8 @@ to the provenance rule below.
 reads a handful of keys out of the `provenance` blob and presents them as its
 own judgement: the peak inspector renders `provenance.p_correct` under
 "Calibrated probability the assignment is correct" with a provisional flag off
-`provenance.calibration.provisional`, and the batch fold-in reads
+the run's `confidence_calibration` (folded into the detail row as
+`provenance.calibration.provisional`), and the batch fold-in reads
 `provenance["p_correct"]` when it rolls a batch peak's consensus. Nulling the
 flattened columns therefore does not achieve what it is for - nothing reads
 those columns - so the keys the server derives those values from are **reserved

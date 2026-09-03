@@ -394,6 +394,36 @@ class TestRunFinalization:
 
         mocks["finalize"].assert_awaited_once()
         assert mocks["finalize"].await_args.args[:2] == ("run-1", "completed")
+        # No curve was loaded (the store mock returns None), so the run records none.
+        assert mocks["finalize"].await_args.kwargs["confidence_calibration"] is None
+
+    @pytest.mark.asyncio
+    async def test_the_curve_the_run_applied_is_recorded_on_it(self):
+        """The calibration record is written once, on the run, when it completes -
+        the rows carry only the P(correct) values read off it."""
+        from mascope_backend.api.new.peak_assignments.config import (
+            PeakAssignmentConfig,
+        )
+        from mascope_tools.composition.calibration import Calibration
+
+        peaks = _peaks_df([("p1", 181.0707, 10000.0), ("p2", 182.0741, 660.0)])
+        recorder = _Recorder()
+        mocks = _start(_patches(recorder, peaks, _stage_a_rows()))
+        mocks["calibration"].return_value = Calibration(
+            a=5.74, b=-3.36, instrument="orbi", provisional=True, source="unit test"
+        )
+
+        await _run(PeakAssignmentConfig(run_untargeted=False))
+
+        assert mocks["finalize"].await_args.kwargs["confidence_calibration"] == {
+            "instrument": "orbi",
+            "provisional": True,
+            "source": "unit test",
+        }
+        for row in recorder.rows:
+            provenance = row.get("provenance") or {}
+            assert "calibration" not in provenance
+            assert "calibrated" not in provenance
 
     @pytest.mark.asyncio
     async def test_failing_stage_finalizes_the_run_failed(self):

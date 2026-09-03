@@ -79,6 +79,11 @@ class PeakAssignmentRunRecord(BaseModel):
     #: which only works if a reader can actually see it. Null for in-app runs,
     #: whose calibration state is the sample's own.
     calibration: dict | None = None
+    #: The confidence calibration the run's P(correct) values were read off -
+    #: instrument class, provisional flag, source - recorded once per run and
+    #: folded back into each row's provenance by the assignment detail read.
+    #: Null when the run was not calibrated, and for imported runs.
+    confidence_calibration: dict | None = None
     error: str | None = None
     peak_assignment_run_utc_created: datetime | None = None
     peak_assignment_run_utc_completed: datetime | None = None

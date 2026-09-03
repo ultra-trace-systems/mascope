@@ -27,6 +27,7 @@ from sqlalchemy import (
     MetaData,
     String,
     Text,
+    TypeDecorator,
     UniqueConstraint,
     event,
     func,
@@ -1433,6 +1434,19 @@ class PeakAssignmentRun(Base):
     # calibrates client-side, so this is what a reader judges its mass accuracy
     # by. NULL for in-app runs, whose calibration state is the sample's own.
     calibration: Mapped[Optional[dict]] = mapped_column(JSON)
+    # The confidence calibration this run's P(correct) values were read off:
+    # the instrument class, whether the curve is provisional, and what it was
+    # fit from. One value per run - the engine loads one curve per run - so it
+    # lives here rather than repeated in every database-sourced row's
+    # provenance, where it cost 90 bytes a row for nothing a reader could not
+    # get from the run. SQL NULL when the run was not calibrated (no curve for
+    # the instrument) and for imported runs, whose rows carry no P(correct).
+    # The detail read folds it back into each row's provenance as
+    # `calibrated` / `calibration`, so the row shape the inspector and the SDK
+    # see is unchanged.
+    confidence_calibration: Mapped[Optional[dict]] = mapped_column(
+        JSON(none_as_null=True)
+    )
     # The importing client's own id for the logical import. What makes the
     # request that *creates* a run idempotent: the row-offset check covers every
     # later chunk, but the first one has no run id yet to be idempotent about,
@@ -1473,6 +1487,81 @@ class PeakAssignmentRun(Base):
             name="uq_peak_assignment_run_sample_item_id_import_key",
         ),
     )
+
+
+# The keys of a formula-only alternative - the untargeted finder's shortlist
+# entry - and the source it names. Exactly these three keys, nothing more: a
+# scored contender carries a fit and an adduct, a displaced winner a mechanism,
+# and an imported entry whatever its engine chose to say, and every one of
+# those stays a dict.
+_FORMULA_ONLY_KEYS = frozenset({"assigned_formula", "plausibility", "source"})
+_FORMULA_ONLY_SOURCE = "untargeted"
+
+
+def pack_alternative(entry):
+    """Store a formula-only alternative as ``[formula, plausibility]``.
+
+    Stage B's ``other_candidates`` shortlist reaches a row as entries carrying
+    a formula, a chemical plausibility and ``"source": "untargeted"`` - 99 % of
+    every stored entry, at about 70 bytes each for 16 bytes of payload.
+    Positionally they are a fifth of that. Anything else is stored as the dict
+    it is, so the packed form is unambiguous: a stored entry is a list exactly
+    when it was formula-only.
+
+    :param entry: One element of a row's ``alternatives`` list.
+    :return: The two-element list, or ``entry`` itself when it is not the
+        finder's shape.
+    """
+    if (
+        isinstance(entry, dict)
+        and set(entry) == _FORMULA_ONLY_KEYS
+        and entry["source"] == _FORMULA_ONLY_SOURCE
+        and isinstance(entry["assigned_formula"], str)
+    ):
+        return [entry["assigned_formula"], entry["plausibility"]]
+    return entry
+
+
+def unpack_alternative(entry):
+    """The stored form back to the dict every reader expects.
+
+    :param entry: One stored element of a row's ``alternatives`` list.
+    :return: The formula-only dict for a packed entry; anything else as it is.
+    """
+    if isinstance(entry, list) and len(entry) == 2:
+        return {
+            "assigned_formula": entry[0],
+            "plausibility": entry[1],
+            "source": _FORMULA_ONLY_SOURCE,
+        }
+    return entry
+
+
+class CompactAlternatives(TypeDecorator):
+    """``PeakAssignment.alternatives``: a JSON list whose formula-only entries are
+    stored positionally and expanded on read.
+
+    Every writer (the engine's bulk insert, an import's, curation's attribute
+    writes) and every reader goes through the column type, so the rest of the
+    code keeps seeing dicts. The read side accepts both forms: rows written
+    before the packing hold dicts until the migration that introduced this
+    type rewrote them, and it rewrote in SQL exactly what :func:`pack_alternative`
+    packs. ``None`` passes through both ways, so the JSON-null convention of the
+    other blobs is unchanged.
+    """
+
+    impl = JSON
+    cache_ok = True
+
+    def process_bind_param(self, value, dialect):
+        if not isinstance(value, list):
+            return value
+        return [pack_alternative(entry) for entry in value]
+
+    def process_result_value(self, value, dialect):
+        if not isinstance(value, list):
+            return value
+        return [unpack_alternative(entry) for entry in value]
 
 
 class PeakAssignment(Base):
@@ -1586,7 +1675,8 @@ class PeakAssignment(Base):
     # resolved into owner_peak_assignment_id when the import finalizes. NULL for
     # in-app runs, which build the owner link directly.
     owner_sample_peak_id: Mapped[Optional[str]] = mapped_column(String(20))
-    alternatives: Mapped[Optional[list]] = mapped_column(JSON)
+    # Packed on the way in, expanded on the way out - see CompactAlternatives.
+    alternatives: Mapped[Optional[list]] = mapped_column(CompactAlternatives)
     provenance: Mapped[Optional[dict]] = mapped_column(JSON)
 
     # Relationships
@@ -2055,6 +2145,9 @@ class AssignmentVerification(Base):
 
 __all__ = [
     "Base",
+    "CompactAlternatives",
+    "pack_alternative",
+    "unpack_alternative",
     "Workspace",
     "WorkspaceMember",
     "User",

@@ -764,12 +764,26 @@ class TestInvertMatches:
             match_df, "sample1", "run1", CANDIDATE, ASSIGNED, instrument="orbi"
         )
         prov = a["provenance"]
-        assert prov["calibrated"] is True
         assert 0.0 <= prov["p_correct"] <= 1.0
-        assert prov["calibration"]["instrument"] == "orbi"
-        assert prov["calibration"]["provisional"] is True
+        # Which curve produced it is the run's record, not the row's: the row
+        # carries neither the block nor the flag (the detail read folds them
+        # back in from the run).
+        assert "calibrated" not in prov
+        assert "calibration" not in prov
         # fully JSON-serializable
         json.dumps(prov)
+
+    def test_the_run_records_the_curve_it_applied(self):
+        from mascope_backend.api.new.peak_assignments.engine import calibration_meta
+        from mascope_tools.composition.calibration import calibration_for
+
+        meta = calibration_meta(calibration_for("orbi"))
+        assert meta["instrument"] == "orbi"
+        assert meta["provisional"] is True
+        assert set(meta) == {"instrument", "provisional", "source"}
+        json.dumps(meta)
+        # An uncalibrated run records nothing, which is what "no curve" means.
+        assert calibration_meta(None) is None
 
     def test_adduct_corroboration_lifts_p_correct(self):
         # Same compound assigned via two adducts (+H+ and the distinctive +Br-): the +H+
@@ -865,8 +879,8 @@ class TestInvertMatches:
             instrument="orbi",
             calibration=None,
         )
-        assert a["provenance"]["calibrated"] is False
         assert a["provenance"]["p_correct"] is None
+        assert "calibrated" not in a["provenance"]
 
     def test_uncalibrated_instrument_reports_no_probability(self):
         # TOF has no calibration yet -> p_correct null, calibrated False (never a
@@ -889,9 +903,9 @@ class TestInvertMatches:
         [a] = invert_matches_to_peak_assignments(
             match_df, "sample1", "run1", CANDIDATE, ASSIGNED, instrument="tof"
         )
-        assert a["provenance"]["calibrated"] is False
         assert a["provenance"]["p_correct"] is None
-        assert a["provenance"]["calibration"] is None
+        assert "calibrated" not in a["provenance"]
+        assert "calibration" not in a["provenance"]
 
     def test_isotope_child_points_at_its_ions_m0_assignment(self):
         match_df = pd.DataFrame(

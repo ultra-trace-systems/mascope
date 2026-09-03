@@ -357,8 +357,8 @@ no backend or DB, only `mascope_tools` + tests.
      yet" becomes *metadata*, not hidden risk.
   2. **Never fabricate a probability we can't back up.** `calibration_for(instrument)`
      returns `None` when an instrument has no calibration (**TOF today**); the engine then
-     stores `p_correct = null`, `calibrated = false` so the UI shows *uncalibrated* rather
-     than a borrowed Orbitrap number. `fit_calibration` refuses to fit on too little /
+     stores `p_correct = null` and the run records no curve, so the UI shows *uncalibrated*
+     rather than a borrowed Orbitrap number. `fit_calibration` refuses to fit on too little /
      single-class data (`InsufficientCalibrationData`).
 
   **The label sourcing — why this is tied to the reference dataset.** The positives are
@@ -377,8 +377,11 @@ no backend or DB, only `mascope_tools` + tests.
   **Status.** One **provisional Orbitrap** curve, fit from the demo bundle via
   `arbitration_eval.py --fit-calibration` (scratch, untracked — like the harness above;
   evidence → P(correct) over all candidates, true vs decoy). It is a placeholder pending a curated dataset; no TOF curve exists.
-  `invert_matches_to_peak_assignments` stores `p_correct` / `calibrated` / `calibration`
-  in the assignment `provenance`. Unit-tested (`test_calibration_layer.py`, engine tests).
+  `invert_matches_to_peak_assignments` stores `p_correct` in the assignment `provenance`;
+  which curve produced it is recorded once per run (`PeakAssignmentRun.confidence_calibration`,
+  via `engine.calibration_meta`) and the detail read folds it back into the row as
+  `calibrated` / `calibration`, so readers see the pair they always did. Unit-tested
+  (`test_calibration_layer.py`, engine tests).
 
 - **Remaining P2 / next:** replace the provisional Orbitrap curve with a curated fit and add
   a TOF curve once a TOF golden set exists; the **persisted, user-refittable per-instrument
