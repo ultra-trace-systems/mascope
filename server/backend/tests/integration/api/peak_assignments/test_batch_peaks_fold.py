@@ -13,7 +13,7 @@ from datetime import datetime, timezone
 
 import pytest
 import pytest_asyncio
-from sqlalchemy import select
+from sqlalchemy import delete, select
 
 from mascope_backend.api.new.peak_assignments import batch_peaks_controller
 from mascope_backend.api.new.peak_assignments.batch_peaks_controller import (
@@ -268,6 +268,197 @@ async def test_refold_with_unchanged_members_leaves_the_anchors_unwritten(
         for p in await _batch_peaks(async_session_factory, batch)
     }
     assert after == before
+
+
+def _consensus_of(peak):
+    """The consensus columns of an anchor, as a comparable tuple."""
+    return (
+        peak.consensus_formula,
+        peak.consensus_ion_formula,
+        peak.ionization_mechanism_id,
+        peak.consensus_tier,
+        peak.best_fit_score,
+        peak.support_fraction,
+        peak.n_present,
+        peak.is_ambiguous,
+        peak.max_intensity,
+        peak.isotopologue_of,
+        peak.batch_peak_utc_modified,
+    )
+
+
+async def test_backfill_leaves_anchors_no_fold_touched_alone(
+    async_session_factory, seeded
+):
+    """A backfill recomputes only what its folds wrote, never the whole batch.
+
+    The retention pass deletes runs and cascades to ``peak_assignment``, but the
+    occurrences survive with their assignment link set to NULL - and the ion
+    formula, the mechanism and the isotopologue link live ONLY on the rows that
+    went away. Recompute such an anchor and the outer join hands back nothing, so
+    those columns are written to NULL and the occurrence cannot supply them
+    again. Folding nothing must therefore change nothing.
+    """
+    batch, samples = seeded
+    await fold_sample_into_batch_peaks(samples["A"])
+    await fold_sample_into_batch_peaks(samples["B"])
+    before = {
+        p.batch_peak_id: _consensus_of(p)
+        for p in await _batch_peaks(async_session_factory, batch)
+    }
+    # There is something to lose: the ion formula lives on peak_assignment alone.
+    assert any(c[1] for c in before.values())
+
+    # Prune every run of the batch, as the nightly retention pass would.
+    async with async_session_factory() as s:
+        await s.execute(
+            delete(PeakAssignmentRun).where(
+                PeakAssignmentRun.sample_item_id.in_(list(samples.values()))
+            )
+        )
+        await s.commit()
+
+    # The precondition the wipe needs: members with no assignment row left.
+    async with async_session_factory() as s:
+        links = (
+            (
+                await s.execute(
+                    select(BatchPeakOccurrence.peak_assignment_id)
+                    .join(
+                        BatchPeak,
+                        BatchPeak.batch_peak_id == BatchPeakOccurrence.batch_peak_id,
+                    )
+                    .where(BatchPeak.sample_batch_id == batch)
+                )
+            )
+            .scalars()
+            .all()
+        )
+    assert links and all(link is None for link in links)
+
+    folded, failed = await backfill_sample_batch_peaks(batch)
+    assert (folded, failed) == (0, 0)  # no completed run left to fold
+
+    after = {
+        p.batch_peak_id: _consensus_of(p)
+        for p in await _batch_peaks(async_session_factory, batch)
+    }
+    assert after == before
+
+
+async def test_every_chunk_of_a_split_recompute_does_its_work(
+    async_session_factory, seeded, monkeypatch
+):
+    """The recompute walks its anchors in chunks, because a fold's touched set is
+    one anchor per detected peak and asyncpg refuses a query carrying more than
+    32767 bind parameters. EVERY chunk has to be walked, so the membership is
+    changed first and each anchor is put in a chunk of its own: a walk that
+    stopped after the first chunk would leave the later anchors stale, which
+    comparing a re-fold against already-correct values could never catch.
+    """
+    batch, samples = seeded
+    await fold_sample_into_batch_peaks(samples["A"])
+    await fold_sample_into_batch_peaks(samples["B"])
+    before = {
+        p.batch_peak_id: p.n_present
+        for p in await _batch_peaks(async_session_factory, batch)
+    }
+    assert sorted(before.values()) == [1, 1, 1, 2]  # 181 shared, three unique
+
+    # Take sample A out from under every anchor it occupied, so each of those
+    # anchors now has real work waiting for it: one to drop to n_present 1, two
+    # to lose their last member and be deleted.
+    async with async_session_factory() as s:
+        await s.execute(
+            delete(BatchPeakOccurrence).where(
+                BatchPeakOccurrence.sample_item_id == samples["A"]
+            )
+        )
+        await s.commit()
+
+    monkeypatch.setattr(batch_peaks_controller, "_CONSENSUS_CHUNK", 1)
+    async with async_session_factory() as s:
+        await batch_peaks_controller._recompute_consensus(
+            s, set(before), datetime.now(timezone.utc)
+        )
+        await s.commit()
+
+    after = {
+        p.batch_peak_id: p.n_present
+        for p in await _batch_peaks(async_session_factory, batch)
+    }
+    # Only B's two anchors survive, both at one member - which requires every
+    # one of the four single-anchor chunks to have been walked.
+    assert sorted(after.values()) == [1, 1]
+    assert len(after) == 2
+
+
+async def test_a_recompute_survives_more_ids_than_the_driver_can_bind(
+    async_session_factory, seeded
+):
+    """asyncpg refuses a query carrying more than 32767 bind parameters, and a
+    fold's touched set is one anchor per detected peak - the ingest ceiling
+    admits a hundred thousand of them. Both id-taking helpers therefore have to
+    survive a set far past that cap.
+
+    Driven directly rather than by seeding 40k peaks: the helpers take their id
+    set as an argument, so the statement under test is the same one and the test
+    costs a second instead of minutes.
+    """
+    batch, samples = seeded
+    await fold_sample_into_batch_peaks(samples["A"])
+    await fold_sample_into_batch_peaks(samples["B"])
+    anchors = await _batch_peaks(async_session_factory, batch)
+    shared = next(a.batch_peak_id for a in anchors if a.n_present == 2)
+    padding = {f"pad-{i:07d}" for i in range(40_000)}
+
+    # Negative control: the unchunked IN this replaced really does raise, so a
+    # pass below cannot be passing vacuously.
+    async with async_session_factory() as s:
+        with pytest.raises(Exception, match="cannot exceed 32767"):
+            await s.execute(
+                select(BatchPeak).where(BatchPeak.batch_peak_id.in_(list(padding)))
+            )
+
+    # Give the pass real work, so it is the recompute being proven and not just
+    # the absence of a driver error: drop sample B from every anchor it occupied.
+    async with async_session_factory() as s:
+        await s.execute(
+            delete(BatchPeakOccurrence).where(
+                BatchPeakOccurrence.sample_item_id == samples["B"]
+            )
+        )
+        await s.commit()
+
+    # The chunked path: real anchors recomputed, the 40k absent ids no-op.
+    async with async_session_factory() as s:
+        await batch_peaks_controller._recompute_consensus(
+            s, {a.batch_peak_id for a in anchors} | padding, datetime.now(timezone.utc)
+        )
+        await s.commit()
+    after = {
+        p.batch_peak_id: p for p in await _batch_peaks(async_session_factory, batch)
+    }
+    assert after[shared].n_present == 1  # B really was folded out
+    assert len(after) == 3  # B's own anchor lost its last member and went
+
+    # The array path: one bind parameter, so length is irrelevant to it.
+    async with async_session_factory() as s:
+        occurrence = (
+            (
+                await s.execute(
+                    select(BatchPeakOccurrence).where(
+                        BatchPeakOccurrence.batch_peak_id.in_(list(after))
+                    )
+                )
+            )
+            .scalars()
+            .first()
+        )
+        mapping = await batch_peaks_controller._owner_anchor_by_assignment(
+            s, {occurrence.peak_assignment_id} | padding
+        )
+    assert mapping == {occurrence.peak_assignment_id: occurrence.batch_peak_id}
 
 
 async def test_series_full_load_applies_occupancy_filter(async_session_factory, seeded):

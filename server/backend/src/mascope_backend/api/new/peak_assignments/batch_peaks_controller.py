@@ -6,7 +6,7 @@ after Stage-A assignment (the assignments are already committed by then), snappi
 the sample's peaks into the batch's frozen, append-only anchors and recomputing the
 consensus of every touched batch peak. :func:`backfill_sample_batch_peaks` folds a
 whole batch's existing runs in time order, reporting progress per sample, and
-recomputes each anchor's consensus once at the end
+recomputes the anchors those folds touched once each at the end
 (:func:`recompute_batch_consensus`) rather than once per sample.
 
 Design: ``docs/dev/peak_assignment_batch.md``.
@@ -19,7 +19,8 @@ import statistics
 from collections import defaultdict
 from datetime import datetime, timezone
 
-from sqlalchemy import func, select
+from sqlalchemy import String, any_, bindparam, func, select
+from sqlalchemy.dialects.postgresql import ARRAY
 from sqlalchemy.exc import IntegrityError
 
 from mascope_backend.api.lib.api_features import api_controller_background_task
@@ -149,7 +150,7 @@ def _tolerance_fn(resolution_func):
 
 
 async def fold_sample_into_batch_peaks(
-    sample_item_id: str, *, recompute_consensus: bool = True
+    sample_item_id: str, *, defer_consensus_to: set[str] | None = None
 ) -> str | None:
     """Fold a sample's latest completed assignment into its batch's batch peaks.
 
@@ -160,12 +161,16 @@ async def fold_sample_into_batch_peaks(
     its prior occurrences and re-derives the affected consensus.
 
     :param sample_item_id: The sample to fold.
-    :param recompute_consensus: ``False`` folds the occurrences only and leaves
-        the touched anchors' consensus to a later :func:`recompute_batch_consensus`.
-        That is the backfill's mode: recomputing per sample there costs
-        O(samples x anchors), and every intermediate result is overwritten by the
-        next sample's. Until that pass runs, a touched anchor's consensus columns
-        describe the members it had before this fold.
+    :param defer_consensus_to: When given, the fold writes its occurrences and
+        adds the anchors it touched to this set instead of recomputing their
+        consensus, leaving that to a later :func:`recompute_batch_consensus` over
+        exactly those anchors. That is the backfill's mode: recomputing per
+        sample there costs O(samples x anchors), and every intermediate result is
+        overwritten by the next sample's. The ids are added only once the fold
+        has COMMITTED, so a fold that raised contributes none and the deferred
+        pass never reaches an anchor this fold did not write. Until that pass
+        runs, a touched anchor's consensus columns describe the members it had
+        before this fold.
     :returns: the ``sample_batch_id`` (for the caller's reload event) or ``None``
         when there is nothing to fold (unknown sample / no completed run).
     """
@@ -330,9 +335,20 @@ async def fold_sample_into_batch_peaks(
             touched.add(f.batch_peak_id)
 
         await session.flush()  # make occurrences visible to the consensus recompute
-        if recompute_consensus:
+        if defer_consensus_to is None:
             await _recompute_consensus(session, touched, now)
         await session.commit()
+        if defer_consensus_to is not None:
+            # After the commit, not before it: a fold that raised rolls its
+            # occurrences back, and handing its anchors to the deferred pass
+            # would invite that pass to recompute anchors nothing had just
+            # written live members into -- which is exactly the case that
+            # loses data (see recompute_batch_consensus). And INSIDE the
+            # session block, so a teardown that raises between the commit and
+            # the caller cannot drop a committed fold's anchors from the set:
+            # an anchor this fold MINTED would then keep its server defaults
+            # for good, which is the state the deferral must never leave.
+            defer_consensus_to |= touched
 
     return sample_batch_id
 
@@ -367,15 +383,47 @@ async def _owner_anchor_by_assignment(session, owner_ids: set[str]) -> dict[str,
     """
     if not owner_ids:
         return {}
+    # `= ANY(array)` rather than `IN`, which would expand to one bind parameter
+    # per id: this set is one entry per iso_child member of the whole recompute,
+    # so a chunk of anchors in a large batch reaches tens of thousands of them
+    # (anchors x samples) and asyncpg refuses a query with more than 32767
+    # arguments. Chunking is the wrong tool here -- the ids are already bounded
+    # by the caller's chunk and the read returns at most one row each, so only
+    # the parameter count is the problem, and an array is one parameter whatever
+    # its length. The index on `peak_assignment_id` serves it either way.
+    #
+    # The element type stays UNQUALIFIED `String`, rendering `$1::VARCHAR[]`.
+    # `String(32)` would render `$1::VARCHAR(32)[]`, and a length-qualified cast
+    # in Postgres TRUNCATES rather than errors - so an over-long id would
+    # silently match the wrong row instead of matching nothing. Do not "tighten"
+    # this to the column's own length.
     rows = (
         await session.execute(
             select(
                 BatchPeakOccurrence.peak_assignment_id,
                 BatchPeakOccurrence.batch_peak_id,
-            ).where(BatchPeakOccurrence.peak_assignment_id.in_(owner_ids))
+            ).where(
+                BatchPeakOccurrence.peak_assignment_id
+                == any_(
+                    bindparam("owner_ids", value=list(owner_ids), type_=ARRAY(String))
+                )
+            )
         )
     ).all()
     return {peak_assignment_id: bp_id for peak_assignment_id, bp_id in rows}
+
+
+#: Anchors per statement in a consensus recompute, and per transaction in a
+#: deferred whole-set one. The member read behind each is one IN over the chunk,
+#: so this bounds both its bind parameters (asyncpg caps a query at 32767) and
+#: the rows one statement materializes, whatever the caller hands in. The row
+#: bound is the binding one here and it is why these two stay an ``IN`` rather
+#: than becoming the array `_owner_anchor_by_assignment` uses: the member read
+#: returns one row per (anchor, sample) carrying a whole ``provenance``
+#: document, so a single unbounded statement would trade a clean driver error
+#: for an out-of-memory one - and a parameterized array is estimated at ten
+#: elements, which freezes a bad generic plan into the prepared statement.
+_CONSENSUS_CHUNK = 500
 
 
 async def _recompute_consensus(
@@ -383,10 +431,31 @@ async def _recompute_consensus(
 ) -> None:
     """Recompute (and persist) the consensus of the given batch peaks from their
     members' per-sample assignments. A batch peak left with no members is deleted.
+
+    Walked in statements of :data:`_CONSENSUS_CHUNK` anchors. The caller's set is
+    not bounded: a fold's touched set is one anchor per detected peak, and
+    ``peak_assignment_ingest_max_peaks`` admits a hundred thousand of them, while
+    asyncpg refuses a query carrying more than 32767 bind parameters -- so an
+    unchunked ``IN`` raises before the statement is even sent, after the ledger
+    it belongs to has already committed. The chunk bounds the rows one statement
+    materializes (members x chunk) as well.
+
+    Runs on the caller's session and inside the caller's transaction; the chunks
+    are statements, not transactions.
     """
-    if not batch_peak_ids:
+    ids = sorted(batch_peak_ids)
+    for start in range(0, len(ids), _CONSENSUS_CHUNK):
+        await _recompute_consensus_chunk(
+            session, ids[start : start + _CONSENSUS_CHUNK], now
+        )
+
+
+async def _recompute_consensus_chunk(
+    session, id_list: list[str], now: datetime
+) -> None:
+    """One statement's worth of :func:`_recompute_consensus`."""
+    if not id_list:
         return
-    id_list = list(batch_peak_ids)
     rows = (
         await session.execute(
             select(
@@ -509,42 +578,60 @@ def _apply_consensus(bp: BatchPeak, consensus: Consensus, now: datetime) -> bool
     return True
 
 
-#: Anchors per statement in a whole-batch recompute. The member read behind
-#: each is one IN over the chunk, so this bounds both its bind parameters and
-#: the rows one statement materializes (members x chunk), whatever the batch.
-_CONSENSUS_CHUNK = 500
-
-
-async def recompute_batch_consensus(sample_batch_id: str) -> int:
-    """Recompute the consensus of every anchor of a batch, once each.
+async def recompute_batch_consensus(
+    sample_batch_id: str, batch_peak_ids: set[str]
+) -> int:
+    """Recompute the consensus of the given anchors of one batch, once each.
 
     The per-arrival fold recomputes the anchors its sample touched, which is
     right for one sample and wrong for a backfill: folding N samples that way
     recomputes each anchor up to N times, rewrites it as often, and the member
     read behind each recompute grows with the samples already folded - O(N x
     anchors) work for a result the last pass alone determines. The backfill
-    folds every sample with the recompute deferred and then calls this.
+    folds every sample with the recompute deferred, collecting the anchors those
+    folds touched, and then calls this once.
+
+    **Scoped to those anchors, never to the whole batch.** Recomputing an anchor
+    no fold just wrote to is not the harmless no-op it looks like. Deleting a run
+    cascades to ``peak_assignment`` but leaves the occurrences standing with
+    ``peak_assignment_id`` NULL (``ON DELETE SET NULL``), and the ion formula,
+    the ionization mechanism and the family link live on the assignment rows
+    alone. Recompute such an anchor and the outer join hands back nothing, so
+    those columns are written to NULL for good - the occurrence cannot supply
+    them again. An anchor a fold has just touched carries that fold's own live
+    members, so ``_mode`` has something to skip the dead-linked ones in favour
+    of, and the anchor keeps its columns.
+
+    That is a reduction of the hazard, not its elimination, and the difference
+    is worth stating exactly. ``_mode`` reads only the members backing the
+    WINNING formula, and the winner is decided over every member carrying an
+    ``assigned_formula`` - which the occurrence denormalizes, so a dead-linked
+    member still votes. An anchor whose winner is backed only by dead-linked
+    members therefore still loses its ion formula and mechanism, and
+    ``resolve_isotopologue_of`` still counts dead members in the denominator of
+    a majority only live ones can vote in. Both predate this scoping (the
+    per-arrival fold recomputes touched anchors the same way, and so did the
+    per-sample backfill before the deferral); scoping removes the exposure on
+    anchors NO fold refreshed, which is the part this pass added.
+
+    Note what does NOT produce a dead-linked member: the nightly retention pass
+    keeps the newest completed run per sample and engine and refuses a quota
+    below one, so it cannot leave a sample runless. It takes a run deleted
+    outright - an import run abandoned, an external engine's whole quota evicted
+    by the across-engine bound - and then a sample the backfill cannot re-fold,
+    since re-folding replaces its occurrences with live links.
 
     Chunked, and each chunk is its own transaction under the fold lock, so a
-    fold arriving mid-way waits for a chunk rather than for the whole batch.
+    fold arriving mid-way waits for a chunk rather than for the whole set.
     The two cannot disagree: an arriving fold recomputes its own anchors, and a
     chunk that runs after it recomputes them again from the same members.
 
-    :param sample_batch_id: The batch whose anchors are recomputed.
+    :param sample_batch_id: The batch the anchors belong to, for the fold lock.
+    :param batch_peak_ids: The anchors to recompute - what the deferred folds
+        reported touching. Empty means there is nothing to do.
     :return: How many anchors were walked.
     """
-    async with async_session() as session:
-        anchor_ids = (
-            (
-                await session.execute(
-                    select(BatchPeak.batch_peak_id).where(
-                        BatchPeak.sample_batch_id == sample_batch_id
-                    )
-                )
-            )
-            .scalars()
-            .all()
-        )
+    anchor_ids = sorted(batch_peak_ids)
     now = datetime.now(timezone.utc)
     for start in range(0, len(anchor_ids), _CONSENSUS_CHUNK):
         chunk = set(anchor_ids[start : start + _CONSENSUS_CHUNK])
@@ -659,72 +746,120 @@ async def backfill_sample_batch_peaks(
 
     folded = 0
     failed = 0
-    for item_index, sample_item_id in enumerate(sample_ids):
-        # The last sample always reports, whatever the stride, so the bar ends
-        # full rather than a stride short of it.
-        reports = process_id is not None and (
-            item_index % stride == 0 or item_index == total_samples - 1
-        )
-        notification = (
-            _backfill_progress_notification(
-                sample_batch_id=sample_batch_id,
-                item_index=item_index,
-                total_samples=total_samples,
-                user_id=user_id,
-                process_id=process_id,
-                parent_id=parent_id,
+    # The anchors the deferred folds below report touching, recomputed once
+    # each at the end instead of once per sample (see recompute_batch_consensus).
+    touched: set[str] = set()
+    # True only once the loop has walked the whole batch of its own accord. Still
+    # False in the finally means we are unwinding, which is the one case where
+    # the consensus pass must not replace the exception that got us there.
+    walked_the_batch = False
+    try:
+        for item_index, sample_item_id in enumerate(sample_ids):
+            # The last sample always reports, whatever the stride, so the bar ends
+            # full rather than a stride short of it.
+            reports = process_id is not None and (
+                item_index % stride == 0 or item_index == total_samples - 1
             )
-            if reports
-            else None
-        )
-        if notification is not None:
-            await send_progress_user_notification(notification)
-
-        try:
-            if (
-                await fold_sample_into_batch_peaks(
-                    sample_item_id, recompute_consensus=False
+            notification = (
+                _backfill_progress_notification(
+                    sample_batch_id=sample_batch_id,
+                    item_index=item_index,
+                    total_samples=total_samples,
+                    user_id=user_id,
+                    process_id=process_id,
+                    parent_id=parent_id,
                 )
-                is not None
-            ):
-                folded += 1
-        except IntegrityError:
-            # Its own branch as a tripwire, not because the cause is known: the
-            # fold-in lock plus the delete-then-flush of a re-fold should have
-            # made the (batch peak, sample) unique key unreachable, so a
-            # violation of THAT key means the serialization did not hold and is
-            # worth chasing. The same branch also catches the foreign keys a
-            # long backfill can lose under it -- a run pruned, a sample removed --
-            # which are ordinary and unrelated. Hence a message that reports
-            # which sample and leaves the diagnosis to the logged constraint.
-            failed += 1
-            runtime.logger.exception(
-                "Batch-peak backfill hit a database constraint on sample "
-                f"'{sample_item_id}'. A violated (batch peak, sample) unique key "
-                "means two folds of it overlapped, which the fold-in lock should "
-                "prevent; a foreign key means a run or sample it referenced went "
-                "away while the backfill ran."
+                if reports
+                else None
             )
-        except Exception:  # noqa: BLE001 - one bad sample must not abort backfill
-            # Logged with the traceback: the exception's message alone is often
-            # just a key or an index, and the caller only ever sees a count.
-            failed += 1
+            if notification is not None:
+                await send_progress_user_notification(notification)
+
+            try:
+                if (
+                    await fold_sample_into_batch_peaks(
+                        sample_item_id, defer_consensus_to=touched
+                    )
+                    is not None
+                ):
+                    folded += 1
+            except IntegrityError:
+                # Its own branch as a tripwire, not because the cause is known: the
+                # fold-in lock plus the delete-then-flush of a re-fold should have
+                # made the (batch peak, sample) unique key unreachable, so a
+                # violation of THAT key means the serialization did not hold and is
+                # worth chasing. The same branch also catches the foreign keys a
+                # long backfill can lose under it -- a run pruned, a sample removed --
+                # which are ordinary and unrelated. Hence a message that reports
+                # which sample and leaves the diagnosis to the logged constraint.
+                failed += 1
+                runtime.logger.exception(
+                    "Batch-peak backfill hit a database constraint on sample "
+                    f"'{sample_item_id}'. A violated (batch peak, sample) unique key "
+                    "means two folds of it overlapped, which the fold-in lock should "
+                    "prevent; a foreign key means a run or sample it referenced went "
+                    "away while the backfill ran."
+                )
+            except Exception:  # noqa: BLE001 - one bad sample must not abort backfill
+                # Logged with the traceback: the exception's message alone is often
+                # just a key or an index, and the caller only ever sees a count.
+                failed += 1
+                runtime.logger.exception(
+                    f"Batch-peak backfill failed for sample '{sample_item_id}'."
+                )
+
+            # Outside the try, so the bar advances past a sample whose fold raised
+            # as well as one that folded. `send_progress_user_notification` deep
+            # copies, so this is the same object the pre-fold tick was built from.
+            if notification is not None:
+                await send_progress_user_notification(notification, 1.0)
+        walked_the_batch = True
+    finally:
+        # In a finally because deferring the recompute is what makes this pass
+        # load-bearing rather than a tidy-up: every fold above has COMMITTED its
+        # occurrences while their anchors still describe the members they had
+        # before, and nothing else will fix them - a later arriving fold
+        # recomputes only the anchors ITS own sample touched. An anchor a
+        # deferred fold MINTED and left unwritten is worse than stale: it keeps
+        # its server defaults (tier 'unassigned', n_present 0, no formula), which
+        # the ledger's default occupancy floor hides outright while the series
+        # endpoint still draws it from the committed occurrences.
+        #
+        # The vector is cancellation, not the notification calls: both socket
+        # layers swallow a Redis failure, but a CancelledError walks past both
+        # `except` arms above (it is a BaseException) and out of the loop.
+        #
+        # In-process only, and deliberately NOT asyncio.shield-ed the way the run
+        # finalizer shields its terminal write. Under a level-triggered
+        # cancellation (anyio re-cancels a suspended child until its scope is
+        # left) the first await here raises again and the pass does nothing;
+        # shielding would fix that at the price of making a cancelled backfill
+        # uninterruptible for up to one lock-taking transaction per chunk, on a
+        # fold lock with no timeout. Neither is free, and the recovery is the
+        # same either way and cheap: re-run the backfill. It is idempotent and
+        # derives everything from committed occurrences. A SIGKILL, an OOM kill
+        # or a worker killed past its stop grace reaches no finally at all.
+        #
+        # Scoping also retires an incidental sweep the whole-batch pass did: an
+        # anchor left memberless by a SAMPLE deletion (its occurrences cascade,
+        # the anchor does not) is no longer collected, because no fold's touched
+        # set can name it. That is develop's behaviour too - the per-sample
+        # recompute was touched-only - so nothing regresses here, but the sample
+        # -delete path owns that cleanup and does not yet do it.
+        try:
+            await recompute_batch_consensus(sample_batch_id, touched)
+        except Exception:
+            if walked_the_batch:
+                raise
+            # Already unwinding. Raising here would REPLACE the exception that
+            # interrupted the loop - a CancelledError above all, which has to
+            # reach the caller as a cancellation and not as a database error.
             runtime.logger.exception(
-                f"Batch-peak backfill failed for sample '{sample_item_id}'."
+                "Batch-peak backfill was interrupted and its deferred consensus "
+                f"pass then failed for batch '{sample_batch_id}'. The anchors its "
+                "committed folds touched still describe their previous members; "
+                "re-running the backfill repairs them."
             )
-
-        # Outside the try, so the bar advances past a sample whose fold raised
-        # as well as one that folded. `send_progress_user_notification` deep
-        # copies, so this is the same object the pre-fold tick was built from.
-        if notification is not None:
-            await send_progress_user_notification(notification, 1.0)
-
-    # One consensus pass over the whole batch instead of one per sample (see
-    # recompute_batch_consensus). Unconditional: it is also what leaves a
-    # partially failed backfill consistent - every anchor a successful fold
-    # touched is recomputed here - and what removes the anchors a batch whose
-    # runs were pruned since its last fold no longer has members for.
-    await recompute_batch_consensus(sample_batch_id)
 
     return folded, failed
 

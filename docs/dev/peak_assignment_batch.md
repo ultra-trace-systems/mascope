@@ -212,10 +212,18 @@ recompute consensus for the TOUCHED batch peaks only
 
 Cost is **O(P·log A)** per sample (P peaks, A anchors) — bounded per arrival, not the
 O(N²) full re-bin the Zarr path would incur. No global re-cluster, no cache wipe. A backfill
-(`backfill_sample_batch_peaks`) folds every sample with that recompute deferred and recomputes each
-anchor once at the end (`recompute_batch_consensus`) — per-sample recomputes there are O(N·A) writes
+(`backfill_sample_batch_peaks`) folds every sample with that recompute deferred, collecting the
+anchors those folds touched, and recomputes each of them once at the end
+(`recompute_batch_consensus`) — per-sample recomputes there are O(N·A) writes
 for a result the last one determines — and any recompute writes an anchor only when its consensus
-actually changed. The hard
+actually changed. **Touched, never the whole batch:** the ion formula, mechanism and family link come from
+`PeakAssignment` alone, so recomputing an anchor whose members' assignment rows were deleted (an
+import run abandoned, an external engine's quota evicted by the across-engine bound — the
+occurrences survive with a NULL link) writes those columns away for good. Scoping the pass to
+anchors a fold has just put live members into removes that exposure; it does not eliminate it,
+since a winner backed only by dead-linked members still loses those columns on the per-arrival
+path too.
+The hard
 "virtual lock mass present in every sample" requirement of the VLM aligner is **dropped** for
 the live path (it is a single point of failure that worsens as the batch grows); the per-sample
 μ replaces it, and VLM stays only as an optional offline refinement.

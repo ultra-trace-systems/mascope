@@ -13,6 +13,7 @@ full.
 No DB or Socket.IO - every dependency is mocked (mirrors test_batch.py).
 """
 
+import asyncio
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -236,15 +237,23 @@ async def test_the_consensus_is_recomputed_once_after_every_sample_folded():
     await backfill_sample_batch_peaks("sb-1")
 
     assert order == ["fold", "fold", "fold", "recompute"]
+    # Every fold defers into ONE shared set, and that same set is what the
+    # single pass at the end is scoped to - it must never be handed the batch.
+    deferred = {
+        id(call.kwargs["defer_consensus_to"]) for call in mocks["fold"].await_args_list
+    }
+    assert len(deferred) == 1
     for call in mocks["fold"].await_args_list:
-        assert call.kwargs == {"recompute_consensus": False}
-    mocks["recompute"].assert_awaited_once_with("sb-1")
+        assert set(call.kwargs) == {"defer_consensus_to"}
+    mocks["recompute"].assert_awaited_once_with("sb-1", set())
+    assert id(mocks["recompute"].await_args.args[1]) in deferred
 
 
 @pytest.mark.asyncio
 async def test_the_consensus_pass_runs_even_when_a_fold_raised():
     """A sample whose fold raised is skipped; the anchors the others touched
-    still need their consensus, so the pass is unconditional."""
+    still need their consensus, so the pass is unconditional on a fold that
+    raised (the loop's own except arms catch it and carry on)."""
     from mascope_backend.api.new.peak_assignments.batch_peaks_controller import (
         backfill_sample_batch_peaks,
     )
@@ -254,7 +263,79 @@ async def test_the_consensus_pass_runs_even_when_a_fold_raised():
     folded, failed = await backfill_sample_batch_peaks("sb-1")
 
     assert (folded, failed) == (1, 1)
-    mocks["recompute"].assert_awaited_once_with("sb-1")
+    mocks["recompute"].assert_awaited_once_with("sb-1", set())
+
+
+@pytest.mark.asyncio
+async def test_the_consensus_pass_runs_when_the_loop_is_left_altogether():
+    """Stronger than the last one: not a fold the loop caught, but the loop
+    being LEFT. Deferring the consensus makes that the dangerous case - the
+    folds before it have COMMITTED occurrences whose anchors nothing else
+    recomputes - so the pass is in a finally, and the exception still
+    propagates. Without it the recompute is never awaited at all."""
+    from mascope_backend.api.new.peak_assignments.batch_peaks_controller import (
+        backfill_sample_batch_peaks,
+    )
+
+    mocks = _start(["si-0", "si-1"])
+    mocks["progress"].side_effect = RuntimeError("progress emit blew up")
+
+    with pytest.raises(RuntimeError, match="progress emit blew up"):
+        await backfill_sample_batch_peaks("sb-1", process_id="proc-1")
+
+    mocks["recompute"].assert_awaited_once_with("sb-1", set())
+
+
+@pytest.mark.asyncio
+async def test_a_cancelled_backfill_still_runs_the_consensus_pass():
+    """The load-bearing vector: a CancelledError is a BaseException, so it walks
+    past both of the loop's except arms. It must still reach the caller as a
+    cancellation, and the committed folds must still get their consensus."""
+    from mascope_backend.api.new.peak_assignments.batch_peaks_controller import (
+        backfill_sample_batch_peaks,
+    )
+
+    mocks = _start(["si-0", "si-1"], fold=[asyncio.CancelledError()])
+
+    with pytest.raises(asyncio.CancelledError):
+        await backfill_sample_batch_peaks("sb-1")
+
+    mocks["recompute"].assert_awaited_once_with("sb-1", set())
+
+
+@pytest.mark.asyncio
+async def test_a_failing_consensus_pass_does_not_mask_the_cancellation():
+    """The guard on the finally. A recompute that raises while the loop is
+    already unwinding must not REPLACE the exception that interrupted it - a
+    cancellation reported as a database error is the wrong story entirely."""
+    from mascope_backend.api.new.peak_assignments.batch_peaks_controller import (
+        backfill_sample_batch_peaks,
+    )
+
+    mocks = _start(["si-0"], fold=[asyncio.CancelledError()])
+    mocks["recompute"].side_effect = RuntimeError("pool timeout")
+
+    with pytest.raises(asyncio.CancelledError):
+        await backfill_sample_batch_peaks("sb-1")
+
+    mocks["recompute"].assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_a_consensus_pass_that_fails_on_the_ordinary_path_still_raises():
+    """The other side of that guard: nothing is unwinding, so a failed pass is
+    the only news there is. Swallowed, `backfill_outcome` would report a green
+    'Computed batch peaks from N assigned sample(s)' over anchors it never
+    wrote."""
+    from mascope_backend.api.new.peak_assignments.batch_peaks_controller import (
+        backfill_sample_batch_peaks,
+    )
+
+    mocks = _start(["si-0", "si-1"])
+    mocks["recompute"].side_effect = RuntimeError("boom")
+
+    with pytest.raises(RuntimeError, match="boom"):
+        await backfill_sample_batch_peaks("sb-1")
 
 
 @pytest.mark.asyncio
