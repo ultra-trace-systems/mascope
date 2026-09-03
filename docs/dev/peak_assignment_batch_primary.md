@@ -238,6 +238,11 @@ them as today. The one thing that stops is ingest writing them.
 
 ### 5.1 Ingest folds without a run
 
+> *Status:* shipped as the third implementation step, behind
+> `[meta] peak_assignment_ingest_ledger = "batch"` (default `"sample"`, today's behaviour).
+> Stage A is one helper shared by the run-backed orchestrator and the run-less fold; the
+> fold takes the rows in memory and writes members that link to no ledger row.
+
 `auto_assign_sample_peaks` runs Stage A exactly as now — peaks from the file, the
 known-isotope set, `compute_match_isotopes`, `apply_match_params`, `score_ions_by_fit`,
 `invert_matches_to_peak_assignments` — but hands the in-memory result to the fold instead of

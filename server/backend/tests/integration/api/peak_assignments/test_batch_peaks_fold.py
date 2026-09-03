@@ -11,6 +11,7 @@ import asyncio
 from collections import defaultdict
 from contextlib import suppress
 from datetime import datetime, timezone
+from types import SimpleNamespace
 
 import pytest
 import pytest_asyncio
@@ -928,3 +929,75 @@ async def test_members_name_their_identity_in_the_anchors_registry(
     assert bare_member.candidate is None
     assert bare_member.role == "unassigned"
     assert bare_member.owner_batch_peak_id is None
+
+
+# --- the run-less ingest path -----------------------------------------------------
+
+
+async def test_a_fold_from_rows_in_memory_links_no_ledger_row(
+    async_session_factory, seeded
+):
+    """The ingest path that writes no run hands the fold its rows directly. The
+    members are written as from a run - formula, tier, fit, the anchor's
+    registry entry - but link to no ledger row; a later run-backed fold of the
+    same sample replaces them and links them."""
+    batch, samples = seeded
+    async with async_session_factory() as s:
+        ledger = (
+            (
+                await s.execute(
+                    select(PeakAssignment).where(
+                        PeakAssignment.sample_item_id == samples["A"]
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+        rows = [
+            SimpleNamespace(
+                **{c.key: getattr(r, c.key) for c in PeakAssignment.__table__.columns}
+            )
+            for r in ledger
+        ]
+
+    assert (
+        await fold_sample_into_batch_peaks(samples["A"], rows=rows, persisted=False)
+        == batch
+    )
+
+    async with async_session_factory() as s:
+        members = (
+            (
+                await s.execute(
+                    select(BatchPeakOccurrence).where(
+                        BatchPeakOccurrence.sample_item_id == samples["A"]
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+    assert len(members) == 3
+    assert all(m.peak_assignment_id is None for m in members)
+    assert {m.assigned_formula for m in members} == {"C6H12O6", "C10H8O", None}
+    anchors = await _batch_peaks(async_session_factory, batch)
+    glucose = next(p for p in anchors if p.consensus_formula == "C6H12O6")
+    assert glucose.consensus_ion_formula == "C6H13O6+"  # from the registry
+    assert glucose.n_present == 1
+
+    # A run-backed fold of the same sample re-links the members to their rows.
+    assert await fold_sample_into_batch_peaks(samples["A"]) == batch
+    async with async_session_factory() as s:
+        links = (
+            (
+                await s.execute(
+                    select(BatchPeakOccurrence.peak_assignment_id).where(
+                        BatchPeakOccurrence.sample_item_id == samples["A"]
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+    assert len(links) == 3 and all(links)

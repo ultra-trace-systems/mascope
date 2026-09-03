@@ -59,9 +59,11 @@ from mascope_backend.api.new.peak_assignments.calibration_store import (
 )
 from mascope_backend.api.new.peak_assignments.config import (
     IN_APP_ENGINE,
+    INGEST_LEDGER_BATCH,
     PEAK_ASSIGNMENT_ENGINE_VERSION,
     PeakAssignmentConfig,
     peak_assignment_enabled,
+    peak_assignment_ingest_ledger,
     peak_assignment_ingest_max_peaks,
     peak_assignment_on_ingest,
 )
@@ -77,6 +79,7 @@ from mascope_backend.api.new.peak_assignments.fold_view import (
     derived_ledger,
     fold_id_target,
     fold_member,
+    fold_run_id,
     fold_run_record,
     is_fold_id,
     member_detail,
@@ -1529,6 +1532,81 @@ async def _already_running_result(
     return result
 
 
+async def _stage_a_assignments(
+    sample,
+    config: PeakAssignmentConfig,
+    match_params,
+    mechanism_ids,
+    mechanisms,
+    peak_assignment_run_id: str,
+) -> tuple[list[dict], dict | None]:
+    """Stage A: database-first assignment from the known composition set.
+
+    The curated target library plus (when loaded) the reference mirror, matched
+    against the sample's peaks, gated by the sample's match parameters, scored
+    with the fit score and arbitrated into one row per won peak. Shared by the
+    run-backed orchestrator and the run-less ingest fold
+    (:func:`fold_sample_peaks_without_run`), so the two cannot drift apart in
+    what they call Stage A.
+
+    :param sample: The sample view row.
+    :param config: The run configuration (thresholds, alternatives cap).
+    :param match_params: The sample's match parameters (gating, abundance floor).
+    :param mechanism_ids: The sample's ionization mechanism ids.
+    :param mechanisms: The mechanisms themselves, for the reference mirror.
+    :param peak_assignment_run_id: The id stamped on every row.
+    :return: The assignment rows, and what a run records about the confidence
+        curve their P(correct) came from - None when Stage A never ran or the
+        instrument has no curve.
+    """
+    stage_a_assignments: list[dict] = []
+    confidence_calibration: dict | None = None
+    target_isotopes_df = await _fetch_known_target_isotopes(
+        sample, match_params.isotope_abundance_threshold, mechanism_ids
+    )
+    reference_isotopes_df = await _fetch_reference_known_isotopes(
+        sample, match_params.isotope_abundance_threshold, mechanisms
+    )
+    known_isotopes_df = _combine_known_isotopes(
+        target_isotopes_df, reference_isotopes_df
+    )
+    if not known_isotopes_df.empty:
+        match_isotope_df = await compute_match_isotopes(
+            filename=sample.filename,
+            target_isotopes_df=known_isotopes_df,
+            polarity=sample.polarity,
+        )
+        # Gate raw matches by the sample's match parameters, exactly as the
+        # targeted Match pipeline does: this zeroes the score of peaks whose
+        # m/z error, isotope-ratio error, or intensity falls outside
+        # tolerance. Without it a peak tens of ppm off a target would be
+        # tiered "assigned" here while the Match tab reports no match.
+        if not match_isotope_df.empty:
+            match_isotope_df = apply_match_params(match_isotope_df, match_params)
+            # Deliberately score Stage A with the fit score (score_pattern_v2):
+            # the peak-centric engine's scoring engine is the ion-level fit
+            # quality, not the targeted matcher's per-isotopologue term. Runs
+            # after gating so tolerance/intensity cuts carry into the fit.
+            match_isotope_df = score_ions_by_fit(match_isotope_df)
+        instrument = get_instrument_type(sample.filename)
+        # Load this instrument's confidence calibration from the D6 store (active DB row,
+        # else the in-code provisional curve, else None -> uncalibrated). Passing it in keeps
+        # the engine DB-free; its corroboration_weights drive the P3 adduct fold-in.
+        calibration = await load_calibration(instrument, SCORE_VERSION)
+        confidence_calibration = calibration_meta(calibration)
+        stage_a_assignments = invert_matches_to_peak_assignments(
+            match_isotope_df,
+            sample_item_id=sample.sample_item_id,
+            peak_assignment_run_id=peak_assignment_run_id,
+            candidate_threshold=config.candidate_threshold,
+            assigned_threshold=config.assigned_threshold,
+            max_alternatives=config.max_alternatives,
+            instrument=instrument,
+            calibration=calibration,
+        )
+    return stage_a_assignments, confidence_calibration
+
+
 async def _run_sample_assignment(
     sample_item_id: str,
     config: PeakAssignmentConfig | None = None,
@@ -1627,53 +1705,14 @@ async def _run_sample_assignment(
 
         # -- Stage A: database-first assignment from the known composition set:
         # the curated target library plus (when loaded) the reference mirror.
-        stage_a_assignments: list[dict] = []
-        # What the run records about the curve its P(correct) values came from;
-        # stays None when Stage A never ran or the instrument has no curve.
-        confidence_calibration: dict | None = None
-        target_isotopes_df = await _fetch_known_target_isotopes(
-            sample, match_params.isotope_abundance_threshold, mechanism_ids
+        stage_a_assignments, confidence_calibration = await _stage_a_assignments(
+            sample,
+            config,
+            match_params,
+            mechanism_ids,
+            mechanisms,
+            run.peak_assignment_run_id,
         )
-        reference_isotopes_df = await _fetch_reference_known_isotopes(
-            sample, match_params.isotope_abundance_threshold, mechanisms
-        )
-        known_isotopes_df = _combine_known_isotopes(
-            target_isotopes_df, reference_isotopes_df
-        )
-        if not known_isotopes_df.empty:
-            match_isotope_df = await compute_match_isotopes(
-                filename=sample.filename,
-                target_isotopes_df=known_isotopes_df,
-                polarity=sample.polarity,
-            )
-            # Gate raw matches by the sample's match parameters, exactly as the
-            # targeted Match pipeline does: this zeroes the score of peaks whose
-            # m/z error, isotope-ratio error, or intensity falls outside
-            # tolerance. Without it a peak tens of ppm off a target would be
-            # tiered "assigned" here while the Match tab reports no match.
-            if not match_isotope_df.empty:
-                match_isotope_df = apply_match_params(match_isotope_df, match_params)
-                # Deliberately score Stage A with the fit score (score_pattern_v2):
-                # the peak-centric engine's scoring engine is the ion-level fit
-                # quality, not the targeted matcher's per-isotopologue term. Runs
-                # after gating so tolerance/intensity cuts carry into the fit.
-                match_isotope_df = score_ions_by_fit(match_isotope_df)
-            instrument = get_instrument_type(sample.filename)
-            # Load this instrument's confidence calibration from the D6 store (active DB row,
-            # else the in-code provisional curve, else None -> uncalibrated). Passing it in keeps
-            # the engine DB-free; its corroboration_weights drive the P3 adduct fold-in.
-            calibration = await load_calibration(instrument, SCORE_VERSION)
-            confidence_calibration = calibration_meta(calibration)
-            stage_a_assignments = invert_matches_to_peak_assignments(
-                match_isotope_df,
-                sample_item_id=sample_item_id,
-                peak_assignment_run_id=run.peak_assignment_run_id,
-                candidate_threshold=config.candidate_threshold,
-                assigned_threshold=config.assigned_threshold,
-                max_alternatives=config.max_alternatives,
-                instrument=instrument,
-                calibration=calibration,
-            )
         runtime.logger.info(
             f"Stage A assigned {len(stage_a_assignments)} of {len(peaks_df)} "
             f"peaks from the known target library"
@@ -1862,6 +1901,63 @@ async def _run_sample_assignment(
         raise
 
 
+async def fold_sample_peaks_without_run(sample_item_id: str) -> str | None:
+    """Assign a newly processed sample database-first and fold the result straight
+    into its batch's batch peaks, writing no per-sample run.
+
+    The ingest path under ``peak_assignment_ingest_ledger = "batch"``. Stage A
+    runs exactly as it does for a run - same peak read, same known-isotope set,
+    same gating, scoring and arbitration - but the rows never reach
+    ``peak_assignment``: each detected peak becomes a member of an anchor, and
+    the Sample view is served from those members (``fold_view``). What is not
+    kept is what only a run keeps - per-peak alternatives and provenance, mass
+    and abundance error - and an explicit run on the sample restores it,
+    replacing the members' links as it folds.
+
+    A sample the engine would refuse a run for (a blank, an unverified
+    calibration) is skipped with a log line and nothing is written.
+
+    :param sample_item_id: The sample to fold.
+    :return: The batch folded into, or None when the sample was skipped.
+    """
+    sample = await fetch_sample(sample_item_id)
+    if (reason := ineligible_reason(sample)) is not None:
+        runtime.logger.info(
+            f"Batch-ledger fold skipped for sample '{sample.sample_item_name}': "
+            f"{reason}."
+        )
+        return None
+    config = PeakAssignmentConfig(run_untargeted=False)
+    match_params = await default_match_params(sample_item_id)
+    peaks_df = load_sample_peaks(sample)
+    mechanism_ids, mechanisms = await fetch_sample_mechanisms(sample)
+    # The rows are shaped as ledger rows - the fold reads them as such - and
+    # stamped with the derived run's id: the run they will never be.
+    run_id = fold_run_id(sample_item_id)
+    stage_a, _ = await _stage_a_assignments(
+        sample, config, match_params, mechanism_ids, mechanisms, run_id
+    )
+    assigned = {row["sample_peak_id"] for row in stage_a}
+    unassigned = build_unassigned_assignments(
+        peaks_df[~peaks_df["sample_peak_id"].isin(assigned)],
+        sample_item_id=sample_item_id,
+        peak_assignment_run_id=run_id,
+    )
+    runtime.logger.info(
+        f"Stage A assigned {len(stage_a)} of {len(peaks_df)} peaks of sample "
+        f"'{sample.sample_item_name}'; folding into the batch ledger without a run"
+    )
+    from mascope_backend.api.new.peak_assignments.batch_peaks_controller import (
+        fold_sample_into_batch_peaks,
+    )
+
+    return await fold_sample_into_batch_peaks(
+        sample_item_id,
+        rows=[SimpleNamespace(**row) for row in stage_a + unassigned],
+        persisted=False,
+    )
+
+
 async def auto_assign_sample_peaks(
     sample_item_id: str,
     user_id: int | None = None,
@@ -1920,6 +2016,11 @@ async def auto_assign_sample_peaks(
                     "assigned with an explicit run."
                 )
                 return
+        if peak_assignment_ingest_ledger() == INGEST_LEDGER_BATCH:
+            # Fold straight into the batch ledger and write no per-sample run;
+            # the Sample view is served from the members instead (fold_view).
+            await fold_sample_peaks_without_run(sample_item_id)
+            return
         # assign_sample_peaks folds the completed run into the batch peaks itself,
         # so the batch overview stays current as samples arrive.
         await assign_sample_peaks(

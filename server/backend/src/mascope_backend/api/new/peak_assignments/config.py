@@ -187,6 +187,35 @@ def peak_assignment_ingest_max_peaks() -> int:
     )
 
 
+#: Values of ``peak_assignment_ingest_ledger``: write a per-sample run at ingest
+#: and fold it (the behaviour before the setting existed), or fold the sample
+#: into the batch ledger and write no run.
+INGEST_LEDGER_SAMPLE = "sample"
+INGEST_LEDGER_BATCH = "batch"
+
+
+def peak_assignment_ingest_ledger() -> str:
+    """Which ledger an ingest-time assignment writes.
+
+    ``"sample"`` (the default) writes a per-sample run and folds it into the
+    batch peaks, as an explicit run does. ``"batch"`` folds the sample into the
+    batch peaks and writes no run: the members carry what the Sample view needs
+    (``fold_view``), and the per-sample rows - about half of the per-peak cost,
+    most of it placeholders for peaks nothing assigned - are never written. An
+    explicit run on such a sample still writes one, and restores what only a
+    run keeps.
+
+    Read from ``peak_assignment_ingest_ledger`` in the runtime ``[meta]`` config;
+    anything but the two values reads as the default.
+
+    :return: :data:`INGEST_LEDGER_SAMPLE` or :data:`INGEST_LEDGER_BATCH`.
+    """
+    value = getattr(runtime.meta, "peak_assignment_ingest_ledger", INGEST_LEDGER_SAMPLE)
+    if str(value).strip().lower() == INGEST_LEDGER_BATCH:
+        return INGEST_LEDGER_BATCH
+    return INGEST_LEDGER_SAMPLE
+
+
 class PeakAssignmentConfig(BaseModel):
     """User-tunable configuration for one peak assignment run.
 

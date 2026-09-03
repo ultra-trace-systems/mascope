@@ -19,7 +19,7 @@ import pytest
 _SVC = "mascope_backend.api.new.peak_assignments.service"
 
 
-def _hook(enabled=True, on_ingest=True, ceiling=0, n_peaks=0):
+def _hook(enabled=True, on_ingest=True, ceiling=0, n_peaks=0, ledger="sample"):
     """Patch everything the hook reads; return the stack and its mocks.
 
     The two settings and the engine are always patched, because the defaults
@@ -30,6 +30,9 @@ def _hook(enabled=True, on_ingest=True, ceiling=0, n_peaks=0):
     mocks = {
         "assign": stack.enter_context(
             patch(f"{_SVC}.assign_sample_peaks", new_callable=AsyncMock)
+        ),
+        "fold": stack.enter_context(
+            patch(f"{_SVC}.fold_sample_peaks_without_run", new_callable=AsyncMock)
         ),
         "fetch": stack.enter_context(
             patch(
@@ -48,6 +51,9 @@ def _hook(enabled=True, on_ingest=True, ceiling=0, n_peaks=0):
     )
     stack.enter_context(
         patch(f"{_SVC}.peak_assignment_ingest_max_peaks", return_value=ceiling)
+    )
+    stack.enter_context(
+        patch(f"{_SVC}.peak_assignment_ingest_ledger", return_value=ledger)
     )
     return stack, mocks
 
@@ -189,3 +195,66 @@ async def test_swallows_a_failed_peak_count_too():
         await auto_assign_sample_peaks(sample_item_id="si-1", user_id=42)
 
     mocks["assign"].assert_not_called()
+
+
+# --- the batch-ledger mode ------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_the_batch_ledger_mode_folds_without_a_run():
+    """Under ``peak_assignment_ingest_ledger = "batch"`` the hook folds the
+    sample straight into the batch peaks and creates no run."""
+    from mascope_backend.api.new.peak_assignments.service import (
+        auto_assign_sample_peaks,
+    )
+
+    stack, mocks = _hook(ledger="batch")
+    with stack:
+        await auto_assign_sample_peaks(
+            sample_item_id="si-1", user_id=42, parent_id="proc-1"
+        )
+
+    mocks["fold"].assert_awaited_once_with("si-1")
+    mocks["assign"].assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_the_sample_ledger_mode_never_folds_without_a_run():
+    from mascope_backend.api.new.peak_assignments.service import (
+        auto_assign_sample_peaks,
+    )
+
+    stack, mocks = _hook(ledger="sample")
+    with stack:
+        await auto_assign_sample_peaks(sample_item_id="si-1")
+
+    mocks["assign"].assert_called_once()
+    mocks["fold"].assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_the_batch_ledger_mode_still_honours_the_ceiling():
+    """The ceiling guards the fold as it guards a run: a pathological sample is
+    hundreds of thousands of members as much as it is of rows."""
+    from mascope_backend.api.new.peak_assignments.service import (
+        auto_assign_sample_peaks,
+    )
+
+    stack, mocks = _hook(ledger="batch", ceiling=100, n_peaks=101)
+    with stack:
+        await auto_assign_sample_peaks(sample_item_id="si-1")
+
+    mocks["fold"].assert_not_called()
+    mocks["assign"].assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_swallows_a_failed_batch_ledger_fold():
+    from mascope_backend.api.new.peak_assignments.service import (
+        auto_assign_sample_peaks,
+    )
+
+    stack, mocks = _hook(ledger="batch")
+    mocks["fold"].side_effect = RuntimeError("fold failed")
+    with stack:
+        await auto_assign_sample_peaks(sample_item_id="si-1")  # must not raise
