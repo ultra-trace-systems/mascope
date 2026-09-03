@@ -141,7 +141,7 @@ PYTHON_REVIEWED = {
     "matplotlib-inline@0.2.1": (
         "BSD-3-Clause - verbatim BSD 3-Clause text in the LICENSE file in its wheel"
     ),
-    "tuspyserver@4.2.0": (
+    "tuspyserver@4.4.1": (
         "MIT - the published package declares nothing and names no project URL, "
         "but the upstream repository (github.com/edihasaj/tuspyserver, author "
         "matches) carries MIT License text. No tag exists for this version, so "
