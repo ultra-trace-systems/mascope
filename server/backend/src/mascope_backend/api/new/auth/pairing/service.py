@@ -59,13 +59,23 @@ def format_user_code(user_code: str) -> str:
     return f"{user_code[:half]}-{user_code[half:]}"
 
 
-async def start_pairing(service_name: str, machine_name: str | None) -> dict:
+async def start_pairing(
+    service_name: str,
+    machine_name: str | None,
+    instrument: str | None = None,
+    agent_version: str | None = None,
+) -> dict:
     """Create a pending pairing and return its codes.
 
     :param service_name: Agent service requesting a token (pre-validated).
     :type service_name: str
     :param machine_name: Optional machine hostname, shown to the approver.
     :type machine_name: str | None
+    :param instrument: Optional instrument the agent watches (pre-validated),
+        kept on the device once the pairing is approved.
+    :type instrument: str | None
+    :param agent_version: Optional agent release, kept on the device likewise.
+    :type agent_version: str | None
     :return: user_code (display form), device_code, expires_in, interval.
     :rtype: dict
     """
@@ -82,6 +92,8 @@ async def start_pairing(service_name: str, machine_name: str | None) -> dict:
     record = {
         "service_name": service_name,
         "machine_name": machine_name,
+        "instrument": instrument,
+        "agent_version": agent_version,
         "status": "pending",
         "device_code": device_code,
         "access_token": None,
@@ -92,6 +104,7 @@ async def start_pairing(service_name: str, machine_name: str | None) -> dict:
     runtime.logger.info(
         f"Pairing started for {service_name}"
         + (f" on '{machine_name}'" if machine_name else "")
+        + (f" watching '{instrument}'" if instrument else "")
     )
     return {
         "user_code": format_user_code(user_code),
@@ -143,7 +156,7 @@ async def approve_pairing(user: User, user_code: str) -> dict:
     :type user: User
     :param user_code: Normalized pairing code (no dash, uppercase).
     :type user_code: str
-    :return: service_name and machine_name of the approved pairing.
+    :return: service_name, machine_name and instrument of the approved pairing.
     :rtype: dict
     :raises PairingCodeInvalidException: Unknown or expired code.
     :raises PairingCodeAlreadyApprovedException: Code approved before.
@@ -166,6 +179,10 @@ async def approve_pairing(user: User, user_code: str) -> dict:
         device = AgentDevice(
             name=machine_name,
             service_name=record["service_name"],
+            # What the agent said about itself when it asked to pair; a
+            # record written before these fields existed carries neither.
+            instrument=record.get("instrument"),
+            last_seen_version=record.get("agent_version"),
             sponsor_user_id=user.id,
         )
         session.add(device)
@@ -219,6 +236,7 @@ async def approve_pairing(user: User, user_code: str) -> dict:
     return {
         "service_name": record["service_name"],
         "machine_name": record["machine_name"],
+        "instrument": record.get("instrument"),
     }
 
 

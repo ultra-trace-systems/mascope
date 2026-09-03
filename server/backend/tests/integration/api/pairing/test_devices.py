@@ -14,6 +14,7 @@ from httpx import ASGITransport, AsyncClient
 from sqlalchemy import delete, select
 
 from mascope_backend.accounts import ACCOUNT_TYPE_MACHINE
+from mascope_backend.api.new.auth.devices.service import record_reported_instrument
 from mascope_backend.api.new.auth.pairing import service as pairing_service
 from mascope_backend.app.fast import fast
 from mascope_backend.db import AccessToken, AgentDevice, User
@@ -70,12 +71,19 @@ async def clean_devices(async_session_factory):
         await session.commit()
 
 
-async def _pair(public_client, approver_client, machine_name):
-    """Run a full pairing and return (token, device_id)."""
+async def _pair(public_client, approver_client, machine_name, **reported):
+    """Run a full pairing and return (token, device_id).
+
+    ``reported`` is what the agent says about itself in the start request.
+    """
     started = (
         await public_client.post(
             "/api/auth/pairing/start",
-            json={"service_name": "file-agent", "machine_name": machine_name},
+            json={
+                "service_name": "file-agent",
+                "machine_name": machine_name,
+                **reported,
+            },
         )
     ).json()
     approve = await approver_client.post(
@@ -111,6 +119,79 @@ async def test_sponsor_lists_only_their_own_devices(
     # ...but the deployment-wide view shows every device.
     all_devices = (await admin_client.get("/api/auth/devices/all")).json()["data"]
     assert "EDITOR-PC" in [d["name"] for d in all_devices]
+
+
+@pytest.mark.asyncio
+async def test_list_shows_what_the_machine_reported(
+    fake_redis, public_client, editor_client
+):
+    await _pair(
+        public_client,
+        editor_client,
+        "LAB-PC",
+        instrument="Orbi-Lab2",
+        agent_version="v2.0.0",
+    )
+
+    devices = (await editor_client.get("/api/auth/devices")).json()["data"]
+    row = next(d for d in devices if d["name"] == "LAB-PC")
+    assert row["instrument"] == "Orbi-Lab2"
+    assert row["last_seen_version"] == "v2.0.0"
+
+
+@pytest.mark.asyncio
+async def test_a_request_records_the_agent_version(
+    fake_redis, public_client, editor_client
+):
+    # The version rides on the same write as last_seen_at, so the first
+    # authenticated request of a fresh device records both.
+    token, device_id = await _pair(public_client, editor_client, "VER-PC")
+
+    resp = await public_client.get(
+        "/api/sample/files",
+        params={"page": 1, "limit": 1},
+        headers={
+            "Authorization": f"Bearer {token}",
+            "X-Service-Name": "file-agent",
+            "X-Agent-Version": "v2.0.0",
+        },
+    )
+    assert resp.status_code == 200, resp.text
+
+    devices = (await editor_client.get("/api/auth/devices")).json()["data"]
+    row = next(d for d in devices if d["device_id"] == device_id)
+    assert row["last_seen_version"] == "v2.0.0"
+    assert row["last_seen_at"] is not None
+
+
+@pytest.mark.asyncio
+async def test_an_upload_backfills_a_missing_instrument_once(
+    fake_redis, public_client, editor_client, async_session_factory
+):
+    _, device_id = await _pair(public_client, editor_client, "FILL-PC")
+
+    # A name the server could not file under is dropped, not stored.
+    await record_reported_instrument(device_id, "orbi lab")
+    async with async_session_factory() as session:
+        assert (await session.get(AgentDevice, device_id)).instrument is None
+
+    # The first usable name fills the empty row...
+    await record_reported_instrument(device_id, "Orbi-Lab2")
+    # ...and a later one does not move it: the row is what the sponsor sees.
+    await record_reported_instrument(device_id, "Orbi-Other")
+    async with async_session_factory() as session:
+        assert (await session.get(AgentDevice, device_id)).instrument == "Orbi-Lab2"
+
+    # A device that reported one at pairing keeps that too.
+    _, paired_id = await _pair(
+        public_client, editor_client, "SET-PC", instrument="Orbi-A"
+    )
+    await record_reported_instrument(paired_id, "Orbi-B")
+    async with async_session_factory() as session:
+        assert (await session.get(AgentDevice, paired_id)).instrument == "Orbi-A"
+
+    # No device behind the upload: nothing to record, nothing raised.
+    await record_reported_instrument(None, "Orbi-B")
 
 
 @pytest.mark.asyncio

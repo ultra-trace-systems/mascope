@@ -1,6 +1,12 @@
+import re
 from datetime import datetime
 
 from pydantic import BaseModel, Field
+
+
+#: What a reported instrument name may look like: letters, digits and hyphens,
+#: the same rule the server applies to the instrument segment of a file name.
+INSTRUMENT_NAME_RE = re.compile(r"^[A-Za-z0-9-]{1,64}$")
 
 
 class DeviceRead(BaseModel):
@@ -9,12 +15,20 @@ class DeviceRead(BaseModel):
     device_id: int
     name: str = Field(description="Machine name, defaults to the paired hostname")
     service_name: str = Field(description="Agent service the device holds a token for")
+    instrument: str | None = Field(
+        None,
+        description="Instrument the agent reports it watches (None until it reports one)",
+    )
     sponsor_username: str | None = Field(
         None, description="Who approved the pairing (None when the account is gone)"
     )
     created_at: datetime
     last_seen_at: datetime | None = Field(
         None, description="Last authenticated use, minute precision"
+    )
+    last_seen_version: str | None = Field(
+        None,
+        description="Agent release last seen on this device (None until it reports one)",
     )
     revoked_at: datetime | None = Field(
         None, description="Set when the device's credentials were revoked"
