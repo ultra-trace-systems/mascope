@@ -95,8 +95,15 @@ def _b64(value: str) -> str:
     return base64.b64encode(value.encode()).decode()
 
 
+#: Every tus request except OPTIONS must declare the protocol version. The
+#: server answers 412 without it, before any of the checks these tests pin, so
+#: HEAD and DELETE carry it as well as creation and chunk transfer. The real
+#: clients always send it: the SDK stamps it on every agent request
+#: (`_tus_headers`), and tus-js-client does the same from the browser.
+TUS_HEADERS = {"Tus-Resumable": "1.0.0"}
+
 CREATE_HEADERS = {
-    "Tus-Resumable": "1.0.0",
+    **TUS_HEADERS,
     "Upload-Length": "8",
     "Upload-Metadata": (
         f"filename {_b64('orbi1_20260801_pos.raw')},"
@@ -202,14 +209,14 @@ async def test_agent_token_can_inspect_and_terminate_upload(file_agent_token):
         assert resp.status_code == 201, resp.text
         upload_id = resp.headers["location"].rstrip("/").rsplit("/", 1)[-1]
 
-        head = await client.head(f"{TUS_URL}{upload_id}")
+        head = await client.head(f"{TUS_URL}{upload_id}", headers=TUS_HEADERS)
         assert head.status_code == 200, head.text
         assert head.headers["upload-offset"] == "0"
 
-        terminate = await client.delete(f"{TUS_URL}{upload_id}")
+        terminate = await client.delete(f"{TUS_URL}{upload_id}", headers=TUS_HEADERS)
         assert terminate.status_code == 204, terminate.text
 
-        head_after = await client.head(f"{TUS_URL}{upload_id}")
+        head_after = await client.head(f"{TUS_URL}{upload_id}", headers=TUS_HEADERS)
         assert head_after.status_code == 404
 
 
@@ -276,7 +283,7 @@ async def _create_and_terminate(client) -> int:
     resp = await client.post(TUS_URL, headers=CREATE_HEADERS)
     if resp.status_code == 201:
         upload_id = resp.headers["location"].rstrip("/").rsplit("/", 1)[-1]
-        await client.delete(f"{TUS_URL}{upload_id}")
+        await client.delete(f"{TUS_URL}{upload_id}", headers=TUS_HEADERS)
     return resp.status_code
 
 
