@@ -31,10 +31,16 @@ COPY_ENGINE = "mascope-copy"
 # tolerance, re-scoring, drop rules). Stamped as engine_version on copied runs.
 COPY_ENGINE_VERSION = "0.1.0"
 
+# The identity of the ledger derived from the batch peaks for a sample that has
+# no run of its own (fold_view.py). The runs listing presents it as a completed
+# run and the UI badges it as first-party, so an import that could claim the
+# name would forge that presentation. Reserved like the two above.
+FOLD_ENGINE = "batch"
+
 # Engine names a client may not claim. Matched case-insensitively on the
 # stripped value: 'Mascope' is not a different engine, it is the same forgery
 # with different capitalization.
-RESERVED_ENGINE_NAMES = frozenset({IN_APP_ENGINE, COPY_ENGINE})
+RESERVED_ENGINE_NAMES = frozenset({IN_APP_ENGINE, COPY_ENGINE, FOLD_ENGINE})
 
 # Rows one import request may carry, mirroring the ledger read's page size for
 # the same reason: a dense sample's full ledger with alternatives and provenance

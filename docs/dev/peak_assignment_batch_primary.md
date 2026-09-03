@@ -298,6 +298,11 @@ runs an explicit assignment, which is unchanged.
 
 ### 6.1 The Sample view
 
+> *Status:* shipped as the second implementation step (`fold_view.py`). The runs listing carries
+> one derived run per folded sample (engine `batch`, listed last); the ledger and detail reads
+> answer for it from members plus anchors; a verdict can be recorded against a derived row,
+> curation is refused with a coded 409, and the inspector withholds the controls.
+
 The per-sample read
 ([`get_peak_assignments`](../../server/backend/src/mascope_backend/api/new/peak_assignments/service.py),
 `service.py:235`) serves a completed run if the sample has one, else it derives the ledger
