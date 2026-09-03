@@ -35,14 +35,13 @@ export const useChartData = defineStore('chart.match.spectra', () => {
           (iso) => iso.target_isotope_id === trace.target_isotope_id
         )
         if (isotope) {
-          // Extract RGB values and convert them to the 0-255 range
-          const colorParts = trace.line.color.match(/(\d+\.?\d*)/g)
-          if (colorParts) {
-            const r = Math.round(parseFloat(colorParts[0]) * 255)
-            const g = Math.round(parseFloat(colorParts[1]) * 255)
-            const b = Math.round(parseFloat(colorParts[2]) * 255)
-            isotope.color = `rgb(${r},${g},${b})`
-          }
+          // The trace colour is already a CSS rgb() string, so the isotope
+          // swatch in the rating dialog can take it as-is. It used to be
+          // rescaled here because the backend sent colorcet's 0-1 floats
+          // verbatim; it now scales them to 0-255 itself, since plotly.js 4
+          // parses colours per the CSS spec and reads an unscaled component
+          // as near-zero.
+          isotope.color = trace.line.color
         }
       }
     }
