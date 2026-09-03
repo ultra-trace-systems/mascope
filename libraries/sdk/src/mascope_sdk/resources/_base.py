@@ -31,6 +31,25 @@ def _coerce_datetime_columns(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
+def _coerce_utc_columns(df: pd.DataFrame) -> pd.DataFrame:
+    """Convert ``*_utc_*`` audit columns to timezone-aware datetimes.
+
+    The run and assignment records name their timestamps
+    ``peak_assignment_run_utc_created`` / ``..._utc_completed``, which the
+    shared ``_coerce_datetime_columns`` (keyed on ``datetime`` in the column
+    name) does not catch.
+    """
+    for col in df.columns:
+        if "_utc" not in col or pd.api.types.is_datetime64_any_dtype(df[col]):
+            continue
+        try:
+            df[col] = pd.to_datetime(df[col], utc=True)
+        except Exception as e:
+            # INFO: fires per column per DataFrame on odd data
+            logger.info(f"Failed to convert column {col} to datetime: {e}")
+    return df
+
+
 class BaseResource:
     """Base class for all API resource classes.
 
@@ -45,6 +64,33 @@ class BaseResource:
         :type client: MascopeClient
         """
         self._client = client
+
+    def _get_envelope(
+        self, path: str, params: dict[str, Any] | None = None
+    ) -> dict[str, Any]:
+        """GET *path* and return the full response envelope.
+
+        :meth:`_get` unwraps a response to its ``data`` field, which drops the
+        ``total`` a paged read needs to know when it has everything - so a
+        paging loop reads the envelope itself.
+
+        :param path: API path (without /api/ prefix).
+        :type path: str
+        :param params: Query parameters.
+        :type params: dict[str, Any], optional
+        :return: The whole JSON body.
+        :rtype: dict[str, Any]
+        """
+        response = http_get(
+            url=self._client.url,
+            path=path,
+            access_token=self._client.access_token,
+            params=params,
+            timeout=self._client._timeout,
+            verify_ssl=self._client._verify_ssl,
+            service_name=self._client._service_name,
+        )
+        return response.json()
 
     def _get(
         self,

@@ -292,6 +292,13 @@ It writes no per-sample runs: the results appear in the batch ledger and in each
 sample's view, marked as untargeted. An assignment run on a sample still takes
 precedence for that sample.
 
+The whole ledger leaves the app as a CSV from the view menu behind the cog: *Export
+ledger (CSV)* writes one row per member peak - every sample's reading of every batch
+peak, with the batch peak's consensus beside it - and the browser downloads the file
+when it is ready. The same rows are one call away in the SDK
+(`mascope.load_batch_ledger(...)`, or `mascope.batch_peaks.members(batch_id)` per
+batch), which is the shortest way from a batch's assignment to any other format.
+
 The *Verdict* column, last in the ledger, records and shows a
 [batch-level verdict](#batch-level-verdicts) on the species: one judgment that covers
 every sample in the batch without a verdict of its own.

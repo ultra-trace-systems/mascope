@@ -1677,6 +1677,20 @@ composition-verify endpoints stay as API/SDK surface - PR
 
 ---
 
+## 9b. The batch ledger (shipped 2026-09-03, batch-primary epic)
+
+With the batch ledger primary (`peak_assignment_batch_primary.md`), the SDK gained
+the batch-level read beside the per-sample one: `mascope.batch_peaks` (`list`,
+`members`, `verdicts`) and the loader `mascope.load_batch_ledger(dataset, batches,
+members=True)`, which returns the whole ledger as flat member rows with the species
+table on `attrs["batch_peaks"]`. The rows come from
+`GET /api/batch-peaks/batch/{id}/members`, paged like the per-sample ledger and shaped
+by `batch_export.COLUMNS` - the same rows the app's *Export ledger (CSV)* writes - so
+a batch's assignment reaches any other format in one line. `load_assignments` and
+`peak_assignments.get` are unchanged and still read a sample's run where one exists;
+a sample served from the batch ledger reads through the same route as a run with
+engine `batch`.
+
 ## 10. Summary
 
 v1 - deliberately **read-only and additive** - has shipped (PR

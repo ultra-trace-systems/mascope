@@ -299,6 +299,37 @@ Key columns: `stage`, `stage_name`, `t_min`, `t_max`, plus all columns from `get
 
 ---
 
+### `load_batch_ledger`: The batch ledger
+
+Load a batch's **batch ledger** — the batch-primary record of peak assignment: one
+**batch peak** per species across the batch's samples, with the consensus formula and
+tier the samples' assignments vote for, and one **member** per sample the species was
+seen in, carrying that sample's own reading of the peak. Every processed sample folds
+in as it arrives, so the ledger is complete without a per-sample run in sight.
+
+```python
+# One row per member: the whole ledger of every matching batch, flat
+ledger = mascope.load_batch_ledger(dataset="My Dataset", batches="Uronium")
+ledger.to_csv("ledger.csv", index=False)  # a short way to any format
+
+# The species table rides along: one row per batch peak
+species = ledger.attrs["batch_peaks"]
+species.groupby("sample_batch_name")["consensus_tier"].value_counts()
+
+# Or the species table alone
+species = mascope.load_batch_ledger(dataset="My Dataset", members=False)
+```
+
+Key columns of a member row: the anchor's `batch_peak_id`, `batch_mz`,
+`consensus_formula`, `consensus_tier`, `support_fraction`, `n_present`, `curated`
+(pinned by hand for the whole batch), beside the member's `sample_item_name`,
+`sample_peak_id`, `mz`, `intensity`, `assigned_formula`, `source`, `tier`, `role`,
+`fit_score` — so a sample that dissents from the batch reads as one row saying both.
+Per batch, the same reads are `mascope.batch_peaks.list(batch_id)`,
+`.members(batch_id, sample_id=...)` and `.verdicts(batch_id)` (the batch-level verdicts
+recorded on its species). The app's *Batch peaks* pane exports the same rows as a CSV
+from its view menu.
+
 ### `load_assignments`: Peak assignments across batches
 
 Load the persisted **peak-assignment** results (see [Peak assignments](#peak-assignments)) of every sample across one or more batches, concatenated into a single DataFrame enriched with batch and sample metadata — the peak-assignment counterpart of `load_peaks`.
