@@ -546,6 +546,20 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
   their copyright and Mascope stays Apache-2.0. See
   [CONTRIBUTING.md](CONTRIBUTING.md#contributor-license-agreement).
 
+- Design note: **isolated deployments - reaching and updating a server with no
+  internet route** (`docs/dev/isolated_deployment_plan.md`). For sites where
+  the Mascope server has no route to the internet and only the instrument PC
+  next to it goes online, on the customer's say-so. The note inventories every
+  place the deployment reaches out today and what breaks without a route, puts
+  an egress allow-list first as the option that costs nothing, and then
+  proposes: administrator access through a customer-switched subnet route on
+  the instrument PC instead of a remote-desktop hop; a signed release bundle
+  (images, manifest, git bundle, CLI wheels) dropped into an inbox that the
+  existing unattended updater applies with its usual window and grace rules; a
+  redacted support bundle travelling the other way; and the host-level hygiene
+  (time, TLS, patching, backups) an isolated server needs. A design document
+  only; no behaviour changes until it is signed off and implemented.
+
 ### Removed
 
 - SDK: the `09_composition_assignment.ipynb` tutorial is retired. It rolled
