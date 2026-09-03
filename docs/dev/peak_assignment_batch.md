@@ -307,6 +307,13 @@ than of the formula, so the ledger can show them without joining the occurrence 
   serialized per-batch fold (§5.3), on the fold's own session — nothing between the advisory
   lock and the commit may open a second one.
 
+*Shipped since:* the roll-up no longer reads the per-sample ledger. A member row carries what
+the vote needs — formula, tier, fit, intensity, P(correct), its role and, for an isotopologue,
+the anchor its owner folded into in the same sample — and names its ion formula and mechanism
+by index into the anchor's append-only candidate registry (`BatchPeak.candidates`). The second
+hop above is therefore resolved at fold time, and a run pruned or deleted afterwards changes no
+consensus. First step of [`peak_assignment_batch_primary.md`](peak_assignment_batch_primary.md).
+
 ### 5.5 Stage B is user-triggered **[settled]**
 
 Untargeted assignment (Stage B) is computationally heavy, so it is **not** run on arrival. The

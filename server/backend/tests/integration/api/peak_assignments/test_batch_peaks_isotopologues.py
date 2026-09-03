@@ -19,8 +19,9 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 import pytest_asyncio
-from sqlalchemy import select
+from sqlalchemy import delete, select
 
+from mascope_backend.api.new.peak_assignments import batch_peaks_controller
 from mascope_backend.api.new.peak_assignments.batch_peaks_controller import (
     fold_sample_into_batch_peaks,
 )
@@ -440,3 +441,36 @@ async def test_the_series_records_carry_the_same_aggregates(
     record = res["data"][0]
     assert record["isotopologue_of"] == peaks[181].batch_peak_id
     assert record["max_intensity"] == pytest.approx(500.0)
+
+
+async def test_the_link_survives_the_loss_of_the_ledger_rows(
+    async_session_factory, seeded
+):
+    """The family link is the members' own now - each isotopologue member names
+    the anchor its owner folded into - so it no longer needs the ledger rows
+    the members came from. Delete every run and recompute: the link stands,
+    and so does the ion formula the members' registry entry carries."""
+    batch, samples = seeded
+    await _fold_all(samples)
+    peaks = await _by_mz(async_session_factory, batch)
+    assert peaks[182].isotopologue_of == peaks[181].batch_peak_id
+
+    async with async_session_factory() as s:
+        await s.execute(
+            delete(PeakAssignmentRun).where(
+                PeakAssignmentRun.sample_item_id.in_(list(samples.values()))
+            )
+        )
+        await s.commit()
+    async with async_session_factory() as s:
+        await batch_peaks_controller._recompute_consensus(
+            s,
+            {p.batch_peak_id for p in peaks.values()},
+            datetime.now(timezone.utc),
+        )
+        await s.commit()
+
+    after = await _by_mz(async_session_factory, batch)
+    assert after[182].isotopologue_of == after[181].batch_peak_id
+    assert after[300].isotopologue_of is None  # still no majority
+    assert after[182].consensus_ion_formula == "C6H13O6+"
