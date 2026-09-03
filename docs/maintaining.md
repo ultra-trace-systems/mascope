@@ -708,13 +708,14 @@ never evicts. Batch peaks add a second row per observed peak per sample, and the
 pass does not touch those at all. Size the database for the ledger you are
 keeping, not for what the timer might reclaim - see [Disk space](#disk-space).
 
-Two `[meta]` settings bound the ingest-time cost without switching the feature
-off - the views, on-demand runs and imports keep working either way:
+Three `[meta]` settings bound the ingest-time cost without switching the
+feature off - the views, on-demand runs and imports keep working either way:
 
 ```toml
 [meta]
 peak_assignment_on_ingest = false          # assign on demand only (default true)
 peak_assignment_ingest_max_peaks = 20000   # skip denser samples at ingest (default 100000; 0 = no ceiling)
+peak_assignment_ingest_ledger = "batch"    # fold into the batch ledger, write no per-sample run (default "sample")
 ```
 
 `peak_assignment_on_ingest = false` is the setting for a high-throughput
@@ -723,7 +724,17 @@ database stage only, mostly peaks it could not assign - are tens of gigabytes a
 month written for nobody in particular. The ceiling guards the other end: one
 very dense acquisition (hundreds of thousands of peaks) is hundreds of
 megabytes of ledger, so a sample above it is logged and left for an explicit
-run. Both take effect on the next stack restart.
+run.
+
+`peak_assignment_ingest_ledger = "batch"` keeps ingest-time assignment but writes
+no per-sample run for it: the sample's peaks fold into the batch ledger as
+members, and its Sample view is served from there (the run selector shows it
+as *Batch ledger*). That removes the per-sample rows - about half of the
+per-peak cost, most of it placeholders for peaks nothing assigned - while every
+sample is still assigned as it arrives. What it gives up per sample is the
+inspector's per-peak alternatives and error figures and hand curation, all of
+which an explicit run on that sample restores. All three take effect on the
+next stack restart.
 
 #### Turning peak assignment off
 

@@ -158,7 +158,11 @@ def _tolerance_fn(resolution_func):
 
 
 async def fold_sample_into_batch_peaks(
-    sample_item_id: str, *, defer_consensus_to: set[str] | None = None
+    sample_item_id: str,
+    *,
+    defer_consensus_to: set[str] | None = None,
+    rows: list | None = None,
+    persisted: bool = True,
 ) -> str | None:
     """Fold a sample's latest completed assignment into its batch's batch peaks.
 
@@ -179,6 +183,14 @@ async def fold_sample_into_batch_peaks(
         pass never reaches an anchor this fold did not write. Until that pass
         runs, a touched anchor's consensus columns describe the members it had
         before this fold.
+    :param rows: The sample's assignment rows to fold, in place of the latest
+        completed run's. The run-less ingest path hands the fold what Stage A
+        computed in memory, shaped as ledger rows (attribute access), and
+        no run is consulted.
+    :param persisted: Whether ``rows`` exist as ``peak_assignment`` rows. False
+        for rows that were never written: the members then link to no ledger
+        row, while the ids the rows carry still resolve the family link among
+        themselves.
     :returns: the ``sample_batch_id`` (for the caller's reload event) or ``None``
         when there is nothing to fold (unknown sample / no completed run).
     """
@@ -194,23 +206,23 @@ async def fold_sample_into_batch_peaks(
         ionization_mode_id = sample.ionization_mode_id
         filename = sample.filename
 
-        run_id = await _latest_completed_run_id(session, sample_item_id)
-        if run_id is None:
-            return None
-
-        # Every observed peak of the run (assigned or not) folds into a batch peak,
-        # so no m/z is dropped from the batch view.
-        rows = (
-            (
-                await session.execute(
-                    select(PeakAssignment).where(
-                        PeakAssignment.peak_assignment_run_id == run_id
+        if rows is None:
+            run_id = await _latest_completed_run_id(session, sample_item_id)
+            if run_id is None:
+                return None
+            # Every observed peak of the run (assigned or not) folds into a
+            # batch peak, so no m/z is dropped from the batch view.
+            rows = (
+                (
+                    await session.execute(
+                        select(PeakAssignment).where(
+                            PeakAssignment.peak_assignment_run_id == run_id
+                        )
                     )
                 )
+                .scalars()
+                .all()
             )
-            .scalars()
-            .all()
-        )
         if not rows:
             return None
 
@@ -359,7 +371,7 @@ async def fold_sample_into_batch_peaks(
                     batch_peak_id=f.batch_peak_id,
                     sample_item_id=sample_item_id,
                     sample_peak_id=r.sample_peak_id,
-                    peak_assignment_id=r.peak_assignment_id,
+                    peak_assignment_id=r.peak_assignment_id if persisted else None,
                     sample_peak_mz=f.peak["raw_mz"],
                     intensity=r.sample_peak_intensity,
                     tier=r.tier,

@@ -578,6 +578,18 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
 
 ### Changed
 
+- **Ingest can fold a sample into the batch ledger without writing a run.** A
+  new `[meta]` setting, `peak_assignment_ingest_ledger`, chooses what an
+  ingest-time assignment writes: `"sample"` (the default, unchanged) writes a
+  per-sample run and folds it; `"batch"` runs the same database-first
+  assignment and folds the result straight into the batch peaks, writing no
+  per-sample run - the Sample view is then served from the batch ledger. That
+  removes the per-sample rows, about half of the per-peak database cost and
+  mostly placeholders for peaks nothing assigned, while every sample is still
+  assigned as it arrives. An explicit run on such a sample still writes one and
+  restores what only a run keeps: per-peak alternatives and error figures, and
+  hand curation. The ingest ceiling applies to both modes.
+
 - **A sample the batch ledger knows but no run describes still has a Sample
   view.** Deleting or pruning a sample's assignment runs used to leave its
   Sample tab empty - grey spectrum, no ledger - although its peaks were still
