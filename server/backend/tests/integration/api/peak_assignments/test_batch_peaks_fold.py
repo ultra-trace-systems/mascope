@@ -18,6 +18,11 @@ import pytest_asyncio
 from sqlalchemy import delete, select
 
 from mascope_backend.api.new.peak_assignments import batch_peaks_controller
+from mascope_backend.api.new.peak_assignments.batch_peaks import (
+    mz_from_delta,
+    role_name,
+    tier_name,
+)
 from mascope_backend.api.new.peak_assignments.batch_peaks_controller import (
     backfill_sample_batch_peaks,
     fold_sample_into_batch_peaks,
@@ -924,10 +929,15 @@ async def test_members_name_their_identity_in_the_anchors_registry(
     for member in members:
         by_anchor[member.batch_peak_id].append(member)
     assert [m.candidate for m in by_anchor[shared.batch_peak_id]] == [0, 0]
-    assert {m.role for m in by_anchor[shared.batch_peak_id]} == {"M0"}
+    assert {role_name(m.role) for m in by_anchor[shared.batch_peak_id]} == {"M0"}
+    assert {tier_name(m.tier) for m in by_anchor[shared.batch_peak_id]} == {"assigned"}
     (bare_member,) = by_anchor[bare.batch_peak_id]
     assert bare_member.candidate is None
-    assert bare_member.role == "unassigned"
+    assert role_name(bare_member.role) == "unassigned"
+    # The m/z is stored as an offset from the anchor and recovers exactly enough.
+    assert mz_from_delta(bare.mz, bare_member.mz_delta_ppm) == pytest.approx(
+        250.1, abs=1e-6
+    )
     assert bare_member.owner_batch_peak_id is None
 
 
@@ -980,7 +990,8 @@ async def test_a_fold_from_rows_in_memory_links_no_ledger_row(
         )
     assert len(members) == 3
     assert all(m.peak_assignment_id is None for m in members)
-    assert {m.assigned_formula for m in members} == {"C6H12O6", "C10H8O", None}
+    # Two assigned members name a registry entry; the unassigned one names none.
+    assert sorted(m.candidate is not None for m in members) == [False, True, True]
     anchors = await _batch_peaks(async_session_factory, batch)
     glucose = next(p for p in anchors if p.consensus_formula == "C6H12O6")
     assert glucose.consensus_ion_formula == "C6H13O6+"  # from the registry

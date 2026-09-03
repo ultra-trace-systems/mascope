@@ -198,7 +198,13 @@ Curation and verification move here too (§6.3).
 
 > *Status:* the new member fields (`candidate`, `role`, `owner_batch_peak_id`, `p_correct`) and
 > the anchor's `candidates` registry shipped as the first implementation step (migration
-> `c4d2e8a1b7f3`), additively: the existing columns and their types are unchanged until phase 4.
+> `c4d2e8a1b7f3`). The slim row itself shipped as the fourth (migration `e7b1c9d4a2f6`): tier
+> and role as `smallint` codes, `real` for intensity, fit and P(correct), `mz_delta_ppm` in
+> place of the absolute m/z, no formula copy, and a partial index on `peak_assignment_id`.
+> `p_correct` stays per member (single precision) rather than moving to the anchor: the
+> derived Sample view shows a per-sample probability. Curation and verification on the
+> anchor are still open. Measured on the 32-sample batch, run-linked members: tuple 165 -> 136 B,
+> 303 -> 274 B per member with indexes; a member folded without a run is about 200 B.
 
 | column | today | proposed |
 | --- | --- | --- |

@@ -729,8 +729,8 @@ run.
 `peak_assignment_ingest_ledger = "batch"` keeps ingest-time assignment but writes
 no per-sample run for it: the sample's peaks fold into the batch ledger as
 members, and its Sample view is served from there (the run selector shows it
-as *Batch ledger*). That removes the per-sample rows - about half of the
-per-peak cost, most of it placeholders for peaks nothing assigned - while every
+as *Batch ledger*). That leaves about a fifth of the per-peak cost - a member
+row of some 200 bytes in place of a ledger row and its occurrence - while every
 sample is still assigned as it arrives. What it gives up per sample is the
 inspector's per-peak alternatives and error figures and hand curation, all of
 which an explicit run on that sample restores. All three take effect on the
