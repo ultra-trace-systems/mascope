@@ -6,6 +6,23 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
 
 ### Added
 
+- **Batch-level verdicts.** A species can be judged once for a whole batch from the
+  new *Verdict* column of the Batch peaks ledger: confirm, reject or unsure with an
+  evidence level and a note, re-judge, or retract. The verdict is about the batch
+  peak's consensus formula and covers every sample in the batch whose peak folded
+  into it and that has no verdict of its own - shown there as a borrowed badge in
+  the assignment ledger and a dashed pill in the inspector - while a per-sample
+  verdict always wins. It is pinned to the formula judged: a confirm or reject
+  names the formula and is refused if the consensus moved since the row was read,
+  and a verdict whose formula the consensus has since left stays on record,
+  outlined as stale. Its own table, `batch_peak_verification`, keeps batch-level
+  judgments structurally out of the calibration label pool. Routes under
+  `/api/batch-peaks`: `POST /batch/{id}/verify` and `.../retract` (editor, behind
+  the feature flag), `GET /batch/{id}/verdicts` and
+  `GET /sample/{id}/anchor-context`. The assignment ledger's verdict filter now
+  runs on the verdict a row visibly carries, so *Unverified* no longer lists rows
+  that show a borrowed badge.
+
 - **The untargeted composition search runs once per batch peak.** *Search
   untargeted*, beside *Compute batch peaks* in the Batch peaks pane, searches
   every batch peak nothing has assigned yet on its brightest member's real

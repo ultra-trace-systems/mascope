@@ -2159,6 +2159,83 @@ class AssignmentCalibration(Base):
     )
 
 
+class BatchPeakVerification(Base):
+    """A user's verdict on a batch peak's species claim - one per anchor, batch-wide.
+
+    The anchor-scoped counterpart of :class:`AssignmentVerification`
+    (``docs/dev/peak_assignment_continuity.md`` section 4): judging the consensus formula of
+    one batch peak covers every sample in the batch whose peak folded into that anchor and
+    that carries no verdict of its own. Append-only with the current row marked, exactly as
+    the per-sample table: one live row per ``(batch_peak_id, assigned_formula,
+    ionization_mechanism_id)`` (``superseded_utc IS NULL``, NULLS NOT DISTINCT), stamped in
+    the same transaction that records its successor; a retract is a stamp with no successor.
+
+    Keyed to the anchor id **without a foreign key**: a re-fold that leaves an anchor
+    memberless deletes it, and anchor ids are minted once and never reused, so a dangling id
+    can never re-attach to a different species and the verdict outlives the machine lifecycle
+    of the anchor it judged. The claim is pinned: if the consensus later flips from F to G
+    the verdict stays live about F and reads as stale, because a machine recompute never
+    supersedes a human label. ``context`` snapshots the consensus the human saw.
+
+    **Structurally outside the calibration label pool.** The pool selects from
+    ``assignment_verification`` alone. An anchor has no honest score to pair with a label
+    (``best_fit_score`` and the consensus probability are maxima over the members backing the
+    claim), and fanning one verdict out over ``n_present`` samples would flood the pool with
+    correlated labels - so this is a separate table on purpose, and a refactor that unified
+    the two would reopen exactly that.
+    """
+
+    __tablename__ = "batch_peak_verification"
+
+    batch_peak_verification_id: Mapped[str] = mapped_column(
+        String(32), primary_key=True
+    )
+    sample_batch_id: Mapped[str] = mapped_column(
+        String(16),
+        ForeignKey("sample_batch.sample_batch_id", ondelete="CASCADE"),
+        index=True,
+    )
+    # No ForeignKey, deliberately - see the docstring.
+    batch_peak_id: Mapped[str] = mapped_column(String(16), index=True)
+    assigned_formula: Mapped[str] = mapped_column(String(256))
+    ionization_mechanism_id: Mapped[Optional[str]] = mapped_column(String(16))
+    verdict: Mapped[str] = mapped_column(String(16))
+    evidence_level: Mapped[Optional[str]] = mapped_column(String(24), nullable=True)
+    note: Mapped[Optional[str]] = mapped_column(Text)
+    context: Mapped[Optional[dict]] = mapped_column(JSON)
+    verified_by: Mapped[Optional[int]] = mapped_column(
+        Integer, ForeignKey("user.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    verified_utc: Mapped[dt] = mapped_column(
+        TIMESTAMP(timezone=True), default=lambda: dt.now(timezone.utc)
+    )
+    superseded_utc: Mapped[Optional[dt]] = mapped_column(
+        TIMESTAMP(timezone=True), nullable=True
+    )
+
+    __table_args__ = (
+        CheckConstraint(
+            "verdict IN ('confirmed', 'rejected', 'unsure')", name="verdict_valid"
+        ),
+        CheckConstraint(
+            "evidence_level IS NULL OR evidence_level IN "
+            "('reference_standard', 'msms', 'orthogonal', 'pattern', 'visual')",
+            name="evidence_level_valid",
+        ),
+        # One live verdict per claim at an anchor; NULLS NOT DISTINCT so a null
+        # mechanism is one claim, not infinitely many - as on the per-sample table.
+        Index(
+            "uq_batch_peak_verification_current",
+            "batch_peak_id",
+            "assigned_formula",
+            "ionization_mechanism_id",
+            unique=True,
+            postgresql_where=text("superseded_utc IS NULL"),
+            postgresql_nulls_not_distinct=True,
+        ),
+    )
+
+
 class AssignmentVerification(Base):
     """A user's verdict on a peak-centric assignment (verification-calibration loop, V1).
 
@@ -2181,6 +2258,11 @@ class AssignmentVerification(Base):
 
     ``evidence_level`` records *why* the user is confident (the guardrail against a
     confirmation-bias loop): a reference-standard confirmation is weighted far above a visual guess.
+
+    The calibration label pool selects from this table **alone**. A batch-level verdict on a
+    batch peak lives in :class:`BatchPeakVerification` and never lands here - not even as one
+    fabricated per-sample row per member sample - so one judgment fanned out over a batch
+    cannot flood the pool with correlated labels. Keep the two tables apart.
     """
 
     __tablename__ = "assignment_verification"
@@ -2293,6 +2375,7 @@ __all__ = [
     "PeakAssignment",
     "BatchPeak",
     "BatchPeakOccurrence",
+    "BatchPeakVerification",
     "AttributeTemplate",
     "InstrumentFunction",
     "ReferenceSource",
