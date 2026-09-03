@@ -83,6 +83,7 @@ _(optional brief description of written/updated tests)_
 
 ## ✅ PR Checklist
 
+- [ ] I have accepted the [Contributor License Agreement](https://github.com/ultra-trace-systems/mascope/blob/develop/CONTRIBUTING.md#contributor-license-agreement) _(first pull request only; the CLA assistant comments if it is still missing)_
 - [ ] I have tested this change locally
 - [ ] I have requested review from GitHub Copilot and addressed useful comments _(if applicable)_
 - [ ] Code changes include appropriate comments/docstrings

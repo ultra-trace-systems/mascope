@@ -484,6 +484,16 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
   superscript count of folded isotopologue peaks beside it, and clicking it does
   not change which row is selected.
 
+- **Contributor License Agreement.** External contributors are now asked to
+  accept the Ultra Trace Systems Individual Contributor License Agreement once,
+  on their first pull request, by replying to the CLA assistant's comment; the
+  `CLA Assistant` check blocks merging until every commit author has. The
+  agreement and the signature register live in
+  [ultra-trace-systems/cla](https://github.com/ultra-trace-systems/cla) and are
+  shared with Peaky, so one acceptance covers both projects. Contributors keep
+  their copyright and Mascope stays Apache-2.0. See
+  [CONTRIBUTING.md](CONTRIBUTING.md#contributor-license-agreement).
+
 ### Removed
 
 - SDK: the `09_composition_assignment.ipynb` tutorial is retired. It rolled
