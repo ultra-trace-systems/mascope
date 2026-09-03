@@ -245,7 +245,8 @@ them as today. The one thing that stops is ingest writing them.
 ### 5.1 Ingest folds without a run
 
 > *Status:* shipped as the third implementation step, behind
-> `[meta] peak_assignment_ingest_ledger = "batch"` (default `"sample"`, today's behaviour).
+> `[meta] peak_assignment_ingest_ledger`, whose default flipped to `"batch"` on the epic once
+> steps B-D had landed; `"sample"` restores the run-writing ingest.
 > Stage A is one helper shared by the run-backed orchestrator and the run-less fold; the
 > fold takes the rows in memory and writes members that link to no ledger row.
 
@@ -424,7 +425,8 @@ Each phase ships on its own and is useful on its own.
    that has a run. This is the prerequisite for everything after it, and it can ship dark. *The
    consensus half - members carry the five fields, the recompute no longer joins the ledger -
    shipped as migration `c4d2e8a1b7f3`.*
-3. **Ingest folds without a run** (§5.1). The big cut, ~-65 %. Behind a setting, so a
+3. **Ingest folds without a run** (§5.1). The big cut, ~-65 %. Behind a setting (now the
+   default), so a
    deployment can go back to writing ingest runs while the derived Sample view is being
    proven. User docs and `docs/maintaining.md` follow: "every completed run folds into the
    batch peaks" becomes "every processed sample folds into the batch peaks".
