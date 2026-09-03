@@ -7,13 +7,30 @@ written and kept, samples fold into it at ingest without a per-sample ledger row
 per-sample run becomes an opt-in deep dive. It is motivated by disk, argued from
 measurements, and justified by the product shape it produces.*
 
-> **Status: proposal (2026-09-03).** A design for sign-off; no code until agreed. Tier 1 of
-> the disk-footprint work has shipped
-> ([#2029](https://github.com/ultra-trace-systems/mascope/pull/2029), migration
-> `97c42c48e011`); this note is what the assessment behind that PR called tier 3, taken to
-> its conclusion. Decisions marked **[settled]** are already on record in earlier design
-> docs; **[open]** items carry a recommendation. Numbers are measured unless marked
-> *estimate*.
+> **Status: implemented (2026-09-03)** on `epic/batch-primary-assignment`, one PR per
+> step, each merged into the epic when green; the epic is reviewed into `develop` as a
+> whole. Tier 1 ([#2029](https://github.com/ultra-trace-systems/mascope/pull/2029)) and
+> tier 2 ([#2037](https://github.com/ultra-trace-systems/mascope/pull/2037)) of the
+> disk-footprint work shipped first on `develop`. The sections below are the design as
+> agreed, with a status blockquote where a step changed a detail of it; the steps:
+>
+> | Step | What shipped | PR |
+> |---|---|---|
+> | A | The batch ledger stands on its own: members carry their assignment, the recompute never joins `peak_assignment` (§4.1, §5) | [#2038](https://github.com/ultra-trace-systems/mascope/pull/2038) |
+> | B | A Sample view derived from the batch ledger, served through the per-sample routes (§6.1) | [#2039](https://github.com/ultra-trace-systems/mascope/pull/2039) |
+> | C | Ingest folds a sample without writing a run, behind `peak_assignment_ingest_ledger` (§5.1) | [#2040](https://github.com/ultra-trace-systems/mascope/pull/2040) |
+> | D | The slim batch ledger member, ~0.27 KB per member with indexes (§4.2, §7) | [#2041](https://github.com/ultra-trace-systems/mascope/pull/2041) |
+> | - | `batch` becomes the default ingest ledger | [#2042](https://github.com/ultra-trace-systems/mascope/pull/2042) |
+> | E | The untargeted search once per batch peak, propagated to the members by measurement (§5.3) | [#2043](https://github.com/ultra-trace-systems/mascope/pull/2043) |
+> | F | One verdict per species at the batch peak, overlaying the samples (§6.3; continuity note §4-5) | [#2047](https://github.com/ultra-trace-systems/mascope/pull/2047) |
+> | G | Curate a species for the whole batch from a derived row's inspector (§6.3) | [#2048](https://github.com/ultra-trace-systems/mascope/pull/2048) |
+> | H | *Rebuild batch ledger* folds every sample; the assignment copy and the batch-wide run are retired (§6.4) | [#2049](https://github.com/ultra-trace-systems/mascope/pull/2049) |
+> | I | The ledger in the SDK (`load_batch_ledger`, `batch_peaks`) and as a CSV export | this step |
+>
+> Not done, by design: §5.4 (per-sample evidence on demand) and the columnar membership of
+> §8 stay in reserve. Decisions marked **[settled]** were on record in earlier design docs;
+> **[open]** items carried a recommendation, and the status blockquotes say how each
+> resolved. Numbers are measured unless marked *estimate*.
 
 ---
 
