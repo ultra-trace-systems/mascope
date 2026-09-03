@@ -382,6 +382,11 @@ for the reason that note gives.
 
 ### 6.4 Import and copy
 
+> **Status (2026-09-03): copy retired, import unchanged.** The assignment copy and the
+> batch-wide assignment run were removed in the epic - both approximated what the
+> ledger now does directly - and *Compute batch peaks* became *Rebuild batch ledger*,
+> which folds a sample without a run through Stage A the way ingest does.
+
 The SDK import contract ([`sdk_peak_assignment.md`](sdk_peak_assignment.md) §8.2)
 publishes a per-sample run and is untouched: an imported run folds into the batch as today,
 and its members link to their ledger rows through `peak_assignment_id`. Copy remaps

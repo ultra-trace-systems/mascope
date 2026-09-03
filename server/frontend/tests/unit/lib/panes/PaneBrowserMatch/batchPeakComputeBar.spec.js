@@ -323,7 +323,7 @@ describe('BatchPeakComputeBar untargeted search', () => {
   it('offers the search beside the compute, under the same gate', () => {
     mountBar()
     const buttons = wrapper.findAll('.compute-button')
-    expect(buttons.map((b) => b.text())).toEqual(['Compute batch peaks', 'Search untargeted'])
+    expect(buttons.map((b) => b.text())).toEqual(['Rebuild batch ledger', 'Search untargeted'])
     expect(buttons[1].attributes('disabled')).toBeUndefined()
   })
 

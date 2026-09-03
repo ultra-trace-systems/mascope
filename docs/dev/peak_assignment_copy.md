@@ -1,5 +1,14 @@
 # Copying Assignments From One Sample to a Batch's Other Samples — Design Note
 
+> **Status (2026-09-03): retired.** Shipped as WP24 and removed in the batch-primary
+> epic (`docs/dev/peak_assignment_batch_primary.md`): with the batch ledger primary,
+> every processed sample folds in without a run, the untargeted search runs once per
+> batch peak and propagates to the members by measurement, and a species is curated
+> once at its anchor - the three things a copy approximated. The seeded re-score chain
+> this note introduced (`seeded_scoring.py`) lives on under that propagation and the
+> inspector's on-demand alternative scores; the reserved `mascope-copy` engine name
+> stays reserved so an import cannot forge it. The design below is kept as history.
+
 *One sample of a batch gets the full treatment — an engine run, inspection,
 and human overrides — the manual-curation write path has since shipped (§6).
 The batch's other samples usually carry closely related chemistry, yet their

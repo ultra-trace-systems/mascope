@@ -11,7 +11,7 @@ import InputText from 'primevue/inputtext'
 import { FilterMatchMode } from '@primevue/core/api'
 
 import { BaseTabbedPanel, BaseMatchTag, BaseCopyableField } from '@/lib/base'
-import { DialogSampleOp, DialogCalibration, DialogCopyAssignments } from '@/lib/dialogs'
+import { DialogSampleOp, DialogCalibration } from '@/lib/dialogs'
 import { calibrationStatus } from '@/lib/calibrationStatus'
 import { clone } from '@/lib/utils'
 import { num } from '@/lib/formatters'
@@ -278,10 +278,6 @@ const openCalibration = (sample) => {
     <DialogCalibration
       v-model:visible="contextMenu.dialog.calibration"
       :context="contextMenu.row"
-    />
-    <DialogCopyAssignments
-      v-model:visible="contextMenu.dialog.copyAssignments"
-      :sample="contextMenu.row"
     />
     <SampleContextMenu />
   </BaseTabbedPanel>

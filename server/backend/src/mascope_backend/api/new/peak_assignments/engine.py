@@ -115,7 +115,7 @@ def evidence_for(fit_score: float | None, formula: str | None) -> float | None:
     """Evidence for a committed formula: ``fit x plausibility``.
 
     The one place the product is spelled out for callers that hold a stored row
-    rather than a live scoring frame - manual curation, the copy service, the
+    rather than a live scoring frame - manual curation, the batch propagation, the
     import check. Both engine stages compute it inline instead, because they
     already carry the plausibility they arbitrated with and re-deriving it from
     the formula string would be a second, divergeable source of the same number.

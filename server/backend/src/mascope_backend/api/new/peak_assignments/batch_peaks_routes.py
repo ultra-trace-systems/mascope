@@ -217,12 +217,12 @@ async def backfill_batch_peaks_route(
     user: User = Depends(current_active_user),
     membership=Depends(require_batch_role("editor")),
 ) -> dict:
-    """Compute (backfill) a batch's batch peaks from its samples' existing
-    completed assignment runs, so the batch overview populates without re-running
-    assignment.
+    """Rebuild a batch's batch peaks from every one of its samples: from a
+    completed assignment run where there is one, otherwise from a fresh Stage A
+    pass with no run written, the way ingest folds a sample.
 
-    Use this for a batch assigned before batch peaks existed, or after a bulk
-    import. Runs as a background task and emits ``peak_assignment_reload`` on
+    Use this for a batch that predates the ledger, was never assigned, or was
+    imported. Runs as a background task and emits ``peak_assignment_reload`` on
     completion so the Assignments chart refreshes.
 
     :param sample_batch_id: The unique identifier of the sample batch.
@@ -240,7 +240,7 @@ async def backfill_batch_peaks_route(
     )
     return {
         "message": (
-            f"Computing batch peaks for '{sample_batch.sample_batch_name}', "
+            f"Rebuilding the batch ledger of '{sample_batch.sample_batch_name}', "
             "please wait."
         ),
         "process_id": process_id,

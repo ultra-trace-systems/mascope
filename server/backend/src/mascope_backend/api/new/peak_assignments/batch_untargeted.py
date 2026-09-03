@@ -11,7 +11,7 @@ than a per-sample pass, and the factor grows with the batch.
 
 What the search decides for an anchor is then **propagated** to the anchor's
 other members: each sample that holds one is measured against the winning
-formula through the seeded chain the copy service uses (one peak read, one
+formula through the shared seeded scoring chain (one peak read, one
 match pass per sample), so every member carries a fit of its own and the
 sample's derived view agrees with the batch. A member whose peak the seeded
 envelope does not reach stays unassigned rather than inheriting a number.

@@ -65,7 +65,7 @@ async def test_batch_peak_backfill_steps_across_the_sample():
             process_id="backfill-proc",
             type="compute_batch_peaks",
             status="pending",
-            message=f"Computing batch peaks, folding sample {item_index + 1}/4.",
+            message=f"Rebuilding the batch ledger, folding sample {item_index + 1}/4.",
             data={
                 "sample_batch_id": "b1",
                 "_room_ids": ["b1"],
@@ -91,13 +91,13 @@ async def test_batch_peak_backfill_keeps_the_message_it_was_given():
         process_id="backfill-proc",
         type="compute_batch_peaks",
         status="pending",
-        message="Computing batch peaks, folding sample 3/4.",
+        message="Rebuilding the batch ledger, folding sample 3/4.",
         data={"_room_ids": ["b1"], "_total_samples": 4, "_item_index": 2},
     )
 
     emitted = await _emit_and_capture(notification, increment=1.0)
 
-    assert emitted.message == "Computing batch peaks, folding sample 3/4."
+    assert emitted.message == "Rebuilding the batch ledger, folding sample 3/4."
     assert emitted.progress == pytest.approx(75.0)
 
 
