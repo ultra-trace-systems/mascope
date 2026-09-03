@@ -578,6 +578,19 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
 
 ### Changed
 
+- **Ingest folds a sample into the batch ledger without writing a run, by
+  default.** `peak_assignment_ingest_ledger` now defaults to `"batch"`: a
+  newly processed sample is assigned from the known compositions and folded
+  into its batch's peaks as member rows of some 200 bytes per detected peak,
+  and its Sample view is served from the batch ledger (the run selector shows
+  it as *Batch ledger*). No per-sample run is written unless someone asks for
+  one - *Assign peaks* on the sample, or an import - which is also what buys
+  the inspector's per-peak alternatives and error figures and hand curation
+  for that sample. Set `peak_assignment_ingest_ledger = "sample"` under
+  `[meta]` to keep writing a run per ingested sample as before, at about a
+  kilobyte per detected peak. The operator guide's cost figures are updated
+  to match.
+
 - **The batch ledger's member row stores only what a trace point and a vote
   need.** A member (one row per detected peak per sample in the batch ledger)
   stored its peak's absolute m/z, its formula as text and its tier and role as
