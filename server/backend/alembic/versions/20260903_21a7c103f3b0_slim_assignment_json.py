@@ -53,6 +53,26 @@ _FORMULA_ONLY = (
     " AND (e - 'assigned_formula' - 'plausibility' - 'source') = '{}'::jsonb"
     " AND e->>'source' = 'untargeted'"
     " AND jsonb_typeof(e->'assigned_formula') = 'string'"
+    " AND jsonb_typeof(e->'plausibility') IN ('number', 'null')"
+)
+
+# The packed form, and only it: a two-element array of a string and a
+# number-or-null. The same domain ``unpack_alternative`` claims, so the two
+# read a stored row the same way. Deliberately narrower than "an array" -
+# ``alternatives`` on an imported row is whatever the publishing client sent,
+# so an array this revision never wrote must come back out unchanged rather
+# than be rewritten into a formula nobody proposed.
+#
+# Every operator here is total over jsonb: ``->`` with an integer yields SQL
+# NULL on an object or a scalar rather than raising, so ``e->2 IS NULL`` bounds
+# the length without ``jsonb_array_length``, which would raise on a non-array.
+# Postgres does not promise to evaluate AND operands left to right, so a guard
+# that only works when it is tested first is not a guard.
+_PACKED_ENTRY = (
+    "jsonb_typeof(e) = 'array'"
+    " AND jsonb_typeof(e->0) = 'string'"
+    " AND jsonb_typeof(e->1) IN ('number', 'null')"
+    " AND e->2 IS NULL"
 )
 
 _PACK_ALTERNATIVES = f"""
@@ -75,11 +95,11 @@ _PACK_ALTERNATIVES = f"""
       )
 """
 
-_UNPACK_ALTERNATIVES = """
+_UNPACK_ALTERNATIVES = f"""
     UPDATE peak_assignment
     SET alternatives = (
         SELECT jsonb_agg(
-            CASE WHEN jsonb_typeof(e) = 'array'
+            CASE WHEN {_PACKED_ENTRY}
                  THEN jsonb_build_object(
                      'assigned_formula', e->0,
                      'plausibility', e->1,
@@ -94,7 +114,7 @@ _UNPACK_ALTERNATIVES = """
       AND jsonb_typeof(alternatives::jsonb) = 'array'
       AND EXISTS (
           SELECT 1 FROM jsonb_array_elements(peak_assignment.alternatives::jsonb) AS x(e)
-          WHERE jsonb_typeof(x.e) = 'array'
+          WHERE {_PACKED_ENTRY}
       )
 """
 
@@ -118,11 +138,20 @@ _RECORD_RUN_CALIBRATION = """
     WHERE run.peak_assignment_run_id = rows.peak_assignment_run_id
 """
 
+# Only the rows this server scored. `p_correct` is the key that says so: the
+# engine writes it beside the pair it is being relieved of, and an import
+# strips it (`SERVER_OWNED_PROVENANCE_KEYS`), so a row carrying it is one the
+# in-app engine wrote. `calibrated` is NOT in that reserved set, so on an
+# imported or copied row it is the publishing client's own key, stored verbatim
+# by contract - and the restore below can only put back rows that carry
+# `p_correct`, so stripping it there would be one-way. The same predicate on
+# both sides is what makes the pair reversible.
 _STRIP_ROW_CALIBRATION = """
     UPDATE peak_assignment
     SET provenance = (provenance::jsonb - 'calibration' - 'calibrated')::json
     WHERE provenance IS NOT NULL
       AND jsonb_typeof(provenance::jsonb) = 'object'
+      AND provenance::jsonb ? 'p_correct'
       AND (provenance::jsonb ? 'calibration' OR provenance::jsonb ? 'calibrated')
 """
 

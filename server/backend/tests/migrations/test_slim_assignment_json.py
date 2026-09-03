@@ -72,6 +72,17 @@ _ANNOTATED = {
     "source": "untargeted",
     "note": "published",
 }
+# Arrays an external engine published. `alternatives` is unvalidated client
+# JSON, so a stored array need not be one this revision packed: the packed form
+# is a string paired with a number or null, and anything else has to come back
+# out of both directions as it went in.
+_CLIENT_PAIR = ["C6H12O6", "isomer of the winner"]
+_CLIENT_TRIPLE = ["C6H12O6", 0.9, {"note": "published"}]
+# An imported row. `calibrated` is not in SERVER_OWNED_PROVENANCE_KEYS, so the
+# import stores the publishing client's own key verbatim while stripping
+# `p_correct` - and the downgrade can only restore rows that carry `p_correct`,
+# so a strip that took this key would be one-way.
+_IMPORTED_PROVENANCE = {"engine_note": "external", "calibrated": True}
 
 # (peak_assignment_id, run_id, sample_peak_id, source, alternatives, provenance)
 _ASSIGNMENTS = [
@@ -120,6 +131,14 @@ _ASSIGNMENTS = [
             "calibrated": False,
             "calibration": None,
         },
+    ),
+    (
+        "pa-cal-imp",
+        _CALIBRATED_RUN,
+        "p4",
+        "database",
+        [_CLIENT_PAIR, _CLIENT_TRIPLE],
+        _IMPORTED_PROVENANCE,
     ),
 ]
 
@@ -376,6 +395,24 @@ def test_the_per_row_copies_are_stripped_and_nothing_else_is(migrated: dict) -> 
     assert migrated["rows"]["pa-cal-none"]["provenance"] is None
 
 
+def test_an_importers_own_calibrated_key_is_not_stripped(migrated: dict) -> None:
+    """`calibrated` is server-owned only beside a `p_correct` the server wrote.
+    On an imported row it is the client's, stored verbatim by contract - and
+    the downgrade restores only rows carrying `p_correct`, so taking it here
+    would delete it for good."""
+    assert migrated["rows"]["pa-cal-imp"]["provenance"] == _IMPORTED_PROVENANCE
+
+
+def test_client_published_arrays_are_not_mistaken_for_packed_entries(
+    migrated: dict,
+) -> None:
+    """Neither is the packed shape, so the pack leaves both as they are."""
+    assert migrated["rows"]["pa-cal-imp"]["alternatives"] == [
+        _CLIENT_PAIR,
+        _CLIENT_TRIPLE,
+    ]
+
+
 # --- Downgrade -------------------------------------------------------------
 
 
@@ -402,3 +439,14 @@ def test_downgrade_puts_the_pair_back_beside_p_correct(downgraded: dict) -> None
     # Rows without a `p_correct` never had the pair and do not get one.
     assert "calibrated" not in downgraded["rows"]["pa-cal-un"]["provenance"]
     assert "confidence_calibration" not in downgraded["run_columns"]
+
+
+def test_downgrade_leaves_client_published_arrays_alone(downgraded: dict) -> None:
+    """The unpack claims exactly what the pack produced - a string paired with
+    a number or null. An array of any other shape is a client's, and rewriting
+    it would drop elements and invent a source it never named."""
+    assert downgraded["rows"]["pa-cal-imp"]["alternatives"] == [
+        _CLIENT_PAIR,
+        _CLIENT_TRIPLE,
+    ]
+    assert downgraded["rows"]["pa-cal-imp"]["provenance"] == _IMPORTED_PROVENANCE

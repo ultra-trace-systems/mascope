@@ -208,6 +208,39 @@ class RunStillAssemblingException(CodedHTTPException):
         )
 
 
+def _carries_own_calibration(provenance: dict) -> bool:
+    """Whether a row states its own confidence calibration.
+
+    True for a row written before the curve moved to the run, or seeded that
+    way. The engine wrote ``calibrated`` and ``calibration`` together, so either
+    key alone is the whole answer: such a row speaks for itself and the run's
+    record does not apply to it.
+
+    One predicate rather than one per reader, so the detail read and the ledger
+    read cannot resolve the same row differently - a response saying
+    ``calibrated: false`` beside a provisional flag read off the run would be
+    contradicting itself.
+    """
+    return "calibration" in provenance or "calibrated" in provenance
+
+
+def _row_calibration(provenance: dict, run_calibration: dict | None) -> dict | None:
+    """The confidence calibration a row's ``p_correct`` was read off.
+
+    The row's own block when it carries one, else the run's - but only for a row
+    that carries a ``p_correct`` at all. The run's curve says nothing about a
+    row it did not calibrate: Stage B rows, unassigned placeholders and imported
+    rows (whose ``p_correct`` is stripped at ingest) have none.
+
+    :param provenance: The row's stored provenance.
+    :param run_calibration: The run's ``confidence_calibration``, or None.
+    :return: The curve that applies to this row, or None.
+    """
+    if _carries_own_calibration(provenance):
+        return provenance.get("calibration")
+    return run_calibration if "p_correct" in provenance else None
+
+
 def _provenance_scalars(
     provenance: dict | None, run_calibration: dict | None = None
 ) -> dict:
@@ -225,17 +258,11 @@ def _provenance_scalars(
 
     ``run_calibration`` is the run's ``confidence_calibration``: the curve a
     calibrated row's ``p_correct`` was read off, recorded once per run rather
-    than in every row. It speaks only for rows that carry a ``p_correct`` - the
-    database stage's - and a row that still carries its own ``calibration``
-    block (written before the move, or seeded that way) is read as it is.
+    than in every row. Which curve applies to this row is
+    :func:`_row_calibration`'s to say, so the ledger and the detail agree.
     """
     provenance = provenance or {}
-    if "calibration" in provenance:
-        calibration = provenance.get("calibration") or {}
-    elif "p_correct" in provenance:
-        calibration = run_calibration or {}
-    else:
-        calibration = {}
+    calibration = _row_calibration(provenance, run_calibration) or {}
     corroboration = provenance.get("corroboration") or {}
     return {
         "evidence": provenance.get("evidence"),
@@ -255,7 +282,8 @@ def provenance_with_calibration(
     with ``calibrated`` and ``calibration`` beside ``p_correct`` all the same,
     because that is the shape the inspector and the SDK read. Only rows that
     carry a ``p_correct`` key ever had the pair - the database stage's - and a
-    row that still carries its own is left as it is.
+    row that already states its own is left as it is, on the same test
+    :func:`_provenance_scalars` resolves the ledger's flag by.
 
     :param provenance: The row's stored provenance.
     :param run_calibration: The run's ``confidence_calibration``, or None.
@@ -263,7 +291,7 @@ def provenance_with_calibration(
     """
     if not isinstance(provenance, dict) or "p_correct" not in provenance:
         return provenance
-    if "calibration" in provenance or "calibrated" in provenance:
+    if _carries_own_calibration(provenance):
         return provenance
     return {
         **provenance,
@@ -395,14 +423,16 @@ async def get_peak_assignments(
             .limit(limit)
         )
         rows = (await session.execute(query)).all()
+        # Read inside the session that loaded the run: outside it the instance
+        # is detached, and an attribute that has been expired there is a lazy
+        # load, which on an async session raises rather than reloading.
+        run_calibration = run.confidence_calibration
 
     data = []
     for row in rows:
         record = row._asdict()
         record.update(
-            _provenance_scalars(
-                record.pop("provenance", None), run.confidence_calibration
-            )
+            _provenance_scalars(record.pop("provenance", None), run_calibration)
         )
         data.append(record)
     return {
@@ -1291,28 +1321,25 @@ async def _finalize_run(
     peak_assignment_run_id: str,
     status: str,
     error: str | None = None,
-    *,
-    confidence_calibration: dict | None = None,
 ) -> None:
     """Mark a run completed/failed with its completion timestamp.
 
-    A completed run also records the confidence calibration its ledger was
-    scored with (see :func:`engine.calibration_meta`); None means the run was
-    uncalibrated. A run that failed records nothing - its ledger, if any, is
-    never served.
+    Deliberately not where the run's ``confidence_calibration`` is recorded:
+    the ledger is committed in an earlier transaction, so a run interrupted
+    between the two keeps its rows and never reaches here - and a reader that
+    names such a run by id is served those rows. The curve is committed with
+    the rows instead (see :func:`_run_sample_assignment`), so the two cannot
+    disagree whatever status the run ends in.
     """
-    values: dict = {
-        "status": status,
-        "error": error,
-        "peak_assignment_run_utc_completed": dt.now(timezone.utc),
-    }
-    if status == "completed":
-        values["confidence_calibration"] = confidence_calibration
     async with async_session() as session:
         await session.execute(
             update(PeakAssignmentRun)
             .where(PeakAssignmentRun.peak_assignment_run_id == peak_assignment_run_id)
-            .values(**values)
+            .values(
+                status=status,
+                error=error,
+                peak_assignment_run_utc_completed=dt.now(timezone.utc),
+            )
         )
         await session.commit()
 
@@ -1681,13 +1708,24 @@ async def _run_sample_assignment(
         if all_assignments:
             async with async_session() as session:
                 await session.execute(insert(PeakAssignment), all_assignments)
+                # The curve the rows were scored against, committed with them.
+                # It is the run's to record - one curve serves a whole run - but
+                # it has to land in the same transaction as the ledger, because
+                # a run interrupted after this point keeps its rows without ever
+                # being finalized: the startup reaper marks it failed and leaves
+                # the ledger standing, and a read that names that run by id
+                # serves rows whose P(correct) would then name no curve at all.
+                await session.execute(
+                    update(PeakAssignmentRun)
+                    .where(
+                        PeakAssignmentRun.peak_assignment_run_id
+                        == run.peak_assignment_run_id
+                    )
+                    .values(confidence_calibration=confidence_calibration)
+                )
                 await session.commit()
 
-        await _finalize_run(
-            run.peak_assignment_run_id,
-            "completed",
-            confidence_calibration=confidence_calibration,
-        )
+        await _finalize_run(run.peak_assignment_run_id, "completed")
         await send_progress_user_notification(notification, 1.0)
 
         # Fold this completed run into the batch peaks so the batch overview

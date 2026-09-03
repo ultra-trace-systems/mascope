@@ -79,10 +79,12 @@ def _sample() -> MagicMock:
 
 
 class _Recorder:
-    """Captures the rows the orchestrator bulk-inserts."""
+    """Captures the rows the orchestrator bulk-inserts, and the statements it
+    issues alongside them."""
 
     def __init__(self):
         self.rows: list[dict] = []
+        self.statements: list = []
         self.finalized: list[tuple[str, str]] = []
 
     def session_factory(self):
@@ -91,6 +93,8 @@ class _Recorder:
         async def execute(statement, params=None):
             if isinstance(params, list):
                 self.rows.extend(params)
+            else:
+                self.statements.append(statement)
             return MagicMock()
 
         session.execute = AsyncMock(side_effect=execute)
@@ -98,6 +102,20 @@ class _Recorder:
         ctx.__aenter__ = AsyncMock(return_value=session)
         ctx.__aexit__ = AsyncMock(return_value=False)
         return ctx
+
+    def recorded_calibrations(self) -> list:
+        """The `confidence_calibration` values written on the run, in order.
+
+        Read off the compiled statements rather than a mocked helper, because
+        what the test is pinning is that the curve is committed in the same
+        transaction as the ledger - not merely that some function was called.
+        """
+        values = []
+        for statement in self.statements:
+            params = statement.compile().params
+            if "confidence_calibration" in params:
+                values.append(params["confidence_calibration"])
+        return values
 
 
 def _patches(
@@ -395,12 +413,20 @@ class TestRunFinalization:
         mocks["finalize"].assert_awaited_once()
         assert mocks["finalize"].await_args.args[:2] == ("run-1", "completed")
         # No curve was loaded (the store mock returns None), so the run records none.
-        assert mocks["finalize"].await_args.kwargs["confidence_calibration"] is None
+        assert recorder.recorded_calibrations() == [None]
 
     @pytest.mark.asyncio
     async def test_the_curve_the_run_applied_is_recorded_on_it(self):
-        """The calibration record is written once, on the run, when it completes -
-        the rows carry only the P(correct) values read off it."""
+        """The calibration record is written once, on the run, in the same
+        transaction as the ledger - the rows carry only the P(correct) values
+        read off it.
+
+        Committed with the rows rather than at finalize because a run that is
+        interrupted in between keeps its ledger: the startup reaper marks it
+        failed and a read that names it by id still serves those rows, so a
+        curve recorded only on the completed path would be missing from exactly
+        the ledgers that outlived their run.
+        """
         from mascope_backend.api.new.peak_assignments.config import (
             PeakAssignmentConfig,
         )
@@ -415,11 +441,15 @@ class TestRunFinalization:
 
         await _run(PeakAssignmentConfig(run_untargeted=False))
 
-        assert mocks["finalize"].await_args.kwargs["confidence_calibration"] == {
-            "instrument": "orbi",
-            "provisional": True,
-            "source": "unit test",
-        }
+        assert recorder.recorded_calibrations() == [
+            {
+                "instrument": "orbi",
+                "provisional": True,
+                "source": "unit test",
+            }
+        ]
+        # Finalize is left with nothing to say about the curve.
+        assert "confidence_calibration" not in mocks["finalize"].await_args.kwargs
         for row in recorder.rows:
             provenance = row.get("provenance") or {}
             assert "calibration" not in provenance
