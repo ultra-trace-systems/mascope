@@ -192,6 +192,7 @@ mask = '*.raw'
 timeout = 10
 source = './agents/file'
 # recursive = false
+# instrument = ''
 host = 'localhost'
 access_token = ''
 # filename_prefix = ''
