@@ -38,7 +38,7 @@ from mascope_backend.api.new.peak_assignments.batch_peaks import (
     tier_name,
 )
 from mascope_backend.api.new.peak_assignments.tiers import TIER_UNASSIGNED
-from mascope_backend.api.new.temp.storage import user_temp_path
+from mascope_backend.api.new.temp.storage import download_name, user_temp_path
 from mascope_backend.db import BatchPeak, BatchPeakOccurrence, SampleItem, async_session
 from mascope_backend.runtime import runtime
 
@@ -238,12 +238,8 @@ async def write_batch_ledger_csv(sample_batch_id: str, user_id: int) -> tuple[st
         else pd.DataFrame(columns=list(COLUMNS))
     )
     stamp = datetime.now().isoformat().replace("-", "").replace(":", "").split(".")[0]
-    name = "_".join(
-        [
-            stamp,
-            "batch_ledger",
-            sample_batch.sample_batch_name.replace(" ", "_") + ".csv",
-        ]
+    name = download_name(
+        stamp, "batch_ledger", sample_batch.sample_batch_name, extension="csv"
     )
     runtime.logger.info(f"Writing the batch ledger ({len(ledger)} rows) to file {name}")
     ledger.to_csv(user_temp_path(user_id, name), index=False, sep=";")
