@@ -325,6 +325,14 @@ only becomes affordable and is an **[open]** follow-up (decision 5).
 
 ### 5.4 Per-sample evidence on demand
 
+> **Status (2026-09-04): shipped for the inspector.** `derived_evidence.py` measures the
+> assigned composition of a derived row's family against the sample on request
+> (`GET /api/peak-assignments/sample/{id}/assignment/{id}/evidence`), through the M0, and
+> the inspector fills the isotopologue table and the evidence grid from it - the stored
+> fit stays the fit the tier was read off, the measurement's own fit is reported beside
+> it, and nothing is persisted. The per-candidate fits of the alternatives stay as the
+> registry shows them (each formula's evidence share in the batch).
+
 A sample's full evidence — mass error, abundance error, per-candidate fits — is computed
 rather than stored for a fold-only sample: the seeded re-score chain scores the anchor's
 candidate list against that sample's peak file in one pass, and the result is served to the
