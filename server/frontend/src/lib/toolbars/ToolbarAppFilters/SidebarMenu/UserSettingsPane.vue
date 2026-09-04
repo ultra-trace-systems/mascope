@@ -18,6 +18,7 @@ import {
   DialogMfaReauth
 } from '@/lib/dialogs'
 import { useMfaReauth } from '@/lib/dialogs/useMfaReauth'
+import { deviceMetaLabel } from '@/lib/devices'
 import { prettyRoleName, ROLES } from '@/lib/roles'
 
 import { useSidebarMenu } from './state.js'
@@ -184,18 +185,9 @@ const lastSeenLabel = (device) =>
     ? `last seen ${new Date(device.last_seen_at).toLocaleString()}`
     : 'never seen'
 
-// What the machine says about itself: the instrument its agent watches and
-// the agent release last seen. Both are absent until an agent that reports
-// them has paired or uploaded, so the label simply leaves them out.
-const deviceMetaLabel = (device) =>
-  [
-    serviceLabel(device.service_name),
-    device.instrument,
-    device.last_seen_version,
-    lastSeenLabel(device)
-  ]
-    .filter(Boolean)
-    .join(' · ')
+// What the machine says about itself, next to what the server knows.
+const deviceMeta = (device) =>
+  deviceMetaLabel(device, serviceLabel(device.service_name), lastSeenLabel(device))
 
 // Clear state when closing drawer
 const clear = () => {
@@ -370,7 +362,7 @@ const vHelpLayer = app.ui.help.directive(layer)
               :field="device.name"
               :save="(name) => renameDevice(device, name)"
             />
-            <span class="device-meta">{{ deviceMetaLabel(device) }}</span>
+            <span class="device-meta">{{ deviceMeta(device) }}</span>
             <Button
               :label="confirmRevokeId === device.device_id ? 'Confirm revoke' : 'Revoke'"
               icon="pi pi-ban"

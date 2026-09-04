@@ -21,6 +21,7 @@ Each test uses its own instrument name so that the acquisition workspace one
 test's upload creates cannot decide the next test's ACL.
 """
 
+from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
@@ -34,6 +35,9 @@ from mascope_backend.api.controllers.sample.files.process import (
     service as process_service,
 )
 from mascope_backend.api.new.auth.access_token.service import create_access_token
+from mascope_backend.api.routes.sample.files import (
+    sample_files_routes as files_routes,
+)
 from mascope_backend.app.fast import fast
 from mascope_backend.db import AgentDevice, SampleFile, User
 
@@ -268,3 +272,69 @@ async def test_an_unknown_device_id_degrades_to_unattributed(
     stored = await _stored(async_session_factory, body["filename"])
     assert stored.uploaded_by_device_id is None
     assert stored.uploaded_by_user_id == machine.id
+
+
+@pytest.mark.asyncio
+async def test_a_tus_upload_reports_its_instrument_under_that_key(monkeypatch):
+    """The one spelling the agent and the server have to agree on.
+
+    The agent writes ``instrument`` into the upload's tus metadata and the
+    server reads it back out by name; nothing else makes the two agree, and a
+    rename on either side would silently stop a machine reporting what it
+    watches. This pins the server's half - the SDK's half is pinned by its own
+    metadata test - along with the device the report is attributed to.
+    """
+    recorded = {}
+
+    async def fake_record(device_id, instrument):
+        recorded.update(device_id=device_id, instrument=instrument)
+
+    async def noop(*args, **kwargs):
+        return None
+
+    monkeypatch.setattr(files_routes, "record_reported_instrument", fake_record)
+    monkeypatch.setattr(files_routes, "check_instrument_workspace_access", noop)
+    monkeypatch.setattr(files_routes, "get_access_token", noop)
+    monkeypatch.setattr(files_routes, "upload_sample_file", noop)
+    monkeypatch.setattr(files_routes.shutil, "move", lambda src, dst: None)
+
+    request = SimpleNamespace(state=SimpleNamespace(token_device_id=7))
+    handler = files_routes.get_upload_handler(request=request, user=object())
+
+    await handler(
+        "/tmp/tus-upload-body",
+        {"filename": "Orbi-Lab2_2026.09.03-10h12m01s.raw", "instrument": "Orbi-Lab2"},
+    )
+
+    assert recorded == {"device_id": 7, "instrument": "Orbi-Lab2"}
+
+
+@pytest.mark.asyncio
+async def test_a_failure_to_record_the_instrument_does_not_fail_the_upload(monkeypatch):
+    """Attribution never fails an ingest: the file is already stored."""
+    uploaded = []
+
+    async def exploding_record(device_id, instrument):
+        raise RuntimeError("database is having a moment")
+
+    async def noop(*args, **kwargs):
+        return None
+
+    async def record_upload(*args, **kwargs):
+        uploaded.append(True)
+
+    monkeypatch.setattr(files_routes, "record_reported_instrument", exploding_record)
+    monkeypatch.setattr(files_routes, "check_instrument_workspace_access", noop)
+    monkeypatch.setattr(files_routes, "get_access_token", noop)
+    monkeypatch.setattr(files_routes, "upload_sample_file", record_upload)
+    monkeypatch.setattr(files_routes.shutil, "move", lambda src, dst: None)
+
+    request = SimpleNamespace(state=SimpleNamespace(token_device_id=7))
+    handler = files_routes.get_upload_handler(request=request, user=object())
+
+    await handler(
+        "/tmp/tus-upload-body",
+        {"filename": "Orbi-Lab2_2026.09.03-10h12m01s.raw", "instrument": "Orbi-Lab2"},
+    )
+
+    assert uploaded == [True]

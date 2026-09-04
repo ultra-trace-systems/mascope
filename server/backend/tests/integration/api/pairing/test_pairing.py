@@ -326,3 +326,75 @@ async def test_machine_name_is_sanitized(fake_redis, public_client, editor_clien
     # Stored record agrees (control characters never reach Redis either)
     stored = [json.loads(v) for k, v in fake_redis.store.items() if "code:" in k]
     assert all("\r" not in (rec.get("machine_name") or "") for rec in stored)
+
+
+@pytest.mark.asyncio
+async def test_a_long_agent_version_is_cut_rather_than_refused(
+    fake_redis, public_client, editor_client
+):
+    # `git describe` off a date-style release tag runs past the column's
+    # width. Pairing is the only route a machine has to a credential, so a
+    # label it reports about itself must never be able to fail it - unlike
+    # the instrument beside it, which is what uploads get filed under and is
+    # worth refusing when it is wrong.
+    long_version = "v2026.09.01-9b9e54d-394-g7e674438e"
+    assert len(long_version) > 32
+
+    started = (
+        await public_client.post(
+            "/api/auth/pairing/start",
+            json={
+                "service_name": "file-agent",
+                "machine_name": "LONG-PC",
+                "agent_version": long_version,
+            },
+        )
+    ).json()
+    approve = await editor_client.post(
+        "/api/auth/pairing/approve", json={"user_code": started["user_code"]}
+    )
+    assert approve.status_code == 200, approve.text
+
+    devices = (await editor_client.get("/api/auth/devices")).json()["data"]
+    row = next(d for d in devices if d["name"] == "LONG-PC")
+    assert row["last_seen_version"] == long_version[:32]
+
+
+@pytest.mark.asyncio
+async def test_pairing_refuses_an_over_long_instrument(fake_redis, public_client):
+    # Length is part of the name rule, so an over-long one is refused the
+    # same way a badly spelled one is - not silently truncated into a name
+    # that would file uploads somewhere nobody asked for.
+    resp = await public_client.post(
+        "/api/auth/pairing/start",
+        json={"service_name": "file-agent", "instrument": "A" * 65},
+    )
+    assert resp.status_code == 422, resp.text
+
+
+@pytest.mark.asyncio
+async def test_a_reported_value_cannot_forge_a_field_in_the_list(
+    fake_redis, public_client, editor_client
+):
+    # Paired machines joins these fields with a middle dot, so a value that
+    # carries one would render as several - a machine could describe itself
+    # as watching an instrument it does not, in the list a sponsor reads to
+    # decide what to revoke.
+    started = (
+        await public_client.post(
+            "/api/auth/pairing/start",
+            json={
+                "service_name": "file-agent",
+                "machine_name": "FORGE-PC",
+                "agent_version": "1.0 \u00b7 watching Orbi-Lab2",
+            },
+        )
+    ).json()
+    approve = await editor_client.post(
+        "/api/auth/pairing/approve", json={"user_code": started["user_code"]}
+    )
+    assert approve.status_code == 200, approve.text
+
+    devices = (await editor_client.get("/api/auth/devices")).json()["data"]
+    row = next(d for d in devices if d["name"] == "FORGE-PC")
+    assert "\u00b7" not in row["last_seen_version"]

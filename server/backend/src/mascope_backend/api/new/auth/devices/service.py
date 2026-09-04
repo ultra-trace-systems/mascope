@@ -18,14 +18,12 @@ from mascope_backend.api.lib.api_features import api_controller
 from mascope_backend.api.lib.exceptions.api_exceptions import NotFoundException
 from mascope_backend.api.new.auth.access_token.service import create_access_token
 from mascope_backend.api.new.auth.config import auth_settings
-from mascope_backend.api.new.auth.devices.schemas import (
-    INSTRUMENT_NAME_RE,
-    DeviceRead,
-)
+from mascope_backend.api.new.auth.devices.schemas import DeviceRead
 from mascope_backend.api.new.auth.exceptions import (
     ForbiddenAccessException,
     InvalidTokenException,
 )
+from mascope_backend.api.new.auth.reported import INSTRUMENT_NAME_RE
 from mascope_backend.db import AccessToken, AgentDevice, User, async_session
 from mascope_backend.runtime import runtime
 
@@ -56,18 +54,30 @@ def _to_device_read(device: AgentDevice, username: str | None, tokens: int) -> d
     ).model_dump()
 
 
+#: Instrument last written for each device by this worker. An upload reports
+#: the same name every time, so without this the steady state is one session,
+#: one connection and one commit per uploaded file to change nothing - the
+#: cost the last-seen write two modules over is throttled to avoid, and this
+#: path is the hotter of the two. Bounded by the number of paired devices,
+#: which is small and finite; a worker that has just started simply writes
+#: once per device.
+_reported_instrument: dict[int, str] = {}
+
+
 async def record_reported_instrument(
     device_id: int | None, instrument: str | None
 ) -> None:
     """
-    Keep the instrument an upload reports, on a device that has none yet.
+    Keep the instrument an upload reports, on the device that sent it.
 
-    Backfills a device paired before the server knew the field, or whose
-    pairing request carried none. A value already on the row is kept: the row
-    is what Paired machines shows and a sponsor may rely on, so one upload
-    must not move it. The name is reported, not verified, and an invalid one
-    is dropped with a log line rather than raised - attribution never fails
-    an ingest.
+    The row follows what the agent currently reports, the way the agent
+    release beside it does: a machine repointed at another instrument says so
+    on its next upload, and a sponsor reading Paired machines sees where its
+    data is actually going. A sponsor can still override it by hand, and that
+    override stands until the agent reports something different.
+
+    The name is reported, not verified, and an invalid one is dropped with a
+    log line rather than raised - attribution never fails an ingest.
 
     :param device_id: The device behind the upload, None when there is none.
     :type device_id: int | None
@@ -83,14 +93,24 @@ async def record_reported_instrument(
             f"upload, which is not one the server files under: {instrument!r}"
         )
         return
+    if _reported_instrument.get(device_id) == instrument:
+        return
     async with async_session() as session:
         await session.execute(
             update(AgentDevice)
             .where(AgentDevice.device_id == device_id)
-            .where(AgentDevice.instrument.is_(None))
+            .where(
+                or_(
+                    AgentDevice.instrument.is_(None),
+                    AgentDevice.instrument != instrument,
+                )
+            )
             .values(instrument=instrument)
         )
         await session.commit()
+    # Marked after the commit, so a failed write is retried by the next upload
+    # rather than remembered as done.
+    _reported_instrument[device_id] = instrument
 
 
 @api_controller()
@@ -145,6 +165,11 @@ async def list_all_devices() -> dict:
 async def rename_device(user: User, device_id: int, name: str) -> dict:
     """
     Rename a device the user sponsors.
+
+    Only the display name: the instrument is what the agent reports, and the
+    row follows it, so a wrong one is corrected in the agent's configuration
+    rather than here - otherwise the two would disagree and the agent would
+    win on its next upload anyway.
 
     :param user: The authenticated user.
     :type user: User

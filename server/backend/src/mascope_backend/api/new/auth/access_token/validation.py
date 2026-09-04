@@ -1,6 +1,5 @@
 """Access token validation."""
 
-import re
 import time
 from datetime import datetime as dt
 from datetime import timedelta, timezone
@@ -15,6 +14,10 @@ from mascope_backend.api.new.auth.exceptions import (
     InvalidTokenException,
 )
 from mascope_backend.api.new.auth.pairing.config import pairing_settings
+from mascope_backend.api.new.auth.reported import (
+    AGENT_VERSION_MAX_LENGTH,
+    clean_reported_text,
+)
 from mascope_backend.api.new.auth.strategies.database import (
     get_database_strategy_context,
 )
@@ -27,27 +30,22 @@ from mascope_backend.runtime import runtime
 # chunk) costs one write per window instead of one per request.
 DEVICE_LAST_SEEN_THROTTLE_S = 60
 
-#: Longest agent version kept, matching the column it is written to.
-AGENT_VERSION_MAX_LENGTH = 32
-
 
 def agent_version_from_header(value: str | None) -> str | None:
     """
     The agent release a request reports, fit for storing and showing.
 
-    The header is free text from a client, so control characters are
-    stripped and the value is cut to the column's width; an absent or blank
-    header is None, which leaves the stored version untouched.
+    The header is free text from a client, so it goes through the same
+    cleaning as the version in a pairing request: control characters
+    stripped, cut to the column's width. An absent or blank header is None,
+    which records that this request reported no version.
 
     :param value: The raw ``X-Agent-Version`` header, if the request sent one.
     :type value: str | None
     :return: The cleaned version, or None.
     :rtype: str | None
     """
-    if not value:
-        return None
-    cleaned = re.sub(r"[\x00-\x1f\x7f]", "", value).strip()
-    return cleaned[:AGENT_VERSION_MAX_LENGTH] or None
+    return clean_reported_text(value, AGENT_VERSION_MAX_LENGTH)
 
 
 def ensure_device_bound(service_name: str, device_id: int | None) -> None:
@@ -173,11 +171,14 @@ async def touch_device_last_seen(
     """
     Record that a device authenticated, at most once per throttle window.
 
-    The agent's reported version rides on the same write when the request
-    carried one, so recording it costs no extra round trip; it is therefore
-    also refreshed at most once per window, which is plenty for a value that
-    changes only at an upgrade. A request without one leaves the stored
-    version as it is.
+    The agent's reported version rides on the same write, so recording it
+    costs no extra round trip; it is therefore also refreshed at most once
+    per window, which is plenty for a value that changes only at an upgrade.
+    It is written whether or not the request carried one, so the column says
+    what the machine last reported rather than the highest it ever reported:
+    a site rolled back to an agent that sends no version would otherwise go
+    on showing the newer release indefinitely, and following an upgrade
+    across instrument PCs is what the column is for.
 
     Two gates, doing different jobs. The in-process claim keeps this worker to
     one write per device per window and, because it is taken before the await,
@@ -197,13 +198,11 @@ async def touch_device_last_seen(
 
     :param device_id: The authenticated device.
     :type device_id: int
-    :param agent_version: The release the agent reported, already cleaned.
+    :param agent_version: The release the agent reported, already cleaned,
+        or None when this request reported none.
     :type agent_version: str | None
     """
     now = dt.now(timezone.utc)
-    values = {"last_seen_at": now}
-    if agent_version:
-        values["last_seen_version"] = agent_version
     if not _is_due_for_last_seen_write(device_id):
         # Skips the round trip entirely. Without it this costs a session, a
         # connection and a commit on every request - once per chunk for an
@@ -223,7 +222,7 @@ async def touch_device_last_seen(
                         AgentDevice.last_seen_at < cutoff,
                     )
                 )
-                .values(**values)
+                .values(last_seen_at=now, last_seen_version=agent_version)
             )
             await session.commit()
             # Re-stamp from the commit rather than the attempt, and here rather
