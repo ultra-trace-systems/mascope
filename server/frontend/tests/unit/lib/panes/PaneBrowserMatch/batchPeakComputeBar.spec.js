@@ -21,6 +21,11 @@ let notificationHandlers
 vi.mock('@/stores', () => ({ useApp: () => app }))
 // The parameters form reads server defaults on mount; a stub keeps this spec
 // about the bar. Its own behaviour is the per-sample launcher's to pin.
+// The run selector reads the runs store; a stub keeps this spec about the
+// bar's actions. Its own behaviour is pinned in batchPeakRunSelect.spec.js.
+vi.mock('@/lib/panes/PaneBrowserMatch/BatchPeakRunSelect.vue', () => ({
+  default: { template: '<div class="run-select-stub" />' }
+}))
 vi.mock('@/lib/dialogs', () => ({
   PeakAssignConfigForm: {
     props: ['config', 'pinned', 'hidden'],
