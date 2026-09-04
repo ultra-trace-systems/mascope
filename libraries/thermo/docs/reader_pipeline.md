@@ -154,12 +154,20 @@ labels:
    real ions that close are resolved within a scan and so share scans. The
    test is intensity-weighted (`_AVG_CENTROID_EXCLUSIVE_OVERLAP`: a stray weak
    label in a shared scan does not veto the merge, a real minor ion present in
-   the same scans does) and requires the two sides to cover most of the scans
+   the same scans does), requires the two sides to cover most of the scans
    (`_AVG_CENTROID_EXCLUSIVE_COVERAGE`), because two noise labels from
    different scans are exclusive by construction -- on a noise-dominated file
-   the rule changes nothing. Thermo's own re-centroid reports such a jittering
-   ion as two peaks, its averaged profile being flat-topped, so here the two
-   readers differ by design.
+   the rule changes nothing -- and requires each side to hold a substantial
+   share of the scans (`_AVG_CENTROID_EXCLUSIVE_MIN_SIDE`, and at least two),
+   which one ion alternating between two positions does and the wobbling
+   fragments beside an intense peak, present in a couple of scans, do not.
+   Measured over a 183-file fleet corpus against Thermo, the per-side floor
+   is what keeps the rule specific: without it the share of strong centroids
+   matching a Thermo centroid fell by more than 0.02 in 31 files, with it in
+   9 and never by more than 0.05, while the jittering base peak still merges.
+   Thermo's own re-centroid reports such a jittering ion as two peaks, its
+   averaged profile being flat-topped, so here the two readers differ by
+   design.
 5. **Scale S:N to the averaged spectrum** (the `n/sqrt(N)` correction): Thermo
    reads S:N off the noise-reduced *averaged* profile. Averaging N scans drops
    the noise ~`sqrt(N)`, so a peak present in `n` of the `N` scans has averaged

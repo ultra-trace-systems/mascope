@@ -101,15 +101,15 @@ JITTER_SCANS = list(range(1, 9))
 HIGH_SCANS = (1, 2, 5, 6)  # the scans in which the ion reads high
 
 
-def _jitter_scans(peaks: list[tuple[float, str]]) -> dict[int, dict]:
+def _jitter_scans(peaks: list[tuple[float, str]], high_scans=HIGH_SCANS) -> dict:
     """Eight scans on one calibration. Each peak is ``(mz, mode)``: ``"jitter"``
-    puts it ``JITTER_PPM`` higher in ``HIGH_SCANS`` than elsewhere, ``"steady"``
+    puts it ``JITTER_PPM`` higher in ``high_scans`` than elsewhere, ``"steady"``
     keeps it put in every scan, ``"high"`` / ``"low"`` make it appear only in
     the high scans / only in the others."""
     params = {"Conversion Parameter B:": B_REF, "Conversion Parameter C:": C_REF}
     scans = {}
     for n in JITTER_SCANS:
-        high = n in HIGH_SCANS
+        high = n in high_scans
         mzs = []
         for mz, mode in peaks:
             if mode == "jitter":
@@ -293,3 +293,17 @@ def test_exclusive_merge_needs_the_sides_to_cover_most_scans():
 
     assert masses.size == 2
     np.testing.assert_allclose(intensities, [2e5, 2e5])
+
+
+def test_exclusive_merge_needs_both_sides_to_be_substantial():
+    # The ion reads high in only two of the eight scans: the sides cover every
+    # scan and share none, but a quarter of the scans is under the required
+    # share for a side. The wobbling fragments beside an intense peak look
+    # like this, present in a couple of scans, and stay the separate peaks
+    # Thermo also reports.
+    scans = _jitter_scans([(61.0397, "jitter")], high_scans=(1, 2))
+
+    masses, intensities, _, _ = _backend(scans).average_centroids(JITTER_SCANS, ppm=1)
+
+    assert masses.size == 2
+    np.testing.assert_allclose(intensities, [6e5, 2e5])
