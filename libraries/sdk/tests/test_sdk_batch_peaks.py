@@ -88,6 +88,22 @@ class FakeServer:
         self.anchors = list(ANCHORS)
         self.members = _members(5)
         self.verdicts = list(VERDICTS)
+        self.runs = [
+            {
+                "batch_peak_run_id": "run-2",
+                "action": "search_untargeted",
+                "status": "completed",
+                "current": True,
+                "batch_peak_run_utc_created": "2026-09-04T10:00:00Z",
+            },
+            {
+                "batch_peak_run_id": "run-1",
+                "action": "fold",
+                "status": "completed",
+                "current": False,
+                "batch_peak_run_utc_created": "2026-09-04T09:00:00Z",
+            },
+        ]
         self.page_cap = page_cap
         self.member_calls: list[dict[str, Any]] = []
         self.list_calls: list[dict[str, Any]] = []
@@ -114,6 +130,10 @@ class FakeServer:
                     "offset": offset,
                     "data": page,
                 }
+            )
+        if path.endswith("/runs"):
+            return _FakeResponse(
+                {"status": "success", "message": "ok", "results": 2, "data": self.runs}
             )
         if path.endswith("/verdicts"):
             return _FakeResponse(
@@ -276,3 +296,22 @@ class TestLoadBatchLedger:
             lambda *args, **kwargs: (None, "ds-1"),
         )
         assert load_batch_ledger(self._client({}, {}), dataset="My Dataset") is None
+
+
+class TestRuns:
+    def test_lists_the_runs_newest_first_with_datetimes(self, resource):
+        df = resource.runs(BATCH_ID)
+        assert df is not None and df["batch_peak_run_id"].tolist() == ["run-2", "run-1"]
+        assert df["current"].tolist() == [True, False]
+        assert pd.api.types.is_datetime64_any_dtype(df["batch_peak_run_utc_created"])
+
+    def test_returns_none_without_a_ledger(self, server, resource):
+        server.runs = []
+        assert resource.runs(BATCH_ID) is None
+
+    def test_list_reads_an_earlier_run_by_id(self, server, resource):
+        resource.list(BATCH_ID, run_id="run-1")
+        assert server.list_calls[-1] == {
+            "min_n_present": 1,
+            "batch_peak_run_id": "run-1",
+        }

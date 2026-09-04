@@ -6,6 +6,7 @@ import Dialog from 'primevue/dialog'
 import { PeakAssignConfigForm } from '@/lib/dialogs'
 import { useApp } from '@/stores'
 
+import BatchPeakRunSelect from './BatchPeakRunSelect.vue'
 import { useBatchPeakCompute } from './stores/batchPeakCompute.js'
 
 /**
@@ -64,6 +65,8 @@ async function launchSearch() {
        receives no mouse events, so a reason attached to it would be readable
        only in the one state where it says nothing. -->
   <span class="compute-bar" :class="{ blocked: compute.blockedReason !== null }">
+    <!-- Which run the ledger is reading, beside the actions that make one. -->
+    <BatchPeakRunSelect class="run-select-slot" />
     <span v-tooltip.left="compute.computeTooltip">
       <Button
         label="Rebuild batch ledger"
@@ -148,6 +151,10 @@ async function launchSearch() {
   gap: 0.35rem;
   flex: 1 1 auto;
   min-width: 0;
+}
+/* The selector takes the left of the bar, the actions keep the right corner. */
+.compute-bar > .run-select-slot {
+  margin-right: auto;
 }
 
 /* Take the disabled button out of hit-testing so the wrapper above it receives

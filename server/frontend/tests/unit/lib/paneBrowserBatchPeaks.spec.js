@@ -87,6 +87,13 @@ function makeApp({
         list: Object.values(verdicts),
         forAnchor: (row) => verdicts[row.batch_peak_id] ?? null,
         isStale: (record, row) => record.assigned_formula !== row.consensus_formula
+      },
+      batchPeakRun: {
+        list: [],
+        focused: null,
+        viewing: null,
+        viewingCurrent: true,
+        viewingId: null
       }
     },
     ui: {
@@ -1056,6 +1063,56 @@ describe('PaneBrowserBatchPeaks batch-level verdicts', () => {
     expect(wrapper.vm.verdictTarget.batch_peak_id).toBe('bp-2')
     // The row as the ledger now holds it, not a copy taken when the cell was clicked.
     expect(wrapper.vm.verdictTarget.verdictRank).toBe(0)
+  })
+})
+
+describe('PaneBrowserBatchPeaks batch runs', () => {
+  /** Put an earlier run on screen, as the run selector does. */
+  async function viewEarlierRun(action = 'search_untargeted') {
+    app.data.batchPeakRun.viewing = { batch_peak_run_id: 'r-old', action, current: false }
+    app.data.batchPeakRun.viewingCurrent = false
+    app.data.batchPeakRun.viewingId = 'r-old'
+    await wrapper.vm.$nextTick()
+  }
+
+  it('says nothing about history while the live ledger is on screen', async () => {
+    wrapper = await mountPane({ peaks: [peak('bp-1', 'assigned', 0.9)] })
+    expect(wrapper.findAll('.pane-message')).toHaveLength(0)
+  })
+
+  it('names the run whose snapshot is on screen, and that it is read-only', async () => {
+    wrapper = await mountPane({ peaks: [peak('bp-1', 'assigned', 0.9)] })
+    await viewEarlierRun('search_untargeted')
+
+    const notice = wrapper.findAll('.pane-message').map((message) => message.text())
+    expect(notice).toHaveLength(1)
+    expect(notice[0]).toContain('as an untargeted search left it, read-only')
+    expect(notice[0]).toContain('pick it in the run selector')
+  })
+
+  it('describes each kind of run in words rather than by its code', async () => {
+    wrapper = await mountPane({ peaks: [peak('bp-1', 'assigned', 0.9)] })
+    for (const [action, label] of [
+      ['fold', 'folded samples'],
+      ['rebuild', 'a rebuild'],
+      ['import', 'an import'],
+      ['unknown_action', 'unknown_action']
+    ]) {
+      await viewEarlierRun(action)
+      expect(wrapper.vm.viewedRunLabel).toBe(label)
+    }
+  })
+
+  it('drops the notice when the current run is picked again', async () => {
+    wrapper = await mountPane({ peaks: [peak('bp-1', 'assigned', 0.9)] })
+    await viewEarlierRun()
+    expect(wrapper.findAll('.pane-message')).toHaveLength(1)
+
+    app.data.batchPeakRun.viewing = { batch_peak_run_id: 'r-new', action: 'rebuild', current: true }
+    app.data.batchPeakRun.viewingCurrent = true
+    app.data.batchPeakRun.viewingId = null
+    await wrapper.vm.$nextTick()
+    expect(wrapper.findAll('.pane-message')).toHaveLength(0)
   })
 })
 

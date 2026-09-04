@@ -39,6 +39,19 @@ const compute = useBatchPeakCompute()
 
 const ledger = computed(() => app.data.batchPeak)
 const verdicts = computed(() => app.data.batchPeakVerification)
+// The batch's runs: which one the ledger is reading, and whether that is the
+// live one. An earlier run is history - shown from its snapshot, read-only.
+const runs = computed(() => app.data.batchPeakRun)
+const RUN_ACTION_LABELS = {
+  fold: 'folded samples',
+  rebuild: 'a rebuild',
+  search_untargeted: 'an untargeted search',
+  import: 'an import'
+}
+const viewedRunLabel = computed(() => {
+  const run = runs.value.viewing
+  return run ? (RUN_ACTION_LABELS[run.action] ?? run.action) : ''
+})
 
 // --- Batch-level verdicts ----------------------------------------------------
 // One judgment per species at a batch peak, recorded from the Verdict column's
@@ -573,6 +586,15 @@ watch(
         {{ selectionNotice }}
       </Message>
 
+      <!-- An earlier run's ledger, from its snapshot. Said here so a formula
+           that differs from what a sample's inspector shows reads as history
+           rather than as a disagreement, and so the withheld verdict cells
+           have their reason. -->
+      <Message v-if="!runs.viewingCurrent" severity="info" icon="pi ph ph-clock-counter-clockwise">
+        Showing the ledger as {{ viewedRunLabel }} left it, read-only. Verdicts and curation act on
+        the current run; pick it in the run selector to judge.
+      </Message>
+
       <div
         v-if="ledger.list.length"
         class="tier-strip"
@@ -877,6 +899,7 @@ watch(
               type="button"
               class="verdict-cell"
               :class="{ stale: verdictStale(data), empty: !verdictFor(data) }"
+              :disabled="!runs.viewingCurrent"
               :aria-label="
                 verdictFor(data) ? 'Batch-level verdict' : 'Record a batch-level verdict'
               "
@@ -922,6 +945,11 @@ watch(
 }
 .verdict-cell.empty .pi {
   opacity: 0.25;
+}
+/* History is read-only: the cell keeps its badge and loses its hand. */
+.verdict-cell:disabled {
+  cursor: default;
+  opacity: 0.6;
 }
 .verdict-cell:hover {
   background: var(--p-content-hover-background);

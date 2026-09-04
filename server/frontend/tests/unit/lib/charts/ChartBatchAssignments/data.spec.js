@@ -17,9 +17,27 @@ const mockApp = reactive({
     batchPeak: { selectedIds: [] }, // the ledger selection that drives the chart
     sample: {
       list: [
-        { sample_item_id: 's1', sample_item_name: 'Sample 1', datetime: '2026-01-01T10:00:00', tic: 1000, length: 2 },
-        { sample_item_id: 's2', sample_item_name: 'Sample 2', datetime: '2026-01-01T11:00:00', tic: 2000, length: 2 },
-        { sample_item_id: 's3', sample_item_name: 'Sample 3', datetime: '2026-01-01T12:00:00', tic: 3000, length: 2 }
+        {
+          sample_item_id: 's1',
+          sample_item_name: 'Sample 1',
+          datetime: '2026-01-01T10:00:00',
+          tic: 1000,
+          length: 2
+        },
+        {
+          sample_item_id: 's2',
+          sample_item_name: 'Sample 2',
+          datetime: '2026-01-01T11:00:00',
+          tic: 2000,
+          length: 2
+        },
+        {
+          sample_item_id: 's3',
+          sample_item_name: 'Sample 3',
+          datetime: '2026-01-01T12:00:00',
+          tic: 3000,
+          length: 2
+        }
       ]
     }
   }
@@ -160,7 +178,11 @@ describe('chart.batch.assignments data store (selection-driven)', () => {
 
     // Select bp2 in addition: fetch is made ONLY for the newly-selected id.
     api.http.post.mockResolvedValueOnce([
-      peakRecord('bp2', { sample_item_ids: ['s2'], intensities: [6], tiers: ['candidate'] }, { consensus_tier: 'candidate' })
+      peakRecord(
+        'bp2',
+        { sample_item_ids: ['s2'], intensities: [6], tiers: ['candidate'] },
+        { consensus_tier: 'candidate' }
+      )
     ])
     mockApp.data.batchPeak.selectedIds = ['bp1', 'bp2']
     await flushAsync()
@@ -186,6 +208,40 @@ describe('chart.batch.assignments data store (selection-driven)', () => {
     // samples exist, so the always-on TIC trace is present, but no batch-peak traces.
     expect(store.traces).toHaveLength(1)
     expect(store.traces[0].name).toBe('TIC')
+  })
+
+  it('refetches every plotted series, naming the run, when the ledger switches runs', async () => {
+    api.http.post.mockResolvedValue([
+      peakRecord('bp1', { sample_item_ids: ['s1'], intensities: [5], tiers: ['assigned'] })
+    ])
+    mockApp.data.batchPeak.selectedIds = ['bp1']
+    await flushAsync()
+    // The live ledger names no run, so the request is exactly what it was.
+    expect(api.http.post.mock.calls[0][1]).toEqual({
+      sample_batch_id: 'batch-1',
+      batch_peak_ids: ['bp1']
+    })
+
+    // An earlier run on screen: the same selection, read from that run's snapshot.
+    api.http.post.mockClear()
+    mockApp.data.batchPeakRun = { viewingId: 'run-1' }
+    await flushAsync()
+    expect(api.http.post).toHaveBeenCalledTimes(1)
+    expect(api.http.post.mock.calls[0][1]).toEqual({
+      sample_batch_id: 'batch-1',
+      batch_peak_ids: ['bp1'],
+      batch_peak_run_id: 'run-1'
+    })
+    expect(store.traces).toHaveLength(2) // bp1 + TIC, not bp1 twice
+
+    // Back to the current run: refetched again, without a run id.
+    api.http.post.mockClear()
+    mockApp.data.batchPeakRun = { viewingId: null }
+    await flushAsync()
+    expect(api.http.post.mock.calls[0][1]).toEqual({
+      sample_batch_id: 'batch-1',
+      batch_peak_ids: ['bp1']
+    })
   })
 })
 
