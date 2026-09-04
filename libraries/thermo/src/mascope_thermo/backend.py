@@ -1258,12 +1258,13 @@ class OpenTFRawBackend:
         average: bool = False,
     ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
         # NumPy reimplementation of Thermo's AverageScans over centroids: pool
-        # the per-scan FT label peaks and ppm-bin them for m/z (sub-ppm
-        # exact), resolution and S:N (approximate). The HEIGHT, however, is then
-        # sourced from the frequency-averaged profile apex (below): Thermo
-        # re-centroids the averaged profile, whose apex incurs an interpolation
-        # loss that a per-scan centroid-apex sum does not, so the ppm-bin sum runs
-        # ~5-6% high; the profile apex matches Thermo to ~1-2%.
+        # the per-scan FT label peaks, key them by physical frequency, and
+        # ppm-bin them for m/z (sub-ppm exact), resolution and S:N
+        # (approximate). The HEIGHT, however, is then sourced from the
+        # frequency-averaged profile apex (below): Thermo re-centroids the
+        # averaged profile, whose apex incurs an interpolation loss that a
+        # per-scan centroid-apex sum does not, so the ppm-bin sum runs ~5-6%
+        # high; the profile apex matches Thermo to ~1-2%.
         if ppm <= 0:
             raise ValueError(f"Invalid ppm value: {ppm}. ppm must be > 0.")
 
@@ -1286,14 +1287,34 @@ class OpenTFRawBackend:
         res_all = np.concatenate(res_parts) if res_parts else np.array([])
         sn_all = np.concatenate(sn_parts) if sn_parts else np.array([])
 
-        masses, summed, (resolutions, signal_to_noise), present = _ppm_bin(
-            mz_all, int_all, [res_all, sn_all], ppm
-        )
-        # Merge jitter-splits: the between-scan m/z jitter (~2 ppm) can exceed the
-        # ppm bin, splitting one peak's per-scan centroids into adjacent bins.
-        # Collapse neighbours whose gap is well below the local FWHM (so a real
-        # peak's split merges, while genuinely-resolved peaks stay separate) --
-        # mirroring Thermo's profile re-centroid, which never splits one peak.
+        # Bin by frequency, report by label. The bin key is each scan's m/z
+        # re-expressed on one calibration (_labels_on_one_calibration), so a
+        # calibration step between scans cannot put one peak's centroids into
+        # two bins; the reported m/z stays the intensity-weighted mean of the
+        # labels as the instrument wrote them, which is what a merged peak has
+        # always reported. Labels bin as written when a scan carries no B/C.
+        key_parts = self._labels_on_one_calibration(scan_indices, mz_parts)
+        if key_parts is None:
+            masses, summed, (resolutions, signal_to_noise), present = _ppm_bin(
+                mz_all, int_all, [res_all, sn_all], ppm
+            )
+        else:
+            key_all = np.concatenate(key_parts) if key_parts else np.array([])
+            _, summed, (resolutions, signal_to_noise, masses), present = _ppm_bin(
+                key_all, int_all, [res_all, sn_all, mz_all], ppm
+            )
+            # Bins come out in key order. Two close bins with different scan
+            # membership can have their label means in the other order, and
+            # the merge and the profile-apex lookup below need sorted masses.
+            order = np.argsort(masses, kind="stable")
+            masses, summed, present = masses[order], summed[order], present[order]
+            resolutions, signal_to_noise = resolutions[order], signal_to_noise[order]
+        # Merge jitter-splits: the residual between-scan m/z wobble can still
+        # exceed the ppm bin, splitting one peak's per-scan centroids into
+        # adjacent bins. Collapse neighbours whose gap is well below the local
+        # FWHM (so a real peak's split merges, while genuinely-resolved peaks
+        # stay separate) -- mirroring Thermo's profile re-centroid, which never
+        # splits one peak.
         (
             masses,
             summed,
@@ -1331,6 +1352,48 @@ class OpenTFRawBackend:
                     masses, intensities, grid_mz, profile
                 )
         return masses, intensities, resolutions, signal_to_noise
+
+    def _labels_on_one_calibration(
+        self, scan_indices: list[int], mz_parts: list[np.ndarray]
+    ) -> list[np.ndarray] | None:
+        """Re-express each scan's centroid m/z on one scan's calibration.
+
+        An ion's frequency is the same in every scan; what moves its centroid
+        m/z between scans is the per-scan frequency->m/z calibration, i.e. the
+        Conversion Parameters B/C, which carry the lock-mass and other
+        compensations. Usually that is a sub-ppm wobble, but when a lock mass
+        engages part-way through a file (the instrument finds the lock-mass ion
+        only after the first scans) the calibration steps by a few ppm at once.
+        At low m/z, where the FWHM is itself only a few ppm, such a step is
+        wider than the ppm bin and than half a FWHM, so one peak's centroids
+        land in two bins and the jitter-split merge cannot recover them.
+        Converting every scan's labels to frequency with its own B/C and back
+        with one reference calibration removes the step -- the profile
+        averaging does the same, see ``_average_profile_in_frequency`` -- so the
+        bin groups a peak's centroids by physical frequency.
+
+        Returns one array per scan, aligned with ``mz_parts``, or None when a
+        selected scan carries no B/C (non-FTMS data), in which case the caller
+        bins the labels as written.
+        """
+        params = [self._profile_conversion_params(int(n)) for n in scan_indices]
+        if not params or any(b is None for b, _ in params):
+            return None
+        # The reference only fixes the key's scale, so any scan serves; the
+        # densest one, as the profile averaging picks.
+        ref = max(range(len(mz_parts)), key=lambda i: mz_parts[i].size)
+        b_ref, c_ref = params[ref]
+        keys = []
+        for (b, c), mz in zip(params, mz_parts):
+            if mz.size == 0 or (b == b_ref and c == c_ref):
+                keys.append(mz)
+                continue
+            key = mz.astype(np.float64, copy=True)
+            ok = np.isfinite(mz) & (mz > 0)
+            f2 = self._mz_to_freq(mz[ok], b, c) ** 2
+            key[ok] = b_ref / f2 + c_ref / (f2 * f2)
+            keys.append(key)
+        return keys
 
     @staticmethod
     def _merge_split_centroids(

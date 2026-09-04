@@ -1108,6 +1108,28 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
 
 ### Fixed
 
+- **Orbitrap peak detection no longer splits a peak in two when the lock mass
+  engages part-way through a file.** The averaged centroids behind peak
+  detection are built by pooling every scan's centroid labels and binning them
+  within 1 ppm. What moves a label between scans is the scan's own
+  frequency-to-m/z calibration, and when an instrument finds its lock mass only
+  after the first scans, that calibration steps by a few ppm at once. At low
+  m/z, where a peak is itself only a few ppm wide, the step is wider than the
+  bin and than the half-width merge behind it, so every strong peak came out as
+  two centroids about 2.5 ppm apart, each carrying the intensity and
+  signal-to-noise of its share of the scans - seen on 20-second acquisitions
+  from m/z 40 to 160 whose lock mass was found from the fourth of seven scans.
+  The labels are now keyed by physical frequency before binning, each scan's
+  re-expressed on one calibration through its conversion parameters the way the
+  profile is already averaged, so a peak's centroids bin together whatever the
+  calibration did between scans; the reported m/z is still the
+  intensity-weighted mean of the labels. On such a file Thermo's own averaged
+  spectrum is broadened by the step and reports a lower apex, whereas Mascope
+  keeps the per-scan heights, so a file with the step and one without now
+  report the same height for the same ion. Readers without conversion
+  parameters bin as before. Peak lists detected earlier keep their split peaks
+  until peak detection is re-run for the sample.
+
 - The peak inspector's **close alternatives** no longer include the assignment
   the peak was actually given. The list is meant to be the runners-up a peak
   could have gone to instead, so the committed formula appearing in it - with
