@@ -69,7 +69,14 @@ export const useChartAssignmentsData = defineStore('chart.batch.assignments', ()
   const fetchSeries = async (batchId, batchPeakIds, signal) => {
     const data = await api.http.post(
       `/batch-peaks/records/series`,
-      { sample_batch_id: batchId, batch_peak_ids: batchPeakIds },
+      {
+        sample_batch_id: batchId,
+        batch_peak_ids: batchPeakIds,
+        // An earlier run's series come off its snapshot; the live ledger names no run.
+        ...(app.data.batchPeakRun?.viewingId
+          ? { batch_peak_run_id: app.data.batchPeakRun.viewingId }
+          : {})
+      },
       // `errors: 'inline'` holds back the interceptor's toast. A chunk aborted
       // because the selection moved on reaches the interceptor as a
       // response-less failure, which it would otherwise announce as a timeout;
@@ -187,6 +194,11 @@ export const useChartAssignmentsData = defineStore('chart.batch.assignments', ()
 
   // The ledger's multi-selection drives the plotted set.
   watch(plottedIds, () => syncPlotted())
+  // The run on screen changed: every plotted series belongs to the other one.
+  watch(
+    () => app.data.batchPeakRun?.viewingId ?? null,
+    () => syncPlotted({ refetch: true })
+  )
 
   // On batch change, clear the plot (the ledger reloads its own list + selection).
   watch(

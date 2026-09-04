@@ -339,6 +339,19 @@ been computed yet: there is no anchor to follow, so nothing does. Picking a peak
 yourself always wins over this — it will not overwrite a choice you just made, or
 refill a selection you cleared.
 
+### Batch runs
+
+--8<-- "_help/batch-runs.md"
+
+The run selector beside *Rebuild batch ledger* lists the batch's runs newest first, each
+with what it did and, for a search, the parameters it was given. The current run is the
+live ledger; picking an earlier one shows the *Batch peaks* ledger and the chart as that
+run left them, read-only - verdicts and curation act on the current run, so the Verdict
+column waits until you pick it again. A run that fails is kept and marked, and never
+becomes current. The same history is one call away in the SDK
+(`mascope.batch_peaks.runs(batch_id)`, and `list(batch_id, run_id=...)` for the species
+table as an earlier run left it).
+
 ## References
 
 - <a id="kf06"></a>Kind, T.; Fiehn, O. *Metabolomic database annotations via query of
