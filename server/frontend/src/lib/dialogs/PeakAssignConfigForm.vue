@@ -32,6 +32,12 @@ const props = defineProps({
   pinned: {
     type: Array,
     default: () => []
+  },
+  // Fields the caller has decided for the user and does not show: a launcher
+  // that IS the untargeted stage pins `run_untargeted` on and hides its switch.
+  hidden: {
+    type: Array,
+    default: () => []
   }
 })
 
@@ -80,6 +86,7 @@ onMounted(() => {
 <template>
   <div class="col config-form" style="gap: 1.25rem; align-items: stretch">
     <div
+      v-if="!hidden.includes('run_untargeted')"
       class="toggle-row"
       v-help-layer.right="{
         message: `

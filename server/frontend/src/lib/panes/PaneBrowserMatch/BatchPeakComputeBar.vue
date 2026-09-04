@@ -1,6 +1,9 @@
 <script setup>
+import { ref, reactive, watch } from 'vue'
 import Button from 'primevue/button'
+import Dialog from 'primevue/dialog'
 
+import { PeakAssignConfigForm } from '@/lib/dialogs'
 import { useApp } from '@/stores'
 
 import { useBatchPeakCompute } from './stores/batchPeakCompute.js'
@@ -21,6 +24,39 @@ import { useBatchPeakCompute } from './stores/batchPeakCompute.js'
  */
 const app = useApp()
 const compute = useBatchPeakCompute()
+
+// The search's parameters dialog: the untargeted stage's own settings (m/z
+// precision, formula ranges, the peak ceiling, the intensity threshold, the
+// alternatives kept), on the same form the per-sample launcher uses - with
+// the stage itself pinned on and its switch hidden, since this button IS the
+// untargeted stage. Reset on every open, as the per-sample launcher does, so
+// a value typed for one search never carries silently into the next.
+const searchVisible = ref(false)
+function initialSearchConfig() {
+  return {
+    run_untargeted: true,
+    mz_precision_ppm: null,
+    formula_ranges: null,
+    max_untargeted_peaks: null,
+    peak_intensity_threshold: null,
+    max_alternatives: null
+  }
+}
+const searchConfig = reactive(initialSearchConfig())
+watch(searchVisible, (open) => {
+  if (open) Object.assign(searchConfig, initialSearchConfig())
+  // The form's help cards live on the launcher dialogs' shared layer.
+  app.ui.help.set(open ? 'dialog_peak_assign' : null)
+})
+async function launchSearch() {
+  // Drop anything still unset so the backend default applies rather than a
+  // null overriding it.
+  const payload = Object.fromEntries(
+    Object.entries(searchConfig).filter(([, value]) => value !== null && value !== '')
+  )
+  searchVisible.value = false
+  await compute.searchUntargeted(payload)
+}
 </script>
 
 <template>
@@ -62,12 +98,13 @@ const compute = useBatchPeakCompute()
         severity="secondary"
         :loading="compute.searching"
         :disabled="compute.blockedReason !== null || compute.computing"
-        @click="compute.searchUntargeted()"
+        @click="searchVisible = true"
         :pt="
           app.ui.help.left(`
             <h1>Search Untargeted</h1>
             <p>
-            Runs the untargeted composition search once per batch peak that
+            Opens the search's parameters, then runs the untargeted composition
+            search once per batch peak that
             nothing has assigned yet &mdash; on its brightest peak, in that
             sample's own spectrum &mdash; and then measures the composition it
             found against every other sample the species was seen in. It
@@ -78,6 +115,27 @@ const compute = useBatchPeakCompute()
         "
       />
     </span>
+    <Dialog
+      v-model:visible="searchVisible"
+      modal
+      header="Search untargeted"
+      :style="{ width: '26rem' }"
+    >
+      <PeakAssignConfigForm
+        :config="searchConfig"
+        :pinned="['run_untargeted']"
+        :hidden="['run_untargeted']"
+      />
+      <template #footer>
+        <Button label="Cancel" text severity="secondary" @click="searchVisible = false" />
+        <Button
+          label="Search"
+          icon="pi ph ph-magnifying-glass"
+          :loading="compute.searching"
+          @click="launchSearch"
+        />
+      </template>
+    </Dialog>
   </span>
 </template>
 
