@@ -6,6 +6,16 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
 
 ### Added
 
+- **Batch import.** An external engine's batch-level result - one identity
+  per m/z, such as a batch pipeline's merged ledger - can be imported onto
+  the batch ledger as a batch run: `POST /api/batch-peaks/batch/{id}/runs/import`
+  and `mascope.batch_peaks.import_run()` in the SDK. Rows are matched to the
+  nearest batch peak within a tolerance and measured against every member by
+  the server's seeded scorer, so the ledger carries Mascope's fit of the
+  engine's formula under the engine's name; curated and isotopologue batch
+  peaks are left alone, and the run's summary counts every skipped row by
+  reason. The previous run's snapshot keeps the ledger as it was.
+
 - **Batch runs.** The batch ledger now has a history: one run per batch-level
   operation that rewrote it - *Rebuild batch ledger*, *Search untargeted* with
   the parameters it was given, an import - and the folds that built it. Exactly
