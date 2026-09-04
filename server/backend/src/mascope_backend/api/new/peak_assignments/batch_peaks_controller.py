@@ -48,6 +48,13 @@ from mascope_backend.api.new.peak_assignments.batch_peaks import (
     tier_code,
     tier_name,
 )
+from mascope_backend.api.new.peak_assignments.batch_runs import (
+    ACTION_REBUILD,
+    complete_run,
+    ensure_current_run,
+    fail_run,
+    start_run,
+)
 from mascope_backend.db import (
     BatchPeak,
     BatchPeakOccurrence,
@@ -265,6 +272,9 @@ async def fold_sample_into_batch_peaks(
         # this placement buys is that nothing between here and the commit may
         # open a second session -- everything below runs on `session`.
         await _acquire_batch_fold_lock(session, sample_batch_id)
+        # A fold edits the current run's state; the first fold of a batch
+        # mints that run, so the ledger's history has a first entry.
+        await ensure_current_run(session, sample_batch_id)
 
         # Existing frozen anchors for this (batch, ionization mode).
         existing = (
@@ -934,6 +944,32 @@ def backfill_outcome(folded: int, failed: int, sample_batch_id: str) -> dict:
     }
 
 
+async def rebuild_batch_ledger(
+    sample_batch_id: str,
+    user_id: int | None = None,
+    process_id: str | None = None,
+    parent_id: str | None = None,
+) -> dict:
+    """The rebuild as a batch run: opened before the first fold (refused if one
+    is in flight; the current run's state is snapshotted), closed as completed
+    with the outcome's counts - or as failed, the live ledger then being
+    whatever the folds left."""
+    run_id = await start_run(sample_batch_id, ACTION_REBUILD, user_id=user_id)
+    try:
+        folded, failed = await backfill_sample_batch_peaks(
+            sample_batch_id,
+            user_id=user_id,
+            process_id=process_id,
+            parent_id=parent_id,
+        )
+    except Exception as exc:
+        await fail_run(sample_batch_id, run_id, f"{type(exc).__name__}: {exc}")
+        raise
+    outcome = backfill_outcome(folded, failed, sample_batch_id)
+    await complete_run(sample_batch_id, run_id, summary=outcome.get("data"))
+    return outcome
+
+
 @api_controller_background_task(
     success_notification_rooms=["sample_batch_id"],
     success_reload=[("peak_assignment", "sample_batch_id")],
@@ -961,10 +997,9 @@ async def compute_batch_peaks(
     ``compute_batch_peaks`` channel, and the decorator's terminal packet ends
     the bar.
     """
-    folded, failed = await backfill_sample_batch_peaks(
+    return await rebuild_batch_ledger(
         sample_batch_id,
         user_id=user_id,
         process_id=process_id,
         parent_id=parent_id,
     )
-    return backfill_outcome(folded, failed, sample_batch_id)

@@ -33,6 +33,10 @@ from mascope_backend.api.new.peak_assignments.batch_peaks_records import (
     get_batch_peak_ledger,
     get_batch_peak_series,
 )
+from mascope_backend.api.new.peak_assignments.batch_runs import (
+    check_no_run_in_flight,
+    list_batch_runs,
+)
 from mascope_backend.api.new.peak_assignments.batch_untargeted import (
     search_batch_untargeted,
 )
@@ -43,6 +47,7 @@ from mascope_backend.api.new.peak_assignments.routes import (
 from mascope_backend.api.new.peak_assignments.schemas import (
     AssignmentTier,
     AssignSamplePeaksBody,
+    BatchPeakRunsResponse,
     BatchPeakVerificationsResponse,
     CurateBatchPeakBody,
     ReleaseBatchPeakCurationBody,
@@ -84,6 +89,11 @@ class BatchPeakSeriesBody(RequestBodyModel):
         ge=1,
         description="Occupancy filter: keep only batch peaks present in at least "
         "this many samples (applied to the full-batch load only).",
+    )
+    batch_peak_run_id: str | None = Field(
+        default=None,
+        description="Read the series as this batch run left them, from its "
+        "snapshot; omit, or name the current run, for the live ledger.",
     )
 
     @model_validator(mode="after")
@@ -198,6 +208,7 @@ async def get_batch_peak_ledger_route(
     sample_batch_id: str,
     tier: AssignmentTier | None = None,
     min_n_present: int = 2,
+    batch_peak_run_id: str | None = None,
     user: User = Depends(current_active_user),
 ) -> BatchPeakRecordsResponse:
     """List a batch's batch peaks (metadata only) -- the Assignments ledger feed.
@@ -214,7 +225,10 @@ async def get_batch_peak_ledger_route(
     """
     await check_batch_access(sample_batch_id, user, "guest")
     result = await get_batch_peak_ledger(
-        sample_batch_id=sample_batch_id, tier=tier, min_n_present=min_n_present
+        sample_batch_id=sample_batch_id,
+        tier=tier,
+        min_n_present=min_n_present,
+        batch_peak_run_id=batch_peak_run_id,
     )
     return BatchPeakRecordsResponse.model_validate(result)
 
@@ -247,6 +261,7 @@ async def backfill_batch_peaks_route(
     :return: Acknowledgement message with the background process id.
     """
     sample_batch = await fetch_sample_batch(sample_batch_id)
+    await check_no_run_in_flight(sample_batch_id=sample_batch_id)
     process_id = gen_id(8)
     background_tasks.add_task(
         compute_batch_peaks,
@@ -296,6 +311,7 @@ async def search_untargeted_batch_peaks_route(
     """
     sample_batch = await fetch_sample_batch(sample_batch_id)
     config = body.config if body is not None and body.config else PeakAssignmentConfig()
+    await check_no_run_in_flight(sample_batch_id=sample_batch_id)
     process_id = gen_id(8)
     background_tasks.add_task(
         search_batch_untargeted,
@@ -585,3 +601,26 @@ async def export_batch_ledger_route(
         ),
         "process_id": process_id,
     }
+
+
+@batch_peaks_router.get(
+    "/batch/{sample_batch_id}/runs", response_model=BatchPeakRunsResponse
+)
+@api_route()
+async def get_batch_peak_runs_route(
+    sample_batch_id: str,
+    user: User = Depends(current_active_user),
+) -> BatchPeakRunsResponse:
+    """A batch's runs, newest first: the batch-level operations that rewrote its
+    ledger (a rebuild, an untargeted search with its parameters, an import) and
+    the folds that built it, the current one flagged. Any other run's ledger and
+    series are read with ``batch_peak_run_id`` on the ledger and series routes,
+    as its snapshot left them.
+
+    :param sample_batch_id: The unique identifier of the sample batch.
+    :param user: The current authenticated user. Requires workspace guest role.
+    :return: The runs.
+    """
+    await check_batch_access(sample_batch_id, user, "guest")
+    result = await list_batch_runs(sample_batch_id=sample_batch_id)
+    return BatchPeakRunsResponse.model_validate(result)

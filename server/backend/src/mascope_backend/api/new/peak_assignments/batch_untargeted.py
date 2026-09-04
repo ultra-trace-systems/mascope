@@ -49,6 +49,12 @@ from mascope_backend.api.new.peak_assignments.batch_peaks_controller import (
     _acquire_batch_fold_lock,
     recompute_batch_consensus,
 )
+from mascope_backend.api.new.peak_assignments.batch_runs import (
+    ACTION_SEARCH,
+    complete_run,
+    fail_run,
+    start_run,
+)
 from mascope_backend.api.new.peak_assignments.config import PeakAssignmentConfig
 from mascope_backend.api.new.peak_assignments.engine import (
     SOURCE_UNTARGETED,
@@ -609,11 +615,27 @@ async def search_batch_untargeted(
     batch, on each anchor's brightest member, and measure the result against
     the anchor's other members. Writes no per-sample run; emits
     ``peak_assignment_reload`` so the ledgers refresh."""
-    counts = await run_batch_untargeted_search(
+    search_config = config or PeakAssignmentConfig()
+    # A batch run: the search's parameters go on the record, the current
+    # run's state is snapshotted before the first anchor is touched, and the
+    # run becomes current on completion - or is marked failed, the live
+    # ledger then holding whatever the search wrote before it stopped.
+    run_id = await start_run(
         sample_batch_id,
-        config or PeakAssignmentConfig(),
+        ACTION_SEARCH,
+        config=search_config.model_dump(mode="json"),
         user_id=user_id,
-        process_id=process_id,
-        parent_id=parent_id,
     )
+    try:
+        counts = await run_batch_untargeted_search(
+            sample_batch_id,
+            search_config,
+            user_id=user_id,
+            process_id=process_id,
+            parent_id=parent_id,
+        )
+    except Exception as exc:
+        await fail_run(sample_batch_id, run_id, f"{type(exc).__name__}: {exc}")
+        raise
+    await complete_run(sample_batch_id, run_id, summary=counts)
     return search_outcome(counts, sample_batch_id)
