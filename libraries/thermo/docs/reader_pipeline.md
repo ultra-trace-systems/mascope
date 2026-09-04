@@ -144,7 +144,22 @@ labels:
    centroids across two adjacent bins. Neighbours whose gap is well below the
    local FWHM (= m/z / resolution, gated by `_AVG_CENTROID_MERGE_FWHM`) are
    merged, while genuinely resolved peaks stay separate -- mirroring Thermo's
-   re-centroid, which never splits one peak.
+   re-centroid, which never splits one peak. A second rule reaches further, to
+   `_AVG_CENTROID_EXCLUSIVE_MERGE_FWHM` (1.5 FWHM), for neighbours the scans
+   hold one or the other of but not both. A dominant ion at a few million
+   counts per scan can have its measured position jitter by about its own
+   width from scan to scan with the calibration steady (measured: a base peak
+   alternating between two positions 1.1 FWHM apart, half the scans each), so
+   each scan yields one centroid that lands in one of two bins, whereas two
+   real ions that close are resolved within a scan and so share scans. The
+   test is intensity-weighted (`_AVG_CENTROID_EXCLUSIVE_OVERLAP`: a stray weak
+   label in a shared scan does not veto the merge, a real minor ion present in
+   the same scans does) and requires the two sides to cover most of the scans
+   (`_AVG_CENTROID_EXCLUSIVE_COVERAGE`), because two noise labels from
+   different scans are exclusive by construction -- on a noise-dominated file
+   the rule changes nothing. Thermo's own re-centroid reports such a jittering
+   ion as two peaks, its averaged profile being flat-topped, so here the two
+   readers differ by design.
 5. **Scale S:N to the averaged spectrum** (the `n/sqrt(N)` correction): Thermo
    reads S:N off the noise-reduced *averaged* profile. Averaging N scans drops
    the noise ~`sqrt(N)`, so a peak present in `n` of the `N` scans has averaged
@@ -166,13 +181,15 @@ and the count of peaks above the S:N threshold tracking Thermo. The unmatched
 few percent are sub-threshold noise and ringing/satellite artifacts, not
 analytes (see `test_centroids_average_matches_thermo`).
 
-One departure from Thermo is deliberate. On a file whose calibration steps
+Two departures from Thermo are deliberate. On a file whose calibration steps
 between scans (step 2), Thermo's averaged profile is broadened by the step and
 its re-centroided height drops with it -- about a quarter for a 2.5 ppm step at
 m/z 42, measured against the same file -- while the frequency-keyed path keeps
 the per-scan heights. The same ion in a file without the step gets the same
 height from both readers, so it is Thermo's number that varies with the lock
-state, not the ion.
+state, not the ion. And an ion whose position jitters by about its own width
+(step 4) is one centroid here and two in Thermo, whose averaged profile of it
+is flat-topped; its height here is the per-scan sum, as for any other peak.
 
 ---
 
