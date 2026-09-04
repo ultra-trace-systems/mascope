@@ -1,0 +1,86 @@
+name: CLA
+run-name: Contributor License Agreement check
+
+# Asks every external contributor to accept the Individual Contributor License
+# Agreement once, and blocks the pull request until every commit author has.
+# The agreement and the signature register live in a separate repository,
+# ultra-trace-systems/cla, shared with Peaky, so one acceptance covers both
+# projects. Ultra Trace's own developers and the bots are in the allowlist.
+#
+# Two things about the triggers matter:
+#
+#   * Both events read this file from the repository's DEFAULT branch,
+#     `master`, whatever branch the pull request targets, and do not fire at
+#     all while it is missing there. A change made on `develop` takes effect
+#     only once it has been released to `master`.
+#   * `pull_request_target` runs with write permission and the secrets, which
+#     is what lets it comment on and set a status for a pull request from a
+#     fork. The action never checks out or executes the pull request's code,
+#     so that is safe here - and it is why no checkout step belongs in this
+#     workflow. Do not add one.
+
+on:
+  issue_comment:
+    types: [created]
+  pull_request_target:
+    types: [opened, synchronize, reopened]
+
+permissions:
+  actions: write # re-runs its own failed check once a signature lands
+  contents: read # signatures are written to the cla repository, not here
+  pull-requests: write # the comment asking for the signature
+  statuses: write # the commit status branch protection can require
+
+jobs:
+  cla:
+    name: CLA Assistant
+    # Forks have neither the secret nor any reason to run this. The comment
+    # trigger fires for every comment on every issue and pull request, so it
+    # is narrowed to the two phrases the action reacts to, on pull requests.
+    if: >-
+      github.repository == 'ultra-trace-systems/mascope' &&
+      (github.event_name == 'pull_request_target' ||
+       (github.event.issue.pull_request &&
+        (github.event.comment.body == 'recheck' ||
+         github.event.comment.body == 'I have read the CLA Document and I hereby sign the CLA')))
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Check that every commit author has accepted the agreement
+        # Upstream archived this action in March 2026 and v2.6.1 is its final
+        # release. It still runs correctly under GitHub's Node 24 runtime and
+        # is in wide use; pinned to the release commit so that cannot drift.
+        uses: contributor-assistant/github-action@ca4a40a7d1004f18d9960b404b97e5f30a505a08 # v2.6.1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Only used to commit signatures to the cla repository. A
+          # fine-grained token with "Contents: read and write" on that one
+          # repository is enough; the comment, status and re-run go through
+          # GITHUB_TOKEN. See the cla repository's README for the setup.
+          PERSONAL_ACCESS_TOKEN: ${{ secrets.CLA_ASSISTANT_TOKEN }}
+        with:
+          path-to-document: https://github.com/ultra-trace-systems/cla/blob/main/ICLA.md
+          remote-organization-name: ultra-trace-systems
+          remote-repository-name: cla
+          # The register's branch must not be protected - the action commits
+          # to it directly. Bump v1 to v2 when the agreement's terms change,
+          # so everyone is asked to accept the new version.
+          branch: main
+          path-to-signatures: signatures/v1/cla.json
+          # Ultra Trace's developers (their work is the company's already) and
+          # the bots, which cannot sign. Keep in step with Peaky's list.
+          allowlist: kausiala,alekseishcherbinin,kluuppo,oskarsari,dependabot[bot],renovate[bot],github-actions[bot]
+          # `$you` becomes "you" or "you all"; the action appends the exact
+          # comment to post and, for several authors, who still has to sign.
+          custom-notsigned-prcomment: >-
+            Thank you for the pull request! Before we can merge it, we ask that
+            $you accept the
+            [Ultra Trace Systems Individual Contributor License Agreement](https://github.com/ultra-trace-systems/cla/blob/main/ICLA.md).
+            It is a one-time step, and one acceptance covers Mascope, Peaky and
+            our other open-source projects. You keep the copyright to your work,
+            and Mascope stays Apache-2.0. To accept, post the comment below on
+            this pull request, exactly as written.
+          # The record of who signed is the JSON file in the cla repository,
+          # not the comment, so there is nothing to protect by locking the
+          # conversation - and a locked pull request stops follow-up discussion.
+          lock-pullrequest-aftermerge: false
