@@ -352,6 +352,20 @@ becomes current. The same history is one call away in the SDK
 (`mascope.batch_peaks.runs(batch_id)`, and `list(batch_id, run_id=...)` for the species
 table as an earlier run left it).
 
+### Importing an engine's batch result
+
+An external engine that works on the batch as a whole - one identity per m/z - can
+land its result on the batch ledger as a run of its own, through the SDK
+(`mascope.batch_peaks.import_run(batch_id, rows, engine=..., engine_version=...)`) or
+`POST /api/batch-peaks/batch/{id}/runs/import`. Each row is matched to the batch peak
+nearest its m/z (within 5 ppm by default) and its composition is then measured against
+every sample that holds that peak, so the ledger shows Mascope's own fit of the engine's
+formula, with the engine named as the source. Curated batch peaks are left alone, as are
+isotopologue peaks, and rows whose adduct could not be resolved to a mechanism; the run's
+summary counts what landed and why the rest did not. The ledger as it was stays under
+the previous run in the run selector, so the two views can be compared, and *Rebuild
+batch ledger* puts Mascope's own view back.
+
 ## References
 
 - <a id="kf06"></a>Kind, T.; Fiehn, O. *Metabolomic database annotations via query of

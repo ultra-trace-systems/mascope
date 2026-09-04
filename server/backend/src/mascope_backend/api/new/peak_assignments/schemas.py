@@ -773,6 +773,53 @@ class ReleaseBatchPeakCurationBody(BaseModel):
     batch_peak_id: str = Field(description="The batch peak whose curation to release.")
 
 
+class BatchImportRow(BaseModel):
+    """One identity of an external engine's batch-level result: the m/z it was
+    found at and the composition it was given. Matched to the batch peak nearest
+    the m/z and measured against that peak's members by this server, so the
+    engine's own scores are not part of the row - send them, and they are
+    ignored; keep them client-side as the engine's provenance.
+    """
+
+    model_config = ConfigDict(extra="ignore")
+
+    mz: float = Field(gt=0, allow_inf_nan=False)
+    #: The neutral formula.
+    formula: str = Field(min_length=1, max_length=256)
+    ion_formula: str | None = Field(None, max_length=4096)
+    #: The adduct, as this deployment's mechanism id. A row without one cannot
+    #: be measured and is counted as skipped rather than refused.
+    ionization_mechanism_id: str | None = Field(None, max_length=16)
+
+
+class ImportBatchRunBody(BaseModel):
+    """Request body for importing an external engine's batch-level result."""
+
+    engine: str = Field(
+        max_length=64,
+        description=(
+            "The external engine that produced the rows, stamped on the run and on "
+            "every registry entry the import creates. The in-app identity is "
+            "reserved."
+        ),
+    )
+    engine_version: str = Field(min_length=1, max_length=64)
+    config: dict | None = Field(
+        None,
+        description=(
+            "The engine's own record of the run - its parameters, its summary - "
+            "kept verbatim on the batch run for the run selector to show."
+        ),
+    )
+    mz_tolerance_ppm: float = Field(
+        5.0,
+        ge=0.1,
+        le=50.0,
+        description="How far a row's m/z may sit from the batch peak it lands on.",
+    )
+    rows: list[BatchImportRow] = Field(min_length=1, max_length=5000)
+
+
 class BatchPeakRunRecord(BaseModel):
     """One batch run: a batch-level operation that rewrote the batch ledger."""
 

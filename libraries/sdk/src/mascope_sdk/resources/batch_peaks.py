@@ -11,6 +11,7 @@ batch without a per-sample run in sight. Read-only; the ledger is built and
 curated from the Mascope app.
 """
 
+import time
 from typing import Any
 
 import pandas as pd
@@ -49,6 +50,11 @@ class BatchPeaksResource(BaseResource):
         runs = mascope.batch_peaks.runs("batch-123")
         earlier = mascope.batch_peaks.list(
             "batch-123", run_id=runs.iloc[-1]["batch_peak_run_id"]
+        )
+
+        # An external engine's batch-level result, landed on the ledger as a run
+        run = mascope.batch_peaks.import_run(
+            "batch-123", rows, engine="peaky", engine_version="0.7.0"
         )
     """
 
@@ -182,3 +188,86 @@ class BatchPeaksResource(BaseResource):
         if not data:
             return None
         return _coerce_utc_columns(pd.DataFrame(data))
+
+    def import_run(
+        self,
+        sample_batch_id: str,
+        rows: "pd.DataFrame | list[dict[str, Any]]",
+        *,
+        engine: str,
+        engine_version: str,
+        config: dict[str, Any] | None = None,
+        mz_tolerance_ppm: float = 5.0,
+        wait: bool = True,
+        poll_interval: float = 2.0,
+        timeout: float = 900.0,
+    ) -> dict[str, Any] | None:
+        """Land an external engine's batch-level result on the batch ledger,
+        as a batch run.
+
+        ``rows`` is one identity per m/z: ``mz``, ``formula`` (neutral),
+        optionally ``ion_formula`` and ``ionization_mechanism_id`` (the adduct
+        as this deployment's mechanism id; a row without one cannot be
+        measured and is skipped). Other columns are ignored. Each row is
+        matched to the batch peak nearest its m/z within ``mz_tolerance_ppm``
+        and measured against that peak's members by the server, so the ledger
+        carries the server's fit of the engine's formula under the engine's
+        name. Curated and isotopologue batch peaks are left alone. The run's
+        ``summary`` counts what landed and, by reason, what did not.
+
+        :param sample_batch_id: The ID of the sample batch.
+        :type sample_batch_id: str
+        :param rows: The engine's rows, as a DataFrame or a list of dicts.
+        :type rows: pd.DataFrame | list[dict]
+        :param engine: The engine's name (not the server's own).
+        :type engine: str
+        :param engine_version: The engine's version string.
+        :type engine_version: str
+        :param config: The engine's own record of the run, kept on the batch
+                       run verbatim.
+        :type config: dict, optional
+        :param mz_tolerance_ppm: The m/z match tolerance. Defaults to 5.
+        :type mz_tolerance_ppm: float
+        :param wait: Poll until the run completes or fails. Defaults to True.
+        :type wait: bool
+        :param poll_interval: Seconds between polls.
+        :type poll_interval: float
+        :param timeout: Seconds to wait before giving up on the poll.
+        :type timeout: float
+        :return: The run record - ``status`` completed with its ``summary``, or
+                 failed with its ``error`` - or the running record when
+                 ``wait`` is False. None when the server accepted nothing.
+        :rtype: dict | None
+        :raises TimeoutError: When the run is still running after ``timeout``.
+        """
+        if isinstance(rows, pd.DataFrame):
+            keep = [
+                c
+                for c in ("mz", "formula", "ion_formula", "ionization_mechanism_id")
+                if c in rows.columns
+            ]
+            rows = rows[keep].astype(object).where(rows[keep].notna(), None)
+            rows = rows.to_dict("records")
+        body = {
+            "engine": engine,
+            "engine_version": engine_version,
+            "config": config,
+            "mz_tolerance_ppm": mz_tolerance_ppm,
+            "rows": list(rows),
+        }
+        data = self._post(f"batch-peaks/batch/{sample_batch_id}/runs/import", body)
+        run = data[0] if data else None
+        if run is None or not wait:
+            return run
+        run_id = run["batch_peak_run_id"]
+        deadline = time.monotonic() + timeout
+        while True:
+            runs = self._get(f"batch-peaks/batch/{sample_batch_id}/runs") or []
+            latest = next((r for r in runs if r["batch_peak_run_id"] == run_id), None)
+            if latest is not None and latest.get("status") != "running":
+                return latest
+            if time.monotonic() > deadline:
+                raise TimeoutError(
+                    f"batch import run '{run_id}' still running after {timeout} s"
+                )
+            time.sleep(poll_interval)

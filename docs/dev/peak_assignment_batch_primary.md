@@ -442,6 +442,40 @@ derived Sample view stay on the live ledger. Not done: a per-sample runs list en
 batch run, and restoring a failed run's snapshot onto the live ledger - both possible on
 this record, neither asked for.
 
+### 6.6 Batch import
+
+> **Status (2026-09-04): shipped.** On the user's review question whether a peaky
+> run can be imported into the batch ledger.
+
+A per-sample import (`POST /api/peak-assignments/sample/{id}/runs/import`, what `peaky
+publish` uses) already reaches the batch ledger: the imported run folds in like any
+other. The batch-level import is for an engine's *batch-level* result - peaky's batch
+pipeline assigns a representative subset of files and merges their ledgers on m/z,
+ending with one identity per m/z - and it lands as a batch run (`action = import`) via
+`POST /api/batch-peaks/batch/{id}/runs/import` (`batch_import.py`). Each row is matched
+to the batch peak nearest its m/z within a tolerance (default 5 ppm) and of the
+polarity its mechanism implies; the identity is then measured against every member of
+that anchor with the seeded scorer, exactly as Stage B propagates a search result
+(`_propagate_to_sample`, over every member rather than the unassigned ones), so the
+ledger carries this server's fit of the engine's formula, tiered under the ledger's own
+bands, with the registry entry naming the engine as its source. The engine's own scores
+are not stored: they are the client's provenance, and the run's `config` keeps whatever
+record the client sends.
+
+Deliberate limits: a curated anchor is left alone (a pin outranks an engine); an
+isotopologue anchor is left alone (the rows are M0s, and a row landing on a peak this
+ledger reads as another peak's isotopologue is a disagreement about the role, not an
+identity); a row without a mechanism id cannot be measured; of two rows nearest the
+same anchor the closer takes it. Every skipped row is counted by reason in the run's
+summary. Members the in-app engine had assigned ARE re-pointed where the engine's
+formula measures - the import is the engine's view, and the previous run's snapshot
+keeps the in-app one; a rebuild puts it back. The route validates (reserved engine,
+unknown mechanism, oversized config: 422; a run in flight: 409), opens the run and
+returns it at once, and completes or fails it in the background; the SDK's
+`batch_peaks.import_run()` posts and polls. The client side for peaky - reading
+`merged_ledger.csv`, resolving adducts to mechanism ids as the per-sample publish does -
+lives in the peaky repository.
+
 ## 7. Cost
 
 Per detected peak per sample, live, with fleet growth at the last year's acquisition rate.

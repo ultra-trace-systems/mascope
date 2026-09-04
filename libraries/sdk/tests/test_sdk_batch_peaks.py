@@ -88,6 +88,8 @@ class FakeServer:
         self.anchors = list(ANCHORS)
         self.members = _members(5)
         self.verdicts = list(VERDICTS)
+        self.import_calls = []
+        self.runs_provider = None
         self.runs = [
             {
                 "batch_peak_run_id": "run-2",
@@ -132,8 +134,15 @@ class FakeServer:
                 }
             )
         if path.endswith("/runs"):
+            # A poll reads whatever the provider says the runs are now.
+            runs = self.runs_provider() if self.runs_provider else self.runs
             return _FakeResponse(
-                {"status": "success", "message": "ok", "results": 2, "data": self.runs}
+                {
+                    "status": "success",
+                    "message": "ok",
+                    "results": len(runs),
+                    "data": runs,
+                }
             )
         if path.endswith("/verdicts"):
             return _FakeResponse(
@@ -315,3 +324,101 @@ class TestRuns:
             "min_n_present": 1,
             "batch_peak_run_id": "run-1",
         }
+
+
+class TestImportRun:
+    @pytest.fixture
+    def posting(self, server, monkeypatch):
+        """The resource's POST captured, answering as the route does: the run,
+        running; the runs list then reports it completed on the second poll."""
+        from mascope_sdk.resources import batch_peaks as module
+
+        polls = {"n": 0}
+
+        def fake_post(url, path, access_token, data, timeout, verify_ssl, service_name):
+            server.import_calls.append((path, data))
+            record = {
+                "batch_peak_run_id": "run-3",
+                "action": "import",
+                "status": "running",
+                "current": False,
+            }
+            return _FakeResponse(
+                {"status": "success", "message": "ok", "results": 1, "data": [record]}
+            )
+
+        original_runs = list(server.runs)
+
+        def runs_after_polls():
+            polls["n"] += 1
+            status = "running" if polls["n"] < 2 else "completed"
+            return [
+                {
+                    "batch_peak_run_id": "run-3",
+                    "action": "import",
+                    "status": status,
+                    "current": status == "completed",
+                    "summary": {"anchors_matched": 1}
+                    if status == "completed"
+                    else None,
+                },
+                *original_runs,
+            ]
+
+        monkeypatch.setattr(module, "http_post", fake_post, raising=False)
+        monkeypatch.setattr(
+            "mascope_sdk.resources._base.http_post", fake_post, raising=False
+        )
+        monkeypatch.setattr(module.time, "sleep", lambda s: None)
+        server.runs_provider = runs_after_polls
+        return polls
+
+    def test_posts_the_rows_and_waits_for_the_run_to_close(
+        self, server, resource, posting
+    ):
+        frame = pd.DataFrame(
+            {
+                "mz": [181.0707, 300.5],
+                "formula": ["C6H12O6", "C10H20O10"],
+                "ion_formula": ["C6H13O6+", None],
+                "ionization_mechanism_id": ["mech-h", None],
+                "ion_score": [0.9, 0.4],  # the engine's own number: not sent
+            }
+        )
+        run = resource.import_run(
+            BATCH_ID, frame, engine="peaky", engine_version="0.7.0", config={"k": 1}
+        )
+        path, body = server.import_calls[-1]
+        assert path == f"batch-peaks/batch/{BATCH_ID}/runs/import"
+        assert body["engine"] == "peaky" and body["engine_version"] == "0.7.0"
+        assert body["config"] == {"k": 1} and body["mz_tolerance_ppm"] == 5.0
+        assert body["rows"] == [
+            {
+                "mz": 181.0707,
+                "formula": "C6H12O6",
+                "ion_formula": "C6H13O6+",
+                "ionization_mechanism_id": "mech-h",
+            },
+            {
+                "mz": 300.5,
+                "formula": "C10H20O10",
+                "ion_formula": None,
+                "ionization_mechanism_id": None,
+            },
+        ]
+        assert run["status"] == "completed"
+        assert run["summary"] == {"anchors_matched": 1}
+        assert posting["n"] == 2
+
+    def test_returns_the_running_record_without_waiting(
+        self, server, resource, posting
+    ):
+        run = resource.import_run(
+            BATCH_ID,
+            [{"mz": 181.0707, "formula": "C6H12O6"}],
+            engine="peaky",
+            engine_version="0.7.0",
+            wait=False,
+        )
+        assert run["status"] == "running"
+        assert posting["n"] == 0
