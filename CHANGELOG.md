@@ -1092,8 +1092,18 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
   spectrum is broadened by the step and reports a lower apex, whereas Mascope
   keeps the per-scan heights, so a file with the step and one without now
   report the same height for the same ion. Readers without conversion
-  parameters bin as before. Peak lists detected earlier keep their split peaks
-  until peak detection is re-run for the sample.
+  parameters bin as before. The same pooling also rejoins the halves of a
+  dominant ion whose measured position jitters from scan to scan by about its
+  own width while the calibration holds still - a base peak at a few million
+  counts per scan alternating between two positions, half the scans each,
+  which came out as two equal peaks 3 ppm apart. Two neighbouring centroids up
+  to one and a half peak widths apart are merged when the scans hold one or
+  the other but not both and together cover most of the scans, so a genuine
+  pair of ions resolved within a scan stays two peaks and noise labels from
+  different scans are not joined; Thermo's own averaging reports such an ion
+  as two peaks, so there the readers differ by design. Peak lists detected
+  earlier keep their split peaks until peak detection is re-run for the
+  sample.
 
 - The peak inspector's **close alternatives** no longer include the assignment
   the peak was actually given. The list is meant to be the runners-up a peak
