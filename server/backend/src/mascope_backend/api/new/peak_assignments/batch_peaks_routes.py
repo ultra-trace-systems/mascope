@@ -52,11 +52,15 @@ from mascope_backend.api.new.peak_assignments.routes import (
     reject_oversized_import,
     require_peak_assignment_enabled,
 )
+from mascope_backend.api.new.peak_assignments.sample_status import (
+    get_batch_sample_assignment_status,
+)
 from mascope_backend.api.new.peak_assignments.schemas import (
     AssignmentTier,
     AssignSamplePeaksBody,
     BatchPeakRunsResponse,
     BatchPeakVerificationsResponse,
+    BatchSampleAssignmentStatusResponse,
     CurateBatchPeakBody,
     ImportBatchRunBody,
     ReleaseBatchPeakCurationBody,
@@ -719,3 +723,25 @@ async def import_batch_run_route(
         "data": [record],
         "process_id": process_id,
     }
+
+
+@batch_peaks_router.get(
+    "/batch/{sample_batch_id}/sample-status",
+    response_model=BatchSampleAssignmentStatusResponse,
+)
+@api_route()
+async def get_batch_sample_status_route(
+    sample_batch_id: str,
+    user: User = Depends(current_active_user),
+) -> BatchSampleAssignmentStatusResponse:
+    """Every sample of a batch with its assignment status: the latest completed
+    assignment run of its own, if any, and what the batch ledger holds for it
+    (members, and how many carry an assignment). The sample browser's badge.
+
+    :param sample_batch_id: The unique identifier of the sample batch.
+    :param user: The current authenticated user. Requires workspace guest role.
+    :return: One record per sample, in sample id order.
+    """
+    await check_batch_access(sample_batch_id, user, "guest")
+    result = await get_batch_sample_assignment_status(sample_batch_id=sample_batch_id)
+    return BatchSampleAssignmentStatusResponse.model_validate(result)

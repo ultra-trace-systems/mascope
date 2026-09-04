@@ -6,6 +6,17 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
 
 ### Added
 
+- **Jump from a batch peak to its brightest sample.** The *Batch peaks* ledger's
+  rows carry an arrow beside the intensity that opens the brightest sample holding
+  the batch peak, with that peak focused, in the Sample tab - the batch chart's
+  click-through without having to tell which trace to click. The chart and the
+  ledger now share that click-through.
+- **Assignment status in the sample browser.** A tag badge beside the match and
+  calibration badges says whether a sample has a completed assignment run of its
+  own, is served from the batch ledger, or has nothing assigned yet; the tooltip
+  names the engine and how many of the sample's peaks are assigned in the ledger.
+  Route: `GET /api/batch-peaks/batch/{id}/sample-status`.
+
 - **Inspector evidence for the derived Sample view.** A peak of a sample served from
   the batch ledger carried its fit and tier but showed dashes for everything a run
   computes: the m/z and abundance error of each isotopologue, the isotope labels, the

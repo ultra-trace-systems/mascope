@@ -278,6 +278,12 @@ such a peak - the family's composition is scored against the sample's own peaks,
 its M0 - and fills them in a moment later. They are computed for the view and never stored;
 run an assignment on the sample to persist a full ledger of its own.
 
+The sample browser marks each sample's assignment status with a tag badge beside the
+match and calibration badges: green for a sample with a completed run of its own (the
+tooltip names the engine, its version and the time), the accent colour for a sample served
+from the batch ledger without a run of its own, faint for one with nothing assigned yet.
+The tooltip also says how many of the sample's peaks carry an assignment in the ledger.
+
 ## Batch peaks
 
 --8<-- "_help/batch-peaks.md"
@@ -346,6 +352,12 @@ clears the way it always did. The same is true in a batch whose batch peaks have
 been computed yet: there is no anchor to follow, so nothing does. Picking a peak
 yourself always wins over this — it will not overwrite a choice you just made, or
 refill a selection you cleared.
+
+To see how an assignment looks in a spectrum, use the arrow beside a row's intensity: it
+opens the brightest sample that holds the batch peak, with that peak focused, in the
+*Sample* tab - the same click-through as a data point in the batch chart, without having
+to tell which trace to click when several are plotted. When an earlier run is on screen,
+the jump reads that run's members.
 
 ### Batch runs
 
