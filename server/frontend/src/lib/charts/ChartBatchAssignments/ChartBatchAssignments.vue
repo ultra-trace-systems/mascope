@@ -7,10 +7,9 @@ import ProgressSpinner from 'primevue/progressspinner'
 
 import { useApp } from '@/stores'
 import { ToolbarDrawMode, ToolbarIntensityScale } from '@/lib/toolbars'
-import { untilStoreSettled } from '@/lib/store/settle'
 
 import BaseChartPlotly from '../BaseChartPlotly.vue'
-import { useSampleScroller } from '@/lib/panes/PaneBrowserSample/stores'
+import { focusSamplePeak, useSampleScroller } from '@/lib/panes/PaneBrowserSample/stores'
 import { useChartAssignmentsData } from './data'
 
 const app = useApp()
@@ -133,28 +132,18 @@ const layout = computed(() => {
 })
 
 /**
- * Resolve once the peak store holds the focused sample's peaks.
- *
- * See `@/lib/store/settle` for why the tick and the backstop are both needed.
- * A load that never settles degrades the click to sample-focus only rather than
- * leaving the promise alive for good, which is why the find below treats a
- * missing peak as "nothing to focus" rather than an error.
- */
-function peakStoreSettled() {
-  return untilStoreSettled(() => app.data.peak.pending)
-}
-
-/**
  * Click a point -> focus its sample, then the sample peak the point was folded
  * from, and bring the Sample tab (spectrum + inspector) forward -- the same
- * click-through the ledger offers (PaneBrowserAssignment) and the overview
- * chart offers for a matched ion. A click on the TIC trace, or on a sample
- * where this batch peak was never observed, focuses the sample and stops there
- * -- this handler writes no peak focus in that case. What the peak focus then
- * does is the general rule for any sample switch: it follows the peak that was
- * already focused into the new sample (see `peakFocusFollow`). That follow
- * stands down whenever this handler focuses a peak itself, so an explicit
- * click-through always wins over it.
+ * click-through the batch ledger offers on a row, the sample ledger offers on
+ * an assignment and the overview chart offers for a matched ion; the shared
+ * `focusSamplePeak` is where the wait for the peak store and the string
+ * comparison of ids live. A click on the TIC trace, or on a sample where this
+ * batch peak was never observed, focuses the sample and stops there -- this
+ * handler writes no peak focus in that case. What the peak focus then does is
+ * the general rule for any sample switch: it follows the peak that was already
+ * focused into the new sample (see `peakFocusFollow`). That follow stands down
+ * whenever a peak is focused here, so an explicit click-through always wins
+ * over it.
  */
 async function onClick({ pointIndex, curveNumber }) {
   if (pointIndex == null) return
@@ -163,31 +152,7 @@ async function onClick({ pointIndex, curveNumber }) {
     app.data.sample.unfocus()
     return
   }
-
-  app.data.sample.focus(sample)
-  scroller.scrollToSample(app.data.sample.focusedId)
-
-  const samplePeakId = data.samplePeakIdAt(curveNumber, pointIndex)
-  if (samplePeakId == null) return
-
-  // Unconditionally, not just when this click switched the sample: the reload
-  // we have to outlast is not always one we started. The sample table focusing
-  // a sample a moment ago, or an earlier click still waiting here, leaves the
-  // store just as stale. Waiting also gives overlapping clicks one wake-up
-  // point, so the last one focuses last instead of being dropped.
-  await peakStoreSettled()
-
-  // A click that landed while we waited has moved on to another sample; its own
-  // handler owns the focus now.
-  if (app.data.sample.focusedId !== sample.sample_item_id) return
-
-  // Ids are compared as strings: the sample-peaks feed and the batch-peak
-  // series do not agree on the type (see docs/dev/peak_assignment_frontend.md).
-  const peak = app.data.peak.list.find((p) => String(p.peak_id) === String(samplePeakId))
-  if (!peak) return
-
-  app.data.peak.focus(peak)
-  app.ui.tab.active = 'sample'
+  await focusSamplePeak(app, sample, data.samplePeakIdAt(curveNumber, pointIndex))
 }
 
 /** Box/lasso select -> update sample selection. */
