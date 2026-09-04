@@ -34,6 +34,17 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
   instrument, or rolled back to an older agent, says so on its next upload
   instead of showing what it first reported. Migration `8e5f0b3a2d71`, two
   nullable columns, no backfill.
+- **Verdicts from the sample ledger.** The Verdict column of the per-sample ledger is
+  now a button, as in the *Batch peaks* ledger: an unverified row shows a faint seal
+  that opens the verdict form in place, recorded on the family's M0.
+- **Plot a species in the batch chart from the sample ledger.** A chart icon on each
+  row selects the batch peak the row's peak folded into (or takes it out), so the
+  batch chart can be built without leaving the sample; a run's own rows now carry
+  their batch peak, looked up when the ledger is read.
+- **The sample ledger follows the focused peak.** A peak focused from the batch
+  chart, the jump beside a batch peak's intensity or the inspector scrolls its row
+  into view.
+
 - **Jump from a batch peak to its brightest sample.** The *Batch peaks* ledger's
   rows carry an arrow beside the intensity that opens the brightest sample holding
   the batch peak, with that peak focused, in the Sample tab - the batch chart's

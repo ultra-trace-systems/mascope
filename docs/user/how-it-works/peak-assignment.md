@@ -226,6 +226,11 @@ and each weaker level is worth correspondingly less as a label. Verdicts deliber
 capture the *evidence* behind a judgment rather than echoing the model's own score,
 so the labelled record stays informative for recalibration.
 
+Verdicts are recorded from the peak inspector's form, or from the ledger's Verdict column:
+the cell is a button, as in the *Batch peaks* ledger, so an unverified row shows a faint
+seal that opens the same form in place. A verdict is about the compound, so it is recorded
+on the family's M0 whichever member the row is.
+
 ### Batch-level verdicts
 
 --8<-- "_help/batch-peak-verdicts.md"
@@ -358,6 +363,13 @@ opens the brightest sample that holds the batch peak, with that peak focused, in
 *Sample* tab - the same click-through as a data point in the batch chart, without having
 to tell which trace to click when several are plotted. When an earlier run is on screen,
 the jump reads that run's members.
+
+The sample ledger reaches the batch chart too: the chart icon on a row puts that species
+into the chart (it selects the batch peak the row's peak folded into, in the *Batch peaks*
+ledger) or takes it out, without leaving the sample. The chart draws at most as many species
+as the *Batch peaks* selection allows, and a peak the ledger does not hold cannot be plotted.
+And a peak focused from the batch side - the chart, the arrow beside a batch peak's intensity
+- scrolls its row into view in the sample ledger.
 
 ### Batch runs
 

@@ -244,7 +244,9 @@ async def test_a_sample_with_a_run_still_reads_its_run(guest_client, folded):
     body = await _ledger(guest_client, folded["s1"])
     assert body["total"] == 3
     assert {row["peak_assignment_run_id"] for row in body["data"]} == {folded["run1"]}
-    assert all(row["batch_peak_id"] is None for row in body["data"])
+    # The run's own rows, and each carries the batch peak its peak folded into,
+    # looked up on read - the link the sample ledger plots in the batch chart.
+    assert all(row["batch_peak_id"] for row in body["data"])
 
 
 # --- the derived ledger --------------------------------------------------------
