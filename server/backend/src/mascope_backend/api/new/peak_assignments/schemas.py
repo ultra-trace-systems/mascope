@@ -141,8 +141,10 @@ class PeakAssignmentRecord(BaseModel):
     #: Number of adducts corroborating the compound (provenance.corroboration),
     #: flattened for the ledger's corroboration marker.
     corroboration_adducts: int | None = None
-    #: The batch peak this row's peak is a member of, on a row derived from the
-    #: batch ledger (``fold_view``); absent on a row of an assignment run.
+    #: The batch peak this row's peak is a member of: carried by a row derived
+    #: from the batch ledger (``fold_view``), looked up on read for a run's own
+    #: row; None when the peak is not in the ledger. What the sample ledger
+    #: plots in the batch chart.
     batch_peak_id: str | None = None
 
 

@@ -1,5 +1,5 @@
 <script setup>
-import { ref, reactive, computed, watch, onScopeDispose } from 'vue'
+import { ref, reactive, computed, watch, nextTick, onScopeDispose } from 'vue'
 
 import Button from 'primevue/button'
 import Dialog from 'primevue/dialog'
@@ -23,9 +23,12 @@ import { num } from '@/lib/formatters'
 import { formatIsotopeFormula } from '@/lib/chem'
 import { tierBucket, tierRank } from '@/lib/tiers'
 import { prettyTrim } from '@/lib/utils'
+import { scrollVirtualRowIntoView } from '@/lib/virtualScroll'
 import { useApp } from '@/stores'
 
 import { useAssignmentLauncher } from './stores'
+import AssignmentVerdictPopover from './AssignmentVerdictPopover.vue'
+import { useBatchChartSelection } from './stores/batchChartSelection.js'
 
 const app = useApp()
 const launcher = useAssignmentLauncher()
@@ -466,6 +469,57 @@ const selectedRow = computed({
   }
 })
 
+// --- Verdict from the row ----------------------------------------------------
+// The batch ledger's verdict cell, here: an unverified row can be judged where
+// it is read, in the same form the inspector carries. The target is the row the
+// cell was opened from, read live so a verdict just recorded shows in the
+// popover without reopening it.
+const verdictMenu = ref()
+const verdictRowId = ref(null)
+const verdictTarget = computed(() =>
+  verdictRowId.value
+    ? (rows.value.find((row) => row.peak_assignment_id === verdictRowId.value) ?? null)
+    : null
+)
+function openVerdict(event, row) {
+  const menu = verdictMenu.value
+  if (!menu) return
+  if (verdictRowId.value === row.peak_assignment_id) {
+    menu.toggle(event)
+    return
+  }
+  verdictRowId.value = row.peak_assignment_id
+  menu.hide()
+  nextTick(() => menu.show(event))
+}
+const verdictTooltip = (row) => {
+  if (verdictFor(row)) return 'Verification verdict - click to re-judge'
+  if (overlayFor(row)) return 'Batch-level verdict reaching this sample - click to judge it here'
+  return 'Record a verdict'
+}
+
+// --- The batch chart from the row ------------------------------------------
+// The batch chart draws the Batch peaks ledger's selection; a row's species
+// goes into it (or out of it) from here, without leaving the sample.
+const chart = useBatchChartSelection()
+
+// --- Keep the focused row in view --------------------------------------------
+// A peak focused elsewhere - the batch chart, the batch ledger's jump, the
+// inspector's isotopologue table - selects its row here, and with a virtual
+// scroller a selected row is in view only if it is scrolled to. Rerun when the
+// rows arrive as well: after a sample switch the focus lands before the
+// sample's ledger has loaded, and the row exists only once it has.
+const assignmentTable = ref()
+function scrollToFocusedRow() {
+  const row = selectedRow.value
+  if (!row) return
+  const index = rows.value.indexOf(row)
+  nextTick(() => scrollVirtualRowIntoView(assignmentTable.value, index))
+}
+watch([() => selectedRow.value?.sample_peak_id, () => rows.value.length], scrollToFocusedRow, {
+  immediate: true
+})
+
 // Whether this run carries a tier of its producing engine's own. Only an
 // imported run does - an in-app row's engine tier IS its `tier` - so the column
 // is absent from every in-app ledger rather than sitting there empty. Read off
@@ -743,6 +797,7 @@ const breadcrumb = computed(() => {
       </div>
       <DataTable
         v-else
+        ref="assignmentTable"
         :value="rows"
         dataKey="sample_peak_id"
         size="small"
@@ -889,16 +944,73 @@ const breadcrumb = computed(() => {
             />
           </template>
           <template #body="{ data }">
-            <BaseVerdictBadge
-              v-if="verdictFor(data)"
-              :record="verdictFor(data)"
-              :conflict="conflictFor(data)"
-              compact
-            />
-            <BaseVerdictBadge v-else :record="overlayFor(data)" inherited compact />
+            <!-- A button, as in the batch ledger: an empty cell opens the
+                 form too, so an unverified row is judged where it is read. -->
+            <button
+              type="button"
+              class="verdict-cell"
+              :class="{ empty: !verdictFor(data) && !overlayFor(data) }"
+              :aria-label="verdictFor(data) ? 'Verification verdict' : 'Record a verdict'"
+              v-tooltip.top="verdictTooltip(data)"
+              @click.stop="openVerdict($event, data)"
+            >
+              <BaseVerdictBadge
+                v-if="verdictFor(data)"
+                :record="verdictFor(data)"
+                :conflict="conflictFor(data)"
+                compact
+              />
+              <BaseVerdictBadge
+                v-else-if="overlayFor(data)"
+                :record="overlayFor(data)"
+                inherited
+                compact
+              />
+              <span v-else class="pi ph ph-seal-check" />
+            </button>
+          </template>
+        </Column>
+
+        <!-- The batch chart draws the Batch peaks ledger's selection; this puts
+             the row's species into it, or takes it out, without leaving the
+             sample. -->
+        <Column style="min-width: 3rem">
+          <template #header>
+            <span class="pi ph ph-chart-line" v-tooltip.top="'In the batch chart'" />
+          </template>
+          <template #body="{ data }">
+            <button
+              type="button"
+              class="chart-cell"
+              :class="{ plotted: chart.isPlotted(data) }"
+              :disabled="!chart.canPlot(data)"
+              :aria-label="
+                chart.isPlotted(data) ? 'Remove from the batch chart' : 'Plot in the batch chart'
+              "
+              v-tooltip.top="
+                !chart.canPlot(data)
+                  ? 'Not in the batch ledger'
+                  : chart.isPlotted(data)
+                    ? 'Remove this species from the batch chart'
+                    : 'Plot this species in the batch chart'
+              "
+              @click.stop="chart.toggle(data)"
+            >
+              <span class="pi ph ph-chart-line" />
+            </button>
           </template>
         </Column>
       </DataTable>
+
+      <Popover ref="verdictMenu" aria-label="Verification verdict">
+        <AssignmentVerdictPopover
+          v-if="verdictTarget"
+          :row="verdictTarget"
+          :record="verdictFor(verdictTarget)"
+          :overlay="overlayFor(verdictTarget)"
+          @done="verdictMenu?.hide()"
+        />
+      </Popover>
     </div>
 
     <Dialog v-model:visible="configVisible" modal header="Assign peaks" :style="{ width: '26rem' }">
@@ -1140,5 +1252,51 @@ const breadcrumb = computed(() => {
   font-family: var(--font-mono, ui-monospace, monospace);
   font-size: 0.86rem;
   opacity: 0.8;
+}
+
+/* The verdict cell is a button so an empty cell opens the form too, as in
+   the batch ledger; the badge - or the faint seal for "none yet" - is its
+   whole content. */
+.verdict-cell {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0.1rem 0.3rem;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+}
+.verdict-cell.empty .pi {
+  opacity: 0.25;
+}
+.verdict-cell:hover {
+  background: var(--p-content-hover-background);
+}
+/* The chart cell: faint until hovered, lit in the accent colour while the
+   species is in the batch chart, greyed when the peak is not in the ledger. */
+.chart-cell {
+  padding: 0.1rem 0.3rem;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+  opacity: 0.45;
+}
+.chart-cell:hover {
+  opacity: 1;
+  background: var(--p-content-hover-background);
+}
+.chart-cell.plotted {
+  color: var(--p-primary-color);
+  opacity: 1;
+}
+.chart-cell:disabled {
+  cursor: default;
+  opacity: 0.15;
 }
 </style>

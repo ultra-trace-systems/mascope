@@ -1,4 +1,5 @@
 import { defineStore } from 'pinia'
+import { MAX_SELECTED_BATCH_PEAKS } from '@/lib/batchChart'
 
 import { api } from '@/api'
 import { useData } from '@/lib/store'
@@ -21,7 +22,7 @@ import { useBatchPeakRun } from './run'
  * Enforced where the table writes its selection (PaneBrowserBatchPeaks.vue) and
  * again where the chart reads it, since the chart has its own way in.
  */
-export const MAX_SELECTED_BATCH_PEAKS = 300
+export { MAX_SELECTED_BATCH_PEAKS }
 
 /**
  * Ledger of a batch's "batch peaks" (cross-sample m/z anchors) -- the selection
