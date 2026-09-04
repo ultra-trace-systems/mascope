@@ -18,6 +18,8 @@ import { TIERS, TIER_META, countTiers, tierRank } from '@/lib/tiers'
 import { VERDICT_META } from '@/lib/verification'
 import { prettyTrim } from '@/lib/utils'
 import { useApp } from '@/stores'
+
+import { useBatchPeakJump } from './stores/batchPeakJump.js'
 import { MAX_SELECTED_BATCH_PEAKS } from '@/stores/data/modules/batchPeak/ledger'
 
 import { useBatchPeakCompute } from './stores/batchPeakCompute.js'
@@ -30,6 +32,8 @@ import BatchPeakVerdictPopover from './BatchPeakVerdictPopover.vue'
  * chart plots, so the chart never renders 1000+ traces at once.
  */
 const app = useApp()
+// The row action that opens the brightest sample on this peak.
+const jump = useBatchPeakJump()
 
 // The button that launches this lives a row up, in the browser's switch bar
 // (BatchPeakComputeBar.vue), so the launch and its state are shared through a
@@ -768,6 +772,25 @@ watch(
             <span class="intensity">
               {{ data.max_intensity != null ? num.peakIntensity.format(data.max_intensity) : '—' }}
             </span>
+            <!-- The chart's click-through, from the row: with several traces
+                 plotted it is not obvious which point to click, and the
+                 brightest sample is where the species is best measured. -->
+            <button
+              type="button"
+              class="jump-cell"
+              :disabled="jump.pendingId != null || !data.n_present"
+              aria-label="Open the brightest sample with this peak in focus"
+              v-tooltip.top="'Open the brightest sample with this peak in focus (Sample tab)'"
+              @click.stop="jump.jumpToBrightest(data)"
+            >
+              <span
+                :class="
+                  jump.pendingId === data.batch_peak_id
+                    ? 'pi pi-spin pi-spinner'
+                    : 'pi ph ph-arrow-square-out'
+                "
+              />
+            </button>
           </template>
         </Column>
 
@@ -1111,5 +1134,27 @@ watch(
 .ledger > :deep(.p-datatable > .p-datatable-table-container) {
   flex: 1;
   min-height: 0;
+}
+
+/* The jump beside the intensity: faint until hovered, so the column stays a
+   column of numbers; the spinner marks the one jump in flight. */
+.jump-cell {
+  margin-left: 0.35rem;
+  padding: 0.05rem 0.25rem;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+  opacity: 0.45;
+}
+.jump-cell:hover {
+  opacity: 1;
+  background: var(--p-content-hover-background);
+}
+.jump-cell:disabled {
+  cursor: default;
+  opacity: 0.2;
 }
 </style>

@@ -197,6 +197,33 @@
     width: 5ch;
   }
 
+  .browser .assignment-column {
+    width: 5ch;
+  }
+
+  /* Assignment badge: green = a run of the sample's own, primary = served from
+     the batch ledger without one, faint = nothing assigned, fainter = the
+     status has not loaded. */
+  .browser .assignment-run {
+    color: var(--state-success);
+    opacity: 0.75;
+  }
+
+  .browser .assignment-ledger {
+    color: var(--p-primary-color);
+    opacity: 0.75;
+  }
+
+  .browser .assignment-none {
+    color: var(--p-text-muted-color);
+    opacity: 0.45;
+  }
+
+  .browser .assignment-unknown {
+    color: var(--p-text-muted-color);
+    opacity: 0.2;
+  }
+
   .browser .calibration-badge {
     cursor: pointer;
   }
