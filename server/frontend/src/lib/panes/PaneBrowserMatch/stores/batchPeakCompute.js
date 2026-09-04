@@ -140,7 +140,9 @@ export const useBatchPeakCompute = defineStore('browser.match.batchPeaks.compute
     searchTimer = null
   }
 
-  async function searchUntargeted() {
+  // `config` is the search's parameters as the launcher dialog collected them
+  // (the untargeted stage's own settings); empty means the server defaults.
+  async function searchUntargeted(config = null) {
     const batchId = app.data.batch.focusedId
     if (!batchId || searching.value || blockedReason.value) return
     searching.value = true
@@ -150,7 +152,7 @@ export const useBatchPeakCompute = defineStore('browser.match.batchPeaks.compute
     try {
       const response = await api.http.post(
         `/batch-peaks/batch/${batchId}/search-untargeted`,
-        {},
+        config && Object.keys(config).length ? { config } : {},
         { type: 'search_batch_untargeted', errors: 'inline' }
       )
       pendingSearchId.value = response?.headers?.['process-id'] ?? null
