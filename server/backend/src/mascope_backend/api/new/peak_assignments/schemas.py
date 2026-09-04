@@ -227,6 +227,57 @@ class AlternativeScoresResponse(BaseModel):
     data: list[AlternativeScoreRecord]
 
 
+class MeasuredIsotopologueRecord(BaseModel):
+    """One predicted isotopologue of a measured composition, with the peak it
+    paired to and the errors of that pairing (absent when it paired to none)."""
+
+    isotope_label: str | None = None
+    isotope_formula: str | None = None
+    #: Theoretical m/z and relative abundance (a fraction of the M0).
+    mz: float | None = None
+    relative_abundance: float | None = None
+    sample_peak_id: str | None = None
+    mz_error_ppm: float | None = None
+    abundance_error: float | None = None
+
+
+class DerivedEvidenceRecord(BaseModel):
+    """A derived row's family measured against its sample on demand: what a
+    run would have stored beside the fit and the tier.
+
+    Keyed by the family's M0 (``peak_assignment_id``); every member reads its
+    own numbers off ``isotopologues`` by ``sample_peak_id``. Session data,
+    computed per request and never written onto the ledger.
+    """
+
+    peak_assignment_id: str
+    sample_peak_id: str
+    assigned_formula: str | None = None
+    ionization_mechanism_id: str | None = None
+    ion_formula: str | None = None
+    #: The stored fit, which the tier was read off; the measurement's own fit
+    #: is reported beside it.
+    fit_score: float | None = None
+    measured_fit_score: float | None = None
+    plausibility: float | None = None
+    #: The stored fit times the plausibility, the currency the tier is banded on.
+    evidence: float | None = None
+    mz_error_ppm: float | None = None
+    abundance_error: float | None = None
+    isotopologues: list[MeasuredIsotopologueRecord] = []
+    blocked_reason: str | None = None
+
+
+class DerivedEvidenceResponse(BaseModel):
+    """A derived row's on-demand measurement (one entry), or nothing for a
+    run's own row."""
+
+    status: str = "success"
+    message: str
+    results: int
+    data: list[DerivedEvidenceRecord]
+
+
 class PeakAssignmentRunsResponse(BaseModel):
     """Peak assignment runs of a sample, newest first."""
 

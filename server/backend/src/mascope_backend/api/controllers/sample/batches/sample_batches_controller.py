@@ -76,7 +76,7 @@ from mascope_backend.api.models.sample.items.sample_item_pydantic_model import (
 from mascope_backend.api.new.ionization.modes.util import (
     resolve_ionization_modes_by_tokens,
 )
-from mascope_backend.api.new.temp.storage import user_temp_path
+from mascope_backend.api.new.temp.storage import download_name, user_temp_path
 from mascope_backend.db import (
     Dataset,
     SampleBatch,
@@ -1106,9 +1106,7 @@ async def sample_batch_export_peaks(
 
     dt_str = datetime.now().isoformat().replace("-", "").replace(":", "").split(".")[0]
 
-    peakfile_name = "_".join(
-        [dt_str, "peaks", sample_batch_name.replace(" ", "_") + ".csv"]
-    )
+    peakfile_name = download_name(dt_str, "peaks", sample_batch_name, extension="csv")
     runtime.logger.info(f"Writing peak data to file {peakfile_name}")
     # Save peak data to dataframe and then to csv file
     batch_peak_df = pd.DataFrame(peak_data)

@@ -27,6 +27,9 @@ from mascope_backend.api.new.peak_assignments.config import (
     peak_assignment_enabled,
 )
 from mascope_backend.api.new.peak_assignments.curation import curate_assignment
+from mascope_backend.api.new.peak_assignments.derived_evidence import (
+    measure_derived_assignment,
+)
 from mascope_backend.api.new.peak_assignments.import_service import (
     abandon_import_run,
     import_assignment_run,
@@ -40,6 +43,7 @@ from mascope_backend.api.new.peak_assignments.schemas import (
     CompositionFitBody,
     CompositionVisualizeBody,
     CurateAssignmentBody,
+    DerivedEvidenceResponse,
     ImportRunBody,
     PeakAssignmentDetailResponse,
     PeakAssignmentImportResponse,
@@ -230,6 +234,37 @@ async def get_alternative_scores_route(
         sample_item_id=sample_item_id, peak_assignment_id=peak_assignment_id
     )
     return AlternativeScoresResponse.model_validate(result)
+
+
+@peak_assignments_router.get(
+    "/sample/{sample_item_id}/assignment/{peak_assignment_id}/evidence",
+    response_model=DerivedEvidenceResponse,
+)
+@api_route()
+async def get_derived_evidence_route(
+    sample_item_id: str,
+    peak_assignment_id: str,
+    user: User = Depends(current_active_user),
+) -> DerivedEvidenceResponse:
+    """Measure a derived row's family against its sample, for the inspector.
+
+    A sample served from the batch ledger shows each peak with the fit and
+    tier its member carries and nothing else a run computes - the m/z and
+    abundance error of each isotopologue, the isotope labels, the
+    plausibility, the evidence the tier was read off. This measures them on
+    request, through the family's M0, the way the finder's alternatives are
+    measured; nothing is stored. A run's own row answers with no entry.
+
+    :param sample_item_id: The unique identifier of the sample item.
+    :param peak_assignment_id: The derived row (``fold-<batch peak>``).
+    :param user: The current authenticated user. Requires workspace guest role.
+    :return: One entry, scored or blocked with a reason, or none.
+    """
+    await check_sample_access(sample_item_id, user, "guest")
+    result = await measure_derived_assignment(
+        sample_item_id=sample_item_id, peak_assignment_id=peak_assignment_id
+    )
+    return DerivedEvidenceResponse.model_validate(result)
 
 
 @peak_assignments_router.get(

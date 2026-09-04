@@ -270,6 +270,14 @@ the rest of the batch saw at that m/z. It carries no mass error or isotope label
 it cannot be edited by hand &mdash; assign the sample for a ledger of its own. Verdicts
 can still be recorded against it.
 
+A sample served from the batch ledger (its run reads *Batch ledger*) carries each peak's
+fit and tier, but not the numbers a run would have stored beside them: the m/z and
+abundance error of each isotopologue, the isotope labels, the chemical plausibility, the
+evidence the tier was read off. The peak inspector measures those on demand when you focus
+such a peak - the family's composition is scored against the sample's own peaks, through
+its M0 - and fills them in a moment later. They are computed for the view and never stored;
+run an assignment on the sample to persist a full ledger of its own.
+
 ## Batch peaks
 
 --8<-- "_help/batch-peaks.md"
