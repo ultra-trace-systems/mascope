@@ -14,9 +14,11 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
   header on every request. A current server ignores all of it; a later one can
   file uploads under the reported instrument instead of reading it from the
   file name, and show which release each paired machine runs. When the files in
-  the watched folder do not start with an instrument name the server reads,
-  setup offers to add the instrument name in front of every uploaded name - the
-  `filename_prefix` such sites had to set by hand before. The setup's questions
+  the watched folder would not be filed under a name the server reads, setup
+  offers to add the instrument name in front of every uploaded name - the
+  `filename_prefix` such sites had to set by hand before. A prefix already
+  configured is checked the same way, so one left over from an earlier
+  instrument is reported rather than silently kept. The setup's questions
   were reordered so the local ones come first and pairing, which needs a second
   person at a browser, comes last. `instrument` is a new `[file-agent]` setting;
   leaving it empty keeps today's behaviour exactly.

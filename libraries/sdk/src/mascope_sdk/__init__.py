@@ -19,6 +19,7 @@ from ._agents import (  # noqa: F401
     AGENT_VERSION_HEADER,
     SERVICE_NAME,
     VERIFY_TLS,
+    agent_headers,
     api_post_file,
     api_post_file_tus,
     api_renew_agent_token,

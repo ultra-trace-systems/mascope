@@ -8,6 +8,9 @@ then pairing. A prefix question follows the instrument name only when the
 watched folder's files do not already start with a name the server reads.
 """
 
+import os
+import time
+
 import pytest
 
 from mascope_file_agent import __version__, wizard
@@ -242,15 +245,17 @@ def test_run_setup_wizard_creates_missing_source(monkeypatch, tmp_path):
 # --- the instrument name and the prefix offer ---
 
 
-def _run_with(monkeypatch, tmp_path, answers, settings=None, captured=None):
+def _run_with(
+    monkeypatch, tmp_path, answers, settings=None, captured=None, recursive=""
+):
     """Run the wizard against a fresh watched folder with the given answers.
 
     The folder and its files are created by the caller through ``tmp_path``;
-    the answers cover everything after the TLS question.
+    the answers cover everything after the file-pattern question.
     """
     source = tmp_path / "watched"
     source.mkdir(exist_ok=True)
-    sequence = iter(["mascope.example.com", "", str(source), "", "", *answers])
+    sequence = iter(["mascope.example.com", "", str(source), recursive, "", *answers])
     monkeypatch.setattr("builtins.input", lambda prompt: next(sequence))
     monkeypatch.setattr(wizard, "run_pairing", _pairing_stub(captured=captured))
     _connection_ok(monkeypatch)
@@ -333,14 +338,122 @@ def test_a_prefix_the_server_would_refuse_is_not_offered(monkeypatch, tmp_path, 
     assert "No prefix is offered" in capsys.readouterr().out
 
 
-def test_a_configured_prefix_is_kept(monkeypatch, tmp_path):
+def test_a_configured_prefix_that_still_works_is_kept(monkeypatch, tmp_path):
+    source = tmp_path / "watched"
+    source.mkdir()
+    (source / "ambient_2026.09.03-10h12m01s.raw").write_bytes(b"x")
+    # 'Orbi-A_' in front of 'ambient_...' files is filed under Orbi-A, which
+    # the server reads, so there is nothing to fix and the prefix stands.
     settings = _run_with(
         monkeypatch,
         tmp_path,
-        ["Orbi-Lab2"],
+        ["Orbi-A"],
+        settings={"filename_prefix": "Orbi-A_"},
+    )
+    assert settings["filename_prefix"] == "Orbi-A_"
+
+
+def test_a_prefix_left_from_another_instrument_is_reported(
+    monkeypatch, tmp_path, capsys
+):
+    source = tmp_path / "watched"
+    source.mkdir()
+    (source / "ambient_2026.09.03-10h12m01s.raw").write_bytes(b"x")
+    # The configured prefix files uploads under 'site1', which the server
+    # cannot read - so every upload is refused today while the machine would
+    # report itself as Orbi-Lab2. Setup says so and offers to replace it.
+    settings = _run_with(
+        monkeypatch,
+        tmp_path,
+        ["Orbi-Lab2", ""],
         settings={"filename_prefix": "site1_"},
     )
-    assert settings["filename_prefix"] == "site1_"
+    assert settings["filename_prefix"] == "Orbi-Lab2_"
+    out = capsys.readouterr().out
+    assert "cannot read 'site1'" in out
+    assert "configured prefix 'site1_'" in out
+
+
+def test_a_prefix_is_not_offered_when_declined(monkeypatch, tmp_path):
+    source = tmp_path / "watched"
+    source.mkdir()
+    (source / "ambient_2026.09.03-10h12m01s.raw").write_bytes(b"x")
+    # Declining leaves the configuration exactly as it was.
+    settings = _run_with(monkeypatch, tmp_path, ["Orbi-Lab2", "n"])
+    assert settings["filename_prefix"] == ""
+
+
+def test_a_name_without_an_underscore_gets_the_prefix_offer(monkeypatch, tmp_path):
+    source = tmp_path / "watched"
+    source.mkdir()
+    (source / "Orbion.raw").write_bytes(b"x")
+    # The server reads the instrument off the whole name, extension included,
+    # so 'Orbion.raw' is refused for the dot even though the stem alone would
+    # be fine. Stripping the extension here would call this folder healthy.
+    settings = _run_with(monkeypatch, tmp_path, ["Orbi-Lab2", ""])
+    assert settings["filename_prefix"] == "Orbi-Lab2_"
+
+
+def test_subfolders_are_searched_when_they_are_watched(monkeypatch, tmp_path):
+    source = tmp_path / "watched"
+    (source / "2026.09.03").mkdir(parents=True)
+    (source / "2026.09.03" / "Orbi-Lab2_10h12m01s.raw").write_bytes(b"x")
+    # The subfolder answer is given before this scan runs, so a site whose
+    # files live one level down is not treated as an empty folder.
+    settings = _run_with(monkeypatch, tmp_path, [""], recursive="y")
+    assert settings["instrument"] == "Orbi-Lab2"
+    assert settings["filename_prefix"] == ""
+
+
+def test_an_empty_folder_asks_for_an_example_name(monkeypatch, tmp_path):
+    # Nothing on disk to reason from, so setup asks for one name and runs it
+    # through the same rule rather than asking the operator to judge.
+    settings = _run_with(
+        monkeypatch, tmp_path, ["Orbi-Lab2", "ambient_2026.09.03.raw", ""]
+    )
+    assert settings["filename_prefix"] == "Orbi-Lab2_"
+
+
+def test_an_empty_folder_with_no_example_changes_nothing(monkeypatch, tmp_path, capsys):
+    settings = _run_with(monkeypatch, tmp_path, ["Orbi-Lab2", ""])
+    assert settings["filename_prefix"] == ""
+    assert "set 'filename_prefix' by hand" in capsys.readouterr().out
+
+
+def test_a_configured_instrument_can_be_cleared(monkeypatch, tmp_path):
+    # Enter keeps the configured name, so without an explicit answer there
+    # would be no way to remove one but hand-editing config.toml.
+    settings = _run_with(
+        monkeypatch, tmp_path, [wizard.CLEAR_ANSWER], settings={"instrument": "Orbi-A"}
+    )
+    assert settings["instrument"] == ""
+
+
+def test_an_invalid_configured_instrument_is_not_offered_back(
+    monkeypatch, tmp_path, capsys
+):
+    # Offering it as the default would make Enter re-submit a name the agent
+    # refuses to start with, and the prompt would never accept an answer.
+    settings = _run_with(
+        monkeypatch, tmp_path, [""], settings={"instrument": "orbi lab"}
+    )
+    assert settings["instrument"] == ""
+    assert "is not one the server accepts" in capsys.readouterr().out
+
+
+def test_a_file_that_vanishes_mid_scan_is_skipped(monkeypatch, tmp_path):
+    source = tmp_path / "watched"
+    source.mkdir()
+    (source / "ambient_2026.09.03-10h12m01s.raw").write_bytes(b"x")
+
+    def vanishing(path):
+        raise OSError("gone")
+
+    monkeypatch.setattr(wizard.os.path, "getmtime", vanishing)
+    # An acquisition folder is written to while setup runs; a file that goes
+    # away between the listing and the stat must not end the wizard.
+    settings = _run_with(monkeypatch, tmp_path, ["Orbi-Lab2", ""])
+    assert settings["instrument"] == "Orbi-Lab2"
 
 
 # --- pairing requests ---
@@ -435,3 +548,69 @@ def test_start_pairing_unsupported_server(monkeypatch, capsys):
     _post_sequence(monkeypatch, [FakeJsonResponse(404)])
     assert wizard.start_pairing("mascope.example.com") is None
     assert "does not support pairing" in capsys.readouterr().out
+
+
+def test_a_long_agent_version_is_clipped_before_pairing(monkeypatch):
+    # A build stamped by `git describe` off a date-style release tag runs past
+    # what the server stores. Clipped here rather than left for the server to
+    # refuse: pairing is the only way a machine gets a credential, so failing
+    # it over a version label would leave the machine unusable.
+    monkeypatch.setattr(wizard.time, "sleep", lambda seconds: None)
+    monkeypatch.setattr(wizard, "__version__", "v2026.09.01-9b9e54d-394-g7e674438e")
+    calls = _post_sequence(monkeypatch, [_started()])
+
+    wizard.start_pairing("mascope.example.com")
+
+    sent = calls[0]["json"]["agent_version"]
+    assert len(sent) == wizard.AGENT_VERSION_MAX_LENGTH
+    assert sent == "v2026.09.01-9b9e54d-394-g7e67443"
+
+
+def test_cancelling_pairing_keeps_the_answers_given_before_it(monkeypatch, tmp_path):
+    # Pairing comes last because it needs a second person at a browser.
+    # Walking away to find one must not cost the six answers already given.
+    source = tmp_path / "watched"
+    source.mkdir()
+    answers = iter(
+        [
+            "mascope.example.com",
+            "",  # verify TLS default
+            str(source),
+            "y",  # subfolders
+            "*.h5",  # mask
+            "Orbi-Lab2",  # instrument
+            "",  # no example file name to offer
+            "n",  # pairing did not complete - do not try again
+        ]
+    )
+    monkeypatch.setattr("builtins.input", lambda prompt: next(answers))
+    monkeypatch.setattr(wizard, "run_pairing", _pairing_stub(token=None))
+
+    with pytest.raises(wizard.SetupCancelled) as excinfo:
+        wizard.run_setup_wizard({"mask": "*.raw", "timeout": 3})
+
+    kept = excinfo.value.settings
+    assert kept["host"] == "mascope.example.com"
+    assert kept["source"] == str(source)
+    assert kept["recursive"] is True
+    assert kept["mask"] == "*.h5"
+    assert kept["instrument"] == "Orbi-Lab2"
+    # Still a KeyboardInterrupt, so every existing handler treats it as the
+    # cancellation it is.
+    assert isinstance(excinfo.value, KeyboardInterrupt)
+
+
+def test_a_stray_file_does_not_prefix_a_correctly_named_folder(monkeypatch, tmp_path):
+    source = tmp_path / "watched"
+    source.mkdir()
+    (source / "Orbi-Lab2_2026.09.03-10h12m01s.raw").write_bytes(b"x")
+    stray = source / "test.raw"
+    stray.write_bytes(b"x")
+    os.utime(stray, (time.time() + 60, time.time() + 60))
+    # The stray file is the newest, but the folder plainly is filed under
+    # Orbi-Lab2 already. Prefixing on that evidence would rename every future
+    # acquisition to Orbi-Lab2_Orbi-Lab2_... - a new sample-name lineage, for
+    # a folder that needed nothing.
+    settings = _run_with(monkeypatch, tmp_path, [""])
+    assert settings["instrument"] == "Orbi-Lab2"
+    assert settings["filename_prefix"] == ""

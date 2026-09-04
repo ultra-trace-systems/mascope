@@ -104,19 +104,30 @@ def _get_agent_version() -> str | None:
     return AGENT_VERSION
 
 
-def _agent_headers(access_token: str) -> dict:
-    """The headers every authenticated agent request carries.
+def agent_headers(access_token: str | None = None) -> dict:
+    """The headers an agent request carries.
 
-    The bearer token, the service name the token must be scoped to, and the
-    agent's version when one is set.
+    The agent's version whenever one is set, so every request an agent makes
+    reports its release; the bearer token and the service name the token must
+    be scoped to when there is a credential to present. Pairing has none yet,
+    which is why the token is optional.
+
+    Read from the package namespace at call time, exactly like
+    :func:`_get_service_name`, so an agent that sets ``SERVICE_NAME`` and
+    ``AGENT_VERSION`` after importing this module is still reported correctly.
+
+    :param access_token: The credential to present, if any
+    :type access_token: str | None
+    :return: Request headers
+    :rtype: dict
     """
-    headers = {
-        "Authorization": f"Bearer {access_token}",
-        "X-Service-Name": _get_service_name(),
-    }
+    headers = {}
     version = _get_agent_version()
     if version:
         headers[AGENT_VERSION_HEADER] = str(version)
+    if access_token:
+        headers["Authorization"] = f"Bearer {access_token}"
+        headers["X-Service-Name"] = _get_service_name()
     return headers
 
 
@@ -171,7 +182,7 @@ def api_post_file(
         act on it (e.g. not retry on a rejected token).
     """
     full_url = url + "/api/" + path
-    headers = _agent_headers(access_token)
+    headers = agent_headers(access_token)
     with open(filepath, "rb") as file:
         if upload_filename:
             files = [("files", (_sanitize_upload_filename(upload_filename), file))]
@@ -211,7 +222,7 @@ def api_post_file(
 
 def _tus_headers(access_token: str) -> dict:
     """Common headers for every TUS request."""
-    return {**_agent_headers(access_token), "Tus-Resumable": "1.0.0"}
+    return {**agent_headers(access_token), "Tus-Resumable": "1.0.0"}
 
 
 def _tus_offset(upload_url: str, access_token: str) -> int | None:
@@ -278,7 +289,7 @@ def api_renew_agent_token(url: str, access_token: str) -> tuple[str, int]:
     :raises MascopeAPIError: on any other error response.
     """
     full_url = f"{url}/api/{RENEW_TOKEN_PATH}"
-    headers = _agent_headers(access_token)
+    headers = agent_headers(access_token)
     try:
         resp = requests.post(
             full_url, headers=headers, verify=_get_verify(), timeout=30

@@ -270,6 +270,31 @@ def test_agent_version_header_rides_on_every_request(monkeypatch, upload_file):
     _agents.api_renew_agent_token("http://testserver", "current")
     assert renew["headers"]["X-Agent-Version"] == "v9.9.9"
 
+    # The third caller: the legacy single-request upload route. Named "every
+    # request", so every builder of authenticated headers belongs here.
+    legacy: dict = {}
+
+    def fake_legacy_post(url, headers, files, data, verify, timeout):
+        legacy.update(headers=headers)
+        return _fake_response(200, {"data": {}})
+
+    monkeypatch.setattr(_agents.requests, "post", fake_legacy_post)
+    _agents.api_post_file(
+        "http://testserver", "sample/files/upload", "tok", upload_file
+    )
+    assert legacy["headers"]["X-Agent-Version"] == "v9.9.9"
+    assert legacy["headers"]["X-Service-Name"] == _agents._get_service_name()
+
+
+def test_pairing_headers_carry_the_version_without_a_credential(monkeypatch):
+    import mascope_sdk
+
+    # Pairing has no token yet, so the builder has to work without one - and
+    # it must not invent an Authorization header out of an empty string.
+    monkeypatch.setattr(mascope_sdk, "AGENT_VERSION", "v9.9.9")
+    headers = _agents.agent_headers()
+    assert headers == {"X-Agent-Version": "v9.9.9"}
+
 
 def test_no_version_header_without_a_version(monkeypatch):
     import mascope_sdk
