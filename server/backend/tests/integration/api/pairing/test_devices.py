@@ -14,10 +14,25 @@ from httpx import ASGITransport, AsyncClient
 from sqlalchemy import delete, select
 
 from mascope_backend.accounts import ACCOUNT_TYPE_MACHINE
+from mascope_backend.api.new.auth.access_token import validation
+from mascope_backend.api.new.auth.devices import service as devices_service
 from mascope_backend.api.new.auth.devices.service import record_reported_instrument
 from mascope_backend.api.new.auth.pairing import service as pairing_service
 from mascope_backend.app.fast import fast
 from mascope_backend.db import AccessToken, AgentDevice, User
+
+
+@pytest.fixture(autouse=True)
+def forget_reported_instruments():
+    """Start each test with the per-worker instrument memo empty.
+
+    The memo skips a write when a device already reports the name the row
+    holds. Left populated it would make one test's writes disappear from the
+    next, so what a test observes would depend on the order they ran in.
+    """
+    devices_service._reported_instrument.clear()
+    yield
+    devices_service._reported_instrument.clear()
 
 
 class FakeRedis:
@@ -165,7 +180,7 @@ async def test_a_request_records_the_agent_version(
 
 
 @pytest.mark.asyncio
-async def test_an_upload_backfills_a_missing_instrument_once(
+async def test_an_upload_keeps_the_instrument_the_agent_reports(
     fake_redis, public_client, editor_client, async_session_factory
 ):
     _, device_id = await _pair(public_client, editor_client, "FILL-PC")
@@ -177,21 +192,56 @@ async def test_an_upload_backfills_a_missing_instrument_once(
 
     # The first usable name fills the empty row...
     await record_reported_instrument(device_id, "Orbi-Lab2")
-    # ...and a later one does not move it: the row is what the sponsor sees.
-    await record_reported_instrument(device_id, "Orbi-Other")
     async with async_session_factory() as session:
         assert (await session.get(AgentDevice, device_id)).instrument == "Orbi-Lab2"
 
-    # A device that reported one at pairing keeps that too.
+    # ...and a later, different one moves it. The agent is the authority for
+    # what it watches, so a machine repointed at another instrument - its
+    # config.toml edited and the agent restarted - says so on its next upload
+    # instead of showing the name it first reported forever.
+    await record_reported_instrument(device_id, "Orbi-Other")
+    async with async_session_factory() as session:
+        assert (await session.get(AgentDevice, device_id)).instrument == "Orbi-Other"
+
+    # The same for a device that reported one at pairing.
     _, paired_id = await _pair(
         public_client, editor_client, "SET-PC", instrument="Orbi-A"
     )
     await record_reported_instrument(paired_id, "Orbi-B")
     async with async_session_factory() as session:
-        assert (await session.get(AgentDevice, paired_id)).instrument == "Orbi-A"
+        assert (await session.get(AgentDevice, paired_id)).instrument == "Orbi-B"
 
     # No device behind the upload: nothing to record, nothing raised.
     await record_reported_instrument(None, "Orbi-B")
+
+
+@pytest.mark.asyncio
+async def test_an_unchanged_instrument_costs_no_write(
+    fake_redis, public_client, editor_client, monkeypatch
+):
+    # An upload reports the same name every time. Without a guard the steady
+    # state would be a session, a connection and a commit per uploaded file to
+    # change nothing - on the upload path, which takes no admission-control
+    # permit, and which the last-seen write next door is throttled to protect.
+    _, device_id = await _pair(public_client, editor_client, "SAME-PC")
+    await record_reported_instrument(device_id, "Orbi-Lab2")
+
+    sessions = []
+    real_session = devices_service.async_session
+
+    def counting_session(*args, **kwargs):
+        sessions.append(1)
+        return real_session(*args, **kwargs)
+
+    monkeypatch.setattr(devices_service, "async_session", counting_session)
+
+    await record_reported_instrument(device_id, "Orbi-Lab2")
+    await record_reported_instrument(device_id, "Orbi-Lab2")
+    assert sessions == []
+
+    # A change still writes.
+    await record_reported_instrument(device_id, "Orbi-Other")
+    assert len(sessions) == 1
 
 
 @pytest.mark.asyncio
@@ -273,3 +323,28 @@ async def test_admin_can_revoke_an_editors_device(
     async with async_session_factory() as session:
         device = await session.get(AgentDevice, device_id)
         assert device.revoked_at is not None
+
+
+@pytest.mark.asyncio
+async def test_a_request_without_a_version_clears_the_stored_one(
+    fake_redis, public_client, editor_client
+):
+    # A site rolled back to an agent that reports no version must stop
+    # showing the newer release: the column says what the machine last
+    # reported, not the highest it ever reported, because following an
+    # upgrade across instrument PCs is what it is read for.
+    token, device_id = await _pair(
+        public_client, editor_client, "ROLLBACK-PC", agent_version="v2.0.0"
+    )
+    headers = {"Authorization": f"Bearer {token}", "X-Service-Name": "file-agent"}
+
+    validation._last_seen_written_at.clear()
+    resp = await public_client.get(
+        "/api/sample/files", params={"page": 1, "limit": 1}, headers=headers
+    )
+    assert resp.status_code == 200, resp.text
+
+    devices = (await editor_client.get("/api/auth/devices")).json()["data"]
+    row = next(d for d in devices if d["device_id"] == device_id)
+    assert row["last_seen_version"] is None
+    assert row["last_seen_at"] is not None

@@ -29,8 +29,11 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
   `X-Agent-Version` header the File Agent sends on every request and from the
   pairing request. Both appear under Paired machines, and the pairing approval
   message names the instrument. They are what the agent reported, not verified,
-  and routing still reads an upload's instrument from the file name. Migration
-  `8e5f0b3a2d71`, two nullable columns, no backfill.
+  and routing still reads an upload's instrument from the file name. Both
+  follow what the agent reports now, so a machine repointed at another
+  instrument, or rolled back to an older agent, says so on its next upload
+  instead of showing what it first reported. Migration `8e5f0b3a2d71`, two
+  nullable columns, no backfill.
 
 - **Batch peaks: one ledger for a whole batch.** A batch peak is a frozen m/z
   anchor shared across a batch's samples, carrying an evidence-weighted

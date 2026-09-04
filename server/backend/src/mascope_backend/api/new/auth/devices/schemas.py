@@ -1,12 +1,6 @@
-import re
 from datetime import datetime
 
 from pydantic import BaseModel, Field
-
-
-#: What a reported instrument name may look like: letters, digits and hyphens,
-#: the same rule the server applies to the instrument segment of a file name.
-INSTRUMENT_NAME_RE = re.compile(r"^[A-Za-z0-9-]{1,64}$")
 
 
 class DeviceRead(BaseModel):

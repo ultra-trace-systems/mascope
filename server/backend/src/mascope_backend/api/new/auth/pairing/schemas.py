@@ -2,8 +2,16 @@ import re
 
 from pydantic import BaseModel, Field, field_validator
 
-from mascope_backend.api.new.auth.devices.schemas import INSTRUMENT_NAME_RE
 from mascope_backend.api.new.auth.pairing.config import pairing_settings
+from mascope_backend.api.new.auth.reported import (
+    AGENT_VERSION_MAX_LENGTH,
+    INSTRUMENT_NAME_RE,
+    clean_reported_text,
+)
+
+
+#: Width of ``AgentDevice.name``, which a reported machine name is stored in.
+MACHINE_NAME_MAX_LENGTH = 64
 
 
 class PairingStartRequest(BaseModel):
@@ -15,19 +23,21 @@ class PairingStartRequest(BaseModel):
     )
     machine_name: str | None = Field(
         None,
-        max_length=64,
         description="Optional hostname of the machine being paired, shown to "
         "the approving user and stamped on the token.",
     )
+    # No max_length on either: a Field constraint runs before the validators
+    # below, so an over-long value would be refused rather than cleaned - and
+    # refusing a pairing request costs the machine its only route to a
+    # credential. The instrument's length is part of INSTRUMENT_NAME_RE; the
+    # version is cut to fit.
     instrument: str | None = Field(
         None,
-        max_length=64,
         description="Optional name of the instrument the agent watches, kept "
         "on the paired device and shown under Paired machines.",
     )
     agent_version: str | None = Field(
         None,
-        max_length=32,
         description="Optional release of the agent, kept on the paired device.",
     )
 
@@ -43,19 +53,21 @@ class PairingStartRequest(BaseModel):
     @classmethod
     def sanitize_machine_name(cls, machine_name: str | None) -> str | None:
         """Strip control characters; the value is displayed to the approver."""
-        if machine_name is None:
-            return None
-        cleaned = re.sub(r"[\x00-\x1f\x7f]", "", machine_name).strip()
-        return cleaned or None
+        return clean_reported_text(machine_name, MACHINE_NAME_MAX_LENGTH)
 
     @field_validator("instrument")
     @classmethod
     def validate_instrument(cls, instrument: str | None) -> str | None:
-        """An instrument name the server could file uploads under, or nothing."""
-        if instrument is None:
-            return None
-        cleaned = instrument.strip()
-        if not cleaned:
+        """An instrument name the server could file uploads under, or nothing.
+
+        Refused rather than dropped, unlike the version beside it: a name is
+        what uploads will be filed under, so a wrong one is worth surfacing
+        to the person approving the pairing rather than quietly ignoring.
+        """
+        # No width: a cut instrument name is a different instrument, and
+        # uploads would be filed under it. Over-long is refused below.
+        cleaned = clean_reported_text(instrument)
+        if cleaned is None:
             return None
         if not INSTRUMENT_NAME_RE.match(cleaned):
             raise ValueError(
@@ -66,11 +78,13 @@ class PairingStartRequest(BaseModel):
     @field_validator("agent_version")
     @classmethod
     def sanitize_agent_version(cls, agent_version: str | None) -> str | None:
-        """Strip control characters; the value is displayed to the approver."""
-        if agent_version is None:
-            return None
-        cleaned = re.sub(r"[\x00-\x1f\x7f]", "", agent_version).strip()
-        return cleaned or None
+        """Strip control characters and cut to fit; shown to the approver.
+
+        Cut rather than refused: a build stamped by ``git describe`` runs
+        past the column's width, and a machine must not be unable to pair
+        over the label it reports for itself.
+        """
+        return clean_reported_text(agent_version, AGENT_VERSION_MAX_LENGTH)
 
 
 class PairingApproveRequest(BaseModel):

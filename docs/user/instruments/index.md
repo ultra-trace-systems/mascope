@@ -72,7 +72,9 @@ Under **Paired machines** (Home menu → Settings → API Access Tokens) each
 machine shows the instrument its agent reports watching and the agent release
 it last connected with, next to when it was last seen — so an upgrade across
 several instrument PCs can be followed from the web app. A machine paired by an
-older agent shows neither until it runs one that reports them.
+older agent shows neither until it runs one that reports them. Both follow
+what the agent reports now, so changing `instrument` in a machine's
+configuration and restarting it updates the list on its next upload.
 
 Setup also asks whether to **verify the server's TLS certificate**. Leave
 this on for a normal Mascope server; answer No only for a self-signed or

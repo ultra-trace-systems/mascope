@@ -550,8 +550,13 @@ the agent signs in as, and a device-bound token. **Paired machines** under
 Settings lists them with their service, the instrument each agent reports
 watching, the agent release last seen and when each was last seen, and lets you
 rename or revoke one machine on its own. The instrument and the release are
-what the agent reported; a machine running an agent that predates them shows
-neither, which is also how far an agent upgrade has got.
+what the agent reported, and both follow what it reports now: a machine
+repointed at another instrument, or rolled back to an older agent, says so on
+its next upload rather than keeping what it first reported. A machine running
+an agent that predates the fields shows neither, which is how far an agent
+upgrade has got. Correct a wrong instrument in that machine's `config.toml`
+and restart its agent - the server takes the agent's word for what it
+watches, so correcting it anywhere else would not stick.
 
 Two consequences worth knowing before an upgrade:
 

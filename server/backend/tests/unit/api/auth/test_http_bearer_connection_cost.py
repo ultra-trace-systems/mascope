@@ -151,7 +151,10 @@ class TestTokenLookupIsReused:
 
 
 def _record(sink):
-    async def _touch(device_id, **kwargs):
+    # Named, not **kwargs: the version the request reported travels on this
+    # call, and a stub that swallowed any keyword would keep passing if the
+    # cleaning step were dropped from the call site.
+    async def _touch(device_id, agent_version=None):
         sink.append(device_id)
 
     return _touch
