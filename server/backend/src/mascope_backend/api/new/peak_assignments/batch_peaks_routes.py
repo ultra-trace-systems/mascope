@@ -19,6 +19,10 @@ from mascope_backend.api.new.peak_assignments.batch_export import (
     export_batch_ledger,
     get_batch_peak_members,
 )
+from mascope_backend.api.new.peak_assignments.batch_import import (
+    import_batch_run,
+    validate_batch_import,
+)
 from mascope_backend.api.new.peak_assignments.batch_peak_verification import (
     get_anchor_context,
     get_batch_peak_verdicts,
@@ -34,14 +38,18 @@ from mascope_backend.api.new.peak_assignments.batch_peaks_records import (
     get_batch_peak_series,
 )
 from mascope_backend.api.new.peak_assignments.batch_runs import (
+    ACTION_IMPORT,
     check_no_run_in_flight,
     list_batch_runs,
+    run_record,
+    start_run,
 )
 from mascope_backend.api.new.peak_assignments.batch_untargeted import (
     search_batch_untargeted,
 )
 from mascope_backend.api.new.peak_assignments.config import PeakAssignmentConfig
 from mascope_backend.api.new.peak_assignments.routes import (
+    reject_oversized_import,
     require_peak_assignment_enabled,
 )
 from mascope_backend.api.new.peak_assignments.schemas import (
@@ -50,6 +58,7 @@ from mascope_backend.api.new.peak_assignments.schemas import (
     BatchPeakRunsResponse,
     BatchPeakVerificationsResponse,
     CurateBatchPeakBody,
+    ImportBatchRunBody,
     ReleaseBatchPeakCurationBody,
     RetractBatchPeakVerdictBody,
     VerifyBatchPeakBody,
@@ -60,7 +69,7 @@ from mascope_backend.api.new.workspaces.dependencies import (
     check_sample_access_bulk,
     require_batch_role,
 )
-from mascope_backend.db import User
+from mascope_backend.db import BatchPeakRun, User, async_session
 from mascope_backend.db.id import gen_id
 
 
@@ -624,3 +633,89 @@ async def get_batch_peak_runs_route(
     await check_batch_access(sample_batch_id, user, "guest")
     result = await list_batch_runs(sample_batch_id=sample_batch_id)
     return BatchPeakRunsResponse.model_validate(result)
+
+
+@batch_peaks_router.post(
+    "/batch/{sample_batch_id}/runs/import",
+    response_model=BatchPeakRunsResponse,
+    # A write into the batch ledger, gated like the search; the body cap is the
+    # per-sample import's, stated here for a client talking to the backend directly.
+    dependencies=[
+        Depends(require_peak_assignment_enabled),
+        Depends(reject_oversized_import),
+    ],
+)
+@api_route(status_code=202, token_access=True)
+async def import_batch_run_route(
+    sample_batch_id: str,
+    body: ImportBatchRunBody,
+    background_tasks: BackgroundTasks,
+    user: User = Depends(current_active_user),
+    membership=Depends(require_batch_role("editor")),
+) -> dict:
+    """Import an external engine's batch-level result - one identity per m/z -
+    onto the batch ledger, as a batch run.
+
+    Each row is matched to the batch peak nearest its m/z within
+    ``mz_tolerance_ppm`` and of the polarity its mechanism implies, and the
+    composition is then measured against every member of that batch peak by
+    this server's seeded scorer, so members carry a fit of their own under the
+    engine's name. Curated batch peaks and isotopologue batch peaks are left
+    alone; a row without a mechanism cannot be measured. Every skipped row is
+    counted by reason in the run's summary.
+
+    The run is opened here and returned at once - the ledger as it was is
+    snapshotted under the previous run - and the import completes it in the
+    background, or marks it failed. Poll ``GET .../runs`` for its status.
+
+    :param sample_batch_id: The unique identifier of the sample batch.
+    :param body: The engine, its version and record, the tolerance, the rows.
+    :param user: The current authenticated user. Requires workspace editor role.
+    :return: The run, running, with the background process id in the header.
+    :raises 409: A batch-level operation is already rewriting this ledger.
+    :raises 422: A reserved engine name, an oversized config, or a mechanism
+        this deployment does not have.
+    """
+    sample_batch = await fetch_sample_batch(sample_batch_id)
+    engine, mechanism_polarity = await validate_batch_import(body)
+    await check_no_run_in_flight(sample_batch_id=sample_batch_id)
+    run_id = await start_run(
+        sample_batch_id,
+        ACTION_IMPORT,
+        config={
+            "engine": engine,
+            "mz_tolerance_ppm": body.mz_tolerance_ppm,
+            "rows": len(body.rows),
+            "client": body.config,
+        },
+        engine=engine,
+        engine_version=body.engine_version,
+        user_id=user.id,
+    )
+    process_id = gen_id(8)
+    background_tasks.add_task(
+        import_batch_run,
+        sample_batch_id=sample_batch_id,
+        batch_peak_run_id=run_id,
+        engine=engine,
+        tolerance_ppm=body.mz_tolerance_ppm,
+        rows=body.rows,
+        mechanism_polarity=mechanism_polarity,
+        independent_transaction=True,
+        user_id=user.id,
+        process_id=process_id,
+    )
+    async with async_session() as session:
+        run = await session.get(BatchPeakRun, run_id)
+        record = run_record(run)
+    return {
+        "status": "success",
+        "message": (
+            f"Importing {len(body.rows)} {engine} row"
+            f"{'s' if len(body.rows) != 1 else ''} into the batch ledger of "
+            f"'{sample_batch.sample_batch_name}', please wait."
+        ),
+        "results": 1,
+        "data": [record],
+        "process_id": process_id,
+    }
