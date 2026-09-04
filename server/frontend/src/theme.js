@@ -13,7 +13,7 @@ const semantic = (color) =>
 
 export default definePreset(Aura, {
   primitive: Object.fromEntries(
-    ['safetyorange', 'charcoal', 'offwhite'].map((color) => [
+    ['safetyorange', 'safetyorangedim', 'charcoal', 'offwhite'].map((color) => [
       color,
       Object.fromEntries(
         palette
@@ -26,9 +26,24 @@ export default definePreset(Aura, {
     primary: semantic('safetyorange'),
     colorScheme: {
       dark: {
-        // Aura reads the accent from primary.400, which the gamut-fitted sweep
-        // puts on Safety Orange itself - the shade the brand guidelines reserve
-        // for dark backgrounds. Nothing to override.
+        // Aura reads the accent from primary.400, which at full strength is
+        // Safety Orange itself - the shade the guidelines reserve for dark
+        // backgrounds, and the most saturated orange the display can make at
+        // that lightness. Over a whole interface on near-black that is tiring,
+        // so dark reads the damped sweep of the same hue instead. It cannot
+        // simply read a darker rung: this one token is both the button fill and
+        // the accent as text on the ground, and a rung down takes the text to
+        // 3.8:1. Damping leaves contrast where it was.
+        primary: {
+          color: '{safetyorangedim.600}',
+          hoverColor: '{safetyorangedim.700}',
+          activeColor: '{safetyorangedim.800}'
+        },
+        // These carry Aura's own mix ratios; only the color they mix changes.
+        highlight: {
+          background: 'color-mix(in srgb, {safetyorangedim.600}, transparent 84%)',
+          focusBackground: 'color-mix(in srgb, {safetyorangedim.600}, transparent 76%)'
+        },
         surface: {
           0: '#ffffff',
           ...semantic('charcoal')
