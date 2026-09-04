@@ -13,12 +13,24 @@ from __future__ import annotations
 from sqlalchemy import select
 
 from mascope_backend.api.lib.api_features import api_controller
+from mascope_backend.api.lib.exceptions.api_exceptions import NotFoundException
 from mascope_backend.api.new.peak_assignments.batch_peaks import (
     manual_pin_of,
     mz_from_delta,
     tier_name,
 )
-from mascope_backend.db import BatchPeak, BatchPeakOccurrence, async_session
+from mascope_backend.api.new.peak_assignments.batch_runs import (
+    resolve_run,
+    snapshot_anchor_meta,
+    snapshot_rows,
+    snapshot_series,
+)
+from mascope_backend.db import (
+    BatchPeak,
+    BatchPeakOccurrence,
+    BatchPeakRun,
+    async_session,
+)
 
 
 def _empty_series() -> dict:
@@ -68,6 +80,7 @@ async def get_batch_peak_series(
     batch_peak_ids: list[str] | None = None,
     tier: str | None = None,
     min_n_present: int = 2,
+    batch_peak_run_id: str | None = None,
 ) -> dict:
     """Retrieve per-sample batch-peak data in a compact columnar form.
 
@@ -96,6 +109,45 @@ async def get_batch_peak_series(
     full_load = not sample_item_ids and not batch_peak_ids
 
     async with async_session() as session:
+        # An earlier run's series come off its snapshot; the current run's,
+        # or none named, off the live members below.
+        if batch_peak_run_id:
+            run = await session.get(BatchPeakRun, batch_peak_run_id)
+            if run is None or (
+                sample_batch_id and run.sample_batch_id != sample_batch_id
+            ):
+                raise NotFoundException(
+                    f"Batch run '{batch_peak_run_id}' not found in this batch"
+                )
+            if not run.is_current:
+                rows = await snapshot_rows(
+                    session,
+                    run,
+                    batch_peak_ids=batch_peak_ids,
+                    tier=tier,
+                    min_n_present=min_n_present if full_load else 1,
+                )
+                data = []
+                for row in rows:
+                    series = snapshot_series(row, sample_item_ids)
+                    if sample_item_ids and not series["sample_item_ids"]:
+                        continue
+                    data.append(
+                        {
+                            **snapshot_anchor_meta(row, run.sample_batch_id),
+                            "peak_series": series,
+                        }
+                    )
+                return {
+                    "status": "success",
+                    "message": (
+                        f"Retrieved {len(data)} batch peak"
+                        f"{'s' if len(data) != 1 else ''} as run "
+                        f"'{run.batch_peak_run_id}' left them"
+                    ),
+                    "results": len(data),
+                    "data": data,
+                }
         bp_query = select(BatchPeak)
         if sample_batch_id:
             bp_query = bp_query.where(BatchPeak.sample_batch_id == sample_batch_id)
@@ -165,6 +217,7 @@ async def get_batch_peak_ledger(
     sample_batch_id: str,
     tier: str | None = None,
     min_n_present: int = 2,
+    batch_peak_run_id: str | None = None,
 ) -> dict:
     """Metadata-only list of a batch's batch peaks -- the ledger table feed.
 
@@ -180,6 +233,22 @@ async def get_batch_peak_ledger(
     are the reader's to resolve, which it can because it holds the whole list.
     """
     async with async_session() as session:
+        # An earlier run's ledger comes off its snapshot, in the same shape.
+        run = await resolve_run(session, sample_batch_id, batch_peak_run_id)
+        if run is not None:
+            rows = await snapshot_rows(
+                session, run, tier=tier, min_n_present=min_n_present
+            )
+            data = [snapshot_anchor_meta(row, sample_batch_id) for row in rows]
+            return {
+                "status": "success",
+                "message": (
+                    f"Retrieved {len(data)} batch peak{'s' if len(data) != 1 else ''} "
+                    f"as run '{run.batch_peak_run_id}' left them"
+                ),
+                "results": len(data),
+                "data": data,
+            }
         query = select(BatchPeak).where(BatchPeak.sample_batch_id == sample_batch_id)
         if tier:
             query = query.where(BatchPeak.consensus_tier == tier)

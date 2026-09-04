@@ -44,6 +44,12 @@ class BatchPeaksResource(BaseResource):
 
         # The batch-level verdicts recorded on the batch's species
         verdicts = mascope.batch_peaks.verdicts("batch-123")
+
+        # The ledger's history, and the species table as an earlier run left it
+        runs = mascope.batch_peaks.runs("batch-123")
+        earlier = mascope.batch_peaks.list(
+            "batch-123", run_id=runs.iloc[-1]["batch_peak_run_id"]
+        )
     """
 
     def list(
@@ -52,6 +58,7 @@ class BatchPeaksResource(BaseResource):
         *,
         tier: str | None = None,
         min_n_present: int = 1,
+        run_id: str | None = None,
     ) -> pd.DataFrame | None:
         """List a batch's batch peaks, one row per anchor, in m/z order.
 
@@ -63,6 +70,10 @@ class BatchPeaksResource(BaseResource):
         :param min_n_present: Keep only batch peaks seen in at least this many
                               samples. Defaults to 1 (every anchor).
         :type min_n_present: int
+        :param run_id: Read the ledger as this batch run left it (see
+                       :meth:`runs`); the current run, or none, is the live
+                       ledger.
+        :type run_id: str, optional
         :return: A DataFrame with one row per batch peak: ``batch_peak_id``,
                  ``mz``, ``consensus_formula``, ``consensus_ion_formula``,
                  ``ionization_mechanism_id``, ``consensus_tier``,
@@ -77,6 +88,8 @@ class BatchPeaksResource(BaseResource):
         params: dict[str, Any] = {"min_n_present": min_n_present}
         if tier is not None:
             params["tier"] = tier
+        if run_id is not None:
+            params["batch_peak_run_id"] = run_id
         data = self._get(f"batch-peaks/batch/{sample_batch_id}", params=params)
         if not data:
             logger.info("Batch '{}' has no batch peaks", sample_batch_id)
@@ -145,6 +158,27 @@ class BatchPeaksResource(BaseResource):
         :rtype: pd.DataFrame | None
         """
         data = self._get(f"batch-peaks/batch/{sample_batch_id}/verdicts")
+        if not data:
+            return None
+        return _coerce_utc_columns(pd.DataFrame(data))
+
+    def runs(self, sample_batch_id: str) -> pd.DataFrame | None:
+        """A batch's runs, newest first: the batch-level operations that
+        rewrote its ledger - a rebuild, an untargeted search with its
+        parameters, an import - and the folds that built it.
+
+        Exactly one run is ``current``, the live ledger; :meth:`list` with an
+        earlier run's id reads the species table as that run left it.
+
+        :param sample_batch_id: The ID of the sample batch.
+        :type sample_batch_id: str
+        :return: A DataFrame with one row per run: ``batch_peak_run_id``,
+                 ``action``, ``engine``, ``engine_version``, ``status``,
+                 ``current``, ``config``, ``summary``, ``error`` and the
+                 timestamps. None when the batch has no ledger yet.
+        :rtype: pd.DataFrame | None
+        """
+        data = self._get(f"batch-peaks/batch/{sample_batch_id}/runs")
         if not data:
             return None
         return _coerce_utc_columns(pd.DataFrame(data))

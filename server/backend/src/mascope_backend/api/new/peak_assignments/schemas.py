@@ -773,6 +773,39 @@ class ReleaseBatchPeakCurationBody(BaseModel):
     batch_peak_id: str = Field(description="The batch peak whose curation to release.")
 
 
+class BatchPeakRunRecord(BaseModel):
+    """One batch run: a batch-level operation that rewrote the batch ledger."""
+
+    batch_peak_run_id: str
+    sample_batch_id: str
+    #: fold | rebuild | search_untargeted | import
+    action: str
+    engine: str
+    engine_version: str
+    #: running | completed | failed
+    status: str
+    #: The run whose state the live ledger holds; exactly one per batch.
+    current: bool
+    is_current: bool
+    config: dict | None = None
+    summary: dict | None = None
+    error: str | None = None
+    created_by: int | None = None
+    batch_peak_run_utc_created: datetime | None = None
+    batch_peak_run_utc_completed: datetime | None = None
+    #: When this run's ledger state was captured - set as the next run started.
+    snapshot_utc: datetime | None = None
+
+
+class BatchPeakRunsResponse(BaseModel):
+    """A batch's runs, newest first."""
+
+    status: str = "success"
+    message: str
+    results: int
+    data: list[BatchPeakRunRecord]
+
+
 class RecalibrateResponse(BaseModel):
     """Outcome of refitting an instrument's calibration from verification labels (V2)."""
 

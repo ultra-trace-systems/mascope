@@ -6,6 +6,30 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
 
 ### Added
 
+- **Batch runs.** The batch ledger now has a history: one run per batch-level
+  operation that rewrote it - *Rebuild batch ledger*, *Search untargeted* with
+  the parameters it was given, an import - and the folds that built it. Exactly
+  one run is current (the live ledger); when a new run starts, the current
+  run's ledger is kept as a compact per-anchor snapshot, so the run selector
+  beside the batch actions shows the *Batch peaks* ledger and the chart as any
+  earlier run left them, read-only. The newest few runs are kept per batch and
+  older ones pruned with their snapshots; a second operation on a ledger one is
+  still rewriting is refused. Routes: `GET /api/batch-peaks/batch/{id}/runs`,
+  and `batch_peak_run_id` on the ledger and series reads; the SDK gained
+  `batch_peaks.runs()` and `list(run_id=...)`. Migration `f2a7c9d1e4b8`.
+
+- **Batch runs.** The batch ledger now has a history: one run per batch-level
+  operation that rewrote it - *Rebuild batch ledger*, *Search untargeted* with
+  the parameters it was given, an import - and the folds that built it. Exactly
+  one run is current (the live ledger); when a new run starts, the current
+  run's ledger is kept as a compact per-anchor snapshot, so the run selector
+  beside the batch actions shows the *Batch peaks* ledger and the chart as any
+  earlier run left them, read-only. The newest few runs are kept per batch and
+  older ones pruned with their snapshots; a second operation on a ledger one is
+  still rewriting is refused. Routes: `GET /api/batch-peaks/batch/{id}/runs`,
+  and `batch_peak_run_id` on the ledger and series reads; the SDK gained
+  `batch_peaks.runs()` and `list(run_id=...)`. Migration `f2a7c9d1e4b8`.
+
 - **The batch ledger in the SDK, and as a CSV.** `mascope.load_batch_ledger(dataset,
   batches=...)` loads a batch's ledger as one flat DataFrame - one row per member
   peak, the batch peak's consensus (formula, tier, support, prevalence, curation)

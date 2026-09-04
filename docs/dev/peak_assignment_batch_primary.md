@@ -412,6 +412,36 @@ path becomes the common case rather than the exception.
 
 ---
 
+### 6.5 Batch runs
+
+> **Status (2026-09-04): shipped.** On the user's review note that the batch level
+> should persist more than one run and offer a selector like the per-sample one.
+
+A **batch run** (`batch_peak_run`) is one batch-level operation that rewrote a batch's
+ledger - a rebuild, an untargeted search with its parameters, an import - or, implicitly,
+the folds that built it (minted by the first fold, so the history has a first entry).
+Exactly one run per batch is `is_current`: the live anchors and members are its state, and
+folds, curation and verdicts edit it without creating a run, as per-sample curation edits
+a row of a run. When a new run starts, the current run's state is captured into
+`batch_peak_run_anchor` - one row per anchor with its consensus, the registry it resolved
+its members with, and the members as parallel arrays (sample, peak, offset, intensity,
+candidate index, tier, role, fit, P(correct), owner) - and the new run becomes current on
+completion; a failed run never does, and the record says the live ledger holds whatever
+the operation left. Snapshots are columnar because they are written once and read whole:
+the run selector reads a whole ledger, the chart a whole series. They cost a small
+fraction of a row per member (JSON arrays, TOAST-compressed), which is what makes keeping
+several affordable; the newest `BATCH_RUN_KEEP` non-current runs are kept per batch and
+the rest pruned, snapshots and all, when a run completes. A second batch-level operation
+on a ledger one is still rewriting is refused on the request (409, `batch_run_in_flight`).
+
+Reads: `GET /api/batch-peaks/batch/{id}/runs`; the ledger and series routes take
+`batch_peak_run_id` and answer from the snapshot for any run but the current. In the app
+the Batch peaks pane's run selector switches the ledger and the chart between runs; an
+earlier run is read-only there (verdict cells withheld), and the members export and the
+derived Sample view stay on the live ledger. Not done: a per-sample runs list entry per
+batch run, and restoring a failed run's snapshot onto the live ledger - both possible on
+this record, neither asked for.
+
 ## 7. Cost
 
 Per detected peak per sample, live, with fleet growth at the last year's acquisition rate.

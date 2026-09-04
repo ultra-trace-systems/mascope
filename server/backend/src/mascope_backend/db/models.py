@@ -2159,6 +2159,96 @@ class AssignmentCalibration(Base):
     )
 
 
+class BatchPeakRun(Base):
+    """One batch-level operation that rewrote a batch's ledger - a rebuild, an
+    untargeted search with its parameters, an import - or, implicitly, the folds
+    that built it. The batch counterpart of :class:`PeakAssignmentRun`.
+
+    Exactly one run per batch is ``is_current``: the one whose state the live
+    anchors and members hold. When a new run starts, the current run's state is
+    captured into :class:`BatchPeakRunAnchor` and the new run becomes current on
+    completion; a failed run never does. Older runs beyond the batch's keep are
+    pruned with their snapshots when a run completes (``batch_runs.py``).
+    """
+
+    __tablename__ = "batch_peak_run"
+
+    batch_peak_run_id: Mapped[str] = mapped_column(String(16), primary_key=True)
+    sample_batch_id: Mapped[str] = mapped_column(
+        String(16),
+        ForeignKey("sample_batch.sample_batch_id", ondelete="CASCADE"),
+        index=True,
+    )
+    action: Mapped[str] = mapped_column(String(32))
+    engine: Mapped[str] = mapped_column(String(64), server_default=text("'mascope'"))
+    engine_version: Mapped[str] = mapped_column(String(64))
+    status: Mapped[str] = mapped_column(String(20), server_default=text("'running'"))
+    is_current: Mapped[int] = mapped_column(Integer, server_default=text("'0'"))
+    config: Mapped[Optional[dict]] = mapped_column(JSON)
+    summary: Mapped[Optional[dict]] = mapped_column(JSON)
+    error: Mapped[Optional[str]] = mapped_column(Text)
+    created_by: Mapped[Optional[int]] = mapped_column(
+        Integer, ForeignKey("user.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    batch_peak_run_utc_created: Mapped[dt] = mapped_column(
+        TIMESTAMP(timezone=True), default=lambda: dt.now(timezone.utc)
+    )
+    batch_peak_run_utc_completed: Mapped[Optional[dt]] = mapped_column(
+        TIMESTAMP(timezone=True), nullable=True
+    )
+    #: When this run's ledger state was captured - set as the next run started.
+    snapshot_utc: Mapped[Optional[dt]] = mapped_column(
+        TIMESTAMP(timezone=True), nullable=True
+    )
+
+    __table_args__ = (
+        CheckConstraint(
+            "action IN ('fold', 'rebuild', 'search_untargeted', 'import')",
+            name="action_valid",
+        ),
+        CheckConstraint(
+            "status IN ('running', 'completed', 'failed')", name="status_valid"
+        ),
+        Index("ix_batch_peak_run_batch_current", "sample_batch_id", "is_current"),
+    )
+
+
+class BatchPeakRunAnchor(Base):
+    """One anchor of a batch run's snapshot: its consensus as the run left it,
+    the registry it resolved its members with, and the members themselves as
+    parallel arrays (``batch_runs.MEMBER_FIELDS``) - columnar, because a
+    snapshot is written once and read whole, and the arrays cost a small
+    fraction of a row per member. ``batch_peak_id`` carries no foreign key: the
+    anchor may be deleted by a later re-fold, and the snapshot is exactly what
+    should outlive that.
+    """
+
+    __tablename__ = "batch_peak_run_anchor"
+
+    batch_peak_run_id: Mapped[str] = mapped_column(
+        String(16),
+        ForeignKey("batch_peak_run.batch_peak_run_id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    batch_peak_id: Mapped[str] = mapped_column(String(16), primary_key=True)
+    mz: Mapped[float] = mapped_column(Float)
+    ionization_mode_id: Mapped[Optional[str]] = mapped_column(String(16))
+    consensus_formula: Mapped[Optional[str]] = mapped_column(String(256))
+    consensus_ion_formula: Mapped[Optional[str]] = mapped_column(String(4096))
+    ionization_mechanism_id: Mapped[Optional[str]] = mapped_column(String(16))
+    consensus_tier: Mapped[str] = mapped_column(String(24))
+    best_fit_score: Mapped[Optional[float]] = mapped_column(Float)
+    support_fraction: Mapped[Optional[float]] = mapped_column(Float)
+    n_present: Mapped[int] = mapped_column(Integer)
+    is_ambiguous: Mapped[int] = mapped_column(Integer, server_default=text("'0'"))
+    intensity_variable: Mapped[Optional[str]] = mapped_column(String(32))
+    max_intensity: Mapped[Optional[float]] = mapped_column(Float)
+    isotopologue_of: Mapped[Optional[str]] = mapped_column(String(16))
+    curated: Mapped[int] = mapped_column(Integer, server_default=text("'0'"))
+    candidates: Mapped[Optional[list]] = mapped_column(JSON)
+    members: Mapped[Optional[dict]] = mapped_column(JSON)
+
+
 class BatchPeakVerification(Base):
     """A user's verdict on a batch peak's species claim - one per anchor, batch-wide.
 
@@ -2376,6 +2466,8 @@ __all__ = [
     "BatchPeak",
     "BatchPeakOccurrence",
     "BatchPeakVerification",
+    "BatchPeakRun",
+    "BatchPeakRunAnchor",
     "AttributeTemplate",
     "InstrumentFunction",
     "ReferenceSource",
