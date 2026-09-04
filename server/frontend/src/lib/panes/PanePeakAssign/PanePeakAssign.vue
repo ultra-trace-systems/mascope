@@ -366,6 +366,8 @@ const isoLabel = (iso) =>
 // of M0, recovered from the stored errors:
 //   theoretical_rel = observed_rel / (1 + abundance_error),  observed_rel = I / I(M0)
 const theoreticalRel = (iso) => {
+  // A measured isotopologue brings the prediction itself.
+  if (iso.relative_abundance != null) return iso.relative_abundance
   const base = m0.value?.sample_peak_intensity
   if (!base || base <= 0 || iso.sample_peak_intensity == null) return null
   const observed = iso.sample_peak_intensity / base
@@ -448,6 +450,66 @@ const curateDenied = ref(false) // 403: not an editor on this sample
 // own: curation edits a peak_assignment row, and there is none behind these.
 // The server answers 409; the control is withheld rather than offered to fail.
 const derivedRun = computed(() => app.data.peakAssignment.peak.run?.engine === 'batch')
+
+// --- On-demand evidence for a derived row -----------------------------------
+// A row derived from the batch ledger carries its fit and its tier, but not what
+// a run would have stored beside them: the m/z and abundance error of each
+// isotopologue, the isotope labels, the plausibility, the evidence the tier was
+// read off. The server measures the family's composition against this sample's
+// peaks on request - through the M0, since the envelope is the compound's - and
+// the numbers are hung onto the rows here. Session data, never written back,
+// exactly like the alternative scores above.
+const measuredKey = computed(
+  () => (m0.value ?? focusedAssignment.value)?.peak_assignment_id ?? null
+)
+const measured = computed(() =>
+  derivedRun.value ? app.data.peakAssignment.peak.evidenceOf(measuredKey.value) : null
+)
+const measuring = computed(
+  () => derivedRun.value && app.data.peakAssignment.peak.evidencePending(measuredKey.value)
+)
+watch(
+  [measuredKey, derivedRun],
+  () => {
+    if (!derivedRun.value) return
+    const target = m0.value ?? focusedAssignment.value
+    if (target?.assigned_formula) {
+      app.data.peakAssignment.peak.loadEvidence(target).catch(() => {})
+    }
+  },
+  { immediate: true }
+)
+// The measured isotopologues by the peak each paired to.
+const measuredByPeak = computed(() => {
+  const map = new Map()
+  for (const iso of measured.value?.isotopologues ?? []) {
+    if (iso.sample_peak_id != null) map.set(String(iso.sample_peak_id), iso)
+  }
+  return map
+})
+// A row with the measured numbers filled in where the row itself has none. The
+// stored value always wins, so a run's own row reads exactly as it did.
+const withMeasured = (row) => {
+  const record = measured.value
+  if (!row || !record) return row
+  const iso = measuredByPeak.value.get(String(row.sample_peak_id))
+  const isM0 = row.peak_assignment_id === record.peak_assignment_id
+  return {
+    ...row,
+    mz_error_ppm: row.mz_error_ppm ?? (isM0 ? record.mz_error_ppm : iso?.mz_error_ppm) ?? null,
+    abundance_error:
+      row.abundance_error ?? (isM0 ? record.abundance_error : iso?.abundance_error) ?? null,
+    isotope_label: row.isotope_label ?? iso?.isotope_label ?? null,
+    isotope_formula: row.isotope_formula ?? iso?.isotope_formula ?? null,
+    relative_abundance: iso?.relative_abundance ?? null,
+    evidence: row.evidence ?? record.evidence ?? null
+  }
+}
+const evidenceRow = computed(() => withMeasured(focusedAssignment.value))
+const familyRows = computed(() => family.value.map(withMeasured))
+const plausibility = computed(
+  () => provenance.value?.plausibility ?? measured.value?.plausibility ?? null
+)
 
 // A candidate can only be committed when it names both halves of an
 // assignment: the formula and the adduct it was found under. The server
@@ -764,37 +826,47 @@ const demotedCount = computed(() => {
           <span class="k">fit</span>
           <span class="v">{{ formatFit(focusedAssignment.fit_score) }}</span>
         </div>
-        <div class="ev" v-if="focusedAssignment.mz_error_ppm != null">
-          <span class="k">m/z error</span>
-          <span class="v">{{ num.mzError.format(focusedAssignment.mz_error_ppm) }} ppm</span>
+        <!-- A derived row's numbers arrive a moment after the row: the family
+             is measured against this sample's peaks on request. -->
+        <div v-if="measuring" class="ev measuring">
+          <span class="k">measuring</span>
+          <span class="v">the isotope pattern against this sample...</span>
         </div>
-        <div class="ev" v-if="focusedAssignment.abundance_error != null">
+        <div v-else-if="measured?.blocked_reason" class="ev measuring">
+          <span class="k">not measured</span>
+          <span class="v">{{ measured.blocked_reason }}</span>
+        </div>
+        <div class="ev" v-if="evidenceRow.mz_error_ppm != null">
+          <span class="k">m/z error</span>
+          <span class="v">{{ num.mzError.format(evidenceRow.mz_error_ppm) }} ppm</span>
+        </div>
+        <div class="ev" v-if="evidenceRow.abundance_error != null">
           <span class="k">abund. error</span>
           <span class="v">{{
-            num.relativeAbundanceError.format(focusedAssignment.abundance_error)
+            num.relativeAbundanceError.format(evidenceRow.abundance_error)
           }}</span>
         </div>
-        <div class="ev" v-if="focusedAssignment.isotope_label">
+        <div class="ev" v-if="evidenceRow.isotope_label">
           <span class="k">isotope</span>
-          <span class="v">{{ focusedAssignment.isotope_label }}</span>
+          <span class="v">{{ evidenceRow.isotope_label }}</span>
         </div>
-        <div class="ev" v-if="provenance?.plausibility != null">
+        <div class="ev" v-if="plausibility != null">
           <span class="k" v-tooltip.top="'Chemical plausibility (Seven Golden Rules)'"
             >plausibility</span
           >
-          <span class="v">{{ formatFit(provenance.plausibility) }}</span>
+          <span class="v">{{ formatFit(plausibility) }}</span>
         </div>
         <!-- The product of the two above, and the number this row's tier was
              read off. Shown here beside its factors rather than only on the
              chip: when a tier looks surprising, "fit 95%, plausibility 40%" is
              the answer, and the inspector is where a reader goes to find it. -->
-        <div class="ev" v-if="focusedAssignment.evidence != null">
+        <div class="ev" v-if="evidenceRow.evidence != null">
           <span
             class="k"
             v-tooltip.top="'Evidence (fit x plausibility) - what the tier is banded on'"
             >evidence</span
           >
-          <span class="v">{{ formatFit(focusedAssignment.evidence) }}</span>
+          <span class="v">{{ formatFit(evidenceRow.evidence) }}</span>
         </div>
         <div class="ev" v-if="provenance?.confidence != null">
           <span
@@ -864,7 +936,7 @@ const demotedCount = computed(() => {
         </div>
         <div class="iso-rows">
           <div
-            v-for="iso in family"
+            v-for="iso in familyRows"
             :key="iso.peak_assignment_id"
             class="iso-row"
             :class="{
@@ -1464,5 +1536,9 @@ const demotedCount = computed(() => {
   display: grid;
   place-items: center;
   min-height: 8rem;
+}
+.ev.measuring .v {
+  font-style: italic;
+  opacity: 0.7;
 }
 </style>

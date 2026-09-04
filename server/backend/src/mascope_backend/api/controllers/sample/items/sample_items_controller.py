@@ -48,7 +48,7 @@ from mascope_backend.api.models.sample.items.sample_item_pydantic_model import (
     SampleItemRead,
     SampleItemUpdate,
 )
-from mascope_backend.api.new.temp.storage import user_temp_path
+from mascope_backend.api.new.temp.storage import download_name, user_temp_path
 from mascope_backend.db import (
     Sample,
     SampleFile,
@@ -916,8 +916,8 @@ async def sample_item_export_peaks(
     dt_str = datetime.now().isoformat().replace("-", "").replace(":", "").split(".")[0]
 
     # Save the peak data to a CSV file
-    peakfile_filename = "_".join(
-        [dt_str, "peak_data", sample.sample_item_name.replace(" ", "_") + ".csv"]
+    peakfile_filename = download_name(
+        dt_str, "peak_data", sample.sample_item_name, extension="csv"
     )
     runtime.logger.info(f"Writing peak data to file {peakfile_filename}")
     sample_peak_df.to_csv(

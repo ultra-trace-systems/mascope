@@ -6,6 +6,15 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
 
 ### Added
 
+- **Inspector evidence for the derived Sample view.** A peak of a sample served from
+  the batch ledger carried its fit and tier but showed dashes for everything a run
+  computes: the m/z and abundance error of each isotopologue, the isotope labels, the
+  plausibility, the evidence. The peak inspector now measures the family's composition
+  against the sample's own peaks on request
+  (`GET /api/peak-assignments/sample/{id}/assignment/{id}/evidence`), the way it
+  measures the finder's alternatives, and fills them in a moment later; nothing is
+  stored.
+
 - **Batch import.** An external engine's batch-level result - one identity
   per m/z, such as a batch pipeline's merged ledger - can be imported onto
   the batch ledger as a batch run: `POST /api/batch-peaks/batch/{id}/runs/import`
@@ -1283,6 +1292,12 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
   again instead of waiting out the window.
 
 ### Fixed
+
+- **Export file names.** A batch or sample whose name contains a path separator or
+  another character no file system accepts (`/`, `\\`, `:`, `*`, `?`, `\"`, `<`, `>`,
+  `|`) broke the temp file path of the batch ledger CSV, the peak CSVs and the
+  spreadsheet export, and the download failed. Every export now names its file
+  through one sanitizer.
 
 - The peak inspector's **close alternatives** no longer include the assignment
   the peak was actually given. The list is meant to be the runners-up a peak
