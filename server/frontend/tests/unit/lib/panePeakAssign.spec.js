@@ -17,6 +17,7 @@ const PEAK = { peak_id: 'p-1', mz: 200.12345, height: 12345, area: 999 }
 const verify = vi.fn(() => Promise.resolve(null))
 const curate = vi.fn(() => Promise.resolve(null))
 const loadAltScores = vi.fn(() => Promise.resolve([]))
+const loadEvidence = vi.fn(() => Promise.resolve(null))
 
 let focusedPeak
 let focusedAssignment
@@ -32,6 +33,10 @@ let runRecord
 // it lands, and `scoringNow` stands in for the request still being in flight.
 let altScoreRecords
 let scoringNow
+// The on-demand measurement of a derived row's family, keyed by the M0's id.
+let evidenceRecord
+let evidenceKey
+let measuringNow
 
 const helpStub = {
   set: vi.fn(),
@@ -79,6 +84,9 @@ function makeApp() {
             id != null && id === focusedAssignment?.peak_assignment_id ? altScoreRecords : null,
           altScoresPending: () => scoringNow,
           loadAltScores,
+          evidenceOf: (id) => (id != null && id === evidenceKey ? evidenceRecord : null),
+          evidencePending: () => measuringNow,
+          loadEvidence,
           curate
         },
         verification: { forAssignment: () => verdictRecord, verify },
@@ -177,6 +185,9 @@ beforeEach(() => {
   detailRecord = null
   altScoreRecords = null
   scoringNow = false
+  evidenceRecord = null
+  evidenceKey = null
+  measuringNow = false
 })
 afterEach(() => vi.clearAllMocks())
 
@@ -1481,5 +1492,118 @@ describe('PanePeakAssign batch curation on a derived row', () => {
     const wrapper = await mountPane()
 
     expect(wrapper.text()).not.toContain('Curated by hand for the whole batch')
+  })
+})
+
+describe('PanePeakAssign on-demand evidence for a derived row', () => {
+  const derivedM0 = () => ({
+    ...assignment({ formula: 'C6H12O6', tier: 'assigned' }),
+    peak_assignment_id: 'fold-bp-1',
+    batch_peak_id: 'bp-1'
+  })
+  const derivedChild = (m0) => ({
+    ...isotopologue(m0),
+    peak_assignment_id: 'fold-bp-2',
+    isotope_label: null
+  })
+  // The measurement, keyed by the M0's derived id: the family's errors by peak.
+  const MEASURED = {
+    peak_assignment_id: 'fold-bp-1',
+    sample_peak_id: 'p-1',
+    assigned_formula: 'C6H12O6',
+    fit_score: 0.9,
+    measured_fit_score: 0.85,
+    plausibility: 0.8,
+    evidence: 0.72,
+    mz_error_ppm: 0.4,
+    abundance_error: 0.02,
+    blocked_reason: null,
+    isotopologues: [
+      {
+        isotope_label: 'M0',
+        sample_peak_id: 'p-1',
+        mz_error_ppm: 0.4,
+        abundance_error: 0.02,
+        relative_abundance: 1
+      },
+      {
+        isotope_label: 'M+1',
+        sample_peak_id: 'p-2',
+        mz_error_ppm: 1.1,
+        abundance_error: -0.05,
+        relative_abundance: 0.066
+      }
+    ]
+  }
+
+  beforeEach(() => {
+    runRecord = { engine: 'batch' }
+    loadEvidence.mockClear()
+  })
+
+  it('measures a derived row through its M0 and fills what a run would have stored', async () => {
+    const m0 = derivedM0()
+    focusedAssignment = m0
+    familyRows = [m0, derivedChild(m0)]
+    evidenceKey = 'fold-bp-1'
+    evidenceRecord = MEASURED
+    const wrapper = await mountPane()
+
+    expect(loadEvidence).toHaveBeenCalledWith(
+      expect.objectContaining({ peak_assignment_id: 'fold-bp-1' })
+    )
+    const grid = wrapper.find('.evidence').text()
+    expect(grid).toContain('m/z error')
+    expect(grid).toContain(num.mzError.format(0.4))
+    expect(grid).toContain('plausibility')
+    expect(grid).toContain('evidence')
+    expect(grid).not.toContain('measuring')
+
+    const rows = wrapper.findAll('.iso-row').map((row) => row.text())
+    expect(rows).toHaveLength(2)
+    expect(rows[1]).toContain('M+1')
+    expect(rows[1]).toContain(num.mzError.format(1.1))
+  })
+
+  it('measures an isotopologue through the M0 it belongs to and shows its own error', async () => {
+    const m0 = derivedM0()
+    const child = derivedChild(m0)
+    focusedAssignment = child
+    familyRows = [m0, child]
+    evidenceKey = 'fold-bp-1'
+    evidenceRecord = MEASURED
+    const wrapper = await mountPane()
+
+    expect(loadEvidence).toHaveBeenCalledWith(
+      expect.objectContaining({ peak_assignment_id: 'fold-bp-1' })
+    )
+    const grid = wrapper.find('.evidence').text()
+    expect(grid).toContain(num.mzError.format(1.1))
+    expect(grid).toContain('M+1')
+  })
+
+  it('asks nothing for a run of its own, whose rows carry their numbers', async () => {
+    runRecord = { engine: 'mascope' }
+    focusedAssignment = assignment({ formula: 'C6H12O6', tier: 'assigned' })
+    await mountPane()
+
+    expect(loadEvidence).not.toHaveBeenCalled()
+  })
+
+  it('says it is measuring while the request is in flight, and why when nothing could be', async () => {
+    focusedAssignment = derivedM0()
+    evidenceKey = 'fold-bp-1'
+    measuringNow = true
+    let wrapper = await mountPane()
+    expect(wrapper.find('.evidence').text()).toContain('measuring')
+
+    measuringNow = false
+    evidenceRecord = {
+      ...MEASURED,
+      mz_error_ppm: null,
+      blocked_reason: 'the ion did not land on this peak'
+    }
+    wrapper = await mountPane()
+    expect(wrapper.find('.evidence').text()).toContain('the ion did not land on this peak')
   })
 })

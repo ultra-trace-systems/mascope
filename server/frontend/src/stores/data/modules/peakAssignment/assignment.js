@@ -136,9 +136,7 @@ export const usePeakAssignment = defineStore('app.data.peakAssignment', () => {
         // let the panel ask for rows the server will not give.
         const servable = run && run.status !== 'importing'
         const peak_assignment_run_id =
-          servable && run.sample_item_id === sample_item_id
-            ? run.peak_assignment_run_id
-            : null
+          servable && run.sample_item_id === sample_item_id ? run.peak_assignment_run_id : null
         return { sample_item_id, peak_assignment_run_id }
       },
       selection: true
@@ -171,6 +169,21 @@ export const usePeakAssignment = defineStore('app.data.peakAssignment', () => {
     return response?.data?.data ?? []
   })
 
+  // The numbers a run would have stored, measured on demand for a derived row:
+  // a member of the batch ledger carries its fit and its tier but not the m/z
+  // and abundance errors of its isotopologues, nor the plausibility and
+  // evidence behind the tier - a run computes those, and no run ran. The
+  // inspector asks for them when it shows such a row, through the family's
+  // M0. As with the alternative scores, session data the ledger never stores.
+  const evidence = createComputedLoader(async (assignment) => {
+    const response = await api.http.get(
+      `/peak-assignments/sample/${assignment.sample_item_id}` +
+        `/assignment/${assignment.peak_assignment_id}/evidence`,
+      { type: 'load_derived_evidence' }
+    )
+    return response?.data?.data?.[0] ?? null
+  })
+
   // A reload (sample/run switch, re-run) replaces the rows and their
   // assignment ids, so any cached detail is stale with them - and so are the
   // scores, which are keyed on the same ids and measured against the
@@ -178,6 +191,7 @@ export const usePeakAssignment = defineStore('app.data.peakAssignment', () => {
   watch(data.list, () => {
     detail.clear()
     altScores.clear()
+    evidence.clear()
   })
 
   // Run metadata for the current view. The shared `read` handler unwraps the
@@ -307,6 +321,9 @@ export const usePeakAssignment = defineStore('app.data.peakAssignment', () => {
     loadDetail: detail.loadDetail,
     altScoresOf: altScores.resultOf,
     altScoresPending: altScores.pendingFor,
-    loadAltScores: altScores.load
+    loadAltScores: altScores.load,
+    evidenceOf: evidence.resultOf,
+    evidencePending: evidence.pendingFor,
+    loadEvidence: evidence.load
   }
 })

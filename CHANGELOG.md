@@ -34,6 +34,15 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
   instrument, or rolled back to an older agent, says so on its next upload
   instead of showing what it first reported. Migration `8e5f0b3a2d71`, two
   nullable columns, no backfill.
+- **Inspector evidence for the derived Sample view.** A peak of a sample served from
+  the batch ledger carried its fit and tier but showed dashes for everything a run
+  computes: the m/z and abundance error of each isotopologue, the isotope labels, the
+  plausibility, the evidence. The peak inspector now measures the family's composition
+  against the sample's own peaks on request
+  (`GET /api/peak-assignments/sample/{id}/assignment/{id}/evidence`), the way it
+  measures the finder's alternatives, and fills them in a moment later; nothing is
+  stored.
+
 - **Batch import.** An external engine's batch-level result - one identity
   per m/z, such as a batch pipeline's merged ledger - can be imported onto
   the batch ledger as a batch run: `POST /api/batch-peaks/batch/{id}/runs/import`
@@ -1399,6 +1408,11 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
   (`DRY_RUN=1` to preview). This was not a reader-backend difference - the
   OpenTFRaw and Thermo RawFileReader paths were verified to behave
   identically.
+- **Export file names.** A batch or sample whose name contains a path separator or
+  another character no file system accepts (`/`, `\\`, `:`, `*`, `?`, `\"`, `<`, `>`,
+  `|`) broke the temp file path of the batch ledger CSV, the peak CSVs and the
+  spreadsheet export, and the download failed. Every export now names its file
+  through one sanitizer.
 
 - The peak inspector's **close alternatives** no longer include the assignment
   the peak was actually given. The list is meant to be the runners-up a peak
