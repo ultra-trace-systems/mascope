@@ -420,6 +420,7 @@ _AVG_CENTROID_MERGE_FWHM = 0.5  # merge centroids whose gap is below this * loca
 _AVG_CENTROID_EXCLUSIVE_MERGE_FWHM = 1.5
 _AVG_CENTROID_EXCLUSIVE_OVERLAP = 0.2  # max share of the smaller side in shared scans
 _AVG_CENTROID_EXCLUSIVE_COVERAGE = 0.6  # min fraction of the scans the two sides span
+_AVG_CENTROID_EXCLUSIVE_MIN_SIDE = 0.35  # min fraction of the scans on each side (>= 2)
 _ZEROFILL_GAP_FACTOR = 4.0  # profile m/z gap > this * median = a cluster boundary
 _ZEROFILL_EDGE_PPM = 2.0  # place baseline zeros this far outside each cluster edge
 
@@ -1457,12 +1458,17 @@ class OpenTFRawBackend:
         of the smaller side's intensity may sit in scans where the other side
         has a centroid too -- a stray weak label in one scan does not veto the
         merge, while a real minor ion beside a major one, present in the same
-        scans, does -- and the two sides together must cover at least
+        scans, does -- the two sides together must cover at least
         ``_AVG_CENTROID_EXCLUSIVE_COVERAGE`` of the scans, so that two noise
         labels from different scans, which are trivially exclusive, are left
-        alone (a transient ion's jitter split is therefore left as it was).
-        The per-scan intensities are carried across the cluster being built,
-        so a fence of satellites cannot chain through a peak pair by pair.
+        alone (a transient ion's jitter split is therefore left as it was),
+        and each side must hold at least ``_AVG_CENTROID_EXCLUSIVE_MIN_SIDE``
+        of the scans, two at the least: one ion alternating between two
+        positions fills both sides, whereas the wobbling fragments beside an
+        intense peak come and go within a couple of scans, and Thermo reports
+        those as the separate peaks they look like. The per-scan intensities
+        are carried across the cluster being built, so a fence of satellites
+        cannot chain through a peak pair by pair.
         """
         if masses.size <= 1:
             return masses, intensities, resolutions, sn, present
@@ -1491,10 +1497,12 @@ class OpenTFRawBackend:
                 smaller = min(cluster.sum(), nxt.sum())
                 shared = np.minimum(cluster, nxt).sum()
                 covered = np.count_nonzero((cluster > 0) | (nxt > 0)) / n_scans
+                side = min(np.count_nonzero(cluster > 0), np.count_nonzero(nxt > 0))
                 if (
                     smaller > 0
                     and shared <= _AVG_CENTROID_EXCLUSIVE_OVERLAP * smaller
                     and covered >= _AVG_CENTROID_EXCLUSIVE_COVERAGE
+                    and side >= max(2, _AVG_CENTROID_EXCLUSIVE_MIN_SIDE * n_scans)
                 ):
                     merge[i] = True
         starts = np.concatenate(([0], np.flatnonzero(~merge) + 1))
