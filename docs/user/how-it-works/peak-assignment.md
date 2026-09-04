@@ -284,7 +284,10 @@ never assigned, or to refresh after an import. There is no batch-wide assignment
 the untargeted search runs once per batch peak instead (below), and a species is
 curated once at its batch peak rather than sample by sample.
 
-*Search untargeted*, beside *Rebuild batch ledger*, runs the untargeted composition search
+*Search untargeted*, beside *Rebuild batch ledger*, first asks for the search's parameters
+- m/z precision, formula ranges, the peak ceiling, the intensity threshold and the number
+of alternatives kept, the same settings as a per-sample run's untargeted stage, applied
+to the whole search - and then runs the untargeted composition search
 for the batch peaks nothing has assigned yet &mdash; once per species, on its brightest
 peak in that sample's own spectrum &mdash; and then measures the composition it found
 against every other sample the species was seen in, so each carries a fit of its own.
