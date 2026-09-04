@@ -88,6 +88,7 @@ from mascope_backend.api.new.peak_assignments.fold_view import (
 from mascope_backend.api.new.peak_assignments.schemas import DEFAULT_PAGE_LIMIT
 from mascope_backend.db import (
     AssignmentVerification,
+    BatchPeakOccurrence,
     IonizationMechanism,
     PeakAssignment,
     PeakAssignmentRun,
@@ -472,6 +473,26 @@ async def get_peak_assignments(
         # is detached, and an attribute that has been expired there is a lazy
         # load, which on an async session raises rather than reloading.
         run_calibration = run.confidence_calibration
+        # The batch peak each row's peak folded into, so the sample ledger can
+        # plot a species in the batch chart. One indexed lookup per page; a
+        # peak the ledger does not hold reads as None.
+        peak_ids = [str(row.sample_peak_id) for row in rows]
+        anchor_by_peak: dict[str, str] = {}
+        if peak_ids:
+            anchor_by_peak = {
+                str(peak_id): batch_peak_id
+                for peak_id, batch_peak_id in (
+                    await session.execute(
+                        select(
+                            BatchPeakOccurrence.sample_peak_id,
+                            BatchPeakOccurrence.batch_peak_id,
+                        ).where(
+                            BatchPeakOccurrence.sample_item_id == sample_item_id,
+                            BatchPeakOccurrence.sample_peak_id.in_(peak_ids),
+                        )
+                    )
+                ).all()
+            }
 
     data = []
     for row in rows:
@@ -479,6 +500,7 @@ async def get_peak_assignments(
         record.update(
             _provenance_scalars(record.pop("provenance", None), run_calibration)
         )
+        record["batch_peak_id"] = anchor_by_peak.get(str(record.get("sample_peak_id")))
         data.append(record)
     return {
         "status": "success",

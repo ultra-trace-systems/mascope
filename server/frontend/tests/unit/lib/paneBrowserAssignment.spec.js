@@ -42,6 +42,8 @@ const SAMPLE = { sample_item_id: 'si-1', sample_item_name: 'Sample 1' }
 const BATCH = { sample_batch_id: 'sb-1', sample_batch_name: 'Batch 1' }
 
 let focusedSampleId
+// The peak focused elsewhere (spectrum, chart, jump), or null.
+let focusedPeak
 let runList
 let runError
 let assignmentList
@@ -72,7 +74,14 @@ function makeApp() {
         unfocus: sampleUnfocus
       },
       batch: { focused: BATCH },
-      peak: { list: [], focused: null, focus: vi.fn(), unfocus: peakUnfocus },
+      peak: { list: [], focused: focusedPeak, focus: vi.fn(), unfocus: peakUnfocus },
+      batchPeak: {
+        list: [],
+        selected: [],
+        isSelected: () => false,
+        select: vi.fn(),
+        unselect: vi.fn()
+      },
       ionization: { mechanism: { list: [] } },
       peakAssignment: {
         run: {
@@ -100,7 +109,7 @@ function makeApp() {
         anchorContext: { overlayFor }
       }
     },
-    ui: { tab: { active: 'sample' }, help: helpStub }
+    ui: { tab: { active: 'sample' }, help: helpStub, notification: { push: vi.fn() } }
   }
 }
 
@@ -118,6 +127,21 @@ vi.mock('@/lib/base', async () => ({
 }))
 
 vi.mock('@/lib/dialogs', () => ({ PeakAssignConfigForm: true }))
+// The row's verdict form has a spec of its own; here it only has to show
+// which row the cell opened it for.
+vi.mock('@/lib/panes/PaneBrowserMatch/AssignmentVerdictPopover.vue', () => ({
+  default: {
+    name: 'AssignmentVerdictPopover',
+    props: ['row', 'record', 'overlay'],
+    template: '<div class="verdict-popover-stub">{{ row?.peak_assignment_id }}</div>'
+  }
+}))
+// The scroll into view is the helper's business (lib/virtualScroll.spec.js);
+// here what matters is that the pane asks for the focused row's display index.
+const scrollVirtualRowIntoView = vi.fn()
+vi.mock('@/lib/virtualScroll', () => ({
+  scrollVirtualRowIntoView: (...args) => scrollVirtualRowIntoView(...args)
+}))
 
 const GLOBAL_STUBS = {
   Dialog: { template: '<div><slot /><slot name="footer" /></div>' },
@@ -134,6 +158,14 @@ const GLOBAL_STUBS = {
       toggle() {
         this.open = !this.open
         this.$emit(this.open ? 'show' : 'hide')
+      },
+      show() {
+        this.open = true
+        this.$emit('show')
+      },
+      hide() {
+        this.open = false
+        this.$emit('hide')
       }
     },
     template: '<div class="view-menu-popover"><slot /></div>'
@@ -310,6 +342,8 @@ beforeEach(() => {
   // per test keeps that flag from leaking between them.
   setActivePinia(createPinia())
   focusedSampleId = ref('si-1')
+  focusedPeak = null
+  scrollVirtualRowIntoView.mockClear()
   runList = []
   runError = null
   verdictRecord = null
@@ -1389,5 +1423,59 @@ describe('PaneBrowserAssignment batch-level verdict overlay', () => {
     wrapper.vm.verdictFilter = 'unverified'
     await wrapper.vm.$nextTick()
     expect(ids(wrapper)).toEqual(['a'])
+  })
+})
+
+describe('PaneBrowserAssignment row actions', () => {
+  // A completed run, so the table (and with it the verdict popover and the
+  // table ref the scroll needs) renders rather than the no-run message.
+  beforeEach(() => {
+    runList = [{ peak_assignment_run_id: 'run-1', status: 'completed' }]
+  })
+
+  it('opens the verdict form for the row the cell was clicked on', async () => {
+    seed(FAMILY_A, FAMILY_B)
+    const wrapper = await mountPane()
+    const row = wrapper.vm.rows.find((r) => r.peak_assignment_id === 'b')
+
+    wrapper.vm.openVerdict({}, row)
+    await wrapper.vm.$nextTick()
+    await wrapper.vm.$nextTick()
+
+    expect(wrapper.vm.verdictTarget?.peak_assignment_id).toBe('b')
+    expect(wrapper.find('.verdict-popover-stub').text()).toBe('b')
+  })
+
+  it('names what the verdict cell offers', async () => {
+    seed(FAMILY_A, FAMILY_B)
+    const wrapper = await mountPane()
+    const row = wrapper.vm.rows.find((r) => r.peak_assignment_id === 'b')
+    expect(wrapper.vm.verdictTooltip(row)).toBe('Record a verdict')
+  })
+
+  it('cannot plot a row whose peak is not in the batch ledger', async () => {
+    seed(FAMILY_A)
+    const wrapper = await mountPane()
+    const row = wrapper.vm.rows[0]
+    expect(wrapper.vm.chart.canPlot(row)).toBe(false)
+    expect(wrapper.vm.chart.isPlotted(row)).toBe(false)
+  })
+
+  it('scrolls the row of a peak focused elsewhere into view, by its display index', async () => {
+    seed(FAMILY_A, FAMILY_B)
+    focusedPeak = { peak_id: 'p-b' }
+    const wrapper = await mountPane()
+    await wrapper.vm.$nextTick()
+
+    const index = wrapper.vm.rows.findIndex((r) => r.sample_peak_id === 'p-b')
+    expect(index).toBeGreaterThanOrEqual(0)
+    expect(scrollVirtualRowIntoView).toHaveBeenCalledWith(expect.anything(), index)
+  })
+
+  it('scrolls nothing while no peak is focused', async () => {
+    seed(FAMILY_A, FAMILY_B)
+    const wrapper = await mountPane()
+    await wrapper.vm.$nextTick()
+    expect(scrollVirtualRowIntoView).not.toHaveBeenCalled()
   })
 })
