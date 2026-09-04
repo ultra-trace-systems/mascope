@@ -798,8 +798,14 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
   washed in a soft cream instead of banded in orange. On a light theme the
   accent also steps down to the deeper orange the guidelines reserve for
   buttons, links and text on light backgrounds - quieter, and the first version
-  of it to carry a white label at full WCAG AA. The dark theme keeps safety
-  orange itself, the background it was drawn for.
+  of it to carry a white label at full WCAG AA. The dark theme keeps the same
+  hue but pulls its intensity back: at full strength the accent is the most
+  saturated orange a screen can produce, and carrying tabs, buttons, focus
+  rings and every selected row in it at once is tiring to work against. It
+  cannot simply use a darker orange there, because the same color is both the
+  button fill and the text on the page behind it, and a darker one stops being
+  readable as text. Muting it instead leaves every contrast measurement exactly
+  where it was.
 
   *Formulas and m/z values are set in IBM Plex Mono.* The guidelines treat the
   mono face as part of the identity rather than a fallback, and the code labels

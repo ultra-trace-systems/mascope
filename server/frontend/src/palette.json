@@ -99,6 +99,105 @@
     "lightness": 5
   },
   {
+    "color": "safetyorangedim",
+    "shade": null,
+    "hex": "#fbeee9",
+    "rgb": "251, 238, 233",
+    "hue": 52.62162704475986,
+    "chroma": 5.37689208984375,
+    "lightness": 95
+  },
+  {
+    "color": "safetyorangedim",
+    "shade": null,
+    "hex": "#f7ddd2",
+    "rgb": "247, 221, 210",
+    "hue": 52.62162704475986,
+    "chroma": 11.356201171875,
+    "lightness": 90
+  },
+  {
+    "color": "safetyorangedim",
+    "shade": null,
+    "hex": "#f0bba1",
+    "rgb": "240, 187, 161",
+    "hue": 52.62162704475986,
+    "chroma": 25.69244384765625,
+    "lightness": 80
+  },
+  {
+    "color": "safetyorangedim",
+    "shade": null,
+    "hex": "#ea976c",
+    "rgb": "234, 151, 108",
+    "hue": 52.62162704475986,
+    "chroma": 44.53399658203125,
+    "lightness": 70
+  },
+  {
+    "color": "safetyorangedim",
+    "shade": null,
+    "hex": "#dd743b",
+    "rgb": "221, 116, 59",
+    "hue": 52.62162704475986,
+    "chroma": 60.92102050781249,
+    "lightness": 60
+  },
+  {
+    "color": "safetyorangedim",
+    "shade": null,
+    "hex": "#b75f30",
+    "rgb": "183, 95, 48",
+    "hue": 52.62162704475986,
+    "chroma": 52.90374755859375,
+    "lightness": 50
+  },
+  {
+    "color": "safetyorangedim",
+    "shade": null,
+    "hex": "#924b24",
+    "rgb": "146, 75, 36",
+    "hue": 52.62162704475986,
+    "chroma": 44.886474609375,
+    "lightness": 40
+  },
+  {
+    "color": "safetyorangedim",
+    "shade": null,
+    "hex": "#6f371a",
+    "rgb": "111, 55, 26",
+    "hue": 52.62162704475986,
+    "chroma": 36.529541015625,
+    "lightness": 30
+  },
+  {
+    "color": "safetyorangedim",
+    "shade": null,
+    "hex": "#4c2612",
+    "rgb": "76, 38, 18",
+    "hue": 52.62162704475986,
+    "chroma": 25.9295654296875,
+    "lightness": 20
+  },
+  {
+    "color": "safetyorangedim",
+    "shade": null,
+    "hex": "#2a170b",
+    "rgb": "42, 23, 11",
+    "hue": 52.62162704475986,
+    "chroma": 13.40057373046875,
+    "lightness": 10
+  },
+  {
+    "color": "safetyorangedim",
+    "shade": null,
+    "hex": "#1a0e05",
+    "rgb": "26, 14, 5",
+    "hue": 52.62162704475986,
+    "chroma": 6.690673828125,
+    "lightness": 5
+  },
+  {
     "color": "charcoal",
     "shade": null,
     "hex": "#eff1f2",

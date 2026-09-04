@@ -11,19 +11,33 @@ const jsonPath = './src/palette.json'
 const colors = {
   // primaries
   safetyorange: '#FF6700',
+  safetyorangedim: '#FF6700',
   // surfaces
   charcoal: '#161718',
   offwhite: '#F5F5F2'
 }
 
-// Colors swept against the sRGB gamut rather than against their own chroma, so
-// every shade takes the most color the screen can hold at its lightness. This
-// is the brand guidelines' own construction - the four oranges it names (Tint,
-// Safety Orange, Deep, Shadow) each sit exactly on the gamut boundary at their
-// lightness, so a ramp built this way passes through the same family. Colors
-// left out keep the seed's chroma the whole way up, which is what the
+// Colors swept against the sRGB gamut rather than against their own chroma: a
+// shade takes the most color the screen can hold at its lightness, scaled by
+// the strength given here. Full strength is the brand guidelines' own
+// construction - the four oranges they name (Tint, Safety Orange, Deep, Shadow)
+// each sit exactly on the gamut boundary at their lightness, so a ramp built
+// that way passes through the same family.
+//
+// The accent is swept twice. Light surfaces read the full-strength ramp. Dark
+// surfaces read a damped one, because against near-black the accent is
+// otherwise the most saturated orange the display can produce - carrying tabs,
+// buttons, focus rings and every selected row at once, which is tiring to read
+// against for long. Damping costs nothing measurable: lightness alone sets
+// contrast, so a damped shade measures exactly what its full-strength twin
+// does against the same background.
+//
+// Colors left out keep the seed's chroma the whole way up, which is what the
 // near-neutral surfaces want.
-const gamutFitted = new Set(['safetyorange'])
+const gamutFitted = {
+  safetyorange: 1,
+  safetyorangedim: 0.7
+}
 
 // shades
 const shades = [
@@ -56,7 +70,8 @@ for (const [color, hexcode] of Object.entries(colors)) {
   // iterate through the shades
   for (const { lightness, shade } of shades) {
     // create the lch triplet
-    const shadeChroma = gamutFitted.has(color) ? gamutChroma(lightness, hue) : chroma
+    const shadeChroma =
+      color in gamutFitted ? gamutChroma(lightness, hue) * gamutFitted[color] : chroma
     const lch = [lightness, shadeChroma, hue]
     // compute color systems
     const rgb = convert
