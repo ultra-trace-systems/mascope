@@ -871,6 +871,36 @@ class ImportBatchRunBody(BaseModel):
     rows: list[BatchImportRow] = Field(min_length=1, max_length=5000)
 
 
+class SampleAssignmentRunRecord(BaseModel):
+    """A sample's latest completed assignment run of its own, in brief."""
+
+    peak_assignment_run_id: str
+    engine: str
+    engine_version: str
+    peak_assignment_run_utc_created: datetime | None = None
+
+
+class BatchSampleAssignmentStatusRecord(BaseModel):
+    """One sample of a batch: its latest completed run of its own, if any, and
+    what the batch ledger holds for it. A sample folded into the ledger is
+    served from it even without a run, so both are reported."""
+
+    sample_item_id: str
+    run: SampleAssignmentRunRecord | None = None
+    #: The sample's members of the batch ledger, and how many carry an assignment.
+    n_members: int
+    n_assigned: int
+
+
+class BatchSampleAssignmentStatusResponse(BaseModel):
+    """Every sample of a batch with its assignment status."""
+
+    status: str = "success"
+    message: str
+    results: int
+    data: list[BatchSampleAssignmentStatusRecord]
+
+
 class BatchPeakRunRecord(BaseModel):
     """One batch run: a batch-level operation that rewrote the batch ledger."""
 

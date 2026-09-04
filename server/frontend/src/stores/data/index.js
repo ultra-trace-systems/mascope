@@ -1,6 +1,11 @@
 import { useAcquisition } from './modules/acquisition'
 import { useBatch } from './modules/batch'
-import { useBatchPeakLedger, useBatchPeakRun, useBatchPeakVerification } from './modules/batchPeak'
+import {
+  useBatchPeakLedger,
+  useBatchPeakRun,
+  useBatchPeakSampleStatus,
+  useBatchPeakVerification
+} from './modules/batchPeak'
 import { useInstrument } from './modules/instrument'
 import { useIonizationMechanism, useIonizationMode } from './modules/ionization'
 import {
@@ -36,6 +41,7 @@ export const useData = () => ({
   batchPeak: useBatchPeakLedger(),
   batchPeakVerification: useBatchPeakVerification(),
   batchPeakRun: useBatchPeakRun(),
+  batchPeakSampleStatus: useBatchPeakSampleStatus(),
   sample: useSample(),
   peak: usePeak(),
   peakAssignment: {
