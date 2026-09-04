@@ -9,16 +9,15 @@ run-name: Contributor License Agreement check
 #
 # Two things about the triggers matter:
 #
-#   * `pull_request_target` runs with the BASE branch's workflow file and
-#     write permission, which is what lets it comment on and set a status for
-#     a pull request from a fork. The action never checks out or executes the
-#     pull request's code, so that is safe here - and it is why no checkout
-#     step belongs in this workflow. Do not add one.
-#   * `issue_comment` (the "I have read the CLA Document ..." reply) only ever
-#     fires for the copy of this file on the DEFAULT branch, `master`. Until
-#     this workflow has been released, a signature is picked up by the next
-#     push to the pull request, or by re-running the check, rather than the
-#     moment it is posted.
+#   * Both events read this file from the repository's DEFAULT branch,
+#     `master`, whatever branch the pull request targets, and do not fire at
+#     all while it is missing there. A change made on `develop` takes effect
+#     only once it has been released to `master`.
+#   * `pull_request_target` runs with write permission and the secrets, which
+#     is what lets it comment on and set a status for a pull request from a
+#     fork. The action never checks out or executes the pull request's code,
+#     so that is safe here - and it is why no checkout step belongs in this
+#     workflow. Do not add one.
 
 on:
   issue_comment:
