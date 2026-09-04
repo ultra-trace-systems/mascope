@@ -659,6 +659,14 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
 
 ### Changed
 
+- **Search untargeted asks for its parameters first.** The Batch peaks pane's
+  *Search untargeted* now opens the same parameters dialog as a per-sample run
+  - m/z precision, formula ranges, the peak ceiling, the intensity threshold
+  and the number of alternatives kept - with the untargeted stage itself
+  pinned on, and posts the settings to the search route
+  (`POST /api/batch-peaks/batch/{id}/search-untargeted`, which already took
+  them). Unset fields fall back to the server defaults, as before.
+
 - **Compute batch peaks is now Rebuild batch ledger**, and it folds every sample
   of the batch: from its assignment run where it has one, otherwise assigned
   from the known compositions and folded without a run, the way ingest does. A
