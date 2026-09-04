@@ -7,7 +7,7 @@ written and kept, samples fold into it at ingest without a per-sample ledger row
 per-sample run becomes an opt-in deep dive. It is motivated by disk, argued from
 measurements, and justified by the product shape it produces.*
 
-> **Status: implemented (2026-09-03)** on `epic/batch-primary-assignment`, one PR per
+> **Status: implemented (2026-09-03, extended 2026-09-04)** on `epic/batch-primary-assignment`, one PR per
 > step, each merged into the epic when green; the epic is reviewed into `develop` as a
 > whole. Tier 1 ([#2029](https://github.com/ultra-trace-systems/mascope/pull/2029)) and
 > tier 2 ([#2037](https://github.com/ultra-trace-systems/mascope/pull/2037)) of the
@@ -25,7 +25,10 @@ measurements, and justified by the product shape it produces.*
 > | F | One verdict per species at the batch peak, overlaying the samples (§6.3; continuity note §4-5) | [#2047](https://github.com/ultra-trace-systems/mascope/pull/2047) |
 > | G | Curate a species for the whole batch from a derived row's inspector (§6.3) | [#2048](https://github.com/ultra-trace-systems/mascope/pull/2048) |
 > | H | *Rebuild batch ledger* folds every sample; the assignment copy and the batch-wide run are retired (§6.4) | [#2049](https://github.com/ultra-trace-systems/mascope/pull/2049) |
-> | I | The ledger in the SDK (`load_batch_ledger`, `batch_peaks`) and as a CSV export | this step |
+> | I | The ledger in the SDK (`load_batch_ledger`, `batch_peaks`) and as a CSV export | [#2050](https://github.com/ultra-trace-systems/mascope/pull/2050) |
+> | J | *Search untargeted* asks for its parameters first, in the per-sample launcher's dialog | [#2055](https://github.com/ultra-trace-systems/mascope/pull/2055) |
+> | K | Batch runs: one record per batch-level operation, the outgoing run's ledger kept as a compact snapshot, a run selector at batch level (§6.5) | [#2056](https://github.com/ultra-trace-systems/mascope/pull/2056) |
+> | L | An external engine's batch-level result imported as a batch run, matched by m/z and measured against every member (§6.6) | [#2057](https://github.com/ultra-trace-systems/mascope/pull/2057) |
 >
 > Not done, by design: §5.4 (per-sample evidence on demand) and the columnar membership of
 > §8 stay in reserve. Decisions marked **[settled]** were on record in earlier design docs;
