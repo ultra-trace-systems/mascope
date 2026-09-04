@@ -18,6 +18,7 @@ from mascope_file_agent.config import ConfigError
 from mascope_file_agent.wizard import (
     CREDENTIAL_OK,
     CREDENTIAL_REJECTED,
+    SetupCancelled,
     check_credential,
     run_pairing,
     run_setup_wizard,
@@ -542,8 +543,7 @@ def resolve_settings(mascope_path: str, env_path: str) -> dict:
     :return: Complete, validated settings dict
     :rtype: dict
     :raises ConfigError: When settings are missing and the wizard cannot run,
-        the watched folder does not exist, or the instrument name is not one
-        the server accepts
+        or the watched folder does not exist
     """
     config_path = os.path.join(mascope_path, agent_config.CONFIG_FILENAME)
     if os.path.exists(config_path):
@@ -563,7 +563,17 @@ def resolve_settings(mascope_path: str, env_path: str) -> dict:
                 "the guided setup, or fill in host, access_token and source "
                 f"in:\n  {config_path}"
             )
-        settings = run_setup_wizard(settings)
+        try:
+            settings = run_setup_wizard(settings)
+        except SetupCancelled as cancelled:
+            # Pairing comes last and needs a second person at a browser, so
+            # walking away to find one must not cost the answers given here.
+            # They are written without a token, which leaves the settings
+            # incomplete, so the next start runs the guided setup again - now
+            # with every earlier answer offered as its default.
+            agent_config.write_user_config(config_path, cancelled.settings)
+            print(f"\nThe answers given so far were saved to {config_path}.")
+            raise
         agent_config.write_user_config(config_path, settings)
         print(f"Settings saved to {config_path}\n")
 
@@ -573,17 +583,28 @@ def resolve_settings(mascope_path: str, env_path: str) -> dict:
             f"Update 'source' in {config_path}, or restart the agent "
             "with --setup to run the guided setup again."
         )
-    instrument = (settings.get("instrument") or "").strip()
+    return settings
+
+
+def _validate_instrument() -> None:
+    """Refuse to start on an instrument name the server would not accept.
+
+    Checked against the loaded runtime config rather than the settings dict,
+    so it covers dev mode too, where the CLI owns the configuration and
+    :func:`resolve_settings` never runs. Refused rather than ignored the way
+    an unresolvable timezone is: the server files uploads under this name, so
+    a wrong one misfiles data instead of merely degrading a timestamp.
+
+    :raises ConfigError: When a configured instrument name is not valid
+    """
+    instrument = (getattr(runtime.config, "instrument", "") or "").strip()
     if instrument and not agent_config.is_valid_instrument(instrument):
-        # Checked here rather than left for the server: the name only rides
-        # along as metadata today, so a bad one would be accepted in silence
-        # and refused the day the server starts filing uploads under it.
         raise ConfigError(
             f"The instrument name is not valid: {instrument!r}\n"
             "Use letters, digits and hyphens only (for example Orbi-Lab2), or "
-            f"leave 'instrument' empty in {config_path}."
+            "leave 'instrument' empty in the agent configuration. Start the "
+            "agent with --setup to fix it in the guided setup."
         )
-    return settings
 
 
 def initialize() -> None:
@@ -620,6 +641,9 @@ def initialize() -> None:
         # dev mode
         # runtime state inherited from the CLI
         runtime = Runtime("file-agent")
+    # After the runtime exists, so the refusal reaches the agent log as well as
+    # the console - a headless prod install has no console to read.
+    _validate_instrument()
 
 
 class FileSystemWatcher:

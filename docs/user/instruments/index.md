@@ -35,11 +35,15 @@ uploads them to your Mascope server automatically.
 4. Next it asks for the **instrument name** this machine watches, for
    example `Orbi-Lab2` (letters, digits and hyphens). The agent reports it
    when pairing and with every upload, so the server can file uploads under
-   it. If the watched folder already holds files whose names start with an
-   instrument name, that name is offered as the default. When the file
-   names do not start with one, the setup offers to add the instrument name
-   in front of every uploaded name, which is what the server needs today to
-   file them. Leave the name empty to skip this.
+   it. If the watched folder already holds files, the name the server files
+   them under is offered as the default. Leave the name empty to skip this,
+   or answer `-` to remove a name that was set before.
+
+   Setup then checks what those uploads would be filed under as things
+   stand — taking any `filename_prefix` already configured into account —
+   and offers to put `<instrument>_` in front of every uploaded name when
+   the server could not read the current one. If the folder is still empty
+   it asks for one example file name rather than guessing.
 
 5. Finally the setup pairs the agent with your account:
    1. The agent shows a short pairing code, for example `BCD-234`.
@@ -85,7 +89,7 @@ All settings live in one file on the instrument PC:
 | `recursive`       | `true` to also watch subfolders of `source` (default `false`)      |
 | `verify_tls`      | `true` to verify the server's TLS certificate (default `true`)     |
 | `timezone`        | IANA timezone of this machine, e.g. `Europe/Helsinki` (auto-detected when empty) |
-| `instrument`      | Name of the instrument this machine watches, e.g. `Orbi-Lab2` (letters, digits and hyphens); reported when pairing and with each upload |
+| `instrument`      | Name of the instrument this machine watches, e.g. `Orbi-Lab2` (letters, digits and hyphens); reported when pairing and with each upload. The agent refuses to start on a name the server would not accept |
 | `mask`            | Pattern of the files to upload, e.g. `*.raw`                       |
 | `timeout`         | Seconds a file must be idle before it is uploaded                  |
 | `filename_prefix` | Optional prefix added to the filename on upload                    |

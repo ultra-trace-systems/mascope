@@ -17,7 +17,7 @@ import urllib3
 
 from mascope_file_agent import __version__
 from mascope_file_agent.config import base_url, is_valid_instrument, normalize_host
-from mascope_sdk import AGENT_VERSION_HEADER
+from mascope_sdk import agent_headers
 
 
 # Suppress the warning urllib3 emits when a user has turned TLS verification
@@ -41,23 +41,28 @@ CREDENTIAL_UNREACHABLE = "unreachable"
 #: refused, so a prefix the setup adds has to satisfy it too.
 _INSTRUMENT_TYPE_HINTS = ("orbi", "tof", "api")
 
+#: Answer that clears a prompt's default instead of accepting it. Not a name
+#: anyone would give an instrument, and the only way to remove an optional
+#: setting without hand-editing the configuration.
+CLEAR_ANSWER = "-"
 
-def _headers(access_token: str | None = None) -> dict:
-    """Headers for the wizard's own requests.
+#: Longest agent version the server keeps. Sent short rather than left for the
+#: server to refuse: the pairing request carries the version, and one rejected
+#: over its length would leave the machine unable to pair at all.
+AGENT_VERSION_MAX_LENGTH = 32
 
-    The agent's version always, so the server can record which release a
-    machine runs; the credential when there is one.
 
-    :param access_token: The credential to present, if any
-    :type access_token: str | None
-    :return: Request headers
-    :rtype: dict
+class SetupCancelled(KeyboardInterrupt):
+    """Setup was abandoned, carrying the answers given before it was.
+
+    A ``KeyboardInterrupt`` so every existing handler still treats it as the
+    cancellation it is; the answers ride along so the caller can save them and
+    offer them as defaults next time.
     """
-    headers = {AGENT_VERSION_HEADER: __version__}
-    if access_token:
-        headers["Authorization"] = f"Bearer {access_token}"
-        headers["X-Service-Name"] = "file-agent"
-    return headers
+
+    def __init__(self, message: str, settings: dict):
+        super().__init__(message)
+        self.settings = settings
 
 
 def check_credential(
@@ -82,7 +87,7 @@ def check_credential(
         resp = requests.get(
             url,
             params={"page": 1, "limit": 1},
-            headers=_headers(access_token),
+            headers=agent_headers(access_token),
             verify=verify,
             timeout=VERIFY_TIMEOUT,
         )
@@ -137,36 +142,31 @@ def verify_connection(
     return outcome == CREDENTIAL_OK, message
 
 
-def _prompt(label: str, default: str = "") -> str:
+def _prompt(label: str, default: str = "", required: bool = True) -> str:
     """Prompt for a value, offering a default when one exists.
+
+    Empty input takes the default, so Enter keeps what is already configured.
+    An optional value is cleared by answering ``-``: without that, a setting
+    that has a default could only ever be changed, never removed, leaving a
+    hand-edit of the configuration as the only way to undo it.
 
     :param label: Prompt label
     :type label: str
     :param default: Value returned on empty input
     :type default: str
-    :return: The entered (or default) value, stripped
+    :param required: Whether an empty result is refused and asked again
+    :type required: bool
+    :return: The entered (or default) value, stripped; empty only when the
+        value is optional
     :rtype: str
     """
     suffix = f" [{default}]" if default else ""
     while True:
-        value = input(f"{label}{suffix}: ").strip() or default
-        if value:
+        answer = input(f"{label}{suffix}: ").strip()
+        value = "" if answer == CLEAR_ANSWER else (answer or default)
+        if value or not required:
             return value
         print("  A value is required.")
-
-
-def _prompt_optional(label: str, default: str = "") -> str:
-    """Prompt for a value that may be left empty.
-
-    :param label: Prompt label
-    :type label: str
-    :param default: Value returned on empty input
-    :type default: str
-    :return: The entered (or default) value, stripped; may be empty
-    :rtype: str
-    """
-    suffix = f" [{default}]" if default else ""
-    return input(f"{label}{suffix}: ").strip() or default
 
 
 def _prompt_yes_no(label: str, default: bool = False) -> bool:
@@ -232,27 +232,73 @@ def _server_reads_as_instrument(name: str) -> bool:
     )
 
 
-def _newest_file_segment(source: str, mask: str) -> str | None:
-    """The instrument segment of the newest file in the watched folder.
+def _folder_evidence(
+    source: str, mask: str, recursive: bool = False, prefix: str = ""
+) -> str | None:
+    """A file name that says how this instrument's uploads are filed today.
+
+    The newest name a current server could read the instrument from, and only
+    if there is none, the newest name of any kind. Taking the newest file
+    outright would let one stray ``test.raw`` in a folder of properly named
+    acquisitions say the folder needs a prefix - and prefixing them all is
+    then a new sample-name lineage for every future file.
+
+    Subfolders are searched when the agent watches them, since that is where
+    such a site's file names live. A file that vanishes between the listing
+    and the stat is skipped rather than raised: an acquisition folder is
+    written to while setup runs, and a disappearing file must not end it.
 
     :param source: The watched folder
     :type source: str
     :param mask: The file pattern to upload
     :type mask: str
-    :return: The first underscore-separated segment of the newest matching
-        file's name, or None when the folder holds none
+    :param recursive: Whether subfolders are watched too
+    :type recursive: bool
+    :param prefix: The configured upload prefix, which is part of the name
+        the server sees
+    :type prefix: str
+    :return: Base name of the file to reason from, or None when the folder
+        holds none
     :rtype: str | None
     """
-    candidates = [
-        path
-        for path in glob.glob(os.path.join(glob.escape(source), mask))
-        if os.path.isfile(path)
-    ]
-    if not candidates:
-        return None
-    newest = max(candidates, key=os.path.getmtime)
-    stem = os.path.splitext(os.path.basename(newest))[0]
-    return stem.split("_")[0]
+    root = glob.escape(source)
+    pattern = os.path.join(root, "**", mask) if recursive else os.path.join(root, mask)
+    newest = newest_mtime = None
+    readable = readable_mtime = None
+    for path in glob.iglob(pattern, recursive=recursive):
+        if not os.path.isfile(path):
+            continue
+        try:
+            mtime = os.path.getmtime(path)
+        except OSError:
+            continue
+        name = os.path.basename(path)
+        if newest_mtime is None or mtime > newest_mtime:
+            newest, newest_mtime = name, mtime
+        if _server_reads_as_instrument(_filed_under(name, prefix)) and (
+            readable_mtime is None or mtime > readable_mtime
+        ):
+            readable, readable_mtime = name, mtime
+    return readable or newest
+
+
+def _filed_under(filename: str, prefix: str) -> str:
+    """The instrument a current server would file an upload under.
+
+    The server takes everything before the first underscore of the name it
+    receives - of the whole name, extension included, so a name with no
+    underscore keeps its suffix and is refused for the dot. The name it
+    receives is the on-disk one behind the configured prefix, which is why
+    the prefix belongs in this answer.
+
+    :param filename: The file's on-disk base name
+    :type filename: str
+    :param prefix: The configured upload prefix, possibly empty
+    :type prefix: str
+    :return: The instrument segment the server would read
+    :rtype: str
+    """
+    return f"{prefix}{filename}".split("_")[0]
 
 
 def _prompt_instrument(default: str, suggested: str | None) -> str:
@@ -260,7 +306,7 @@ def _prompt_instrument(default: str, suggested: str | None) -> str:
 
     :param default: Previously configured name, if any
     :type default: str
-    :param suggested: Name the watched folder's files already start with
+    :param suggested: Name this folder's uploads are filed under today
     :type suggested: str | None
     :return: A valid instrument name, or an empty string
     :rtype: str
@@ -269,32 +315,42 @@ def _prompt_instrument(default: str, suggested: str | None) -> str:
         "\n"
         "The instrument name is reported when pairing and with each upload, so\n"
         "the server can file uploads under it. Letters, digits and hyphens,\n"
-        "e.g. Orbi-Lab2. Leave it empty to skip."
+        f"e.g. Orbi-Lab2. Leave it empty to skip, or answer '{CLEAR_ANSWER}' to\n"
+        "remove a name that is already set."
     )
-    if suggested and not default:
-        print(f"Files in the watched folder start with '{suggested}'.")
+    if default and not is_valid_instrument(default):
+        # Offering it back would make Enter re-submit a name the agent refuses
+        # to start with, leaving no way out of this prompt but Ctrl+C.
+        print(
+            f"The configured name '{default}' is not one the server accepts, so\n"
+            "it is not offered as the default."
+        )
+        default = ""
+    if suggested and suggested != default:
+        print(f"Uploads from this folder are filed under '{suggested}' today.")
     while True:
-        value = _prompt_optional("Instrument name", default or suggested or "")
+        value = _prompt("Instrument name", default or suggested or "", required=False)
         if not value or is_valid_instrument(value):
             return value
         print("  Use letters, digits and hyphens only, at most 64 characters.")
 
 
 def _offer_filename_prefix(
-    source: str, mask: str, instrument: str, current_prefix: str
+    example_name: str | None, instrument: str, current_prefix: str
 ) -> str:
     """Offer to put the instrument name in front of uploaded file names.
 
-    A current server reads the instrument from the start of each file name
-    and refuses names it cannot read. Files that already start with a name it
-    accepts need nothing. Files that do not get the instrument name prefixed
-    when the operator agrees, which replaces the hand-edited ``filename_prefix``
-    those sites needed before. A prefix that is already configured is kept.
+    A current server reads the instrument from the start of each uploaded
+    name and refuses names it cannot read, so there is one question to
+    answer: what would this folder's files be filed under as things stand?
+    That accounts for a prefix already configured, which is why one no longer
+    skips the check - a prefix left over from an earlier instrument is the
+    case most worth catching, since it files uploads under a name the
+    reported instrument does not match.
 
-    :param source: The watched folder
-    :type source: str
-    :param mask: The file pattern to upload
-    :type mask: str
+    :param example_name: Base name of a file that says how this folder's
+        uploads are filed, or None when there is none to look at
+    :type example_name: str | None
     :param instrument: The instrument name entered, possibly empty
     :type instrument: str
     :param current_prefix: The configured prefix, possibly empty
@@ -302,43 +358,57 @@ def _offer_filename_prefix(
     :return: The prefix to configure, possibly empty
     :rtype: str
     """
-    if not instrument or current_prefix:
+    if not instrument:
         return current_prefix
-    segment = _newest_file_segment(source, mask)
-    if segment is not None:
-        if segment == instrument:
-            return ""
-        if _server_reads_as_instrument(segment):
-            print(
-                f"\nFiles in the folder start with '{segment}', which is the name\n"
-                "the server files them under today. The instrument name is\n"
-                "reported alongside it; nothing changes for existing data.\n"
-            )
-            return ""
+    example = example_name
+    if example is None:
         print(
-            f"\nFiles in the folder start with '{segment}', which the server\n"
-            "cannot read as an instrument name."
+            "\nThe watched folder holds no files yet, so setup cannot tell how\n"
+            "this instrument names them."
         )
-    elif _prompt_yes_no(
-        f"Do the file names from this instrument start with '{instrument}_'?",
-        default=True,
-    ):
-        return ""
+        example = _prompt(
+            "Example file name from this instrument (Enter to skip)", required=False
+        )
+    if not example:
+        # Nothing to reason from. Guessing risks prefixing names that already
+        # carry one, so leave the configuration alone and say what to do.
+        print(
+            "  No prefix is configured. If uploads are refused, run setup again\n"
+            "  once the folder holds a file, or set 'filename_prefix' by hand.\n"
+        )
+        return current_prefix
+    filed_as = _filed_under(example, current_prefix)
+    if filed_as == instrument:
+        print(f"\nUploads from this folder are filed under '{instrument}' already.\n")
+        return current_prefix
+    if _server_reads_as_instrument(filed_as):
+        print(
+            f"\nUploads from this folder are filed under '{filed_as}', the name the\n"
+            "server reads from them today. The instrument name is reported\n"
+            "alongside it; nothing changes for existing data.\n"
+        )
+        return current_prefix
+    print(
+        f"\nThe server cannot read '{filed_as}' as an instrument name, so it\n"
+        "refuses uploads named that way."
+    )
+    if current_prefix:
+        print(f"  The configured prefix '{current_prefix}' is what puts it there.")
     if not _server_reads_as_instrument(instrument):
         print(
             "  No prefix is offered: this server release only files uploads under\n"
-            "  an instrument name containing 'orbi' or 'tof' (e.g. Orbi-Lab2), and\n"
-            f"  '{instrument}' has neither. Set 'filename_prefix' in the\n"
-            "  configuration if the files need one.\n"
+            "  an instrument name containing 'orbi', 'tof' or 'api' (e.g.\n"
+            f"  Orbi-Lab2), and '{instrument}' has none. Set 'filename_prefix' in\n"
+            "  the configuration if the files need one.\n"
         )
-        return ""
+        return current_prefix
     if _prompt_yes_no(
         f"Add '{instrument}_' in front of every uploaded file name so the "
         "server can file them?",
         default=True,
     ):
         return f"{instrument}_"
-    return ""
+    return current_prefix
 
 
 def start_pairing(
@@ -362,8 +432,10 @@ def start_pairing(
         "service_name": "file-agent",
         "machine_name": machine_name,
         # Stored on the paired machine by a server that knows these fields
-        # and shown to the approver; an older server drops them.
-        "agent_version": __version__,
+        # and shown to the approver; an older server drops them. Clipped the
+        # way machine_name is: a build stamped by `git describe` can run past
+        # what the server stores, and pairing must not fail over a label.
+        "agent_version": __version__[:AGENT_VERSION_MAX_LENGTH],
     }
     if instrument:
         payload["instrument"] = instrument
@@ -371,7 +443,7 @@ def start_pairing(
         resp = requests.post(
             f"{base_url(host)}/api/auth/pairing/start",
             json=payload,
-            headers=_headers(),
+            headers=agent_headers(),
             verify=verify,
             timeout=VERIFY_TIMEOUT,
         )
@@ -426,7 +498,7 @@ def run_pairing(
                 resp = requests.post(
                     f"{base_url(host)}/api/auth/pairing/poll",
                     json={"device_code": started["device_code"]},
-                    headers=_headers(),
+                    headers=agent_headers(),
                     verify=verify,
                     timeout=VERIFY_TIMEOUT,
                 )
@@ -506,12 +578,28 @@ def run_setup_wizard(settings: dict) -> dict:
         bool(settings.get("recursive")),
     )
     mask = _prompt("Pattern of files to upload", settings.get("mask") or "*.raw")
-    segment = _newest_file_segment(source, mask)
-    suggested = segment if segment and _server_reads_as_instrument(segment) else None
+    # Scanned once and handed to both questions below: a second scan of a live
+    # acquisition folder is slow, and can disagree with the first.
+    current_prefix = settings.get("filename_prefix") or ""
+    example_name = _folder_evidence(source, mask, recursive, current_prefix)
+    filed_as = _filed_under(example_name, current_prefix) if example_name else None
+    suggested = filed_as if filed_as and _server_reads_as_instrument(filed_as) else None
     instrument = _prompt_instrument(settings.get("instrument") or "", suggested)
-    filename_prefix = _offer_filename_prefix(
-        source, mask, instrument, settings.get("filename_prefix") or ""
-    )
+    filename_prefix = _offer_filename_prefix(example_name, instrument, current_prefix)
+
+    # Collected before pairing so a cancelled pairing can hand them back: they
+    # are every answer that needed nobody but the person at this machine, and
+    # retyping them is the whole cost of walking away to find an approver.
+    answers = {
+        **settings,
+        "host": host,
+        "verify_tls": verify_tls,
+        "source": source,
+        "recursive": recursive,
+        "mask": mask,
+        "instrument": instrument,
+        "filename_prefix": filename_prefix,
+    }
 
     access_token = _obtain_token(host, verify_tls, instrument or None)
 
@@ -531,6 +619,7 @@ def run_setup_wizard(settings: dict) -> dict:
         )
         if choice == "s":
             host = normalize_host(_prompt("Mascope server address", host))
+            answers["host"] = host
             access_token = _obtain_token(host, verify_tls, instrument or None)
         elif choice == "c":
             print("Continuing without verification.\n")
@@ -539,16 +628,6 @@ def run_setup_wizard(settings: dict) -> dict:
             access_token = _obtain_token(host, verify_tls, instrument or None)
 
     if access_token is None:
-        raise KeyboardInterrupt("Setup cancelled: the agent was not paired.")
+        raise SetupCancelled("Setup cancelled: the agent was not paired.", answers)
 
-    return {
-        **settings,
-        "host": host,
-        "access_token": access_token,
-        "source": source,
-        "recursive": recursive,
-        "mask": mask,
-        "verify_tls": verify_tls,
-        "instrument": instrument,
-        "filename_prefix": filename_prefix,
-    }
+    return {**answers, "access_token": access_token}
