@@ -29,7 +29,10 @@ from mascope_backend.api.controllers.samples.lib.samples_fetch import fetch_samp
 from mascope_backend.api.lib.api_features import api_controller
 from mascope_backend.api.lib.exceptions.api_exceptions import NotFoundException
 from mascope_backend.api.new.match.params import default_match_params
-from mascope_backend.api.new.peak_assignments.batch_peaks import resolve_candidate
+from mascope_backend.api.new.peak_assignments.batch_peaks import (
+    mz_from_delta,
+    resolve_candidate,
+)
 from mascope_backend.api.new.peak_assignments.engine import (
     _isotope_offset_label,
     evidence_for,
@@ -57,20 +60,41 @@ def _peak_id(value: Any) -> Optional[str]:
     return text or None
 
 
+def _monoisotopic_mz(ordered: pd.DataFrame) -> float:
+    """The m/z of the ion's monoisotopic isotopologue - the one built from each
+    element's most abundant isotope, which the generator writes without an
+    isotope marker (``C6H13O6+``; never ``C5[13C]H13O6+``). The lightest row
+    stands in when no formula carries the distinction, and is the same peak
+    wherever the most abundant isotope is also the lightest.
+
+    :param ordered: One ion's rows, in m/z order.
+    """
+    formulas = ordered.get("target_isotope_formula")
+    if formulas is not None:
+        for mz, formula in zip(ordered["mz"], formulas):
+            if isinstance(formula, str) and formula and "[" not in formula:
+                return float(mz)
+    return float(ordered["mz"].iloc[0])
+
+
 def isotopologue_rows(ion_rows: pd.DataFrame) -> list[dict]:
     """One entry per predicted isotopologue of an ion, lightest first.
 
-    Each carries its offset label (``M0``, ``M+1`` ...), its isotope formula,
-    its theoretical m/z and relative abundance, and - when the matcher paired
-    it to one of the sample's peaks - that peak with the errors of the
-    pairing. Two isotopologues can pair to the same peak in a crowded window;
-    the more abundant one keeps the peak and the other reads as unpaired, the
-    rule ``seeded_scoring.scored_maps`` applies.
+    Each carries its offset label, its isotope formula, its theoretical m/z and
+    relative abundance, and - when the matcher paired it to one of the sample's
+    peaks - that peak with the errors of the pairing. Two isotopologues can pair
+    to the same peak in a crowded window; the more abundant one keeps the peak
+    and the other reads as unpaired, the rule ``seeded_scoring.scored_maps``
+    applies.
 
-    The relative abundance is a fraction of the M0's, so the M0 reads 1 - the
-    way a run's rows and the inspector's column read it. The seed pattern
-    arrives normalised to its sum, where an M0 is only as large as its share of
-    the envelope; without an M0 abundance to scale by, the values pass through.
+    The labels count from the ion's monoisotopic isotopologue, ``M0``, the way
+    an isotope table does: for a bromine- or chlorine-rich ion that is the
+    lightest peak of the cluster rather than the most intense, so its heavier
+    isotopologues read ``M+2``, ``M+4`` and never below ``M0``. The relative
+    abundance is a fraction of the most abundant predicted isotopologue, so
+    nothing exceeds 1 - the seed pattern arrives normalised to its sum, where
+    each peak is only its share of the envelope; without an abundance to scale
+    by, the values pass through.
 
     :param ion_rows: The scored frame's rows for one ion.
     :return: The entries, in m/z order.
@@ -78,13 +102,13 @@ def isotopologue_rows(ion_rows: pd.DataFrame) -> list[dict]:
     if ion_rows.empty:
         return []
     ordered = ion_rows.sort_values("mz")
-    main_mz = float(ordered["mz"].iloc[0])
-    main_abundance = finite_or_none(ordered["relative_abundance"].iloc[0])
+    main_mz = _monoisotopic_mz(ordered)
+    reference_abundance = finite_or_none(ordered["relative_abundance"].max())
 
-    def relative_to_m0(value: Optional[float]) -> Optional[float]:
-        if value is None or not main_abundance or main_abundance <= 0:
+    def relative_to_reference(value: Optional[float]) -> Optional[float]:
+        if value is None or not reference_abundance or reference_abundance <= 0:
             return value
-        return value / main_abundance
+        return value / reference_abundance
 
     entries: list[dict] = []
     for row in ordered.to_dict("records"):
@@ -94,7 +118,7 @@ def isotopologue_rows(ion_rows: pd.DataFrame) -> list[dict]:
                 "isotope_label": _isotope_offset_label(float(row["mz"]), main_mz),
                 "isotope_formula": _peak_id(row.get("target_isotope_formula")),
                 "mz": finite_or_none(row.get("mz")),
-                "relative_abundance": relative_to_m0(
+                "relative_abundance": relative_to_reference(
                     finite_or_none(row.get("relative_abundance"))
                 ),
                 "sample_peak_id": peak,
@@ -128,6 +152,37 @@ def isotopologue_rows(ion_rows: pd.DataFrame) -> list[dict]:
             {"sample_peak_id": None, "mz_error_ppm": None, "abundance_error": None}
         )
     return entries
+
+
+def main_peak_note(main_peak_mz: float, isotopologues: list[dict]) -> str:
+    """Why the family's main peak carries no errors of its own: none of the
+    ion's predicted isotopologues paired with it. Says which predicted peak lies
+    nearest, how far, and whether that one paired with a peak elsewhere - the
+    two ways this happens read the same otherwise, and only one of them is
+    about the sample's m/z window.
+
+    :param main_peak_mz: The main peak's m/z, recovered from its member.
+    :param isotopologues: The entries ``isotopologue_rows`` built.
+    """
+    head = (
+        f"the family's main peak at m/z {main_peak_mz:.4f} matched none of the ion's "
+        "predicted isotopologues within the sample's m/z window"
+    )
+    predicted = [iso for iso in isotopologues if iso.get("mz") is not None]
+    if not predicted:
+        return head
+    nearest = min(predicted, key=lambda iso: abs(iso["mz"] - main_peak_mz))
+    distance_ppm = abs(main_peak_mz - nearest["mz"]) / nearest["mz"] * 1e6
+    label = nearest.get("isotope_label") or "an isotopologue"
+    where = (
+        "paired with another peak"
+        if nearest.get("sample_peak_id")
+        else "paired with no peak"
+    )
+    return (
+        f"{head}; the nearest, {label} predicted at m/z {nearest['mz']:.4f}, lies "
+        f"{distance_ppm:.1f} ppm away and {where}"
+    )
 
 
 def _envelope(entry: dict, sample_name: str) -> dict:
@@ -206,7 +261,9 @@ async def measure_derived_assignment(
             "mz_error_ppm": None,
             "abundance_error": None,
             "isotopologues": [],
+            "main_peak_note": None,
         }
+        main_peak_mz = mz_from_delta(anchor.mz, member.mz_delta_ppm)
     formula = entry["assigned_formula"]
     mechanism_id = entry["ionization_mechanism_id"]
     if not formula:
@@ -241,13 +298,23 @@ async def measure_derived_assignment(
     if isinstance(ion_formula, str) and ion_formula:
         entry["ion_formula"] = ion_formula
     entry["isotopologues"] = isotopologues
-    m0 = next((iso for iso in isotopologues if iso["isotope_label"] == "M0"), None)
-    if m0 is not None and m0["sample_peak_id"] == entry["sample_peak_id"]:
-        entry["mz_error_ppm"] = m0["mz_error_ppm"]
-        entry["abundance_error"] = m0["abundance_error"]
+    # The family's main peak - the member measured, whichever isotopologue the
+    # engine made the family's head - reads its errors off the isotopologue
+    # that paired with it. When none did, the pattern was still scored and the
+    # other members carry their numbers, so that is a note beside the entry
+    # rather than a blocked measurement - and a precise one, since the peak
+    # the note is about need not be the one in focus.
+    at_main_peak = next(
+        (
+            iso
+            for iso in isotopologues
+            if iso["sample_peak_id"] == entry["sample_peak_id"]
+        ),
+        None,
+    )
+    if at_main_peak is not None:
+        entry["mz_error_ppm"] = at_main_peak["mz_error_ppm"]
+        entry["abundance_error"] = at_main_peak["abundance_error"]
     else:
-        entry["blocked_reason"] = (
-            "the ion's monoisotopic peak did not land on this peak within the "
-            "sample's m/z window"
-        )
+        entry["main_peak_note"] = main_peak_note(main_peak_mz, isotopologues)
     return _envelope(entry, sample.sample_item_name)

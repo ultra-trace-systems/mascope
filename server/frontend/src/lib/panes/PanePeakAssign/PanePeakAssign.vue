@@ -854,6 +854,13 @@ const demotedCount = computed(() => {
           <span class="k">not measured</span>
           <span class="v">{{ measured.blocked_reason }}</span>
         </div>
+        <!-- Measured, but the family's main peak paired with none of the
+             predicted isotopologues: the pattern's numbers stand, this row
+             says which prediction came nearest and where it went. -->
+        <div v-else-if="measured?.main_peak_note" class="ev measuring">
+          <span class="k">main peak</span>
+          <span class="v">{{ measured.main_peak_note }}</span>
+        </div>
         <div class="ev" v-if="evidenceRow.mz_error_ppm != null">
           <span class="k">m/z error</span>
           <span class="v">{{ num.mzError.format(evidenceRow.mz_error_ppm) }} ppm</span>
@@ -955,7 +962,10 @@ const demotedCount = computed(() => {
               <p>
               The isotope pattern behind this assignment: the main peak (M0)
               and its isotopologues (M+1, M+2 ...), each with its m/z error and its
-              estimated relative abundance (<b>abu.</b>, as a fraction of M0).
+              estimated relative abundance (<b>abu.</b>, as a fraction of the most
+              abundant isotopologue). Labels count from the monoisotopic peak, so
+              a bromine- or chlorine-rich ion reads M0, M+2, M+4 with M0 the
+              lightest peak rather than the tallest.
               </p>
               <p>
               Click a row to focus that peak. Greyed rows with a warning icon are
@@ -967,7 +977,12 @@ const demotedCount = computed(() => {
         <div class="alts-label">Isotopologues</div>
         <div class="iso-head">
           <span>iso</span><span>m/z</span><span>ppm</span
-          ><span v-tooltip.top="'Estimated relative abundance (fraction of M0)'">abu.</span>
+          ><span
+            v-tooltip.top="
+              'Estimated relative abundance (fraction of the most abundant isotopologue)'
+            "
+            >abu.</span
+          >
         </div>
         <div class="iso-rows">
           <div
