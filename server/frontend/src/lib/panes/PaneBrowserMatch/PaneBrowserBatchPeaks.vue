@@ -921,7 +921,7 @@ watch(
             <button
               type="button"
               class="verdict-cell"
-              :class="{ stale: verdictStale(data), empty: !verdictFor(data) }"
+              :class="{ stale: verdictStale(data), unjudged: !verdictFor(data) }"
               :disabled="!runs.viewingCurrent"
               :aria-label="
                 verdictFor(data) ? 'Batch-level verdict' : 'Record a batch-level verdict'
@@ -950,10 +950,12 @@ watch(
 </template>
 
 <style scoped>
-/* The verdict cell is a button so an empty cell opens the popover too; the badge
-   - or the faint seal for "none yet" - is its whole content. Stale: the judgment
-   is about a formula the consensus has since left, outlined in the warning
-   colour until re-judged or retracted. */
+/* The verdict cell is a button so an unjudged cell opens the popover too; the
+   badge - or the faint seal for "none yet" - is its whole content. Named
+   `unjudged` rather than `empty`, which is the browser panes' empty-state
+   panel class and carries a height. Stale: the judgment is about a formula the
+   consensus has since left, outlined in the warning colour until re-judged or
+   retracted. */
 .verdict-cell {
   display: inline-flex;
   align-items: center;
@@ -966,7 +968,7 @@ watch(
   font: inherit;
   cursor: pointer;
 }
-.verdict-cell.empty .pi {
+.verdict-cell.unjudged .pi {
   opacity: 0.25;
 }
 /* History is read-only: the cell keeps its badge and loses its hand. */

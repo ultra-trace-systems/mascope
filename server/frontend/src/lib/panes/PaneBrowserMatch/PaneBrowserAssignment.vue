@@ -812,6 +812,36 @@ const breadcrumb = computed(() => {
         :metaKeySelection="false"
         v-model:selection="selectedRow"
       >
+        <!-- The batch chart draws the Batch peaks ledger's selection; this puts
+             the row's species into it, or takes it out, without leaving the
+             sample. First in the row, where the eye lands when scanning down
+             a ledger to build a chart, and clear of the numeric columns. -->
+        <Column style="min-width: 3rem">
+          <template #header>
+            <span class="pi ph ph-chart-line" v-tooltip.top="'In the batch chart'" />
+          </template>
+          <template #body="{ data }">
+            <button
+              type="button"
+              class="chart-cell"
+              :class="{ plotted: chart.isPlotted(data) }"
+              :disabled="!chart.canPlot(data)"
+              :aria-label="
+                chart.isPlotted(data) ? 'Remove from the batch chart' : 'Plot in the batch chart'
+              "
+              v-tooltip.top="
+                !chart.canPlot(data)
+                  ? 'Not in the batch ledger'
+                  : chart.isPlotted(data)
+                    ? 'Remove this species from the batch chart'
+                    : 'Plot this species in the batch chart'
+              "
+              @click.stop="chart.toggle(data)"
+            >
+              <span class="pi ph ph-chart-line" />
+            </button>
+          </template>
+        </Column>
         <Column field="sample_peak_mz" header="m/z" sortable style="min-width: 6rem">
           <template #body="{ data }">{{ num.mz.format(data.sample_peak_mz) }}</template>
         </Column>
@@ -944,12 +974,12 @@ const breadcrumb = computed(() => {
             />
           </template>
           <template #body="{ data }">
-            <!-- A button, as in the batch ledger: an empty cell opens the
+            <!-- A button, as in the batch ledger: an unjudged cell opens the
                  form too, so an unverified row is judged where it is read. -->
             <button
               type="button"
               class="verdict-cell"
-              :class="{ empty: !verdictFor(data) && !overlayFor(data) }"
+              :class="{ unjudged: !verdictFor(data) && !overlayFor(data) }"
               :aria-label="verdictFor(data) ? 'Verification verdict' : 'Record a verdict'"
               v-tooltip.top="verdictTooltip(data)"
               @click.stop="openVerdict($event, data)"
@@ -967,36 +997,6 @@ const breadcrumb = computed(() => {
                 compact
               />
               <span v-else class="pi ph ph-seal-check" />
-            </button>
-          </template>
-        </Column>
-
-        <!-- The batch chart draws the Batch peaks ledger's selection; this puts
-             the row's species into it, or takes it out, without leaving the
-             sample. -->
-        <Column style="min-width: 3rem">
-          <template #header>
-            <span class="pi ph ph-chart-line" v-tooltip.top="'In the batch chart'" />
-          </template>
-          <template #body="{ data }">
-            <button
-              type="button"
-              class="chart-cell"
-              :class="{ plotted: chart.isPlotted(data) }"
-              :disabled="!chart.canPlot(data)"
-              :aria-label="
-                chart.isPlotted(data) ? 'Remove from the batch chart' : 'Plot in the batch chart'
-              "
-              v-tooltip.top="
-                !chart.canPlot(data)
-                  ? 'Not in the batch ledger'
-                  : chart.isPlotted(data)
-                    ? 'Remove this species from the batch chart'
-                    : 'Plot this species in the batch chart'
-              "
-              @click.stop="chart.toggle(data)"
-            >
-              <span class="pi ph ph-chart-line" />
             </button>
           </template>
         </Column>
@@ -1254,9 +1254,12 @@ const breadcrumb = computed(() => {
   opacity: 0.8;
 }
 
-/* The verdict cell is a button so an empty cell opens the form too, as in
+/* The verdict cell is a button so an unjudged cell opens the form too, as in
    the batch ledger; the badge - or the faint seal for "none yet" - is its
-   whole content. */
+   whole content. The "none yet" state is `unjudged`, not `empty`: `.empty`
+   above is the pane's empty-state panel, 220px tall, and a scoped class
+   selector styles every element that carries the class - a button called
+   `empty` would take that height and hand it to its row. */
 .verdict-cell {
   display: inline-flex;
   align-items: center;
@@ -1269,7 +1272,7 @@ const breadcrumb = computed(() => {
   font: inherit;
   cursor: pointer;
 }
-.verdict-cell.empty .pi {
+.verdict-cell.unjudged .pi {
   opacity: 0.25;
 }
 .verdict-cell:hover {
