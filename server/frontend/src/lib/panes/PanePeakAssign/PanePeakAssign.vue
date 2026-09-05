@@ -9,6 +9,12 @@ import { useApp } from '@/stores'
 import { BaseTierTag, BaseVerdictBadge } from '@/lib/base'
 import { num } from '@/lib/formatters'
 import { formatIsotopeFormula } from '@/lib/chem'
+import {
+  LEDGER_CONFIDENCE_TOOLTIP,
+  LEDGER_P_CORRECT_TOOLTIP,
+  P_CORRECT_TOOLTIP,
+  uncalibratedReason
+} from '@/lib/pCorrect'
 import { EVIDENCE_LEVELS, VERDICT_META } from '@/lib/verification'
 import { useBatchPeakCuration } from './stores/batchPeakCuration.js'
 
@@ -451,6 +457,18 @@ const curateDenied = ref(false) // 403: not an editor on this sample
 // The server answers 409; the control is withheld rather than offered to fail.
 const derivedRun = computed(() => app.data.peakAssignment.peak.run?.engine === 'batch')
 
+// A derived row with a formula. The rows a run fills - arbitration confidence,
+// P(correct) - are kept on the card for it, with what the ledger has or a
+// placeholder that says why not, so the card reads the same for every sample.
+const ledgerServed = computed(
+  () => derivedRun.value && Boolean(focusedAssignment.value?.assigned_formula)
+)
+// The probability itself: in the detail's provenance on a run's row, on the row
+// itself for a derived one (member_row carries it at the top level).
+const pCorrect = computed(
+  () => provenance.value?.p_correct ?? focusedAssignment.value?.p_correct ?? null
+)
+
 // --- On-demand evidence for a derived row -----------------------------------
 // A row derived from the batch ledger carries its fit and its tier, but not what
 // a run would have stored beside them: the m/z and abundance error of each
@@ -868,13 +886,18 @@ const demotedCount = computed(() => {
           >
           <span class="v">{{ formatFit(evidenceRow.evidence) }}</span>
         </div>
-        <div class="ev" v-if="provenance?.confidence != null">
+        <!-- Arbitration confidence and P(correct) are a run's numbers. A row
+             served from the batch ledger gets both rows all the same, so the
+             card reads the same for every sample: the P(correct) recorded when
+             the sample was folded in, or a dash saying why there is none, and a
+             dash for the confidence, which the ledger has no contest to compute. -->
+        <div class="ev" v-if="provenance?.confidence != null || ledgerServed">
           <span
             class="k"
             v-tooltip.top="'Arbitration confidence: winner share of fit x plausibility'"
             >confidence</span
           >
-          <span class="v"
+          <span class="v" v-if="provenance?.confidence != null"
             >{{ formatFit(provenance.confidence)
             }}<span
               v-if="provenance.is_tie"
@@ -883,19 +906,28 @@ const demotedCount = computed(() => {
               >&nbsp;tie</span
             ></span
           >
+          <span class="v uncal" v-else v-tooltip.top="LEDGER_CONFIDENCE_TOOLTIP">&mdash;</span>
         </div>
-        <div class="ev" v-if="provenance && provenance.calibrated !== undefined">
-          <span class="k" v-tooltip.top="'Calibrated probability the assignment is correct'"
-            >P(correct)</span
+        <div class="ev" v-if="(provenance && provenance.calibrated !== undefined) || ledgerServed">
+          <span class="k" v-tooltip.top="P_CORRECT_TOOLTIP">P(correct)</span>
+          <span
+            class="v"
+            v-if="pCorrect != null"
+            v-tooltip.top="ledgerServed ? LEDGER_P_CORRECT_TOOLTIP : ''"
           >
-          <span class="v" v-if="provenance.p_correct != null">
-            {{ formatFit(provenance.p_correct)
+            {{ formatFit(pCorrect)
             }}<span
-              v-if="provenance.calibration?.provisional"
+              v-if="provenance?.calibration?.provisional"
               class="prov-flag"
               v-tooltip.top="'Provisional calibration curve - directionally right, not hardened'"
               >&nbsp;prov.</span
             ></span
+          >
+          <span
+            v-else-if="ledgerServed"
+            class="v uncal"
+            v-tooltip.top="uncalibratedReason(focusedAssignment, { fromLedger: true })"
+            >&mdash;</span
           >
           <span class="v uncal" v-else v-tooltip.top="'No calibration curve for this instrument'"
             >uncalibrated</span
@@ -911,8 +943,11 @@ const demotedCount = computed(() => {
         <span class="pi ph ph-link-simple" />
         {{ corroborationLabel }}
       </div>
+      <!-- For a lone M0 as much as for a full pattern: this table is where the
+           focused peak's m/z is read, and it should be read in the same place
+           whether or not the pattern has more peaks. -->
       <div
-        v-if="family.length > 1"
+        v-if="family.length"
         class="isotopologues"
         v-help.right="{
           message: `

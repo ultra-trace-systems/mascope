@@ -283,6 +283,15 @@ such a peak - the family's composition is scored against the sample's own peaks,
 its M0 - and fills them in a moment later. They are computed for the view and never stored;
 run an assignment on the sample to persist a full ledger of its own.
 
+The inspector's *confidence* and *P(correct)* rows stay in place for such a sample, so the
+card reads the same whichever way a sample is served. The P(correct) shown is the one
+recorded when the sample was folded into the batch ledger - calibrated on the sample's own
+peak at the time, and not re-scored since; hovering it says so - or a dash with the reason
+there is none. The arbitration confidence, which only a run of the sample computes by
+weighing the peak's candidates against each other, reads as a dash with that explanation.
+The isotopologue table always lists the main peak, even when the pattern has no other
+peaks, so the focused peak's m/z is read in the same place on every card.
+
 The sample browser marks each sample's assignment status with a tag badge beside the
 match and calibration badges: green for a sample with a completed run of its own (the
 tooltip names the engine, its version and the time), the accent colour for a sample served
@@ -347,6 +356,11 @@ the batch, in the instrument's own unit (summed peak heights on an Orbitrap, sum
 peak areas on a TOF). It is a property of the trace rather than of the assignment, so
 unassigned anchors carry one too — sorting by it is how you find the largest thing in
 the batch that nothing was assigned to.
+
+Hover a column header for a one-line reminder of what the column holds at batch level:
+the m/z is the anchor's bin, the intensity the brightest sample's, the formula and tier a
+consensus over the members. The column a ledger is sorted by is kept per ledger - it
+survives the switch between the *Batch peaks* ledger and a sample's ledger, and a reload.
 
 Because a batch peak is one identity for a species across the batch, the focused peak
 follows you between samples: pick another sample and the inspector and the spectrum

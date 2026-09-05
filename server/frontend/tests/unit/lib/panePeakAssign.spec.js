@@ -124,9 +124,13 @@ const GLOBAL_STUBS = {
 
 const { default: PanePeakAssign } = await import('@/lib/panes/PanePeakAssign/PanePeakAssign.vue')
 
-async function mountPane() {
+// `recordTooltips` swaps the inert tooltip directive for one that writes its
+// text onto the element, for the tests that read what a value says on hover.
+async function mountPane({ recordTooltips = false } = {}) {
+  const record = (el, binding) => el.setAttribute('data-tooltip', binding.value ?? '')
+  const tooltip = recordTooltips ? { mounted: record, updated: record } : {}
   const wrapper = mount(PanePeakAssign, {
-    global: { stubs: GLOBAL_STUBS, directives: { tooltip: {}, help: {} } }
+    global: { stubs: GLOBAL_STUBS, directives: { tooltip, help: {} } }
   })
   await wrapper.vm.$nextTick()
   return wrapper
@@ -1539,6 +1543,46 @@ describe('PanePeakAssign on-demand evidence for a derived row', () => {
   beforeEach(() => {
     runRecord = { engine: 'batch' }
     loadEvidence.mockClear()
+  })
+
+  // A derived row reads like a run's: the rows a run fills are there, with what
+  // the ledger has or a dash that says why not, so the card keeps its shape
+  // whether the sample has a run of its own or is served from the batch ledger.
+  it('keeps the confidence and P(correct) rows on a ledger-served row', async () => {
+    focusedAssignment = { ...derivedM0(), p_correct: 0.87, source: 'database' }
+    const wrapper = await mountPane({ recordTooltips: true })
+
+    const rows = Object.fromEntries(
+      wrapper.findAll('.evidence .ev').map((ev) => [ev.find('.k').text(), ev.find('.v')])
+    )
+    expect(rows['P(correct)'].text()).toContain('87')
+    expect(rows['P(correct)'].attributes('data-tooltip')).toMatch(/batch ledger/)
+    expect(rows.confidence.text()).toBe('—')
+    expect(rows.confidence.attributes('data-tooltip')).toMatch(/assignment run/)
+  })
+
+  it('explains a missing P(correct) on a ledger-served row', async () => {
+    focusedAssignment = { ...derivedM0(), p_correct: null, source: 'untargeted' }
+    const wrapper = await mountPane({ recordTooltips: true })
+
+    const p = wrapper.findAll('.evidence .ev').find((ev) => ev.find('.k').text() === 'P(correct)')
+    expect(p.find('.v').text()).toBe('—')
+    expect(p.find('.v').attributes('data-tooltip')).toBe(
+      'Untargeted assignment - no calibrated probability'
+    )
+  })
+
+  // The isotopologue table is where the focused peak's m/z is read, so it is
+  // there for a lone M0 too - the same place whether or not the pattern has
+  // more peaks - and on a run's own row as much as on a derived one.
+  it('lists a lone M0 in the isotopologue table', async () => {
+    runRecord = null
+    focusedAssignment = assignment({ formula: 'C6H12O6', tier: 'assigned' })
+    const wrapper = await mountPane()
+
+    const rows = wrapper.findAll('.isotopologues .iso-row')
+    expect(rows).toHaveLength(1)
+    expect(rows[0].text()).toContain(num.mz.format(200.12345))
   })
 
   it('measures a derived row through its M0 and fills what a run would have stored', async () => {
