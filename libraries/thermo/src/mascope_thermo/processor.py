@@ -14,6 +14,7 @@ from mascope_backend.file_converter.base_processor import (
 )
 from mascope_backend.file_converter.errors import (
     EMPTY_ACQUISITION_MESSAGE,
+    NO_MS1_SCANS_MESSAGE,
     EmptyAcquisitionError,
 )
 from mascope_thermo.backend import open_backend
@@ -137,8 +138,35 @@ class RawProcessor(BaseFileProcessor):
             )
             return {}
 
+    @property
+    @with_file_context
+    def _records_ms1_scans(self) -> bool:
+        """Whether the acquisition recorded any MS1 scans.
+
+        Peak detection and the instrument-function fit both read MS1, so an
+        acquisition of fragmentation scans alone reaches the fit with nothing
+        to run on. Asking here is what lets that be reported as a property of
+        the data: left to the fit, it surfaces as the reader's own
+        ``NoScansFoundError`` from inside a traceback, which reads as a fault
+        in Mascope and wakes error monitoring.
+
+        The unfiltered selection first, deliberately: it raises for a file
+        that holds no scans at all, so that file keeps being named the empty
+        acquisition it is rather than an MS1-less one.
+
+        :return: True when at least one MS1 scan was recorded
+        :rtype: bool
+        :raises NoScansFoundError: When the file holds no scans at all.
+        """
+        self.file_handle.scan_indices(ms_type=None)
+        try:
+            self.file_handle.scan_indices(ms_type="Ms")
+        except NoScansFoundError:
+            return False
+        return True
+
     def _get_sample_file_props(self) -> SampleFileProps:
-        """Extract the sample file properties, naming a scanless file as data.
+        """Extract the sample file properties, naming as data what is data.
 
         Every property that asks the reader for scans raises
         ``NoScansFoundError`` when the file recorded none, and which property
@@ -148,11 +176,19 @@ class RawProcessor(BaseFileProcessor):
         later is covered by construction, and both reader backends are covered
         by the same one.
 
+        A file with scans but no MS1 scan among them is the other condition
+        the walk cannot see: every property it reads is answerable from the
+        MS2 scans, so extraction succeeds and the file fails later, inside the
+        instrument-function fit. It is checked up front instead.
+
         :return: The properties extracted from the file
         :rtype: SampleFileProps
-        :raises EmptyAcquisitionError: When the file recorded no scans.
+        :raises EmptyAcquisitionError: When the file recorded no scans, or none
+            that peak detection can run on.
         """
         try:
+            if not self._records_ms1_scans:
+                raise EmptyAcquisitionError(NO_MS1_SCANS_MESSAGE)
             return super()._get_sample_file_props()
         except NoScansFoundError as e:
             raise EmptyAcquisitionError(EMPTY_ACQUISITION_MESSAGE) from e

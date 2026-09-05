@@ -45,18 +45,28 @@ UNUSABLE_SCAN_TIMES_MESSAGE = (
     "measurable time axis."
 )
 
+#: The acquisition recorded only fragmentation scans. Peak detection and the
+#: instrument-function fit both read MS1, so a file without a single MS1 scan
+#: carries nothing either of them can run on - the MS2 scans are real data, but
+#: Mascope has no survey spectrum to anchor them to.
+NO_MS1_SCANS_MESSAGE = (
+    "The file contains no MS1 scans; Mascope detects peaks in MS1, so an "
+    "acquisition of fragmentation scans alone cannot be processed."
+)
+
 
 class EmptyAcquisitionError(Exception):
-    """A raw file that carries too few scans to ingest.
+    """A raw file that carries nothing Mascope can ingest.
 
     Raised by a processor when the reader reports an empty acquisition - a run
     that was aborted, or that wrote a file before recording a single scan -
-    and also when what was recorded yields no measurable time axis, such as a
-    single scan. Nothing downstream can be derived from such a file, so it
-    still fails and lands in ``failed_files``; the distinct type marks it as a
-    property of the data rather than a fault in Mascope, so
-    ``BaseFileProcessor.run`` logs it at INFO without a traceback and error
-    monitoring stays quiet.
+    when what was recorded yields no measurable time axis, such as a single
+    scan, and when the scans that are there are all fragmentation scans, which
+    leaves peak detection nothing to run on. Nothing downstream can be derived
+    from such a file, so it still fails and lands in ``failed_files``; the
+    distinct type marks it as a property of the data rather than a fault in
+    Mascope, so ``BaseFileProcessor.run`` logs it at INFO without a traceback
+    and error monitoring stays quiet.
 
     The raise site picks which of the messages above applies, because only it
     knows which case it found; the wording lives here because it reaches the
