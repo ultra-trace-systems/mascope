@@ -30,7 +30,10 @@ from mascope_backend.api.controllers.samples.lib.samples_fetch import fetch_samp
 from mascope_backend.api.lib.api_features import api_controller
 from mascope_backend.api.lib.exceptions.api_exceptions import NotFoundException
 from mascope_backend.api.new.match.params import default_match_params
-from mascope_backend.api.new.peak_assignments.engine import evidence_for
+from mascope_backend.api.new.peak_assignments.engine import (
+    evidence_for,
+    monoisotopic_row,
+)
 from mascope_backend.api.new.peak_assignments.fold_view import is_fold_id
 from mascope_backend.api.new.peak_assignments.seeded_scoring import (
     finite_or_none,
@@ -82,20 +85,19 @@ def _m0_by_ion(scored_df: pd.DataFrame) -> dict[str, pd.Series]:
     A shortlist entry is a composition the finder proposed *for this peak's
     own mass*, so the claim being measured is that the peak IS that ion's
     monoisotopic peak - not that it is some isotopologue of it. The M0 is the
-    lightest isotopologue the generator emitted for the ion, so it is the one
-    at the minimum m/z; reading it positionally would depend on frame order,
-    which the matcher does not promise.
+    same reference the engine's roles and labels count from
+    (``engine.monoisotopic_row``): the isotopologue whose formula carries no
+    isotope marker, or the lightest where the frame carries no formula; reading
+    it positionally would depend on frame order, which the matcher does not
+    promise.
 
     :param scored_df: The gated, fit-scored seeded frame.
     :return: ion id -> its monoisotopic row.
     """
     if scored_df.empty or "target_ion_id" not in scored_df.columns:
         return {}
-    # Positionally off a sort rather than `.loc[idxmin()]`: the frame reaches
-    # here through a gate and a scorer, and a duplicated index would make that
-    # lookup hand back a frame where every caller expects one row.
     return {
-        str(ion_id): group.sort_values("mz").iloc[0]
+        str(ion_id): monoisotopic_row(group)
         for ion_id, group in scored_df.groupby("target_ion_id", sort=False)
     }
 

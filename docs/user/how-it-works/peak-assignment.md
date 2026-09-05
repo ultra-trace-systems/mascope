@@ -91,6 +91,14 @@ awareness. The full mathematical model is in the developer reference,
 scores *low* by design, while a fully corroborated isotope envelope scores near 1.0. This
 is intentional — mass alone is weak evidence.
 
+**M0, M+1, M+2.** Throughout Mascope, **M0** is the monoisotopic peak — the ion built from
+each element's most abundant isotope — and the offsets count from it, as in an isotope
+table. It is the row that carries a compound's assignment, the peak its isotopologues
+fold under in the ledgers, and the peak a verdict is recorded on. For most ions it is
+also the tallest peak of the cluster; for a bromine- or chlorine-rich ion it is the
+lightest, and the tallest peak is its M+2. Abundances in the inspector are fractions of
+the family's most abundant isotopologue, so nothing reads above 100 %.
+
 ## Chemical plausibility — the Seven Golden Rules
 
 Most mass-degenerate formulas are chemically impossible or implausible. Mascope scores
