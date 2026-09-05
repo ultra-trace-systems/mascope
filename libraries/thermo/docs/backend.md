@@ -66,7 +66,7 @@ All methods returning time values convert internal units (minutes) to **seconds*
 
 ### MS2 Specific Methods
 
-- **`ms2_precursor_by_scan(scan_number)`**: Decodes and returns the precursor m/z for MS2 acquisition events.
+- **`ms2_events_by_scan(scan_number)`**: Decodes and returns the precursor m/z and activation (e.g. `hcd40.00`) for MS2 acquisition events. The activation is what separates the steps of a stepped-energy acquisition, whose scans share one precursor.
 - **`ms2_acquisition_info(scan_number)`**: Returns specialized MS2 metadata, such as isolation width and collision energy.
 - **`ms2_centroids_for_scans(scan_indices)`**: Retrieves centroid data specifically for a set of MS2 scans.
 

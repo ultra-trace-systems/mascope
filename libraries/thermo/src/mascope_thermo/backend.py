@@ -40,6 +40,25 @@ MsType = Literal["Ms", "Ms2"]
 # seconds (matching the Thermo path's StartTime * 60).
 _SECONDS_PER_MINUTE = 60
 
+# The MS2 precursor and its dissociation suffix, as rendered in a scan filter:
+#   "FTMS + p NSI Full ms2 137.0960@hcd25.00 [40.0000-160.0419]"
+#   "FTMS + c NSI Full ms2 445.1200@cid30.00@hcd20.00 [50.0000-500.0000]"
+# The suffix repeats when a scan chains activations, so it is captured whole.
+# Case-insensitive on the activation name: every filter seen renders it in
+# lower case, but the precursor is what this has to resolve, and a scan should
+# not go missing over the spelling of the dissociation next to it.
+# Both backends share this expression so the two agree by construction.
+_MS2_EVENT = re.compile(r"ms2 ([\d.]+)((?:@[A-Za-z]+[\d.]+)+)")
+
+
+def _parse_ms2_event(filter_string: str) -> tuple[float, str] | None:
+    """``(precursor_mz, activation)`` parsed from a rendered scan filter, or
+    ``None`` when the filter carries no resolvable MS2 event."""
+    match = _MS2_EVENT.search(filter_string)
+    if not match:
+        return None
+    return float(match.group(1)), match.group(2).lstrip("@")
+
 
 @runtime_checkable
 class ReaderBackend(Protocol):
@@ -218,17 +237,23 @@ class ReaderBackend(Protocol):
         reimplements m/z-window summation in NumPy."""
         ...
 
-    def ms2_precursor_by_scan(
+    def ms2_events_by_scan(
         self,
         polarity: Polarity | None = None,
         t_min: float | None = None,
         t_max: float | None = None,
-    ) -> dict[int, float]:
-        """``{scan_number: precursor_mz}`` for MS2 scans (only those whose
-        precursor is resolvable).
+    ) -> dict[int, tuple[float, str]]:
+        """``{scan_number: (precursor_mz, activation)}`` for MS2 scans (only
+        those whose precursor is resolvable).
 
-        Both backends parse the precursor from the rendered scan-filter string;
-        on Exploris this relies on ``opentfraw``'s scan-event decoding."""
+        ``activation`` is the filter's dissociation suffix with the leading
+        ``@`` stripped -- ``"hcd25.00"``, or ``"cid30.00@hcd20.00"`` when the
+        scan chains two. It carries the collision energy the operator set, and
+        it is what separates the steps of a stepped-energy acquisition, whose
+        scans share one precursor.
+
+        Both backends parse this from the rendered scan-filter string; on
+        Exploris this relies on ``opentfraw``'s scan-event decoding."""
         ...
 
     def ms2_acquisition_info(
@@ -859,20 +884,20 @@ class ThermoBackend:
 
         return intensities, selector.scan_times
 
-    def ms2_precursor_by_scan(
+    def ms2_events_by_scan(
         self,
         polarity: Polarity | None = None,
         t_min: float | None = None,
         t_max: float | None = None,
-    ) -> dict[int, float]:
+    ) -> dict[int, tuple[float, str]]:
         selector = self._selector(polarity, t_min, t_max, ms_type="Ms2")
-        out: dict[int, float] = {}
+        out: dict[int, tuple[float, str]] = {}
         for scan_idx, scan_filter in zip(
             selector.scan_indices_1based, selector.scan_filters, strict=True
         ):
-            match = re.search(r"ms2 ([\d.]+)@", scan_filter.ToString())
-            if match:
-                out[scan_idx] = float(match.group(1))
+            event = _parse_ms2_event(scan_filter.ToString())
+            if event:
+                out[scan_idx] = event
         return out
 
     def ms2_acquisition_info(
@@ -1819,24 +1844,24 @@ class OpenTFRawBackend:
         times = np.array([s["retention_time"] * _SECONDS_PER_MINUTE for s in selected])
         return intensities, times
 
-    def ms2_precursor_by_scan(
+    def ms2_events_by_scan(
         self,
         polarity: Polarity | None = None,
         t_min: float | None = None,
         t_max: float | None = None,
-    ) -> dict[int, float]:
-        # Mirror the Thermo path: parse the precursor from the rendered filter
+    ) -> dict[int, tuple[float, str]]:
+        # Mirror the Thermo path: parse the event from the rendered filter
         # string. OpenTFRaw's build_filter now renders it for Exploris too once
         # the scan-event reaction is decoded (e.g. "... ms2 100.0757@hcd3.00").
-        out: dict[int, float] = {}
+        out: dict[int, tuple[float, str]] = {}
         for s in self._selected(polarity, t_min, t_max, ms_type="Ms2"):
             scan_number = int(s["scan_number"])
             filter_string = self._raw.scan_filter(scan_number) or s.get("filter_string")
             if not filter_string:
                 continue
-            match = re.search(r"ms2 ([\d.]+)@", filter_string)
-            if match:
-                out[scan_number] = float(match.group(1))
+            event = _parse_ms2_event(filter_string)
+            if event:
+                out[scan_number] = event
         return out
 
     def ms2_acquisition_info(

@@ -576,6 +576,26 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
 
 ### Changed
 
+- **MS2 spectra are now grouped by collision energy as well as precursor.** A
+  stepped-energy acquisition measures one precursor at several energies as
+  separate scan events; grouping on precursor m/z alone averaged them into a
+  single spectrum whose reported energy was their mean - a number the
+  instrument never used. Scans are now keyed by precursor *and* activation, so
+  such a run yields one averaged spectrum per step. `GET
+  /api/samples/{id}/ms2/centroids` keys its spectra `"<parent m/z>@<activation>"`
+  (e.g. `"137.096@hcd40.00"`), mirroring the instrument's own scan-filter
+  notation, and each carries `parent_peak_mz` and `activation` of its own.
+  `.../ms2/summary` gains `groups`, one record per step with its activation,
+  calibrated `hcd_energy`, scan count and time span, and its `hcd_energy_map`
+  now lists the energies a precursor was measured at instead of their mean.
+  `.../ms2/timeseries` takes an optional `activation` to narrow to one step and
+  still spans them all by default, which is the view that shows fragments
+  changing as the energy steps. `Ms2Resource` in the SDK passes the new
+  parameter through, and the MS2 analysis notebook
+  (`tooling/notebooks/ms2_analysis`) selects a group rather than a precursor -
+  its dropdowns, fragment table, CSV export and charts now carry one entry per
+  step, labelled with its activation.
+
 - **The assignment ledger stores its JSON leaner, without changing what it
   serves.** Two of the ledger's largest costs were repetition rather than
   information. Every database-sourced row repeated the confidence calibration
@@ -1072,6 +1092,21 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
   again instead of waiting out the window.
 
 ### Fixed
+
+- **A manual MS2 acquisition no longer loses all of its MS2 scans.** A sample's
+  time window was computed from the TIC, which reports MS1 scans only, so it
+  ended at the last MS1 scan. Data-dependent acquisition hides that - its
+  survey scans bracket the whole run - but a manual MS2 measurement records
+  MS1 first and the fragmentation afterwards, so every MS2 scan fell after the
+  window and the MS2 summary, centroid and timeseries endpoints reported an
+  acquisition with no MS2 data in it at all. The window now spans every scan
+  type, which is identical for interleaved files. Samples ingested before this
+  keep the short window until repaired: `mascope prod db script run
+  fix_acquisition_window` recomputes the ACQUISITION windows that stop before
+  their file does, and leaves every deliberately sliced sample item alone
+  (`DRY_RUN=1` to preview). This was not a reader-backend difference - the
+  OpenTFRaw and Thermo RawFileReader paths were verified to behave
+  identically.
 
 - The peak inspector's **close alternatives** no longer include the assignment
   the peak was actually given. The list is meant to be the runners-up a peak

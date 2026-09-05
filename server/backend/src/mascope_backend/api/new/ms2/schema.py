@@ -73,6 +73,14 @@ class GetMs2TimeseriesQueryParams(QueryParamsModel):
     normalize_by: Literal["tic"] | None = Field(
         None, description="Normalization mode: 'tic' or None"
     )
+    activation: str | None = Field(
+        None,
+        description=(
+            "Restrict to one activation, e.g. 'hcd40.00'. Defaults to every "
+            "activation of the parent peak, so a stepped-energy acquisition "
+            "shows its fragments changing across the steps"
+        ),
+    )
     timeout: float = Field(
         DEFAULT_TIMEOUT,
         description="Maximum seconds to wait for the computation before returning 504",
