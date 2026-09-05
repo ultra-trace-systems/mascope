@@ -3,6 +3,7 @@ pairing, and a contested peak going to the more abundant isotopologue."""
 
 import numpy as np
 import pandas as pd
+import pytest
 
 from mascope_backend.api.new.peak_assignments.derived_evidence import (
     isotopologue_rows,
@@ -88,3 +89,37 @@ def test_the_more_abundant_isotopologue_keeps_a_contested_peak():
 
 def test_an_empty_frame_measures_nothing():
     assert isotopologue_rows(frame([])) == []
+
+
+def test_abundances_are_reported_relative_to_the_m0():
+    # The seed pattern arrives normalised to its sum, so the M0 is only its
+    # share of the envelope here (89 %). The inspector's column is a fraction of
+    # the M0, as a run's rows are: the M0 reads 1 and the rest scale with it.
+    rows = isotopologue_rows(
+        frame(
+            [
+                ("ion", 181.0707, "M0", 0.89, "p1", 0.4, 0.0),
+                ("ion", 182.0741, "M+1", 0.099, "p2", 1.1, -0.05),
+                ("ion", 183.0775, "M+2", 0.011, np.nan, np.nan, np.nan),
+            ]
+        )
+    )
+    assert [r["relative_abundance"] for r in rows] == pytest.approx(
+        [1.0, 0.099 / 0.89, 0.011 / 0.89]
+    )
+    # The pairing and its errors are untouched by the scaling.
+    assert rows[1]["sample_peak_id"] == "p2"
+    assert rows[1]["abundance_error"] == -0.05
+
+
+def test_abundances_pass_through_without_an_m0_abundance_to_scale_by():
+    rows = isotopologue_rows(
+        frame(
+            [
+                ("ion", 181.0707, "M0", np.nan, "p1", 0.4, 0.0),
+                ("ion", 182.0741, "M+1", 0.066, "p2", 1.1, -0.05),
+            ]
+        )
+    )
+    assert rows[0]["relative_abundance"] is None
+    assert rows[1]["relative_abundance"] == 0.066

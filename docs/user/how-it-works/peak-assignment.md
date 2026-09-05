@@ -292,8 +292,9 @@ weighing the peak's candidates against each other, reads as a dash with that exp
 The isotopologue table always lists the main peak, even when the pattern has no other
 peaks, so the focused peak's m/z is read in the same place on every card.
 
-The sample browser marks each sample's assignment status with a tag badge beside the
-match and calibration badges: green for a sample with a completed run of its own (the
+The sample browser marks each sample's assignment status with a tag badge in a column of
+its own, after the sample name by default (the table-controls cog moves or hides it like
+any other column): green for a sample with a completed run of its own (the
 tooltip names the engine, its version and the time), the accent colour for a sample served
 from the batch ledger without a run of its own, faint for one with nothing assigned yet.
 The tooltip also says how many of the sample's peaks carry an assignment in the ledger.
