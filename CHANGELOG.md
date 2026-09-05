@@ -1133,11 +1133,12 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
   counts per scan alternating between two positions, half the scans each,
   which came out as two equal peaks 3 ppm apart. Two neighbouring centroids up
   to one and a half peak widths apart are merged when the scans hold one or
-  the other but not both, together cover most of the scans, and each hold a
-  substantial share of them, so a genuine pair of ions resolved within a scan
-  stays two peaks and noise labels or the wobbling fragments beside an intense
-  peak are not joined; Thermo's own averaging reports such an ion as two
-  peaks, so there the readers differ by design. Peak lists detected
+  the other but not both and alternate between them, each side holding a
+  substantial share of the scans and the two together covering most of them,
+  so a genuine pair of ions resolved within a scan stays two peaks, two ions
+  that hand over in time stay two peaks, and noise labels or the wobbling
+  fragments beside an intense peak are not joined; Thermo's own averaging
+  reports such an ion as two peaks, so there the readers differ by design. Peak lists detected
   earlier keep their split peaks until peak detection is re-run for the
   sample.
 

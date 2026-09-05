@@ -213,16 +213,17 @@ def test_without_conversion_parameters_the_step_is_beyond_the_merges():
     np.testing.assert_allclose(np.sort(intensities), [3e5, 4e5])
 
 
-def test_without_conversion_parameters_a_narrow_step_still_merges():
-    # At 0.6 FWHM the same two bins alternate over the scans (three and four)
-    # and cover all of them, so the scan-exclusive merge rejoins them even
-    # without the key.
+def test_without_conversion_parameters_a_step_is_left_to_the_key():
+    # At 0.6 FWHM the same two bins share no scan, cover all seven and hold
+    # three and four of them, but a step is a hand-over in time: the side
+    # changes once, between scans 3 and 4, so the scan-exclusive merge leaves
+    # the pair alone and only the frequency key rejoins it.
     scans = _stepped_scans([42.0086], with_params=False)
 
     masses, intensities, _, _ = _backend(scans).average_centroids(SCANS, ppm=1)
 
-    assert masses.size == 1
-    assert intensities[0] == pytest.approx(7e5)
+    assert masses.size == 2
+    np.testing.assert_allclose(np.sort(intensities), [3e5, 4e5])
 
 
 def test_labels_on_one_calibration_agree_across_scans():
@@ -297,6 +298,38 @@ def test_exclusive_merge_tracks_the_whole_cluster():
     np.testing.assert_allclose(intensities, [8e5, 4e5])
 
 
+def test_exclusive_merge_tracks_the_cluster_on_the_right_too():
+    # B (low scans, 1.2 FWHM up from A) and C (0.4 FWHM above B, in the high
+    # scans) merge unconditionally, being closer than half a FWHM. Weighed as
+    # that pair, the right side shares the high scans with A, so A stays a
+    # peak of its own; weighed as B alone it would join A, and C would follow.
+    a = 61.0397
+    scans = _jitter_scans(
+        [(a, "high"), (_fwhm_apart(a, 1.2), "low"), (_fwhm_apart(a, 1.6), "high")]
+    )
+
+    masses, intensities, _, _ = _backend(scans).average_centroids(JITTER_SCANS, ppm=1)
+
+    assert masses.size == 2
+    np.testing.assert_allclose(intensities, [4e5, 8e5])
+
+
+def test_two_ions_that_hand_over_in_time_stay_two():
+    # One ion in scans 1-4, another 1.2 FWHM up in scans 5-8: the sides share
+    # no scan, cover every scan and hold half each, but the side changes only
+    # once, between scans 4 and 5. Joining them would report a centroid about
+    # 2 ppm off both ions, so they stay two peaks.
+    a = 61.0397
+    b = _fwhm_apart(a, 1.2)
+    scans = _scans_of([[(a, 1e5)]] * 4 + [[(b, 1e5)]] * 4)
+
+    masses, intensities, _, _ = _backend(scans).average_centroids(JITTER_SCANS, ppm=1)
+
+    assert masses.size == 2
+    np.testing.assert_allclose(masses, [a, b], rtol=1e-12)
+    np.testing.assert_allclose(intensities, [4e5, 4e5])
+
+
 def test_exclusive_merge_survives_a_stray_label():
     # A weak stray label in one of the high scans lands in the low bin, so the
     # two bins are no longer strictly disjoint. It carries a twentieth of the
@@ -358,19 +391,20 @@ def test_two_scans_cannot_establish_an_alternation():
 
 
 def test_coverage_alone_keeps_overlapping_sides_apart():
-    # Sides of three scans each, overlapping in two of them but carrying a
-    # fiftieth of their intensity there, so the intensity-weighted overlap
-    # test passes and each side clears the per-side floor. Between them they
-    # occupy four of the eight scans, under the required coverage, which is
-    # the only gate left to keep them apart.
+    # Two sides alternating over four scans, each carrying a hundredth of its
+    # intensity in the other's scans: the intensity-weighted overlap test
+    # passes, each side clears the per-side floor with four scans, and the
+    # dominant side changes three times. Between them they occupy four of the
+    # eight scans, under the required coverage, which is the only gate left
+    # to keep them apart.
     a = 61.0397
     b = _fwhm_apart(a, 1.0)
     scans = _scans_of(
         [
-            [(a, 1e5)],
-            [(a, 1e3), (b, 1e3)],
-            [(a, 1e3), (b, 1e3)],
-            [(b, 1e5)],
+            [(a, 1e5), (b, 1e3)],
+            [(a, 1e3), (b, 1e5)],
+            [(a, 1e5), (b, 1e3)],
+            [(a, 1e3), (b, 1e5)],
             [],
             [],
             [],
@@ -381,7 +415,7 @@ def test_coverage_alone_keeps_overlapping_sides_apart():
     masses, intensities, _, _ = _backend(scans).average_centroids(JITTER_SCANS, ppm=1)
 
     assert masses.size == 2
-    np.testing.assert_allclose(intensities, [1.02e5, 1.02e5])
+    np.testing.assert_allclose(intensities, [2.02e5, 2.02e5])
 
 
 def test_bins_out_of_label_order_are_sorted_before_the_merge():

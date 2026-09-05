@@ -154,17 +154,24 @@ labels:
    real ions that close are resolved within a scan and so share scans. The
    test is intensity-weighted (`_AVG_CENTROID_EXCLUSIVE_OVERLAP`: a stray weak
    label in a shared scan does not veto the merge, a real minor ion present in
-   the same scans does), requires the two sides to cover most of the scans
-   (`_AVG_CENTROID_EXCLUSIVE_COVERAGE`), because two noise labels from
-   different scans are exclusive by construction -- on a noise-dominated file
-   the rule changes nothing -- and requires each side to hold a substantial
-   share of the scans (`_AVG_CENTROID_EXCLUSIVE_MIN_SIDE`, and at least two),
-   which one ion alternating between two positions does and the wobbling
-   fragments beside an intense peak, present in a couple of scans, do not.
+   the same scans does), requires each side to hold a substantial share of
+   the scans (`_AVG_CENTROID_EXCLUSIVE_MIN_SIDE`, and at least two), which
+   one ion alternating between two positions does and the wobbling fragments
+   beside an intense peak, present in a couple of scans, do not -- it is also
+   what keeps two noise labels from different scans apart, so on a
+   noise-dominated file the rule changes nothing -- requires the two sides
+   together to cover most of the scans (`_AVG_CENTROID_EXCLUSIVE_COVERAGE`),
+   which only decides when they overlap in scans, and requires the side
+   holding more intensity to change at least twice along the scans
+   (`_AVG_CENTROID_EXCLUSIVE_MIN_ALTERNATIONS`): two ions that hand over in
+   time, one present before a transition and the other after, share no scan
+   either but change side once, and joining them would report a mass about
+   2 ppm off both. A calibration step without conversion parameters is a
+   hand-over too, so only the frequency key rejoins one.
    Measured over a 183-file fleet corpus against Thermo, the per-side floor
    is what keeps the rule specific: without it the share of strong centroids
    matching a Thermo centroid fell by more than 0.02 in 31 files, with it in
-   9 and never by more than 0.05, while the jittering base peak still merges.
+   11 and never by more than 0.05, while the jittering base peak still merges.
    Thermo's own re-centroid reports such a jittering ion as two peaks, its
    averaged profile being flat-topped, so here the two readers differ by
    design.
