@@ -1503,15 +1503,13 @@ class OpenTFRawBackend:
                     )
                 return acc
 
-            # `left` accumulates the cluster ending at bin `left_end`; it is
-            # extended over the bins that joined since, or started afresh at
-            # the first bin of the cluster bin i belongs to, which runs back
-            # over merged pairs whose decisions are final by now.
+            # `left` accumulates the cluster ending at bin `left_end`. The
+            # next pair either begins at that bin, carrying the cluster
+            # forward, or starts one of its own, running back over the merged
+            # pairs whose decisions are final by now.
             left, left_end = None, -1
             for i in exclusive:
-                if left is not None and left_end < i and merge[left_end:i].all():
-                    left += per_scan(left_end + 1, i)
-                elif left is None or left_end != i:
+                if left is None or left_end != i:
                     start = i
                     while start > 0 and merge[start - 1]:
                         start -= 1
