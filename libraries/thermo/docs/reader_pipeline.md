@@ -155,7 +155,7 @@ labels:
    test is intensity-weighted (`_AVG_CENTROID_EXCLUSIVE_OVERLAP`: a stray weak
    label in a shared scan does not veto the merge, a real minor ion present in
    the same scans does), requires each side to hold a substantial share of
-   the scans (`_AVG_CENTROID_EXCLUSIVE_MIN_SIDE`, and at least two), which
+   the scans (`_AVG_CENTROID_EXCLUSIVE_MIN_SIDE`), which
    one ion alternating between two positions does and the wobbling fragments
    beside an intense peak, present in a couple of scans, do not -- it is also
    what keeps two noise labels from different scans apart, so on a
