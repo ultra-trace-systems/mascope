@@ -949,6 +949,56 @@ class TestInvertMatches:
         assert child["isotope_label"] == "M+1"
         assert child["owner_peak_assignment_id"] == m0["peak_assignment_id"]
 
+    def test_the_m0_is_the_monoisotopic_isotopologue_not_the_tallest(self):
+        # Br3-: the monoisotopic isotopologue (79Br3, the formula without an
+        # isotope marker) is the lightest peak of the cluster but not the most
+        # intense - the 79Br2 81Br combination is three times as likely. The M0
+        # an isotope table counts from is the monoisotopic one, so that peak
+        # carries the assignment and the tallest peak is its M+2, whichever
+        # order the matcher listed them in.
+        mono = _isotope_row(
+            target_isotope_id="iso-mono",
+            target_ion_id="ion1",
+            target_compound_id="cmp1",
+            compound_formula="Br2",
+            ion_formula="Br3-",
+            mz=236.7558,
+            relative_abundance=0.128,
+            sample_peak_id="p1",
+            sample_peak_intensity=340.0,
+            match_score=0.9,
+        )
+        tallest = {
+            **_isotope_row(
+                target_isotope_id="iso-81",
+                target_ion_id="ion1",
+                target_compound_id="cmp1",
+                compound_formula="Br2",
+                ion_formula="Br3-",
+                mz=238.7537,
+                relative_abundance=0.373,
+                sample_peak_id="p2",
+                sample_peak_intensity=1000.0,
+                match_score=0.9,
+            ),
+            "target_isotope_formula": "[81Br]Br2-",
+        }
+
+        assignments = invert_matches_to_peak_assignments(
+            pd.DataFrame([tallest, mono]), "sample1", "run1", CANDIDATE, ASSIGNED
+        )
+        by_peak = {a["sample_peak_id"]: a for a in assignments}
+
+        assert by_peak["p1"]["role"] == ROLE_M0
+        assert by_peak["p1"]["isotope_label"] == "M0"
+        assert by_peak["p1"]["owner_peak_assignment_id"] is None
+        assert by_peak["p2"]["role"] == ROLE_ISO_CHILD
+        assert by_peak["p2"]["isotope_label"] == "M+2"
+        assert (
+            by_peak["p2"]["owner_peak_assignment_id"]
+            == by_peak["p1"]["peak_assignment_id"]
+        )
+
     def test_child_owner_stays_none_when_ions_m0_lost_its_peak(self):
         # ion1's M0 loses peak p1 to ion2, but ion1's M+1 still wins p2:
         # the child cannot be attributed to an M0 assignment of its own ion.

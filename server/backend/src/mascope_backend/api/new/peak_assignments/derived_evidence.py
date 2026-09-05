@@ -36,6 +36,7 @@ from mascope_backend.api.new.peak_assignments.batch_peaks import (
 from mascope_backend.api.new.peak_assignments.engine import (
     _isotope_offset_label,
     evidence_for,
+    monoisotopic_row,
 )
 from mascope_backend.api.new.peak_assignments.fold_view import (
     fold_assignment_id,
@@ -60,23 +61,6 @@ def _peak_id(value: Any) -> Optional[str]:
     return text or None
 
 
-def _monoisotopic_mz(ordered: pd.DataFrame) -> float:
-    """The m/z of the ion's monoisotopic isotopologue - the one built from each
-    element's most abundant isotope, which the generator writes without an
-    isotope marker (``C6H13O6+``; never ``C5[13C]H13O6+``). The lightest row
-    stands in when no formula carries the distinction, and is the same peak
-    wherever the most abundant isotope is also the lightest.
-
-    :param ordered: One ion's rows, in m/z order.
-    """
-    formulas = ordered.get("target_isotope_formula")
-    if formulas is not None:
-        for mz, formula in zip(ordered["mz"], formulas):
-            if isinstance(formula, str) and formula and "[" not in formula:
-                return float(mz)
-    return float(ordered["mz"].iloc[0])
-
-
 def isotopologue_rows(ion_rows: pd.DataFrame) -> list[dict]:
     """One entry per predicted isotopologue of an ion, lightest first.
 
@@ -87,14 +71,15 @@ def isotopologue_rows(ion_rows: pd.DataFrame) -> list[dict]:
     and the other reads as unpaired, the rule ``seeded_scoring.scored_maps``
     applies.
 
-    The labels count from the ion's monoisotopic isotopologue, ``M0``, the way
-    an isotope table does: for a bromine- or chlorine-rich ion that is the
-    lightest peak of the cluster rather than the most intense, so its heavier
-    isotopologues read ``M+2``, ``M+4`` and never below ``M0``. The relative
-    abundance is a fraction of the most abundant predicted isotopologue, so
-    nothing exceeds 1 - the seed pattern arrives normalised to its sum, where
-    each peak is only its share of the envelope; without an abundance to scale
-    by, the values pass through.
+    The labels count from the ion's monoisotopic isotopologue, ``M0`` - the
+    same reference the engine's roles and labels use (``engine.monoisotopic_row``)
+    - the way an isotope table does: for a bromine- or chlorine-rich ion that
+    is the lightest peak of the cluster rather than the most intense, so its
+    heavier isotopologues read ``M+2``, ``M+4``. The relative abundance is a
+    fraction of the most abundant predicted isotopologue, so nothing exceeds 1
+    - the seed pattern arrives normalised to its sum, where each peak is only
+    its share of the envelope; without an abundance to scale by, the values
+    pass through.
 
     :param ion_rows: The scored frame's rows for one ion.
     :return: The entries, in m/z order.
@@ -102,7 +87,7 @@ def isotopologue_rows(ion_rows: pd.DataFrame) -> list[dict]:
     if ion_rows.empty:
         return []
     ordered = ion_rows.sort_values("mz")
-    main_mz = _monoisotopic_mz(ordered)
+    main_mz = float(monoisotopic_row(ordered)["mz"])
     reference_abundance = finite_or_none(ordered["relative_abundance"].max())
 
     def relative_to_reference(value: Optional[float]) -> Optional[float]:
