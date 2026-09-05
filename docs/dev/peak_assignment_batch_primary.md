@@ -34,6 +34,7 @@ measurements, and justified by the product shape it produces.*
 > | O | The sample ledger's verdict cell records a verdict in place, scrolls the focused row into view, and plots a row's species in the batch chart (run rows carry their batch peak on read) | [#2062](https://github.com/ultra-trace-systems/mascope/pull/2062) |
 > | P | Sample-ledger polish: the chart cell leads the row, the verdict cell keeps the row's height, and the auto-scroll reaches the scroller in a production build | [#2063](https://github.com/ultra-trace-systems/mascope/pull/2063) |
 > | Q | Each ledger keeps its sort across the switch between them (and a reload); the batch ledger's headers explain their columns on hover; the inspector keeps its confidence and P(correct) rows (and the isotopologue table for a lone M0) for a sample served from the ledger; the sample, ion and peak tables reach their scroller the same production-safe way | [#2064](https://github.com/ultra-trace-systems/mascope/pull/2064) |
+> | R | The sample browser's status badge is a column of its own after the sample name, and column reordering works (a key per column, the fixed-column offset, the table's private order cleared); a ledger-served peak's isotopologue abundances are fractions of the M0 | [#2065](https://github.com/ultra-trace-systems/mascope/pull/2065) |
 >
 > Not done, by design: §5.4 (per-sample evidence on demand) and the columnar membership of
 > §8 stay in reserve. Decisions marked **[settled]** were on record in earlier design docs;

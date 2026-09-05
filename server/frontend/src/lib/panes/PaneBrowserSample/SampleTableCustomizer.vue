@@ -11,6 +11,7 @@ import { useApp } from '@/stores'
 import { runtime } from '@/lib/runtime'
 
 import { useCustomizerPopover } from './stores'
+import { STATUS_COLUMN, withStatusColumn } from './columnOrder.js'
 
 const app = useApp()
 
@@ -34,22 +35,32 @@ const availableColumns = computed(() => {
       app.data.sample.list?.map((item) => Object.keys(item?.sample_item_attributes ?? {})).flat()
     )
   ].map((field) => ({ field, kind: 'custom' }))
-  return [...standard, { field: 'time', kind: 'custom', label: 'Time' }, ...custom]
-    .map(({ field, kind }) => ({
-      field,
-      kind,
-      label: createLabel(field),
-      type: kind == 'custom' ? 'string' : inferType(field)
-    }))
-    .filter(({ type }) => type !== 'object')
+  const describe = ({ field, kind }) => ({
+    field,
+    kind,
+    label: createLabel(field),
+    type: kind == 'custom' ? 'string' : inferType(field)
+  })
+  const listed = (entries) => entries.map(describe).filter(({ type }) => type !== 'object')
+  // The status badge is a column of the table's own, not a field of the sample,
+  // so it is listed rather than discovered.
+  return [
+    ...listed(standard),
+    { ...STATUS_COLUMN },
+    ...listed([{ field: 'time', kind: 'custom' }, ...custom])
+  ]
 })
 
 const runtimeConfig = runtime.config.sample_table_defaults
 
+// The server's default columns, with the status badge in its default place
+// unless the server names it somewhere itself.
 const defaultConfig = computed(() => ({
-  columns: runtimeConfig.columns
-    .map((col) => availableColumns.value.find(({ field }) => field === col))
-    .filter((col) => !!col),
+  columns: withStatusColumn(
+    runtimeConfig.columns
+      .map((col) => availableColumns.value.find(({ field }) => field === col))
+      .filter((col) => !!col)
+  ),
   sortField: runtimeConfig.sort_field,
   sortOrder: runtimeConfig.sort_order
 }))
@@ -82,11 +93,17 @@ function writeConfig() {
     localStorage.setItem(STORAGE_KEY, newState)
   }
 }
-// read from local storage, falling back on default
+// read from local storage, falling back on default. A stored configuration
+// from before the status badge was a column of its own has no entry for it and
+// gets the badge in its default place rather than losing it.
 function readConfig() {
   const storedState = localStorage.getItem(STORAGE_KEY)
-  const defaultState = JSON.stringify(defaultConfig.value)
-  customizer.config = JSON.parse(storedState ?? defaultState)
+  if (!storedState) {
+    customizer.config = structuredClone(defaultConfig.value)
+    return
+  }
+  const stored = JSON.parse(storedState)
+  customizer.config = { ...stored, columns: withStatusColumn(stored.columns ?? []) }
 }
 // reset to default config and clear local storage
 function resetConfig() {
