@@ -23,6 +23,7 @@ import { useBatchPeakJump } from './stores/batchPeakJump.js'
 import { MAX_SELECTED_BATCH_PEAKS } from '@/stores/data/modules/batchPeak/ledger'
 
 import { useBatchPeakCompute } from './stores/batchPeakCompute.js'
+import { useLedgerSort } from './stores/ledgerSort.js'
 import BatchPeakVerdictPopover from './BatchPeakVerdictPopover.vue'
 
 /**
@@ -255,8 +256,19 @@ const showIsotopologues = ref(false)
 // clicked with, and the filter menus still write into `filters`;
 // `removableSort` gives a third click that clears the column and returns the
 // ledger to its confidence-ordered default.
-const sortField = ref('n_present')
-const sortOrder = ref(-1)
+//
+// Held in a store shared with the sample ledger's pane (stores/ledgerSort.js),
+// so the sort survives the switch between the two ledgers, and a reload; these
+// are this pane's handles on it - what the header binds and `rows` reads.
+const ledgerSort = useLedgerSort()
+const sortField = computed({
+  get: () => ledgerSort.batch.field,
+  set: (value) => (ledgerSort.batch.field = value)
+})
+const sortOrder = computed({
+  get: () => ledgerSort.batch.order,
+  set: (value) => (ledgerSort.batch.order = value)
+})
 
 // Numeric collation, so the formula column reads as a chemist expects: C2H6
 // before C10H22, not after it. This is the comparer PrimeVue sorted with -
@@ -529,6 +541,27 @@ const intensityTooltip = computed(() => {
   )
 })
 
+// One line per column whose number is a property of the batch peak rather than
+// of a single peak - the columns a reader arriving from the sample ledger, where
+// the same names mean one peak's values, reads wrong at first. Help mode carries
+// the full account; these are the reminder on hover. The intensity's is
+// `intensityTooltip` above, because it names the instrument's unit.
+const HEADER_TOOLTIPS = {
+  mz:
+    "Anchor m/z of the batch peak: the m/z bin every sample's peak of this species folds " +
+    'into, set by the first peak seen and never redrawn',
+  formula:
+    "Consensus formula: an evidence-weighted vote over the members' per-sample assignments, " +
+    'so a bright, well-fitting member outweighs weak ones',
+  tier:
+    "Consensus tier: an evidence-weighted vote over the members' per-sample tiers, " +
+    'assigned only when a weighted majority reach it',
+  samples: 'Number of samples this species is seen in',
+  verdict:
+    'Batch-level verdict: one judgment per species, covering every sample without a ' +
+    'verdict of its own'
+}
+
 // Whatever was in flight, went wrong, or was selected belonged to the previous
 // batch. The selection itself is reset by the ledger's own reload.
 watch(
@@ -753,7 +786,13 @@ watch(
 
         <Column selectionMode="multiple" style="width: 3rem" />
 
-        <Column field="mz" header="m/z" sortable style="min-width: 7rem">
+        <!-- The header tooltips sit on a span in the header slot, never on the
+             Column itself: Column renders no element of its own, so a directive
+             placed on it has nothing to attach to and never shows. -->
+        <Column field="mz" sortable style="min-width: 7rem">
+          <template #header>
+            <span v-tooltip.top="HEADER_TOOLTIPS.mz">m/z</span>
+          </template>
           <template #body="{ data }">{{ num.mz.format(data.mz) }}</template>
         </Column>
 
@@ -761,13 +800,10 @@ watch(
              says which one it picked: the brightest sample, which is where a
              species is best measured and the order a reader looks for the
              largest thing in the batch in. -->
-        <Column
-          field="max_intensity"
-          header="Intensity"
-          sortable
-          style="min-width: 7rem"
-          v-tooltip="intensityTooltip"
-        >
+        <Column field="max_intensity" sortable style="min-width: 7rem">
+          <template #header>
+            <span v-tooltip.top="intensityTooltip">Intensity</span>
+          </template>
           <template #body="{ data }">
             <span class="intensity">
               {{ data.max_intensity != null ? num.peakIntensity.format(data.max_intensity) : '—' }}
@@ -794,7 +830,10 @@ watch(
           </template>
         </Column>
 
-        <Column field="consensus_formula" header="Formula" sortable style="min-width: 9rem">
+        <Column field="consensus_formula" sortable style="min-width: 9rem">
+          <template #header>
+            <span v-tooltip.top="HEADER_TOOLTIPS.formula">Formula</span>
+          </template>
           <template #body="{ data }">
             <!-- An unfolded isotopologue says what it is rather than repeating its
                  family's formula, which is the whole reason it was folded. -->
@@ -860,6 +899,7 @@ watch(
         >
           <template #header>
             <span
+              v-tooltip.top="HEADER_TOOLTIPS.tier"
               v-help.top="{
                 title: 'Confidence Tiers',
                 helpKey: 'assignment-tiers',
@@ -889,13 +929,10 @@ watch(
           </template>
         </Column>
 
-        <Column
-          field="n_present"
-          header="Samples"
-          sortable
-          style="min-width: 6rem"
-          v-tooltip="'Number of samples this species is seen in'"
-        >
+        <Column field="n_present" sortable style="min-width: 6rem">
+          <template #header>
+            <span v-tooltip.top="HEADER_TOOLTIPS.samples">Samples</span>
+          </template>
           <template #body="{ data }">{{ data.n_present }}</template>
         </Column>
 
@@ -909,7 +946,7 @@ watch(
           <template #header>
             <span
               class="pi ph ph-seal-check"
-              v-tooltip.top="'Batch-level verdict'"
+              v-tooltip.top="HEADER_TOOLTIPS.verdict"
               v-help.top="{
                 title: 'Batch-Level Verdicts',
                 helpKey: 'batch-peak-verdicts',

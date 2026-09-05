@@ -51,6 +51,9 @@ let childrenByOwner
 let byId
 let verdictRecord
 let verdictPeakId
+// The focused sample's run record; `{ engine: 'batch' }` is a sample served
+// from the batch ledger rather than from a run of its own.
+let runRecord
 
 // Minimal help-mode facade: the pane registers help cards through these calls;
 // the tests only need them to resolve.
@@ -103,7 +106,8 @@ function makeApp() {
           // stores/data/modules/peakAssignment/assignment.spec.js.
           m0Of: (row) =>
             row?.role === 'iso_child' ? (byId.get(row.owner_peak_assignment_id) ?? row) : row,
-          forPeak: () => null
+          forPeak: () => null,
+          run: runRecord
         },
         verification: { forAssignment },
         anchorContext: { overlayFor }
@@ -340,6 +344,10 @@ beforeEach(() => {
   // The pane reads the Assign-peaks dialog's open flag from a real Pinia store
   // (the button that sets it lives a row up, in the switch bar). A fresh Pinia
   // per test keeps that flag from leaking between them.
+  // The ledger's sort store writes through to localStorage and reads it back on
+  // creation, so without this a sort set in one test would be the next test's
+  // starting order.
+  localStorage.clear()
   setActivePinia(createPinia())
   focusedSampleId = ref('si-1')
   focusedPeak = null
@@ -349,6 +357,7 @@ beforeEach(() => {
   verdictRecord = null
   verdictPeakId = null
   overlayRecord = null
+  runRecord = null
   seed()
 })
 
@@ -523,6 +532,26 @@ describe('PaneBrowserAssignment isotopologue grouping', () => {
     wrapper.vm.sortOrder = 1
     await wrapper.vm.$nextTick()
     expect(ids(wrapper)).toEqual(['b', 'b-c0', 'b-c1', 'a', 'a-c0', 'a-c1'])
+  })
+
+  // The sort lives in a store outside the pane: PaneBrowserMatch swaps this pane
+  // for the batch ledger's whenever the sample is unfocused, and a sort held in
+  // the pane's own state went with it. A second mount on the same Pinia is that
+  // switch and back.
+  it('keeps its sort across a remount', async () => {
+    seed(FAMILY_A, FAMILY_B)
+    const first = await mountPane()
+    first.vm.sortField = 'sample_peak_intensity'
+    first.vm.sortOrder = -1
+    await first.vm.$nextTick()
+    first.unmount()
+
+    const second = await mountPane()
+    expect(second.vm.sortField).toBe('sample_peak_intensity')
+    expect(second.vm.sortOrder).toBe(-1)
+    expect(second.vm.rows[0].sample_peak_intensity).toBe(
+      Math.max(...second.vm.rows.map((row) => row.sample_peak_intensity))
+    )
   })
 
   it('keeps families whole under every sortable column, both directions', async () => {
@@ -892,20 +921,47 @@ describe('PaneBrowserAssignment uncalibrated P(correct)', () => {
     )
   })
 
-  // The header has to account for every dash in the column: a reader deciding
-  // whether the column is worth sorting on cannot hover them all to find out.
-  // Asserted against what the cells themselves say, so rewording a cell tooltip
-  // fails here rather than quietly leaving the header telling the old story.
-  it('names every cause in the column header', async () => {
+  // The header says what the column is in one line; the reasons for a dash are
+  // on the dashes, where each can be the row's own. Four rows, four distinct
+  // reasons - and none of them in the header.
+  it('keeps the header to one line and the reasons on the cells', async () => {
     const { wrapper, rows } = await ledger()
     const reasons = LEDGER.map(({ id }) => wrapper.vm.uncalibratedReason(rows.get(id)))
 
-    // Four rows, four distinct sentences - otherwise the loop below would pass
-    // on a header that names one cause and misses three.
     expect(new Set(reasons).size).toBe(LEDGER.length)
+    expect(wrapper.vm.pCorrectHeaderTooltip).toBe(
+      'Calibrated probability the assignment is correct'
+    )
     for (const reason of reasons) {
-      expect(wrapper.vm.pCorrectHeaderTooltip, reason).toContain(reason)
+      expect(wrapper.vm.pCorrectHeaderTooltip).not.toContain(reason)
     }
+  })
+
+  // A sample with no run of its own is served from the batch ledger: its
+  // P(correct) is the one recorded when it was folded in, and says so on hover,
+  // and a missing one is the ledger's to explain rather than the instrument's.
+  // The row's own reasons still come first.
+  it('explains a P(correct) served from the batch ledger, and its absence', async () => {
+    runRecord = { engine: 'batch' }
+    const { wrapper, rows } = await ledger()
+
+    expect(wrapper.vm.pCorrectTooltip({ pCorrect: 0.9 })).toMatch(/batch ledger/)
+    expect(wrapper.vm.pCorrectTooltip({ pCorrect: null })).toBe('')
+    expect(wrapper.vm.uncalibratedReason(rows.get('engine'))).toBe(
+      'No calibrated probability was recorded when this sample was folded into the batch ledger'
+    )
+    expect(wrapper.vm.uncalibratedReason(rows.get('untargeted'))).toBe(
+      'Untargeted assignment - no calibrated probability'
+    )
+  })
+
+  it("says nothing about the ledger on a run's own rows", async () => {
+    const { wrapper, rows } = await ledger()
+
+    expect(wrapper.vm.pCorrectTooltip({ pCorrect: 0.9 })).toBe('')
+    expect(wrapper.vm.uncalibratedReason(rows.get('engine'))).toBe(
+      'No calibration curve for this instrument'
+    )
   })
 
   it('still says what the column is', async () => {

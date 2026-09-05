@@ -21,12 +21,18 @@ import {
 import { PeakAssignConfigForm } from '@/lib/dialogs'
 import { num } from '@/lib/formatters'
 import { formatIsotopeFormula } from '@/lib/chem'
+import {
+  LEDGER_P_CORRECT_TOOLTIP,
+  P_CORRECT_TOOLTIP,
+  uncalibratedReason as reasonForNoPCorrect
+} from '@/lib/pCorrect'
 import { tierBucket, tierRank } from '@/lib/tiers'
 import { prettyTrim } from '@/lib/utils'
 import { scrollVirtualRowIntoView } from '@/lib/virtualScroll'
 import { useApp } from '@/stores'
 
 import { useAssignmentLauncher } from './stores'
+import { useLedgerSort } from './stores/ledgerSort.js'
 import AssignmentVerdictPopover from './AssignmentVerdictPopover.vue'
 import { useBatchChartSelection } from './stores/batchChartSelection.js'
 
@@ -257,8 +263,19 @@ const showIsotopologues = ref(false)
 // The header still renders its sort indicator and still emits the field it was
 // clicked with; `removableSort` gives a third click that clears the column and
 // returns the ledger to its confidence-ordered default.
-const sortField = ref('tierRank')
-const sortOrder = ref(1)
+//
+// Held in a store shared with the batch ledger's pane (stores/ledgerSort.js),
+// so the sort survives the switch between the two ledgers, and a reload; these
+// are this pane's handles on it - what the header binds and `rows` reads.
+const ledgerSort = useLedgerSort()
+const sortField = computed({
+  get: () => ledgerSort.sample.field,
+  set: (value) => (ledgerSort.sample.field = value)
+})
+const sortOrder = computed({
+  get: () => ledgerSort.sample.order,
+  set: (value) => (ledgerSort.sample.order = value)
+})
 
 // Numeric collation, so the formula column reads as a chemist expects: C2H6
 // before C10H22, not after it. This is the comparer PrimeVue sorted with -
@@ -384,50 +401,20 @@ const pctFmt = new Intl.NumberFormat('en-US', { style: 'percent', maximumFractio
 const corrobLabel = (row) =>
   row.corrobInherited ? `(${row.corrobAdducts})` : `${row.corrobAdducts}`
 
-// Why a row shows no calibrated probability. Several different reasons, and the
-// wrong one is worse than none: a hand-assigned row has no P(correct) because
-// nobody calibrated the formula a person chose, which says nothing about
-// whether this instrument has a curve - and reading "no calibration curve for
-// this instrument" there would send someone to calibrate an instrument that is
-// calibrated perfectly well.
-//
-// Kept as one list because the column header has to name all of them: a reader
-// deciding whether the column is worth sorting on cannot hover every dash in it
-// to find out why the dashes are there. Written once so a reworded reason - or
-// a fifth one - cannot land in the cells and miss the header.
-const UNCALIBRATED_REASONS = {
-  // First because a demoted satellite is both: curation.py's _demote strips the
-  // satellites of a formula their M0 no longer holds and leaves source =
-  // 'manual' on them, so a row can be a person's doing and hold no formula at
-  // all. "Assigned by hand" on a row the tier chip beside it labels Unassigned
-  // is the ledger's copy contradicting itself.
-  unassigned: 'Nothing assigned to this peak',
-  manual: 'Assigned by hand - the calibration never scored this formula',
-  untargeted: 'Untargeted assignment - no calibrated probability',
-  uncalibrated: 'No calibration curve for this instrument'
-}
+// Why a row shows no calibrated probability, and what one served from the batch
+// ledger is: shared with the inspector through @/lib/pCorrect, so the ledger's
+// cells and the inspector's row cannot drift apart on the same fact. A sample
+// with no run of its own is served from the batch ledger (run engine 'batch'):
+// its P(correct) is the one recorded when the sample was folded in, and a
+// missing one is the ledger's to explain rather than the instrument's.
+const fromLedger = computed(() => assignments.value.run?.engine === 'batch')
+const uncalibratedReason = (row) => reasonForNoPCorrect(row, { fromLedger: fromLedger.value })
+const pCorrectTooltip = (row) =>
+  row.pCorrect != null && fromLedger.value ? LEDGER_P_CORRECT_TOOLTIP : ''
 
-const uncalibratedReason = (row) => {
-  if (!row.assigned_formula) {
-    return UNCALIBRATED_REASONS.unassigned
-  }
-  if (row.source === 'manual') {
-    return UNCALIBRATED_REASONS.manual
-  }
-  if (row.source === 'untargeted') {
-    return UNCALIBRATED_REASONS.untargeted
-  }
-  return UNCALIBRATED_REASONS.uncalibrated
-}
-
-// The column header tells the same story the empty cells tell, assembled from
-// the same list rather than summarised again in its own words - the old header
-// promised only "untargeted / uncalibrated show -", which is now two reasons
-// out of four and left a reader with no account of the other two.
-const pCorrectHeaderTooltip =
-  'Calibrated probability the assignment is correct, from database-stage ' +
-  'assignments on calibrated instruments. A cell reads a dash when there is ' +
-  `none: ${Object.values(UNCALIBRATED_REASONS).join('; ')}.`
+// The header says what the column is, in one line. What a dash means is on the
+// dash, where the reason can be the row's own.
+const pCorrectHeaderTooltip = P_CORRECT_TOOLTIP
 
 // Tooltip for the adduct-corroboration marker. An isotopologue shows the count its
 // M0 was corroborated by, so it has to say both that the evidence is the
@@ -941,7 +928,11 @@ const breadcrumb = computed(() => {
             >
           </template>
           <template #body="{ data }">
-            <span v-if="data.pCorrect != null" class="pcorrect">
+            <span
+              v-if="data.pCorrect != null"
+              class="pcorrect"
+              v-tooltip.top="pCorrectTooltip(data)"
+            >
               {{ pctFmt.format(data.pCorrect)
               }}<span
                 v-if="data.pProvisional"
