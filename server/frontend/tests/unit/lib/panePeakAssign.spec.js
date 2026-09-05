@@ -1650,4 +1650,28 @@ describe('PanePeakAssign on-demand evidence for a derived row', () => {
     wrapper = await mountPane()
     expect(wrapper.find('.evidence').text()).toContain('the ion did not land on this peak')
   })
+
+  // The pattern was measured but nothing predicted paired with the family's
+  // main peak: not a failed measurement - the other members keep their
+  // numbers - so the card says which prediction came nearest, under its own
+  // heading rather than "not measured".
+  it('reports a main peak nothing paired with, without calling the measurement failed', async () => {
+    focusedAssignment = derivedM0()
+    evidenceKey = 'fold-bp-1'
+    evidenceRecord = {
+      ...MEASURED,
+      mz_error_ppm: null,
+      abundance_error: null,
+      main_peak_note:
+        "the family's main peak at m/z 238.7537 matched none of the ion's predicted " +
+        "isotopologues within the sample's m/z window; the nearest, M+2 predicted at " +
+        'm/z 238.7537, lies 0.1 ppm away and paired with no peak'
+    }
+    const wrapper = await mountPane()
+
+    const grid = wrapper.find('.evidence').text()
+    expect(grid).toContain('main peak')
+    expect(grid).toContain('M+2 predicted at m/z 238.7537')
+    expect(grid).not.toContain('not measured')
+  })
 })

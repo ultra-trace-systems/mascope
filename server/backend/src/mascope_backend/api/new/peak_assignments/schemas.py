@@ -233,9 +233,13 @@ class MeasuredIsotopologueRecord(BaseModel):
     """One predicted isotopologue of a measured composition, with the peak it
     paired to and the errors of that pairing (absent when it paired to none)."""
 
+    #: The offset from the ion's monoisotopic isotopologue (``M0``, ``M+2`` ...),
+    #: counted the way an isotope table counts it: for a bromine-rich ion the
+    #: M0 is the lightest peak of the cluster, not the most intense.
     isotope_label: str | None = None
     isotope_formula: str | None = None
-    #: Theoretical m/z and relative abundance (a fraction of the M0).
+    #: Theoretical m/z and relative abundance, the latter a fraction of the
+    #: ion's most abundant isotopologue, so it never exceeds 1.
     mz: float | None = None
     relative_abundance: float | None = None
     sample_peak_id: str | None = None
@@ -264,10 +268,16 @@ class DerivedEvidenceRecord(BaseModel):
     plausibility: float | None = None
     #: The stored fit times the plausibility, the currency the tier is banded on.
     evidence: float | None = None
+    #: The family's main peak's own errors, read off the isotopologue that
+    #: paired with it; absent when none did, in which case `main_peak_note`
+    #: says which prediction came nearest and where it went. The pattern was
+    #: still measured then - `blocked_reason` is for a measurement that could
+    #: not be made at all.
     mz_error_ppm: float | None = None
     abundance_error: float | None = None
     isotopologues: list[MeasuredIsotopologueRecord] = []
     blocked_reason: str | None = None
+    main_peak_note: str | None = None
 
 
 class DerivedEvidenceResponse(BaseModel):

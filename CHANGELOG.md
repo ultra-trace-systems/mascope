@@ -1335,8 +1335,18 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
   the fixed columns it has, and the table's private order is cleared after each
   drop, so the list in the table-controls cog is the one column order there is.
 - **Isotopologue abundances on a peak served from the batch ledger** are fractions
-  of the M0, as the inspector's column says and as a run's rows are. They arrived
-  normalised to the pattern's sum, so the M0 read below 100 %.
+  of the most abundant isotopologue, as an isotope table gives them, so nothing
+  reads above 100 %; they arrived normalised to the pattern's sum, so the M0 read
+  below it. The labels count from the monoisotopic peak, the way an isotope table
+  does: a bromine-rich ion reads M0, M+2, M+4, M+6, with M0 the lightest peak of
+  the cluster rather than the tallest.
+- **The inspector no longer calls a measured pattern "not measured"** when none of
+  its predicted isotopologues paired with the family's main peak. The measurement
+  stands and the other members keep their numbers; a *main peak* line says which
+  prediction came nearest, how far away it lies and whether it paired with a peak
+  elsewhere. The old notice compared the wrong peak for bromine- and
+  chlorine-rich ions, whose main peak by intensity is not the monoisotopic one, and
+  so blamed a peak that had paired perfectly well.
 - **Scroll-to-row in production builds.** The sample, ion and peak tables reached
   their virtual scroller through a handle that exists only in development builds,
   so a production build always took a cruder fallback that scrolls the row to the
