@@ -1478,4 +1478,54 @@ describe('PaneBrowserAssignment row actions', () => {
     await wrapper.vm.$nextTick()
     expect(scrollVirtualRowIntoView).not.toHaveBeenCalled()
   })
+
+  // The shared stubs never render a cell (DataTable is a bare div, Column is
+  // auto-stubbed), so the tests below pass the rows down, as the corroboration
+  // tests do, to read the markup the row actions ship. Each Column stub is one
+  // `.stub-col`, in template order.
+  async function renderedCells(...families) {
+    const tableRows = ref([])
+    seed(...families)
+    const wrapper = mount(PaneBrowserAssignment, {
+      global: {
+        directives: { tooltip: {}, help: {} },
+        stubs: {
+          ...GLOBAL_STUBS,
+          DataTable: {
+            ...GLOBAL_STUBS.DataTable,
+            watch: {
+              value: { handler: (value) => (tableRows.value = value), immediate: true }
+            }
+          },
+          Column: {
+            setup: () => ({ rows: tableRows }),
+            template:
+              '<div class="stub-col"><template v-for="(row, i) in rows" :key="i">' +
+              '<slot name="body" :data="row" /></template></div>'
+          }
+        }
+      }
+    })
+    await wrapper.vm.$nextTick()
+    return wrapper
+  }
+
+  it('leads the row with the chart cell', async () => {
+    const wrapper = await renderedCells(FAMILY_A)
+    const columns = wrapper.findAll('.stub-col')
+    expect(columns.length).toBeGreaterThan(1)
+    expect(columns[0].find('.chart-cell').exists()).toBe(true)
+    expect(columns[0].find('.verdict-cell').exists()).toBe(false)
+  })
+
+  // `empty` is the pane's empty-state panel class, and its scoped
+  // `.empty { height: 220px }` styles every element wearing it: a verdict
+  // button called that hands the panel's height to its row.
+  it('marks a row with no verdict as unjudged, never as the empty-state panel', async () => {
+    const wrapper = await renderedCells(FAMILY_A)
+    const cell = wrapper.find('.verdict-cell')
+    expect(cell.exists()).toBe(true)
+    expect(cell.classes()).toContain('unjudged')
+    expect(cell.classes()).not.toContain('empty')
+  })
 })

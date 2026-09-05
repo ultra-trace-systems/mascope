@@ -31,7 +31,8 @@ measurements, and justified by the product shape it produces.*
 > | L | An external engine's batch-level result imported as a batch run, matched by m/z and measured against every member (§6.6) | [#2057](https://github.com/ultra-trace-systems/mascope/pull/2057) |
 > | M | The inspector measures a derived row's family on demand (§5.4), and every export names its file safely | [#2059](https://github.com/ultra-trace-systems/mascope/pull/2059) |
 > | N | A ledger row jumps to the brightest sample with the peak focused (the chart's click-through, shared), and the sample browser shows each sample's assignment status | [#2060](https://github.com/ultra-trace-systems/mascope/pull/2060) |
-> | O | The sample ledger's verdict cell records a verdict in place, scrolls the focused row into view, and plots a row's species in the batch chart (run rows carry their batch peak on read) | this step |
+> | O | The sample ledger's verdict cell records a verdict in place, scrolls the focused row into view, and plots a row's species in the batch chart (run rows carry their batch peak on read) | [#2062](https://github.com/ultra-trace-systems/mascope/pull/2062) |
+> | P | Sample-ledger polish: the chart cell leads the row, the verdict cell keeps the row's height, and the auto-scroll reaches the scroller in a production build | [#2063](https://github.com/ultra-trace-systems/mascope/pull/2063) |
 >
 > Not done, by design: §5.4 (per-sample evidence on demand) and the columnar membership of
 > §8 stay in reserve. Decisions marked **[settled]** were on record in earlier design docs;
