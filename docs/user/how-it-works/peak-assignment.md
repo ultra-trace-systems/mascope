@@ -364,7 +364,7 @@ opens the brightest sample that holds the batch peak, with that peak focused, in
 to tell which trace to click when several are plotted. When an earlier run is on screen,
 the jump reads that run's members.
 
-The sample ledger reaches the batch chart too: the chart icon on a row puts that species
+The sample ledger reaches the batch chart too: the chart icon at the start of a row puts that species
 into the chart (it selects the batch peak the row's peak folded into, in the *Batch peaks*
 ledger) or takes it out, without leaving the sample. The chart draws at most as many species
 as the *Batch peaks* selection allows, and a peak the ledger does not hold cannot be plotted.
