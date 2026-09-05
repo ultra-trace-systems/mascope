@@ -67,6 +67,11 @@ def isotopologue_rows(ion_rows: pd.DataFrame) -> list[dict]:
     the more abundant one keeps the peak and the other reads as unpaired, the
     rule ``seeded_scoring.scored_maps`` applies.
 
+    The relative abundance is a fraction of the M0's, so the M0 reads 1 - the
+    way a run's rows and the inspector's column read it. The seed pattern
+    arrives normalised to its sum, where an M0 is only as large as its share of
+    the envelope; without an M0 abundance to scale by, the values pass through.
+
     :param ion_rows: The scored frame's rows for one ion.
     :return: The entries, in m/z order.
     """
@@ -74,6 +79,13 @@ def isotopologue_rows(ion_rows: pd.DataFrame) -> list[dict]:
         return []
     ordered = ion_rows.sort_values("mz")
     main_mz = float(ordered["mz"].iloc[0])
+    main_abundance = finite_or_none(ordered["relative_abundance"].iloc[0])
+
+    def relative_to_m0(value: Optional[float]) -> Optional[float]:
+        if value is None or not main_abundance or main_abundance <= 0:
+            return value
+        return value / main_abundance
+
     entries: list[dict] = []
     for row in ordered.to_dict("records"):
         peak = _peak_id(row.get("sample_peak_id"))
@@ -82,7 +94,9 @@ def isotopologue_rows(ion_rows: pd.DataFrame) -> list[dict]:
                 "isotope_label": _isotope_offset_label(float(row["mz"]), main_mz),
                 "isotope_formula": _peak_id(row.get("target_isotope_formula")),
                 "mz": finite_or_none(row.get("mz")),
-                "relative_abundance": finite_or_none(row.get("relative_abundance")),
+                "relative_abundance": relative_to_m0(
+                    finite_or_none(row.get("relative_abundance"))
+                ),
                 "sample_peak_id": peak,
                 "mz_error_ppm": (
                     finite_or_none(row.get("match_mz_error")) if peak else None

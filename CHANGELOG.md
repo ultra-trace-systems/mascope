@@ -732,6 +732,10 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
 
 ### Changed
 
+- **The peak-assignment status badge is a column of its own** in the sample browser,
+  after the sample name by default, and can be moved or hidden through the
+  table-controls cog like any other column. A stored table configuration gets it in
+  the default place.
 - **Search untargeted asks for its parameters first.** The Batch peaks pane's
   *Search untargeted* now opens the same parameters dialog as a per-sample run
   - m/z precision, formula ranges, the peak ceiling, the intensity threshold
@@ -1323,6 +1327,16 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
 
 ### Fixed
 
+- **Sample browser column reordering.** Dragging a column header could duplicate
+  columns or empty the table: the custom-attribute columns all shared one field and
+  the badge columns had none, so the table's key-based reorder mapped several
+  columns onto one, and the browser's own handler counted one fixed column where
+  there were three. Every column now carries a key of its own, the handler counts
+  the fixed columns it has, and the table's private order is cleared after each
+  drop, so the list in the table-controls cog is the one column order there is.
+- **Isotopologue abundances on a peak served from the batch ledger** are fractions
+  of the M0, as the inspector's column says and as a run's rows are. They arrived
+  normalised to the pattern's sum, so the M0 read below 100 %.
 - **Scroll-to-row in production builds.** The sample, ion and peak tables reached
   their virtual scroller through a handle that exists only in development builds,
   so a production build always took a cruder fallback that scrolls the row to the
