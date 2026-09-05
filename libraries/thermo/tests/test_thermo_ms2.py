@@ -17,6 +17,7 @@ import numpy as np
 import pytest
 from conftest import POS_ORBI_FILE_PATH, TEST_FILES_DIR, read_or_xfail
 
+import mascope_thermo.backend as m_backend
 import mascope_thermo.thermo as m_thermo
 from mascope_thermo.backend import open_backend
 
@@ -66,6 +67,7 @@ def test_ms2_summary_on_ms1_only_file_returns_empty():
     meta = m_thermo.get_ms2_summary_metadata(POS_ORBI_FILE_PATH)
     assert meta["ms2_scan_count"] == 0
     assert meta["parent_peaks"] == []
+    assert meta["groups"] == []
     assert meta["hcd_energy_map"] == {}
     assert meta["isolation_width"] is None
     assert meta["ms1_scan_count"] >= 0
@@ -135,8 +137,11 @@ class TestGetMs2CentroidsByParent:
     reader backend must preserve).
     """
 
-    def test_keys_match_summary_parents(self, by_parent, summary):
-        assert sorted(by_parent) == pytest.approx(summary["parent_peaks"])
+    def test_keys_match_summary_groups(self, by_parent, summary):
+        expected = {(g["parent_peak_mz"], g["activation"]) for g in summary["groups"]}
+        assert set(by_parent) == expected
+        parents = sorted({mz for mz, _ in by_parent})
+        assert parents == pytest.approx(summary["parent_peaks"])
 
     def test_centroid_arrays_well_formed(self, by_parent):
         for masses, intensities, resolutions, sn in by_parent.values():
@@ -157,13 +162,13 @@ class TestGetMs2CentroidsByParent:
             assert summed[parent][1].sum() >= avg_int.sum()
 
     def test_mz_range_filters_parents(self, by_parent):
-        parents = sorted(by_parent)
+        parents = sorted({mz for mz, _ in by_parent})
         if len(parents) < 2:
             pytest.skip("need >=2 parent peaks to exercise m/z filtering")
         threshold = (parents[0] + parents[-1]) / 2
         filtered = m_thermo.get_ms2_centroids_by_parent(MS2_FILE, mz_min=threshold)
         assert filtered, "expected at least one parent above the threshold"
-        assert all(p >= threshold for p in filtered)
+        assert all(mz >= threshold for mz, _ in filtered)
         assert set(filtered).issubset(set(by_parent))
 
 
@@ -210,3 +215,132 @@ class TestGetMs2CentroidsPerScanForParent:
         )
         assert per_scan == []
         assert tics == []
+
+
+class TestClusterScansByParent:
+    """``_cluster_scans_by_parent`` groups on precursor *and* activation.
+
+    Pure function over a ``{scan: (precursor_mz, activation)}`` mapping, so
+    these run without an MS2 acquisition on disk.
+    """
+
+    def test_stepped_energy_splits_into_one_group_per_step(self):
+        """A stepped-energy run is one precursor at several collision energies.
+
+        Grouping on m/z alone would average the steps into a single spectrum
+        whose collision energy is a number the instrument never used.
+        """
+        events = {
+            1: (137.096, "hcd20.00"),
+            2: (137.096, "hcd20.00"),
+            3: (137.096, "hcd40.00"),
+            4: (137.096, "hcd80.00"),
+        }
+        assert m_thermo._cluster_scans_by_parent(events) == {
+            (137.096, "hcd20.00"): [1, 2],
+            (137.096, "hcd40.00"): [3],
+            (137.096, "hcd80.00"): [4],
+        }
+
+    def test_single_activation_yields_one_group_per_precursor(self):
+        """The ordinary case is unchanged: one group per precursor."""
+        events = {
+            1: (200.5, "hcd25.00"),
+            2: (300.5, "hcd25.00"),
+            3: (200.5, "hcd25.00"),
+        }
+        assert m_thermo._cluster_scans_by_parent(events) == {
+            (200.5, "hcd25.00"): [1, 3],
+            (300.5, "hcd25.00"): [2],
+        }
+
+    def test_near_duplicate_precursors_merge_across_activations(self):
+        """Clustering runs over all of a precursor's scans, so every step of one
+        precursor shares one canonical m/z -- the steps must not drift apart."""
+        events = {
+            1: (137.0960, "hcd20.00"),
+            2: (137.0965, "hcd40.00"),
+        }
+        groups = m_thermo._cluster_scans_by_parent(events, parent_peak_tolerance=0.001)
+        assert len({mz for mz, _ in groups}) == 1
+        assert {activation for _, activation in groups} == {"hcd20.00", "hcd40.00"}
+
+    def test_distinct_precursors_stay_apart(self):
+        events = {1: (137.0960, "hcd20.00"), 2: (137.5000, "hcd20.00")}
+        groups = m_thermo._cluster_scans_by_parent(events, parent_peak_tolerance=0.001)
+        assert len(groups) == 2
+
+    def test_chained_activations_are_one_key(self):
+        """A scan that chains two activations keeps them together in the key."""
+        events = {1: (445.12, "cid30.00@hcd20.00"), 2: (445.12, "hcd20.00")}
+        groups = m_thermo._cluster_scans_by_parent(events)
+        assert set(groups) == {
+            (445.12, "cid30.00@hcd20.00"),
+            (445.12, "hcd20.00"),
+        }
+
+    def test_empty_input(self):
+        assert m_thermo._cluster_scans_by_parent({}) == {}
+
+
+class TestParseMs2Event:
+    """The scan-filter parse both backends share."""
+
+    @pytest.mark.parametrize(
+        ("filter_string", "expected"),
+        [
+            (
+                "FTMS + p NSI Full ms2 137.0960@hcd40.00 [40.0000-160.0419]",
+                (137.0960, "hcd40.00"),
+            ),
+            (
+                "FTMS + c NSI Full ms2 445.1200@cid30.00@hcd20.00 [50.0000-500.0000]",
+                (445.1200, "cid30.00@hcd20.00"),
+            ),
+            ("FTMS + p NSI Full ms [120.0000-200.0000]", None),
+            # The precursor is what has to be resolved; a scan must not go
+            # missing over how the dissociation next to it is spelled.
+            (
+                "FTMS + p NSI Full ms2 137.0960@ETD50.00 [40.0000-160.0419]",
+                (137.0960, "ETD50.00"),
+            ),
+        ],
+    )
+    def test_parse(self, filter_string, expected):
+        assert m_backend._parse_ms2_event(filter_string) == expected
+
+
+@requires_ms2
+class TestMs2SummaryGroups:
+    """``groups`` reports each (parent peak, activation) separately, and is
+    internally consistent with the rest of the summary."""
+
+    def test_groups_cover_every_ms2_scan_once(self, summary):
+        assert (
+            sum(g["scan_count"] for g in summary["groups"])
+            <= (summary["ms2_scan_count"])
+        )
+        assert all(g["scan_count"] > 0 for g in summary["groups"])
+
+    def test_group_parents_are_the_summary_parents(self, summary):
+        assert {g["parent_peak_mz"] for g in summary["groups"]} == set(
+            summary["parent_peaks"]
+        )
+
+    def test_group_energies_concatenate_into_the_hcd_map(self, summary):
+        for parent, energies in summary["hcd_energy_map"].items():
+            from_groups = [
+                e
+                for g in summary["groups"]
+                if g["parent_peak_mz"] == parent
+                for e in g["hcd_energy"]
+            ]
+            assert energies == from_groups
+
+    def test_group_times_are_json_safe_and_ordered(self, summary):
+        for g in summary["groups"]:
+            # These go out over the API, so a numpy scalar here would fail to
+            # serialize.
+            assert type(g["t_min"]) is float
+            assert type(g["t_max"]) is float
+            assert g["t_min"] <= g["t_max"]

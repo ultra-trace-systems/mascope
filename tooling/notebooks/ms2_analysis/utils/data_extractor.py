@@ -1,9 +1,37 @@
+from dataclasses import dataclass
+
 import numpy as np
 
 import mascope_sdk as msdk
 from mascope_tools.alignment.calibration import CentroidedSpectrum
 
 from .config import DEFAULT_NOISE_THRESHOLD, DEFAULT_PARENT_PEAK_TOLERANCE
+
+
+@dataclass(frozen=True, order=True)
+class Ms2Group:
+    """One MS2 group: a precursor measured at one activation.
+
+    The unit an MS2 spectrum belongs to. A precursor alone does not identify a
+    spectrum, because a stepped-energy acquisition measures one precursor at
+    several collision energies - so this carries the activation too, and it is
+    what every per-spectrum mapping here is keyed by. ``parent_peak_mz`` is the
+    number to do m/z arithmetic with.
+    """
+
+    parent_peak_mz: float
+    activation: str = ""
+
+    @property
+    def key(self) -> str:
+        """The server's key for this group, ``"<parent m/z>@<activation>"``."""
+        if not self.activation:
+            return f"{self.parent_peak_mz}"
+        return f"{self.parent_peak_mz}@{self.activation}"
+
+    def __str__(self) -> str:
+        label = f"{self.parent_peak_mz:.4f} m/z"
+        return f"{label} ({self.activation})" if self.activation else label
 
 
 class DataExtractor:
@@ -49,28 +77,37 @@ class DataExtractor:
         if summary is None:
             raise ValueError("Failed to retrieve MS2 summary for the sample.")
 
-        parent_peaks = summary.get("parent_peaks", [])
+        summary_groups = summary.get("groups", [])
         isolation_width = summary.get("isolation_width", None)
-        if not parent_peaks or isolation_width is None:
+        if not summary_groups or isolation_width is None:
             raise ValueError(
                 "No MS2 scans were found for the sample; MS2 analysis requires "
-                "non-empty parent peaks and a valid isolation width."
+                "at least one parent peak group and a valid isolation width."
             )
 
-        self.parent_peaks = np.array(parent_peaks)
+        self.groups = [
+            Ms2Group(float(g["parent_peak_mz"]), g.get("activation", ""))
+            for g in summary_groups
+        ]
+        self.parent_peaks = np.array(summary.get("parent_peaks", []))
         self.isolation_width = isolation_width
-        self.hcd_energy_map = {
-            float(k): v for k, v in summary["hcd_energy_map"].items()
+        # Keyed per group, not per precursor: a stepped-energy acquisition uses
+        # a different collision energy in each of its groups.
+        self.hcd_energy_map: dict[Ms2Group, list[float]] = {
+            group: list(g.get("hcd_energy", []))
+            for group, g in zip(self.groups, summary_groups, strict=True)
         }
 
         centroids_data = self._ms2.get_averaged_centroids(
             noise_threshold=noise_threshold,
             parent_peak_tolerance=parent_peak_tolerance,
         )
-        self.ms2_spectra: dict[float, CentroidedSpectrum] = {}
+        self.ms2_spectra: dict[Ms2Group, CentroidedSpectrum] = {}
         if centroids_data:
-            for pp_str, data in centroids_data.items():
-                pp = float(pp_str)
+            for data in centroids_data.values():
+                group = Ms2Group(
+                    float(data["parent_peak_mz"]), data.get("activation", "")
+                )
                 mz = np.array(data["mz"])
                 intensity = np.array(data["intensity"])
                 resolution = np.array(data.get("resolution", []))
@@ -79,25 +116,26 @@ class DataExtractor:
                     resolution = np.zeros_like(mz)
                 if signal_to_noise.size != mz.size:
                     signal_to_noise = np.zeros_like(mz)
-                self.ms2_spectra[pp] = CentroidedSpectrum(
+                self.ms2_spectra[group] = CentroidedSpectrum(
                     mz=mz,
                     intensity=intensity,
                     signal_to_noise=signal_to_noise,
                     resolution=resolution,
                 )
-        # Ensure every parent peak has an entry
-        for pp in self.parent_peaks:
-            if pp not in self.ms2_spectra:
-                self.ms2_spectra[pp] = CentroidedSpectrum(
+        # Ensure every group has an entry
+        for group in self.groups:
+            if group not in self.ms2_spectra:
+                self.ms2_spectra[group] = CentroidedSpectrum(
                     mz=np.array([]),
                     intensity=np.array([]),
                     signal_to_noise=np.array([]),
                     resolution=np.array([]),
                 )
 
-        # MS2 TIC per parent peak
-        self.ms2_tic: dict[float, float] = {
-            pp: float(spec.intensity.sum()) for pp, spec in self.ms2_spectra.items()
+        # MS2 TIC per group
+        self.ms2_tic: dict[Ms2Group, float] = {
+            group: float(spec.intensity.sum())
+            for group, spec in self.ms2_spectra.items()
         }
 
         # Lazy-loaded properties
@@ -120,35 +158,37 @@ class DataExtractor:
 
     @property
     def parent_peak_intensities(self) -> dict:
-        """Parent peak intensities from averaged MS1 spectrum."""
+        """Parent peak intensity from the averaged MS1 spectrum, per group."""
         if self._parent_peak_intensities is None:
             mz = self.ms1_spectrum.mz
             intensity = self.ms1_spectrum.intensity
             if mz.size == 0 or intensity.size == 0:
                 self._parent_peak_intensities = {
-                    pp: float("nan") for pp in self.parent_peaks
+                    group: float("nan") for group in self.groups
                 }
                 return self._parent_peak_intensities
             result = {}
-            for pp in self.parent_peaks:
-                idx = np.argmin(np.abs(mz - pp))
-                result[pp] = float(intensity[idx])
+            for group in self.groups:
+                idx = np.argmin(np.abs(mz - group.parent_peak_mz))
+                result[group] = float(intensity[idx])
             self._parent_peak_intensities = result
         return self._parent_peak_intensities
 
     @property
     def ms1_isolation_tic(self) -> dict:
-        """Sum MS1 intensities within isolation window per parent peak."""
+        """Sum MS1 intensities within the isolation window, per group."""
         if self._ms1_isolation_tic is None:
             mz = self.ms1_spectrum.mz
             intensity = self.ms1_spectrum.intensity
             if mz.size == 0 or intensity.size == 0:
-                self._ms1_isolation_tic = {pp: float("nan") for pp in self.parent_peaks}
+                self._ms1_isolation_tic = {group: float("nan") for group in self.groups}
                 return self._ms1_isolation_tic
             half_iso = self.isolation_width / 2
             self._ms1_isolation_tic = {
-                pp: float(intensity[np.abs(mz - pp) <= half_iso].sum())
-                for pp in self.parent_peaks
+                group: float(
+                    intensity[np.abs(mz - group.parent_peak_mz) <= half_iso].sum()
+                )
+                for group in self.groups
             }
         return self._ms1_isolation_tic
 

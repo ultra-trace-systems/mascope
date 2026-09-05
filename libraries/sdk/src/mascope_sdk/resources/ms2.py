@@ -42,8 +42,14 @@ class Ms2Resource(BaseResource):
         *,
         parent_peak_tolerance: float = 0.001,
     ) -> dict | None:
-        """Retrieve MS2 summary: parent peaks, HCD energy map, isolation width,
-        and scan counts.
+        """Retrieve MS2 summary: parent peaks, per-group detail, HCD energy map,
+        isolation width, and scan counts.
+
+        ``groups`` holds one record per (parent peak, activation) pair --
+        ``parent_peak_mz``, ``activation``, ``hcd_energy``, ``scan_count``,
+        ``t_min``, ``t_max`` -- so a stepped-energy acquisition is reported step
+        by step. ``hcd_energy_map`` lists the energies each precursor was
+        measured at, one per step.
 
         :param parent_peak_tolerance: Tolerance in Da for merging near-duplicate
                                       parent peaks.
@@ -55,7 +61,8 @@ class Ms2Resource(BaseResource):
 
             summary = mascope.samples.ms2("sample-456").get_summary()
             print(summary["parent_peaks"])
-            print(summary["hcd_energy_map"])
+            for group in summary["groups"]:
+                print(group["activation"], group["scan_count"], group["hcd_energy"])
         """
         params: dict[str, Any] = {
             "parent_peak_tolerance": parent_peak_tolerance,
@@ -89,22 +96,25 @@ class Ms2Resource(BaseResource):
         noise_threshold: float = 10.0,
         parent_peak_tolerance: float = 0.001,
     ) -> dict | None:
-        """Retrieve averaged MS2 centroids for each parent peak.
+        """Retrieve averaged MS2 centroids for each (parent peak, activation) group.
+
+        A stepped-energy acquisition returns one spectrum per collision energy.
 
         :param noise_threshold: Minimum signal-to-noise ratio threshold.
         :type noise_threshold: float
         :param parent_peak_tolerance: Tolerance in Da for merging parent peaks.
         :type parent_peak_tolerance: float
-        :return: Dictionary keyed by parent peak m/z (as string), each
-                 value containing 'mz', 'intensity', 'resolution',
-                 and 'signal_to_noise' lists.
+        :return: Dictionary keyed by ``"<parent m/z>@<activation>"`` (e.g.
+                 ``"137.096@hcd40.00"``), each value containing
+                 'parent_peak_mz', 'activation', 'mz', 'intensity',
+                 'resolution', and 'signal_to_noise'.
         :rtype: dict | None
 
         Example::
 
             centroids = mascope.samples.ms2("sample-456").get_averaged_centroids()
-            for pp_mz, data in centroids.items():
-                print(f"Parent {pp_mz}: {len(data['mz'])} fragments")
+            for key, data in centroids.items():
+                print(f"{key}: {len(data['mz'])} fragments")
         """
         params: dict[str, int | float] = {
             "noise_threshold": noise_threshold,
@@ -119,6 +129,7 @@ class Ms2Resource(BaseResource):
         noise_threshold: float = 10.0,
         parent_peak_tolerance: float = 0.001,
         normalize_by: str | None = None,
+        activation: str | None = None,
     ) -> dict | None:
         """Retrieve fragment timeseries for a single parent peak.
 
@@ -131,6 +142,10 @@ class Ms2Resource(BaseResource):
         :param normalize_by: Normalization mode: ``"tic"`` normalizes by scan TIC,
             ``None`` returns raw intensities.
         :type normalize_by: str
+        :param activation: Restrict to one activation, e.g. ``"hcd40.00"``.
+            Defaults to every activation of the parent peak, which is what makes
+            a stepped-energy run's fragments visible changing across the steps.
+        :type activation: str | None
         :return: Dictionary with 'mz_values' (list of fragment m/z), 'time'
                  (list of timestamps), and 'values' (2D list of intensities).
         :rtype: dict | None
@@ -147,5 +162,6 @@ class Ms2Resource(BaseResource):
             "noise_threshold": noise_threshold,
             "parent_peak_tolerance": parent_peak_tolerance,
             "normalize_by": normalize_by,
+            "activation": activation,
         }
         return self._get(f"{self._base_path}/timeseries", params=params)

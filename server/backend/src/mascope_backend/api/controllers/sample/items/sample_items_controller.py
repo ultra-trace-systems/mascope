@@ -67,6 +67,7 @@ from mascope_backend.socket.records.service import (
     emit_record_updated,
 )
 from mascope_file.name import get_instrument_type
+from mascope_thermo.thermo import NoScansFoundError
 
 
 @api_controller()
@@ -261,15 +262,29 @@ async def create_sample_items(
                     # kwargs, not a lambda: sample_file is an attached ORM
                     # instance inside a live session, so its attributes must
                     # be read here on the loop, not in the worker thread.
-                    tic_time, tic_values = await asyncio.to_thread(
+                    _, tic_values = await asyncio.to_thread(
                         m_compute.get_tic_per_scan,
                         base_filename=sample_file.filename,
                         polarity=sample_item.polarity,  # sample_item polarity (+ or -)
                     )
                     computed_tic = float(np.sum(tic_values))
-                    computed_t0 = float(tic_time[0])
-                    computed_t1 = float(tic_time[-1])
-                except TypeError as e:
+                    # The window spans every scan type, not just the MS1 scans
+                    # the TIC is taken over: an acquisition that records its
+                    # MS2 scans as a block after the MS1 ones would otherwise
+                    # get a window that ends before the first of them, and its
+                    # MS2 data would be invisible to every endpoint that
+                    # selects within [t0, t1]. Worth the second read of the
+                    # file, which happens once per sample item created.
+                    computed_t0, computed_t1 = await asyncio.to_thread(
+                        m_compute.get_acquisition_window,
+                        base_filename=sample_file.filename,
+                        polarity=sample_item.polarity,
+                    )
+                except (TypeError, NoScansFoundError) as e:
+                    # NoScansFoundError is what the raw readers raise for a
+                    # polarity the file does not carry; without it here that
+                    # request came back a 500 rather than the message below,
+                    # and only the TOF path's TypeError was ever caught.
                     verbose_polarity = (
                         "positive" if sample_item.polarity == "+" else "negative"
                     )

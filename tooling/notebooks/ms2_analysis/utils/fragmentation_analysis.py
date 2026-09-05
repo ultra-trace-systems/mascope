@@ -160,13 +160,14 @@ class FragmentationAnalysis:
         reagent_mz = self._classifier.reagent_ion_mz
         rows = []
 
-        for pp in self._data.parent_peaks:
+        for group in self._data.groups:
+            pp = group.parent_peak_mz
             if pp not in parent_set:
                 continue
 
-            ms2 = self._data.ms2_spectra[pp]
-            tic = self._data.ms2_tic[pp]
-            comp_df = self._compositions.matches.get(pp, pd.DataFrame())
+            ms2 = self._data.ms2_spectra[group]
+            tic = self._data.ms2_tic[group]
+            comp_df = self._compositions.matches.get(group, pd.DataFrame())
 
             if ms2.mz.size == 0 or tic <= 0:
                 continue
@@ -190,6 +191,7 @@ class FragmentationAnalysis:
             rows.append(
                 {
                     "composition": parent_comp,
+                    "group": group,
                     "mz": pp,
                     "fragment_frac": reagent_tic_pct / total * 100,
                     "parent_frac": parent_tic_pct / total * 100,
@@ -335,13 +337,14 @@ class FragmentationAnalysis:
         pt_mass = self._classifier.proton_transfer_mass
         rows = []
 
-        for pp in self._data.parent_peaks:
+        for group in self._data.groups:
+            pp = group.parent_peak_mz
             if pp not in parent_set:
                 continue
 
-            ms2 = self._data.ms2_spectra[pp]
-            tic = self._data.ms2_tic[pp]
-            comp_df = self._compositions.matches.get(pp, pd.DataFrame())
+            ms2 = self._data.ms2_spectra[group]
+            tic = self._data.ms2_tic[group]
+            comp_df = self._compositions.matches.get(group, pd.DataFrame())
 
             if ms2.mz.size == 0 or tic <= 0:
                 continue
@@ -369,6 +372,7 @@ class FragmentationAnalysis:
                 {
                     "composition": parent_comp,
                     "fragment_composition": frag_comp,
+                    "group": group,
                     "mz": pp,
                     "fragment_mz": float(ms2.mz[frag_idx]),
                     "fragment_frac": frag_tic_pct / total * 100,

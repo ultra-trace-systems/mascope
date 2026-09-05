@@ -30,12 +30,13 @@ class RatioChart:
     def _build_ratio_df(self) -> pd.DataFrame:
         """Build a DataFrame with the target fragment fraction for each parent peak."""
         rows = []
-        for pp in self._data.parent_peaks:
+        for group in self._data.groups:
+            pp = group.parent_peak_mz
             if self._parent_filter is not None and pp not in self._parent_filter:
                 continue
-            ms2_spec = self._data.ms2_spectra[pp]
-            ms2_tic = self._data.ms2_tic[pp]
-            comp_df = self._compositions.matches.get(pp, pd.DataFrame())
+            ms2_spec = self._data.ms2_spectra[group]
+            ms2_tic = self._data.ms2_tic[group]
+            comp_df = self._compositions.matches.get(group, pd.DataFrame())
 
             # Parent peak TIC% in MS2: find peak closest to pp
             if ms2_spec.mz.size == 0 or ms2_tic <= 0:
@@ -64,6 +65,7 @@ class RatioChart:
             rows.append(
                 {
                     "composition": parent_comp,
+                    "group": group,
                     "mz": pp,
                     "fragment_frac": fragment_tic_pct / total * 100,
                     "parent_frac": parent_tic_pct / total * 100,
