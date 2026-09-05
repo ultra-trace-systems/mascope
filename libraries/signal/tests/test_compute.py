@@ -110,3 +110,54 @@ class TestGetSumSignalCaching:
         expected = np.array([4.0, 5.0, 6.0], dtype=np.float64)
         np.testing.assert_allclose(result.compute().values, expected)
         assert injected_error["raised"] is True
+
+
+class TestGetAcquisitionWindow:
+    """``get_acquisition_window`` spans every scan type, not just MS1.
+
+    The window a sample item covers used to come from the TIC, which reports
+    MS1 scans only. A manual MS2 acquisition records its MS1 scans first and
+    the fragmentation afterwards instead of interleaving them, so an
+    MS1-derived window ended before the first MS2 scan and every endpoint that
+    selects within it found no MS2 data at all.
+    """
+
+    def test_asks_the_reader_for_every_scan_type(self, monkeypatch):
+        captured = {}
+
+        def fake_scan_timestamps(datafile_path, **kwargs):
+            captured.update(kwargs)
+            # MS1 scans first, then a block of MS2 scans, as a manual MS2
+            # acquisition records them.
+            return np.array([1.0, 2.0, 3.0, 40.0, 41.0], dtype=np.float64)
+
+        monkeypatch.setattr(
+            m_compute.m_name, "get_sample_file_type", lambda _: "orbi_raw"
+        )
+        monkeypatch.setattr(
+            m_compute.m_name, "filename_to_datafile_path", lambda _: "data.raw"
+        )
+        monkeypatch.setattr(
+            m_compute.m_thermo, "get_scan_timestamps", fake_scan_timestamps
+        )
+
+        t0, t1 = m_compute.get_acquisition_window("sample", polarity="+")
+
+        assert captured["scan_type"] is None, (
+            "the window must span every scan type; scan_type='Ms' would cut the "
+            "MS2 block of a manual MS2 acquisition out of the sample"
+        )
+        assert captured["polarity"] == "+"
+        assert (t0, t1) == (1.0, 41.0)
+
+    def test_falls_back_to_the_scan_axis_for_readers_without_ms2(self, monkeypatch):
+        monkeypatch.setattr(
+            m_compute.m_name, "get_sample_file_type", lambda _: "tof_zarr"
+        )
+        monkeypatch.setattr(
+            m_compute,
+            "get_scan_timestamps",
+            lambda *args, **kwargs: np.array([0.5, 1.5, 2.5], dtype=np.float64),
+        )
+
+        assert m_compute.get_acquisition_window("sample") == (0.5, 2.5)

@@ -494,9 +494,10 @@ def get_scan_timestamps(
     t_min: float | None = None,
     t_max: float | None = None,
     polarity: Literal["+", "-"] | None = None,
+    scan_type: Literal["Ms", "Ms2"] | None = "Ms",
 ) -> np.ndarray:
     """Extracts the scan timestamps [s] from the raw file,
-    with optional polarity and time filtering.
+    with optional polarity, time and scan-type filtering.
 
     :param datafile_path: Path to the Thermo Fisher raw file (.raw) containing the data.
     :type datafile_path: str
@@ -507,11 +508,17 @@ def get_scan_timestamps(
     :param polarity: Polarity of the scans to be retrieved,
                      either '+' or '-', optional, defaults to None
     :type polarity: str
+    :param scan_type: Filter by scan type ('Ms' or 'Ms2'), or None for every
+                      scan. Defaults to 'Ms', which is what callers reading the
+                      MS1 time axis want; pass None to span a whole acquisition.
+    :type scan_type: Literal['Ms', 'Ms2'] | None, optional
     :return: Array of filtered scan timestamps [s]
     :rtype: np.ndarray
     """
     with open_backend(datafile_path) as backend:
-        return backend.scan_times(polarity=polarity, t_min=t_min, t_max=t_max)
+        return backend.scan_times(
+            polarity=polarity, t_min=t_min, t_max=t_max, ms_type=scan_type
+        )
 
 
 def get_peak_timeseries(
@@ -718,30 +725,37 @@ def get_centroids_per_scan(
 
 
 def _cluster_scans_by_parent(
-    scan_precursors: dict[int, float],
+    scan_events: dict[int, tuple[float, str]],
     parent_peak_tolerance: float = 0.001,
-) -> dict[float, list[int]]:
-    """Cluster MS2 scans by precursor m/z.
+) -> dict[tuple[float, str], list[int]]:
+    """Group MS2 scans by precursor m/z *and* activation.
 
-    Takes a ``{scan_number: precursor_mz}`` mapping (from a backend), clusters
-    near-duplicate precursors within tolerance, and returns a mapping of
-    canonical parent peak m/z to scan numbers. Backend-agnostic: the precursor
-    extraction itself lives in the backend (``ms2_precursor_by_scan``).
+    Takes a ``{scan_number: (precursor_mz, activation)}`` mapping (from a
+    backend), clusters near-duplicate precursors within tolerance, and returns a
+    mapping of ``(canonical parent peak m/z, activation)`` to scan numbers.
+    Backend-agnostic: the event extraction itself lives in the backend
+    (``ms2_events_by_scan``).
 
-    :param scan_precursors: Mapping of scan number to precursor m/z.
-    :type scan_precursors: dict[int, float]
+    The activation belongs in the key because a stepped-energy acquisition
+    records one precursor at several collision energies -- as separate scan
+    events, and (when stepped by hand) as consecutive blocks of scans rather
+    than interleaved. Keying on m/z alone would average those steps into a
+    single spectrum whose collision energy is a number the instrument never
+    used. Clustering still runs over all the scans of a precursor, so every step
+    of one precursor shares one canonical m/z.
+
+    :param scan_events: Mapping of scan number to (precursor m/z, activation).
+    :type scan_events: dict[int, tuple[float, str]]
     :param parent_peak_tolerance: Tolerance in Da for merging
                                   near-duplicate parent peaks.
     :type parent_peak_tolerance: float
-    :return: Mapping of canonical parent peak m/z to list of scan numbers.
-    :rtype: dict[float, list[int]]
+    :return: Mapping of (canonical parent peak m/z, activation) to scan numbers.
+    :rtype: dict[tuple[float, str], list[int]]
     """
-    scan_parent_peaks: list[tuple[int, float]] = list(scan_precursors.items())
-
-    if not scan_parent_peaks:
+    if not scan_events:
         return {}
 
-    raw_parent_peaks = np.array([pp for _, pp in scan_parent_peaks])
+    raw_parent_peaks = np.array([mz for mz, _ in scan_events.values()])
     sorted_unique = np.sort(np.unique(raw_parent_peaks))
 
     clusters: list[list[float]] = []
@@ -753,16 +767,20 @@ def _cluster_scans_by_parent(
 
     clustered_parent_peaks = [round(float(np.median(c)), 4) for c in clusters]
 
-    parent_peak_mapping: dict[float, list[int]] = {
-        pp: [] for pp in clustered_parent_peaks
-    }
-    for scan_idx, raw_pp in scan_parent_peaks:
+    # Only groups that actually got scans are returned. Clusters are built by
+    # chaining adjacent values, so one can grow wider than the tolerance and
+    # leave an extreme member further from the median than the tolerance
+    # allows; such a scan matches no cluster and is dropped, exactly as before.
+    parent_peak_mapping: dict[tuple[float, str], list[int]] = {}
+    for scan_idx, (raw_pp, activation) in scan_events.items():
         for clustered_pp in clustered_parent_peaks:
             if abs(raw_pp - clustered_pp) <= parent_peak_tolerance:
-                parent_peak_mapping[clustered_pp].append(scan_idx)
+                parent_peak_mapping.setdefault((clustered_pp, activation), []).append(
+                    scan_idx
+                )
                 break
 
-    return parent_peak_mapping
+    return dict(sorted(parent_peak_mapping.items()))
 
 
 def get_ms2_centroids_by_parent(
@@ -775,11 +793,14 @@ def get_ms2_centroids_by_parent(
     parent_peak_tolerance: float = 0.001,
     ppm: int = 1,
     average: bool = True,
-) -> dict[float, tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]]:
-    """Extract averaged centroids for each parent peak in an MS2 raw file.
+) -> dict[tuple[float, str], tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]]:
+    """Extract averaged centroids for each MS2 group in an MS2 raw file.
 
-    Opens the raw file once, groups MS2 scans by parent peak, and averages
-    each group using Thermo's native ppm-based binning.
+    Opens the raw file once, groups MS2 scans by parent peak *and* activation
+    (see :func:`_cluster_scans_by_parent`), and averages each group using
+    Thermo's native ppm-based binning. A stepped-energy acquisition therefore
+    yields one averaged spectrum per collision energy rather than one spectrum
+    blending them all.
 
     :param datafile_path: Path to the Thermo Fisher raw file (.raw).
     :type datafile_path: str
@@ -802,17 +823,13 @@ def get_ms2_centroids_by_parent(
     :param average: If True, return averaged intensities; if False,
                     scale by scan count.
     :type average: bool, optional
-    :return: Mapping of parent peak m/z to
+    :return: Mapping of (parent peak m/z, activation) to
              (masses, intensities, resolutions, signal_to_noise).
-    :rtype: dict[float, tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]]
+    :rtype: dict[tuple[float, str], tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]]
     """
     with open_backend(datafile_path) as backend:
-        precursors = backend.ms2_precursor_by_scan(
-            polarity=polarity, t_min=t_min, t_max=t_max
-        )
-        parent_peak_mapping = _cluster_scans_by_parent(
-            precursors, parent_peak_tolerance
-        )
+        events = backend.ms2_events_by_scan(polarity=polarity, t_min=t_min, t_max=t_max)
+        parent_peak_mapping = _cluster_scans_by_parent(events, parent_peak_tolerance)
         if not parent_peak_mapping:
             return {}
 
@@ -821,30 +838,17 @@ def get_ms2_centroids_by_parent(
             low = mz_min if mz_min is not None else -np.inf
             high = mz_max if mz_max is not None else np.inf
             parent_peak_mapping = {
-                pp: indices
-                for pp, indices in parent_peak_mapping.items()
-                if low <= pp <= high
+                key: indices
+                for key, indices in parent_peak_mapping.items()
+                if low <= key[0] <= high
             }
             if not parent_peak_mapping:
                 return {}
 
-        centroid_mapping: dict[
-            float, tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]
-        ] = {}
-        for pp, scan_indices in parent_peak_mapping.items():
-            if not scan_indices:
-                centroid_mapping[pp] = (
-                    np.array([], dtype=np.float64),
-                    np.array([], dtype=np.float64),
-                    np.array([], dtype=np.float64),
-                    np.array([], dtype=np.float64),
-                )
-                continue
-            centroid_mapping[pp] = backend.average_centroids(
-                scan_indices, ppm=ppm, average=average
-            )
-
-        return centroid_mapping
+        return {
+            key: backend.average_centroids(scan_indices, ppm=ppm, average=average)
+            for key, scan_indices in parent_peak_mapping.items()
+        }
 
 
 def get_ms2_summary_metadata(
@@ -856,8 +860,15 @@ def get_ms2_summary_metadata(
 ) -> dict:
     """Extract MS2 summary metadata from a Thermo raw file.
 
-    Groups MS2 scans by parent peak, extracts HCD energies and isolation
-    width from trailer extra data, and counts MS1/MS2 scans.
+    Groups MS2 scans by parent peak and activation, extracts HCD energies and
+    isolation width from trailer extra data, and counts MS1/MS2 scans.
+
+    ``parent_peaks`` lists the distinct precursors; ``groups`` describes each
+    (precursor, activation) pair separately, so a stepped-energy acquisition is
+    reported step by step -- including each step's scan count and time span,
+    which is what shows that its steps ran as consecutive blocks rather than
+    interleaved. ``hcd_energy_map`` gives the calibrated energies a precursor
+    was measured at, one entry per step, in group order.
 
     :param datafile_path: Path to the Thermo Fisher raw file (.raw).
     :type datafile_path: str
@@ -869,8 +880,9 @@ def get_ms2_summary_metadata(
     :type polarity: Literal['+', '-'] | None, optional
     :param parent_peak_tolerance: Tolerance in Da for merging parent peaks.
     :type parent_peak_tolerance: float
-    :return: Dictionary with parent_peaks, hcd_energy_map, isolation_width,
-             ms1_scan_count, ms2_scan_count, parent_peak_tolerance.
+    :return: Dictionary with parent_peaks, groups, hcd_energy_map,
+             isolation_width, ms1_scan_count, ms2_scan_count,
+             parent_peak_tolerance.
     :rtype: dict
     """
     with open_backend(datafile_path) as backend:
@@ -887,6 +899,7 @@ def get_ms2_summary_metadata(
         if ms2_count == 0:
             return {
                 "parent_peaks": [],
+                "groups": [],
                 "hcd_energy_map": {},
                 "isolation_width": None,
                 "ms1_scan_count": ms1_count,
@@ -894,12 +907,9 @@ def get_ms2_summary_metadata(
                 "parent_peak_tolerance": parent_peak_tolerance,
             }
 
-        # Get MS2 scans grouped by parent peak
-        precursors = backend.ms2_precursor_by_scan(polarity, t_min, t_max)
-        parent_peak_mapping = _cluster_scans_by_parent(
-            precursors, parent_peak_tolerance
-        )
-        parent_peaks = list(parent_peak_mapping.keys())
+        # Get MS2 scans grouped by (parent peak, activation)
+        events = backend.ms2_events_by_scan(polarity, t_min, t_max)
+        parent_peak_mapping = _cluster_scans_by_parent(events, parent_peak_tolerance)
 
         # Isolation width + (calibrated) HCD energy per MS2 scan. Thermo reads
         # these from the trailer ("MS2 Isolation Width:" / "HCD Energy V:");
@@ -908,33 +918,67 @@ def get_ms2_summary_metadata(
             polarity, t_min, t_max
         )
 
-        # Average HCD energies per parent peak, handling step dissociation
-        # where energy values may contain multiple comma-separated values
+        # Scan times, so each group can report the span it was acquired over.
+        # scan_indices and scan_times select identically, so they pair by
+        # position.
+        ms2_indices = backend.scan_indices(polarity, t_min, t_max, ms_type="Ms2")
+        ms2_times = backend.scan_times(polarity, t_min, t_max, ms_type="Ms2")
+        # float(), not the numpy scalar the time array hands back: these go out
+        # over the API, and a numpy float is not JSON-serializable.
+        scan_idx_to_time = {
+            idx: float(t) for idx, t in zip(ms2_indices, ms2_times, strict=True)
+        }
+
+        parent_peaks: list[float] = []
+        groups: list[dict] = []
         hcd_energy_map: dict[float, list[float]] = {}
-        for pp, scan_indices in parent_peak_mapping.items():
+        for (pp, activation), scan_indices in parent_peak_mapping.items():
+            if pp not in hcd_energy_map:
+                parent_peaks.append(pp)
+                hcd_energy_map[pp] = []
+
+            # Averaged within the group, so the energies reported are ones the
+            # instrument actually used. A value may itself be comma-separated
+            # when the instrument stepped the energy *within* one scan, which
+            # is a different thing from the per-scan stepping the group key
+            # separates - each comma-separated step keeps its own entry.
             raw_values = [
                 scan_idx_to_hcd[idx] for idx in scan_indices if idx in scan_idx_to_hcd
             ]
-            if not raw_values:
-                hcd_energy_map[pp] = []
-                continue
-
             step_dissociation_values = [
-                [float(v) for v in str(val).split(",")] for val in raw_values
+                [float(v) for v in str(val).split(",") if v.strip()]
+                for val in raw_values
+                if str(val).strip()
             ]
-            max_steps = max(len(row) for row in step_dissociation_values)
-            averaged = []
-            for step_idx in range(max_steps):
-                step_values = [
-                    row[step_idx]
-                    for row in step_dissociation_values
-                    if step_idx < len(row)
-                ]
-                averaged.append(round(float(np.mean(step_values)), 2))
-            hcd_energy_map[pp] = averaged
+            energies: list[float] = []
+            if step_dissociation_values:
+                max_steps = max(len(row) for row in step_dissociation_values)
+                for step_idx in range(max_steps):
+                    step_values = [
+                        row[step_idx]
+                        for row in step_dissociation_values
+                        if step_idx < len(row)
+                    ]
+                    energies.append(round(float(np.mean(step_values)), 2))
+            hcd_energy_map[pp].extend(energies)
+
+            group_times = [
+                scan_idx_to_time[idx] for idx in scan_indices if idx in scan_idx_to_time
+            ]
+            groups.append(
+                {
+                    "parent_peak_mz": pp,
+                    "activation": activation,
+                    "hcd_energy": energies,
+                    "scan_count": len(scan_indices),
+                    "t_min": min(group_times) if group_times else None,
+                    "t_max": max(group_times) if group_times else None,
+                }
+            )
 
         return {
             "parent_peaks": parent_peaks,
+            "groups": groups,
             "hcd_energy_map": hcd_energy_map,
             "isolation_width": isolation_width,
             "ms1_scan_count": ms1_count,
@@ -950,8 +994,14 @@ def get_ms2_centroids_per_scan_for_parent(
     t_max: float | None = None,
     polarity: Literal["+", "-"] | None = None,
     parent_peak_tolerance: float = 0.001,
+    activation: str | None = None,
 ) -> tuple[list[dict[str, np.ndarray | float]], list[float]]:
     """Extract per-scan centroids and TIC values for MS2 scans matching a parent peak.
+
+    Every activation of the parent peak is included unless ``activation`` names
+    one. Keeping them together is the default because the fragment timeseries of
+    a stepped-energy run is exactly the view that shows fragments appearing and
+    disappearing as the energy steps.
 
     :param datafile_path: Path to the Thermo Fisher raw file (.raw).
     :type datafile_path: str
@@ -965,28 +1015,32 @@ def get_ms2_centroids_per_scan_for_parent(
     :type polarity: Literal['+', '-'] | None, optional
     :param parent_peak_tolerance: Tolerance in Da for matching parent peaks.
     :type parent_peak_tolerance: float
+    :param activation: Restrict to one activation (e.g. ``"hcd40.00"``),
+                       optional; defaults to every activation of the parent.
+    :type activation: str | None, optional
     :return: Tuple of (per-scan centroid dicts, per-scan TIC values).
              Each centroid dict has keys: masses, intensities, resolutions,
              signal_to_noise, timestamp.
     :rtype: tuple[list[dict], list[float]]
     """
     with open_backend(datafile_path) as backend:
-        precursors = backend.ms2_precursor_by_scan(polarity, t_min, t_max)
-        parent_peak_mapping = _cluster_scans_by_parent(
-            precursors, parent_peak_tolerance
-        )
+        events = backend.ms2_events_by_scan(polarity, t_min, t_max)
+        parent_peak_mapping = _cluster_scans_by_parent(events, parent_peak_tolerance)
 
-        # Find the matching parent peak cluster
-        matching_scan_indices = None
-        for pp, scan_indices in parent_peak_mapping.items():
-            if abs(pp - parent_peak_mz) <= parent_peak_tolerance:
-                matching_scan_indices = scan_indices
-                break
+        # Collect every group of this parent peak (one per activation), so the
+        # scans stay in acquisition order across the steps.
+        matching_scan_indices: list[int] = []
+        for (pp, group_activation), scan_indices in parent_peak_mapping.items():
+            if abs(pp - parent_peak_mz) > parent_peak_tolerance:
+                continue
+            if activation is not None and group_activation != activation:
+                continue
+            matching_scan_indices.extend(scan_indices)
 
         if not matching_scan_indices:
             return [], []
 
-        return backend.ms2_centroids_for_scans(matching_scan_indices)
+        return backend.ms2_centroids_for_scans(sorted(matching_scan_indices))
 
 
 class RawFileMetadata:

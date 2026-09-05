@@ -108,13 +108,14 @@ class ClusterClassifier:
     def _classify(self) -> pd.DataFrame:
         rows: list[dict] = []
 
-        for pp in self._data.parent_peaks:
-            ms2 = self._data.ms2_spectra[pp]
-            tic = self._data.ms2_tic[pp]
+        for group in self._data.groups:
+            pp = group.parent_peak_mz
+            ms2 = self._data.ms2_spectra[group]
+            tic = self._data.ms2_tic[group]
             if ms2.mz.size == 0 or tic <= 0:
                 continue
 
-            comp_df = self._compositions.matches.get(pp, pd.DataFrame())
+            comp_df = self._compositions.matches.get(group, pd.DataFrame())
 
             # --- Reagent ion intensity ---
             reagent_int = self._find_reagent_intensity(ms2, comp_df)
@@ -137,6 +138,7 @@ class ClusterClassifier:
 
             rows.append(
                 {
+                    "group": group,
                     "mz": pp,
                     "type": frag_type,
                     "reagent_intensity": reagent_int,

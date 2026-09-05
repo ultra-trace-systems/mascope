@@ -552,6 +552,52 @@ def get_tic_per_scan(
     return tic_time, tic_per_scan
 
 
+def get_acquisition_window(
+    base_filename: str,
+    polarity: Literal["+", "-"] | None = None,
+) -> tuple[float, float]:
+    """First and last scan time [s] of an acquisition, across every scan type.
+
+    This is the window a sample item covers, and it deliberately does not come
+    from the TIC: :func:`get_tic_per_scan` reports MS1 scans, so on a file whose
+    MS2 scans are recorded as their own block -- a manual MS2 acquisition
+    records MS1 first and the fragmentation afterwards, rather than interleaving
+    them the way data-dependent acquisition does -- an MS1-derived window ends
+    before the first MS2 scan and excludes all of them. Spanning every scan type
+    is identical for interleaved files, where MS1 survey scans already bracket
+    the run.
+
+    :param base_filename: Sample file name (base, not full path).
+    :type base_filename: str
+    :param polarity: Polarity of the scans to span ('+' or '-'), optional.
+    :type polarity: Literal['+', '-'] | None, optional
+    :return: (t0, t1) in seconds.
+    :rtype: tuple[float, float]
+    :raises ValueError: When the file reports no scan times to span.
+    """
+    sample_type = m_name.get_sample_file_type(base_filename)
+    match sample_type:
+        case "orbi_raw":
+            datafile_path = m_name.filename_to_datafile_path(base_filename)
+            times = m_thermo.get_scan_timestamps(
+                datafile_path, polarity=polarity, scan_type=None
+            )
+        case _:
+            # No other reader has an MS2 scan type to leave out, so the scan
+            # time axis is the acquisition window.
+            times = get_scan_timestamps(base_filename, polarity=polarity)
+
+    # The raw readers raise rather than hand back an empty selection, but the
+    # zarr time axis can come back empty; say what is wrong rather than let
+    # numpy report a zero-size reduction.
+    if not len(times):
+        raise ValueError(
+            f"No scan times to span for '{base_filename}' (polarity={polarity!r})."
+        )
+
+    return float(np.min(times)), float(np.max(times))
+
+
 async def get_orbi_centroids(
     base_filename: str,
     u_list: Iterable[float] | None = None,
@@ -678,8 +724,11 @@ async def get_orbi_ms2_centroids_by_parent(
     parent_peak_tolerance: float = 0.001,
     ppm: int = 1,
     average: bool = True,
-) -> dict[float, tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]]:
-    """Extract averaged MS2 centroids per parent peak from an Orbitrap raw file.
+) -> dict[tuple[float, str], tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]]:
+    """Extract averaged MS2 centroids per (parent peak, activation) group.
+
+    Grouping includes the activation, so a stepped-energy acquisition returns
+    one averaged spectrum per collision energy.
 
     :param base_filename: Sample file name (base, not full path).
     :type base_filename: str
@@ -699,8 +748,9 @@ async def get_orbi_ms2_centroids_by_parent(
     :type ppm: int, optional
     :param average: If True, return averaged intensities, defaults to True.
     :type average: bool, optional
-    :return: Mapping of parent peak m/z to (masses, intensities, resolutions, signal_to_noise).
-    :rtype: dict[float, tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]]
+    :return: Mapping of (parent peak m/z, activation) to
+             (masses, intensities, resolutions, signal_to_noise).
+    :rtype: dict[tuple[float, str], tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]]
     """
     sample_type = m_name.get_sample_file_type(base_filename)
     match sample_type:
@@ -724,8 +774,8 @@ async def get_orbi_ms2_centroids_by_parent(
 
             if factor is not None:
                 mapped_ms2_centroids = {
-                    pp: (masses * factor, intensities, resolutions, signal_to_noise)
-                    for pp, (
+                    key: (masses * factor, intensities, resolutions, signal_to_noise)
+                    for key, (
                         masses,
                         intensities,
                         resolutions,
@@ -790,6 +840,7 @@ async def get_ms2_fragment_timeseries(
     noise_threshold: float = 10.0,
     parent_peak_tolerance: float = 0.001,
     normalize_by: Literal["tic"] | None = None,
+    activation: str | None = None,
 ) -> dict:
     """Compute fragment timeseries for a single MS2 parent peak.
 
@@ -814,6 +865,10 @@ async def get_ms2_fragment_timeseries(
     :param normalize_by: Normalization mode. ``"tic"`` normalizes by scan TIC,
         ``None`` returns raw intensities.
     :type normalize_by: Literal["tic"] | None, optional
+    :param activation: Restrict to one activation (e.g. ``"hcd40.00"``),
+        optional; defaults to every activation of the parent peak, which is what
+        makes the fragment timeseries of a stepped-energy run show the steps.
+    :type activation: str | None, optional
     :return: Dictionary with mz_values, time, and values arrays.
     :rtype: dict
     """
@@ -830,6 +885,7 @@ async def get_ms2_fragment_timeseries(
                 t_max=t_max,
                 polarity=polarity,
                 parent_peak_tolerance=parent_peak_tolerance,
+                activation=activation,
             )
         case _:
             raise NotImplementedError(
