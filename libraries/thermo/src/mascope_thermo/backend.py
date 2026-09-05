@@ -420,7 +420,7 @@ _AVG_CENTROID_MERGE_FWHM = 0.5  # merge centroids whose gap is below this * loca
 _AVG_CENTROID_EXCLUSIVE_MERGE_FWHM = 1.5
 _AVG_CENTROID_EXCLUSIVE_OVERLAP = 0.2  # max share of the smaller side in shared scans
 _AVG_CENTROID_EXCLUSIVE_COVERAGE = 0.6  # min fraction of the scans the two sides span
-_AVG_CENTROID_EXCLUSIVE_MIN_SIDE = 0.35  # min fraction of the scans on each side (>= 2)
+_AVG_CENTROID_EXCLUSIVE_MIN_SIDE = 0.35  # min fraction of the scans on each side
 _AVG_CENTROID_EXCLUSIVE_MIN_ALTERNATIONS = (
     2  # side changes along the scans; a hand-over is 1
 )
@@ -1466,11 +1466,12 @@ class OpenTFRawBackend:
         sit in scans where the other side has a centroid too -- a stray weak
         label in one scan does not veto the merge, while a real minor ion
         beside a major one, present in the same scans, does; each side must
-        hold at least ``_AVG_CENTROID_EXCLUSIVE_MIN_SIDE`` of the scans, two at
-        the least, which one ion alternating between two positions does and
-        the wobbling fragments beside an intense peak, present in a couple of
-        scans each, do not, and which also keeps two noise labels from
-        different scans apart; the two sides together must cover at least
+        hold at least ``_AVG_CENTROID_EXCLUSIVE_MIN_SIDE`` of the scans, which
+        one ion alternating between two positions does and the wobbling
+        fragments beside an intense peak, present in a couple of scans each,
+        do not, and which also keeps two noise labels from different scans
+        apart (on any window the alternation count below can pass, that share
+        is two scans or more); the two sides together must cover at least
         ``_AVG_CENTROID_EXCLUSIVE_COVERAGE`` of the scans, which only decides
         when they overlap in scans; and, walking the scans in order, the side
         holding more intensity must change at least
@@ -1490,7 +1491,7 @@ class OpenTFRawBackend:
         )
         if n_scans and exclusive.size:
             scans, weights, bin_starts, bin_ends = members
-            min_side = max(2, _AVG_CENTROID_EXCLUSIVE_MIN_SIDE * n_scans)
+            min_side = _AVG_CENTROID_EXCLUSIVE_MIN_SIDE * n_scans
             min_covered = _AVG_CENTROID_EXCLUSIVE_COVERAGE * n_scans
 
             def per_scan(first: int, last: int) -> np.ndarray:

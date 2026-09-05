@@ -1103,9 +1103,9 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
   so a genuine pair of ions resolved within a scan stays two peaks, two ions
   that hand over in time stay two peaks, and noise labels or the wobbling
   fragments beside an intense peak are not joined; Thermo's own averaging
-  reports such an ion as two peaks, so there the readers differ by design. Peak lists detected
-  earlier keep their split peaks until peak detection is re-run for the
-  sample.
+  reports such an ion as two peaks, so there the readers differ by design.
+  Peak lists detected earlier keep their split peaks until peak detection is
+  re-run for the sample.
 
 - The peak inspector's **close alternatives** no longer include the assignment
   the peak was actually given. The list is meant to be the runners-up a peak
