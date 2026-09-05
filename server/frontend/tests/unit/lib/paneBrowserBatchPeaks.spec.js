@@ -196,6 +196,10 @@ async function mountPane(options = {}) {
   // The app facade first: the compute store the pane reads its refusal off is
   // created during that mount, and it reads the facade while being created.
   app = makeApp(options)
+  // The ledger's sort store writes through to localStorage and reads it back on
+  // creation, so without this a sort set in one test would be the next test's
+  // starting order.
+  localStorage.clear()
   setActivePinia(createPinia())
   const wrapper = mount(PaneBrowserBatchPeaks, {
     global: {
@@ -393,6 +397,72 @@ describe('PaneBrowserBatchPeaks tier ordering', () => {
     })
 
     expect(wrapper.vm.rows.map((row) => row.batch_peak_id)).toEqual(['bp-2', 'bp-1'])
+  })
+
+  // The sort lives in a store outside the pane: PaneBrowserMatch swaps this pane
+  // for the sample ledger's whenever a sample is focused, and a sort held in the
+  // pane's own state went with it. A second mount on the same Pinia is that
+  // switch and back - mountPane would start a fresh Pinia, which is the reload
+  // case the store's own spec covers.
+  it('keeps its sort across a remount', async () => {
+    const first = await mountPane()
+    first.vm.sortField = 'mz'
+    first.vm.sortOrder = 1
+    await first.vm.$nextTick()
+    first.unmount()
+
+    const second = mount(PaneBrowserBatchPeaks, {
+      global: { stubs: GLOBAL_STUBS, directives: { tooltip: {}, help: {} } }
+    })
+    await second.vm.$nextTick()
+    expect(second.vm.sortField).toBe('mz')
+    expect(second.vm.sortOrder).toBe(1)
+    const mzs = second.vm.rows.filter((row) => !row.parentId).map((row) => row.mz)
+    expect(mzs).toEqual([...mzs].sort((a, b) => a - b))
+  })
+
+  // Every header but the selection checkbox's explains its column on hover: the
+  // numbers here are properties of the batch peak, where the same column names
+  // in the sample ledger mean one peak's. The directive records what it was
+  // given, and the Column stub renders the header slot the spans live in - a
+  // tooltip placed on the Column itself would never show, since Column renders
+  // no element of its own.
+  it('explains every column header on hover', async () => {
+    app = makeApp()
+    localStorage.clear()
+    setActivePinia(createPinia())
+    const wrapper = mount(PaneBrowserBatchPeaks, {
+      global: {
+        stubs: {
+          ...GLOBAL_STUBS,
+          Column: {
+            ...ColumnStub,
+            template: '<div class="column-stub"><slot name="header" /></div>'
+          }
+        },
+        directives: {
+          tooltip: { mounted: (el, binding) => el.setAttribute('data-tooltip', binding.value) },
+          help: {}
+        }
+      }
+    })
+    await wrapper.vm.$nextTick()
+
+    const tips = wrapper
+      .findAll('.column-stub [data-tooltip]')
+      .map((span) => [span.text(), span.attributes('data-tooltip')])
+    expect(tips.map(([label]) => label)).toEqual([
+      'm/z',
+      'Intensity',
+      'Formula',
+      'Tier',
+      'Samples',
+      '' // the verdict header is an icon
+    ])
+    for (const [, tip] of tips) expect(tip.length).toBeGreaterThan(20)
+    expect(tips.find(([label]) => label === 'm/z')[1]).toMatch(/anchor/i)
+    expect(tips.find(([label]) => label === 'Intensity')[1]).toMatch(/any sample/)
+    expect(tips.find(([label]) => label === 'Formula')[1]).toMatch(/consensus/i)
   })
 
   it('sorts the tier column on the rank, which is what the header click reads', async () => {

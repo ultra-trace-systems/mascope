@@ -6,6 +6,26 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
 
 ### Added
 
+- **The peak inspector reads the same for a sample served from the batch ledger.**
+  Its *confidence* and *P(correct)* rows stay on the card: the P(correct) recorded
+  when the sample was folded into the ledger, said to be so on hover, or a dash with
+  the reason there is none; the arbitration confidence, which only a run of the
+  sample computes, reads as a dash with the reason. And the isotopologue table now
+  lists a lone main peak too, so the focused peak's m/z is read in the same place
+  whether or not the pattern has more peaks.
+- **P(correct) tooltips in the sample ledger.** The column header says in one line
+  what the column is; a dash still explains itself on hover, and a value on a sample
+  served from the batch ledger says it was recorded when the sample was folded in.
+- **Each ledger keeps its sort.** The column the *Batch peaks* ledger or a sample's
+  ledger is sorted by now survives the switch between the two ledgers, and a reload,
+  instead of snapping back to the default order every time a sample is focused or
+  unfocused.
+- **Header tooltips in the batch ledger.** Hovering a column header of the *Batch
+  peaks* ledger says in a line what the column holds at batch level - the anchor's
+  m/z bin, the brightest sample's intensity, the consensus formula and tier, the
+  sample count, the batch-level verdict. (The two headers that already had a
+  tooltip declared never showed it.)
+
 - **Verdicts from the sample ledger.** The Verdict column of the per-sample ledger is
   now a button, as in the *Batch peaks* ledger: an unverified row shows a faint seal
   that opens the verdict form in place, recorded on the family's M0.
@@ -46,18 +66,6 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
   engine's formula under the engine's name; curated and isotopologue batch
   peaks are left alone, and the run's summary counts every skipped row by
   reason. The previous run's snapshot keeps the ledger as it was.
-
-- **Batch runs.** The batch ledger now has a history: one run per batch-level
-  operation that rewrote it - *Rebuild batch ledger*, *Search untargeted* with
-  the parameters it was given, an import - and the folds that built it. Exactly
-  one run is current (the live ledger); when a new run starts, the current
-  run's ledger is kept as a compact per-anchor snapshot, so the run selector
-  beside the batch actions shows the *Batch peaks* ledger and the chart as any
-  earlier run left them, read-only. The newest few runs are kept per batch and
-  older ones pruned with their snapshots; a second operation on a ledger one is
-  still rewriting is refused. Routes: `GET /api/batch-peaks/batch/{id}/runs`,
-  and `batch_peak_run_id` on the ledger and series reads; the SDK gained
-  `batch_peaks.runs()` and `list(run_id=...)`. Migration `f2a7c9d1e4b8`.
 
 - **Batch runs.** The batch ledger now has a history: one run per batch-level
   operation that rewrote it - *Rebuild batch ledger*, *Search untargeted* with
@@ -1315,6 +1323,11 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
 
 ### Fixed
 
+- **Scroll-to-row in production builds.** The sample, ion and peak tables reached
+  their virtual scroller through a handle that exists only in development builds,
+  so a production build always took a cruder fallback that scrolls the row to the
+  top and nudges it afterwards. They now ask the table itself, and scroll the least
+  distance that brings the row into view, as the dev server always did.
 - **Export file names.** A batch or sample whose name contains a path separator or
   another character no file system accepts (`/`, `\\`, `:`, `*`, `?`, `\"`, `<`, `>`,
   `|`) broke the temp file path of the batch ledger CSV, the peak CSVs and the
