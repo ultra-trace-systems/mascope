@@ -22,7 +22,9 @@ class FragmentTable:
         self._max_fragments = max_fragments
         self._current_df = pd.DataFrame()
 
-        self._parent_peak_options = {f"{pp:.4f} m/z": pp for pp in data.parent_peaks}
+        # One entry per group: a stepped-energy acquisition gives one
+        # precursor several spectra, one per collision energy.
+        self._parent_peak_options = {str(group): group for group in data.groups}
 
         self._dropdown = widgets.Dropdown(
             options=self._parent_peak_options,
@@ -58,11 +60,11 @@ class FragmentTable:
         self._update()
         display(self._container)
 
-    def _build_table_df(self, pp: float) -> pd.DataFrame:
-        """Builds a DataFrame for the fragments of the given parent peak."""
-        ms2_spec = self._data.ms2_spectra[pp]
-        ms2_tic = self._data.ms2_tic[pp]
-        comp_df = self._compositions.matches.get(pp, pd.DataFrame())
+    def _build_table_df(self, group) -> pd.DataFrame:
+        """Builds a DataFrame for the fragments of the given MS2 group."""
+        ms2_spec = self._data.ms2_spectra[group]
+        ms2_tic = self._data.ms2_tic[group]
+        comp_df = self._compositions.matches.get(group, pd.DataFrame())
 
         frag_mzs = ms2_spec.mz
         frag_ints = ms2_spec.intensity
@@ -90,15 +92,15 @@ class FragmentTable:
             .reset_index(drop=True)
         )
 
-    def _get_parent_info(self, pp: float) -> dict:
-        """Retrieves metadata for the given parent peak."""
-        parent_int = self._data.parent_peak_intensities[pp]
-        iso_tic = self._data.ms1_isolation_tic[pp]
+    def _get_parent_info(self, group) -> dict:
+        """Retrieves metadata for the given MS2 group."""
+        parent_int = self._data.parent_peak_intensities[group]
+        iso_tic = self._data.ms1_isolation_tic[group]
         pct_tic = (parent_int / iso_tic * 100) if iso_tic > 0 else 0.0
-        hcd = self._data.hcd_energy_map[pp]
-        comp_df = self._compositions.matches.get(pp, pd.DataFrame())
+        hcd = self._data.hcd_energy_map[group]
+        comp_df = self._compositions.matches.get(group, pd.DataFrame())
 
-        parent_comp = get_composition_label(pp, comp_df)
+        parent_comp = get_composition_label(group.parent_peak_mz, comp_df)
 
         return {
             "intensity": parent_int,
@@ -151,9 +153,9 @@ class FragmentTable:
 
     def _update(self, change=None):
         """Updates the fragment table based on the selected parent peak."""
-        pp = self._dropdown.value
-        self._current_df = self._build_table_df(pp)
-        parent_info = self._get_parent_info(pp)
+        group = self._dropdown.value
+        self._current_df = self._build_table_df(group)
+        parent_info = self._get_parent_info(group)
         self._table_html.value = self._render_html(parent_info, self._current_df)
         self._download_html.value = ""
 
@@ -162,17 +164,18 @@ class FragmentTable:
         import io
 
         buf = io.StringIO()
-        for pp in self._data.parent_peaks:
-            pi = self._get_parent_info(pp)
+        for group in self._data.groups:
+            pi = self._get_parent_info(group)
             hcd_str = ", ".join(str(v) for v in pi["hcd"])
 
-            buf.write(f"m/z,{pp:.4f}\n")
+            buf.write(f"m/z,{group.parent_peak_mz:.4f}\n")
+            buf.write(f"Activation,{group.activation}\n")
             buf.write(f"Intensity (MS1),{pi['intensity']:.0f}\n")
             buf.write(f"% TIC (isolation window),{pi['pct_tic']:.1f}\n")
             buf.write(f'HCD energy,"{hcd_str} V"\n')
             buf.write(f"Composition,{pi['composition']}\n")
 
-            df = self._build_table_df(pp)
+            df = self._build_table_df(group)
             df.to_csv(buf, index=False)
             buf.write("\n")
 

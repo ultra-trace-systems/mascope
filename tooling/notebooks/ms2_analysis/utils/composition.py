@@ -32,9 +32,9 @@ class CompositionMap:
         self._heuristic_config = heuristic_config
 
         self.matches = {}
-        for pp in data.parent_peaks:
-            mz = data.ms2_spectra[pp].mz
-            intensity = data.ms2_spectra[pp].intensity
+        for group in data.groups:
+            mz = data.ms2_spectra[group].mz
+            intensity = data.ms2_spectra[group].intensity
             ms2_peak_df = pd.DataFrame({"mz": mz, "intensity": intensity})
 
             assigned_peaks, _ = assign_compositions(
@@ -54,7 +54,9 @@ class CompositionMap:
             }
             assigned_peaks = assigned_peaks.fillna(placeholders)
 
-            self.matches[pp] = assigned_peaks.sort_values("mz").reset_index(drop=True)
+            self.matches[group] = assigned_peaks.sort_values("mz").reset_index(
+                drop=True
+            )
 
 
 def get_composition_label(mz: float, comp_df: pd.DataFrame) -> str:
