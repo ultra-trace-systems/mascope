@@ -477,12 +477,13 @@ def _ppm_bin(
     """
     empty = np.array([], dtype=np.float64)
     if mz.size == 0:
+        empty_idx = np.array([], dtype=np.intp)
         return (
             empty,
             empty,
             [empty for _ in extras],
             empty,
-            [] if groups is not None else None,
+            None if groups is None else (empty_idx, empty, empty_idx, empty_idx),
         )
 
     order = np.argsort(mz, kind="stable")

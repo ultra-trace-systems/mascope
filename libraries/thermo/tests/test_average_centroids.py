@@ -376,11 +376,12 @@ def test_exclusive_merge_needs_both_sides_to_be_substantial():
 
 
 def test_two_scans_cannot_establish_an_alternation():
-    # Two labels 1 FWHM apart, one in each of two scans. Every proportional
-    # gate passes -- the sides share no scan, cover both of them, and hold half
-    # the scans each -- so only the floor of two scans a side keeps them apart.
-    # It is what stops a pair of unrelated noise labels being read as one
-    # alternating ion on a window too short to show an alternation.
+    # Two labels 1 FWHM apart, one in each of two scans. They share no scan,
+    # cover both and hold half each, but two scans can show only one side
+    # change, under the two the rule asks for, so a pair of unrelated noise
+    # labels on a window this short is never read as one alternating ion. The
+    # floor of two scans a side holds them apart as well; with the alternation
+    # count in place it no longer decides a case of its own.
     a = 61.0397
     scans = _scans_of([[(a, 1e5)], [(_fwhm_apart(a, 1.0), 1e5)]])
 
@@ -440,3 +441,78 @@ def test_bins_out_of_label_order_are_sorted_before_the_merge():
     # the step; the one in the three stepped scans reads 6 ppm above its own.
     np.testing.assert_allclose(masses, [high, low * (1 + 6.0 / 1e6)], rtol=1e-12)
     np.testing.assert_allclose(intensities, [4e5, 3e5])
+
+
+def test_a_window_with_no_labels_is_empty_not_an_error():
+    # Scans that carry conversion parameters but hold no label -- a blank
+    # stretch of an acquisition, or a window that falls between two -- take
+    # the frequency-keyed path with nothing in it.
+    scans = _scans_of([[], [], []])
+
+    masses, intensities, resolutions, sn = _backend(scans).average_centroids(
+        [1, 2, 3], ppm=1
+    )
+
+    assert masses.size == 0
+    assert intensities.size == resolutions.size == sn.size == 0
+
+
+def test_a_window_whose_labels_are_all_dropped_is_empty():
+    # Labels whose resolution or S:N is not finite are dropped before the
+    # binning, which can leave a window that did hold labels with none.
+    scans = _scans_of([[(100.0, 1e5)], [(100.0, 1e5)], [(100.0, 1e5)]])
+    for n in (1, 2, 3):
+        scans[n]["labels"]["signal_to_noise"] = np.array([np.nan])
+
+    masses, intensities, _, _ = _backend(scans).average_centroids([1, 2, 3], ppm=1)
+
+    assert masses.size == 0
+    assert intensities.size == 0
+
+
+def test_exclusive_merge_needs_a_substantial_side_however_it_alternates():
+    # A fragment in two of the eight scans beside an ion holding the other
+    # six. The sides share no scan, cover every one, and the dominant side
+    # changes three times, so the per-side floor is the only gate left --
+    # which is what the wobbling fragments beside an intense peak look like,
+    # and Thermo reports them as the separate peaks they are.
+    a = 61.0397
+    b = _fwhm_apart(a, 1.0)
+    scans = _scans_of([[(a, 1e5)] if n in (0, 4) else [(b, 1e5)] for n in range(8)])
+
+    masses, intensities, _, _ = _backend(scans).average_centroids(JITTER_SCANS, ppm=1)
+
+    assert masses.size == 2
+    np.testing.assert_allclose(intensities, [2e5, 6e5])
+
+
+def test_exclusive_merge_weighs_a_cluster_merged_before_it():
+    # A and B are 0.4 FWHM apart and merge unconditionally; C sits 1.2 FWHM
+    # above B, sharing every scan with A and none with B. Weighed as the A+B
+    # cluster the pair overlaps and C stays a peak of its own; weighed as B
+    # alone it reads as a clean alternation and all three would collapse into
+    # one. Only the walk back over the merged pair tells them apart.
+    a = 61.0397
+    mid, top = _fwhm_apart(a, 0.4), _fwhm_apart(a, 1.6)
+    scans = _scans_of(
+        [[(a, 1e5), (top, 1e5)] if n % 2 == 0 else [(mid, 1e5)] for n in range(8)]
+    )
+
+    masses, intensities, _, _ = _backend(scans).average_centroids(JITTER_SCANS, ppm=1)
+
+    assert masses.size == 2
+    np.testing.assert_allclose(intensities, [8e5, 4e5])
+
+
+def test_two_side_changes_are_enough_to_merge():
+    # The threshold is two changes, one more than a hand-over shows. An ion
+    # reading high in scans 3 to 5 and low in the rest changes side exactly
+    # twice, which is the shallowest alternation the rule accepts.
+    a = 61.0397
+    b = _fwhm_apart(a, 1.0)
+    scans = _scans_of([[(b, 1e5)] if n in (2, 3, 4) else [(a, 1e5)] for n in range(8)])
+
+    masses, intensities, _, _ = _backend(scans).average_centroids(JITTER_SCANS, ppm=1)
+
+    assert masses.size == 1
+    assert intensities[0] == pytest.approx(8e5)
