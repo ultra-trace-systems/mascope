@@ -199,13 +199,50 @@ def _str_or_none(value) -> str | None:
 
 
 def _isotope_offset_label(iso_mz: float, main_mz: float | None) -> str | None:
-    """Label an isotopologue by its nominal mass offset from the ion's M0."""
+    """Label an isotopologue by its nominal mass offset from the ion's M0, the
+    monoisotopic isotopologue: ``M+1``, ``M+2`` ... and, for an element whose
+    most abundant isotope is not its lightest (iron), ``M-2``."""
     if main_mz is None or not np.isfinite(main_mz):
         return None
     offset = int(round(iso_mz - main_mz))
     if offset == 0:
         return "M0"
     return f"M+{offset}" if offset > 0 else f"M{offset}"
+
+
+def is_monoisotopic_formula(formula) -> bool:
+    """Whether an isotopologue formula names the ion's monoisotopic isotopologue.
+
+    The generator writes a substituted isotope in brackets (``C5[13C]H13O6+``,
+    ``[81Br]Br2-``) and the monoisotopic isotopologue - every element at its
+    most abundant isotope - without (``C6H13O6+``, ``Br3-``).
+    """
+    return isinstance(formula, str) and bool(formula) and "[" not in formula
+
+
+def monoisotopic_row(ion_rows: pd.DataFrame) -> pd.Series:
+    """The row of an ion's monoisotopic isotopologue: the M0 every role and
+    offset label counts from, the way an isotope table counts - which for a
+    bromine- or chlorine-rich ion is the lightest peak of the cluster, not the
+    tallest. The lightest row stands in when no formula carries the isotope
+    marker that tells the two apart, and is the same row wherever an element's
+    most abundant isotope is also its lightest.
+
+    Positionally off a sort rather than ``.loc[idxmin()]``: a frame that has
+    been through a gate and a scorer can carry a duplicated index, and that
+    lookup would then hand back a frame where every caller expects one row.
+
+    :param ion_rows: One ion's rows of an isotope frame (``mz``, and
+        ``target_isotope_formula`` where the frame has it).
+    """
+    ordered = ion_rows.sort_values("mz")
+    if "target_isotope_formula" in ordered.columns:
+        mono = ordered[
+            ordered["target_isotope_formula"].map(is_monoisotopic_formula).astype(bool)
+        ]
+        if not mono.empty:
+            return mono.iloc[0]
+    return ordered.iloc[0]
 
 
 # Columns the ion-level fit score needs on the isotope frame. Absent (e.g. a lighter
@@ -419,9 +456,11 @@ def invert_matches_to_peak_assignments(
     smaller m/z error), and keeps the runners-up as alternatives - the
     single-owner-per-peak invariant.
 
-    Roles: the winner is 'M0' when it is its ion's reference (most abundant)
-    isotope, otherwise 'iso_child' pointing at the assignment that holds the
-    ion's M0 peak (when that peak was also won by the same ion).
+    Roles: the winner is 'M0' when it is its ion's monoisotopic isotopologue -
+    the M0 an isotope table counts from, the lightest peak of a bromine-rich
+    cluster rather than the tallest - otherwise 'iso_child' pointing at the
+    assignment that holds the ion's M0 peak (when that peak was also won by the
+    same ion).
 
     :param match_isotope_df: Output of compute_match_isotopes enriched with
         target metadata columns (target_compound_id, target_compound_formula,
@@ -479,13 +518,20 @@ def invert_matches_to_peak_assignments(
                 REFERENCE_IDENTITIES_COL
             ]
 
-    # Reference (most abundant) isotope per ion, used for role attribution
-    # and isotope labelling. Computed over the full target set so an ion
-    # whose M0 went unmatched still labels its children correctly.
-    main_idx = match_isotope_df.groupby("target_ion_id")["relative_abundance"].idxmax()
-    main_isotopes = match_isotope_df.loc[main_idx]
-    main_isotope_ids = set(main_isotopes["target_isotope_id"])
-    main_mz_by_ion = main_isotopes.set_index("target_ion_id")["mz"].to_dict()
+    # Reference isotope per ion - the monoisotopic isotopologue, the M0 an isotope
+    # table counts from - used for role attribution and isotope labelling. For a
+    # bromine- or chlorine-rich ion that is the lightest peak of the cluster, not
+    # the most intense one. Computed over the full target set so an ion whose M0
+    # went unmatched still labels its children correctly.
+    references = [
+        monoisotopic_row(group)
+        for _, group in match_isotope_df.groupby("target_ion_id", sort=False)
+    ]
+    main_isotope_ids = {reference["target_isotope_id"] for reference in references}
+    main_mz_by_ion = {
+        str(reference["target_ion_id"]): float(reference["mz"])
+        for reference in references
+    }
 
     # Arbitration (P2): rank a peak's competing candidates by evidence =
     # fit x chemical plausibility, not fit alone, so a chemically implausible formula

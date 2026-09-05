@@ -368,17 +368,28 @@ const corroborationTooltip = computed(() => {
 const isoLabel = (iso) =>
   iso.isotope_formula ? formatIsotopeFormula(iso.isotope_formula) : iso.isotope_label || '-'
 
-// Theoretical (predicted) relative abundance of an isotopologue as a fraction
-// of M0, recovered from the stored errors:
+// Theoretical (predicted) relative abundance of an isotopologue, as a fraction
+// of the family's most abundant isotopologue - the way an isotope table gives
+// it, so nothing reads above 100 %. A measured row (a ledger-served family)
+// brings the prediction itself, already on that scale. A run's row recovers
+// its prediction from the stored errors, relative to the M0,
 //   theoretical_rel = observed_rel / (1 + abundance_error),  observed_rel = I / I(M0)
-const theoreticalRel = (iso) => {
-  // A measured isotopologue brings the prediction itself.
+// and the family's largest value is then the reference: the M0 itself for most
+// ions, a heavier isotopologue for a bromine- or chlorine-rich one, whose M0 is
+// the lightest peak of the cluster and not the tallest.
+const relativeToM0 = (iso) => {
   if (iso.relative_abundance != null) return iso.relative_abundance
   const base = m0.value?.sample_peak_intensity
   if (!base || base <= 0 || iso.sample_peak_intensity == null) return null
   const observed = iso.sample_peak_intensity / base
   const denom = 1 + (iso.abundance_error ?? 0)
   return denom > 0 ? observed / denom : null
+}
+const theoreticalRel = (iso) => {
+  const rel = relativeToM0(iso)
+  if (rel == null) return null
+  const top = familyRelReference.value
+  return top && top > 0 ? rel / top : rel
 }
 const relAbuFmt = new Intl.NumberFormat('en-US', {
   style: 'percent',
@@ -525,6 +536,12 @@ const withMeasured = (row) => {
 }
 const evidenceRow = computed(() => withMeasured(focusedAssignment.value))
 const familyRows = computed(() => family.value.map(withMeasured))
+// The family's largest predicted abundance relative to the M0 - what the
+// abundance column is a fraction of (see theoreticalRel).
+const familyRelReference = computed(() => {
+  const values = familyRows.value.map(relativeToM0).filter((v) => v != null && v > 0)
+  return values.length ? Math.max(...values) : null
+})
 const plausibility = computed(
   () => provenance.value?.plausibility ?? measured.value?.plausibility ?? null
 )
