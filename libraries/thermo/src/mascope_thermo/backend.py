@@ -421,6 +421,9 @@ _AVG_CENTROID_EXCLUSIVE_MERGE_FWHM = 1.5
 _AVG_CENTROID_EXCLUSIVE_OVERLAP = 0.2  # max share of the smaller side in shared scans
 _AVG_CENTROID_EXCLUSIVE_COVERAGE = 0.6  # min fraction of the scans the two sides span
 _AVG_CENTROID_EXCLUSIVE_MIN_SIDE = 0.35  # min fraction of the scans on each side (>= 2)
+_AVG_CENTROID_EXCLUSIVE_MIN_ALTERNATIONS = (
+    2  # side changes along the scans; a hand-over is 1
+)
 _ZEROFILL_GAP_FACTOR = 4.0  # profile m/z gap > this * median = a cluster boundary
 _ZEROFILL_EDGE_PPM = 2.0  # place baseline zeros this far outside each cluster edge
 
@@ -467,9 +470,10 @@ def _ppm_bin(
     Returns ``(binned_mz, summed_intensity, [binned_extra, ...], counts,
     members)`` where ``counts`` is the number of pooled points in each bin (=
     scans contributing a centroid, used to scale the averaged S:N) and
-    ``members`` holds, per bin, the ``groups`` id (the scan) and the intensity
-    of each of its points as a pair of arrays -- or None when ``groups`` is
-    not given.
+    ``members`` is ``(scans, intensities, starts, ends)``: the ``groups`` id
+    and the intensity of every point in bin order, and where each bin starts
+    and ends in them -- or None when ``groups`` is not given. Nothing is
+    sliced up front; a consumer takes the bins it looks at.
     """
     empty = np.array([], dtype=np.float64)
     if mz.size == 0:
@@ -495,9 +499,7 @@ def _ppm_bin(
     members = (
         None
         if groups is None
-        else list(
-            zip(np.split(groups[order], starts[1:]), np.split(intensity, starts[1:]))
-        )
+        else (groups[order], intensity, starts, np.append(starts[1:], mz.size))
     )
     counts = np.diff(np.append(starts, mz.size))
     isum = np.add.reduceat(intensity, starts)
@@ -1337,7 +1339,8 @@ class OpenTFRawBackend:
             order = np.argsort(masses, kind="stable")
             masses, summed, present = masses[order], summed[order], present[order]
             resolutions, signal_to_noise = resolutions[order], signal_to_noise[order]
-            members = [members[k] for k in order]
+            scans_sorted, weights_sorted, bin_starts, bin_ends = members
+            members = (scans_sorted, weights_sorted, bin_starts[order], bin_ends[order])
         # Merge jitter-splits: the residual between-scan m/z wobble can still
         # exceed the ppm bin, splitting one peak's per-scan centroids into
         # adjacent bins. Collapse neighbours whose gap is well below the local
@@ -1433,8 +1436,8 @@ class OpenTFRawBackend:
         resolutions: np.ndarray,
         sn: np.ndarray,
         present: np.ndarray,
-        members: list[tuple[np.ndarray, np.ndarray]] | None = None,
-        n_scans: int | None = None,
+        members: tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray],
+        n_scans: int,
     ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
         """Merge adjacent centroids that are a jitter-split of one peak.
 
@@ -1445,30 +1448,35 @@ class OpenTFRawBackend:
         intensity, intensity-weighted resolution / S:N, and summed ``present``
         (the split halves' scans add up to the merged peak's scan count).
 
-        With ``members`` (per bin, the scan and the intensity of each of its
-        centroids) and ``n_scans`` (how many scans were pooled) a second, wider
-        rule applies, up to ``_AVG_CENTROID_EXCLUSIVE_MERGE_FWHM`` * the local
-        FWHM: neighbours are merged when the scans hold one side or the other,
-        not both. An ion whose measured position jitters from scan to scan by
-        about its own width (seen on a dominant ion at a few million counts per
-        scan, with the calibration steady) yields one centroid per scan,
-        landing in one of two bins, so the bins alternate over the scans; two
-        ions that close are resolved within a scan, so their bins share scans
-        and stay apart. Concretely, at most ``_AVG_CENTROID_EXCLUSIVE_OVERLAP``
-        of the smaller side's intensity may sit in scans where the other side
-        has a centroid too -- a stray weak label in one scan does not veto the
-        merge, while a real minor ion beside a major one, present in the same
-        scans, does -- the two sides together must cover at least
-        ``_AVG_CENTROID_EXCLUSIVE_COVERAGE`` of the scans, so that two noise
-        labels from different scans, which are trivially exclusive, are left
-        alone (a transient ion's jitter split is therefore left as it was),
-        and each side must hold at least ``_AVG_CENTROID_EXCLUSIVE_MIN_SIDE``
-        of the scans, two at the least: one ion alternating between two
-        positions fills both sides, whereas the wobbling fragments beside an
-        intense peak come and go within a couple of scans, and Thermo reports
-        those as the separate peaks they look like. The per-scan intensities
-        are carried across the cluster being built, so a fence of satellites
-        cannot chain through a peak pair by pair.
+        A second, wider rule applies up to ``_AVG_CENTROID_EXCLUSIVE_MERGE_FWHM``
+        * the local FWHM, read from ``members`` (the scan and intensity of every
+        pooled centroid in bin order, with each bin's start and end into them,
+        as ``_ppm_bin`` returns them) and ``n_scans`` (how many scans were
+        pooled): neighbours are merged when the scans hold one side or the
+        other, not both, and alternate between them. An ion whose measured
+        position jitters from scan to scan by about its own width (seen on a
+        dominant ion at a few million counts per scan, with the calibration
+        steady) yields one centroid per scan, landing now in one bin and now
+        in the other; two ions that close are resolved within a scan, so their
+        bins share scans; and two ions that hand over in time, one present
+        before a transition and the other after, share no scan either but
+        change side only once. Concretely, at most
+        ``_AVG_CENTROID_EXCLUSIVE_OVERLAP`` of the smaller side's intensity may
+        sit in scans where the other side has a centroid too -- a stray weak
+        label in one scan does not veto the merge, while a real minor ion
+        beside a major one, present in the same scans, does; each side must
+        hold at least ``_AVG_CENTROID_EXCLUSIVE_MIN_SIDE`` of the scans, two at
+        the least, which one ion alternating between two positions does and
+        the wobbling fragments beside an intense peak, present in a couple of
+        scans each, do not, and which also keeps two noise labels from
+        different scans apart; the two sides together must cover at least
+        ``_AVG_CENTROID_EXCLUSIVE_COVERAGE`` of the scans, which only decides
+        when they overlap in scans; and, walking the scans in order, the side
+        holding more intensity must change at least
+        ``_AVG_CENTROID_EXCLUSIVE_MIN_ALTERNATIONS`` times. The per-scan
+        intensities are carried along the cluster on both sides of the pair
+        under test, so a fence of satellites cannot chain through a peak pair
+        by pair.
         """
         if masses.size <= 1:
             return masses, intensities, resolutions, sn, present
@@ -1476,35 +1484,62 @@ class OpenTFRawBackend:
         gap_ppm = np.diff(masses) / masses[:-1] * 1e6
         local = np.minimum(fwhm_ppm[:-1], fwhm_ppm[1:])
         merge = gap_ppm < _AVG_CENTROID_MERGE_FWHM * local
-        if members is not None and n_scans:
-            exclusive = gap_ppm < _AVG_CENTROID_EXCLUSIVE_MERGE_FWHM * local
+        exclusive = np.flatnonzero(
+            (gap_ppm < _AVG_CENTROID_EXCLUSIVE_MERGE_FWHM * local) & ~merge
+        )
+        if n_scans and exclusive.size:
+            scans, weights, bin_starts, bin_ends = members
+            min_side = max(2, _AVG_CENTROID_EXCLUSIVE_MIN_SIDE * n_scans)
+            min_covered = _AVG_CENTROID_EXCLUSIVE_COVERAGE * n_scans
 
             def per_scan(first: int, last: int) -> np.ndarray:
-                scans = np.concatenate([members[k][0] for k in range(first, last + 1)])
-                weights = np.concatenate(
-                    [members[k][1] for k in range(first, last + 1)]
-                )
-                return np.bincount(scans, weights=weights, minlength=n_scans)
+                """Intensity per scan over bins ``first`` to ``last`` inclusive."""
+                acc = np.zeros(n_scans)
+                for k in range(first, last + 1):
+                    part = slice(bin_starts[k], bin_ends[k])
+                    acc += np.bincount(
+                        scans[part], weights=weights[part], minlength=n_scans
+                    )
+                return acc
 
-            for i in np.flatnonzero(exclusive & ~merge):
-                # The cluster bin i belongs to runs back over merged pairs;
-                # decisions made earlier in this loop are already in `merge`.
-                start = i
-                while start > 0 and merge[start - 1]:
-                    start -= 1
-                cluster = per_scan(start, i)
-                nxt = per_scan(i + 1, i + 1)
-                smaller = min(cluster.sum(), nxt.sum())
-                shared = np.minimum(cluster, nxt).sum()
-                covered = np.count_nonzero((cluster > 0) | (nxt > 0)) / n_scans
-                side = min(np.count_nonzero(cluster > 0), np.count_nonzero(nxt > 0))
+            # `left` accumulates the cluster ending at bin `left_end`; it is
+            # extended over the bins that joined since, or started afresh at
+            # the first bin of the cluster bin i belongs to, which runs back
+            # over merged pairs whose decisions are final by now.
+            left, left_end = None, -1
+            for i in exclusive:
+                if left is not None and left_end < i and merge[left_end:i].all():
+                    left += per_scan(left_end + 1, i)
+                elif left is None or left_end != i:
+                    start = i
+                    while start > 0 and merge[start - 1]:
+                        start -= 1
+                    left = per_scan(start, i)
+                # The right side runs forward over the pairs already merged
+                # unconditionally, so a bin that will join it either way is
+                # weighed now rather than slipping in afterwards.
+                end = i + 1
+                while end < masses.size - 1 and merge[end]:
+                    end += 1
+                right = per_scan(i + 1, end)
+                smaller = min(left.sum(), right.sum())
+                shared = np.minimum(left, right).sum()
+                held = (left > 0) | (right > 0)
+                side = min(np.count_nonzero(left > 0), np.count_nonzero(right > 0))
+                dominant = (right > left)[held]
+                alternations = np.count_nonzero(dominant[1:] != dominant[:-1])
                 if (
                     smaller > 0
                     and shared <= _AVG_CENTROID_EXCLUSIVE_OVERLAP * smaller
-                    and covered >= _AVG_CENTROID_EXCLUSIVE_COVERAGE
-                    and side >= max(2, _AVG_CENTROID_EXCLUSIVE_MIN_SIDE * n_scans)
+                    and side >= min_side
+                    and np.count_nonzero(held) >= min_covered
+                    and alternations >= _AVG_CENTROID_EXCLUSIVE_MIN_ALTERNATIONS
                 ):
                     merge[i] = True
+                    left += right
+                else:
+                    left = right
+                left_end = end
         starts = np.concatenate(([0], np.flatnonzero(~merge) + 1))
         isum = np.add.reduceat(intensities, starts)
         counts = np.diff(np.append(starts, masses.size))
