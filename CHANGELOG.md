@@ -1093,6 +1093,23 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
 
 ### Fixed
 
+- **A raw file with no MS1 scans now fails as data instead of as a fault.**
+  Peak detection and the instrument-function fit both read MS1, so an
+  acquisition of fragmentation scans alone has nothing for them to run on. Every
+  property the extraction reads is answerable from the MS2 scans, though, so
+  such a file survived extraction and died inside the fit on the reader's own
+  `NoScansFoundError` - logged with a traceback at the level error monitoring
+  subscribes to, and reported to the operator as
+  `No scans found matching the specified filters: polarity='+', ms_type='Ms'`.
+  It is now recognised up front and refused the way an empty acquisition is:
+  the file still lands in `failed_files`, but with a message that says what is
+  wrong with it and without minting a monitoring event. Importing such files as
+  MS2-only samples is a separate question and unchanged - they are still
+  refused. Relatedly, asking for a sample item in a polarity the file does not
+  carry now returns the "No scans with 'negative' polarity were found" message
+  it always intended to: the raw readers raise `NoScansFoundError` there, which
+  was not caught, so the request came back a 500.
+
 - **A manual MS2 acquisition no longer loses all of its MS2 scans.** A sample's
   time window was computed from the TIC, which reports MS1 scans only, so it
   ended at the last MS1 scan. Data-dependent acquisition hides that - its
