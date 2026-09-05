@@ -230,6 +230,45 @@ def stubbed_scorer(monkeypatch):
     return calls
 
 
+@pytest.fixture
+def stubbed_scorer_missing_main(monkeypatch):
+    """The seeded scorer with the envelope paired everywhere but at the main
+    peak: the M0 prediction found no peak, the M+1 paired to the 182."""
+
+    async def match_params(sample_item_id):
+        return SimpleNamespace(isotope_abundance_threshold=0.01)
+
+    async def seeded(sample, seeds, params):
+        scored = pd.DataFrame(
+            [
+                {
+                    "target_ion_id": "ion-glc",
+                    "mz": 181.0707,
+                    "target_isotope_formula": "C6H13O6+",
+                    "relative_abundance": 1.0,
+                    "sample_peak_id": None,
+                    "match_mz_error": None,
+                    "match_abundance_error": None,
+                    "target_ion_formula": "C6H13O6+",
+                },
+                {
+                    "target_ion_id": "ion-glc",
+                    "mz": 182.0741,
+                    "target_isotope_formula": "C5[13C]H13O6+",
+                    "relative_abundance": 0.066,
+                    "sample_peak_id": "p2",
+                    "match_mz_error": 1.1,
+                    "match_abundance_error": -0.05,
+                    "target_ion_formula": "C6H13O6+",
+                },
+            ]
+        )
+        return {("C6H12O6", "mech-h"): "ion-glc"}, {"ion-glc": 0.85}, {}, scored
+
+    monkeypatch.setattr(derived_evidence, "default_match_params", match_params)
+    monkeypatch.setattr(derived_evidence, "score_seeds", seeded)
+
+
 def _url(sample_item_id, assignment_id):
     return f"/api/peak-assignments/sample/{sample_item_id}/assignment/{assignment_id}/evidence"
 
@@ -287,6 +326,29 @@ async def test_an_isotopologue_is_measured_through_its_m0(
     assert entry["peak_assignment_id"] == m0_id
     assert entry["sample_peak_id"] == "p1"
     assert entry["isotopologues"][1]["sample_peak_id"] == "p2"
+
+
+async def test_a_main_peak_nothing_paired_with_is_a_note_not_a_blocked_measurement(
+    guest_client, derived_sample, stubbed_scorer_missing_main
+):
+    sample_item_id = derived_sample["sample_item_id"]
+    m0_id = fold_assignment_id(derived_sample["anchors"][181])
+
+    response = await guest_client.get(_url(sample_item_id, m0_id))
+
+    assert response.status_code == 200, response.text
+    entry = response.json()["data"][0]
+    # Measured: the pattern was scored, and the other member keeps its numbers.
+    assert entry["blocked_reason"] is None
+    assert entry["measured_fit_score"] == 0.85
+    assert entry["isotopologues"][1]["sample_peak_id"] == "p2"
+    # The main peak's own errors are absent, and the note says why - naming the
+    # nearest prediction and where it went.
+    assert entry["mz_error_ppm"] is None
+    assert entry["abundance_error"] is None
+    assert entry["main_peak_note"].startswith("the family's main peak at m/z 181.07")
+    assert "M0 predicted at m/z 181.0707" in entry["main_peak_note"]
+    assert entry["main_peak_note"].endswith("paired with no peak")
 
 
 async def test_an_unassigned_derived_row_says_there_is_nothing_to_measure(
