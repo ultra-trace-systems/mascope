@@ -136,6 +136,36 @@ def _all_labels(scans: dict[int, dict]) -> np.ndarray:
     return np.concatenate([scans[n]["labels"]["mz"] for n in SCANS])
 
 
+def _scans_of(per_scan: list[list[tuple[float, float]]]) -> dict:
+    """One calibration throughout; ``per_scan[i]`` gives the ``(mz, intensity)``
+    labels of scan ``i + 1``, so a peak's scans and per-scan intensity can be
+    set one at a time. The number of scans is the length of ``per_scan``."""
+    params = {"Conversion Parameter B:": B_REF, "Conversion Parameter C:": C_REF}
+    scans = {}
+    for n, peaks in enumerate(per_scan, start=1):
+        labels = _labels([mz for mz, _ in peaks], resolution=JITTER_RESOLUTION)
+        labels["intensity"] = np.array([i for _, i in peaks], dtype=float)
+        scans[n] = {"labels": labels, "params": params}
+    return scans
+
+
+def _stepped_scans_of(present: list[list[float]], step_ppm: float, resolution: float):
+    """Seven scans holding the ions listed per scan, given as reference-frame
+    m/z. Scans 1-3 sit on a calibration ``step_ppm`` above the reference; B and
+    C scale together there, so a label is written scaled by the same factor."""
+    scans = {}
+    for n, mz_ref in zip(SCANS, present):
+        scale = 1 + step_ppm / 1e6 if n <= 3 else 1.0
+        scans[n] = {
+            "labels": _labels(np.asarray(mz_ref, float) * scale, resolution=resolution),
+            "params": {
+                "Conversion Parameter B:": B_REF * scale,
+                "Conversion Parameter C:": C_REF * scale,
+            },
+        }
+    return scans
+
+
 @pytest.mark.parametrize("resolution", [RESOLUTION, HIGH_RESOLUTION])
 def test_a_peak_split_by_a_calibration_step_is_one_centroid(resolution):
     scans = _stepped_scans([42.0086], resolution=resolution)
@@ -284,7 +314,10 @@ def test_exclusive_merge_needs_the_sides_to_cover_most_scans():
     # The same alternation confined to four of the eight scans covers half of
     # them, under the required share: two labels from different scans are
     # exclusive by construction, so a jitter split of a transient ion is left
-    # as it was rather than risk joining noise.
+    # as it was rather than risk joining noise. Two scans a side is also under
+    # the per-side floor, so both gates hold this pair apart;
+    # test_coverage_alone_keeps_overlapping_sides_apart isolates the coverage
+    # one.
     scans = _jitter_scans([(61.0397, "jitter")])
     for n in (5, 6, 7, 8):
         scans[n]["labels"] = _labels([])
@@ -307,3 +340,69 @@ def test_exclusive_merge_needs_both_sides_to_be_substantial():
 
     assert masses.size == 2
     np.testing.assert_allclose(intensities, [6e5, 2e5])
+
+
+def test_two_scans_cannot_establish_an_alternation():
+    # Two labels 1 FWHM apart, one in each of two scans. Every proportional
+    # gate passes -- the sides share no scan, cover both of them, and hold half
+    # the scans each -- so only the floor of two scans a side keeps them apart.
+    # It is what stops a pair of unrelated noise labels being read as one
+    # alternating ion on a window too short to show an alternation.
+    a = 61.0397
+    scans = _scans_of([[(a, 1e5)], [(_fwhm_apart(a, 1.0), 1e5)]])
+
+    masses, intensities, _, _ = _backend(scans).average_centroids([1, 2], ppm=1)
+
+    assert masses.size == 2
+    np.testing.assert_allclose(intensities, [1e5, 1e5])
+
+
+def test_coverage_alone_keeps_overlapping_sides_apart():
+    # Sides of three scans each, overlapping in two of them but carrying a
+    # fiftieth of their intensity there, so the intensity-weighted overlap
+    # test passes and each side clears the per-side floor. Between them they
+    # occupy four of the eight scans, under the required coverage, which is
+    # the only gate left to keep them apart.
+    a = 61.0397
+    b = _fwhm_apart(a, 1.0)
+    scans = _scans_of(
+        [
+            [(a, 1e5)],
+            [(a, 1e3), (b, 1e3)],
+            [(a, 1e3), (b, 1e3)],
+            [(b, 1e5)],
+            [],
+            [],
+            [],
+            [],
+        ]
+    )
+
+    masses, intensities, _, _ = _backend(scans).average_centroids(JITTER_SCANS, ppm=1)
+
+    assert masses.size == 2
+    np.testing.assert_allclose(intensities, [1.02e5, 1.02e5])
+
+
+def test_bins_out_of_label_order_are_sorted_before_the_merge():
+    # Two ions 2 ppm apart in frequency, each held by one side of a 6 ppm
+    # calibration step: the lower-frequency one appears only in the stepped
+    # scans, so its labels are written 6 ppm high and the two bins leave the
+    # binning in key order with their label means the other way round. Read in
+    # that order the gap between them is negative, which is below every merge
+    # threshold and would collapse the pair into one peak.
+    low, high = 100.0, 100.0 * (1 + 2.0 / 1e6)
+    scans = _stepped_scans_of(
+        [[low], [low], [low], [high], [high], [high], [high]],
+        step_ppm=6.0,
+        resolution=HIGH_RESOLUTION,
+    )
+
+    masses, intensities, _, _ = _backend(scans).average_centroids(SCANS, ppm=1)
+
+    assert masses.size == 2
+    assert np.all(np.diff(masses) > 0)
+    # The ion in the four reference scans reads lower, its label untouched by
+    # the step; the one in the three stepped scans reads 6 ppm above its own.
+    np.testing.assert_allclose(masses, [high, low * (1 + 6.0 / 1e6)], rtol=1e-12)
+    np.testing.assert_allclose(intensities, [4e5, 3e5])
