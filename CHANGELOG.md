@@ -732,6 +732,17 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
 
 ### Changed
 
+- **M0 is the monoisotopic peak everywhere.** The assignment engine now takes an ion's
+  monoisotopic isotopologue - the formula without an isotope marker, each element at
+  its most abundant isotope - as its M0: the row that carries the assignment, the
+  reference the M+1, M+2 labels count from, and the peak a family folds under in the
+  batch ledger. It took the most abundant isotopologue before, which is the same peak
+  for most ions but not for bromine- or chlorine-rich ones, whose assignment now sits on
+  the lightest peak of the cluster with the tallest as its M+2, as in an isotope table;
+  no isotopologue is labelled below M0 unless an element's most abundant isotope is not
+  its lightest (iron's M-2). The inspector's abundance column reads a run's rows as
+  fractions of the family's most abundant isotopologue as well. Runs and ledgers
+  computed before this keep their old roles until re-assigned or rebuilt.
 - **The peak-assignment status badge is a column of its own** in the sample browser,
   after the sample name by default, and can be moved or hidden through the
   table-controls cog like any other column. A stored table configuration gets it in

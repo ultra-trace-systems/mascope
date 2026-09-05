@@ -1634,6 +1634,31 @@ describe('PanePeakAssign on-demand evidence for a derived row', () => {
     expect(loadEvidence).not.toHaveBeenCalled()
   })
 
+  // A run's rows carry no predicted abundance; the column is recovered from the
+  // stored errors relative to the M0 and read as a fraction of the family's most
+  // abundant isotopologue, as an isotope table gives it - so a bromine-rich ion,
+  // whose M0 is the lightest peak and not the tallest, tops out at 100 % rather
+  // than reading 290 % on its M+2.
+  it("reads a run's abundances as fractions of the family's tallest isotopologue", async () => {
+    runRecord = null
+    const m0 = { ...assignment({ formula: 'Br2', tier: 'assigned' }), sample_peak_intensity: 100 }
+    const child = {
+      ...isotopologue(m0),
+      sample_peak_mz: m0.sample_peak_mz + 1.9979,
+      sample_peak_intensity: 290,
+      abundance_error: 0,
+      isotope_label: 'M+2'
+    }
+    focusedAssignment = m0
+    familyRows = [m0, child]
+    const wrapper = await mountPane()
+
+    expect(wrapper.findAll('.isotopologues .iso-rel').map((cell) => cell.text())).toEqual([
+      '34.5%',
+      '100%'
+    ])
+  })
+
   it('says it is measuring while the request is in flight, and why when nothing could be', async () => {
     focusedAssignment = derivedM0()
     evidenceKey = 'fold-bp-1'
