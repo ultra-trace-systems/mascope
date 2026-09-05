@@ -7,7 +7,7 @@ verified against the server right away so typos surface during setup instead
 of at the first upload.
 """
 
-import glob
+import fnmatch
 import os
 import platform
 import time
@@ -40,6 +40,17 @@ CREDENTIAL_UNREACHABLE = "unreachable"
 #: instrument type apart. A file whose name starts with anything else is
 #: refused, so a prefix the setup adds has to satisfy it too.
 _INSTRUMENT_TYPE_HINTS = ("orbi", "tof", "api")
+
+#: How far setup looks into the watched folder for a file name to reason
+#: from: this many files, this many levels below the watched folder when
+#: subfolders are watched, and this long. See _folder_evidence.
+_EVIDENCE_MAX_FILES = 500
+_EVIDENCE_MAX_DEPTH = 2
+_EVIDENCE_TIME_BUDGET_S = 3.0
+
+#: The agent's own quarantine folder inside the watched one. Never watched,
+#: and full of names the server refused, so never evidence either.
+_FAILED_UPLOADS_DIR = "failed_uploads"
 
 #: Answer that clears a prompt's default instead of accepting it. Not a name
 #: anyone would give an instrument, and the only way to remove an optional
@@ -243,10 +254,17 @@ def _folder_evidence(
     acquisitions say the folder needs a prefix - and prefixing them all is
     then a new sample-name lineage for every future file.
 
-    Subfolders are searched when the agent watches them, since that is where
-    such a site's file names live. A file that vanishes between the listing
-    and the stat is skipped rather than raised: an acquisition folder is
-    written to while setup runs, and a disappearing file must not end it.
+    The look is bounded, because an acquisition folder can hold years of
+    files on a network share and a full walk of it is exactly the "setup
+    hangs" an operator would report: the watched folder first, then, when
+    subfolders are watched, its subfolders newest-named first, at most
+    ``_EVIDENCE_MAX_DEPTH`` levels down, at most ``_EVIDENCE_MAX_FILES`` files,
+    within ``_EVIDENCE_TIME_BUDGET_S`` seconds. A sample of the newest files
+    is evidence enough for a suggestion the operator confirms anyway. The
+    agent's own ``failed_uploads`` folder is never looked at: it holds names
+    the server refused. A file that vanishes between the listing and the stat
+    is skipped rather than raised: an acquisition folder is written to while
+    setup runs, and a disappearing file must not end it.
 
     :param source: The watched folder
     :type source: str
@@ -261,24 +279,46 @@ def _folder_evidence(
         holds none
     :rtype: str | None
     """
-    root = glob.escape(source)
-    pattern = os.path.join(root, "**", mask) if recursive else os.path.join(root, mask)
+    deadline = time.monotonic() + _EVIDENCE_TIME_BUDGET_S
+    examined = 0
     newest = newest_mtime = None
     readable = readable_mtime = None
-    for path in glob.iglob(pattern, recursive=recursive):
-        if not os.path.isfile(path):
-            continue
+    pending = [(source, 0)]
+    while pending:
+        folder, depth = pending.pop(0)
+        subfolders = []
         try:
-            mtime = os.path.getmtime(path)
+            with os.scandir(folder) as entries:
+                for entry in entries:
+                    if examined >= _EVIDENCE_MAX_FILES or time.monotonic() > deadline:
+                        return readable or newest
+                    try:
+                        if entry.is_dir(follow_symlinks=False):
+                            if (
+                                recursive
+                                and depth < _EVIDENCE_MAX_DEPTH
+                                and entry.name != _FAILED_UPLOADS_DIR
+                            ):
+                                subfolders.append(entry.path)
+                            continue
+                        if not entry.is_file() or not fnmatch.fnmatch(entry.name, mask):
+                            continue
+                        mtime = entry.stat().st_mtime
+                    except OSError:
+                        continue
+                    examined += 1
+                    name = entry.name
+                    if newest_mtime is None or mtime > newest_mtime:
+                        newest, newest_mtime = name, mtime
+                    if _server_reads_as_instrument(_filed_under(name, prefix)) and (
+                        readable_mtime is None or mtime > readable_mtime
+                    ):
+                        readable, readable_mtime = name, mtime
         except OSError:
             continue
-        name = os.path.basename(path)
-        if newest_mtime is None or mtime > newest_mtime:
-            newest, newest_mtime = name, mtime
-        if _server_reads_as_instrument(_filed_under(name, prefix)) and (
-            readable_mtime is None or mtime > readable_mtime
-        ):
-            readable, readable_mtime = name, mtime
+        # Newest-named first: acquisition folders are commonly named by date,
+        # so the most recent data is reached before the cap is.
+        pending.extend((path, depth + 1) for path in sorted(subfolders, reverse=True))
     return readable or newest
 
 

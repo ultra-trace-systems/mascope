@@ -36,7 +36,9 @@ uploads them to your Mascope server automatically.
    example `Orbi-Lab2` (letters, digits and hyphens). The agent reports it
    when pairing and with every upload, so the server can file uploads under
    it. If the watched folder already holds files, the name the server files
-   them under is offered as the default. Leave the name empty to skip this,
+   them under is offered as the default; setup looks at a sample of the
+   newest files, at most two folders deep, and takes at most a few seconds
+   whatever the size of the folder. Leave the name empty to skip this,
    or answer `-` to remove a name that was set before.
 
    Setup then checks what those uploads would be filed under as things

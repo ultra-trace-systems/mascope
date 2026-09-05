@@ -405,6 +405,92 @@ def test_subfolders_are_searched_when_they_are_watched(monkeypatch, tmp_path):
     assert settings["filename_prefix"] == ""
 
 
+def _touch(path, age_s=0):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(b"x")
+    stamp = time.time() - age_s
+    os.utime(path, (stamp, stamp))
+
+
+def test_the_look_stops_two_levels_below_the_watched_folder(tmp_path):
+    # An acquisition tree can be deep and enormous; the bound is what keeps
+    # setup from walking all of it. Two levels reach a year/month layout.
+    _touch(tmp_path / "2026" / "09" / "Orbi-Lab2_10h12m01s.raw")
+    _touch(tmp_path / "2026" / "09" / "03" / "Orbi-Lab2_11h12m01s.raw")
+    assert (
+        wizard._folder_evidence(str(tmp_path), "*.raw", recursive=True)
+        == "Orbi-Lab2_10h12m01s.raw"
+    )
+    _touch(tmp_path / "2025" / "12" / "31" / "Orbi-Lab2_23h59m59s.raw")
+    (tmp_path / "2026" / "09" / "Orbi-Lab2_10h12m01s.raw").unlink()
+    assert wizard._folder_evidence(str(tmp_path), "*.raw", recursive=True) is None
+
+
+def test_the_look_stays_in_the_watched_folder_unless_subfolders_are_watched(tmp_path):
+    _touch(tmp_path / "2026.09.03" / "Orbi-Lab2_10h12m01s.raw")
+    assert wizard._folder_evidence(str(tmp_path), "*.raw") is None
+    assert wizard._folder_evidence(str(tmp_path), "*.raw", recursive=True)
+
+
+def test_the_agents_own_quarantine_folder_is_never_evidence(tmp_path):
+    # failed_uploads holds names the server refused; reasoning from them
+    # would offer a prefix to a folder whose live files need none.
+    _touch(tmp_path / "failed_uploads" / "ambient_10h12m01s.raw")
+    assert wizard._folder_evidence(str(tmp_path), "*.raw", recursive=True) is None
+
+
+def test_the_look_gives_up_when_its_time_is_spent(tmp_path, monkeypatch):
+    # A network share with years of files must not hang setup: past the
+    # budget the look returns what it has, here nothing.
+    _touch(tmp_path / "Orbi-Lab2_10h12m01s.raw")
+    monkeypatch.setattr(wizard, "_EVIDENCE_TIME_BUDGET_S", -1.0)
+    assert wizard._folder_evidence(str(tmp_path), "*.raw") is None
+
+
+def test_the_look_examines_at_most_the_configured_number_of_files(
+    tmp_path, monkeypatch
+):
+    for i in range(5):
+        _touch(tmp_path / f"Orbi-Lab2_{i}.raw", age_s=i)
+    monkeypatch.setattr(wizard, "_EVIDENCE_MAX_FILES", 2)
+    stats = []
+    original = os.DirEntry.stat
+
+    def counting_stat(entry, *args, **kwargs):
+        stats.append(entry.name)
+        return original(entry, *args, **kwargs)
+
+    monkeypatch.setattr(os.DirEntry, "stat", counting_stat)
+    assert wizard._folder_evidence(str(tmp_path), "*.raw") in stats
+    assert len(stats) == 2
+
+
+def test_newest_named_subfolders_are_looked_at_first(tmp_path, monkeypatch):
+    # Acquisition folders are commonly named by date, so with the file cap
+    # in play the most recent data is reached before the cap is.
+    _touch(tmp_path / "2025" / "Orbi-Old_10h12m01s.raw", age_s=10)
+    _touch(tmp_path / "2026" / "Orbi-New_10h12m01s.raw")
+    monkeypatch.setattr(wizard, "_EVIDENCE_MAX_FILES", 1)
+    assert (
+        wizard._folder_evidence(str(tmp_path), "*.raw", recursive=True)
+        == "Orbi-New_10h12m01s.raw"
+    )
+
+
+def test_a_file_that_vanishes_mid_look_is_skipped(tmp_path, monkeypatch):
+    _touch(tmp_path / "Orbi-Lab2_10h12m01s.raw")
+    _touch(tmp_path / "Orbi-Lab2_11h12m01s.raw")
+    original = os.DirEntry.stat
+
+    def vanishing_stat(entry, *args, **kwargs):
+        if entry.name.endswith("11h12m01s.raw"):
+            raise FileNotFoundError(entry.name)
+        return original(entry, *args, **kwargs)
+
+    monkeypatch.setattr(os.DirEntry, "stat", vanishing_stat)
+    assert wizard._folder_evidence(str(tmp_path), "*.raw") == "Orbi-Lab2_10h12m01s.raw"
+
+
 def test_an_empty_folder_asks_for_an_example_name(monkeypatch, tmp_path):
     # Nothing on disk to reason from, so setup asks for one name and runs it
     # through the same rule rather than asking the operator to judge.
