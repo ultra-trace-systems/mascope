@@ -3,7 +3,7 @@ from sqlalchemy import func
 from sqlalchemy.sql.elements import ColumnElement
 
 from mascope_backend.api.controllers.samples.lib.samples_fetch import fetch_sample
-from mascope_file.name import resolve_instrument_type
+from mascope_file.name import get_instrument_type, resolve_instrument_type
 from mascope_match.params import (
     BaseMatchParams,
     OrbiMatchParams,
@@ -11,12 +11,59 @@ from mascope_match.params import (
 )
 
 
-def instrument_default_match_params(instrument_name: str):
-    instrument_type = resolve_instrument_type(instrument_name)
+def instrument_default_match_params(
+    instrument_name: str, instrument_type: str | None = None
+) -> BaseMatchParams:
+    """Default match parameters for an instrument.
+
+    ``instrument_type`` is the class the reader recorded for the instrument's
+    files; pass it whenever the row at hand carries it. Without it the name
+    has to say, which names from before the field do and reported names need
+    not.
+
+    :param instrument_name: The instrument name
+    :type instrument_name: str
+    :param instrument_type: "orbi" or "tof" when known
+    :type instrument_type: str | None
+    :raises ValueError: Neither the type nor the name says which class it is
+    :return: The class's default parameters
+    :rtype: BaseMatchParams
+    """
+    if instrument_type is None:
+        instrument_type = resolve_instrument_type(instrument_name)
     if instrument_type == "orbi":
         return OrbiMatchParams()
-    elif instrument_type == "tof":
+    if instrument_type == "tof":
         return TofMatchParams()
+    raise ValueError(
+        f"Unknown instrument type {instrument_type!r} for instrument {instrument_name}"
+    )
+
+
+def _instrument_types_in(df: pd.DataFrame) -> dict[str, str]:
+    """Instrument class per instrument name, from what the frame carries.
+
+    A recorded ``instrument_type`` column first; else the files' names, whose
+    props record the class; else nothing, and the name has to say.
+
+    :param df: Match rows with an ``instrument`` column
+    :type df: pd.DataFrame
+    :return: Instrument name to class, for the names the frame can settle
+    :rtype: dict[str, str]
+    """
+    if "instrument_type" in df.columns:
+        pairs = df[["instrument", "instrument_type"]].dropna().drop_duplicates()
+        return dict(zip(pairs["instrument"], pairs["instrument_type"]))
+    if "filename" in df.columns:
+        types = {}
+        pairs = df[["instrument", "filename"]].drop_duplicates("instrument")
+        for instrument, filename in pairs.itertuples(index=False):
+            try:
+                types[instrument] = get_instrument_type(filename)
+            except ValueError:
+                continue
+        return types
+    return {}
 
 
 def isotope_abundance_threshold_expr(
@@ -44,7 +91,9 @@ def isotope_abundance_threshold_expr(
 
 async def default_match_params(sample_item_id: str):
     sample = await fetch_sample(sample_item_id)
-    return instrument_default_match_params(sample.instrument)
+    return instrument_default_match_params(
+        sample.instrument, instrument_type=getattr(sample, "instrument_type", None)
+    )
 
 
 def apply_match_params(
@@ -82,8 +131,11 @@ def apply_match_params(
         )
     else:
         instruments = df["instrument"].to_numpy()
+        types = _instrument_types_in(df)
         defaults = {
-            instrument: instrument_default_match_params(instrument).model_dump()
+            instrument: instrument_default_match_params(
+                instrument, instrument_type=types.get(instrument)
+            ).model_dump()
             for instrument in df["instrument"].unique()
         }
         if "filter_params" in df.columns:

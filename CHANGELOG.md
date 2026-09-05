@@ -6,6 +6,30 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
 
 ### Added
 
+- **Uploads from a paired File Agent are filed under the instrument the agent
+  reports, so the file names no longer have to carry it.** An agent whose
+  setup named its instrument gets each upload stored under
+  `<instrument>_<file name>`, checked against that instrument's workspace and
+  converted into its `Acquisitions <instrument>` dataset, whatever the
+  acquisition software called the file; a name that already starts with the
+  instrument is left alone, and an upload that reports nothing is filed by
+  its name as before. The file's name on the instrument PC is kept as
+  `sample_file.source_filename`. With that, an instrument's name no longer
+  has to contain "orbi" or "tof": the instrument class is recorded by the
+  reader that converts the file, in the file's props and as
+  `sample_file.instrument_type` (migration `c2d9f4a71b3e`, backfilled from
+  the old name rule and carried by `sample_view`), and every place that chose
+  Orbitrap or TOF behaviour by parsing the name reads the recorded class
+  instead - the instrument list, match and calibration parameters, isotope
+  resolution, the spectrum window and the calibrants allowance in the web
+  app. The pairing start response now announces
+  `capabilities.files_uploads_under_reported_instrument`, and the agent's
+  guided setup skips its upload-prefix offer against a server that says so.
+  An `.h5` file whose name carries no acquisition time gets it inserted after
+  the instrument segment, as `.raw` files always did, so TOF acquisition
+  software need not stamp its files either. Browser uploads still take the
+  instrument from the file name.
+
 - **The File Agent reports which instrument it watches, and its version.** Its
   guided setup now asks for the instrument name (letters, digits and hyphens,
   e.g. `Orbi-Lab2`), offering the name the watched folder's files already start
@@ -1107,40 +1131,6 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
   again instead of waiting out the window.
 
 ### Fixed
-
-- **Orbitrap peak detection no longer splits a peak in two when the lock mass
-  engages part-way through a file.** The averaged centroids behind peak
-  detection are built by pooling every scan's centroid labels and binning them
-  within 1 ppm. What moves a label between scans is the scan's own
-  frequency-to-m/z calibration, and when an instrument finds its lock mass only
-  after the first scans, that calibration steps by a few ppm at once. At low
-  m/z, where a peak is itself only a few ppm wide, the step is wider than the
-  bin and than the half-width merge behind it, so every strong peak came out as
-  two centroids about 2.5 ppm apart, each carrying the intensity and
-  signal-to-noise of its share of the scans - seen on 20-second acquisitions
-  from m/z 40 to 160 whose lock mass was found from the fourth of seven scans.
-  The labels are now keyed by physical frequency before binning, each scan's
-  re-expressed on one calibration through its conversion parameters the way the
-  profile is already averaged, so a peak's centroids bin together whatever the
-  calibration did between scans; the reported m/z is still the
-  intensity-weighted mean of the labels. On such a file Thermo's own averaged
-  spectrum is broadened by the step and reports a lower apex, whereas Mascope
-  keeps the per-scan heights, so a file with the step and one without now
-  report the same height for the same ion. Readers without conversion
-  parameters bin as before. The same pooling also rejoins the halves of a
-  dominant ion whose measured position jitters from scan to scan by about its
-  own width while the calibration holds still - a base peak at a few million
-  counts per scan alternating between two positions, half the scans each,
-  which came out as two equal peaks 3 ppm apart. Two neighbouring centroids up
-  to one and a half peak widths apart are merged when the scans hold one or
-  the other but not both and alternate between them, each side holding a
-  substantial share of the scans and the two together covering most of them,
-  so a genuine pair of ions resolved within a scan stays two peaks, two ions
-  that hand over in time stay two peaks, and noise labels or the wobbling
-  fragments beside an intense peak are not joined; Thermo's own averaging
-  reports such an ion as two peaks, so there the readers differ by design.
-  Peak lists detected earlier keep their split peaks until peak detection is
-  re-run for the sample.
 
 - The peak inspector's **close alternatives** no longer include the assignment
   the peak was actually given. The list is meant to be the runners-up a peak

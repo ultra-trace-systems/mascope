@@ -4,7 +4,7 @@ import { ref, reactive, computed, toRaw, watch, watchEffect, nextTick } from 'vu
 import { useApp } from '@/stores'
 import { usePreview } from '@/lib/panes'
 import { ToolbarIntensityScale } from '@/lib/toolbars'
-import { instrumentType as getInstrumentType } from '@/lib/utils'
+import { sampleInstrumentType } from '@/lib/utils'
 import { peakAssignmentEnabled } from '@/lib/features'
 
 import BaseChartPlotly from '../BaseChartPlotly.vue'
@@ -70,7 +70,7 @@ const sampleLength = computed(() => app.data.sample.focused.length) // duration 
 // peaks are far narrower than TOF, so a tight window keeps the selected
 // isotopologue centered instead of showing a wide, mostly-empty span.
 const mzHalfWindow = computed(() =>
-  getInstrumentType(app.data.sample.focused?.instrument) === 'tof' ? 0.3 : 0.05
+  sampleInstrumentType(app.data.sample.focused) === 'tof' ? 0.3 : 0.05
 )
 
 const traces = computed(() =>

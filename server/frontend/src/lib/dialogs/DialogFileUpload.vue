@@ -87,10 +87,9 @@ const count = computed(() => ({
   total: props.files.length
 }))
 
-const validInstrumentName = (name) => {
-  const re = new RegExp('^[a-zA-Z]+[0-9]*$')
-  return re.test(name)
-}
+// The server's rule for an instrument name: letters, digits and hyphens,
+// up to 64 of them. Underscores are the separator and cannot be part of it.
+const validInstrumentName = (name) => /^[A-Za-z0-9-]{1,64}$/.test(name)
 
 const invalid = computed(() => {
   const invalidOrbi =
@@ -229,7 +228,7 @@ const cancel = () => {
             v-model="instrument.tof"
             :options="
               app.data.instrument.list.filter(
-                ({ instrument }) => instrumentType(instrument) == 'tof'
+                ({ instrument, type }) => (type ?? instrumentType(instrument)) == 'tof'
               )
             "
             dataKey="instrument"
@@ -279,7 +278,7 @@ const cancel = () => {
             v-model="instrument.orbi"
             :options="
               app.data.instrument.list.filter(
-                ({ instrument }) => instrumentType(instrument) == 'orbi'
+                ({ instrument, type }) => (type ?? instrumentType(instrument)) == 'orbi'
               )
             "
             dataKey="instrument"

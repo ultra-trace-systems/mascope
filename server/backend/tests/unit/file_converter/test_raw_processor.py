@@ -58,6 +58,8 @@ def test_ingestion_is_dll_free_and_correct(props):
     # Reaching here means _get_sample_file_props() ran without the Thermo DLLs.
     assert props.range == EXPECTED_RANGE
     assert props.polarity == EXPECTED_POLARITY
+    # The reader that opened the file names its class; the name need not.
+    assert props.instrument_type == "orbi"
     assert props.length > 0
     assert props.interval > 0
     # Orbitrap files carry neither of these; the processor must report them empty.

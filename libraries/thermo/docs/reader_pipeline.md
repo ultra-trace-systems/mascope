@@ -125,64 +125,23 @@ the averaged profile; OpenTFRaw reconstructs the same result from the per-scan
 labels:
 
 1. **Pool** the per-scan FT label peaks across the selected scans.
-2. **Key them by frequency** (`_labels_on_one_calibration`): each scan's label
-   m/z is converted to frequency with that scan's Conversion Parameter B/C and
-   back with one reference scan's, the same move the profile averaging makes
-   (section 3.1). What shifts a label between scans is the per-scan
-   calibration, and when a lock mass engages part-way through a file that
-   calibration steps by a few ppm at once. At low m/z such a step is wider
-   than the bin below *and* than half a FWHM, so without this key one peak's
-   centroids land in two bins that step 4 cannot rejoin (measured: a 2.5 ppm
-   step on seven-scan acquisitions split every strong peak below m/z 70).
-   Scans without B/C (non-FTMS data) bin on the labels as written.
-3. **ppm-bin** them (`_ppm_bin`) on that key: peaks within `ppm` of each other
-   (default 1) collapse into one bin. The reported m/z is the intensity-weighted
-   mean of the labels as written, exact to sub-ppm; resolution and S:N are
-   approximate.
-4. **Merge jitter-splits** (`_merge_split_centroids`): the residual sub-ppm
-   between-scan m/z wobble can still exceed the bin, splitting one real peak's
-   centroids across two adjacent bins. Neighbours whose gap is well below the
-   local FWHM (= m/z / resolution, gated by `_AVG_CENTROID_MERGE_FWHM`) are
-   merged, while genuinely resolved peaks stay separate -- mirroring Thermo's
-   re-centroid, which never splits one peak. A second rule reaches further, to
-   `_AVG_CENTROID_EXCLUSIVE_MERGE_FWHM` (1.5 FWHM), for neighbours the scans
-   hold one or the other of but not both. A dominant ion at a few million
-   counts per scan can have its measured position jitter by about its own
-   width from scan to scan with the calibration steady (measured: a base peak
-   alternating between two positions 1.1 FWHM apart, half the scans each), so
-   each scan yields one centroid that lands in one of two bins, whereas two
-   real ions that close are resolved within a scan and so share scans. The
-   test is intensity-weighted (`_AVG_CENTROID_EXCLUSIVE_OVERLAP`: a stray weak
-   label in a shared scan does not veto the merge, a real minor ion present in
-   the same scans does), requires each side to hold a substantial share of
-   the scans (`_AVG_CENTROID_EXCLUSIVE_MIN_SIDE`), which
-   one ion alternating between two positions does and the wobbling fragments
-   beside an intense peak, present in a couple of scans, do not -- it is also
-   what keeps two noise labels from different scans apart, so on a
-   noise-dominated file the rule changes nothing -- requires the two sides
-   together to cover most of the scans (`_AVG_CENTROID_EXCLUSIVE_COVERAGE`),
-   which only decides when they overlap in scans, and requires the side
-   holding more intensity to change at least twice along the scans
-   (`_AVG_CENTROID_EXCLUSIVE_MIN_ALTERNATIONS`): two ions that hand over in
-   time, one present before a transition and the other after, share no scan
-   either but change side once, and joining them would report a mass about
-   2 ppm off both. A calibration step without conversion parameters is a
-   hand-over too, so only the frequency key rejoins one.
-   Measured over a 183-file fleet corpus against Thermo, the per-side floor
-   is what keeps the rule specific: without it the share of strong centroids
-   matching a Thermo centroid fell by more than 0.02 in 31 files, with it in
-   11 and never by more than 0.05, while the jittering base peak still merges.
-   Thermo's own re-centroid reports such a jittering ion as two peaks, its
-   averaged profile being flat-topped, so here the two readers differ by
-   design.
-5. **Scale S:N to the averaged spectrum** (the `n/sqrt(N)` correction): Thermo
+2. **ppm-bin** them (`_ppm_bin`): peaks within `ppm` of each other (default 1)
+   collapse into one bin. m/z is exact to sub-ppm this way; resolution and S:N
+   are approximate.
+3. **Merge jitter-splits** (`_merge_split_centroids`): the ~2 ppm between-scan
+   m/z wobble can exceed the bin, splitting one real peak's centroids across two
+   adjacent bins. Neighbours whose gap is well below the local FWHM (=
+   m/z / resolution, gated by `_AVG_CENTROID_MERGE_FWHM`) are merged, while
+   genuinely resolved peaks stay separate -- mirroring Thermo's re-centroid,
+   which never splits one peak.
+4. **Scale S:N to the averaged spectrum** (the `n/sqrt(N)` correction): Thermo
    reads S:N off the noise-reduced *averaged* profile. Averaging N scans drops
    the noise ~`sqrt(N)`, so a peak present in `n` of the `N` scans has averaged
    S:N ~= `(mean per-scan S:N) * n / sqrt(N)`. Without this the pooled per-scan
    S:N runs ~`sqrt(N)` too low, and near-threshold peaks that the weak-peak
    filter should keep would be dropped. (`present` is the per-peak scan count
    threaded through from the binning/merge.)
-6. **Source peak height from the profile apex** (`_heights_from_profile_apex`):
+5. **Source peak height from the profile apex** (`_heights_from_profile_apex`):
    the ppm-bin intensity sum runs ~5-6% high versus Thermo, because Thermo's
    height comes from re-centroiding the averaged profile (whose apex carries a
    small interpolation loss). So the heights are taken from the
@@ -195,16 +154,6 @@ close" not "exact": m/z to sub-0.1 ppm, summed intensity within a few percent,
 and the count of peaks above the S:N threshold tracking Thermo. The unmatched
 few percent are sub-threshold noise and ringing/satellite artifacts, not
 analytes (see `test_centroids_average_matches_thermo`).
-
-Two departures from Thermo are deliberate. On a file whose calibration steps
-between scans (step 2), Thermo's averaged profile is broadened by the step and
-its re-centroided height drops with it -- about a quarter for a 2.5 ppm step at
-m/z 42, measured against the same file -- while the frequency-keyed path keeps
-the per-scan heights. The same ion in a file without the step gets the same
-height from both readers, so it is Thermo's number that varies with the lock
-state, not the ion. And an ion whose position jitters by about its own width
-(step 4) is one centroid here and two in Thermo, whose averaged profile of it
-is flat-topped; its height here is the per-scan sum, as for any other peak.
 
 ---
 
@@ -261,7 +210,7 @@ Display endpoints (spectrum/match views in the server controllers) pass
   for the whole averaging path -- `test_instrument_fit_parity.py` asserts it
   agrees across backends.
 - **Peak detection** uses the averaged-centroid S:N against a weak-peak
-  threshold (S:N >= 3); this is why the `n/sqrt(N)` S:N scaling (section 4.5)
+  threshold (S:N >= 3); this is why the `n/sqrt(N)` S:N scaling (section 4.4)
   matters -- it keeps/drops the same near-threshold peaks as Thermo.
 - **Extracted-ion chromatogram** (`xic()`): for each target m/z, sum the
   centroid intensities in its ppm window per selected scan (vectorized per scan
@@ -302,7 +251,6 @@ a tolerance.
 | Profile->centroid m/z alignment | `_align_profile_grid_to_centroids` |
 | Baseline zero-fill | `_zero_fill_profile_baseline` |
 | ppm binning | `_ppm_bin` |
-| Labels keyed by frequency | `_labels_on_one_calibration` |
 | Averaged centroids | `average_centroids`, `_merge_split_centroids`, `_heights_from_profile_apex` |
 | Reconstruction | `_reconstruct_profile` |
 | XIC | `xic` |

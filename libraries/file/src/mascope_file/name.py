@@ -6,9 +6,17 @@ import datetime_glob
 from mascope_file.runtime import runtime
 
 
-# Instrument names are derived from filenames (first segment before '_').
-# Only allow letters, digits, and hyphens — no underscores (used as separator).
+# Instrument names are the first segment of a stored file name (before '_'):
+# either read off the name the file arrived with, or put there by the server
+# from the instrument the uploading agent reported. Only letters, digits and
+# hyphens - no underscores, which are the separator.
 _INSTRUMENT_RE = re.compile(r"^[a-zA-Z0-9\-]{1,64}$")
+
+#: The instrument class each reader produces. A file's type is decided by the
+#: reader that converted it, recorded in the file's props and on its database
+#: row; the substrings in resolve_instrument_type are the older rule, kept for
+#: names that carry them.
+INSTRUMENT_TYPE_BY_EXTENSION = {".raw": "orbi", ".h5": "tof"}
 
 
 FILENAME_DATETIME_PATTERNS = [
@@ -106,20 +114,21 @@ def filename_to_datafile_path(base_filename):
 def validate_instrument_name(instrument: str) -> None:
     """Reject instrument names that don't match the expected pattern.
 
-    Validates that the name contains only letters, digits, and hyphens
-    (no underscores - those are used as the filename separator), and that
-    the instrument resolves to a known type via :func:`resolve_instrument_type`.
+    Validates that the name contains only letters, digits, and hyphens (no
+    underscores - those are used as the filename separator). The name no
+    longer has to say which instrument class it is: the type is recorded by
+    the reader that converts the file, so an instrument can be called what
+    its operator calls it.
 
     :param instrument: Instrument name to validate
     :type instrument: str
-    :raises ValueError: If the name is invalid or the instrument type is unknown
+    :raises ValueError: If the name is invalid
     """
     if not _INSTRUMENT_RE.match(instrument):
         raise ValueError(
             f"Invalid instrument name '{instrument}'. "
             "Must be 1-64 characters using only letters, digits, and hyphens."
         )
-    resolve_instrument_type(instrument)
 
 
 def get_instrument_name(filename: str) -> str:
@@ -162,17 +171,48 @@ def resolve_instrument_type(instrument_name: str, throw: bool = True) -> str | N
     return instrument_type
 
 
+def _instrument_type_from_props(filename: str) -> str | None:
+    """The instrument type the converter recorded in the file's props, if any.
+
+    :param filename: Sample file name
+    :type filename: str
+    :return: "orbi" or "tof", or None when the file has no props or they
+        predate the field
+    :rtype: str | None
+    """
+    from mascope_file.io import read_props  # noqa: PLC0415  (io imports name)
+
+    try:
+        instrument_type = read_props(filename).get("instrument_type")
+    except (OSError, ValueError):
+        return None
+    return instrument_type if instrument_type in ("orbi", "tof") else None
+
+
 def get_instrument_type(filename: str) -> str | None:
     """Get instrument type (one of {"orbi", "tof"}) from sample file
+
+    The name decides when it can (it carries "orbi" or "tof"); otherwise the
+    type the reader recorded in the file's props at conversion. Files whose
+    name does not say and whose props predate the field cannot exist: every
+    file converted before the field was written carried a name that says.
 
     :param filename: Sample file name
     :type filename: str
     :raises ValueError: Failed to detect instrument type
-    :return: Instrument type, one of {"orbi", "tof"} or None if not resolved
+    :return: Instrument type, one of {"orbi", "tof"}
     :rtype: str | None
     """
     instrument_name = get_instrument_name(filename)
-    return resolve_instrument_type(instrument_name)
+    instrument_type = resolve_instrument_type(instrument_name, throw=False)
+    if instrument_type is None:
+        instrument_type = _instrument_type_from_props(filename)
+    if instrument_type is None:
+        raise ValueError(
+            f"Failed to get instrument type for instrument {instrument_name}: "
+            "the name does not say, and the file's props record none"
+        )
+    return instrument_type
 
 
 def get_sample_file_type(filename: str) -> str:

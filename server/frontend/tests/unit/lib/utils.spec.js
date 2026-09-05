@@ -10,7 +10,8 @@ import {
   genId,
   clone,
   debounce,
-  instrumentType
+  instrumentType,
+  sampleInstrumentType
 } from '@/lib/utils'
 
 describe('string helpers', () => {
@@ -90,5 +91,14 @@ describe('misc helpers', () => {
     expect(instrumentType('api-3000')).toBe('tof')
     expect(instrumentType('unrelated')).toBe(null)
     expect(instrumentType(null)).toBe(null)
+  })
+
+  it('takes the recorded instrument class of a sample over its name', () => {
+    // The converter records the class; a name that does not say is fine.
+    expect(sampleInstrumentType({ instrument: 'Test', instrument_type: 'tof' })).toBe('tof')
+    // Rows from before the field fall back to the name rule.
+    expect(sampleInstrumentType({ instrument: 'KORBI2' })).toBe('orbi')
+    expect(sampleInstrumentType({ instrument: 'Test' })).toBe(null)
+    expect(sampleInstrumentType(null)).toBe(null)
   })
 })

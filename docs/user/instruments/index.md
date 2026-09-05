@@ -41,11 +41,16 @@ uploads them to your Mascope server automatically.
    whatever the size of the folder. Leave the name empty to skip this,
    or answer `-` to remove a name that was set before.
 
-   Setup then checks what those uploads would be filed under as things
-   stand — taking any `filename_prefix` already configured into account —
-   and offers to put `<instrument>_` in front of every uploaded name when
-   the server could not read the current one. If the folder is still empty
-   it asks for one example file name rather than guessing.
+   A server that files uploads under the reported instrument name (any
+   release from this one on) needs nothing more: the file names can stay
+   exactly as the acquisition software writes them, and setup says so once
+   it has paired. Against an older server, which reads the instrument off
+   the start of each file name, setup then checks what those uploads would
+   be filed under as things stand — taking any `filename_prefix` already
+   configured into account — and offers to put `<instrument>_` in front of
+   every uploaded name when the server could not read the current one. If
+   the folder is still empty it asks for one example file name rather than
+   guessing.
 
 5. Finally the setup pairs the agent with your account:
    1. The agent shows a short pairing code, for example `BCD-234`.
@@ -158,17 +163,18 @@ The agent prints its version when it starts, and uninstalling (Windows
   token), copy the file back into the watched folder to retry. The
   `failed_uploads` folder itself is never watched, even with `recursive`
   enabled.
-- *"Failed to get instrument type"*: the file name does not identify an
-  instrument. Mascope takes the instrument from the start of the name, up to
-  the first underscore — `Orbion_2026.05.03…` is instrument `Orbion` — and it
-  must be one this deployment knows. Either name the files that way in the
-  acquisition software, or set `filename_prefix` in the configuration to add
-  it, including the underscore (`filename_prefix = 'Orbion_'`). The guided
-  setup offers to set that prefix for you when the files in the watched
-  folder do not start with an instrument name: start the agent with
-  `--setup`. The agent does not retry these: the server has understood the
-  name and refused it, so the file is set aside in `failed_uploads`
-  immediately.
+- *"Failed to get instrument type"* or *"Invalid instrument name"*: the
+  server could not tell which instrument the file belongs to. A current
+  server files each upload under the instrument named in the agent's
+  configuration, so set `instrument` (or run `--setup`) and the file names
+  can be anything. An older server takes the instrument from the start of
+  the name, up to the first underscore — `Orbion_2026.05.03…` is instrument
+  `Orbion` — and needs it to contain `orbi` or `tof`; either name the files
+  that way in the acquisition software, or set `filename_prefix` in the
+  configuration to add it, including the underscore
+  (`filename_prefix = 'Orbion_'`), which the guided setup offers to do for
+  you. The agent does not retry these: the server has understood the name
+  and refused it, so the file is set aside in `failed_uploads` immediately.
 - *"The server rejected the access token"* or *"This agent credential has
   expired"*: the machine's token has lapsed or its device was revoked.
   Answer the prompt the agent shows in its window, or close it and start

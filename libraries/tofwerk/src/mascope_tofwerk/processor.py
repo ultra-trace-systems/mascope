@@ -21,6 +21,7 @@ from mascope_backend.file_converter.errors import (
     UNUSABLE_SCAN_TIMES_MESSAGE,
     EmptyAcquisitionError,
 )
+from mascope_file.name import timestamp_from_filename
 from mascope_signal.noise import max_peak_snr
 from mascope_tofwerk.tofwerk import (
     NoScansRecordedError,
@@ -73,8 +74,34 @@ class H5Processor(BaseFileProcessor):
 
     @property
     def filename(self) -> str:
-        """Get the processed filename."""
-        return self._strip_filepath(self.file_to_process)
+        """The stored file name: the on-disk stem, with the acquisition time
+        put after the instrument segment when the stem does not carry one.
+
+        The filestore files a sample under the date in its name, so the name
+        has to carry the acquisition time. The Thermo processor always injects
+        it; here it is injected only when missing, since TOF acquisition
+        software usually stamps its files already and a second stamp would
+        change every existing name.
+        """
+        stem = self._strip_filepath(self.file_to_process)
+        try:
+            timestamp_from_filename(stem)
+            return stem
+        except ValueError:
+            pass
+        try:
+            stamp = datetime.fromisoformat(self.timestamp).strftime(
+                "%Y.%m.%d-%Hh%Mm%Ss"
+            )
+        except Exception:  # noqa: BLE001  (the reader's own error types vary)
+            # The time could not be read off the file. The name goes out as it
+            # is, and the filestore step reports the missing time exactly as it
+            # did before this injection existed - rather than a name lookup
+            # failing on a file that has not been opened for anything else.
+            return stem
+        if "_" in stem:
+            return stem.replace("_", f"_{stamp}_", 1)
+        return f"{stem}_{stamp}"
 
     @property
     def acquisition_params(self) -> dict:

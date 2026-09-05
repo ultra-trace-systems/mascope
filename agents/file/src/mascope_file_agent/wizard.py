@@ -52,6 +52,21 @@ _EVIDENCE_TIME_BUDGET_S = 3.0
 #: and full of names the server refused, so never evidence either.
 _FAILED_UPLOADS_DIR = "failed_uploads"
 
+#: What the server said it does with what the agent reports, from the last
+#: pairing start response. An older server sends nothing, and then setup
+#: assumes it files uploads by their names alone.
+_server_capabilities: dict = {}
+
+#: The capability under which a server files uploads under the instrument
+#: the agent reports, so the file names need not carry it.
+FILES_UNDER_REPORTED_INSTRUMENT = "files_uploads_under_reported_instrument"
+
+
+def server_files_under_reported_instrument() -> bool:
+    """Whether the server paired with files uploads under the reported instrument."""
+    return bool(_server_capabilities.get(FILES_UNDER_REPORTED_INSTRUMENT))
+
+
 #: Answer that clears a prompt's default instead of accepting it. Not a name
 #: anyone would give an instrument, and the only way to remove an optional
 #: setting without hand-editing the configuration.
@@ -496,7 +511,12 @@ def start_pairing(
     if resp.status_code != 200 or "json" not in resp.headers.get("content-type", ""):
         print(f"Unexpected response from the server (HTTP {resp.status_code}).")
         return None
-    return resp.json()
+    started = resp.json()
+    # What the server does with what the agent reports; an older server
+    # announces nothing, and setup then assumes it files uploads by name.
+    _server_capabilities.clear()
+    _server_capabilities.update(started.get("capabilities") or {})
+    return started
 
 
 def run_pairing(
@@ -625,7 +645,6 @@ def run_setup_wizard(settings: dict) -> dict:
     filed_as = _filed_under(example_name, current_prefix) if example_name else None
     suggested = filed_as if filed_as and _server_reads_as_instrument(filed_as) else None
     instrument = _prompt_instrument(settings.get("instrument") or "", suggested)
-    filename_prefix = _offer_filename_prefix(example_name, instrument, current_prefix)
 
     # Collected before pairing so a cancelled pairing can hand them back: they
     # are every answer that needed nobody but the person at this machine, and
@@ -638,7 +657,7 @@ def run_setup_wizard(settings: dict) -> dict:
         "recursive": recursive,
         "mask": mask,
         "instrument": instrument,
-        "filename_prefix": filename_prefix,
+        "filename_prefix": current_prefix,
     }
 
     access_token = _obtain_token(host, verify_tls, instrument or None)
@@ -669,5 +688,23 @@ def run_setup_wizard(settings: dict) -> dict:
 
     if access_token is None:
         raise SetupCancelled("Setup cancelled: the agent was not paired.", answers)
+
+    # Asked only once pairing has succeeded, because the answer depends on the
+    # server paired with: one that files uploads under the reported instrument
+    # needs no prefix in the file names, and says so when pairing starts. An
+    # older server reads the instrument off the name alone, and then the offer
+    # is what keeps its uploads filed. A cancelled pairing never reaches this,
+    # so the answers it keeps are exactly the ones given before it.
+    if instrument and server_files_under_reported_instrument():
+        print(
+            "\nThe server files uploads under the reported instrument name, so\n"
+            "the file names need not carry it.\n"
+        )
+        filename_prefix = current_prefix
+    else:
+        filename_prefix = _offer_filename_prefix(
+            example_name, instrument, current_prefix
+        )
+    answers["filename_prefix"] = filename_prefix
 
     return {**answers, "access_token": access_token}
