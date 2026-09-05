@@ -516,3 +516,26 @@ def test_two_side_changes_are_enough_to_merge():
 
     assert masses.size == 1
     assert intensities[0] == pytest.approx(8e5)
+
+
+def test_a_pair_after_a_wide_gap_is_weighed_on_its_own_cluster():
+    # Two exclusive pairs with a gap wider than the window between them. A and
+    # B share every scan and stay apart; C and D alternate cleanly and merge.
+    # The second pair has to be weighed from the cluster it belongs to --
+    # carrying the first pair's forward would test D against B, which holds
+    # every one of D's scans, and leave C and D apart.
+    a = 61.0397
+    b = _fwhm_apart(a, 1.0)
+    c, d = _fwhm_apart(a, 4.0), _fwhm_apart(a, 5.0)
+    high = (0, 1, 4, 5)
+    scans = _scans_of(
+        [
+            [(a, 1e5), (b, 2e5)] + ([(c, 1e5)] if n in high else [(d, 1e5)])
+            for n in range(8)
+        ]
+    )
+
+    masses, intensities, _, _ = _backend(scans).average_centroids(JITTER_SCANS, ppm=1)
+
+    assert masses.size == 3
+    np.testing.assert_allclose(intensities, [8e5, 1.6e6, 8e5])
