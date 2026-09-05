@@ -203,6 +203,19 @@ it. Verifications are the layer built to outlive a run &mdash; keyed on the peak
 and ionization mechanism rather than on a run &mdash; which is why they carry over a
 re-assignment and an override does not.
 
+### Curating a species for the whole batch
+
+In a sample served from the batch ledger (its runs list shows *Batch ledger*), the
+inspector's close alternatives are the other identities the batch has seen at that
+peak, each with the share of the batch's evidence behind it. *Use this* on one of them
+acts on the batch peak rather than on the sample: the chosen identity is pinned as the
+species for the whole batch, then measured in every sample that holds the peak. A sample
+where it can be measured now reads it with a fit of its own; one where it cannot keeps
+what it had. The batch peak claims the pinned formula whatever the samples' vote says -
+and says so when the two disagree - and a hand icon beside the formula in the *Batch
+peaks* ledger marks it. *Release*, in the inspector's note, undoes it: the samples that
+were re-measured go back to what they read before, and the batch decides again.
+
 ## Verifying assignments
 
 --8<-- "_help/assignment-verification.md"
@@ -212,6 +225,31 @@ The evidence levels follow the field's identification-confidence ladder
 and each weaker level is worth correspondingly less as a label. Verdicts deliberately
 capture the *evidence* behind a judgment rather than echoing the model's own score,
 so the labelled record stays informative for recalibration.
+
+Verdicts are recorded from the peak inspector's form, or from the ledger's Verdict column:
+the cell is a button, as in the *Batch peaks* ledger, so an unverified row shows a faint
+seal that opens the same form in place. A verdict is about the compound, so it is recorded
+on the family's M0 whichever member the row is.
+
+### Batch-level verdicts
+
+--8<-- "_help/batch-peak-verdicts.md"
+
+The *Verdict* column of the *Batch peaks* ledger is where a batch-level verdict is
+recorded: click the cell to judge the species, change the verdict or retract it. The
+samples it covers show it as a borrowed badge - in parentheses in the assignment
+ledger, as a dashed pill in the inspector - and the assignment ledger's verdict filter
+counts them under it, so *Unverified* lists only rows that show no badge at all. A
+per-sample verdict always wins: verifying one of those samples yourself records an
+exception, and where the two disagree the per-sample badge says so.
+
+Confirming or rejecting names the formula you judged. If the consensus has moved since
+the ledger was read - another sample's fold can move it - the verdict is refused and the
+row reloads, so you never confirm a formula you did not see. A verdict whose formula the
+consensus has since left stays on record, outlined as stale, until you judge the new
+formula or retract it. Batch-level verdicts are kept apart from the labelled record that
+confidence calibration is fit on: one judgment fanned out over a batch would count as
+many correlated labels, so it counts as none.
 
 ## Assignment runs
 
@@ -228,17 +266,73 @@ recorded against an imported run are kept and shown, but stay out of the
 instrument-wide confidence calibration, whose labels come only from runs this
 server computed.
 
+A sample whose peaks are in the batch ledger but that has no run of its own &mdash; its
+runs were deleted or pruned, or it was folded into the batch without one &mdash; is shown
+from the batch ledger instead. The run selector lists it as **Batch ledger**; the
+ledger carries what the batch knows about each peak (formula, adduct, tier, fit,
+probability and isotopologue family), and the inspector's close alternatives are what
+the rest of the batch saw at that m/z. It carries no mass error or isotope label, and
+it cannot be edited by hand &mdash; assign the sample for a ledger of its own. Verdicts
+can still be recorded against it.
+
+A sample served from the batch ledger (its run reads *Batch ledger*) carries each peak's
+fit and tier, but not the numbers a run would have stored beside them: the m/z and
+abundance error of each isotopologue, the isotope labels, the chemical plausibility, the
+evidence the tier was read off. The peak inspector measures those on demand when you focus
+such a peak - the family's composition is scored against the sample's own peaks, through
+its M0 - and fills them in a moment later. They are computed for the view and never stored;
+run an assignment on the sample to persist a full ledger of its own.
+
+The inspector's *confidence* and *P(correct)* rows stay in place for such a sample, so the
+card reads the same whichever way a sample is served. The P(correct) shown is the one
+recorded when the sample was folded into the batch ledger - calibrated on the sample's own
+peak at the time, and not re-scored since; hovering it says so - or a dash with the reason
+there is none. The arbitration confidence, which only a run of the sample computes by
+weighing the peak's candidates against each other, reads as a dash with that explanation.
+The isotopologue table always lists the main peak, even when the pattern has no other
+peaks, so the focused peak's m/z is read in the same place on every card.
+
+The sample browser marks each sample's assignment status with a tag badge beside the
+match and calibration badges: green for a sample with a completed run of its own (the
+tooltip names the engine, its version and the time), the accent colour for a sample served
+from the batch ledger without a run of its own, faint for one with nothing assigned yet.
+The tooltip also says how many of the sample's peaks carry an assignment in the ledger.
+
 ## Batch peaks
 
 --8<-- "_help/batch-peaks.md"
 
-A whole batch can be assigned in one launch: the same engine runs over every eligible
-sample with one shared configuration (blank samples and samples whose m/z calibration
-is not verified are skipped, and the run continues in the background). The untargeted
-stage is off by default for batches — its cost multiplies by the number of samples.
-Every completed assignment run folds into the batch peaks automatically; a batch whose
-runs predate the batch overview can be backfilled from them without any new
-assignment work.
+Every processed sample folds into the batch peaks as it arrives - assigned from the
+known compositions, without a per-sample run of its own - and so does every completed
+assignment run. *Rebuild batch ledger* does the same for a whole batch on demand: a
+sample with an assignment run folds from it, one without is assigned from the known
+compositions and folded without a run (a blank, or a sample whose m/z calibration is
+not verified, is skipped). Use it to populate a batch that predates the ledger or was
+never assigned, or to refresh after an import. There is no batch-wide assignment run:
+the untargeted search runs once per batch peak instead (below), and a species is
+curated once at its batch peak rather than sample by sample.
+
+*Search untargeted*, beside *Rebuild batch ledger*, first asks for the search's parameters
+- m/z precision, formula ranges, the peak ceiling, the intensity threshold and the number
+of alternatives kept, the same settings as a per-sample run's untargeted stage, applied
+to the whole search - and then runs the untargeted composition search
+for the batch peaks nothing has assigned yet &mdash; once per species, on its brightest
+peak in that sample's own spectrum &mdash; and then measures the composition it found
+against every other sample the species was seen in, so each carries a fit of its own.
+It writes no per-sample runs: the results appear in the batch ledger and in each
+sample's view, marked as untargeted. An assignment run on a sample still takes
+precedence for that sample.
+
+The whole ledger leaves the app as a CSV from the view menu behind the cog: *Export
+ledger (CSV)* writes one row per member peak - every sample's reading of every batch
+peak, with the batch peak's consensus beside it - and the browser downloads the file
+when it is ready. The same rows are one call away in the SDK
+(`mascope.load_batch_ledger(...)`, or `mascope.batch_peaks.members(batch_id)` per
+batch), which is the shortest way from a batch's assignment to any other format.
+
+The *Verdict* column, last in the ledger, records and shows a
+[batch-level verdict](#batch-level-verdicts) on the species: one judgment that covers
+every sample in the batch without a verdict of its own.
 
 The rows you tick in the *Batch peaks* ledger are what the batch chart draws, one
 trace per batch peak. The ledger lists every anchor in the batch, which on a large
@@ -263,6 +357,11 @@ peak areas on a TOF). It is a property of the trace rather than of the assignmen
 unassigned anchors carry one too — sorting by it is how you find the largest thing in
 the batch that nothing was assigned to.
 
+Hover a column header for a one-line reminder of what the column holds at batch level:
+the m/z is the anchor's bin, the intensity the brightest sample's, the formula and tier a
+consensus over the members. The column a ledger is sorted by is kept per ledger - it
+survives the switch between the *Batch peaks* ledger and a sample's ledger, and a reload.
+
 Because a batch peak is one identity for a species across the batch, the focused peak
 follows you between samples: pick another sample and the inspector and the spectrum
 stay on the same species rather than on nothing. It is the batch peak that decides
@@ -272,6 +371,46 @@ clears the way it always did. The same is true in a batch whose batch peaks have
 been computed yet: there is no anchor to follow, so nothing does. Picking a peak
 yourself always wins over this — it will not overwrite a choice you just made, or
 refill a selection you cleared.
+
+To see how an assignment looks in a spectrum, use the arrow beside a row's intensity: it
+opens the brightest sample that holds the batch peak, with that peak focused, in the
+*Sample* tab - the same click-through as a data point in the batch chart, without having
+to tell which trace to click when several are plotted. When an earlier run is on screen,
+the jump reads that run's members.
+
+The sample ledger reaches the batch chart too: the chart icon at the start of a row puts that species
+into the chart (it selects the batch peak the row's peak folded into, in the *Batch peaks*
+ledger) or takes it out, without leaving the sample. The chart draws at most as many species
+as the *Batch peaks* selection allows, and a peak the ledger does not hold cannot be plotted.
+And a peak focused from the batch side - the chart, the arrow beside a batch peak's intensity
+- scrolls its row into view in the sample ledger.
+
+### Batch runs
+
+--8<-- "_help/batch-runs.md"
+
+The run selector beside *Rebuild batch ledger* lists the batch's runs newest first, each
+with what it did and, for a search, the parameters it was given. The current run is the
+live ledger; picking an earlier one shows the *Batch peaks* ledger and the chart as that
+run left them, read-only - verdicts and curation act on the current run, so the Verdict
+column waits until you pick it again. A run that fails is kept and marked, and never
+becomes current. The same history is one call away in the SDK
+(`mascope.batch_peaks.runs(batch_id)`, and `list(batch_id, run_id=...)` for the species
+table as an earlier run left it).
+
+### Importing an engine's batch result
+
+An external engine that works on the batch as a whole - one identity per m/z - can
+land its result on the batch ledger as a run of its own, through the SDK
+(`mascope.batch_peaks.import_run(batch_id, rows, engine=..., engine_version=...)`) or
+`POST /api/batch-peaks/batch/{id}/runs/import`. Each row is matched to the batch peak
+nearest its m/z (within 5 ppm by default) and its composition is then measured against
+every sample that holds that peak, so the ledger shows Mascope's own fit of the engine's
+formula, with the engine named as the source. Curated batch peaks are left alone, as are
+isotopologue peaks, and rows whose adduct could not be resolved to a mechanism; the run's
+summary counts what landed and why the rest did not. The ledger as it was stays under
+the previous run in the run selector, so the two views can be compared, and *Rebuild
+batch ledger* puts Mascope's own view back.
 
 ## References
 

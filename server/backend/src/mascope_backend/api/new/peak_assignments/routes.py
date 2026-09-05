@@ -7,9 +7,6 @@ formula and confidence") and the endpoint that launches an assignment run.
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, Request
 
-from mascope_backend.api.controllers.sample.lib.sample_batches_fetch import (
-    fetch_sample_batch,
-)
 from mascope_backend.api.controllers.samples.lib.samples_fetch import fetch_sample
 from mascope_backend.api.lib.api_features import api_route
 from mascope_backend.api.lib.exceptions.api_exceptions import ApiException
@@ -20,41 +17,33 @@ from mascope_backend.api.new.auth.dependencies import (
 from mascope_backend.api.new.peak_assignments.admission import (
     assignment_claim,
     in_flight_run_id,
-    in_flight_run_ids,
 )
 from mascope_backend.api.new.peak_assignments.alternatives_scoring import (
     score_row_alternatives,
-)
-from mascope_backend.api.new.peak_assignments.batch import (
-    assign_sample_batch_peaks,
-    partition_batch_samples,
 )
 from mascope_backend.api.new.peak_assignments.config import (
     MAX_IMPORT_BODY_BYTES,
     MAX_IMPORT_ROWS_PER_REQUEST,
     peak_assignment_enabled,
 )
-from mascope_backend.api.new.peak_assignments.copy_service import (
-    copy_assignments_to_batch,
-    partition_copy_destinations,
-)
 from mascope_backend.api.new.peak_assignments.curation import curate_assignment
+from mascope_backend.api.new.peak_assignments.derived_evidence import (
+    measure_derived_assignment,
+)
 from mascope_backend.api.new.peak_assignments.import_service import (
     abandon_import_run,
     import_assignment_run,
 )
 from mascope_backend.api.new.peak_assignments.schemas import (
     AlternativeScoresResponse,
-    AssignBatchResponse,
     AssignmentCurationResponse,
     AssignmentVerificationsResponse,
     AssignSamplePeaksBody,
     AssignSampleResponse,
     CompositionFitBody,
     CompositionVisualizeBody,
-    CopyAssignmentsPreviewResponse,
-    CopyAssignmentsResponse,
     CurateAssignmentBody,
+    DerivedEvidenceResponse,
     ImportRunBody,
     PeakAssignmentDetailResponse,
     PeakAssignmentImportResponse,
@@ -81,7 +70,6 @@ from mascope_backend.api.new.peak_assignments.visualization import (
 )
 from mascope_backend.api.new.workspaces.dependencies import (
     check_sample_access,
-    require_batch_role,
     require_sample_role,
 )
 from mascope_backend.db import User
@@ -246,6 +234,37 @@ async def get_alternative_scores_route(
         sample_item_id=sample_item_id, peak_assignment_id=peak_assignment_id
     )
     return AlternativeScoresResponse.model_validate(result)
+
+
+@peak_assignments_router.get(
+    "/sample/{sample_item_id}/assignment/{peak_assignment_id}/evidence",
+    response_model=DerivedEvidenceResponse,
+)
+@api_route()
+async def get_derived_evidence_route(
+    sample_item_id: str,
+    peak_assignment_id: str,
+    user: User = Depends(current_active_user),
+) -> DerivedEvidenceResponse:
+    """Measure a derived row's family against its sample, for the inspector.
+
+    A sample served from the batch ledger shows each peak with the fit and
+    tier its member carries and nothing else a run computes - the m/z and
+    abundance error of each isotopologue, the isotope labels, the
+    plausibility, the evidence the tier was read off. This measures them on
+    request, through the family's M0, the way the finder's alternatives are
+    measured; nothing is stored. A run's own row answers with no entry.
+
+    :param sample_item_id: The unique identifier of the sample item.
+    :param peak_assignment_id: The derived row (``fold-<batch peak>``).
+    :param user: The current authenticated user. Requires workspace guest role.
+    :return: One entry, scored or blocked with a reason, or none.
+    """
+    await check_sample_access(sample_item_id, user, "guest")
+    result = await measure_derived_assignment(
+        sample_item_id=sample_item_id, peak_assignment_id=peak_assignment_id
+    )
+    return DerivedEvidenceResponse.model_validate(result)
 
 
 @peak_assignments_router.get(
@@ -556,293 +575,6 @@ async def assign_sample_peaks_route(
                 "sample_item_id": sample_item_id,
                 "peak_assignment_run_id": run.peak_assignment_run_id,
                 "run_status": run.status,
-            }
-        ],
-        "process_id": process_id,
-    }
-
-
-@peak_assignments_router.post(
-    "/batch/{sample_batch_id}/assign",
-    response_model=AssignBatchResponse,
-    dependencies=[Depends(require_peak_assignment_enabled)],
-)
-@api_route(status_code=202, token_access=True)
-async def assign_sample_batch_peaks_route(
-    sample_batch_id: str,
-    background_tasks: BackgroundTasks,
-    body: AssignSamplePeaksBody | None = None,
-    user: User = Depends(current_active_user),
-    membership=Depends(require_batch_role("editor")),
-) -> AssignBatchResponse:
-    """
-    Launch a peak assignment run for every sample in a sample batch.
-
-    Assigns a composition to every observed peak of each sample: first from the
-    known target library (Stage A), then via untargeted composition search for
-    the remainder (Stage B, configurable). Each sample gets its own
-    PeakAssignmentRun, readable via the sample GET endpoints.
-
-    Because a batch multiplies per-sample cost by the number of samples, it
-    defaults to **Stage A only**; pass a config with ``run_untargeted: true`` to
-    include the untargeted stage.
-
-    **What the 202 carries is the eligibility partition, not run ids.** A batch
-    has no run row of its own, and an all-skipped batch produces none at all - so
-    without the partition a client cannot tell "nothing to do" from "refused",
-    and cannot know how many runs to wait for. The partition is cheap here (the
-    batch's samples plus a pure function of each row) and is handed to the
-    background task, so what is reported is what executes.
-
-    Runs are deliberately *not* pre-created. A run exists only from the moment
-    the batch reaches its sample: created up front it would be a non-terminal run
-    for a sample nothing is working on, which durable admission would then refuse
-    - and a batch that stops early (cancellation propagates out of the loop)
-    would strand one blocking row per sample it never reached.
-
-    - **202** with the admitted sample ids and the skipped ones with reasons.
-    - **409** when a run is already in flight for any admitted sample, naming
-      those samples and the runs holding them.
-    - **403** when peak assignment is not enabled for this environment.
-
-    A batch already being assigned by this worker is refused by the task's own
-    in-flight set and advisory claim, which guard the window between this
-    response and the first run's creation.
-
-    :param sample_batch_id: The unique identifier of the sample batch.
-    :param body: Optional run configuration overrides applied to every sample.
-    :param user: The current authenticated user. Requires workspace editor role.
-    :param membership: Workspace membership with editor role on the batch.
-    :return: The samples that will be assigned, and the ones that will be skipped.
-    """
-    # Verify the existence of the sample batch before queueing the task
-    sample_batch = await fetch_sample_batch(sample_batch_id)
-
-    partition = await partition_batch_samples(sample_batch_id)
-
-    if blocked := await in_flight_run_ids(partition.admitted):
-        raise ApiException(
-            f"Peak assignment is already running for "
-            f"{len(blocked)} sample{'s' if len(blocked) != 1 else ''} of sample "
-            f"batch '{sample_batch.sample_batch_name}'.",
-            {
-                "sample_batch_id": sample_batch_id,
-                "blocked": [
-                    {
-                        "sample_item_id": sample_item_id,
-                        "peak_assignment_run_id": run_id,
-                    }
-                    for sample_item_id, run_id in blocked.items()
-                ],
-            },
-            409,
-        )
-
-    process_id = gen_id(8)
-    background_tasks.add_task(
-        assign_sample_batch_peaks,
-        sample_batch_id=sample_batch_id,
-        config=body.config if body else None,
-        independent_transaction=True,
-        user_id=user.id,
-        process_id=process_id,
-        partition=partition,
-    )
-    return {
-        "status": "success",
-        "message": (
-            f"Assigning peaks for {len(partition.admitted)} sample"
-            f"{'s' if len(partition.admitted) != 1 else ''} of sample batch "
-            f"'{sample_batch.sample_batch_name}' "
-            f"({len(partition.skipped)} skipped), please wait."
-        ),
-        "results": 1,
-        "data": [
-            {
-                "sample_batch_id": sample_batch_id,
-                "admitted": list(partition.admitted),
-                "skipped": partition.skipped_payload(),
-            }
-        ],
-        "process_id": process_id,
-    }
-
-
-@peak_assignments_router.get(
-    "/sample/{sample_item_id}/copy-to-batch",
-    response_model=CopyAssignmentsPreviewResponse,
-    dependencies=[Depends(require_peak_assignment_enabled)],
-)
-@api_route(token_access=True)
-async def copy_assignments_preview_route(
-    sample_item_id: str,
-    user: User = Depends(current_active_user),
-    membership=Depends(require_sample_role("editor")),
-) -> CopyAssignmentsPreviewResponse:
-    """
-    Preview what copying this sample's assignments to its batch would do.
-
-    Serves the same eligibility partition the POST executes - the source's
-    latest completed run and, for every other sample of the batch, whether a
-    copy would publish onto it or skip it and why (different polarity, blank,
-    assignment run in flight). The copy dialog renders this so what it lists
-    is what a confirm runs.
-
-    Gated like the launch rather than like a read: this surface exists only to
-    stage the copy action.
-
-    :param sample_item_id: The unique identifier of the source sample.
-    :param user: The current authenticated user. Requires workspace editor role.
-    :param membership: Workspace membership with editor role on the sample.
-    :return: The source run and the per-destination eligibility list.
-    """
-    sample = await fetch_sample(sample_item_id)
-    if sample.sample_batch_id is None:
-        raise ApiException(
-            f"Sample '{sample.sample_item_name}' does not belong to a sample "
-            "batch, so there is nothing to copy its assignments to.",
-            {"sample_item_id": sample_item_id},
-            422,
-        )
-    partition = await partition_copy_destinations(sample)
-    eligible = len(partition.admitted)
-    return CopyAssignmentsPreviewResponse.model_validate(
-        {
-            "status": "success",
-            "message": (
-                f"{eligible} of {len(partition.destinations)} batch sample"
-                f"{'s' if len(partition.destinations) != 1 else ''} eligible "
-                f"for an assignment copy from '{sample.sample_item_name}'."
-            ),
-            "results": 1,
-            "data": [
-                {
-                    "sample_item_id": sample_item_id,
-                    "sample_batch_id": sample.sample_batch_id,
-                    "source_peak_assignment_run_id": partition.source_run_id,
-                    "source_engine": partition.source_engine,
-                    "destinations": [
-                        {
-                            "sample_item_id": candidate.sample_item_id,
-                            "sample_item_name": candidate.sample_item_name,
-                            "eligible": candidate.reason is None,
-                            "reason": candidate.reason,
-                        }
-                        for candidate in partition.destinations
-                    ],
-                }
-            ],
-        }
-    )
-
-
-@peak_assignments_router.post(
-    "/sample/{sample_item_id}/copy-to-batch",
-    response_model=CopyAssignmentsResponse,
-    dependencies=[Depends(require_peak_assignment_enabled)],
-)
-@api_route(status_code=202, token_access=True)
-async def copy_assignments_to_batch_route(
-    sample_item_id: str,
-    background_tasks: BackgroundTasks,
-    user: User = Depends(current_active_user),
-    membership=Depends(require_sample_role("editor")),
-) -> CopyAssignmentsResponse:
-    """
-    Copy this sample's assignments onto the batch's other samples.
-
-    Remaps the source's latest completed run onto each eligible destination's
-    own peaks, re-scores the seeded rows against each destination's data with
-    the engine's own scoring chain, and publishes one complete run per
-    destination under the reserved `mascope-copy` engine - append-only,
-    through the same validated import pipeline external engines use, batch
-    fold-in included. Curation on the source (including manual overrides, once
-    that write path exists) travels with the rows; verification verdicts do
-    not, because a verdict is judgement about one sample's evidence.
-    Design: `docs/dev/peak_assignment_copy.md`.
-
-    **The 202 carries the eligibility partition, not run ids** - each
-    destination's run is created only as the fan-out reaches it, exactly as a
-    batch assign's runs are, and per-destination outcomes are reported by the
-    completion notification. Destinations with a run already in flight are
-    skipped and reported, never failed.
-
-    - **202** with the destinations that will receive a copy and the skipped
-      ones with reasons.
-    - **422** when the sample is not in a batch, has no completed run to copy,
-      or no destination is eligible.
-    - **403** when peak assignment is not enabled for this environment.
-
-    :param sample_item_id: The unique identifier of the source sample.
-    :param user: The current authenticated user. Requires workspace editor role.
-    :param membership: Workspace membership with editor role on the sample.
-    :return: The admitted destinations and the skipped ones with reasons.
-    """
-    sample = await fetch_sample(sample_item_id)
-    if sample.sample_batch_id is None:
-        raise ApiException(
-            f"Sample '{sample.sample_item_name}' does not belong to a sample "
-            "batch, so there is nothing to copy its assignments to.",
-            {"sample_item_id": sample_item_id},
-            422,
-        )
-
-    partition = await partition_copy_destinations(sample)
-    if partition.source_run_id is None:
-        raise ApiException(
-            f"Sample '{sample.sample_item_name}' has no completed peak "
-            "assignment run to copy. Assign its peaks first.",
-            {"sample_item_id": sample_item_id},
-            422,
-        )
-    if partition.tier_bands is None:
-        raise ApiException(
-            f"The latest completed run of sample '{sample.sample_item_name}' "
-            "declares no tier bands, so copied rows could not be tiered. "
-            "Re-assign the sample to produce a run with bands.",
-            {
-                "sample_item_id": sample_item_id,
-                "peak_assignment_run_id": partition.source_run_id,
-            },
-            422,
-        )
-    if not partition.admitted:
-        raise ApiException(
-            f"No sample in the batch is eligible for an assignment copy from "
-            f"'{sample.sample_item_name}'.",
-            {
-                "sample_item_id": sample_item_id,
-                "skipped": partition.skipped_payload(),
-            },
-            422,
-        )
-
-    process_id = gen_id(8)
-    background_tasks.add_task(
-        copy_assignments_to_batch,
-        sample_item_id=sample_item_id,
-        partition=partition,
-        independent_transaction=True,
-        user_id=user.id,
-        process_id=process_id,
-    )
-    return {
-        "status": "success",
-        "message": (
-            f"Copying assignments from sample '{sample.sample_item_name}' to "
-            f"{len(partition.admitted)} batch sample"
-            f"{'s' if len(partition.admitted) != 1 else ''} "
-            f"({len(partition.destinations) - len(partition.admitted)} skipped), "
-            "please wait."
-        ),
-        "results": 1,
-        "data": [
-            {
-                "sample_item_id": sample_item_id,
-                "sample_batch_id": sample.sample_batch_id,
-                "source_peak_assignment_run_id": partition.source_run_id,
-                "admitted": list(partition.admitted),
-                "skipped": partition.skipped_payload(),
             }
         ],
         "process_id": process_id,

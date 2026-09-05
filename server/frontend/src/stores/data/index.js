@@ -1,6 +1,11 @@
 import { useAcquisition } from './modules/acquisition'
 import { useBatch } from './modules/batch'
-import { useBatchPeakLedger } from './modules/batchPeak'
+import {
+  useBatchPeakLedger,
+  useBatchPeakRun,
+  useBatchPeakSampleStatus,
+  useBatchPeakVerification
+} from './modules/batchPeak'
 import { useInstrument } from './modules/instrument'
 import { useIonizationMechanism, useIonizationMode } from './modules/ionization'
 import {
@@ -12,6 +17,7 @@ import {
 import { usePeak } from './modules/peak'
 import {
   usePeakAssignment,
+  usePeakAssignmentAnchorContext,
   usePeakAssignmentRun,
   usePeakAssignmentVerification
 } from './modules/peakAssignment'
@@ -33,12 +39,16 @@ export const useData = () => ({
   template: useTemplate(),
   batch: useBatch(),
   batchPeak: useBatchPeakLedger(),
+  batchPeakVerification: useBatchPeakVerification(),
+  batchPeakRun: useBatchPeakRun(),
+  batchPeakSampleStatus: useBatchPeakSampleStatus(),
   sample: useSample(),
   peak: usePeak(),
   peakAssignment: {
     run: usePeakAssignmentRun(),
     peak: usePeakAssignment(),
-    verification: usePeakAssignmentVerification()
+    verification: usePeakAssignmentVerification(),
+    anchorContext: usePeakAssignmentAnchorContext()
   },
   target: {
     collection: useTargetCollection(),

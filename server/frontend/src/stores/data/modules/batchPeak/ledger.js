@@ -1,9 +1,11 @@
 import { defineStore } from 'pinia'
+import { MAX_SELECTED_BATCH_PEAKS } from '@/lib/batchChart'
 
 import { api } from '@/api'
 import { useData } from '@/lib/store'
 
 import { useBatch } from '../batch'
+import { useBatchPeakRun } from './run'
 
 /**
  * Ceiling on how many batch peaks may be selected at once.
@@ -20,7 +22,7 @@ import { useBatch } from '../batch'
  * Enforced where the table writes its selection (PaneBrowserBatchPeaks.vue) and
  * again where the chart reads it, since the chart has its own way in.
  */
-export const MAX_SELECTED_BATCH_PEAKS = 300
+export { MAX_SELECTED_BATCH_PEAKS }
 
 /**
  * Ledger of a batch's "batch peaks" (cross-sample m/z anchors) -- the selection
@@ -35,20 +37,27 @@ export const useBatchPeakLedger = defineStore('app.data.batchPeak', () => {
 
   const data = useData(
     name,
-    ({ sample_batch_id }) => {
+    ({ sample_batch_id, batch_peak_run_id }) => {
       if (!sample_batch_id) return []
       // min_n_present=1: the ledger lists every batch peak so any (even
       // event-specific, low-prevalence) species is selectable; the selection is
       // what limits the plot, and the selection is capped rather than the list.
       return api.http.get(`/batch-peaks/batch/${sample_batch_id}`, {
-        params: { min_n_present: 1 },
+        // An earlier run reads off its snapshot; the live ledger names no run.
+        params: { min_n_present: 1, ...(batch_peak_run_id ? { batch_peak_run_id } : {}) },
         use: 'read',
         type: 'load_batch_peak_ledger'
       })
     },
     {
       key,
-      deps: () => ({ sample_batch_id: useBatch().focusedId }),
+      deps: () => ({
+        sample_batch_id: useBatch().focusedId,
+        // An earlier run's ledger is read off its snapshot. The live ledger is
+        // undefined here rather than null: a null dependency is one the loader
+        // waits on, and there is no run to wait for.
+        batch_peak_run_id: useBatchPeakRun().viewingId ?? undefined
+      }),
       selection: { mode: 'multiple' },
       // Reload when the arrival fold-in / backfill updates batch peaks.
       events: ['peak_assignment_reload']

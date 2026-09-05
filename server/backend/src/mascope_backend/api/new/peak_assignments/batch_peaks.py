@@ -9,6 +9,12 @@ This module holds the PURE logic (no DB, no I/O) behind the batch overview:
   is a stable cross-sample identity under incremental sample arrival -- the property
   the batch-overview chart needs to draw one durable trace per species.
 
+- **Candidates** (:func:`candidate_index`, :func:`resolve_candidate`): the
+  anchor's append-only registry of the assignment identities its members have
+  carried - neutral formula, ion formula, ionization mechanism - which a member
+  row names by index instead of repeating. What makes the batch ledger stand
+  without the per-sample ledger it was folded from.
+
 - **Consensus** (:func:`compute_consensus`): roll the members' *per-sample*
   ``PeakAssignment`` results up into the batch peak's formula/tier. The vote is
   **evidence-weighted** (a high-fit, high-signal member outweighs low-SNR flips),
@@ -37,6 +43,7 @@ from mascope_backend.api.new.peak_assignments.tiers import (
     TIER_ASSIGNED,
     TIER_BELOW_ASSIGNABILITY,
     TIER_CANDIDATE,
+    TIER_RANK,
     TIER_UNASSIGNED,
 )
 
@@ -63,6 +70,63 @@ AMBIGUOUS_SUPPORT = 0.5
 #: the assignment engine: this module is pure, and the engine pulls in pandas,
 #: numpy and the database id helper. A unit test holds the two spellings in step.
 ROLE_ISO_CHILD = "iso_child"
+ROLE_M0 = "M0"
+ROLE_UNASSIGNED = "unassigned"
+ROLE_REAGENT = "reagent"
+ROLE_ARTIFACT = "artifact"
+
+
+# --- the member row's codes -----------------------------------------------------
+
+#: A member stores its tier as a ``smallint``: the tier's rank, so the code
+#: compares the way the engine compares tiers (higher is more confident).
+TIER_CODES: dict[str, int] = dict(TIER_RANK)
+TIER_NAMES: dict[int, str] = {code: tier for tier, code in TIER_CODES.items()}
+
+#: A member stores its per-sample role as a ``smallint`` too. Order is
+#: arbitrary but fixed: a code, once written, means one role for good.
+ROLE_CODES: dict[str, int] = {
+    ROLE_UNASSIGNED: 0,
+    ROLE_M0: 1,
+    ROLE_ISO_CHILD: 2,
+    ROLE_REAGENT: 3,
+    ROLE_ARTIFACT: 4,
+}
+ROLE_NAMES: dict[int, str] = {code: role for role, code in ROLE_CODES.items()}
+
+
+def tier_code(tier: Optional[str]) -> Optional[int]:
+    """The stored code of a tier name; ``None`` for no tier or an unknown one."""
+    return TIER_CODES.get(tier) if tier is not None else None
+
+
+def tier_name(code: Optional[int]) -> Optional[str]:
+    """The tier name a stored code means; ``None`` for no code or an unknown one."""
+    return TIER_NAMES.get(code) if code is not None else None
+
+
+def role_code(role: Optional[str]) -> Optional[int]:
+    """The stored code of a role name; ``None`` for no role or an unknown one."""
+    return ROLE_CODES.get(role) if role is not None else None
+
+
+def role_name(code: Optional[int]) -> Optional[str]:
+    """The role name a stored code means; ``None`` for no code or an unknown one."""
+    return ROLE_NAMES.get(code) if code is not None else None
+
+
+def mz_delta_ppm(mz: float, anchor_mz: float) -> float:
+    """A member's offset from its anchor's frozen m/z, in ppm - what the member
+    stores in place of its absolute m/z. Single precision suffices: an offset
+    of tens of ppm carried to seven significant digits places the peak to well
+    below the precision the peak file itself carries."""
+    return (mz - anchor_mz) / anchor_mz * 1e6
+
+
+def mz_from_delta(anchor_mz: float, delta_ppm: Optional[float]) -> float:
+    """The absolute m/z a member's stored offset recovers to; the anchor's own
+    m/z when the member carries none."""
+    return anchor_mz * (1.0 + (delta_ppm or 0.0) / 1e6)
 
 
 def resolution_adaptive_tol_ppm(
@@ -194,6 +258,73 @@ def fold_in_sample(
     return list(claimed.values())
 
 
+# --- candidates ---------------------------------------------------------------
+
+#: Keys of one entry in ``BatchPeak.candidates``: the identity of an assignment
+#: a member can point at, and nothing that varies per member (fit, tier and
+#: intensity stay on the member row, where the vote reads them).
+CANDIDATE_KEYS = ("formula", "ion_formula", "ionization_mechanism_id")
+
+
+def candidate_index(
+    candidates: list[dict],
+    formula: str,
+    ion_formula: Optional[str],
+    ionization_mechanism_id: Optional[str],
+    source: Optional[str] = None,
+) -> int:
+    """Index of the candidate (``formula``, ``ion_formula``, mechanism) in
+    ``candidates``, appending it when absent.
+
+    The list is the anchor's registry of every assignment identity its members
+    have carried, and member rows reference it by position - so it is
+    **append-only**: an entry is never removed or reordered while a member may
+    point at it, and a re-fold that no longer needs an entry leaves it in
+    place. ``candidates`` is extended in place; the caller persists it.
+
+    :param candidates: The anchor's registry, in stored order.
+    :param formula: The member's neutral formula.
+    :param ion_formula: The member's ion formula, or None.
+    :param ionization_mechanism_id: The member's mechanism, or None.
+    :param source: Where the identity came from (``database``, ``untargeted``,
+        ``manual``), recorded on a NEW entry only - the first member to bring
+        an identity names its source, and a later member with the same
+        identity from elsewhere does not rewrite it. Not part of the match.
+    :return: The position the member's row should name.
+    """
+    for index, entry in enumerate(candidates):
+        if (
+            entry.get("formula") == formula
+            and entry.get("ion_formula") == ion_formula
+            and entry.get("ionization_mechanism_id") == ionization_mechanism_id
+        ):
+            return index
+    entry = {
+        "formula": formula,
+        "ion_formula": ion_formula,
+        "ionization_mechanism_id": ionization_mechanism_id,
+    }
+    if source is not None:
+        entry["source"] = source
+    candidates.append(entry)
+    return len(candidates) - 1
+
+
+def resolve_candidate(candidates: Optional[list], index: Optional[int]) -> dict:
+    """The registry entry a member's index names, or ``{}`` when it names none:
+    an unassigned member, an anchor with no registry, or an index the list does
+    not reach.
+
+    :param candidates: The anchor's registry, as stored (may be None).
+    :param index: The member's ``candidate`` column (may be None).
+    :return: The entry, or an empty dict.
+    """
+    if index is None or not candidates or index < 0 or index >= len(candidates):
+        return {}
+    entry = candidates[index]
+    return entry if isinstance(entry, dict) else {}
+
+
 # --- consensus ----------------------------------------------------------------
 
 
@@ -295,8 +426,67 @@ def resolve_isotopologue_of(
     return owner if 2 * n_votes > n_assigned else None
 
 
+def manual_pin_of(anchor: Any) -> Optional[dict]:
+    """The manual curation an anchor carries under ``provenance.manual``, or None.
+
+    A pin names a formula; anything else under that key is not one.
+    """
+    provenance = _member(anchor, "provenance")
+    if not isinstance(provenance, dict):
+        return None
+    pin = provenance.get("manual")
+    if isinstance(pin, dict) and pin.get("formula"):
+        return pin
+    return None
+
+
+def member_state(member: Any) -> dict:
+    """What a member reads - the fields a curation may overwrite and a release
+    puts back. ``tier`` and ``role`` stay as the codes the row stores."""
+    return {
+        "sample_item_id": _member(member, "sample_item_id"),
+        "candidate": _member(member, "candidate"),
+        "tier": _member(member, "tier"),
+        "fit_score": _member(member, "fit_score"),
+        "role": _member(member, "role"),
+        "owner_batch_peak_id": _member(member, "owner_batch_peak_id"),
+        "p_correct": _member(member, "p_correct"),
+    }
+
+
+def _pinned_without_support(
+    manual: dict, n_present: int, brightest: Optional[float]
+) -> Consensus:
+    """A pinned anchor none of whose members carry the pin: the claim stands, as
+    a candidate with no measured support, and says so."""
+    return Consensus(
+        consensus_formula=manual["formula"],
+        consensus_ion_formula=manual.get("ion_formula"),
+        ionization_mechanism_id=manual.get("ionization_mechanism_id"),
+        consensus_tier=TIER_CANDIDATE,
+        best_fit_score=None,
+        support_fraction=0.0,
+        n_present=n_present,
+        is_ambiguous=True,
+        max_intensity=brightest,
+        isotopologue_of=None,
+        alternatives=[],
+        provenance={
+            "n_assigned": 0,
+            "n_winner": 0,
+            "winner_evidence_share": 0.0,
+            "agreement": 0.0,
+            "p_correct": None,
+            "manual": manual,
+            "vote_winner": None,
+        },
+    )
+
+
 def compute_consensus(
-    members: Iterable[Any], batch_peak_id: Optional[str] = None
+    members: Iterable[Any],
+    batch_peak_id: Optional[str] = None,
+    manual: Optional[dict] = None,
 ) -> Consensus:
     """Evidence-weighted consensus of a batch peak's per-sample members.
 
@@ -315,13 +505,23 @@ def compute_consensus(
     :param members: The batch peak's occurrences.
     :param batch_peak_id: This batch peak's own id, used only to keep the
         isotopologue link from pointing at itself.
+    :param manual: A manual curation pinned on the anchor (``manual_pin_of``).
+        The consensus then claims the pinned formula, ion and mechanism
+        whatever the vote says: its tier is rolled up over the members that
+        carry the pin (``candidate`` when none do), its support is their
+        share of the assigned members, the vote's own winner is kept under
+        ``provenance.vote_winner`` and a disagreement reads as ambiguous. The
+        pin itself travels in the provenance, so a recompute never drops it.
     """
     members = list(members)
     n_present = len(members)
     brightest = max_intensity(members)
     assigned = [m for m in members if _member(m, "assigned_formula")]
 
+    pin = manual if isinstance(manual, dict) and manual.get("formula") else None
     if not assigned:
+        if pin is not None:
+            return _pinned_without_support(pin, n_present, brightest)
         return Consensus(n_present=n_present, max_intensity=brightest)
 
     # Evidence-weighted vote per neutral formula.
@@ -336,8 +536,10 @@ def compute_consensus(
 
     total_weight = sum(weight_by_formula.values()) or 1.0
     ranked = sorted(weight_by_formula.items(), key=lambda kv: kv[1], reverse=True)
-    winner, winner_weight = ranked[0]
-    winner_members = members_by_formula[winner]
+    vote_winner = ranked[0][0]
+    winner = pin["formula"] if pin is not None else vote_winner
+    winner_weight = weight_by_formula.get(winner, 0.0)
+    winner_members = members_by_formula.get(winner, [])
 
     winner_share = winner_weight / total_weight
     # Agreement = fraction of ASSIGNED members that back the winner (count-based).
@@ -345,10 +547,19 @@ def compute_consensus(
 
     # Winning ion formula / mechanism = the mode among the winner's members
     # (they share the neutral formula; the adduct is essentially fixed by m/z).
-    ion_formula = _mode(_member(m, "ion_formula") for m in winner_members)
-    mechanism = _mode(_member(m, "ionization_mechanism_id") for m in winner_members)
-
-    consensus_tier = _rollup_tier(winner_members)
+    if pin is not None:
+        # The pin names the identity; the members that carry it decide how well
+        # it is measured, and none carrying it is a candidate claim, not an
+        # assigned one.
+        ion_formula = pin.get("ion_formula")
+        mechanism = pin.get("ionization_mechanism_id")
+        consensus_tier = (
+            _rollup_tier(winner_members) if winner_members else TIER_CANDIDATE
+        )
+    else:
+        ion_formula = _mode(_member(m, "ion_formula") for m in winner_members)
+        mechanism = _mode(_member(m, "ionization_mechanism_id") for m in winner_members)
+        consensus_tier = _rollup_tier(winner_members)
     best_fit = max(
         (
             _member(m, "fit_score")
@@ -359,10 +570,13 @@ def compute_consensus(
     )
 
     # Tie / blend honesty.
-    runner_share = (ranked[1][1] / total_weight) if len(ranked) > 1 else 0.0
+    others = [(f, w) for f, w in ranked if f != winner]
+    runner_share = (others[0][1] / total_weight) if others else 0.0
     is_ambiguous = (
-        (winner_share - runner_share) <= CONSENSUS_TIE_TOL and len(ranked) > 1
-    ) or support_fraction < AMBIGUOUS_SUPPORT
+        ((winner_share - runner_share) <= CONSENSUS_TIE_TOL and bool(others))
+        or support_fraction < AMBIGUOUS_SUPPORT
+        or (pin is not None and vote_winner != winner)
+    )
 
     alternatives = [
         {
@@ -370,7 +584,7 @@ def compute_consensus(
             "evidence_share": round(w / total_weight, 4),
             "n": len(members_by_formula[f]),
         }
-        for f, w in ranked[1:4]
+        for f, w in others[:3]
     ]
 
     p_values = [
@@ -388,6 +602,9 @@ def compute_consensus(
         "p_correct": (max(p_values) if p_values else None),
     }
 
+    if pin is not None:
+        provenance["manual"] = pin
+        provenance["vote_winner"] = vote_winner
     return Consensus(
         consensus_formula=winner,
         consensus_ion_formula=ion_formula,

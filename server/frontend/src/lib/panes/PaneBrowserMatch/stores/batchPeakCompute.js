@@ -60,18 +60,33 @@ export const useBatchPeakCompute = defineStore('browser.match.batchPeaks.compute
   // the backend, which now reports folding nothing as a warning instead of
   // announcing it green.
   const blockedReason = computed(() => {
-    if (!app.data.batch.focusedId) return 'Select a batch to compute its batch peaks.'
+    if (!app.data.batch.focusedId) return 'Select a batch to rebuild its ledger.'
     if (!canCompute.value) {
-      return 'Computing batch peaks writes to the batch, so it needs the editor role in this workspace.'
+      return 'Rebuilding the batch ledger writes to the batch, so it needs the editor role in this workspace.'
     }
     if (!app.data.sample.pending && !app.data.sample.list.length) {
-      return 'This batch has no samples yet, so there is nothing to fold into batch peaks.'
+      return 'This batch has no samples yet, so there is nothing to fold into the ledger.'
     }
     return null
   })
 
   const computeTooltip = computed(
-    () => blockedReason.value ?? 'Build / refresh batch peaks from assigned sample peaks.'
+    () =>
+      blockedReason.value ??
+      'Rebuild the batch ledger from every sample of the batch - from its assignment run where it has one, otherwise assigned from the known compositions.'
+  )
+
+  // The untargeted search over the batch peaks nothing has assigned yet: once
+  // per species, on its brightest peak, then measured against every other
+  // sample the species was seen in. Same gate as the compute, same shape of
+  // wait: an acknowledgement is not completion, the task's own notification is.
+  const searching = ref(false)
+  const pendingSearchId = ref(null)
+  let searchTimer = null
+  const searchTooltip = computed(
+    () =>
+      blockedReason.value ??
+      'Search untargeted compositions for the batch peaks nothing has assigned yet - once per species, on its brightest peak.'
   )
 
   function endComputing() {
@@ -79,6 +94,73 @@ export const useBatchPeakCompute = defineStore('browser.match.batchPeaks.compute
     pendingProcessId.value = null
     clearTimeout(computeTimer)
     computeTimer = null
+  }
+
+  // The ledger export: a background task whose completion notification
+  // carries the file the browser then downloads (App.vue), so this only
+  // keeps the control busy for as long as the task runs.
+  const exporting = ref(false)
+  const pendingExportId = ref(null)
+  let exportTimer = null
+  function endExporting() {
+    exporting.value = false
+    pendingExportId.value = null
+    clearTimeout(exportTimer)
+    exportTimer = null
+  }
+  async function exportLedger() {
+    const batchId = app.data.batch.focusedId
+    if (!batchId || exporting.value) return
+    exporting.value = true
+    clearTimeout(exportTimer)
+    exportTimer = setTimeout(endExporting, COMPUTE_TIMEOUT)
+    try {
+      const response = await api.http.post(
+        `/batch-peaks/batch/${batchId}/export`,
+        {},
+        { use: 'process', type: 'export_batch_ledger' }
+      )
+      pendingExportId.value = response?.headers?.['process-id'] ?? null
+    } catch {
+      endExporting()
+    }
+  }
+  app.ui.notification.on('export_batch_ledger', (notification) => {
+    if (!exporting.value) return
+    if (notification?.status === 'pending') return
+    const id = notification?.process_id
+    if (pendingExportId.value && id && id !== pendingExportId.value) return
+    endExporting()
+  })
+
+  function endSearching() {
+    searching.value = false
+    pendingSearchId.value = null
+    clearTimeout(searchTimer)
+    searchTimer = null
+  }
+
+  // `config` is the search's parameters as the launcher dialog collected them
+  // (the untargeted stage's own settings); empty means the server defaults.
+  async function searchUntargeted(config = null) {
+    const batchId = app.data.batch.focusedId
+    if (!batchId || searching.value || blockedReason.value) return
+    searching.value = true
+    launchError.value = null
+    clearTimeout(searchTimer)
+    searchTimer = setTimeout(endSearching, COMPUTE_TIMEOUT)
+    try {
+      const response = await api.http.post(
+        `/batch-peaks/batch/${batchId}/search-untargeted`,
+        config && Object.keys(config).length ? { config } : {},
+        { type: 'search_batch_untargeted', errors: 'inline' }
+      )
+      pendingSearchId.value = response?.headers?.['process-id'] ?? null
+    } catch (error) {
+      endSearching()
+      launchRefused.value = isRefusedRequest(error) || error?.response?.status === 403
+      launchError.value = getApiErrorMessage(error, 'Could not start the untargeted search.')
+    }
   }
 
   /** Backfill batch peaks from this batch's existing assignments; the ledger and
@@ -114,7 +196,7 @@ export const useBatchPeakCompute = defineStore('browser.match.batchPeaks.compute
       // editor-role check and the feature flag, and it is what a role revoked
       // mid-session looks like. Anything else is a fault.
       launchRefused.value = isRefusedRequest(error) || error?.response?.status === 403
-      launchError.value = getApiErrorMessage(error, 'Could not start the batch peak computation.')
+      launchError.value = getApiErrorMessage(error, 'Could not start the batch ledger rebuild.')
     }
   }
 
@@ -144,8 +226,18 @@ export const useBatchPeakCompute = defineStore('browser.match.batchPeaks.compute
   })
 
   /** Whatever was in flight or went wrong belonged to the previous batch. */
+  app.ui.notification.on('search_batch_untargeted', (notification) => {
+    if (!searching.value) return
+    if (notification?.status === 'pending') return
+    const id = notification?.process_id
+    if (pendingSearchId.value && id && id !== pendingSearchId.value) return
+    endSearching()
+  })
+
   function reset() {
     endComputing()
+    endSearching()
+    endExporting()
     launchError.value = null
     launchRefused.value = false
   }
@@ -157,6 +249,11 @@ export const useBatchPeakCompute = defineStore('browser.match.batchPeaks.compute
     launchError,
     launchRefused,
     compute,
+    searching,
+    searchTooltip,
+    searchUntargeted,
+    exporting,
+    exportLedger,
     reset
   }
 })

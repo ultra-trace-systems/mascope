@@ -692,38 +692,49 @@ transactions are far more numerous than errors.
 
 **Peak assignment** (assign a chemical composition to every peak - see
 [the user docs](user/how-it-works/peak-assignment.md)) ships **on**. What that
-costs a server is one database-stage assignment run per newly processed sample:
-some extra processing time, and **about 1 KB of database per detected peak** -
-one ledger row plus one batch-peak occurrence, so roughly 2-8 MB for a typical
-sample of 2,000-8,000 peaks, which on most instruments is comparable to the raw
-data the sample itself brings. Targeted matching is unaffected - assignment is
-an addition, not a replacement - and samples processed before the upgrade are
-not assigned retroactively; run assignment explicitly from the UI for those.
+costs a server is a database-stage assignment of every newly processed sample,
+folded into its batch's ledger: some extra processing time, and **about 200
+bytes of database per detected peak** - one batch-ledger member row - so
+roughly 0.4-1.6 MB for a typical sample of 2,000-8,000 peaks. That is
+permanent, in the database's volume, and grows with everything you acquire;
+on most instruments it is a fraction of the raw data the sample itself
+brings. Targeted matching is unaffected - assignment is an addition, not a
+replacement - and samples processed before the upgrade are not assigned
+retroactively; use *Rebuild batch ledger* on their batch for those.
 
-That per-sample ledger is a **permanent** cost, not a temporary one. The
-retention pass described under [Reclaiming assignment
-runs](#reclaiming-assignment-runs) bounds *re-assignment* of the same sample; a
-server that only assigns at ingest produces one run per sample, which the pass
-never evicts. Batch peaks add a second row per observed peak per sample, and the
-pass does not touch those at all. Size the database for the ledger you are
-keeping, not for what the timer might reclaim - see [Disk space](#disk-space).
+An **explicit** assignment run - *Assign peaks* on a sample, or an import from
+an external engine - writes a per-sample ledger as well: one row per detected
+peak, about 0.8 KB each, with the per-peak alternatives, error figures and
+provenance the batch ledger does not keep. Those runs are what the retention
+pass described under [Reclaiming assignment runs](#reclaiming-assignment-runs)
+bounds: it keeps the newest few per sample and engine and drops the rest. The
+batch ledger's member rows are replaced when a sample is re-folded, never
+accumulated, and the pass does not touch them. Size the database for the
+members you keep plus the runs people ask for - see [Disk space](#disk-space).
 
-Two `[meta]` settings bound the ingest-time cost without switching the feature
-off - the views, on-demand runs and imports keep working either way:
+Three `[meta]` settings shape the ingest-time cost without switching the
+feature off - the views, on-demand runs and imports keep working either way:
 
 ```toml
 [meta]
 peak_assignment_on_ingest = false          # assign on demand only (default true)
 peak_assignment_ingest_max_peaks = 20000   # skip denser samples at ingest (default 100000; 0 = no ceiling)
+peak_assignment_ingest_ledger = "sample"   # write a per-sample run at ingest as well (default "batch")
 ```
 
-`peak_assignment_on_ingest = false` is the setting for a high-throughput
-instrument: at tens of thousands of samples a month, ingest-time ledgers - the
-database stage only, mostly peaks it could not assign - are tens of gigabytes a
-month written for nobody in particular. The ceiling guards the other end: one
-very dense acquisition (hundreds of thousands of peaks) is hundreds of
-megabytes of ledger, so a sample above it is logged and left for an explicit
-run. Both take effect on the next stack restart.
+`peak_assignment_on_ingest = false` is for a deployment that wants nothing
+assigned unasked: samples are assigned when someone launches a run on them or
+computes their batch's peaks. The ceiling guards against a pathological
+acquisition: a sample with hundreds of thousands of peaks is skipped at
+ingest, logged, and left for an explicit run.
+
+`peak_assignment_ingest_ledger = "sample"` restores the behaviour releases
+before the batch-primary ledger had: every ingested sample also gets a
+per-sample run, about a kilobyte per detected peak, most of it placeholder
+rows for peaks nothing assigned - on a high-throughput instrument tens of
+gigabytes a month. It buys the inspector's per-peak alternatives and error
+figures and hand curation on every sample without an explicit run. All three
+take effect on the next stack restart.
 
 #### Turning peak assignment off
 

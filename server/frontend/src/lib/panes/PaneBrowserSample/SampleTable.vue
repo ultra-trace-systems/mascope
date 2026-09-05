@@ -11,7 +11,8 @@ import InputText from 'primevue/inputtext'
 import { FilterMatchMode } from '@primevue/core/api'
 
 import { BaseTabbedPanel, BaseMatchTag, BaseCopyableField } from '@/lib/base'
-import { DialogSampleOp, DialogCalibration, DialogCopyAssignments } from '@/lib/dialogs'
+import { DialogSampleOp, DialogCalibration } from '@/lib/dialogs'
+import { assignmentStatus } from '@/lib/assignmentStatus'
 import { calibrationStatus } from '@/lib/calibrationStatus'
 import { clone } from '@/lib/utils'
 import { num } from '@/lib/formatters'
@@ -27,6 +28,11 @@ import {
 } from './stores'
 
 const app = useApp()
+
+// The sample's peak-assignment badge: a run of its own, served from the batch
+// ledger, or nothing yet. One status read per batch, one record per row.
+const assignmentBadge = (sample) =>
+  assignmentStatus(app.data.batchPeakSampleStatus?.forSample(sample.sample_item_id))
 const sampleTable = ref(null)
 const scroller = useSampleScroller()
 
@@ -255,6 +261,29 @@ const openCalibration = (sample) => {
         </template>
       </Column>
 
+      <!-- Which samples have been assigned, beside the match and calibration
+           badges: solid for a run of the sample's own, dimmed for one served
+           from the batch ledger, faint for nothing yet. -->
+      <Column class="assignment-column">
+        <template #header>
+          <span
+            class="pi ph ph-tag"
+            v-tooltip.top="'Peak assignment status'"
+            v-help.top="{
+              title: 'Assignment Status',
+              helpKey: 'assignment-status',
+              doc: app.ui.help.docUrl('how-it-works/peak-assignment/#assignment-runs')
+            }"
+          />
+        </template>
+        <template #body="{ data }">
+          <span
+            :class="['pi', assignmentBadge(data).icon, `assignment-${assignmentBadge(data).state}`]"
+            v-tooltip="{ value: assignmentBadge(data).tooltip, showDelay: 500 }"
+          />
+        </template>
+      </Column>
+
       <template v-for="{ field, label, kind } in customizer.config.columns" :key="field">
         <Column v-if="kind == 'standard'" :field="field" :header="label" sortable>
           <template #body="{ data }">
@@ -278,10 +307,6 @@ const openCalibration = (sample) => {
     <DialogCalibration
       v-model:visible="contextMenu.dialog.calibration"
       :context="contextMenu.row"
-    />
-    <DialogCopyAssignments
-      v-model:visible="contextMenu.dialog.copyAssignments"
-      :sample="contextMenu.row"
     />
     <SampleContextMenu />
   </BaseTabbedPanel>

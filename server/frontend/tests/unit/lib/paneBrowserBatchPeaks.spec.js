@@ -28,7 +28,11 @@ vi.mock('@/stores', () => ({ useApp: () => app }))
 vi.mock('@/lib/base', () => ({
   BaseTabbedPanel: { template: '<div><slot name="menu" /><slot /></div>' },
   BaseTierTag: true,
-  BaseCopyableField: true
+  BaseCopyableField: true,
+  BaseVerdictBadge: true
+}))
+vi.mock('@/lib/panes/PaneBrowserMatch/BatchPeakVerdictPopover.vue', () => ({
+  default: { name: 'BatchPeakVerdictPopover', template: '<div class="verdict-popover-stub" />' }
 }))
 
 // Minimal help-mode facade: the pane registers help cards through these calls;
@@ -57,7 +61,13 @@ const peak = (batch_peak_id, consensus_tier, best_fit_score, extra = {}) => ({
   ...extra
 })
 
-function makeApp({ batch = BATCH, workspace = WORKSPACE, samples = [{}], peaks = [] } = {}) {
+function makeApp({
+  batch = BATCH,
+  workspace = WORKSPACE,
+  samples = [{}],
+  peaks = [],
+  verdicts = {}
+} = {}) {
   return reactive({
     auth: { user: { role_id: 200, is_superuser: false } },
     data: {
@@ -70,6 +80,20 @@ function makeApp({ batch = BATCH, workspace = WORKSPACE, samples = [{}], peaks =
         error: null,
         selected: [],
         load: vi.fn()
+      },
+      // Batch-level verdicts by anchor id; stale when the record's formula is
+      // not the row's, as the real store decides.
+      batchPeakVerification: {
+        list: Object.values(verdicts),
+        forAnchor: (row) => verdicts[row.batch_peak_id] ?? null,
+        isStale: (record, row) => record.assigned_formula !== row.consensus_formula
+      },
+      batchPeakRun: {
+        list: [],
+        focused: null,
+        viewing: null,
+        viewingCurrent: true,
+        viewingId: null
       }
     },
     ui: {
@@ -172,6 +196,10 @@ async function mountPane(options = {}) {
   // The app facade first: the compute store the pane reads its refusal off is
   // created during that mount, and it reads the facade while being created.
   app = makeApp(options)
+  // The ledger's sort store writes through to localStorage and reads it back on
+  // creation, so without this a sort set in one test would be the next test's
+  // starting order.
+  localStorage.clear()
   setActivePinia(createPinia())
   const wrapper = mount(PaneBrowserBatchPeaks, {
     global: {
@@ -369,6 +397,72 @@ describe('PaneBrowserBatchPeaks tier ordering', () => {
     })
 
     expect(wrapper.vm.rows.map((row) => row.batch_peak_id)).toEqual(['bp-2', 'bp-1'])
+  })
+
+  // The sort lives in a store outside the pane: PaneBrowserMatch swaps this pane
+  // for the sample ledger's whenever a sample is focused, and a sort held in the
+  // pane's own state went with it. A second mount on the same Pinia is that
+  // switch and back - mountPane would start a fresh Pinia, which is the reload
+  // case the store's own spec covers.
+  it('keeps its sort across a remount', async () => {
+    const first = await mountPane()
+    first.vm.sortField = 'mz'
+    first.vm.sortOrder = 1
+    await first.vm.$nextTick()
+    first.unmount()
+
+    const second = mount(PaneBrowserBatchPeaks, {
+      global: { stubs: GLOBAL_STUBS, directives: { tooltip: {}, help: {} } }
+    })
+    await second.vm.$nextTick()
+    expect(second.vm.sortField).toBe('mz')
+    expect(second.vm.sortOrder).toBe(1)
+    const mzs = second.vm.rows.filter((row) => !row.parentId).map((row) => row.mz)
+    expect(mzs).toEqual([...mzs].sort((a, b) => a - b))
+  })
+
+  // Every header but the selection checkbox's explains its column on hover: the
+  // numbers here are properties of the batch peak, where the same column names
+  // in the sample ledger mean one peak's. The directive records what it was
+  // given, and the Column stub renders the header slot the spans live in - a
+  // tooltip placed on the Column itself would never show, since Column renders
+  // no element of its own.
+  it('explains every column header on hover', async () => {
+    app = makeApp()
+    localStorage.clear()
+    setActivePinia(createPinia())
+    const wrapper = mount(PaneBrowserBatchPeaks, {
+      global: {
+        stubs: {
+          ...GLOBAL_STUBS,
+          Column: {
+            ...ColumnStub,
+            template: '<div class="column-stub"><slot name="header" /></div>'
+          }
+        },
+        directives: {
+          tooltip: { mounted: (el, binding) => el.setAttribute('data-tooltip', binding.value) },
+          help: {}
+        }
+      }
+    })
+    await wrapper.vm.$nextTick()
+
+    const tips = wrapper
+      .findAll('.column-stub [data-tooltip]')
+      .map((span) => [span.text(), span.attributes('data-tooltip')])
+    expect(tips.map(([label]) => label)).toEqual([
+      'm/z',
+      'Intensity',
+      'Formula',
+      'Tier',
+      'Samples',
+      '' // the verdict header is an icon
+    ])
+    for (const [, tip] of tips) expect(tip.length).toBeGreaterThan(20)
+    expect(tips.find(([label]) => label === 'm/z')[1]).toMatch(/anchor/i)
+    expect(tips.find(([label]) => label === 'Intensity')[1]).toMatch(/any sample/)
+    expect(tips.find(([label]) => label === 'Formula')[1]).toMatch(/consensus/i)
   })
 
   it('sorts the tier column on the rank, which is what the header click reads', async () => {
@@ -941,5 +1035,184 @@ describe('PaneBrowserBatchPeaks selection across the fold', () => {
 
     expect(wrapper.vm.showIsotopologues).toBe(true)
     expect(wrapper.vm.rows).toHaveLength(2)
+  })
+})
+
+describe('PaneBrowserBatchPeaks batch-level verdicts', () => {
+  /** A live batch-level verdict on `batch_peak_id`, about `assigned_formula`. */
+  const verdictOn = (batch_peak_id, verdict, assigned_formula = 'C6H12O6') => ({
+    batch_peak_verification_id: `v-${batch_peak_id}`,
+    batch_peak_id,
+    assigned_formula,
+    ionization_mechanism_id: null,
+    verdict,
+    superseded_utc: null
+  })
+  const PEAKS = [
+    peak('bp-1', 'assigned', 0.9),
+    peak('bp-2', 'assigned', 0.8),
+    peak('bp-3', 'assigned', 0.7),
+    peak('bp-4', 'assigned', 0.6)
+  ]
+  const VERDICTS = {
+    'bp-1': verdictOn('bp-1', 'unsure'),
+    'bp-2': verdictOn('bp-2', 'confirmed'),
+    'bp-4': verdictOn('bp-4', 'rejected')
+  }
+
+  it('carries a verdict rank on every row, confirmed first and unjudged last', async () => {
+    wrapper = await mountPane({ peaks: PEAKS, verdicts: VERDICTS })
+
+    const rank = new Map(wrapper.vm.rows.map((row) => [row.batch_peak_id, row.verdictRank]))
+    expect(rank.get('bp-2')).toBe(0)
+    expect(rank.get('bp-4')).toBe(1)
+    expect(rank.get('bp-1')).toBe(2)
+    expect(rank.get('bp-3')).toBeNull()
+  })
+
+  it('offers a sortable verdict column after Samples, sorting on that rank', async () => {
+    wrapper = await mountPane({ peaks: PEAKS, verdicts: VERDICTS })
+
+    const columns = wrapper.findAllComponents(ColumnStub).map((column) => column.props('field'))
+    expect(columns.at(-1)).toBe('verdictRank')
+    expect(columns.at(-2)).toBe('n_present')
+    expect(columnFor('verdictRank').props('sortable')).toBe(true)
+  })
+
+  it('sorts the column through the pane, unjudged rows last either way', async () => {
+    wrapper = await mountPane({ peaks: PEAKS, verdicts: VERDICTS })
+
+    wrapper.vm.sortField = 'verdictRank'
+    wrapper.vm.sortOrder = 1
+    await wrapper.vm.$nextTick()
+    expect(wrapper.vm.rows.map((row) => row.batch_peak_id)).toEqual([
+      'bp-2',
+      'bp-4',
+      'bp-1',
+      'bp-3'
+    ])
+
+    wrapper.vm.sortOrder = -1
+    await wrapper.vm.$nextTick()
+    expect(wrapper.vm.rows.map((row) => row.batch_peak_id)).toEqual([
+      'bp-1',
+      'bp-4',
+      'bp-2',
+      'bp-3'
+    ])
+  })
+
+  it('reads a verdict about a formula the consensus has left as stale, and says so', async () => {
+    wrapper = await mountPane({
+      peaks: [peak('bp-1', 'assigned', 0.9), peak('bp-2', 'assigned', 0.8)],
+      verdicts: {
+        'bp-1': verdictOn('bp-1', 'confirmed', 'C7H14O7'),
+        'bp-2': verdictOn('bp-2', 'confirmed')
+      }
+    })
+    const byId = new Map(wrapper.vm.rows.map((row) => [row.batch_peak_id, row]))
+
+    expect(wrapper.vm.verdictStale(byId.get('bp-1'))).toBe(true)
+    expect(wrapper.vm.verdictTooltip(byId.get('bp-1'))).toBe(
+      'Confirmed as C7H14O7 - the consensus is now C6H12O6. Re-judge or retract.'
+    )
+    // A current verdict speaks through its badge; an unjudged row invites one.
+    expect(wrapper.vm.verdictStale(byId.get('bp-2'))).toBe(false)
+    expect(wrapper.vm.verdictTooltip(byId.get('bp-2'))).toBe('')
+    expect(wrapper.vm.verdictTooltip({ batch_peak_id: 'bp-9', consensus_formula: null })).toBe(
+      'Record a batch-level verdict'
+    )
+  })
+
+  it('points the verdict popover at the live row it was opened from', async () => {
+    wrapper = await mountPane({ peaks: PEAKS, verdicts: VERDICTS })
+
+    expect(wrapper.vm.verdictTarget).toBeNull()
+    wrapper.vm.verdictRowId = 'bp-2'
+    await wrapper.vm.$nextTick()
+    expect(wrapper.vm.verdictTarget.batch_peak_id).toBe('bp-2')
+    // The row as the ledger now holds it, not a copy taken when the cell was clicked.
+    expect(wrapper.vm.verdictTarget.verdictRank).toBe(0)
+  })
+})
+
+describe('PaneBrowserBatchPeaks batch runs', () => {
+  /** Put an earlier run on screen, as the run selector does. */
+  async function viewEarlierRun(action = 'search_untargeted') {
+    app.data.batchPeakRun.viewing = { batch_peak_run_id: 'r-old', action, current: false }
+    app.data.batchPeakRun.viewingCurrent = false
+    app.data.batchPeakRun.viewingId = 'r-old'
+    await wrapper.vm.$nextTick()
+  }
+
+  it('says nothing about history while the live ledger is on screen', async () => {
+    wrapper = await mountPane({ peaks: [peak('bp-1', 'assigned', 0.9)] })
+    expect(wrapper.findAll('.pane-message')).toHaveLength(0)
+  })
+
+  it('names the run whose snapshot is on screen, and that it is read-only', async () => {
+    wrapper = await mountPane({ peaks: [peak('bp-1', 'assigned', 0.9)] })
+    await viewEarlierRun('search_untargeted')
+
+    const notice = wrapper.findAll('.pane-message').map((message) => message.text())
+    expect(notice).toHaveLength(1)
+    expect(notice[0]).toContain('as an untargeted search left it, read-only')
+    expect(notice[0]).toContain('pick it in the run selector')
+  })
+
+  it('describes each kind of run in words rather than by its code', async () => {
+    wrapper = await mountPane({ peaks: [peak('bp-1', 'assigned', 0.9)] })
+    for (const [action, label] of [
+      ['fold', 'folded samples'],
+      ['rebuild', 'a rebuild'],
+      ['import', 'an import'],
+      ['unknown_action', 'unknown_action']
+    ]) {
+      await viewEarlierRun(action)
+      expect(wrapper.vm.viewedRunLabel).toBe(label)
+    }
+  })
+
+  it('drops the notice when the current run is picked again', async () => {
+    wrapper = await mountPane({ peaks: [peak('bp-1', 'assigned', 0.9)] })
+    await viewEarlierRun()
+    expect(wrapper.findAll('.pane-message')).toHaveLength(1)
+
+    app.data.batchPeakRun.viewing = { batch_peak_run_id: 'r-new', action: 'rebuild', current: true }
+    app.data.batchPeakRun.viewingCurrent = true
+    app.data.batchPeakRun.viewingId = null
+    await wrapper.vm.$nextTick()
+    expect(wrapper.findAll('.pane-message')).toHaveLength(0)
+  })
+})
+
+describe('PaneBrowserBatchPeaks ledger export', () => {
+  it('offers the export from the view menu and launches it', async () => {
+    wrapper = await mountPane({ peaks: [peak('bp-1', 'assigned', 0.9)] })
+
+    const button = wrapper.find('.view-popover .export-ledger')
+    expect(button.exists()).toBe(true)
+    expect(button.attributes('disabled')).toBeUndefined()
+
+    await button.trigger('click')
+    await wrapper.vm.$nextTick()
+    expect(post).toHaveBeenCalledWith(
+      '/batch-peaks/batch/b-1/export',
+      {},
+      expect.objectContaining({ type: 'export_batch_ledger' })
+    )
+    // Busy until the task's own notification says it ended.
+    expect(useBatchPeakCompute().exporting).toBe(true)
+    notificationHandlers.export_batch_ledger?.forEach((cb) =>
+      cb({ status: 'success', process_id: 'proc-1' })
+    )
+    expect(useBatchPeakCompute().exporting).toBe(false)
+  })
+
+  it('offers no export on an empty ledger', async () => {
+    // The view menu hangs off the tier strip, which an empty ledger does not
+    // draw - so there is no control to disable.
+    wrapper = await mountPane({ peaks: [] })
+    expect(wrapper.find('.export-ledger').exists()).toBe(false)
   })
 })

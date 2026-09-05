@@ -6,6 +6,152 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
 
 ### Added
 
+- **The peak inspector reads the same for a sample served from the batch ledger.**
+  Its *confidence* and *P(correct)* rows stay on the card: the P(correct) recorded
+  when the sample was folded into the ledger, said to be so on hover, or a dash with
+  the reason there is none; the arbitration confidence, which only a run of the
+  sample computes, reads as a dash with the reason. And the isotopologue table now
+  lists a lone main peak too, so the focused peak's m/z is read in the same place
+  whether or not the pattern has more peaks.
+- **P(correct) tooltips in the sample ledger.** The column header says in one line
+  what the column is; a dash still explains itself on hover, and a value on a sample
+  served from the batch ledger says it was recorded when the sample was folded in.
+- **Each ledger keeps its sort.** The column the *Batch peaks* ledger or a sample's
+  ledger is sorted by now survives the switch between the two ledgers, and a reload,
+  instead of snapping back to the default order every time a sample is focused or
+  unfocused.
+- **Header tooltips in the batch ledger.** Hovering a column header of the *Batch
+  peaks* ledger says in a line what the column holds at batch level - the anchor's
+  m/z bin, the brightest sample's intensity, the consensus formula and tier, the
+  sample count, the batch-level verdict. (The two headers that already had a
+  tooltip declared never showed it.)
+
+- **Verdicts from the sample ledger.** The Verdict column of the per-sample ledger is
+  now a button, as in the *Batch peaks* ledger: an unverified row shows a faint seal
+  that opens the verdict form in place, recorded on the family's M0.
+- **Plot a species in the batch chart from the sample ledger.** A chart icon at the start
+  of each row selects the batch peak the row's peak folded into (or takes it out), so the
+  batch chart can be built without leaving the sample; a run's own rows now carry
+  their batch peak, looked up when the ledger is read.
+- **The sample ledger follows the focused peak.** A peak focused from the batch
+  chart, the jump beside a batch peak's intensity or the inspector scrolls its row
+  into view.
+
+- **Jump from a batch peak to its brightest sample.** The *Batch peaks* ledger's
+  rows carry an arrow beside the intensity that opens the brightest sample holding
+  the batch peak, with that peak focused, in the Sample tab - the batch chart's
+  click-through without having to tell which trace to click. The chart and the
+  ledger now share that click-through.
+- **Assignment status in the sample browser.** A tag badge beside the match and
+  calibration badges says whether a sample has a completed assignment run of its
+  own, is served from the batch ledger, or has nothing assigned yet; the tooltip
+  names the engine and how many of the sample's peaks are assigned in the ledger.
+  Route: `GET /api/batch-peaks/batch/{id}/sample-status`.
+
+- **Inspector evidence for the derived Sample view.** A peak of a sample served from
+  the batch ledger carried its fit and tier but showed dashes for everything a run
+  computes: the m/z and abundance error of each isotopologue, the isotope labels, the
+  plausibility, the evidence. The peak inspector now measures the family's composition
+  against the sample's own peaks on request
+  (`GET /api/peak-assignments/sample/{id}/assignment/{id}/evidence`), the way it
+  measures the finder's alternatives, and fills them in a moment later; nothing is
+  stored.
+
+- **Batch import.** An external engine's batch-level result - one identity
+  per m/z, such as a batch pipeline's merged ledger - can be imported onto
+  the batch ledger as a batch run: `POST /api/batch-peaks/batch/{id}/runs/import`
+  and `mascope.batch_peaks.import_run()` in the SDK. Rows are matched to the
+  nearest batch peak within a tolerance and measured against every member by
+  the server's seeded scorer, so the ledger carries Mascope's fit of the
+  engine's formula under the engine's name; curated and isotopologue batch
+  peaks are left alone, and the run's summary counts every skipped row by
+  reason. The previous run's snapshot keeps the ledger as it was.
+
+- **Batch runs.** The batch ledger now has a history: one run per batch-level
+  operation that rewrote it - *Rebuild batch ledger*, *Search untargeted* with
+  the parameters it was given, an import - and the folds that built it. Exactly
+  one run is current (the live ledger); when a new run starts, the current
+  run's ledger is kept as a compact per-anchor snapshot, so the run selector
+  beside the batch actions shows the *Batch peaks* ledger and the chart as any
+  earlier run left them, read-only. The newest few runs are kept per batch and
+  older ones pruned with their snapshots; a second operation on a ledger one is
+  still rewriting is refused. Routes: `GET /api/batch-peaks/batch/{id}/runs`,
+  and `batch_peak_run_id` on the ledger and series reads; the SDK gained
+  `batch_peaks.runs()` and `list(run_id=...)`. Migration `f2a7c9d1e4b8`.
+
+- **The batch ledger in the SDK, and as a CSV.** `mascope.load_batch_ledger(dataset,
+  batches=...)` loads a batch's ledger as one flat DataFrame - one row per member
+  peak, the batch peak's consensus (formula, tier, support, prevalence, curation)
+  beside the sample's own reading (formula, source, tier, role, fit) - with the
+  species table on `df.attrs["batch_peaks"]`, or the species table alone with
+  `members=False`; per batch, `mascope.batch_peaks.list()`, `.members()` and
+  `.verdicts()`. Behind them, `GET /api/batch-peaks/batch/{id}/members` serves the
+  ledger as paged flat rows. In the app, *Export ledger (CSV)* in the Batch peaks
+  pane's view menu writes the same rows to a CSV the browser downloads
+  (`POST /api/batch-peaks/batch/{id}/export`, a background task).
+
+- **Curating a species for the whole batch.** In a sample served from the batch
+  ledger, *use this* on a close alternative in the inspector now acts on the batch
+  peak: the chosen identity - one the batch's samples have carried at that peak -
+  is pinned as the species for the whole batch, measured in every sample that
+  holds the peak (a sample where it can be measured reads it with a fit of its
+  own; one where it cannot keeps what it had), and the batch peak is recomputed.
+  The batch peak claims the pinned formula whatever the samples' vote says, keeps
+  the vote's own winner beside it and reads as ambiguous when the two disagree;
+  a hand icon marks it in the Batch peaks ledger. *Release*, in the inspector's
+  note, undoes it: the re-measured samples go back to what they read before and
+  the batch decides again. Routes `POST /api/batch-peaks/batch/{id}/curate`
+  (background task) and `.../release-curation`, editor-gated behind the feature
+  flag.
+
+- **Batch-level verdicts.** A species can be judged once for a whole batch from the
+  new *Verdict* column of the Batch peaks ledger: confirm, reject or unsure with an
+  evidence level and a note, re-judge, or retract. The verdict is about the batch
+  peak's consensus formula and covers every sample in the batch whose peak folded
+  into it and that has no verdict of its own - shown there as a borrowed badge in
+  the assignment ledger and a dashed pill in the inspector - while a per-sample
+  verdict always wins. It is pinned to the formula judged: a confirm or reject
+  names the formula and is refused if the consensus moved since the row was read,
+  and a verdict whose formula the consensus has since left stays on record,
+  outlined as stale. Its own table, `batch_peak_verification`, keeps batch-level
+  judgments structurally out of the calibration label pool. Routes under
+  `/api/batch-peaks`: `POST /batch/{id}/verify` and `.../retract` (editor, behind
+  the feature flag), `GET /batch/{id}/verdicts` and
+  `GET /sample/{id}/anchor-context`. The assignment ledger's verdict filter now
+  runs on the verdict a row visibly carries, so *Unverified* no longer lists rows
+  that show a borrowed badge.
+
+- **The untargeted composition search runs once per batch peak.** *Search
+  untargeted*, beside *Compute batch peaks* in the Batch peaks pane, searches
+  every batch peak nothing has assigned yet on its brightest member's real
+  spectrum - enumerating compositions for that one peak while the isotope
+  pattern is scored against the whole sample - and then measures the
+  composition it found against every other sample the species was seen in,
+  so each carries a fit of its own and a sample the envelope does not reach
+  stays unassigned. On a 32-sample batch that is about nineteen times fewer
+  enumerations than the untargeted stage of a per-sample batch assignment. It
+  writes no per-sample runs; the results appear in the batch ledger and in
+  each sample's derived view, marked as untargeted, and an explicit run on a
+  sample still supersedes them there. Route
+  `POST /api/batch-peaks/batch/{id}/search-untargeted`, editor-gated behind
+  the feature flag like the other batch writes.
+
+- Design note: **batch-primary peak assignment**
+  (`docs/dev/peak_assignment_batch_primary.md`). Ingest-time assignment writes
+  a per-sample ledger for every processed sample - about 0.84 KB per detected
+  peak after the index trim, most of it placeholder rows - and derives the
+  batch ledger from it afterwards. Measured on a real batch, the batch ledger's
+  anchors are about six percent of its member rows while membership itself is
+  dense (half the anchors recur in most samples, and most recurring anchors
+  are unassigned), so the note proposes inverting the two: the batch peak
+  becomes the object that carries the assignment, its evidence, curation and
+  verification; ingest folds a sample in as slim member rows without writing a
+  per-sample run; the per-sample run stays as an opt-in deep dive and the
+  import target; and the untargeted stage runs once per anchor instead of once
+  per sample. Estimated at about a fifth of today's growth per peak, below the
+  raw data the samples bring. A design document only; no behaviour changes
+  until it is signed off and implemented.
+
 - **Batch peaks: one ledger for a whole batch.** A batch peak is a frozen m/z
   anchor shared across a batch's samples, carrying an evidence-weighted
   consensus of the per-sample assignments that folded into it - so a species can
@@ -562,6 +708,16 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
 
 ### Removed
 
+- **Copy assignments to batch, and the batch-wide assignment run.** With the batch
+  ledger primary they had nothing left to do: every processed sample folds into
+  the ledger without a run, the untargeted search runs once per batch peak, and
+  a species is curated once at its batch peak. The sample context menu's *Copy
+  assignments to batch...* and the batch context menu's *Assign peaks* are gone,
+  with their routes (`GET`/`POST /api/peak-assignments/sample/{id}/copy-to-batch`,
+  `POST /api/peak-assignments/batch/{id}/assign`). The reserved `mascope-copy`
+  engine name stays reserved, so an import still cannot forge it. The copy
+  design note is marked retired.
+
 - SDK: the `09_composition_assignment.ipynb` tutorial is retired. It rolled
   its own untargeted composition assignment client-side, predating the
   server-side assignment engine; next to the engine's persisted, arbitrated,
@@ -575,6 +731,94 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
   and end up with batch-stages twice under two numbers.
 
 ### Changed
+
+- **Search untargeted asks for its parameters first.** The Batch peaks pane's
+  *Search untargeted* now opens the same parameters dialog as a per-sample run
+  - m/z precision, formula ranges, the peak ceiling, the intensity threshold
+  and the number of alternatives kept - with the untargeted stage itself
+  pinned on, and posts the settings to the search route
+  (`POST /api/batch-peaks/batch/{id}/search-untargeted`, which already took
+  them). Unset fields fall back to the server defaults, as before.
+
+- **Compute batch peaks is now Rebuild batch ledger**, and it folds every sample
+  of the batch: from its assignment run where it has one, otherwise assigned
+  from the known compositions and folded without a run, the way ingest does. A
+  batch that predates the ledger, or was never assigned, gets one from this
+  button alone; the outcome messages say what was folded and why a sample is
+  skipped.
+
+- **Ingest folds a sample into the batch ledger without writing a run, by
+  default.** `peak_assignment_ingest_ledger` now defaults to `"batch"`: a
+  newly processed sample is assigned from the known compositions and folded
+  into its batch's peaks as member rows of some 200 bytes per detected peak,
+  and its Sample view is served from the batch ledger (the run selector shows
+  it as *Batch ledger*). No per-sample run is written unless someone asks for
+  one - *Assign peaks* on the sample, or an import - which is also what buys
+  the inspector's per-peak alternatives and error figures and hand curation
+  for that sample. Set `peak_assignment_ingest_ledger = "sample"` under
+  `[meta]` to keep writing a run per ingested sample as before, at about a
+  kilobyte per detected peak. The operator guide's cost figures are updated
+  to match.
+
+- **The batch ledger's member row stores only what a trace point and a vote
+  need.** A member (one row per detected peak per sample in the batch ledger)
+  stored its peak's absolute m/z, its formula as text and its tier and role as
+  strings, all in double precision. It now stores the m/z as an offset from its
+  anchor, the tier and role as small integer codes, intensity, fit and
+  probability in single precision, and no formula copy - the anchor's candidate
+  registry names it. Measured on a real 32-sample batch whose members are all
+  linked to ledger rows: the member tuple went from 165 to 136 bytes and the
+  table from 303 to 274 bytes per member with its indexes; a member folded at
+  ingest without a run carries no ledger link and no index entry for it, about
+  200 bytes in all against the roughly 1,000 a ledger row and its occurrence
+  cost before this epic. The m/z recovered from the offset matched the ledger
+  row's own to nine decimals on every one of the batch's 28,810 members.
+  Nothing changes on the wire: the series, counterpart and derived-ledger reads
+  return the same absolute m/z and tier names they always did. One migration,
+  converting in place.
+
+- **Ingest can fold a sample into the batch ledger without writing a run.** A
+  new `[meta]` setting, `peak_assignment_ingest_ledger`, chooses what an
+  ingest-time assignment writes: `"sample"` (the default, unchanged) writes a
+  per-sample run and folds it; `"batch"` runs the same database-first
+  assignment and folds the result straight into the batch peaks, writing no
+  per-sample run - the Sample view is then served from the batch ledger. That
+  removes the per-sample rows, about half of the per-peak database cost and
+  mostly placeholders for peaks nothing assigned, while every sample is still
+  assigned as it arrives. An explicit run on such a sample still writes one and
+  restores what only a run keeps: per-peak alternatives and error figures, and
+  hand curation. The ingest ceiling applies to both modes.
+
+- **A sample the batch ledger knows but no run describes still has a Sample
+  view.** Deleting or pruning a sample's assignment runs used to leave its
+  Sample tab empty - grey spectrum, no ledger - although its peaks were still
+  in the batch ledger. The runs listing now carries one derived run per such
+  sample (engine `batch`, listed after the real runs), and the ledger and
+  inspector reads answer for it from the batch peaks: formula, ion formula,
+  mechanism, tier, fit, P(correct), role and isotopologue family come from the
+  member rows and their anchor's candidate registry, and the inspector's close
+  alternatives are what the rest of the batch saw at that m/z. Derived rows
+  carry no mass or abundance error, isotope label, source or target link -
+  those are a run's numbers - and cannot be curated (the server answers 409
+  and the inspector withholds the controls), but a verdict can be recorded
+  against them. An imported run can no longer claim the `batch` engine name.
+  This is the read model the next step, ingest folding a sample without
+  writing a run, will serve.
+
+- **The batch ledger stands without the per-sample ledger.** A batch peak's
+  consensus used to be recomputed by joining every member back to its
+  `peak_assignment` row for the ion formula, the mechanism, the calibrated
+  probability, the member's role and its isotopologue link - so a run deleted
+  or pruned afterwards left members that contributed nothing to those, and a
+  later recompute could blank an anchor's ion formula, mechanism and family
+  link for good. Each member now carries those fields itself and names its ion
+  formula and mechanism by index into its anchor's new append-only candidate
+  registry (`batch_peak.candidates`). One migration adds the columns and
+  backfills them from the ledger rows still linked; a member whose row is
+  already gone keeps its formula and gets an entry with no ion formula behind
+  it, which is what a recompute could recover for it before. Nothing changes
+  in the API or the UI. First step of the batch-primary design note
+  (`docs/dev/peak_assignment_batch_primary.md`).
 
 - **The assignment ledger stores its JSON leaner, without changing what it
   serves.** Two of the ledger's largest costs were repetition rather than
@@ -1078,6 +1322,17 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
   again instead of waiting out the window.
 
 ### Fixed
+
+- **Scroll-to-row in production builds.** The sample, ion and peak tables reached
+  their virtual scroller through a handle that exists only in development builds,
+  so a production build always took a cruder fallback that scrolls the row to the
+  top and nudges it afterwards. They now ask the table itself, and scroll the least
+  distance that brings the row into view, as the dev server always did.
+- **Export file names.** A batch or sample whose name contains a path separator or
+  another character no file system accepts (`/`, `\\`, `:`, `*`, `?`, `\"`, `<`, `>`,
+  `|`) broke the temp file path of the batch ledger CSV, the peak CSVs and the
+  spreadsheet export, and the download failed. Every export now names its file
+  through one sanitizer.
 
 - The peak inspector's **close alternatives** no longer include the assignment
   the peak was actually given. The list is meant to be the runners-up a peak

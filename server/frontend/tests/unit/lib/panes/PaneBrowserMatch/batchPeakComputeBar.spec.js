@@ -19,6 +19,19 @@ let app
 let notificationHandlers
 
 vi.mock('@/stores', () => ({ useApp: () => app }))
+// The parameters form reads server defaults on mount; a stub keeps this spec
+// about the bar. Its own behaviour is the per-sample launcher's to pin.
+// The run selector reads the runs store; a stub keeps this spec about the
+// bar's actions. Its own behaviour is pinned in batchPeakRunSelect.spec.js.
+vi.mock('@/lib/panes/PaneBrowserMatch/BatchPeakRunSelect.vue', () => ({
+  default: { template: '<div class="run-select-stub" />' }
+}))
+vi.mock('@/lib/dialogs', () => ({
+  PeakAssignConfigForm: {
+    props: ['config', 'pinned', 'hidden'],
+    template: '<div class="config-form" />'
+  }
+}))
 
 // Minimal help-mode facade: the bar registers a help card through these calls;
 // the tests only need them to resolve.
@@ -57,6 +70,10 @@ function makeApp({ batch = BATCH, workspace = WORKSPACE, samples = [{}] } = {}) 
 }
 
 const GLOBAL_STUBS = {
+  Dialog: {
+    props: ['visible'],
+    template: '<div v-if="visible" class="search-dialog"><slot /><slot name="footer" /></div>'
+  },
   Button: {
     props: ['label', 'disabled', 'loading'],
     template:
@@ -316,5 +333,52 @@ describe('BatchPeakComputeBar failed launch', () => {
 
     await compute.compute()
     expect(compute.launchError).toBeNull()
+  })
+})
+
+describe('BatchPeakComputeBar untargeted search', () => {
+  it('offers the search beside the compute, under the same gate', () => {
+    mountBar()
+    const buttons = wrapper.findAll('.compute-button')
+    expect(buttons.map((b) => b.text())).toEqual(['Rebuild batch ledger', 'Search untargeted'])
+    expect(buttons[1].attributes('disabled')).toBeUndefined()
+  })
+
+  it('disables the search with the compute when no batch is focused', () => {
+    mountBar({ batch: null })
+    expect(wrapper.findAll('.compute-button')[1].attributes('disabled')).toBeDefined()
+  })
+
+  it('asks for the parameters first, then posts them to the search route and waits', async () => {
+    mountBar()
+    post.mockResolvedValueOnce({ headers: { 'process-id': 'proc-s' } })
+    // The button opens the dialog rather than launching.
+    await wrapper.findAll('.compute-button')[1].trigger('click')
+    expect(post).not.toHaveBeenCalled()
+    const dialog = wrapper.find('.search-dialog')
+    expect(dialog.exists()).toBe(true)
+    expect(dialog.find('.config-form').exists()).toBe(true)
+    // The stage is pinned on and its switch hidden: this button is the stage.
+    expect(wrapper.vm.searchConfig.run_untargeted).toBe(true)
+    wrapper.vm.searchConfig.mz_precision_ppm = 2
+    const launch = dialog.findAll('.compute-button').find((b) => b.text() === 'Search')
+    await launch.trigger('click')
+    await Promise.resolve()
+    // Unset fields stay out so the server defaults apply.
+    expect(post).toHaveBeenCalledWith(
+      '/batch-peaks/batch/b-1/search-untargeted',
+      { config: { run_untargeted: true, mz_precision_ppm: 2 } },
+      expect.objectContaining({ type: 'search_batch_untargeted' })
+    )
+    expect(wrapper.find('.search-dialog').exists()).toBe(false)
+    expect(compute.searching).toBe(true)
+    for (const handler of notificationHandlers['search_batch_untargeted'] ?? []) {
+      handler({ status: 'pending', process_id: 'proc-s' })
+    }
+    expect(compute.searching).toBe(true)
+    for (const handler of notificationHandlers['search_batch_untargeted'] ?? []) {
+      handler({ status: 'success', process_id: 'proc-s' })
+    }
+    expect(compute.searching).toBe(false)
   })
 })

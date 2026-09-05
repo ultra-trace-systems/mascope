@@ -63,6 +63,9 @@ class PeakAssignmentRunRecord(BaseModel):
     #: that published its ledger here. Never null - existing rows were
     #: backfilled to the in-app identity - so a reader can compare it without
     #: handling a sentinel. The run selector's provenance badge renders this.
+    #: ``batch`` is the ledger derived from the batch peaks for a sample that
+    #: has no run of its own - listed after the real runs, always completed,
+    #: and what the ledger read falls back to (see ``fold_view``).
     engine: str
     engine_version: str
     status: str
@@ -138,6 +141,11 @@ class PeakAssignmentRecord(BaseModel):
     #: Number of adducts corroborating the compound (provenance.corroboration),
     #: flattened for the ledger's corroboration marker.
     corroboration_adducts: int | None = None
+    #: The batch peak this row's peak is a member of: carried by a row derived
+    #: from the batch ledger (``fold_view``), looked up on read for a run's own
+    #: row; None when the peak is not in the ledger. What the sample ledger
+    #: plots in the batch chart.
+    batch_peak_id: str | None = None
 
 
 class PeakAssignmentDetailRecord(PeakAssignmentRecord):
@@ -221,6 +229,57 @@ class AlternativeScoresResponse(BaseModel):
     data: list[AlternativeScoreRecord]
 
 
+class MeasuredIsotopologueRecord(BaseModel):
+    """One predicted isotopologue of a measured composition, with the peak it
+    paired to and the errors of that pairing (absent when it paired to none)."""
+
+    isotope_label: str | None = None
+    isotope_formula: str | None = None
+    #: Theoretical m/z and relative abundance (a fraction of the M0).
+    mz: float | None = None
+    relative_abundance: float | None = None
+    sample_peak_id: str | None = None
+    mz_error_ppm: float | None = None
+    abundance_error: float | None = None
+
+
+class DerivedEvidenceRecord(BaseModel):
+    """A derived row's family measured against its sample on demand: what a
+    run would have stored beside the fit and the tier.
+
+    Keyed by the family's M0 (``peak_assignment_id``); every member reads its
+    own numbers off ``isotopologues`` by ``sample_peak_id``. Session data,
+    computed per request and never written onto the ledger.
+    """
+
+    peak_assignment_id: str
+    sample_peak_id: str
+    assigned_formula: str | None = None
+    ionization_mechanism_id: str | None = None
+    ion_formula: str | None = None
+    #: The stored fit, which the tier was read off; the measurement's own fit
+    #: is reported beside it.
+    fit_score: float | None = None
+    measured_fit_score: float | None = None
+    plausibility: float | None = None
+    #: The stored fit times the plausibility, the currency the tier is banded on.
+    evidence: float | None = None
+    mz_error_ppm: float | None = None
+    abundance_error: float | None = None
+    isotopologues: list[MeasuredIsotopologueRecord] = []
+    blocked_reason: str | None = None
+
+
+class DerivedEvidenceResponse(BaseModel):
+    """A derived row's on-demand measurement (one entry), or nothing for a
+    run's own row."""
+
+    status: str = "success"
+    message: str
+    results: int
+    data: list[DerivedEvidenceRecord]
+
+
 class PeakAssignmentRunsResponse(BaseModel):
     """Peak assignment runs of a sample, newest first."""
 
@@ -302,100 +361,6 @@ class AssignSampleResponse(BaseModel):
     message: str
     results: int
     data: list[AssignSampleRecord]
-
-
-class SkippedSampleRecord(BaseModel):
-    """A batch sample the engine cannot usefully assign, and why."""
-
-    sample_item_id: str
-    #: Short prose from the shared eligibility rule, e.g. "blank sample (no
-    #: peaks)" or "m/z calibration not verified".
-    reason: str
-
-
-class AssignBatchRecord(BaseModel):
-    """The eligibility partition a batch assign request will execute."""
-
-    sample_batch_id: str
-    #: Samples that will be assigned, in the order the batch visits them. No run
-    #: ids: a batch creates each run only as it reaches that sample, so any id
-    #: here would either be a run nothing is executing yet - which durable
-    #: admission would then refuse - or one stranded by a batch that stopped
-    #: early. Poll the admitted samples' runs instead.
-    admitted: list[str]
-    #: Samples that will not be assigned, each with its reason.
-    skipped: list[SkippedSampleRecord]
-
-
-class AssignBatchResponse(BaseModel):
-    """Acknowledgement of a launched batch assignment."""
-
-    status: str = "success"
-    message: str
-    results: int
-    data: list[AssignBatchRecord]
-
-
-class CopyDestinationRecord(BaseModel):
-    """One batch sibling of a copy source, with its eligibility verdict."""
-
-    sample_item_id: str
-    sample_item_name: str
-    #: Whether the fan-out will publish a copied run onto this sample.
-    eligible: bool
-    #: Why not, when it will not - e.g. "different polarity", "blank sample
-    #: (no peaks)", "assignment run in flight". Null for eligible destinations.
-    reason: str | None = None
-
-
-class CopyAssignmentsPreviewRecord(BaseModel):
-    """What a copy launched now would do: the source run and the partition.
-
-    Computed by the same partition the launch executes, so the dialog that
-    renders this lists exactly the destinations a confirm would copy to.
-    """
-
-    sample_item_id: str
-    sample_batch_id: str
-    #: The run whose current rows the copy would remap - the source's latest
-    #: completed run. Null when the sample has none, in which case a launch is
-    #: refused; the eligibility list is still served so the dialog can say why.
-    source_peak_assignment_run_id: str | None = None
-    source_engine: str | None = None
-    destinations: list[CopyDestinationRecord]
-
-
-class CopyAssignmentsPreviewResponse(BaseModel):
-    """Eligibility preview for copying a sample's assignments to its batch."""
-
-    status: str = "success"
-    message: str
-    results: int
-    data: list[CopyAssignmentsPreviewRecord]
-
-
-class CopyAssignmentsRecord(BaseModel):
-    """The partition a copy launch will execute (mirrors AssignBatchRecord)."""
-
-    sample_item_id: str
-    sample_batch_id: str
-    #: The source run being copied.
-    source_peak_assignment_run_id: str
-    #: Destinations that will receive a copied run, in fan-out order. No run
-    #: ids: each destination's run is created only as the fan-out reaches it,
-    #: exactly as a batch assign's runs are.
-    admitted: list[str]
-    #: Destinations that will not, each with its reason.
-    skipped: list[SkippedSampleRecord]
-
-
-class CopyAssignmentsResponse(BaseModel):
-    """Acknowledgement of a launched copy fan-out."""
-
-    status: str = "success"
-    message: str
-    results: int
-    data: list[CopyAssignmentsRecord]
 
 
 class TierBands(BaseModel):
@@ -745,6 +710,230 @@ class AssignmentVerificationsResponse(BaseModel):
     message: str
     results: int
     data: list[AssignmentVerificationRecord]
+
+
+class VerifyBatchPeakBody(BaseModel):
+    """Request body to record a batch-level verdict on a batch peak's species claim."""
+
+    batch_peak_id: str = Field(description="The batch peak (anchor) being judged.")
+    verdict: Verdict = Field(
+        description="confirmed | rejected | unsure - one judgment per species at this anchor."
+    )
+    evidence_level: EvidenceLevel | None = Field(
+        None,
+        description=(
+            "Why the user is confident, as for a per-sample verification. Required for "
+            "'confirmed'."
+        ),
+    )
+    note: str | None = Field(None, description="Optional free-text note.")
+    expected_formula: str | None = Field(
+        None,
+        description=(
+            "The consensus formula the user judged. Required to confirm or reject: an "
+            "anchor's claim can change under another sample's fold between the row being "
+            "read and this request landing, and a mismatch is refused (409) rather than "
+            "recorded against a formula the user never saw."
+        ),
+    )
+
+    @model_validator(mode="after")
+    def _guards(self) -> "VerifyBatchPeakBody":
+        if self.verdict == "confirmed" and self.evidence_level is None:
+            raise ValueError("evidence_level is required when verdict is 'confirmed'")
+        if self.verdict in ("confirmed", "rejected") and not self.expected_formula:
+            raise ValueError(
+                "expected_formula is required when verdict is 'confirmed' or 'rejected'"
+            )
+        return self
+
+
+class RetractBatchPeakVerdictBody(BaseModel):
+    """Request body to withdraw the live batch-level verdict(s) on a batch peak."""
+
+    batch_peak_id: str = Field(description="The batch peak whose verdict to retract.")
+    assigned_formula: str | None = Field(
+        None,
+        description=(
+            "Retract only the live verdict on this claim; omit to retract every live "
+            "verdict on the batch peak, stale ones included."
+        ),
+    )
+    ionization_mechanism_id: str | None = Field(
+        None, description="The claim's mechanism, with assigned_formula."
+    )
+
+
+class BatchPeakVerificationRecord(BaseModel):
+    """One batch-level verdict, with the anchor's present claim beside the one judged."""
+
+    batch_peak_verification_id: str
+    sample_batch_id: str
+    batch_peak_id: str
+    assigned_formula: str
+    ionization_mechanism_id: str | None = None
+    verdict: str
+    evidence_level: str | None = None
+    note: str | None = None
+    context: dict | None = None
+    verified_by: int | None = None
+    verified_utc: datetime | None = None
+    superseded_utc: datetime | None = None
+    #: The anchor's consensus now; null when the anchor is gone.
+    current_formula: str | None = None
+    current_ionization_mechanism_id: str | None = None
+    anchor_present: bool
+    #: A live verdict about a claim the anchor no longer makes, or whose anchor is gone.
+    stale: bool
+    #: On anchor-context rows: the focused sample's peak the verdict reaches.
+    sample_peak_id: str | None = None
+
+
+class BatchPeakVerificationsResponse(BaseModel):
+    """Batch-level verdicts, newest first; superseded ones included where listed."""
+
+    status: str = "success"
+    message: str
+    results: int
+    data: list[BatchPeakVerificationRecord]
+
+
+class CurateBatchPeakBody(BaseModel):
+    """Request body to pin one of a batch peak's identities as its species, batch-wide."""
+
+    batch_peak_id: str = Field(description="The batch peak (anchor) being curated.")
+    candidate: int = Field(
+        ge=0,
+        description=(
+            "Index into the batch peak's identity registry - the `candidate` an "
+            "alternative of a derived row carries. The identities a batch peak can be "
+            "assigned are the ones its members have carried."
+        ),
+    )
+    expected_formula: str | None = Field(
+        None,
+        description=(
+            "The consensus formula the user saw. A mismatch is refused (409): the "
+            "claim can move under another sample's fold between the row being read "
+            "and this request landing."
+        ),
+    )
+
+
+class ReleaseBatchPeakCurationBody(BaseModel):
+    """Request body to undo a batch peak's manual curation."""
+
+    batch_peak_id: str = Field(description="The batch peak whose curation to release.")
+
+
+class BatchImportRow(BaseModel):
+    """One identity of an external engine's batch-level result: the m/z it was
+    found at and the composition it was given. Matched to the batch peak nearest
+    the m/z and measured against that peak's members by this server, so the
+    engine's own scores are not part of the row - send them, and they are
+    ignored; keep them client-side as the engine's provenance.
+    """
+
+    model_config = ConfigDict(extra="ignore")
+
+    mz: float = Field(gt=0, allow_inf_nan=False)
+    #: The neutral formula.
+    formula: str = Field(min_length=1, max_length=256)
+    ion_formula: str | None = Field(None, max_length=4096)
+    #: The adduct, as this deployment's mechanism id. A row without one cannot
+    #: be measured and is counted as skipped rather than refused.
+    ionization_mechanism_id: str | None = Field(None, max_length=16)
+
+
+class ImportBatchRunBody(BaseModel):
+    """Request body for importing an external engine's batch-level result."""
+
+    engine: str = Field(
+        max_length=64,
+        description=(
+            "The external engine that produced the rows, stamped on the run and on "
+            "every registry entry the import creates. The in-app identity is "
+            "reserved."
+        ),
+    )
+    engine_version: str = Field(min_length=1, max_length=64)
+    config: dict | None = Field(
+        None,
+        description=(
+            "The engine's own record of the run - its parameters, its summary - "
+            "kept verbatim on the batch run for the run selector to show."
+        ),
+    )
+    mz_tolerance_ppm: float = Field(
+        5.0,
+        ge=0.1,
+        le=50.0,
+        description="How far a row's m/z may sit from the batch peak it lands on.",
+    )
+    rows: list[BatchImportRow] = Field(min_length=1, max_length=5000)
+
+
+class SampleAssignmentRunRecord(BaseModel):
+    """A sample's latest completed assignment run of its own, in brief."""
+
+    peak_assignment_run_id: str
+    engine: str
+    engine_version: str
+    peak_assignment_run_utc_created: datetime | None = None
+
+
+class BatchSampleAssignmentStatusRecord(BaseModel):
+    """One sample of a batch: its latest completed run of its own, if any, and
+    what the batch ledger holds for it. A sample folded into the ledger is
+    served from it even without a run, so both are reported."""
+
+    sample_item_id: str
+    run: SampleAssignmentRunRecord | None = None
+    #: The sample's members of the batch ledger, and how many carry an assignment.
+    n_members: int
+    n_assigned: int
+
+
+class BatchSampleAssignmentStatusResponse(BaseModel):
+    """Every sample of a batch with its assignment status."""
+
+    status: str = "success"
+    message: str
+    results: int
+    data: list[BatchSampleAssignmentStatusRecord]
+
+
+class BatchPeakRunRecord(BaseModel):
+    """One batch run: a batch-level operation that rewrote the batch ledger."""
+
+    batch_peak_run_id: str
+    sample_batch_id: str
+    #: fold | rebuild | search_untargeted | import
+    action: str
+    engine: str
+    engine_version: str
+    #: running | completed | failed
+    status: str
+    #: The run whose state the live ledger holds; exactly one per batch.
+    current: bool
+    is_current: bool
+    config: dict | None = None
+    summary: dict | None = None
+    error: str | None = None
+    created_by: int | None = None
+    batch_peak_run_utc_created: datetime | None = None
+    batch_peak_run_utc_completed: datetime | None = None
+    #: When this run's ledger state was captured - set as the next run started.
+    snapshot_utc: datetime | None = None
+
+
+class BatchPeakRunsResponse(BaseModel):
+    """A batch's runs, newest first."""
+
+    status: str = "success"
+    message: str
+    results: int
+    data: list[BatchPeakRunRecord]
 
 
 class RecalibrateResponse(BaseModel):

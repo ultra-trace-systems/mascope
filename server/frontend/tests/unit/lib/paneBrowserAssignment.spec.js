@@ -31,11 +31,19 @@ const peakUnfocus = vi.fn()
 const forAssignment = vi.fn((row) =>
   verdictPeakId && row?.sample_peak_id !== verdictPeakId ? null : verdictRecord
 )
+// The batch-level verdict reaching a row with none of its own: null unless a
+// test sets one, on the M0 whose peak id it names.
+let overlayRecord = null
+const overlayFor = vi.fn((row) =>
+  overlayRecord && row?.sample_peak_id === overlayRecord.sample_peak_id ? overlayRecord : null
+)
 
 const SAMPLE = { sample_item_id: 'si-1', sample_item_name: 'Sample 1' }
 const BATCH = { sample_batch_id: 'sb-1', sample_batch_name: 'Batch 1' }
 
 let focusedSampleId
+// The peak focused elsewhere (spectrum, chart, jump), or null.
+let focusedPeak
 let runList
 let runError
 let assignmentList
@@ -43,6 +51,9 @@ let childrenByOwner
 let byId
 let verdictRecord
 let verdictPeakId
+// The focused sample's run record; `{ engine: 'batch' }` is a sample served
+// from the batch ledger rather than from a run of its own.
+let runRecord
 
 // Minimal help-mode facade: the pane registers help cards through these calls;
 // the tests only need them to resolve.
@@ -66,7 +77,14 @@ function makeApp() {
         unfocus: sampleUnfocus
       },
       batch: { focused: BATCH },
-      peak: { list: [], focused: null, focus: vi.fn(), unfocus: peakUnfocus },
+      peak: { list: [], focused: focusedPeak, focus: vi.fn(), unfocus: peakUnfocus },
+      batchPeak: {
+        list: [],
+        selected: [],
+        isSelected: () => false,
+        select: vi.fn(),
+        unselect: vi.fn()
+      },
       ionization: { mechanism: { list: [] } },
       peakAssignment: {
         run: {
@@ -88,12 +106,14 @@ function makeApp() {
           // stores/data/modules/peakAssignment/assignment.spec.js.
           m0Of: (row) =>
             row?.role === 'iso_child' ? (byId.get(row.owner_peak_assignment_id) ?? row) : row,
-          forPeak: () => null
+          forPeak: () => null,
+          run: runRecord
         },
-        verification: { forAssignment }
+        verification: { forAssignment },
+        anchorContext: { overlayFor }
       }
     },
-    ui: { tab: { active: 'sample' }, help: helpStub }
+    ui: { tab: { active: 'sample' }, help: helpStub, notification: { push: vi.fn() } }
   }
 }
 
@@ -111,6 +131,21 @@ vi.mock('@/lib/base', async () => ({
 }))
 
 vi.mock('@/lib/dialogs', () => ({ PeakAssignConfigForm: true }))
+// The row's verdict form has a spec of its own; here it only has to show
+// which row the cell opened it for.
+vi.mock('@/lib/panes/PaneBrowserMatch/AssignmentVerdictPopover.vue', () => ({
+  default: {
+    name: 'AssignmentVerdictPopover',
+    props: ['row', 'record', 'overlay'],
+    template: '<div class="verdict-popover-stub">{{ row?.peak_assignment_id }}</div>'
+  }
+}))
+// The scroll into view is the helper's business (lib/virtualScroll.spec.js);
+// here what matters is that the pane asks for the focused row's display index.
+const scrollVirtualRowIntoView = vi.fn()
+vi.mock('@/lib/virtualScroll', () => ({
+  scrollVirtualRowIntoView: (...args) => scrollVirtualRowIntoView(...args)
+}))
 
 const GLOBAL_STUBS = {
   Dialog: { template: '<div><slot /><slot name="footer" /></div>' },
@@ -127,6 +162,14 @@ const GLOBAL_STUBS = {
       toggle() {
         this.open = !this.open
         this.$emit(this.open ? 'show' : 'hide')
+      },
+      show() {
+        this.open = true
+        this.$emit('show')
+      },
+      hide() {
+        this.open = false
+        this.$emit('hide')
       }
     },
     template: '<div class="view-menu-popover"><slot /></div>'
@@ -301,12 +344,20 @@ beforeEach(() => {
   // The pane reads the Assign-peaks dialog's open flag from a real Pinia store
   // (the button that sets it lives a row up, in the switch bar). A fresh Pinia
   // per test keeps that flag from leaking between them.
+  // The ledger's sort store writes through to localStorage and reads it back on
+  // creation, so without this a sort set in one test would be the next test's
+  // starting order.
+  localStorage.clear()
   setActivePinia(createPinia())
   focusedSampleId = ref('si-1')
+  focusedPeak = null
+  scrollVirtualRowIntoView.mockClear()
   runList = []
   runError = null
   verdictRecord = null
   verdictPeakId = null
+  overlayRecord = null
+  runRecord = null
   seed()
 })
 
@@ -481,6 +532,26 @@ describe('PaneBrowserAssignment isotopologue grouping', () => {
     wrapper.vm.sortOrder = 1
     await wrapper.vm.$nextTick()
     expect(ids(wrapper)).toEqual(['b', 'b-c0', 'b-c1', 'a', 'a-c0', 'a-c1'])
+  })
+
+  // The sort lives in a store outside the pane: PaneBrowserMatch swaps this pane
+  // for the batch ledger's whenever the sample is unfocused, and a sort held in
+  // the pane's own state went with it. A second mount on the same Pinia is that
+  // switch and back.
+  it('keeps its sort across a remount', async () => {
+    seed(FAMILY_A, FAMILY_B)
+    const first = await mountPane()
+    first.vm.sortField = 'sample_peak_intensity'
+    first.vm.sortOrder = -1
+    await first.vm.$nextTick()
+    first.unmount()
+
+    const second = await mountPane()
+    expect(second.vm.sortField).toBe('sample_peak_intensity')
+    expect(second.vm.sortOrder).toBe(-1)
+    expect(second.vm.rows[0].sample_peak_intensity).toBe(
+      Math.max(...second.vm.rows.map((row) => row.sample_peak_intensity))
+    )
   })
 
   it('keeps families whole under every sortable column, both directions', async () => {
@@ -850,20 +921,47 @@ describe('PaneBrowserAssignment uncalibrated P(correct)', () => {
     )
   })
 
-  // The header has to account for every dash in the column: a reader deciding
-  // whether the column is worth sorting on cannot hover them all to find out.
-  // Asserted against what the cells themselves say, so rewording a cell tooltip
-  // fails here rather than quietly leaving the header telling the old story.
-  it('names every cause in the column header', async () => {
+  // The header says what the column is in one line; the reasons for a dash are
+  // on the dashes, where each can be the row's own. Four rows, four distinct
+  // reasons - and none of them in the header.
+  it('keeps the header to one line and the reasons on the cells', async () => {
     const { wrapper, rows } = await ledger()
     const reasons = LEDGER.map(({ id }) => wrapper.vm.uncalibratedReason(rows.get(id)))
 
-    // Four rows, four distinct sentences - otherwise the loop below would pass
-    // on a header that names one cause and misses three.
     expect(new Set(reasons).size).toBe(LEDGER.length)
+    expect(wrapper.vm.pCorrectHeaderTooltip).toBe(
+      'Calibrated probability the assignment is correct'
+    )
     for (const reason of reasons) {
-      expect(wrapper.vm.pCorrectHeaderTooltip, reason).toContain(reason)
+      expect(wrapper.vm.pCorrectHeaderTooltip).not.toContain(reason)
     }
+  })
+
+  // A sample with no run of its own is served from the batch ledger: its
+  // P(correct) is the one recorded when it was folded in, and says so on hover,
+  // and a missing one is the ledger's to explain rather than the instrument's.
+  // The row's own reasons still come first.
+  it('explains a P(correct) served from the batch ledger, and its absence', async () => {
+    runRecord = { engine: 'batch' }
+    const { wrapper, rows } = await ledger()
+
+    expect(wrapper.vm.pCorrectTooltip({ pCorrect: 0.9 })).toMatch(/batch ledger/)
+    expect(wrapper.vm.pCorrectTooltip({ pCorrect: null })).toBe('')
+    expect(wrapper.vm.uncalibratedReason(rows.get('engine'))).toBe(
+      'No calibrated probability was recorded when this sample was folded into the batch ledger'
+    )
+    expect(wrapper.vm.uncalibratedReason(rows.get('untargeted'))).toBe(
+      'Untargeted assignment - no calibrated probability'
+    )
+  })
+
+  it("says nothing about the ledger on a run's own rows", async () => {
+    const { wrapper, rows } = await ledger()
+
+    expect(wrapper.vm.pCorrectTooltip({ pCorrect: 0.9 })).toBe('')
+    expect(wrapper.vm.uncalibratedReason(rows.get('engine'))).toBe(
+      'No calibration curve for this instrument'
+    )
   })
 
   it('still says what the column is', async () => {
@@ -1314,5 +1412,176 @@ describe('PaneBrowserAssignment engine tier column', () => {
     expect(wrapper.vm.engineTierTooltip({ tier: 'assigned', engine_tier: 'assigned' })).toContain(
       'agrees'
     )
+  })
+})
+
+describe('PaneBrowserAssignment batch-level verdict overlay', () => {
+  // The two default families, as the describes above seed them.
+  beforeEach(() => {
+    seed(FAMILY_A, FAMILY_B)
+  })
+
+  /** A batch-level verdict reaching B's M0 (peak `p-b`). */
+  const OVERLAY = {
+    batch_peak_verification_id: 'bv1',
+    batch_peak_id: 'bp-b',
+    sample_peak_id: 'p-b',
+    assigned_formula: 'C2H6',
+    ionization_mechanism_id: null,
+    verdict: 'confirmed',
+    evidence_level: 'pattern'
+  }
+
+  it('shows a batch-level verdict as borrowed on a row with none of its own', async () => {
+    overlayRecord = OVERLAY
+    const wrapper = await mountPane()
+
+    const rowsById = new Map(wrapper.vm.rows.map((row) => [row.peak_assignment_id, row]))
+    expect(wrapper.vm.verdictFor(rowsById.get('b'))).toBeNull()
+    expect(wrapper.vm.overlayFor(rowsById.get('b'))).toEqual(OVERLAY)
+    expect(wrapper.vm.effectiveVerdictFor(rowsById.get('b'))).toEqual(OVERLAY)
+    // A's peak is not the one the verdict reaches.
+    expect(wrapper.vm.overlayFor(rowsById.get('a'))).toBeNull()
+    // The overlay resolves through the M0 the same way the owned verdict does.
+    expect(overlayFor).toHaveBeenCalledWith(rowsById.get('b'))
+  })
+
+  it('lets the row keep its own verdict over the batch-level one, and names the disagreement', async () => {
+    verdictRecord = { verdict: 'rejected', evidence_level: null }
+    verdictPeakId = 'p-b'
+    overlayRecord = OVERLAY
+    const wrapper = await mountPane()
+
+    const rowsById = new Map(wrapper.vm.rows.map((row) => [row.peak_assignment_id, row]))
+    expect(wrapper.vm.effectiveVerdictFor(rowsById.get('b'))).toEqual(verdictRecord)
+    expect(wrapper.vm.conflictFor(rowsById.get('b'))).toEqual(OVERLAY)
+  })
+
+  it('names no disagreement when the two agree', async () => {
+    verdictRecord = { verdict: 'confirmed', evidence_level: 'msms' }
+    verdictPeakId = 'p-b'
+    overlayRecord = OVERLAY
+    const wrapper = await mountPane()
+
+    const rowsById = new Map(wrapper.vm.rows.map((row) => [row.peak_assignment_id, row]))
+    expect(wrapper.vm.conflictFor(rowsById.get('b'))).toBeNull()
+  })
+
+  it('filters on the verdict a row visibly carries, borrowed or not', async () => {
+    overlayRecord = OVERLAY
+    const wrapper = await mountPane()
+
+    wrapper.vm.verdictFilter = 'confirmed'
+    await wrapper.vm.$nextTick()
+    expect(ids(wrapper)).toEqual(['b'])
+
+    // "Unverified" lists only rows that show no badge at all.
+    wrapper.vm.verdictFilter = 'unverified'
+    await wrapper.vm.$nextTick()
+    expect(ids(wrapper)).toEqual(['a'])
+  })
+})
+
+describe('PaneBrowserAssignment row actions', () => {
+  // A completed run, so the table (and with it the verdict popover and the
+  // table ref the scroll needs) renders rather than the no-run message.
+  beforeEach(() => {
+    runList = [{ peak_assignment_run_id: 'run-1', status: 'completed' }]
+  })
+
+  it('opens the verdict form for the row the cell was clicked on', async () => {
+    seed(FAMILY_A, FAMILY_B)
+    const wrapper = await mountPane()
+    const row = wrapper.vm.rows.find((r) => r.peak_assignment_id === 'b')
+
+    wrapper.vm.openVerdict({}, row)
+    await wrapper.vm.$nextTick()
+    await wrapper.vm.$nextTick()
+
+    expect(wrapper.vm.verdictTarget?.peak_assignment_id).toBe('b')
+    expect(wrapper.find('.verdict-popover-stub').text()).toBe('b')
+  })
+
+  it('names what the verdict cell offers', async () => {
+    seed(FAMILY_A, FAMILY_B)
+    const wrapper = await mountPane()
+    const row = wrapper.vm.rows.find((r) => r.peak_assignment_id === 'b')
+    expect(wrapper.vm.verdictTooltip(row)).toBe('Record a verdict')
+  })
+
+  it('cannot plot a row whose peak is not in the batch ledger', async () => {
+    seed(FAMILY_A)
+    const wrapper = await mountPane()
+    const row = wrapper.vm.rows[0]
+    expect(wrapper.vm.chart.canPlot(row)).toBe(false)
+    expect(wrapper.vm.chart.isPlotted(row)).toBe(false)
+  })
+
+  it('scrolls the row of a peak focused elsewhere into view, by its display index', async () => {
+    seed(FAMILY_A, FAMILY_B)
+    focusedPeak = { peak_id: 'p-b' }
+    const wrapper = await mountPane()
+    await wrapper.vm.$nextTick()
+
+    const index = wrapper.vm.rows.findIndex((r) => r.sample_peak_id === 'p-b')
+    expect(index).toBeGreaterThanOrEqual(0)
+    expect(scrollVirtualRowIntoView).toHaveBeenCalledWith(expect.anything(), index)
+  })
+
+  it('scrolls nothing while no peak is focused', async () => {
+    seed(FAMILY_A, FAMILY_B)
+    const wrapper = await mountPane()
+    await wrapper.vm.$nextTick()
+    expect(scrollVirtualRowIntoView).not.toHaveBeenCalled()
+  })
+
+  // The shared stubs never render a cell (DataTable is a bare div, Column is
+  // auto-stubbed), so the tests below pass the rows down, as the corroboration
+  // tests do, to read the markup the row actions ship. Each Column stub is one
+  // `.stub-col`, in template order.
+  async function renderedCells(...families) {
+    const tableRows = ref([])
+    seed(...families)
+    const wrapper = mount(PaneBrowserAssignment, {
+      global: {
+        directives: { tooltip: {}, help: {} },
+        stubs: {
+          ...GLOBAL_STUBS,
+          DataTable: {
+            ...GLOBAL_STUBS.DataTable,
+            watch: {
+              value: { handler: (value) => (tableRows.value = value), immediate: true }
+            }
+          },
+          Column: {
+            setup: () => ({ rows: tableRows }),
+            template:
+              '<div class="stub-col"><template v-for="(row, i) in rows" :key="i">' +
+              '<slot name="body" :data="row" /></template></div>'
+          }
+        }
+      }
+    })
+    await wrapper.vm.$nextTick()
+    return wrapper
+  }
+
+  it('leads the row with the chart cell', async () => {
+    const wrapper = await renderedCells(FAMILY_A)
+    const columns = wrapper.findAll('.stub-col')
+    expect(columns.length).toBeGreaterThan(1)
+    expect(columns[0].find('.chart-cell').exists()).toBe(true)
+    expect(columns[0].find('.verdict-cell').exists()).toBe(false)
+  })
+
+  // `empty` is the pane's empty-state panel class, and its scoped
+  // `.empty { height: 220px }` styles every element wearing it: a verdict
+  // button called that hands the panel's height to its row.
+  it('marks a row with no verdict as unjudged, never as the empty-state panel', async () => {
+    const wrapper = await renderedCells(FAMILY_A)
+    const cell = wrapper.find('.verdict-cell')
+    expect(cell.exists()).toBe(true)
+    expect(cell.classes()).toContain('unjudged')
+    expect(cell.classes()).not.toContain('empty')
   })
 })

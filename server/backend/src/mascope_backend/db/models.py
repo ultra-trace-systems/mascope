@@ -17,6 +17,7 @@ from fastapi_users_db_sqlalchemy.access_token import (
 )
 from sqlalchemy import (
     JSON,
+    REAL,
     TIMESTAMP,
     BigInteger,
     Boolean,
@@ -25,6 +26,7 @@ from sqlalchemy import (
     Index,
     Integer,
     MetaData,
+    SmallInteger,
     String,
     Text,
     TypeDecorator,
@@ -1858,6 +1860,13 @@ class BatchPeak(Base):
         ForeignKey("batch_peak.batch_peak_id", ondelete="SET NULL"),
         index=True,
     )
+    # The anchor's registry of the assignment identities its members have
+    # carried: ``[{formula, ion_formula, ionization_mechanism_id}, ...]`` in the
+    # order they were first seen. A member names its own identity by index
+    # (``BatchPeakOccurrence.candidate``), so the list is APPEND-ONLY - an entry
+    # is never removed or reordered while a member may point at it. NULL on an
+    # anchor written before the registry existed and never re-folded since.
+    candidates: Mapped[Optional[list]] = mapped_column(JSON)
     alternatives: Mapped[Optional[list]] = mapped_column(JSON)
     provenance: Mapped[Optional[dict]] = mapped_column(JSON)
     batch_peak_utc_created: Mapped[Optional[dt]] = mapped_column(
@@ -1872,6 +1881,9 @@ class BatchPeak(Base):
     batch_peak_occurrence = relationship(
         "BatchPeakOccurrence",
         back_populates="batch_peak",
+        # Two foreign keys point here from the occurrence (membership and the
+        # family link); this relationship is the membership.
+        foreign_keys="[BatchPeakOccurrence.batch_peak_id]",
         cascade="all, delete, delete-orphan",
         passive_deletes=True,
     )
@@ -1902,6 +1914,15 @@ class BatchPeakOccurrence(Base):
     on (batch_peak_id, sample_item_id) - a member's identity, and the only key
     the row needs: a batch peak has at most one member per sample, one y-value
     per trace per sample, and nothing addresses an occurrence any other way.
+
+    A member carries everything the consensus reads - formula, tier, fit,
+    intensity, P(correct), its per-sample role, the anchor its owner folded into
+    when it is an isotopologue, and an index into its anchor's candidate
+    registry for the ion formula and mechanism - so the batch ledger stands
+    without the ledger rows it was folded from. ``peak_assignment_id`` is a
+    back-reference for a reader that wants the row, not something the batch
+    level depends on: a run pruned or deleted afterwards leaves it NULL and
+    changes no consensus. Design: ``docs/dev/peak_assignment_batch_primary.md``.
     """
 
     __tablename__ = "batch_peak_occurrence"
@@ -1923,23 +1944,64 @@ class BatchPeakOccurrence(Base):
         index=True,
     )
     sample_peak_id: Mapped[str] = mapped_column(String(20))
+    # The ledger row this member was folded from, when one exists: a member
+    # folded at ingest without a run links to none, so the index is partial.
     peak_assignment_id: Mapped[Optional[str]] = mapped_column(
         String(32),
         ForeignKey("peak_assignment.peak_assignment_id", ondelete="SET NULL"),
-        index=True,
     )
-    # Denormalized member fields (as MatchIsotope / PeakAssignment do): the peak's
-    # own m/z in this sample (for jitter/QC), its intensity (the chart y-value),
-    # and its per-sample assignment tier / fit / formula folded in.
-    sample_peak_mz: Mapped[float] = mapped_column(Float)
-    intensity: Mapped[Optional[float]] = mapped_column(Float)
-    tier: Mapped[Optional[str]] = mapped_column(String(24))
-    fit_score: Mapped[Optional[float]] = mapped_column(Float)
-    assigned_formula: Mapped[Optional[str]] = mapped_column(String(256))
+    # The member's own fields, in the smallest type that holds each: the row is
+    # written once per detected peak per sample, so its bytes are the batch
+    # ledger's cost. The peak's m/z is stored as its offset from the anchor's
+    # frozen m/z in ppm (``batch_peaks.mz_from_delta`` recovers it), the
+    # intensity (the chart y-value), fit and probability in single precision,
+    # and the tier and role as codes (``batch_peaks.TIER_CODES`` - the tier's
+    # rank - and ``ROLE_CODES``). The formula is not copied: ``candidate``
+    # names it in the anchor's registry.
+    mz_delta_ppm: Mapped[Optional[float]] = mapped_column(REAL)
+    intensity: Mapped[Optional[float]] = mapped_column(REAL)
+    tier: Mapped[Optional[int]] = mapped_column(SmallInteger)
+    fit_score: Mapped[Optional[float]] = mapped_column(REAL)
+    # Which entry of the anchor's ``candidates`` this member's assignment is;
+    # NULL for an unassigned member.
+    candidate: Mapped[Optional[int]] = mapped_column(SmallInteger)
+    # The member's per-sample role and, for an isotopologue, the anchor its
+    # owning peak folded into in the same sample. NULL when the owner is unknown
+    # or folded nowhere, in which case the member abstains from the family vote;
+    # SET NULL when the owner anchor goes.
+    role: Mapped[Optional[int]] = mapped_column(SmallInteger)
+    owner_batch_peak_id: Mapped[Optional[str]] = mapped_column(
+        String(16),
+        ForeignKey("batch_peak.batch_peak_id", ondelete="SET NULL"),
+    )
+    # The member's calibrated probability, as its assignment's provenance
+    # recorded it; NULL when uncalibrated.
+    p_correct: Mapped[Optional[float]] = mapped_column(REAL)
 
-    # Relationships
-    batch_peak = relationship("BatchPeak", back_populates="batch_peak_occurrence")
+    # Relationships. Two foreign keys point at batch_peak (membership and the
+    # family link), so the membership relationship names its own.
+    batch_peak = relationship(
+        "BatchPeak",
+        back_populates="batch_peak_occurrence",
+        foreign_keys="[BatchPeakOccurrence.batch_peak_id]",
+    )
     sample_item = relationship("SampleItem", back_populates="batch_peak_occurrence")
+
+    __table_args__ = (
+        # Partial, as the ledger's nullable references are: most members are
+        # not isotopologues, and the SET NULL action is served by `= $1`, which
+        # implies IS NOT NULL.
+        Index(
+            "ix_batch_peak_occurrence_owner_batch_peak_id",
+            "owner_batch_peak_id",
+            postgresql_where=text("owner_batch_peak_id IS NOT NULL"),
+        ),
+        Index(
+            "ix_batch_peak_occurrence_peak_assignment_id",
+            "peak_assignment_id",
+            postgresql_where=text("peak_assignment_id IS NOT NULL"),
+        ),
+    )
 
 
 class AttributeTemplate(Base):
@@ -2097,6 +2159,173 @@ class AssignmentCalibration(Base):
     )
 
 
+class BatchPeakRun(Base):
+    """One batch-level operation that rewrote a batch's ledger - a rebuild, an
+    untargeted search with its parameters, an import - or, implicitly, the folds
+    that built it. The batch counterpart of :class:`PeakAssignmentRun`.
+
+    Exactly one run per batch is ``is_current``: the one whose state the live
+    anchors and members hold. When a new run starts, the current run's state is
+    captured into :class:`BatchPeakRunAnchor` and the new run becomes current on
+    completion; a failed run never does. Older runs beyond the batch's keep are
+    pruned with their snapshots when a run completes (``batch_runs.py``).
+    """
+
+    __tablename__ = "batch_peak_run"
+
+    batch_peak_run_id: Mapped[str] = mapped_column(String(16), primary_key=True)
+    sample_batch_id: Mapped[str] = mapped_column(
+        String(16),
+        ForeignKey("sample_batch.sample_batch_id", ondelete="CASCADE"),
+        index=True,
+    )
+    action: Mapped[str] = mapped_column(String(32))
+    engine: Mapped[str] = mapped_column(String(64), server_default=text("'mascope'"))
+    engine_version: Mapped[str] = mapped_column(String(64))
+    status: Mapped[str] = mapped_column(String(20), server_default=text("'running'"))
+    is_current: Mapped[int] = mapped_column(Integer, server_default=text("'0'"))
+    config: Mapped[Optional[dict]] = mapped_column(JSON)
+    summary: Mapped[Optional[dict]] = mapped_column(JSON)
+    error: Mapped[Optional[str]] = mapped_column(Text)
+    created_by: Mapped[Optional[int]] = mapped_column(
+        Integer, ForeignKey("user.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    batch_peak_run_utc_created: Mapped[dt] = mapped_column(
+        TIMESTAMP(timezone=True), default=lambda: dt.now(timezone.utc)
+    )
+    batch_peak_run_utc_completed: Mapped[Optional[dt]] = mapped_column(
+        TIMESTAMP(timezone=True), nullable=True
+    )
+    #: When this run's ledger state was captured - set as the next run started.
+    snapshot_utc: Mapped[Optional[dt]] = mapped_column(
+        TIMESTAMP(timezone=True), nullable=True
+    )
+
+    __table_args__ = (
+        CheckConstraint(
+            "action IN ('fold', 'rebuild', 'search_untargeted', 'import')",
+            name="action_valid",
+        ),
+        CheckConstraint(
+            "status IN ('running', 'completed', 'failed')", name="status_valid"
+        ),
+        Index("ix_batch_peak_run_batch_current", "sample_batch_id", "is_current"),
+    )
+
+
+class BatchPeakRunAnchor(Base):
+    """One anchor of a batch run's snapshot: its consensus as the run left it,
+    the registry it resolved its members with, and the members themselves as
+    parallel arrays (``batch_runs.MEMBER_FIELDS``) - columnar, because a
+    snapshot is written once and read whole, and the arrays cost a small
+    fraction of a row per member. ``batch_peak_id`` carries no foreign key: the
+    anchor may be deleted by a later re-fold, and the snapshot is exactly what
+    should outlive that.
+    """
+
+    __tablename__ = "batch_peak_run_anchor"
+
+    batch_peak_run_id: Mapped[str] = mapped_column(
+        String(16),
+        ForeignKey("batch_peak_run.batch_peak_run_id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    batch_peak_id: Mapped[str] = mapped_column(String(16), primary_key=True)
+    mz: Mapped[float] = mapped_column(Float)
+    ionization_mode_id: Mapped[Optional[str]] = mapped_column(String(16))
+    consensus_formula: Mapped[Optional[str]] = mapped_column(String(256))
+    consensus_ion_formula: Mapped[Optional[str]] = mapped_column(String(4096))
+    ionization_mechanism_id: Mapped[Optional[str]] = mapped_column(String(16))
+    consensus_tier: Mapped[str] = mapped_column(String(24))
+    best_fit_score: Mapped[Optional[float]] = mapped_column(Float)
+    support_fraction: Mapped[Optional[float]] = mapped_column(Float)
+    n_present: Mapped[int] = mapped_column(Integer)
+    is_ambiguous: Mapped[int] = mapped_column(Integer, server_default=text("'0'"))
+    intensity_variable: Mapped[Optional[str]] = mapped_column(String(32))
+    max_intensity: Mapped[Optional[float]] = mapped_column(Float)
+    isotopologue_of: Mapped[Optional[str]] = mapped_column(String(16))
+    curated: Mapped[int] = mapped_column(Integer, server_default=text("'0'"))
+    candidates: Mapped[Optional[list]] = mapped_column(JSON)
+    members: Mapped[Optional[dict]] = mapped_column(JSON)
+
+
+class BatchPeakVerification(Base):
+    """A user's verdict on a batch peak's species claim - one per anchor, batch-wide.
+
+    The anchor-scoped counterpart of :class:`AssignmentVerification`
+    (``docs/dev/peak_assignment_continuity.md`` section 4): judging the consensus formula of
+    one batch peak covers every sample in the batch whose peak folded into that anchor and
+    that carries no verdict of its own. Append-only with the current row marked, exactly as
+    the per-sample table: one live row per ``(batch_peak_id, assigned_formula,
+    ionization_mechanism_id)`` (``superseded_utc IS NULL``, NULLS NOT DISTINCT), stamped in
+    the same transaction that records its successor; a retract is a stamp with no successor.
+
+    Keyed to the anchor id **without a foreign key**: a re-fold that leaves an anchor
+    memberless deletes it, and anchor ids are minted once and never reused, so a dangling id
+    can never re-attach to a different species and the verdict outlives the machine lifecycle
+    of the anchor it judged. The claim is pinned: if the consensus later flips from F to G
+    the verdict stays live about F and reads as stale, because a machine recompute never
+    supersedes a human label. ``context`` snapshots the consensus the human saw.
+
+    **Structurally outside the calibration label pool.** The pool selects from
+    ``assignment_verification`` alone. An anchor has no honest score to pair with a label
+    (``best_fit_score`` and the consensus probability are maxima over the members backing the
+    claim), and fanning one verdict out over ``n_present`` samples would flood the pool with
+    correlated labels - so this is a separate table on purpose, and a refactor that unified
+    the two would reopen exactly that.
+    """
+
+    __tablename__ = "batch_peak_verification"
+
+    batch_peak_verification_id: Mapped[str] = mapped_column(
+        String(32), primary_key=True
+    )
+    sample_batch_id: Mapped[str] = mapped_column(
+        String(16),
+        ForeignKey("sample_batch.sample_batch_id", ondelete="CASCADE"),
+        index=True,
+    )
+    # No ForeignKey, deliberately - see the docstring.
+    batch_peak_id: Mapped[str] = mapped_column(String(16), index=True)
+    assigned_formula: Mapped[str] = mapped_column(String(256))
+    ionization_mechanism_id: Mapped[Optional[str]] = mapped_column(String(16))
+    verdict: Mapped[str] = mapped_column(String(16))
+    evidence_level: Mapped[Optional[str]] = mapped_column(String(24), nullable=True)
+    note: Mapped[Optional[str]] = mapped_column(Text)
+    context: Mapped[Optional[dict]] = mapped_column(JSON)
+    verified_by: Mapped[Optional[int]] = mapped_column(
+        Integer, ForeignKey("user.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    verified_utc: Mapped[dt] = mapped_column(
+        TIMESTAMP(timezone=True), default=lambda: dt.now(timezone.utc)
+    )
+    superseded_utc: Mapped[Optional[dt]] = mapped_column(
+        TIMESTAMP(timezone=True), nullable=True
+    )
+
+    __table_args__ = (
+        CheckConstraint(
+            "verdict IN ('confirmed', 'rejected', 'unsure')", name="verdict_valid"
+        ),
+        CheckConstraint(
+            "evidence_level IS NULL OR evidence_level IN "
+            "('reference_standard', 'msms', 'orthogonal', 'pattern', 'visual')",
+            name="evidence_level_valid",
+        ),
+        # One live verdict per claim at an anchor; NULLS NOT DISTINCT so a null
+        # mechanism is one claim, not infinitely many - as on the per-sample table.
+        Index(
+            "uq_batch_peak_verification_current",
+            "batch_peak_id",
+            "assigned_formula",
+            "ionization_mechanism_id",
+            unique=True,
+            postgresql_where=text("superseded_utc IS NULL"),
+            postgresql_nulls_not_distinct=True,
+        ),
+    )
+
+
 class AssignmentVerification(Base):
     """A user's verdict on a peak-centric assignment (verification-calibration loop, V1).
 
@@ -2119,6 +2348,11 @@ class AssignmentVerification(Base):
 
     ``evidence_level`` records *why* the user is confident (the guardrail against a
     confirmation-bias loop): a reference-standard confirmation is weighted far above a visual guess.
+
+    The calibration label pool selects from this table **alone**. A batch-level verdict on a
+    batch peak lives in :class:`BatchPeakVerification` and never lands here - not even as one
+    fabricated per-sample row per member sample - so one judgment fanned out over a batch
+    cannot flood the pool with correlated labels. Keep the two tables apart.
     """
 
     __tablename__ = "assignment_verification"
@@ -2231,6 +2465,9 @@ __all__ = [
     "PeakAssignment",
     "BatchPeak",
     "BatchPeakOccurrence",
+    "BatchPeakVerification",
+    "BatchPeakRun",
+    "BatchPeakRunAnchor",
     "AttributeTemplate",
     "InstrumentFunction",
     "ReferenceSource",

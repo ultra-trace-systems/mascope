@@ -1,5 +1,5 @@
 <script setup>
-import { ref, computed, watch } from 'vue'
+import { ref, computed, watch, nextTick } from 'vue'
 
 import Button from 'primevue/button'
 import DataTable from 'primevue/datatable'
@@ -12,14 +12,19 @@ import Select from 'primevue/select'
 import ToggleSwitch from 'primevue/toggleswitch'
 import { FilterMatchMode, FilterOperator, FilterService } from '@primevue/core/api'
 
-import { BaseTabbedPanel, BaseTierTag, BaseCopyableField } from '@/lib/base'
+import { BaseTabbedPanel, BaseTierTag, BaseCopyableField, BaseVerdictBadge } from '@/lib/base'
 import { num } from '@/lib/formatters'
 import { TIERS, TIER_META, countTiers, tierRank } from '@/lib/tiers'
+import { VERDICT_META } from '@/lib/verification'
 import { prettyTrim } from '@/lib/utils'
 import { useApp } from '@/stores'
+
+import { useBatchPeakJump } from './stores/batchPeakJump.js'
 import { MAX_SELECTED_BATCH_PEAKS } from '@/stores/data/modules/batchPeak/ledger'
 
 import { useBatchPeakCompute } from './stores/batchPeakCompute.js'
+import { useLedgerSort } from './stores/ledgerSort.js'
+import BatchPeakVerdictPopover from './BatchPeakVerdictPopover.vue'
 
 /**
  * Batch-peak ledger: the selection surface for the peak-centric batch overview.
@@ -28,6 +33,8 @@ import { useBatchPeakCompute } from './stores/batchPeakCompute.js'
  * chart plots, so the chart never renders 1000+ traces at once.
  */
 const app = useApp()
+// The row action that opens the brightest sample on this peak.
+const jump = useBatchPeakJump()
 
 // The button that launches this lives a row up, in the browser's switch bar
 // (BatchPeakComputeBar.vue), so the launch and its state are shared through a
@@ -36,6 +43,48 @@ const app = useApp()
 const compute = useBatchPeakCompute()
 
 const ledger = computed(() => app.data.batchPeak)
+const verdicts = computed(() => app.data.batchPeakVerification)
+// The batch's runs: which one the ledger is reading, and whether that is the
+// live one. An earlier run is history - shown from its snapshot, read-only.
+const runs = computed(() => app.data.batchPeakRun)
+const RUN_ACTION_LABELS = {
+  fold: 'folded samples',
+  rebuild: 'a rebuild',
+  search_untargeted: 'an untargeted search',
+  import: 'an import'
+}
+const viewedRunLabel = computed(() => {
+  const run = runs.value.viewing
+  return run ? (RUN_ACTION_LABELS[run.action] ?? run.action) : ''
+})
+
+// --- Batch-level verdicts ----------------------------------------------------
+// One judgment per species at a batch peak, recorded from the Verdict column's
+// popover. A row's badge is the live verdict on its present claim, or - stale -
+// the latest live one on a claim the consensus has since left; the projection
+// carries a rank for the column to sort on, confirmed first and unjudged last,
+// the way the tier column sorts on `tierRank`.
+const VERDICT_RANK = { confirmed: 0, rejected: 1, unsure: 2 }
+const verdictFor = (row) => verdicts.value.forAnchor(row)
+const verdictStale = (row) => {
+  const record = verdictFor(row)
+  return Boolean(record && verdicts.value.isStale(record, row))
+}
+const verdictRank = (row) => {
+  const record = verdictFor(row)
+  return record ? (VERDICT_RANK[record.verdict] ?? 3) : null
+}
+// The cell's own tooltip covers the two states the badge has none for: no
+// verdict yet, and a stale one. A current badge speaks for itself.
+const verdictTooltip = (row) => {
+  const record = verdictFor(row)
+  if (!record) return 'Record a batch-level verdict'
+  if (!verdicts.value.isStale(record, row)) return ''
+  const label = VERDICT_META[record.verdict]?.label ?? record.verdict
+  return `${label} as ${record.assigned_formula} - the consensus is now ${
+    row.consensus_formula ?? 'unassigned'
+  }. Re-judge or retract.`
+}
 
 // A Popover rather than a Menu, matching the sample ledger: a menu item cannot
 // hold a labelled switch, and the switch's only accessible name is its label.
@@ -126,6 +175,7 @@ const decorated = computed(() => {
   return ledger.value.list.map((batchPeak) => ({
     ...batchPeak,
     tierRank: tierRank(batchPeak.consensus_tier),
+    verdictRank: verdictRank(batchPeak),
     parentId: rootParentId(batchPeak, index)
   }))
 })
@@ -150,6 +200,29 @@ const childrenByParent = computed(() => {
 // shows at top level, folded or not - the toggle decides only whether the
 // isotopologues are drawn underneath.
 const parents = computed(() => decorated.value.filter((row) => !row.parentId))
+
+// One verdict popover for the table, pointed at the row whose cell opened it -
+// the live row, so a reload under an open popover (the consensus moved, say)
+// shows the row as it now is. Clicking the open row's cell again closes it;
+// another row's cell moves it there.
+const verdictMenu = ref()
+const verdictRowId = ref(null)
+const verdictTarget = computed(() =>
+  verdictRowId.value
+    ? (decorated.value.find((row) => row.batch_peak_id === verdictRowId.value) ?? null)
+    : null
+)
+function openVerdict(event, row) {
+  const menu = verdictMenu.value
+  if (!menu) return
+  if (verdictRowId.value === row.batch_peak_id) {
+    menu.toggle(event)
+    return
+  }
+  verdictRowId.value = row.batch_peak_id
+  menu.hide()
+  nextTick(() => menu.show(event))
+}
 
 const isotopologueCount = (row) => childrenByParent.value.get(row.batch_peak_id)?.length ?? 0
 
@@ -183,8 +256,19 @@ const showIsotopologues = ref(false)
 // clicked with, and the filter menus still write into `filters`;
 // `removableSort` gives a third click that clears the column and returns the
 // ledger to its confidence-ordered default.
-const sortField = ref('n_present')
-const sortOrder = ref(-1)
+//
+// Held in a store shared with the sample ledger's pane (stores/ledgerSort.js),
+// so the sort survives the switch between the two ledgers, and a reload; these
+// are this pane's handles on it - what the header binds and `rows` reads.
+const ledgerSort = useLedgerSort()
+const sortField = computed({
+  get: () => ledgerSort.batch.field,
+  set: (value) => (ledgerSort.batch.field = value)
+})
+const sortOrder = computed({
+  get: () => ledgerSort.batch.order,
+  set: (value) => (ledgerSort.batch.order = value)
+})
 
 // Numeric collation, so the formula column reads as a chemist expects: C2H6
 // before C10H22, not after it. This is the comparer PrimeVue sorted with -
@@ -457,6 +541,27 @@ const intensityTooltip = computed(() => {
   )
 })
 
+// One line per column whose number is a property of the batch peak rather than
+// of a single peak - the columns a reader arriving from the sample ledger, where
+// the same names mean one peak's values, reads wrong at first. Help mode carries
+// the full account; these are the reminder on hover. The intensity's is
+// `intensityTooltip` above, because it names the instrument's unit.
+const HEADER_TOOLTIPS = {
+  mz:
+    "Anchor m/z of the batch peak: the m/z bin every sample's peak of this species folds " +
+    'into, set by the first peak seen and never redrawn',
+  formula:
+    "Consensus formula: an evidence-weighted vote over the members' per-sample assignments, " +
+    'so a bright, well-fitting member outweighs weak ones',
+  tier:
+    "Consensus tier: an evidence-weighted vote over the members' per-sample tiers, " +
+    'assigned only when a weighted majority reach it',
+  samples: 'Number of samples this species is seen in',
+  verdict:
+    'Batch-level verdict: one judgment per species, covering every sample without a ' +
+    'verdict of its own'
+}
+
 // Whatever was in flight, went wrong, or was selected belonged to the previous
 // batch. The selection itself is reset by the ledger's own reload.
 watch(
@@ -516,6 +621,15 @@ watch(
            selection just has a size. -->
       <Message v-if="selectionNotice" severity="secondary" icon="pi pi-exclamation-triangle">
         {{ selectionNotice }}
+      </Message>
+
+      <!-- An earlier run's ledger, from its snapshot. Said here so a formula
+           that differs from what a sample's inspector shows reads as history
+           rather than as a disagreement, and so the withheld verdict cells
+           have their reason. -->
+      <Message v-if="!runs.viewingCurrent" severity="info" icon="pi ph ph-clock-counter-clockwise">
+        Showing the ledger as {{ viewedRunLabel }} left it, read-only. Verdicts and curation act on
+        the current run; pick it in the run selector to judge.
       </Message>
 
       <div
@@ -614,6 +728,23 @@ watch(
               />
               <label for="unfold-batch-iso">Isotopologues</label>
             </div>
+            <!-- The whole ledger as a CSV: every batch peak with every
+                 sample's member, one row per member. A background task; the
+                 browser downloads the file when it is ready. -->
+            <Button
+              class="export-ledger"
+              label="Export ledger (CSV)"
+              icon="pi ph ph-download-simple"
+              size="small"
+              text
+              severity="secondary"
+              :disabled="!parents.length || compute.exporting"
+              :loading="compute.exporting"
+              v-tooltip.top="
+                'Download the whole ledger as CSV: one row per member peak, with the batch peak it folded into'
+              "
+              @click="compute.exportLedger()"
+            />
           </div>
         </Popover>
       </div>
@@ -651,13 +782,17 @@ watch(
           )
         "
       >
-        <template #empty>
-          No batch peaks yet - run "Compute batch peaks" (or assign the batch) to populate.
-        </template>
+        <template #empty> No batch peaks yet - run "Rebuild batch ledger" to populate. </template>
 
         <Column selectionMode="multiple" style="width: 3rem" />
 
-        <Column field="mz" header="m/z" sortable style="min-width: 7rem">
+        <!-- The header tooltips sit on a span in the header slot, never on the
+             Column itself: Column renders no element of its own, so a directive
+             placed on it has nothing to attach to and never shows. -->
+        <Column field="mz" sortable style="min-width: 7rem">
+          <template #header>
+            <span v-tooltip.top="HEADER_TOOLTIPS.mz">m/z</span>
+          </template>
           <template #body="{ data }">{{ num.mz.format(data.mz) }}</template>
         </Column>
 
@@ -665,21 +800,40 @@ watch(
              says which one it picked: the brightest sample, which is where a
              species is best measured and the order a reader looks for the
              largest thing in the batch in. -->
-        <Column
-          field="max_intensity"
-          header="Intensity"
-          sortable
-          style="min-width: 7rem"
-          v-tooltip="intensityTooltip"
-        >
+        <Column field="max_intensity" sortable style="min-width: 7rem">
+          <template #header>
+            <span v-tooltip.top="intensityTooltip">Intensity</span>
+          </template>
           <template #body="{ data }">
             <span class="intensity">
               {{ data.max_intensity != null ? num.peakIntensity.format(data.max_intensity) : '—' }}
             </span>
+            <!-- The chart's click-through, from the row: with several traces
+                 plotted it is not obvious which point to click, and the
+                 brightest sample is where the species is best measured. -->
+            <button
+              type="button"
+              class="jump-cell"
+              :disabled="jump.pendingId != null || !data.n_present"
+              aria-label="Open the brightest sample with this peak in focus"
+              v-tooltip.top="'Open the brightest sample with this peak in focus (Sample tab)'"
+              @click.stop="jump.jumpToBrightest(data)"
+            >
+              <span
+                :class="
+                  jump.pendingId === data.batch_peak_id
+                    ? 'pi pi-spin pi-spinner'
+                    : 'pi ph ph-arrow-square-out'
+                "
+              />
+            </button>
           </template>
         </Column>
 
-        <Column field="consensus_formula" header="Formula" sortable style="min-width: 9rem">
+        <Column field="consensus_formula" sortable style="min-width: 9rem">
+          <template #header>
+            <span v-tooltip.top="HEADER_TOOLTIPS.formula">Formula</span>
+          </template>
           <template #body="{ data }">
             <!-- An unfolded isotopologue says what it is rather than repeating its
                  family's formula, which is the whole reason it was folded. -->
@@ -696,6 +850,11 @@ watch(
               class="formula"
               :field="data.consensus_formula"
             >
+              <span
+                v-if="data.curated"
+                class="pi ph ph-hand-pointing curated"
+                v-tooltip.top="'Curated by hand for the whole batch'"
+              />
               <span
                 v-if="isotopologueCount(data)"
                 class="iso-count"
@@ -740,6 +899,7 @@ watch(
         >
           <template #header>
             <span
+              v-tooltip.top="HEADER_TOOLTIPS.tier"
               v-help.top="{
                 title: 'Confidence Tiers',
                 helpKey: 'assignment-tiers',
@@ -769,21 +929,98 @@ watch(
           </template>
         </Column>
 
-        <Column
-          field="n_present"
-          header="Samples"
-          sortable
-          style="min-width: 6rem"
-          v-tooltip="'Number of samples this species is seen in'"
-        >
+        <Column field="n_present" sortable style="min-width: 6rem">
+          <template #header>
+            <span v-tooltip.top="HEADER_TOOLTIPS.samples">Samples</span>
+          </template>
           <template #body="{ data }">{{ data.n_present }}</template>
         </Column>
+
+        <!-- Batch-level verdict: one judgment per species at this batch peak,
+             covering every sample in the batch without a verdict of its own. The
+             cell is a button whichever state it is in, so an unjudged row is
+             judged from the same place a judged one is re-judged. Sorts through
+             `compareBy` on the rank the projection carries - confirmed first,
+             unjudged last - as the tier column does. -->
+        <Column field="verdictRank" sortable style="min-width: 4rem">
+          <template #header>
+            <span
+              class="pi ph ph-seal-check"
+              v-tooltip.top="HEADER_TOOLTIPS.verdict"
+              v-help.top="{
+                title: 'Batch-Level Verdicts',
+                helpKey: 'batch-peak-verdicts',
+                doc: app.ui.help.docUrl('how-it-works/peak-assignment/#batch-level-verdicts')
+              }"
+            />
+          </template>
+          <template #body="{ data }">
+            <button
+              type="button"
+              class="verdict-cell"
+              :class="{ stale: verdictStale(data), unjudged: !verdictFor(data) }"
+              :disabled="!runs.viewingCurrent"
+              :aria-label="
+                verdictFor(data) ? 'Batch-level verdict' : 'Record a batch-level verdict'
+              "
+              v-tooltip.top="verdictTooltip(data)"
+              @click.stop="openVerdict($event, data)"
+            >
+              <BaseVerdictBadge v-if="verdictFor(data)" :record="verdictFor(data)" compact />
+              <span v-else class="pi ph ph-seal-check" />
+            </button>
+          </template>
+        </Column>
       </DataTable>
+
+      <Popover ref="verdictMenu" aria-label="Batch-level verdict">
+        <BatchPeakVerdictPopover
+          v-if="verdictTarget"
+          :row="verdictTarget"
+          :record="verdictFor(verdictTarget)"
+          :stale="verdictStale(verdictTarget)"
+          @done="verdictMenu?.hide()"
+        />
+      </Popover>
     </div>
   </BaseTabbedPanel>
 </template>
 
 <style scoped>
+/* The verdict cell is a button so an unjudged cell opens the popover too; the
+   badge - or the faint seal for "none yet" - is its whole content. Named
+   `unjudged` rather than `empty`, which is the browser panes' empty-state
+   panel class and carries a height. Stale: the judgment is about a formula the
+   consensus has since left, outlined in the warning colour until re-judged or
+   retracted. */
+.verdict-cell {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0.1rem 0.3rem;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+}
+.verdict-cell.unjudged .pi {
+  opacity: 0.25;
+}
+/* History is read-only: the cell keeps its badge and loses its hand. */
+.verdict-cell:disabled {
+  cursor: default;
+  opacity: 0.6;
+}
+.verdict-cell:hover {
+  background: var(--p-content-hover-background);
+}
+.verdict-cell.stale {
+  border-color: var(--state-warning);
+  border-style: dashed;
+}
+
 .unassigned {
   color: var(--p-text-muted-color, #888);
   font-style: italic;
@@ -839,6 +1076,11 @@ watch(
 .child-label {
   font-family: var(--font-mono, ui-monospace, monospace);
   font-size: 0.86rem;
+  opacity: 0.8;
+}
+.curated {
+  font-size: 0.8rem;
+  margin-right: 0.25rem;
   opacity: 0.8;
 }
 .iso-count {
@@ -931,5 +1173,27 @@ watch(
 .ledger > :deep(.p-datatable > .p-datatable-table-container) {
   flex: 1;
   min-height: 0;
+}
+
+/* The jump beside the intensity: faint until hovered, so the column stays a
+   column of numbers; the spinner marks the one jump in flight. */
+.jump-cell {
+  margin-left: 0.35rem;
+  padding: 0.05rem 0.25rem;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+  opacity: 0.45;
+}
+.jump-cell:hover {
+  opacity: 1;
+  background: var(--p-content-hover-background);
+}
+.jump-cell:disabled {
+  cursor: default;
+  opacity: 0.2;
 }
 </style>

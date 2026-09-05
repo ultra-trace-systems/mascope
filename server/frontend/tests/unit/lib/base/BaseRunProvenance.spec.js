@@ -249,3 +249,32 @@ describe('BaseRunProvenance', () => {
     })
   })
 })
+
+// A ledger derived from the batch peaks for a sample that has no run of its own
+// (backend fold_view.py). The fold ran on this deployment, so it is first-party
+// work, and it carries none of an import's disclosures - so none of an import's
+// badges or warnings apply to it.
+describe('BaseRunProvenance: a batch-derived ledger', () => {
+  const DERIVED_RUN = {
+    peak_assignment_run_id: 'fold-si-1',
+    engine: 'batch',
+    engine_version: '0.3.0',
+    status: 'completed',
+    tier_bands: null,
+    calibration: null
+  }
+
+  it('is named for what it is and presented as first-party', () => {
+    const wrapper = mountBadge(DERIVED_RUN)
+    const tags = wrapper.findAll('.tag')
+    expect(tags).toHaveLength(1)
+    expect(tags[0].text()).toContain('Batch ledger')
+    expect(tags[0].attributes('data-severity')).not.toBe('info')
+  })
+
+  it('carries none of the import warnings', () => {
+    const wrapper = mountBadge(DERIVED_RUN)
+    expect(wrapper.text()).not.toContain('calibration')
+    expect(wrapper.text()).not.toContain('batch 0.3.0')
+  })
+})

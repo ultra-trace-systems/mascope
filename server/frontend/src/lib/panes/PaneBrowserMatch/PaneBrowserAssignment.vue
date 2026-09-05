@@ -1,5 +1,5 @@
 <script setup>
-import { ref, reactive, computed, watch, onScopeDispose } from 'vue'
+import { ref, reactive, computed, watch, nextTick, onScopeDispose } from 'vue'
 
 import Button from 'primevue/button'
 import Dialog from 'primevue/dialog'
@@ -21,11 +21,20 @@ import {
 import { PeakAssignConfigForm } from '@/lib/dialogs'
 import { num } from '@/lib/formatters'
 import { formatIsotopeFormula } from '@/lib/chem'
+import {
+  LEDGER_P_CORRECT_TOOLTIP,
+  P_CORRECT_TOOLTIP,
+  uncalibratedReason as reasonForNoPCorrect
+} from '@/lib/pCorrect'
 import { tierBucket, tierRank } from '@/lib/tiers'
 import { prettyTrim } from '@/lib/utils'
+import { scrollVirtualRowIntoView } from '@/lib/virtualScroll'
 import { useApp } from '@/stores'
 
 import { useAssignmentLauncher } from './stores'
+import { useLedgerSort } from './stores/ledgerSort.js'
+import AssignmentVerdictPopover from './AssignmentVerdictPopover.vue'
+import { useBatchChartSelection } from './stores/batchChartSelection.js'
 
 const app = useApp()
 const launcher = useAssignmentLauncher()
@@ -62,6 +71,24 @@ const verdictFor = (row) => {
   const m0 = assignments.value.m0Of(row)
   return m0?.assigned_formula ? app.data.peakAssignment.verification.forAssignment(m0) : null
 }
+
+// The batch-level verdict that reaches a row with no verdict of its own: the
+// family M0's peak folded into a judged batch peak, and the judgment is about the
+// M0's own formula and mechanism - a dissenting row gets no overlay from a verdict
+// about another formula. A per-sample verdict always wins; where both exist and
+// disagree, the per-sample badge says so in its tooltip.
+const overlayFor = (row) => {
+  const m0 = assignments.value.m0Of(row)
+  return m0?.assigned_formula ? app.data.peakAssignment.anchorContext.overlayFor(m0) : null
+}
+const conflictFor = (row) => {
+  const own = verdictFor(row)
+  const overlay = own ? overlayFor(row) : null
+  return overlay && overlay.verdict !== own.verdict ? overlay : null
+}
+// What the row visibly carries, its own verdict first. The filter runs on this,
+// so "Unverified" never lists a row that shows a badge.
+const effectiveVerdictFor = (row) => verdictFor(row) ?? overlayFor(row)
 
 // Verdict filter (single-select). "unverified" = no current verdict.
 const VERDICT_FILTERS = [
@@ -236,8 +263,19 @@ const showIsotopologues = ref(false)
 // The header still renders its sort indicator and still emits the field it was
 // clicked with; `removableSort` gives a third click that clears the column and
 // returns the ledger to its confidence-ordered default.
-const sortField = ref('tierRank')
-const sortOrder = ref(1)
+//
+// Held in a store shared with the batch ledger's pane (stores/ledgerSort.js),
+// so the sort survives the switch between the two ledgers, and a reload; these
+// are this pane's handles on it - what the header binds and `rows` reads.
+const ledgerSort = useLedgerSort()
+const sortField = computed({
+  get: () => ledgerSort.sample.field,
+  set: (value) => (ledgerSort.sample.field = value)
+})
+const sortOrder = computed({
+  get: () => ledgerSort.sample.order,
+  set: (value) => (ledgerSort.sample.order = value)
+})
 
 // Numeric collation, so the formula column reads as a chemist expects: C2H6
 // before C10H22, not after it. This is the comparer PrimeVue sorted with -
@@ -284,7 +322,7 @@ const rows = computed(() => {
     .filter(
       (row) =>
         verdictFilter.value === 'all' ||
-        (verdictFor(row)?.verdict ?? 'unverified') === verdictFilter.value
+        (effectiveVerdictFor(row)?.verdict ?? 'unverified') === verdictFilter.value
     )
     .map((row) => ({
       ...row,
@@ -363,50 +401,20 @@ const pctFmt = new Intl.NumberFormat('en-US', { style: 'percent', maximumFractio
 const corrobLabel = (row) =>
   row.corrobInherited ? `(${row.corrobAdducts})` : `${row.corrobAdducts}`
 
-// Why a row shows no calibrated probability. Several different reasons, and the
-// wrong one is worse than none: a hand-assigned row has no P(correct) because
-// nobody calibrated the formula a person chose, which says nothing about
-// whether this instrument has a curve - and reading "no calibration curve for
-// this instrument" there would send someone to calibrate an instrument that is
-// calibrated perfectly well.
-//
-// Kept as one list because the column header has to name all of them: a reader
-// deciding whether the column is worth sorting on cannot hover every dash in it
-// to find out why the dashes are there. Written once so a reworded reason - or
-// a fifth one - cannot land in the cells and miss the header.
-const UNCALIBRATED_REASONS = {
-  // First because a demoted satellite is both: curation.py's _demote strips the
-  // satellites of a formula their M0 no longer holds and leaves source =
-  // 'manual' on them, so a row can be a person's doing and hold no formula at
-  // all. "Assigned by hand" on a row the tier chip beside it labels Unassigned
-  // is the ledger's copy contradicting itself.
-  unassigned: 'Nothing assigned to this peak',
-  manual: 'Assigned by hand - the calibration never scored this formula',
-  untargeted: 'Untargeted assignment - no calibrated probability',
-  uncalibrated: 'No calibration curve for this instrument'
-}
+// Why a row shows no calibrated probability, and what one served from the batch
+// ledger is: shared with the inspector through @/lib/pCorrect, so the ledger's
+// cells and the inspector's row cannot drift apart on the same fact. A sample
+// with no run of its own is served from the batch ledger (run engine 'batch'):
+// its P(correct) is the one recorded when the sample was folded in, and a
+// missing one is the ledger's to explain rather than the instrument's.
+const fromLedger = computed(() => assignments.value.run?.engine === 'batch')
+const uncalibratedReason = (row) => reasonForNoPCorrect(row, { fromLedger: fromLedger.value })
+const pCorrectTooltip = (row) =>
+  row.pCorrect != null && fromLedger.value ? LEDGER_P_CORRECT_TOOLTIP : ''
 
-const uncalibratedReason = (row) => {
-  if (!row.assigned_formula) {
-    return UNCALIBRATED_REASONS.unassigned
-  }
-  if (row.source === 'manual') {
-    return UNCALIBRATED_REASONS.manual
-  }
-  if (row.source === 'untargeted') {
-    return UNCALIBRATED_REASONS.untargeted
-  }
-  return UNCALIBRATED_REASONS.uncalibrated
-}
-
-// The column header tells the same story the empty cells tell, assembled from
-// the same list rather than summarised again in its own words - the old header
-// promised only "untargeted / uncalibrated show -", which is now two reasons
-// out of four and left a reader with no account of the other two.
-const pCorrectHeaderTooltip =
-  'Calibrated probability the assignment is correct, from database-stage ' +
-  'assignments on calibrated instruments. A cell reads a dash when there is ' +
-  `none: ${Object.values(UNCALIBRATED_REASONS).join('; ')}.`
+// The header says what the column is, in one line. What a dash means is on the
+// dash, where the reason can be the row's own.
+const pCorrectHeaderTooltip = P_CORRECT_TOOLTIP
 
 // Tooltip for the adduct-corroboration marker. An isotopologue shows the count its
 // M0 was corroborated by, so it has to say both that the evidence is the
@@ -446,6 +454,57 @@ const selectedRow = computed({
     if (row) focusPeak(row)
     else app.data.peak.unfocus()
   }
+})
+
+// --- Verdict from the row ----------------------------------------------------
+// The batch ledger's verdict cell, here: an unverified row can be judged where
+// it is read, in the same form the inspector carries. The target is the row the
+// cell was opened from, read live so a verdict just recorded shows in the
+// popover without reopening it.
+const verdictMenu = ref()
+const verdictRowId = ref(null)
+const verdictTarget = computed(() =>
+  verdictRowId.value
+    ? (rows.value.find((row) => row.peak_assignment_id === verdictRowId.value) ?? null)
+    : null
+)
+function openVerdict(event, row) {
+  const menu = verdictMenu.value
+  if (!menu) return
+  if (verdictRowId.value === row.peak_assignment_id) {
+    menu.toggle(event)
+    return
+  }
+  verdictRowId.value = row.peak_assignment_id
+  menu.hide()
+  nextTick(() => menu.show(event))
+}
+const verdictTooltip = (row) => {
+  if (verdictFor(row)) return 'Verification verdict - click to re-judge'
+  if (overlayFor(row)) return 'Batch-level verdict reaching this sample - click to judge it here'
+  return 'Record a verdict'
+}
+
+// --- The batch chart from the row ------------------------------------------
+// The batch chart draws the Batch peaks ledger's selection; a row's species
+// goes into it (or out of it) from here, without leaving the sample.
+const chart = useBatchChartSelection()
+
+// --- Keep the focused row in view --------------------------------------------
+// A peak focused elsewhere - the batch chart, the batch ledger's jump, the
+// inspector's isotopologue table - selects its row here, and with a virtual
+// scroller a selected row is in view only if it is scrolled to. Rerun when the
+// rows arrive as well: after a sample switch the focus lands before the
+// sample's ledger has loaded, and the row exists only once it has.
+const assignmentTable = ref()
+function scrollToFocusedRow() {
+  const row = selectedRow.value
+  if (!row) return
+  const index = rows.value.indexOf(row)
+  nextTick(() => scrollVirtualRowIntoView(assignmentTable.value, index))
+}
+watch([() => selectedRow.value?.sample_peak_id, () => rows.value.length], scrollToFocusedRow, {
+  immediate: true
 })
 
 // Whether this run carries a tier of its producing engine's own. Only an
@@ -725,6 +784,7 @@ const breadcrumb = computed(() => {
       </div>
       <DataTable
         v-else
+        ref="assignmentTable"
         :value="rows"
         dataKey="sample_peak_id"
         size="small"
@@ -739,6 +799,36 @@ const breadcrumb = computed(() => {
         :metaKeySelection="false"
         v-model:selection="selectedRow"
       >
+        <!-- The batch chart draws the Batch peaks ledger's selection; this puts
+             the row's species into it, or takes it out, without leaving the
+             sample. First in the row, where the eye lands when scanning down
+             a ledger to build a chart, and clear of the numeric columns. -->
+        <Column style="min-width: 3rem">
+          <template #header>
+            <span class="pi ph ph-chart-line" v-tooltip.top="'In the batch chart'" />
+          </template>
+          <template #body="{ data }">
+            <button
+              type="button"
+              class="chart-cell"
+              :class="{ plotted: chart.isPlotted(data) }"
+              :disabled="!chart.canPlot(data)"
+              :aria-label="
+                chart.isPlotted(data) ? 'Remove from the batch chart' : 'Plot in the batch chart'
+              "
+              v-tooltip.top="
+                !chart.canPlot(data)
+                  ? 'Not in the batch ledger'
+                  : chart.isPlotted(data)
+                    ? 'Remove this species from the batch chart'
+                    : 'Plot this species in the batch chart'
+              "
+              @click.stop="chart.toggle(data)"
+            >
+              <span class="pi ph ph-chart-line" />
+            </button>
+          </template>
+        </Column>
         <Column field="sample_peak_mz" header="m/z" sortable style="min-width: 6rem">
           <template #body="{ data }">{{ num.mz.format(data.sample_peak_mz) }}</template>
         </Column>
@@ -838,7 +928,11 @@ const breadcrumb = computed(() => {
             >
           </template>
           <template #body="{ data }">
-            <span v-if="data.pCorrect != null" class="pcorrect">
+            <span
+              v-if="data.pCorrect != null"
+              class="pcorrect"
+              v-tooltip.top="pCorrectTooltip(data)"
+            >
               {{ pctFmt.format(data.pCorrect)
               }}<span
                 v-if="data.pProvisional"
@@ -871,10 +965,43 @@ const breadcrumb = computed(() => {
             />
           </template>
           <template #body="{ data }">
-            <BaseVerdictBadge :record="verdictFor(data)" compact />
+            <!-- A button, as in the batch ledger: an unjudged cell opens the
+                 form too, so an unverified row is judged where it is read. -->
+            <button
+              type="button"
+              class="verdict-cell"
+              :class="{ unjudged: !verdictFor(data) && !overlayFor(data) }"
+              :aria-label="verdictFor(data) ? 'Verification verdict' : 'Record a verdict'"
+              v-tooltip.top="verdictTooltip(data)"
+              @click.stop="openVerdict($event, data)"
+            >
+              <BaseVerdictBadge
+                v-if="verdictFor(data)"
+                :record="verdictFor(data)"
+                :conflict="conflictFor(data)"
+                compact
+              />
+              <BaseVerdictBadge
+                v-else-if="overlayFor(data)"
+                :record="overlayFor(data)"
+                inherited
+                compact
+              />
+              <span v-else class="pi ph ph-seal-check" />
+            </button>
           </template>
         </Column>
       </DataTable>
+
+      <Popover ref="verdictMenu" aria-label="Verification verdict">
+        <AssignmentVerdictPopover
+          v-if="verdictTarget"
+          :row="verdictTarget"
+          :record="verdictFor(verdictTarget)"
+          :overlay="overlayFor(verdictTarget)"
+          @done="verdictMenu?.hide()"
+        />
+      </Popover>
     </div>
 
     <Dialog v-model:visible="configVisible" modal header="Assign peaks" :style="{ width: '26rem' }">
@@ -1116,5 +1243,54 @@ const breadcrumb = computed(() => {
   font-family: var(--font-mono, ui-monospace, monospace);
   font-size: 0.86rem;
   opacity: 0.8;
+}
+
+/* The verdict cell is a button so an unjudged cell opens the form too, as in
+   the batch ledger; the badge - or the faint seal for "none yet" - is its
+   whole content. The "none yet" state is `unjudged`, not `empty`: `.empty`
+   above is the pane's empty-state panel, 220px tall, and a scoped class
+   selector styles every element that carries the class - a button called
+   `empty` would take that height and hand it to its row. */
+.verdict-cell {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0.1rem 0.3rem;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+}
+.verdict-cell.unjudged .pi {
+  opacity: 0.25;
+}
+.verdict-cell:hover {
+  background: var(--p-content-hover-background);
+}
+/* The chart cell: faint until hovered, lit in the accent colour while the
+   species is in the batch chart, greyed when the peak is not in the ledger. */
+.chart-cell {
+  padding: 0.1rem 0.3rem;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+  opacity: 0.45;
+}
+.chart-cell:hover {
+  opacity: 1;
+  background: var(--p-content-hover-background);
+}
+.chart-cell.plotted {
+  color: var(--p-primary-color);
+  opacity: 1;
+}
+.chart-cell:disabled {
+  cursor: default;
+  opacity: 0.15;
 }
 </style>

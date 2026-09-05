@@ -216,26 +216,27 @@ async def send_progress_user_notification(
                 f"Assigning peaks, processing sample {item_index + 1}/{total_samples}"
             )
 
-    # An assignment copy fans out over the batch's other samples, so it fills one
-    # bar the same way a batch assignment does. Unlike that one it reports
-    # WITHIN a destination too - reading its peaks, re-scoring the copied
-    # formulas against them, publishing the run - because a copy of a two-sample
-    # batch would otherwise sit at 0% through the slowest part and then finish.
-    # The message is left as the caller wrote it: it names the source sample and
-    # the phase, which is more than this function knows.
-    if notification_copy.type == "copy_assignments_to_batch":
-        if total_samples is not None and item_index is not None:
-            inc = increment if increment is not None else 0.0
-            notification_copy.progress = ((item_index + inc) / total_samples) * 100
-
     # A batch-peak backfill folds the batch's samples one at a time, and the
     # message it arrives with already names which one - so only the bar is
-    # computed here. Same two ticks per sample as the batch assignment above:
+    # computed here. Two ticks per sample:
     # increment is None before the fold and 1.0 after it, stepping the bar from
     # item_index/N to (item_index + 1)/N. Guarded on a non-zero N rather than
     # merely a present one: a batch with no samples emits nothing today, and
     # that is not a reason for the arithmetic here to be divisible by it.
     if notification_copy.type == "compute_batch_peaks":
+        if total_samples and item_index is not None:
+            inc = increment if increment is not None else 0.0
+            notification_copy.progress = ((item_index + inc) / total_samples) * 100
+    # The per-anchor untargeted search reports per sample too, over its two
+    # passes (the search, then the seeded re-score), with the message naming
+    # the pass - so, as for the backfill, only the bar is computed here.
+    if notification_copy.type == "search_batch_untargeted":
+        if total_samples and item_index is not None:
+            inc = increment if increment is not None else 0.0
+            notification_copy.progress = ((item_index + inc) / total_samples) * 100
+    # A batch peak's manual curation measures the pinned identity in every
+    # sample holding the peak, one message per sample - the bar only, again.
+    if notification_copy.type == "curate_batch_peak":
         if total_samples and item_index is not None:
             inc = increment if increment is not None else 0.0
             notification_copy.progress = ((item_index + inc) / total_samples) * 100

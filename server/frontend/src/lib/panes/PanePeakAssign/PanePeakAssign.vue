@@ -9,9 +9,17 @@ import { useApp } from '@/stores'
 import { BaseTierTag, BaseVerdictBadge } from '@/lib/base'
 import { num } from '@/lib/formatters'
 import { formatIsotopeFormula } from '@/lib/chem'
-import { EVIDENCE_LEVELS } from '@/lib/verification'
+import {
+  LEDGER_CONFIDENCE_TOOLTIP,
+  LEDGER_P_CORRECT_TOOLTIP,
+  P_CORRECT_TOOLTIP,
+  uncalibratedReason
+} from '@/lib/pCorrect'
+import { EVIDENCE_LEVELS, VERDICT_META } from '@/lib/verification'
+import { useBatchPeakCuration } from './stores/batchPeakCuration.js'
 
 const app = useApp()
+const curation = useBatchPeakCuration()
 
 // Toggles the Sample view's bottom pane between the time series (default) and
 // the Re-search panel. Owned by the parent (PaneTabSample); the inspector only
@@ -85,6 +93,40 @@ const verification = computed(() =>
 // its M0 is not a thing a chemist does - it is the same compound - so the form
 // reads and writes through the M0 whichever family member is in view.
 const verifyTarget = computed(() => app.data.peakAssignment.peak.m0Of(focusedAssignment.value))
+
+// The batch-level verdict on the species this peak folded into, when the
+// judgment is about this peak's own claim. Shown as borrowed evidence above the
+// capture controls: a verdict recorded here is a per-sample exception to it.
+const anchorVerdict = computed(() =>
+  verifyTarget.value ? app.data.peakAssignment.anchorContext.overlayFor(verifyTarget.value) : null
+)
+const anchorConflict = computed(() =>
+  anchorVerdict.value &&
+  verification.value &&
+  anchorVerdict.value.verdict !== verification.value.verdict
+    ? anchorVerdict.value
+    : null
+)
+const anchorVerdictLabel = computed(() =>
+  anchorVerdict.value
+    ? (VERDICT_META[anchorVerdict.value.verdict]?.label ?? anchorVerdict.value.verdict)
+    : ''
+)
+const anchorVerdictTooltip = computed(() => {
+  const record = anchorVerdict.value
+  if (!record) return ''
+  const who =
+    record.verified_by && app.auth?.user?.id === record.verified_by
+      ? 'you'
+      : record.verified_by
+        ? `user #${record.verified_by}`
+        : 'unknown'
+  const when = record.verified_utc ? new Date(record.verified_utc).toLocaleString() : ''
+  return [
+    `Batch-level verdict on ${record.assigned_formula}, by ${who}${when ? ` · ${when}` : ''}`,
+    'It covers every sample in this batch that has no verdict of its own.'
+  ].join('\n')
+})
 
 // Only a real assignment can be judged. A formula-less row is a placeholder for
 // a peak nothing explained, so a verdict on it is an opinion about nothing: it
@@ -330,6 +372,8 @@ const isoLabel = (iso) =>
 // of M0, recovered from the stored errors:
 //   theoretical_rel = observed_rel / (1 + abundance_error),  observed_rel = I / I(M0)
 const theoreticalRel = (iso) => {
+  // A measured isotopologue brings the prediction itself.
+  if (iso.relative_abundance != null) return iso.relative_abundance
   const base = m0.value?.sample_peak_intensity
   if (!base || base <= 0 || iso.sample_peak_intensity == null) return null
   const observed = iso.sample_peak_intensity / base
@@ -408,6 +452,82 @@ const altTooltip = (alt, index) => {
 // showing.
 const curating = ref(null) // index of the alternative being committed
 const curateDenied = ref(false) // 403: not an editor on this sample
+// A ledger derived from the batch peaks (run engine 'batch') has no rows of its
+// own: curation edits a peak_assignment row, and there is none behind these.
+// The server answers 409; the control is withheld rather than offered to fail.
+const derivedRun = computed(() => app.data.peakAssignment.peak.run?.engine === 'batch')
+
+// A derived row with a formula. The rows a run fills - arbitration confidence,
+// P(correct) - are kept on the card for it, with what the ledger has or a
+// placeholder that says why not, so the card reads the same for every sample.
+const ledgerServed = computed(
+  () => derivedRun.value && Boolean(focusedAssignment.value?.assigned_formula)
+)
+// The probability itself: in the detail's provenance on a run's row, on the row
+// itself for a derived one (member_row carries it at the top level).
+const pCorrect = computed(
+  () => provenance.value?.p_correct ?? focusedAssignment.value?.p_correct ?? null
+)
+
+// --- On-demand evidence for a derived row -----------------------------------
+// A row derived from the batch ledger carries its fit and its tier, but not what
+// a run would have stored beside them: the m/z and abundance error of each
+// isotopologue, the isotope labels, the plausibility, the evidence the tier was
+// read off. The server measures the family's composition against this sample's
+// peaks on request - through the M0, since the envelope is the compound's - and
+// the numbers are hung onto the rows here. Session data, never written back,
+// exactly like the alternative scores above.
+const measuredKey = computed(
+  () => (m0.value ?? focusedAssignment.value)?.peak_assignment_id ?? null
+)
+const measured = computed(() =>
+  derivedRun.value ? app.data.peakAssignment.peak.evidenceOf(measuredKey.value) : null
+)
+const measuring = computed(
+  () => derivedRun.value && app.data.peakAssignment.peak.evidencePending(measuredKey.value)
+)
+watch(
+  [measuredKey, derivedRun],
+  () => {
+    if (!derivedRun.value) return
+    const target = m0.value ?? focusedAssignment.value
+    if (target?.assigned_formula) {
+      app.data.peakAssignment.peak.loadEvidence(target).catch(() => {})
+    }
+  },
+  { immediate: true }
+)
+// The measured isotopologues by the peak each paired to.
+const measuredByPeak = computed(() => {
+  const map = new Map()
+  for (const iso of measured.value?.isotopologues ?? []) {
+    if (iso.sample_peak_id != null) map.set(String(iso.sample_peak_id), iso)
+  }
+  return map
+})
+// A row with the measured numbers filled in where the row itself has none. The
+// stored value always wins, so a run's own row reads exactly as it did.
+const withMeasured = (row) => {
+  const record = measured.value
+  if (!row || !record) return row
+  const iso = measuredByPeak.value.get(String(row.sample_peak_id))
+  const isM0 = row.peak_assignment_id === record.peak_assignment_id
+  return {
+    ...row,
+    mz_error_ppm: row.mz_error_ppm ?? (isM0 ? record.mz_error_ppm : iso?.mz_error_ppm) ?? null,
+    abundance_error:
+      row.abundance_error ?? (isM0 ? record.abundance_error : iso?.abundance_error) ?? null,
+    isotope_label: row.isotope_label ?? iso?.isotope_label ?? null,
+    isotope_formula: row.isotope_formula ?? iso?.isotope_formula ?? null,
+    relative_abundance: iso?.relative_abundance ?? null,
+    evidence: row.evidence ?? record.evidence ?? null
+  }
+}
+const evidenceRow = computed(() => withMeasured(focusedAssignment.value))
+const familyRows = computed(() => family.value.map(withMeasured))
+const plausibility = computed(
+  () => provenance.value?.plausibility ?? measured.value?.plausibility ?? null
+)
 
 // A candidate can only be committed when it names both halves of an
 // assignment: the formula and the adduct it was found under. The server
@@ -523,12 +643,25 @@ const promoteBody = (alt, index) =>
 
 async function promoteAlternative(alt, index) {
   if (!canPromote(alt) || curating.value !== null) return
+  if (derivedRun.value && alt.candidate == null) return
   curating.value = index
   try {
-    await app.data.peakAssignment.peak.curate(
-      focusedAssignment.value.peak_assignment_id,
-      promoteBody(alt, index)
-    )
+    if (derivedRun.value) {
+      // A derived row has no row of its own to edit: "use this" here pins the
+      // identity on the batch peak and measures it in every sample of the
+      // batch. The guard is the consensus the card shows, not this member's
+      // own formula, which is what the server compares against.
+      await curation.curate({
+        batch_peak_id: focusedAssignment.value.batch_peak_id,
+        candidate: alt.candidate,
+        expected_formula: provenance.value?.batch_peak?.consensus_formula ?? null
+      })
+    } else {
+      await app.data.peakAssignment.peak.curate(
+        focusedAssignment.value.peak_assignment_id,
+        promoteBody(alt, index)
+      )
+    }
   } catch (error) {
     // The http layer already toasts; only 403 changes the UI (hide the control).
     if (error?.response?.status === 403) curateDenied.value = true
@@ -540,6 +673,28 @@ async function promoteAlternative(alt, index) {
 // What an override says about itself. `source` is on the slim ledger row, so
 // the note appears at once; the formula it replaced arrives with the detail.
 const manualOverride = computed(() => provenance.value?.manual ?? null)
+
+// A derived row's provenance is the anchor's, so `manual` there is a
+// batch-level pin: the species chosen by hand for the whole batch. Its own
+// note and its own undo - release, which puts the re-measured samples back
+// and lets the batch decide again.
+const batchOverride = computed(() =>
+  derivedRun.value && provenance.value?.manual?.action === 'promote_identity'
+    ? provenance.value.manual
+    : null
+)
+const releasing = ref(false)
+async function releaseOverride() {
+  if (releasing.value || !focusedAssignment.value?.batch_peak_id) return
+  releasing.value = true
+  try {
+    await curation.release({ batch_peak_id: focusedAssignment.value.batch_peak_id })
+  } catch (error) {
+    if (error?.response?.status === 403) curateDenied.value = true
+  } finally {
+    releasing.value = false
+  }
+}
 
 // Whether the assignment this override replaced could be committed again at
 // all. The archive keeps that winner in the alternatives shape, so the same
@@ -689,45 +844,60 @@ const demotedCount = computed(() => {
           <span class="k">fit</span>
           <span class="v">{{ formatFit(focusedAssignment.fit_score) }}</span>
         </div>
-        <div class="ev" v-if="focusedAssignment.mz_error_ppm != null">
-          <span class="k">m/z error</span>
-          <span class="v">{{ num.mzError.format(focusedAssignment.mz_error_ppm) }} ppm</span>
+        <!-- A derived row's numbers arrive a moment after the row: the family
+             is measured against this sample's peaks on request. -->
+        <div v-if="measuring" class="ev measuring">
+          <span class="k">measuring</span>
+          <span class="v">the isotope pattern against this sample...</span>
         </div>
-        <div class="ev" v-if="focusedAssignment.abundance_error != null">
+        <div v-else-if="measured?.blocked_reason" class="ev measuring">
+          <span class="k">not measured</span>
+          <span class="v">{{ measured.blocked_reason }}</span>
+        </div>
+        <div class="ev" v-if="evidenceRow.mz_error_ppm != null">
+          <span class="k">m/z error</span>
+          <span class="v">{{ num.mzError.format(evidenceRow.mz_error_ppm) }} ppm</span>
+        </div>
+        <div class="ev" v-if="evidenceRow.abundance_error != null">
           <span class="k">abund. error</span>
           <span class="v">{{
-            num.relativeAbundanceError.format(focusedAssignment.abundance_error)
+            num.relativeAbundanceError.format(evidenceRow.abundance_error)
           }}</span>
         </div>
-        <div class="ev" v-if="focusedAssignment.isotope_label">
+        <div class="ev" v-if="evidenceRow.isotope_label">
           <span class="k">isotope</span>
-          <span class="v">{{ focusedAssignment.isotope_label }}</span>
+          <span class="v">{{ evidenceRow.isotope_label }}</span>
         </div>
-        <div class="ev" v-if="provenance?.plausibility != null">
+        <div class="ev" v-if="plausibility != null">
           <span class="k" v-tooltip.top="'Chemical plausibility (Seven Golden Rules)'"
             >plausibility</span
           >
-          <span class="v">{{ formatFit(provenance.plausibility) }}</span>
+          <span class="v">{{ formatFit(plausibility) }}</span>
         </div>
         <!-- The product of the two above, and the number this row's tier was
              read off. Shown here beside its factors rather than only on the
              chip: when a tier looks surprising, "fit 95%, plausibility 40%" is
              the answer, and the inspector is where a reader goes to find it. -->
-        <div class="ev" v-if="focusedAssignment.evidence != null">
+        <div class="ev" v-if="evidenceRow.evidence != null">
           <span
             class="k"
             v-tooltip.top="'Evidence (fit x plausibility) - what the tier is banded on'"
             >evidence</span
           >
-          <span class="v">{{ formatFit(focusedAssignment.evidence) }}</span>
+          <span class="v">{{ formatFit(evidenceRow.evidence) }}</span>
         </div>
-        <div class="ev" v-if="provenance?.confidence != null">
+        <!-- Arbitration confidence and P(correct) are a run's numbers. A row
+             served from the batch ledger gets both rows all the same, so the
+             card reads the same for every sample: the P(correct) recorded when
+             the sample was folded in, or a dash saying why there is none, and a
+             dash for the confidence, which the ledger has no contest to compute. -->
+        <div class="ev" v-if="provenance?.confidence != null || ledgerServed">
           <span
             class="k"
             v-tooltip.top="'Arbitration confidence: winner share of fit x plausibility'"
             >confidence</span
           >
-          <span class="v"
+          <span class="v" v-if="provenance?.confidence != null"
             >{{ formatFit(provenance.confidence)
             }}<span
               v-if="provenance.is_tie"
@@ -736,19 +906,28 @@ const demotedCount = computed(() => {
               >&nbsp;tie</span
             ></span
           >
+          <span class="v uncal" v-else v-tooltip.top="LEDGER_CONFIDENCE_TOOLTIP">&mdash;</span>
         </div>
-        <div class="ev" v-if="provenance && provenance.calibrated !== undefined">
-          <span class="k" v-tooltip.top="'Calibrated probability the assignment is correct'"
-            >P(correct)</span
+        <div class="ev" v-if="(provenance && provenance.calibrated !== undefined) || ledgerServed">
+          <span class="k" v-tooltip.top="P_CORRECT_TOOLTIP">P(correct)</span>
+          <span
+            class="v"
+            v-if="pCorrect != null"
+            v-tooltip.top="ledgerServed ? LEDGER_P_CORRECT_TOOLTIP : ''"
           >
-          <span class="v" v-if="provenance.p_correct != null">
-            {{ formatFit(provenance.p_correct)
+            {{ formatFit(pCorrect)
             }}<span
-              v-if="provenance.calibration?.provisional"
+              v-if="provenance?.calibration?.provisional"
               class="prov-flag"
               v-tooltip.top="'Provisional calibration curve - directionally right, not hardened'"
               >&nbsp;prov.</span
             ></span
+          >
+          <span
+            v-else-if="ledgerServed"
+            class="v uncal"
+            v-tooltip.top="uncalibratedReason(focusedAssignment, { fromLedger: true })"
+            >&mdash;</span
           >
           <span class="v uncal" v-else v-tooltip.top="'No calibration curve for this instrument'"
             >uncalibrated</span
@@ -764,8 +943,11 @@ const demotedCount = computed(() => {
         <span class="pi ph ph-link-simple" />
         {{ corroborationLabel }}
       </div>
+      <!-- For a lone M0 as much as for a full pattern: this table is where the
+           focused peak's m/z is read, and it should be read in the same place
+           whether or not the pattern has more peaks. -->
       <div
-        v-if="family.length > 1"
+        v-if="family.length"
         class="isotopologues"
         v-help.right="{
           message: `
@@ -789,7 +971,7 @@ const demotedCount = computed(() => {
         </div>
         <div class="iso-rows">
           <div
-            v-for="iso in family"
+            v-for="iso in familyRows"
             :key="iso.peak_assignment_id"
             class="iso-row"
             :class="{
@@ -864,6 +1046,29 @@ const demotedCount = computed(() => {
           change; record a verification to keep the judgement.
         </span>
       </div>
+      <div v-if="batchOverride" class="manual-note">
+        <span class="pi ph ph-hand-pointing manual-icon" />
+        <span>
+          Curated by hand for the whole batch<template
+            v-if="batchOverride.previous?.consensus_formula"
+          >
+            in place of {{ batchOverride.previous.consensus_formula }}</template
+          >: every sample in the batch reads this identity where it could be measured.
+          <Button
+            label="release"
+            size="small"
+            text
+            severity="secondary"
+            class="release-link"
+            :disabled="releasing || curateDenied"
+            :loading="releasing"
+            v-tooltip.top="
+              'Let the batch decide again: the samples measured for this identity go back to what they read before'
+            "
+            @click="releaseOverride"
+          />
+        </span>
+      </div>
       <div
         v-if="verifiable"
         class="verify"
@@ -874,8 +1079,21 @@ const demotedCount = computed(() => {
         }"
       >
         <div class="alts-label">Verification</div>
+        <!-- Borrowed from the batch level: the dashed pill is this pane's grammar
+             for evidence read off another row, as on the inherited corroboration. -->
+        <div
+          v-if="anchorVerdict && !verification"
+          class="anchor-verdict"
+          v-tooltip.top="anchorVerdictTooltip"
+        >
+          <span :class="['pi', VERDICT_META[anchorVerdict.verdict].icon]" />
+          <span
+            >{{ anchorVerdictLabel }} at batch level &mdash; a verdict here records a per-sample
+            exception</span
+          >
+        </div>
         <div v-if="verification && !editing" class="verify-current">
-          <BaseVerdictBadge :record="verification" />
+          <BaseVerdictBadge :record="verification" :conflict="anchorConflict" />
           <Button
             v-if="!denied"
             size="small"
@@ -990,6 +1208,10 @@ const demotedCount = computed(() => {
               @click="promoteAlternative(alt, i)"
             />
           </div>
+        </div>
+        <div v-if="derivedRun && !curateDenied" class="verify-denied">
+          <span class="pi ph ph-info" /> Derived from the batch ledger: "use this" pins the identity
+          on the batch peak for the whole batch and measures it in every sample.
         </div>
         <div v-if="curateDenied" class="verify-denied">
           <span class="pi ph ph-lock-simple" /> Editor access is required to change an assignment.
@@ -1154,6 +1376,11 @@ const demotedCount = computed(() => {
   line-height: 1.35;
   opacity: 0.75;
 }
+.manual-note .release-link {
+  padding: 0 0.3rem;
+  font-size: inherit;
+  vertical-align: baseline;
+}
 .manual-note > .pi {
   margin-top: 0.1rem;
 }
@@ -1187,6 +1414,22 @@ const demotedCount = computed(() => {
   display: flex;
   align-items: center;
   gap: 0.5rem;
+}
+.anchor-verdict {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  align-self: flex-start;
+  font-size: 0.78rem;
+  padding: 0.12rem 0.55rem;
+  border-radius: 100px;
+  color: var(--state-info);
+  background: color-mix(in srgb, var(--state-info) 12%, transparent);
+  border: 1px dashed color-mix(in srgb, var(--state-info) 45%, transparent);
+  cursor: default;
+}
+.anchor-verdict .pi {
+  font-size: 0.8rem;
 }
 .verify-buttons {
   display: flex;
@@ -1328,5 +1571,9 @@ const demotedCount = computed(() => {
   display: grid;
   place-items: center;
   min-height: 8rem;
+}
+.ev.measuring .v {
+  font-style: italic;
+  opacity: 0.7;
 }
 </style>

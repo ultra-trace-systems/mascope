@@ -50,6 +50,14 @@ function makeApp() {
         error: null,
         load: vi.fn()
       },
+      batchPeakVerification: { list: [], forAnchor: () => null, isStale: () => false },
+      batchPeakRun: {
+        list: [],
+        focused: null,
+        viewing: null,
+        viewingCurrent: true,
+        viewingId: null
+      },
       match: {
         collection: {
           list: [],
@@ -88,7 +96,11 @@ vi.mock('@/lib/base', () => ({
   BaseTabbedPanel: { template: '<div class="panel"><slot name="menu" /><slot /></div>' },
   BaseTierTag: true,
   BaseMatchTag: true,
-  BaseCopyableField: true
+  BaseCopyableField: true,
+  BaseVerdictBadge: true
+}))
+vi.mock('@/lib/panes/PaneBrowserMatch/BatchPeakVerdictPopover.vue', () => ({
+  default: { name: 'BatchPeakVerdictPopover', template: '<div class="verdict-popover-stub" />' }
 }))
 
 vi.mock('@/lib/panes/PaneBrowserMatch/stores', () => ({

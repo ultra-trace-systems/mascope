@@ -237,7 +237,7 @@ column.
 **Those shortlist entries are measured on demand** (`GET .../assignment/{id}/alternative-scores`,
 `alternatives_scoring.py`). The inspector fires it when it loads a row that has any, and the server
 seeds every one of the sample's adducts against every such formula in one pass of the shared Stage-A
-chain (`seeded_scoring.py`, the same chain the copy service's re-score uses) — the adduct whose
+chain (`seeded_scoring.py`, the same chain the batch ledger's propagation uses) — the adduct whose
 **monoisotopic** peak lands on this row's peak with the strongest evidence is reported, ranked on
 `fit x plausibility` and tie-broken by mass error. A formula no adduct places on the peak comes back
 with a `blocked_reason` saying which of the three cases it is in (the sample has no adducts recorded,
@@ -306,16 +306,15 @@ calibrated `p_correct` needs universal calibration coverage (untargeted + all in
 backend/science, still deferred, and evidence-tiering is a step toward it rather than its arrival. Both
 `tier` and `P(correct)` are now shown side-by-side so the discrepancy is inspectable.
 
-**Launching a run.** Two launchers share one form
-([`PeakAssignConfigForm.vue`](../../server/frontend/src/lib/dialogs/PeakAssignConfigForm.vue)):
-the per-sample dialog in the Assignments browser, and
-[`DialogPeakAssignBatch.vue`](../../server/frontend/src/lib/dialogs/DialogPeakAssignBatch.vue)
-opened from the sample browser's batch context menu (`dialog.assign`, rendered in
-`BatchContextMenu.vue` beside the other batch dialogs). They differ only in where the
-untargeted stage starts: **on** per sample, where the user is looking at one spectrum and
-the cost is seconds; **off** per batch, matching `default_batch_config()` on the backend,
-because batch cost scales with the number of samples. The batch dialog says so, and warns
-again if the untargeted stage is switched on.
+**Launching a run.** One launcher, the per-sample dialog in the Assignments browser
+([`PeakAssignConfigForm.vue`](../../server/frontend/src/lib/dialogs/PeakAssignConfigForm.vue)),
+with the untargeted stage on: the user is looking at one spectrum and the cost is seconds.
+The batch launcher (`DialogPeakAssignBatch.vue`) and the assignment copy
+(`DialogCopyAssignments.vue`) were retired in the batch-primary epic: with the batch ledger
+primary every processed sample folds in without a run, *Rebuild batch ledger* covers a batch
+that predates it or was imported, the untargeted search runs once per batch peak, and a
+species is curated once at its anchor from a derived row's inspector.
+
 
 The form's bounds come from `GET /params` (`peak_assignment` defaults +
 `peak_assignment_limits`), which publishes the same constants `PeakAssignmentConfig`
@@ -352,7 +351,6 @@ which persist nothing:
 | `PATCH` | `/sample/{sample_item_id}/assignment/{peak_assignment_id}` | `{ data: PeakAssignmentDetail[] }` | Manual curation. Body is one of two actions: `promote_alternative` (`alternative_index`, optional `expected_formula` guard → 409 on a mismatch) or `set_assignment` (`assigned_formula` + `ionization_mechanism_id`, both required, plus the search's own `ion_formula` / `isotope_label` / `isotope_formula` / `fit_score` / `mz_error_ppm`). `data[0]` is the curated row, **followed by every satellite row the edit moved** — the isotopologue satellites it demoted, then the ones it restored — as full detail records, so a client can refresh what it holds without a second read. Requires `editor` + flag. |
 | `POST` | `/calibration/{instrument}/recalibrate` | `{ recalibrated, ... }` | Refit the confidence calibration from labels. Superuser + flag. |
 | `POST` | `/sample/{sample_item_id}/assign` | `202 { message, process_id }` | Body `{ config?: PeakAssignmentConfig }`. Requires `editor` + flag. |
-| `POST` | `/batch/{sample_batch_id}/assign` | `202 { message, process_id }` | One run per eligible sample; Stage A only by default. Requires `editor` + flag. |
 | `POST` | `/sample/{sample_item_id}/runs/import` | `{ data: [ImportState] }` | Publish an externally computed run, assembled over one or more chunks. `data[0]` carries `peak_assignment_run_id`, `rows`, `max_rows_per_request`, `run_status`. Requires `editor` + flag. |
 | `DELETE` | `/sample/{sample_item_id}/runs/{run_id}` | `200` | Abandon an `importing` run and its staged rows, releasing the sample. Requires `editor` + flag. |
 | `POST` | `/sample/{sample_item_id}/fit/aggregate` | `{ match_ions, match_isotopes }` | B2a: non-persisting composition fit (isotope table). |

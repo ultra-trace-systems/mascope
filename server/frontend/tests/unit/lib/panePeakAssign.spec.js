@@ -17,6 +17,7 @@ const PEAK = { peak_id: 'p-1', mz: 200.12345, height: 12345, area: 999 }
 const verify = vi.fn(() => Promise.resolve(null))
 const curate = vi.fn(() => Promise.resolve(null))
 const loadAltScores = vi.fn(() => Promise.resolve([]))
+const loadEvidence = vi.fn(() => Promise.resolve(null))
 
 let focusedPeak
 let focusedAssignment
@@ -26,10 +27,16 @@ let verdictRecord
 // one detail record the inspector fetches (for the focused assignment only).
 let familyRows
 let detailRecord
+// The focused sample's run record; `{ engine: 'batch' }` is a derived ledger.
+let runRecord
 // The on-demand measurement of the finder's formula-only shortlist: null until
 // it lands, and `scoringNow` stands in for the request still being in flight.
 let altScoreRecords
 let scoringNow
+// The on-demand measurement of a derived row's family, keyed by the M0's id.
+let evidenceRecord
+let evidenceKey
+let measuringNow
 
 const helpStub = {
   set: vi.fn(),
@@ -63,6 +70,7 @@ function makeApp() {
           detailOf: (id) =>
             id != null && id === focusedAssignment?.peak_assignment_id ? detailRecord : null,
           familyOf: () => familyRows ?? (focusedAssignment ? [focusedAssignment] : []),
+          run: runRecord,
           // Stands in for the store's family resolution over whatever `ledger`
           // holds. The rule itself is pinned against the real implementation in
           // stores/data/modules/peakAssignment/assignment.spec.js; what matters
@@ -76,16 +84,30 @@ function makeApp() {
             id != null && id === focusedAssignment?.peak_assignment_id ? altScoreRecords : null,
           altScoresPending: () => scoringNow,
           loadAltScores,
+          evidenceOf: (id) => (id != null && id === evidenceKey ? evidenceRecord : null),
+          evidencePending: () => measuringNow,
+          loadEvidence,
           curate
         },
-        verification: { forAssignment: () => verdictRecord, verify }
+        verification: { forAssignment: () => verdictRecord, verify },
+        anchorContext: { overlayFor: () => anchorVerdictRecord }
       }
     },
     ui: { help: helpStub }
   }
 }
 
+// The batch-level verdict reaching the focused peak; null unless a test sets one.
+let anchorVerdictRecord = null
+
 vi.mock('@/stores', () => ({ useApp: () => makeApp() }))
+
+// The batch curation a derived row's "use this" goes through.
+const batchCurate = vi.fn()
+const batchRelease = vi.fn()
+vi.mock('@/lib/panes/PanePeakAssign/stores/batchPeakCuration.js', () => ({
+  useBatchPeakCuration: () => ({ curating: false, curate: batchCurate, release: batchRelease })
+}))
 
 // Stubbed rather than auto-stubbed: the badge renders nothing of its own for a
 // null record, which would make "no badge" pass even with the block still there.
@@ -102,9 +124,13 @@ const GLOBAL_STUBS = {
 
 const { default: PanePeakAssign } = await import('@/lib/panes/PanePeakAssign/PanePeakAssign.vue')
 
-async function mountPane() {
+// `recordTooltips` swaps the inert tooltip directive for one that writes its
+// text onto the element, for the tests that read what a value says on hover.
+async function mountPane({ recordTooltips = false } = {}) {
+  const record = (el, binding) => el.setAttribute('data-tooltip', binding.value ?? '')
+  const tooltip = recordTooltips ? { mounted: record, updated: record } : {}
   const wrapper = mount(PanePeakAssign, {
-    global: { stubs: GLOBAL_STUBS, directives: { tooltip: {}, help: {} } }
+    global: { stubs: GLOBAL_STUBS, directives: { tooltip, help: {} } }
   })
   await wrapper.vm.$nextTick()
   return wrapper
@@ -159,9 +185,13 @@ beforeEach(() => {
   ledger = new Map()
   verdictRecord = null
   familyRows = null
+  runRecord = null
   detailRecord = null
   altScoreRecords = null
   scoringNow = false
+  evidenceRecord = null
+  evidenceKey = null
+  measuringNow = false
 })
 afterEach(() => vi.clearAllMocks())
 
@@ -1322,5 +1352,302 @@ describe('PanePeakAssign scoring the formula-only shortlist', () => {
     expect(wrapper.vm.alternatives[1].scored).toBeNull()
     expect(wrapper.vm.alternatives[2].scored).toMatchObject({ assigned_formula: 'C9H8' })
     expect(wrapper.findAll('.alt')[2].find('.s').text()).toContain('fit 72%')
+  })
+})
+
+describe('PanePeakAssign batch-level verdict overlay', () => {
+  const ANCHOR_VERDICT = {
+    batch_peak_verification_id: 'bv1',
+    batch_peak_id: 'bp-1',
+    sample_peak_id: 'p-1',
+    assigned_formula: 'C10H12',
+    ionization_mechanism_id: null,
+    verdict: 'confirmed',
+    evidence_level: 'pattern',
+    verified_by: 3,
+    verified_utc: '2026-09-04T10:00:00Z'
+  }
+
+  afterEach(() => {
+    anchorVerdictRecord = null
+  })
+
+  it('shows a batch-level verdict as borrowed when the peak has none of its own', async () => {
+    focusedAssignment = assignment({ formula: 'C10H12', tier: 'assigned' })
+    anchorVerdictRecord = ANCHOR_VERDICT
+    const wrapper = await mountPane()
+
+    const pill = wrapper.find('.anchor-verdict')
+    expect(pill.exists()).toBe(true)
+    expect(pill.text()).toContain('Confirmed at batch level')
+    expect(pill.text()).toContain('records a per-sample exception')
+    expect(wrapper.vm.anchorVerdictTooltip).toContain('Batch-level verdict on C10H12, by user #3')
+    // The form still offers the exception.
+    expect(wrapper.vm.showVerifyForm).toBe(true)
+    expect(wrapper.text()).toContain('Confirm')
+  })
+
+  it("lets the peak's own verdict win, and hands the disagreement to its badge", async () => {
+    focusedAssignment = assignment({ formula: 'C10H12', tier: 'assigned' })
+    verdictRecord = VERDICT
+    anchorVerdictRecord = { ...ANCHOR_VERDICT, verdict: 'rejected' }
+    const wrapper = await mountPane()
+
+    expect(wrapper.find('.anchor-verdict').exists()).toBe(false)
+    expect(wrapper.find('.verdict-badge').exists()).toBe(true)
+    expect(wrapper.vm.anchorConflict).toEqual(anchorVerdictRecord)
+  })
+
+  it('names no disagreement when the two agree', async () => {
+    focusedAssignment = assignment({ formula: 'C10H12', tier: 'assigned' })
+    verdictRecord = VERDICT
+    anchorVerdictRecord = ANCHOR_VERDICT
+    const wrapper = await mountPane()
+
+    expect(wrapper.vm.anchorConflict).toBeNull()
+  })
+
+  it('shows nothing borrowed when no batch-level verdict reaches the peak', async () => {
+    focusedAssignment = assignment({ formula: 'C10H12', tier: 'assigned' })
+    const wrapper = await mountPane()
+
+    expect(wrapper.find('.anchor-verdict').exists()).toBe(false)
+  })
+})
+
+describe('PanePeakAssign batch curation on a derived row', () => {
+  // What member_detail serves for a derived row: the anchor's other identity,
+  // naming its registry index.
+  const DERIVED_ALTERNATIVES = [
+    {
+      assigned_formula: 'C7H14O7',
+      ion_formula: 'C7H15O7+',
+      ionization_mechanism_id: 'm1',
+      source: 'batch',
+      evidence_share: 0.2,
+      n_members: 1,
+      candidate: 1
+    }
+  ]
+
+  beforeEach(() => {
+    runRecord = { engine: 'batch' }
+    focusedAssignment = {
+      ...assignment({ formula: 'C6H12O6', tier: 'assigned' }),
+      batch_peak_id: 'bp-1'
+    }
+    detailRecord = {
+      ...focusedAssignment,
+      alternatives: DERIVED_ALTERNATIVES,
+      provenance: { batch_peak: { consensus_formula: 'C6H12O6' } }
+    }
+    batchCurate.mockReset()
+    batchRelease.mockReset()
+    batchCurate.mockResolvedValue(null)
+    batchRelease.mockResolvedValue(null)
+  })
+
+  const settle = async (wrapper) => {
+    await wrapper.vm.$nextTick()
+    await wrapper.vm.$nextTick()
+  }
+
+  it('offers use this on a derived row and pins the identity on the batch peak', async () => {
+    const wrapper = await mountPane()
+
+    const buttons = wrapper.findAll('.alt .alt-use:not(.blocked)')
+    expect(buttons).toHaveLength(1)
+    expect(wrapper.text()).toContain('pins the identity on the batch peak')
+
+    await buttons[0].trigger('click')
+    await settle(wrapper)
+
+    // The guard is the consensus the card shows, and the candidate is the
+    // registry index the alternative carries.
+    expect(batchCurate).toHaveBeenCalledWith({
+      batch_peak_id: 'bp-1',
+      candidate: 1,
+      expected_formula: 'C6H12O6'
+    })
+  })
+
+  it('shows the batch curation note and releases it from there', async () => {
+    detailRecord.provenance.manual = {
+      action: 'promote_identity',
+      candidate: 1,
+      formula: 'C7H14O7',
+      previous: { consensus_formula: 'C6H12O6' }
+    }
+    const wrapper = await mountPane()
+
+    const note = wrapper.find('.manual-note')
+    expect(note.exists()).toBe(true)
+    expect(note.text()).toContain('Curated by hand for the whole batch')
+    expect(note.text()).toContain('in place of C6H12O6')
+
+    await note.find('.release-link').trigger('click')
+    await settle(wrapper)
+    expect(batchRelease).toHaveBeenCalledWith({ batch_peak_id: 'bp-1' })
+  })
+
+  it('reads a pin on a run-backed row as nothing of its own', async () => {
+    runRecord = { engine: 'mascope' }
+    detailRecord.provenance.manual = { action: 'promote_identity', formula: 'C7H14O7' }
+    const wrapper = await mountPane()
+
+    expect(wrapper.text()).not.toContain('Curated by hand for the whole batch')
+  })
+})
+
+describe('PanePeakAssign on-demand evidence for a derived row', () => {
+  const derivedM0 = () => ({
+    ...assignment({ formula: 'C6H12O6', tier: 'assigned' }),
+    peak_assignment_id: 'fold-bp-1',
+    batch_peak_id: 'bp-1'
+  })
+  const derivedChild = (m0) => ({
+    ...isotopologue(m0),
+    peak_assignment_id: 'fold-bp-2',
+    isotope_label: null
+  })
+  // The measurement, keyed by the M0's derived id: the family's errors by peak.
+  const MEASURED = {
+    peak_assignment_id: 'fold-bp-1',
+    sample_peak_id: 'p-1',
+    assigned_formula: 'C6H12O6',
+    fit_score: 0.9,
+    measured_fit_score: 0.85,
+    plausibility: 0.8,
+    evidence: 0.72,
+    mz_error_ppm: 0.4,
+    abundance_error: 0.02,
+    blocked_reason: null,
+    isotopologues: [
+      {
+        isotope_label: 'M0',
+        sample_peak_id: 'p-1',
+        mz_error_ppm: 0.4,
+        abundance_error: 0.02,
+        relative_abundance: 1
+      },
+      {
+        isotope_label: 'M+1',
+        sample_peak_id: 'p-2',
+        mz_error_ppm: 1.1,
+        abundance_error: -0.05,
+        relative_abundance: 0.066
+      }
+    ]
+  }
+
+  beforeEach(() => {
+    runRecord = { engine: 'batch' }
+    loadEvidence.mockClear()
+  })
+
+  // A derived row reads like a run's: the rows a run fills are there, with what
+  // the ledger has or a dash that says why not, so the card keeps its shape
+  // whether the sample has a run of its own or is served from the batch ledger.
+  it('keeps the confidence and P(correct) rows on a ledger-served row', async () => {
+    focusedAssignment = { ...derivedM0(), p_correct: 0.87, source: 'database' }
+    const wrapper = await mountPane({ recordTooltips: true })
+
+    const rows = Object.fromEntries(
+      wrapper.findAll('.evidence .ev').map((ev) => [ev.find('.k').text(), ev.find('.v')])
+    )
+    expect(rows['P(correct)'].text()).toContain('87')
+    expect(rows['P(correct)'].attributes('data-tooltip')).toMatch(/batch ledger/)
+    expect(rows.confidence.text()).toBe('—')
+    expect(rows.confidence.attributes('data-tooltip')).toMatch(/assignment run/)
+  })
+
+  it('explains a missing P(correct) on a ledger-served row', async () => {
+    focusedAssignment = { ...derivedM0(), p_correct: null, source: 'untargeted' }
+    const wrapper = await mountPane({ recordTooltips: true })
+
+    const p = wrapper.findAll('.evidence .ev').find((ev) => ev.find('.k').text() === 'P(correct)')
+    expect(p.find('.v').text()).toBe('—')
+    expect(p.find('.v').attributes('data-tooltip')).toBe(
+      'Untargeted assignment - no calibrated probability'
+    )
+  })
+
+  // The isotopologue table is where the focused peak's m/z is read, so it is
+  // there for a lone M0 too - the same place whether or not the pattern has
+  // more peaks - and on a run's own row as much as on a derived one.
+  it('lists a lone M0 in the isotopologue table', async () => {
+    runRecord = null
+    focusedAssignment = assignment({ formula: 'C6H12O6', tier: 'assigned' })
+    const wrapper = await mountPane()
+
+    const rows = wrapper.findAll('.isotopologues .iso-row')
+    expect(rows).toHaveLength(1)
+    expect(rows[0].text()).toContain(num.mz.format(200.12345))
+  })
+
+  it('measures a derived row through its M0 and fills what a run would have stored', async () => {
+    const m0 = derivedM0()
+    focusedAssignment = m0
+    familyRows = [m0, derivedChild(m0)]
+    evidenceKey = 'fold-bp-1'
+    evidenceRecord = MEASURED
+    const wrapper = await mountPane()
+
+    expect(loadEvidence).toHaveBeenCalledWith(
+      expect.objectContaining({ peak_assignment_id: 'fold-bp-1' })
+    )
+    const grid = wrapper.find('.evidence').text()
+    expect(grid).toContain('m/z error')
+    expect(grid).toContain(num.mzError.format(0.4))
+    expect(grid).toContain('plausibility')
+    expect(grid).toContain('evidence')
+    expect(grid).not.toContain('measuring')
+
+    const rows = wrapper.findAll('.iso-row').map((row) => row.text())
+    expect(rows).toHaveLength(2)
+    expect(rows[1]).toContain('M+1')
+    expect(rows[1]).toContain(num.mzError.format(1.1))
+  })
+
+  it('measures an isotopologue through the M0 it belongs to and shows its own error', async () => {
+    const m0 = derivedM0()
+    const child = derivedChild(m0)
+    focusedAssignment = child
+    familyRows = [m0, child]
+    evidenceKey = 'fold-bp-1'
+    evidenceRecord = MEASURED
+    const wrapper = await mountPane()
+
+    expect(loadEvidence).toHaveBeenCalledWith(
+      expect.objectContaining({ peak_assignment_id: 'fold-bp-1' })
+    )
+    const grid = wrapper.find('.evidence').text()
+    expect(grid).toContain(num.mzError.format(1.1))
+    expect(grid).toContain('M+1')
+  })
+
+  it('asks nothing for a run of its own, whose rows carry their numbers', async () => {
+    runRecord = { engine: 'mascope' }
+    focusedAssignment = assignment({ formula: 'C6H12O6', tier: 'assigned' })
+    await mountPane()
+
+    expect(loadEvidence).not.toHaveBeenCalled()
+  })
+
+  it('says it is measuring while the request is in flight, and why when nothing could be', async () => {
+    focusedAssignment = derivedM0()
+    evidenceKey = 'fold-bp-1'
+    measuringNow = true
+    let wrapper = await mountPane()
+    expect(wrapper.find('.evidence').text()).toContain('measuring')
+
+    measuringNow = false
+    evidenceRecord = {
+      ...MEASURED,
+      mz_error_ppm: null,
+      blocked_reason: 'the ion did not land on this peak'
+    }
+    wrapper = await mountPane()
+    expect(wrapper.find('.evidence').text()).toContain('the ion did not land on this peak')
   })
 })

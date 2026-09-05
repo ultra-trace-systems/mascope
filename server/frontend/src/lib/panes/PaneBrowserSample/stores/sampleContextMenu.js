@@ -4,7 +4,6 @@ import { defineStore } from 'pinia'
 import { useConfirm } from 'primevue/useconfirm'
 
 import { api } from '@/api'
-import { peakAssignmentEnabled } from '@/lib/features'
 import { canCalibrateInstrument } from '@/lib/permissions'
 import { useApp } from '@/stores'
 
@@ -27,8 +26,7 @@ export const useSampleContextMenu = defineStore('browser.sample.sampleCtxMenu', 
   const selection = ref(null)
   const dialog = reactive({
     op: null,
-    calibration: false,
-    copyAssignments: false
+    calibration: false
   })
 
   // paste context
@@ -259,24 +257,6 @@ export const useSampleContextMenu = defineStore('browser.sample.sampleCtxMenu', 
               await app.data.peak.computeAll(row.value)
             },
             visible: !multiselecting
-          },
-          {
-            label: `Copy assignments to batch...`,
-            icon: 'pi pi-copy',
-            command: () => {
-              // Publishes a run onto every eligible sample of the batch, which
-              // is too much to commit to on one click - and what "eligible"
-              // covers depends on samples the user is not looking at. The
-              // dialog lists them with the server's own verdicts first.
-              dialog.copyAssignments = true
-            },
-            // Gated with the rest of the peak-assignment surfaces: without the
-            // feature there is no assignment UI to view the copies in. Whether
-            // this sample has a run to copy is NOT knowable here - no loaded
-            // record carries a per-sample run status - so the dialog asks the
-            // backend and says so there, which is also where the editor role
-            // is enforced (require_sample_role on both copy endpoints).
-            visible: peakAssignmentEnabled && !multiselecting
           }
         ]
       }

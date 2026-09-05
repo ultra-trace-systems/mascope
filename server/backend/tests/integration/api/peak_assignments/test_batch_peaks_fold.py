@@ -8,14 +8,21 @@ deliberately -- that concurrent folds of one batch cannot duplicate an anchor.
 """
 
 import asyncio
+from collections import defaultdict
 from contextlib import suppress
 from datetime import datetime, timezone
+from types import SimpleNamespace
 
 import pytest
 import pytest_asyncio
 from sqlalchemy import delete, select
 
 from mascope_backend.api.new.peak_assignments import batch_peaks_controller
+from mascope_backend.api.new.peak_assignments.batch_peaks import (
+    mz_from_delta,
+    role_name,
+    tier_name,
+)
 from mascope_backend.api.new.peak_assignments.batch_peaks_controller import (
     backfill_sample_batch_peaks,
     fold_sample_into_batch_peaks,
@@ -292,12 +299,9 @@ async def test_backfill_leaves_anchors_no_fold_touched_alone(
 ):
     """A backfill recomputes only what its folds wrote, never the whole batch.
 
-    The retention pass deletes runs and cascades to ``peak_assignment``, but the
-    occurrences survive with their assignment link set to NULL - and the ion
-    formula, the mechanism and the isotopologue link live ONLY on the rows that
-    went away. Recompute such an anchor and the outer join hands back nothing, so
-    those columns are written to NULL and the occurrence cannot supply them
-    again. Folding nothing must therefore change nothing.
+    Folding nothing must change nothing: with no completed run left the pass
+    has no anchors to walk, and an anchor nobody touched keeps its consensus -
+    modified stamp included - exactly as it was.
     """
     batch, samples = seeded
     await fold_sample_into_batch_peaks(samples["A"])
@@ -306,7 +310,7 @@ async def test_backfill_leaves_anchors_no_fold_touched_alone(
         p.batch_peak_id: _consensus_of(p)
         for p in await _batch_peaks(async_session_factory, batch)
     }
-    # There is something to lose: the ion formula lives on peak_assignment alone.
+    # There is a consensus worth preserving.
     assert any(c[1] for c in before.values())
 
     # Prune every run of the batch, as the nightly retention pass would.
@@ -398,10 +402,10 @@ async def test_a_recompute_survives_more_ids_than_the_driver_can_bind(
 ):
     """asyncpg refuses a query carrying more than 32767 bind parameters, and a
     fold's touched set is one anchor per detected peak - the ingest ceiling
-    admits a hundred thousand of them. Both id-taking helpers therefore have to
-    survive a set far past that cap.
+    admits a hundred thousand of them. The recompute therefore has to survive a
+    set far past that cap.
 
-    Driven directly rather than by seeding 40k peaks: the helpers take their id
+    Driven directly rather than by seeding 40k peaks: the recompute takes its id
     set as an argument, so the statement under test is the same one and the test
     costs a second instead of minutes.
     """
@@ -441,24 +445,6 @@ async def test_a_recompute_survives_more_ids_than_the_driver_can_bind(
     }
     assert after[shared].n_present == 1  # B really was folded out
     assert len(after) == 3  # B's own anchor lost its last member and went
-
-    # The array path: one bind parameter, so length is irrelevant to it.
-    async with async_session_factory() as s:
-        occurrence = (
-            (
-                await s.execute(
-                    select(BatchPeakOccurrence).where(
-                        BatchPeakOccurrence.batch_peak_id.in_(list(after))
-                    )
-                )
-            )
-            .scalars()
-            .first()
-        )
-        mapping = await batch_peaks_controller._owner_anchor_by_assignment(
-            s, {occurrence.peak_assignment_id} | padding
-        )
-    assert mapping == {occurrence.peak_assignment_id: occurrence.batch_peak_id}
 
 
 async def test_series_full_load_applies_occupancy_filter(async_session_factory, seeded):
@@ -843,3 +829,187 @@ async def test_counterpart_of_an_unknown_peak_is_empty(seeded):
     )
 
     assert result["results"] == 0
+
+
+# --- the batch ledger stands on its own ---------------------------------------
+
+
+async def test_the_consensus_stands_without_the_ledger_rows(
+    async_session_factory, seeded
+):
+    """A member carries what the vote reads, and its anchor's registry carries
+    the ion formula and mechanism its candidate index names - so the batch
+    ledger no longer depends on the per-sample ledger it was folded from.
+    Delete every run (cascading to the ledger rows and NULLing the members'
+    links), recompute over those very members, and the consensus, ion formula
+    included, comes out as it went in.
+    """
+    batch, samples = seeded
+    await fold_sample_into_batch_peaks(samples["A"])
+    await fold_sample_into_batch_peaks(samples["B"])
+    before = {
+        p.batch_peak_id: _consensus_of(p)
+        for p in await _batch_peaks(async_session_factory, batch)
+    }
+    shared = next(i for i, c in before.items() if c[6] == 2)
+    assert before[shared][1] == "C6H13O6+"  # there is an ion formula to lose
+
+    async with async_session_factory() as s:
+        await s.execute(
+            delete(PeakAssignmentRun).where(
+                PeakAssignmentRun.sample_item_id.in_(list(samples.values()))
+            )
+        )
+        await s.commit()
+    async with async_session_factory() as s:
+        links = (
+            (
+                await s.execute(
+                    select(BatchPeakOccurrence.peak_assignment_id).where(
+                        BatchPeakOccurrence.batch_peak_id == shared
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+    assert links == [None, None]
+
+    # Recompute the very anchors whose members just lost their rows - the
+    # operation that used to blank their ion formula and mechanism.
+    async with async_session_factory() as s:
+        await batch_peaks_controller._recompute_consensus(
+            s, set(before), datetime.now(timezone.utc)
+        )
+        await s.commit()
+
+    after = {
+        p.batch_peak_id: _consensus_of(p)
+        for p in await _batch_peaks(async_session_factory, batch)
+    }
+    assert after == before
+
+
+async def test_members_name_their_identity_in_the_anchors_registry(
+    async_session_factory, seeded
+):
+    """Each assigned member points at the registry entry for its own
+    (formula, ion formula, mechanism); an unassigned one points at none; and
+    the registry holds each identity once however many members share it."""
+    batch, samples = seeded
+    await fold_sample_into_batch_peaks(samples["A"])
+    await fold_sample_into_batch_peaks(samples["B"])
+    anchors = await _batch_peaks(async_session_factory, batch)
+    shared = next(p for p in anchors if p.n_present == 2)
+    assert shared.candidates == [
+        {
+            "formula": "C6H12O6",
+            "ion_formula": "C6H13O6+",
+            "ionization_mechanism_id": None,
+            "source": "database",
+        }
+    ]
+    bare = next(p for p in anchors if p.consensus_formula is None)
+    assert bare.candidates == []
+
+    async with async_session_factory() as s:
+        members = (
+            (
+                await s.execute(
+                    select(BatchPeakOccurrence).where(
+                        BatchPeakOccurrence.batch_peak_id.in_(
+                            [shared.batch_peak_id, bare.batch_peak_id]
+                        )
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+    by_anchor = defaultdict(list)
+    for member in members:
+        by_anchor[member.batch_peak_id].append(member)
+    assert [m.candidate for m in by_anchor[shared.batch_peak_id]] == [0, 0]
+    assert {role_name(m.role) for m in by_anchor[shared.batch_peak_id]} == {"M0"}
+    assert {tier_name(m.tier) for m in by_anchor[shared.batch_peak_id]} == {"assigned"}
+    (bare_member,) = by_anchor[bare.batch_peak_id]
+    assert bare_member.candidate is None
+    assert role_name(bare_member.role) == "unassigned"
+    # The m/z is stored as an offset from the anchor and recovers exactly enough.
+    assert mz_from_delta(bare.mz, bare_member.mz_delta_ppm) == pytest.approx(
+        250.1, abs=1e-6
+    )
+    assert bare_member.owner_batch_peak_id is None
+
+
+# --- the run-less ingest path -----------------------------------------------------
+
+
+async def test_a_fold_from_rows_in_memory_links_no_ledger_row(
+    async_session_factory, seeded
+):
+    """The ingest path that writes no run hands the fold its rows directly. The
+    members are written as from a run - formula, tier, fit, the anchor's
+    registry entry - but link to no ledger row; a later run-backed fold of the
+    same sample replaces them and links them."""
+    batch, samples = seeded
+    async with async_session_factory() as s:
+        ledger = (
+            (
+                await s.execute(
+                    select(PeakAssignment).where(
+                        PeakAssignment.sample_item_id == samples["A"]
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+        rows = [
+            SimpleNamespace(
+                **{c.key: getattr(r, c.key) for c in PeakAssignment.__table__.columns}
+            )
+            for r in ledger
+        ]
+
+    assert (
+        await fold_sample_into_batch_peaks(samples["A"], rows=rows, persisted=False)
+        == batch
+    )
+
+    async with async_session_factory() as s:
+        members = (
+            (
+                await s.execute(
+                    select(BatchPeakOccurrence).where(
+                        BatchPeakOccurrence.sample_item_id == samples["A"]
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+    assert len(members) == 3
+    assert all(m.peak_assignment_id is None for m in members)
+    # Two assigned members name a registry entry; the unassigned one names none.
+    assert sorted(m.candidate is not None for m in members) == [False, True, True]
+    anchors = await _batch_peaks(async_session_factory, batch)
+    glucose = next(p for p in anchors if p.consensus_formula == "C6H12O6")
+    assert glucose.consensus_ion_formula == "C6H13O6+"  # from the registry
+    assert glucose.n_present == 1
+
+    # A run-backed fold of the same sample re-links the members to their rows.
+    assert await fold_sample_into_batch_peaks(samples["A"]) == batch
+    async with async_session_factory() as s:
+        links = (
+            (
+                await s.execute(
+                    select(BatchPeakOccurrence.peak_assignment_id).where(
+                        BatchPeakOccurrence.sample_item_id == samples["A"]
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+    assert len(links) == 3 and all(links)

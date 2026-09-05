@@ -9,7 +9,14 @@ whole batch's existing runs in time order, reporting progress per sample, and
 recomputes the anchors those folds touched once each at the end
 (:func:`recompute_batch_consensus`) rather than once per sample.
 
-Design: ``docs/dev/peak_assignment_batch.md``.
+A member row carries everything the consensus reads - formula, tier, fit,
+intensity, P(correct), role, the owner anchor of an isotopologue, and an index
+into its anchor's candidate registry for the ion formula and mechanism - so the
+batch ledger stands without the per-sample ledger rows it was folded from: a
+run pruned or deleted afterwards costs the anchors nothing.
+
+Design: ``docs/dev/peak_assignment_batch.md`` and, for the member fields,
+``docs/dev/peak_assignment_batch_primary.md``.
 """
 
 from __future__ import annotations
@@ -19,8 +26,7 @@ import statistics
 from collections import defaultdict
 from datetime import datetime, timezone
 
-from sqlalchemy import String, any_, bindparam, func, select
-from sqlalchemy.dialects.postgresql import ARRAY
+from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 
 from mascope_backend.api.lib.api_features import api_controller_background_task
@@ -30,9 +36,24 @@ from mascope_backend.api.new.peak_assignments.batch_peaks import (
     Anchor,
     AnchorSet,
     Consensus,
+    candidate_index,
     compute_consensus,
     fold_in_sample,
+    manual_pin_of,
+    mz_delta_ppm,
     resolution_adaptive_tol_ppm,
+    resolve_candidate,
+    role_code,
+    role_name,
+    tier_code,
+    tier_name,
+)
+from mascope_backend.api.new.peak_assignments.batch_runs import (
+    ACTION_REBUILD,
+    complete_run,
+    ensure_current_run,
+    fail_run,
+    start_run,
 )
 from mascope_backend.db import (
     BatchPeak,
@@ -150,7 +171,11 @@ def _tolerance_fn(resolution_func):
 
 
 async def fold_sample_into_batch_peaks(
-    sample_item_id: str, *, defer_consensus_to: set[str] | None = None
+    sample_item_id: str,
+    *,
+    defer_consensus_to: set[str] | None = None,
+    rows: list | None = None,
+    persisted: bool = True,
 ) -> str | None:
     """Fold a sample's latest completed assignment into its batch's batch peaks.
 
@@ -171,6 +196,14 @@ async def fold_sample_into_batch_peaks(
         pass never reaches an anchor this fold did not write. Until that pass
         runs, a touched anchor's consensus columns describe the members it had
         before this fold.
+    :param rows: The sample's assignment rows to fold, in place of the latest
+        completed run's. The run-less ingest path hands the fold what Stage A
+        computed in memory, shaped as ledger rows (attribute access), and
+        no run is consulted.
+    :param persisted: Whether ``rows`` exist as ``peak_assignment`` rows. False
+        for rows that were never written: the members then link to no ledger
+        row, while the ids the rows carry still resolve the family link among
+        themselves.
     :returns: the ``sample_batch_id`` (for the caller's reload event) or ``None``
         when there is nothing to fold (unknown sample / no completed run).
     """
@@ -186,23 +219,23 @@ async def fold_sample_into_batch_peaks(
         ionization_mode_id = sample.ionization_mode_id
         filename = sample.filename
 
-        run_id = await _latest_completed_run_id(session, sample_item_id)
-        if run_id is None:
-            return None
-
-        # Every observed peak of the run (assigned or not) folds into a batch peak,
-        # so no m/z is dropped from the batch view.
-        rows = (
-            (
-                await session.execute(
-                    select(PeakAssignment).where(
-                        PeakAssignment.peak_assignment_run_id == run_id
+        if rows is None:
+            run_id = await _latest_completed_run_id(session, sample_item_id)
+            if run_id is None:
+                return None
+            # Every observed peak of the run (assigned or not) folds into a
+            # batch peak, so no m/z is dropped from the batch view.
+            rows = (
+                (
+                    await session.execute(
+                        select(PeakAssignment).where(
+                            PeakAssignment.peak_assignment_run_id == run_id
+                        )
                     )
                 )
+                .scalars()
+                .all()
             )
-            .scalars()
-            .all()
-        )
         if not rows:
             return None
 
@@ -239,6 +272,9 @@ async def fold_sample_into_batch_peaks(
         # this placement buys is that nothing between here and the commit may
         # open a second session -- everything below runs on `session`.
         await _acquire_batch_fold_lock(session, sample_batch_id)
+        # A fold edits the current run's state; the first fold of a batch
+        # mints that run, so the ledger's history has a first entry.
+        await ensure_current_run(session, sample_batch_id)
 
         # Existing frozen anchors for this (batch, ionization mode).
         existing = (
@@ -302,37 +338,78 @@ async def fold_sample_into_batch_peaks(
 
         new_ids = {f.batch_peak_id for f in folded if f.is_new_anchor}
         anchors_by_id = {a.batch_peak_id: a for a in anchor_set.anchors()}
+        rows_by_id = {bp.batch_peak_id: bp for bp in existing}
         for bp_id in new_ids:
             a = anchors_by_id[bp_id]
-            session.add(
-                BatchPeak(
-                    batch_peak_id=a.batch_peak_id,
-                    sample_batch_id=sample_batch_id,
-                    ionization_mode_id=ionization_mode_id,
-                    mz=a.mz,
-                    mz_tol_ppm=a.tol_ppm,
-                    intensity_variable=intensity_variable,
-                    batch_peak_utc_created=now,
-                    batch_peak_utc_modified=now,
-                )
+            bp = BatchPeak(
+                batch_peak_id=a.batch_peak_id,
+                sample_batch_id=sample_batch_id,
+                ionization_mode_id=ionization_mode_id,
+                mz=a.mz,
+                mz_tol_ppm=a.tol_ppm,
+                intensity_variable=intensity_variable,
+                candidates=[],
+                batch_peak_utc_created=now,
+                batch_peak_utc_modified=now,
             )
+            session.add(bp)
+            rows_by_id[bp_id] = bp
 
+        # The family link, resolved while this sample's fold is in hand: an
+        # iso_child names the assignment that owns it, and the owner's own peak
+        # folded into some anchor in this same pass - or lost a same-anchor
+        # contest and folded nowhere, in which case the child names no owner
+        # and abstains from the vote (see resolve_isotopologue_of).
+        anchor_of_assignment = {
+            f.peak["row"].peak_assignment_id: f.batch_peak_id for f in folded
+        }
+        # Each touched anchor's candidate registry, extended as members bring
+        # identities it has not seen. Copied out and reassigned rather than
+        # mutated in place, which a JSON column would not notice.
+        registries: dict[str, list] = {}
         for f in folded:
             r = f.peak["row"]
+            candidate = None
+            if r.assigned_formula:
+                registry = registries.get(f.batch_peak_id)
+                if registry is None:
+                    registry = list(rows_by_id[f.batch_peak_id].candidates or [])
+                    registries[f.batch_peak_id] = registry
+                candidate = candidate_index(
+                    registry,
+                    r.assigned_formula,
+                    r.ion_formula,
+                    r.ionization_mechanism_id,
+                    source=getattr(r, "source", None),
+                )
+            provenance = r.provenance if isinstance(r.provenance, dict) else {}
             session.add(
                 BatchPeakOccurrence(
                     batch_peak_id=f.batch_peak_id,
                     sample_item_id=sample_item_id,
                     sample_peak_id=r.sample_peak_id,
-                    peak_assignment_id=r.peak_assignment_id,
-                    sample_peak_mz=f.peak["raw_mz"],
+                    peak_assignment_id=r.peak_assignment_id if persisted else None,
+                    mz_delta_ppm=mz_delta_ppm(
+                        f.peak["raw_mz"], anchors_by_id[f.batch_peak_id].mz
+                    ),
                     intensity=r.sample_peak_intensity,
-                    tier=r.tier,
+                    tier=tier_code(r.tier),
                     fit_score=r.fit_score,
-                    assigned_formula=r.assigned_formula,
+                    candidate=candidate,
+                    role=role_code(r.role),
+                    owner_batch_peak_id=(
+                        anchor_of_assignment.get(r.owner_peak_assignment_id)
+                        if r.role == ROLE_ISO_CHILD and r.owner_peak_assignment_id
+                        else None
+                    ),
+                    p_correct=provenance.get("p_correct"),
                 )
             )
             touched.add(f.batch_peak_id)
+        for bp_id, registry in registries.items():
+            bp = rows_by_id[bp_id]
+            if len(registry) != len(bp.candidates or []):
+                bp.candidates = registry
 
         await session.flush()  # make occurrences visible to the consensus recompute
         if defer_consensus_to is None:
@@ -353,76 +430,15 @@ async def fold_sample_into_batch_peaks(
     return sample_batch_id
 
 
-async def _owner_anchor_by_assignment(session, owner_ids: set[str]) -> dict[str, str]:
-    """Map each owning assignment to the batch peak its own peak folded into.
-
-    The family link an isotopologue needs is per-sample: an ``iso_child`` assignment
-    names the assignment that owns it, and what the batch level wants is the
-    ANCHOR that owning peak landed on. ``BatchPeakOccurrence`` already records
-    the assignment each member was folded from, so the hop is one indexed lookup
-    rather than a walk back through the owner's sample peak.
-
-    An owner with no occurrence resolves to nothing, which is the honest answer:
-    a peak dropped from the fold (two peaks inside one anchor's tolerance in one
-    sample, nearest wins) has no anchor to point at, and the isotopologue abstains
-    from the vote rather than naming a peak that is not in the ledger.
-
-    One lookup per owner, not one per (owner, sample), because an assignment
-    belongs to a single sample and a sample's peak folds into a single anchor -
-    so an assignment has at most one occurrence. No constraint says so
-    (``batch_peak_occurrence`` is unique on batch peak + sample), which is why
-    it is written down here rather than relied on silently.
-
-    Runs on the caller's session, as everything between the fold lock and the
-    commit must.
-
-    :param session: The fold's session, already holding the batch lock.
-    :param owner_ids: ``peak_assignment_id`` of each owning assignment.
-    :return: owning ``peak_assignment_id`` -> ``batch_peak_id``.
-    :rtype: dict[str, str]
-    """
-    if not owner_ids:
-        return {}
-    # `= ANY(array)` rather than `IN`, which would expand to one bind parameter
-    # per id: this set is one entry per iso_child member of the whole recompute,
-    # so a chunk of anchors in a large batch reaches tens of thousands of them
-    # (anchors x samples) and asyncpg refuses a query with more than 32767
-    # arguments. Chunking is the wrong tool here -- the ids are already bounded
-    # by the caller's chunk and the read returns at most one row each, so only
-    # the parameter count is the problem, and an array is one parameter whatever
-    # its length. The index on `peak_assignment_id` serves it either way.
-    #
-    # The element type stays UNQUALIFIED `String`, rendering `$1::VARCHAR[]`.
-    # `String(32)` would render `$1::VARCHAR(32)[]`, and a length-qualified cast
-    # in Postgres TRUNCATES rather than errors - so an over-long id would
-    # silently match the wrong row instead of matching nothing. Do not "tighten"
-    # this to the column's own length.
-    rows = (
-        await session.execute(
-            select(
-                BatchPeakOccurrence.peak_assignment_id,
-                BatchPeakOccurrence.batch_peak_id,
-            ).where(
-                BatchPeakOccurrence.peak_assignment_id
-                == any_(
-                    bindparam("owner_ids", value=list(owner_ids), type_=ARRAY(String))
-                )
-            )
-        )
-    ).all()
-    return {peak_assignment_id: bp_id for peak_assignment_id, bp_id in rows}
-
-
 #: Anchors per statement in a consensus recompute, and per transaction in a
 #: deferred whole-set one. The member read behind each is one IN over the chunk,
 #: so this bounds both its bind parameters (asyncpg caps a query at 32767) and
-#: the rows one statement materializes, whatever the caller hands in. The row
-#: bound is the binding one here and it is why these two stay an ``IN`` rather
-#: than becoming the array `_owner_anchor_by_assignment` uses: the member read
-#: returns one row per (anchor, sample) carrying a whole ``provenance``
-#: document, so a single unbounded statement would trade a clean driver error
-#: for an out-of-memory one - and a parameterized array is estimated at ten
-#: elements, which freezes a bad generic plan into the prepared statement.
+#: the rows one statement materializes, whatever the caller hands in. It stays
+#: an ``IN`` rather than one array parameter because the row bound is the one
+#: that matters: the member read returns one row per (anchor, sample), so an
+#: unbounded statement would trade a clean driver error for an out-of-memory
+#: one - and a parameterized array is estimated at ten elements, which freezes
+#: a bad generic plan into the prepared statement.
 _CONSENSUS_CHUNK = 500
 
 
@@ -453,60 +469,18 @@ async def _recompute_consensus(
 async def _recompute_consensus_chunk(
     session, id_list: list[str], now: datetime
 ) -> None:
-    """One statement's worth of :func:`_recompute_consensus`."""
+    """One statement's worth of :func:`_recompute_consensus`.
+
+    Reads the anchors first and the members second, and nothing else: a
+    member's formula, ion formula and mechanism are the registry entry its
+    ``candidate`` index names on its own anchor, its tier and role are codes
+    (``tier_name``, ``role_name``), and its family link and P(correct) are
+    columns of its own. The per-sample ledger is not consulted, so a member
+    whose ledger row has since been pruned or deleted votes exactly as it did
+    the day it was folded.
+    """
     if not id_list:
         return
-    rows = (
-        await session.execute(
-            select(
-                BatchPeakOccurrence.batch_peak_id,
-                BatchPeakOccurrence.assigned_formula,
-                BatchPeakOccurrence.tier,
-                BatchPeakOccurrence.fit_score,
-                BatchPeakOccurrence.intensity,
-                PeakAssignment.ion_formula,
-                PeakAssignment.ionization_mechanism_id,
-                PeakAssignment.provenance,
-                PeakAssignment.role,
-                PeakAssignment.owner_peak_assignment_id,
-            )
-            .outerjoin(
-                PeakAssignment,
-                PeakAssignment.peak_assignment_id
-                == BatchPeakOccurrence.peak_assignment_id,
-            )
-            .where(BatchPeakOccurrence.batch_peak_id.in_(id_list))
-        )
-    ).all()
-
-    # Second hop of the isotopologue link, resolved once for every member of this
-    # recompute rather than once per batch peak.
-    anchor_of_owner = await _owner_anchor_by_assignment(
-        session,
-        {
-            r.owner_peak_assignment_id
-            for r in rows
-            if r.role == ROLE_ISO_CHILD and r.owner_peak_assignment_id
-        },
-    )
-
-    members_by_peak: dict[str, list] = defaultdict(list)
-    for r in rows:
-        prov = r.provenance if isinstance(r.provenance, dict) else {}
-        members_by_peak[r.batch_peak_id].append(
-            {
-                "assigned_formula": r.assigned_formula,
-                "ion_formula": r.ion_formula,
-                "ionization_mechanism_id": r.ionization_mechanism_id,
-                "tier": r.tier,
-                "fit_score": r.fit_score,
-                "intensity": r.intensity,
-                "p_correct": prov.get("p_correct"),
-                "role": r.role,
-                "owner_batch_peak_id": anchor_of_owner.get(r.owner_peak_assignment_id),
-            }
-        )
-
     # One read for the anchors rather than one `get` per anchor: a whole-batch
     # recompute walks thousands of them.
     anchors = (
@@ -518,13 +492,51 @@ async def _recompute_consensus_chunk(
         .scalars()
         .all()
     )
+    registries = {bp.batch_peak_id: bp.candidates for bp in anchors}
+
+    rows = (
+        await session.execute(
+            select(
+                BatchPeakOccurrence.batch_peak_id,
+                BatchPeakOccurrence.tier,
+                BatchPeakOccurrence.fit_score,
+                BatchPeakOccurrence.intensity,
+                BatchPeakOccurrence.candidate,
+                BatchPeakOccurrence.p_correct,
+                BatchPeakOccurrence.role,
+                BatchPeakOccurrence.owner_batch_peak_id,
+            ).where(BatchPeakOccurrence.batch_peak_id.in_(id_list))
+        )
+    ).all()
+
+    members_by_peak: dict[str, list] = defaultdict(list)
+    for r in rows:
+        identity = resolve_candidate(registries.get(r.batch_peak_id), r.candidate)
+        members_by_peak[r.batch_peak_id].append(
+            {
+                "assigned_formula": identity.get("formula"),
+                "ion_formula": identity.get("ion_formula"),
+                "ionization_mechanism_id": identity.get("ionization_mechanism_id"),
+                "tier": tier_name(r.tier),
+                "fit_score": r.fit_score,
+                "intensity": r.intensity,
+                "p_correct": r.p_correct,
+                "role": role_name(r.role),
+                "owner_batch_peak_id": r.owner_batch_peak_id,
+            }
+        )
+
     for bp in anchors:
         members = members_by_peak.get(bp.batch_peak_id, [])
         if not members:
             await session.delete(bp)
             continue
         _apply_consensus(
-            bp, compute_consensus(members, batch_peak_id=bp.batch_peak_id), now
+            bp,
+            compute_consensus(
+                members, batch_peak_id=bp.batch_peak_id, manual=manual_pin_of(bp)
+            ),
+            now,
         )
 
 
@@ -591,35 +603,16 @@ async def recompute_batch_consensus(
     folds every sample with the recompute deferred, collecting the anchors those
     folds touched, and then calls this once.
 
-    **Scoped to those anchors, never to the whole batch.** Recomputing an anchor
-    no fold just wrote to is not the harmless no-op it looks like. Deleting a run
-    cascades to ``peak_assignment`` but leaves the occurrences standing with
-    ``peak_assignment_id`` NULL (``ON DELETE SET NULL``), and the ion formula,
-    the ionization mechanism and the family link live on the assignment rows
-    alone. Recompute such an anchor and the outer join hands back nothing, so
-    those columns are written to NULL for good - the occurrence cannot supply
-    them again. An anchor a fold has just touched carries that fold's own live
-    members, so ``_mode`` has something to skip the dead-linked ones in favour
-    of, and the anchor keeps its columns.
-
-    That is a reduction of the hazard, not its elimination, and the difference
-    is worth stating exactly. ``_mode`` reads only the members backing the
-    WINNING formula, and the winner is decided over every member carrying an
-    ``assigned_formula`` - which the occurrence denormalizes, so a dead-linked
-    member still votes. An anchor whose winner is backed only by dead-linked
-    members therefore still loses its ion formula and mechanism, and
-    ``resolve_isotopologue_of`` still counts dead members in the denominator of
-    a majority only live ones can vote in. Both predate this scoping (the
-    per-arrival fold recomputes touched anchors the same way, and so did the
-    per-sample backfill before the deferral); scoping removes the exposure on
-    anchors NO fold refreshed, which is the part this pass added.
-
-    Note what does NOT produce a dead-linked member: the nightly retention pass
-    keeps the newest completed run per sample and engine and refuses a quota
-    below one, so it cannot leave a sample runless. It takes a run deleted
-    outright - an import run abandoned, an external engine's whole quota evicted
-    by the across-engine bound - and then a sample the backfill cannot re-fold,
-    since re-folding replaces its occurrences with live links.
+    **Scoped to those anchors, never to the whole batch.** An anchor no fold
+    just touched already holds the consensus of its unchanged members, so
+    walking it is work for no result - and on a large batch most of the work.
+    It used to be load-bearing for correctness as well: the ion formula, the
+    mechanism and the family link lived on the ledger rows alone, so
+    recomputing an anchor whose members had lost theirs (a run deleted
+    outright, or pruned) blanked those columns for good. A member now carries
+    everything the vote reads (see :func:`_recompute_consensus_chunk`), so a
+    recompute over dead-linked members reaches the answer their fold did; the
+    scoping is a matter of cost only.
 
     Chunked, and each chunk is its own transaction under the fold lock, so a
     fold arriving mid-way waits for a chunk rather than for the whole set.
@@ -679,7 +672,9 @@ def _backfill_progress_notification(
         parent_id=parent_id,
         type="compute_batch_peaks",
         status="pending",
-        message=f"Computing batch peaks, folding sample {item_index + 1}/{total_samples}.",
+        message=(
+            f"Rebuilding the batch ledger, folding sample {item_index + 1}/{total_samples}."
+        ),
         data={
             "sample_batch_id": sample_batch_id,
             "_room_ids": [sample_batch_id],
@@ -696,9 +691,11 @@ async def backfill_sample_batch_peaks(
     process_id: str | None = None,
     parent_id: str | None = None,
 ) -> tuple[int, int]:
-    """Fold every sample of a batch (that has a completed run) into the batch
-    peaks, in acquisition-time order. Used to seed batch peaks for batches assigned
-    before this feature.
+    """Fold every sample of a batch into the batch peaks, in acquisition-time
+    order: from its latest completed assignment run where it has one, otherwise
+    from a fresh Stage A pass over its peaks with no run written - the way
+    ingest folds a sample. The Rebuild batch ledger button, and what populates
+    a batch that predates the ledger, was never assigned, or was imported.
 
     Returns the number of samples folded and the number whose fold raised. The
     two are counted apart because they mean opposite things to whoever asked:
@@ -728,6 +725,12 @@ async def backfill_sample_batch_peaks(
     :return: ``(folded, failed)`` sample counts.
     :rtype: tuple[int, int]
     """
+    # Imported here, as the service imports this module's fold: the two lean on
+    # each other and neither can be the other's module-level import.
+    from mascope_backend.api.new.peak_assignments.service import (
+        fold_sample_peaks_without_run,
+    )
+
     async with async_session() as session:
         sample_ids = (
             (
@@ -776,8 +779,15 @@ async def backfill_sample_batch_peaks(
                 await send_progress_user_notification(notification)
 
             try:
+                # The run fold answers None for a sample with no completed run;
+                # Stage A then folds it as ingest would, skipping a blank or an
+                # unverified calibration the same way.
                 if (
                     await fold_sample_into_batch_peaks(
+                        sample_item_id, defer_consensus_to=touched
+                    )
+                    is not None
+                    or await fold_sample_peaks_without_run(
                         sample_item_id, defer_consensus_to=touched
                     )
                     is not None
@@ -867,16 +877,16 @@ async def backfill_sample_batch_peaks(
 def backfill_outcome(folded: int, failed: int, sample_batch_id: str) -> dict:
     """Report a backfill outcome, distinguishing "folded nothing" from success.
 
-    Folding zero samples is what a batch with no completed assignment runs looks
-    like, and it is the outcome the person who clicked most needs to hear: the
-    request was accepted and did nothing. Announced green as "Computed batch
-    peaks from 0 assigned sample(s)" it reads as done, which is how a user
-    arrives back at an empty ledger with no idea why.
+    Folding zero samples is what a batch of blanks, or of samples not yet
+    calibrated or peak-detected, looks like, and it is the outcome the person
+    who clicked most needs to hear: the request was accepted and did nothing.
+    Announced green as "Rebuilt the batch ledger from 0 sample(s)" it reads as
+    done, which is how a user arrives back at an empty ledger with no idea why.
 
     Which of the four things happened is not a count's to say, so the failures
     are carried separately. Nothing folded and nothing raised is the batch's
     state and the message names it; nothing folded because every fold raised is
-    a fault, and telling that user to "assign the batch first" would be advice
+    a fault, and telling that user why a sample is skipped would be advice
     that cannot help. A run that folded some and dropped others is neither, and
     saying only how many succeeded hides a sample missing from the ledger.
 
@@ -898,8 +908,9 @@ def backfill_outcome(folded: int, failed: int, sample_batch_id: str) -> dict:
         return {
             "status": "partial",
             "message": (
-                "No batch peaks were computed: none of this batch's samples "
-                "has a completed assignment run yet. Assign the batch first."
+                "The batch ledger is empty: none of this batch's samples could "
+                "be folded. A sample is skipped when it is a blank, when its m/z "
+                "calibration is not verified, or when it has no detected peaks yet."
             ),
             "data": counts,
             "_notification_data": notification_data,
@@ -908,7 +919,7 @@ def backfill_outcome(folded: int, failed: int, sample_batch_id: str) -> dict:
         return {
             "status": "failed",
             "message": (
-                f"No batch peaks were computed: all {failed} sample(s) failed "
+                f"The batch ledger was not rebuilt: all {failed} sample(s) failed "
                 "to fold. See the server log for the reason."
             ),
             "data": counts,
@@ -918,7 +929,7 @@ def backfill_outcome(folded: int, failed: int, sample_batch_id: str) -> dict:
         return {
             "status": "partial",
             "message": (
-                f"Computed batch peaks from {folded} assigned sample(s); "
+                f"Rebuilt the batch ledger from {folded} sample(s); "
                 f"{failed} sample(s) failed to fold and are missing from the "
                 "result. See the server log for the reason."
             ),
@@ -927,10 +938,36 @@ def backfill_outcome(folded: int, failed: int, sample_batch_id: str) -> dict:
         }
     return {
         "status": "success",
-        "message": f"Computed batch peaks from {folded} assigned sample(s).",
+        "message": f"Rebuilt the batch ledger from {folded} sample(s).",
         "data": counts,
         "_notification_data": notification_data,
     }
+
+
+async def rebuild_batch_ledger(
+    sample_batch_id: str,
+    user_id: int | None = None,
+    process_id: str | None = None,
+    parent_id: str | None = None,
+) -> dict:
+    """The rebuild as a batch run: opened before the first fold (refused if one
+    is in flight; the current run's state is snapshotted), closed as completed
+    with the outcome's counts - or as failed, the live ledger then being
+    whatever the folds left."""
+    run_id = await start_run(sample_batch_id, ACTION_REBUILD, user_id=user_id)
+    try:
+        folded, failed = await backfill_sample_batch_peaks(
+            sample_batch_id,
+            user_id=user_id,
+            process_id=process_id,
+            parent_id=parent_id,
+        )
+    except Exception as exc:
+        await fail_run(sample_batch_id, run_id, f"{type(exc).__name__}: {exc}")
+        raise
+    outcome = backfill_outcome(folded, failed, sample_batch_id)
+    await complete_run(sample_batch_id, run_id, summary=outcome.get("data"))
+    return outcome
 
 
 @api_controller_background_task(
@@ -945,11 +982,12 @@ async def compute_batch_peaks(
     process_id: str | None = None,
     parent_id: str | None = None,
 ) -> dict:
-    """Backfill a batch's batch peaks from its samples' existing completed
-    assignment runs, without re-running assignment.
+    """Rebuild a batch's batch peaks from every one of its samples - from a
+    completed assignment run where there is one, otherwise from a fresh Stage A
+    pass with no run written.
 
-    This is how a batch assigned before batch peaks existed (or after a bulk
-    import) gets populated into the batch overview. Idempotent -- re-running
+    This is how a batch that predates the ledger, was never assigned, or was
+    imported gets populated into the batch overview. Idempotent -- re-running
     re-folds each sample. Emits ``peak_assignment_reload`` so the Assignments
     chart refreshes, including when nothing was folded: the ledger is then
     correct in being empty, and the notification says why.
@@ -959,10 +997,9 @@ async def compute_batch_peaks(
     ``compute_batch_peaks`` channel, and the decorator's terminal packet ends
     the bar.
     """
-    folded, failed = await backfill_sample_batch_peaks(
+    return await rebuild_batch_ledger(
         sample_batch_id,
         user_id=user_id,
         process_id=process_id,
         parent_id=parent_id,
     )
-    return backfill_outcome(folded, failed, sample_batch_id)

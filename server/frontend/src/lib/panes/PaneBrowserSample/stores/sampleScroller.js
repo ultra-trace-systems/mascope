@@ -41,11 +41,14 @@ export const useSampleScroller = defineStore('browser.sample.scroller', () => {
   })
 
   /**
-   * Get VirtualScroller component instance for native scroll methods.
+   * The VirtualScroller instance behind the table, for its native scroll
+   * methods. Reached through the DataTable's own accessor, a method of the
+   * component instance that a production bundle keeps; the `__vnode` handle on
+   * the scroller's element exists only in development builds, so a reach
+   * through it takes the fallback everywhere else.
    */
   function getScrollerInstance() {
-    const scrollerEl = tableRef.value?.$el?.querySelector('.p-virtualscroller')
-    return scrollerEl?.__vnode?.component?.exposed || scrollerEl?.__vnode?.component?.ctx
+    return tableRef.value?.getVirtualScrollerRef?.()
   }
 
   let scrollLock = false

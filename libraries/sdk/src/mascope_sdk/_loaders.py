@@ -85,6 +85,53 @@ def _confirm_sample_count(count: int, threshold: int) -> None:
         )
 
 
+def _resolve_batches(
+    client: MascopeClient,
+    dataset: "str | re.Pattern",
+    batches: "str | re.Pattern | None" = None,
+    *,
+    exact: bool = False,
+) -> "tuple[pd.DataFrame | None, str]":
+    """Resolve a dataset and the batches in it the filter keeps.
+
+    :param client: The MascopeClient instance.
+    :param dataset: Dataset name or literal substring (or ID); pass a compiled
+      ``re.Pattern`` to match by regex.
+    :param batches: Optional case-insensitive filter on batch names. A string is
+      a literal substring (or full-name match when ``exact`` is True); a
+      compiled ``re.Pattern`` is used as a regex. See :func:`_name_mask`.
+    :param exact: Require the filter to match the whole name instead of a substring.
+    :return: The batches kept (None when the dataset has none, or none match)
+      and the dataset id.
+    :raises ValueError: If the dataset cannot be resolved.
+    """
+    from ._resolve import resolve_id
+
+    datasets = client.datasets.list()
+    dataset_id = resolve_id(
+        dataset,
+        datasets,
+        id_column="dataset_id",
+        name_column="dataset_name",
+        entity_label="dataset",
+    )
+    logger.info("Loading dataset '{}'", dataset)
+    all_batches = client.batches._list_by_id(dataset_id)
+    if all_batches is None or all_batches.empty:
+        logger.info("No batches found in dataset")
+        return None, dataset_id
+    if batches is not None:
+        all_batches = all_batches[
+            _name_mask(all_batches["sample_batch_name"], batches, exact=exact)
+        ]
+        if all_batches.empty:
+            logger.info("No batches matching '{}'", batches)
+            return None, dataset_id
+    batch_names = all_batches["sample_batch_name"].tolist()
+    logger.info("Found {} batch(es): {}", len(all_batches), batch_names)
+    return all_batches, dataset_id
+
+
 def _collect_sample_tasks(
     client: MascopeClient,
     dataset: "str | re.Pattern",
@@ -107,33 +154,9 @@ def _collect_sample_tasks(
     :return: Tuple of (sample_tasks, dataset_id).
     :raises ValueError: If dataset or batches cannot be resolved.
     """
-    from ._resolve import resolve_id
-
-    datasets = client.datasets.list()
-    dataset_id = resolve_id(
-        dataset,
-        datasets,
-        id_column="dataset_id",
-        name_column="dataset_name",
-        entity_label="dataset",
-    )
-    logger.info("Loading dataset '{}'", dataset)
-
-    all_batches = client.batches._list_by_id(dataset_id)
-    if all_batches is None or all_batches.empty:
-        logger.info("No batches found in dataset")
+    all_batches, dataset_id = _resolve_batches(client, dataset, batches, exact=exact)
+    if all_batches is None:
         return [], dataset_id
-
-    if batches is not None:
-        all_batches = all_batches[
-            _name_mask(all_batches["sample_batch_name"], batches, exact=exact)
-        ]
-        if all_batches.empty:
-            logger.info("No batches matching '{}'", batches)
-            return [], dataset_id
-
-    batch_names = all_batches["sample_batch_name"].tolist()
-    logger.info("Found {} batch(es): {}", len(all_batches), batch_names)
 
     sample_tasks: list[tuple[Any, str]] = []
     for _, batch_row in all_batches.iterrows():
@@ -849,4 +872,78 @@ def load_peak_timeseries(
     frames = [f.dropna(axis=1, how="all") for f in frames]
     result = pd.concat(frames, ignore_index=True)
     logger.info("Loaded {} timeseries points total", len(result))
+    return result
+
+
+def load_batch_ledger(
+    client: MascopeClient,
+    dataset: "str | re.Pattern",
+    batches: "str | re.Pattern | None" = None,
+    *,
+    exact: bool = False,
+    members: bool = True,
+) -> pd.DataFrame | None:
+    """Load the batch ledger of one or more batches into a single DataFrame.
+
+    The batch-primary counterpart of :func:`load_assignments`: resolves the
+    dataset/batch selection and reads each batch's ledger - its batch peaks
+    (one per species across the batch) and, by default, their members (one
+    per sample the species was seen in, the anchor's consensus beside the
+    sample's own reading) - concatenated with ``sample_batch_name`` prepended.
+
+    :param client: The MascopeClient instance.
+    :type client: MascopeClient
+    :param dataset: Dataset name or literal substring (or dataset ID); pass a
+                    compiled ``re.Pattern`` to match by regex.
+    :type dataset: str | re.Pattern
+    :param batches: Optional case-insensitive filter on batch names.
+    :type batches: str | re.Pattern, optional
+    :param exact: Match a string ``batches`` against the whole name.
+    :type exact: bool
+    :param members: Return the member rows (default) rather than the species
+                    table. With members, the species table rides on
+                    ``df.attrs["batch_peaks"]``.
+    :type members: bool
+    :return: The ledger rows of every batch that has one, or None.
+    :rtype: pd.DataFrame | None
+    :raises ValueError: If the dataset cannot be resolved.
+
+    Example::
+
+        ledger = load_batch_ledger(mascope, dataset="My Dataset", batches="Uronium")
+        ledger.to_csv("ledger.csv", index=False)
+        ledger.attrs["batch_peaks"]  # one row per batch peak
+    """
+    all_batches, _ = _resolve_batches(client, dataset, batches, exact=exact)
+    if all_batches is None:
+        return None
+    frames: list[pd.DataFrame] = []
+    species_frames: list[pd.DataFrame] = []
+    for _, batch_row in all_batches.iterrows():
+        batch_id = batch_row["sample_batch_id"]
+        batch_name = batch_row["sample_batch_name"]
+        species = client.batch_peaks.list(batch_id)
+        if species is None:
+            logger.info("Batch '{}': no batch ledger yet, skipping", batch_name)
+            continue
+        species = species.copy()
+        species.insert(0, "sample_batch_name", batch_name)
+        if not members:
+            frames.append(species)
+            continue
+        rows = client.batch_peaks.members(batch_id)
+        if rows is None:
+            logger.info("Batch '{}': a ledger with no members, skipping", batch_name)
+            continue
+        rows = rows.copy()
+        rows.insert(0, "sample_batch_name", batch_name)
+        frames.append(rows)
+        species_frames.append(species)
+    if not frames:
+        logger.info("No batch ledger found")
+        return None
+    result = pd.concat(frames, ignore_index=True)
+    if members:
+        result.attrs["batch_peaks"] = pd.concat(species_frames, ignore_index=True)
+    logger.info("Loaded {} ledger row(s) from {} batch(es)", len(result), len(frames))
     return result
