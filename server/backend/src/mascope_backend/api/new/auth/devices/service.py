@@ -61,7 +61,7 @@ def _to_device_read(device: AgentDevice, username: str | None, tokens: int) -> d
 #: path is the hotter of the two. Bounded by the number of paired devices,
 #: which is small and finite; a worker that has just started simply writes
 #: once per device.
-_reported_instrument: dict[int, str] = {}
+_reported_instrument: dict[int, str | None] = {}
 
 
 async def record_reported_instrument(
@@ -72,39 +72,39 @@ async def record_reported_instrument(
 
     The row follows what the agent currently reports, the way the agent
     release beside it does: a machine repointed at another instrument says so
-    on its next upload, and a sponsor reading Paired machines sees where its
-    data is actually going. A sponsor can still override it by hand, and that
-    override stands until the agent reports something different.
+    on its next upload, one whose instrument was cleared says so too, and a
+    sponsor reading Paired machines sees where its data is actually going.
+    Uploads are filed under this same name, so the row and the filing cannot
+    disagree.
 
     The name is reported, not verified, and an invalid one is dropped with a
     log line rather than raised - attribution never fails an ingest.
 
     :param device_id: The device behind the upload, None when there is none.
     :type device_id: int | None
-    :param instrument: The instrument the upload's metadata named, if any.
+    :param instrument: The instrument the upload's metadata named; None or
+        blank when it named none, which clears the row.
     :type instrument: str | None
     """
-    if device_id is None or not instrument:
+    if device_id is None:
         return
-    instrument = instrument.strip()
-    if not INSTRUMENT_NAME_RE.match(instrument):
+    instrument = (instrument or "").strip() or None
+    if instrument is not None and not INSTRUMENT_NAME_RE.match(instrument):
         runtime.logger.info(
             f"Ignoring the instrument name device {device_id} reported with an "
             f"upload, which is not one the server files under: {instrument!r}"
         )
         return
-    if _reported_instrument.get(device_id) == instrument:
+    if (
+        device_id in _reported_instrument
+        and _reported_instrument[device_id] == instrument
+    ):
         return
     async with async_session() as session:
         await session.execute(
             update(AgentDevice)
             .where(AgentDevice.device_id == device_id)
-            .where(
-                or_(
-                    AgentDevice.instrument.is_(None),
-                    AgentDevice.instrument != instrument,
-                )
-            )
+            .where(AgentDevice.instrument.is_distinct_from(instrument))
             .values(instrument=instrument)
         )
         await session.commit()

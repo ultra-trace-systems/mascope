@@ -43,10 +43,13 @@ const allowedTypes = computed(() => {
   // For targets mode, use batch type constraints
   let allowed = getAllowedCollectionTypes(props.batch.type)
 
-  // Special case: TOF instruments can use CALIBRANTS for ACQUISITION batches
+  // Special case: TOF instruments can use CALIBRANTS for ACQUISITION batches.
+  // The instrument list carries the class the reader recorded for each
+  // instrument's files; the name rule is the fallback for a name it lacks.
   if (props.batch.type === 'ACQUISITION') {
     const currentInstrument = app.data.dataset.focused?.instrument
-    if (instrumentType(currentInstrument) === 'tof') {
+    const listed = app.data.instrument.list?.find((i) => i.instrument === currentInstrument)
+    if ((listed?.type ?? instrumentType(currentInstrument)) === 'tof') {
       allowed = [...new Set([...allowed, 'CALIBRANTS'])]
     }
   }

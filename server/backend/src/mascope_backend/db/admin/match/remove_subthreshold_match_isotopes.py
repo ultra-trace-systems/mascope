@@ -61,19 +61,21 @@ async def remove_subthreshold_match_isotopes(
     """
     async with async_session() as session:
         instruments = (
-            (await session.execute(text("SELECT DISTINCT instrument FROM sample_file")))
-            .scalars()
-            .all()
-        )
+            await session.execute(
+                text("SELECT DISTINCT instrument, instrument_type FROM sample_file")
+            )
+        ).all()
 
         per_instrument: list[dict] = []
         total_subthreshold = 0
         total_matched = 0
         skipped_instruments: list[str] = []
 
-        for instrument in instruments:
+        for instrument, instrument_type in instruments:
             try:
-                params = instrument_default_match_params(instrument)
+                params = instrument_default_match_params(
+                    instrument, instrument_type=instrument_type
+                )
             except ValueError:
                 # resolve_instrument_type raises on unrecognized instrument names.
                 params = None

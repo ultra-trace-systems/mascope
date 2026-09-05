@@ -25,12 +25,14 @@ from mascope_backend.api.controllers.sample.files.sample_files_controller import
     delete_sample_file,
     delete_sample_files,
     ensure_converter_available,
+    file_upload_name,
     get_sample_file,
     get_sample_file_metadata,
     get_sample_file_peak_timeseries,
     get_sample_file_peaks,
     get_sample_file_spectrum,
     get_sample_files,
+    reported_instrument_or_none,
     update_sample_file,
     upload_sample_file,
     upload_sample_files,
@@ -489,18 +491,27 @@ def get_upload_handler(
     """
 
     async def handler(file_path: str, metadata: dict):
-        # Sanitize filename to prevent path traversal
-        safe_filename = os.path.basename(metadata["filename"])
+        # Sanitize filenames to prevent path traversal
+        uploaded_name = os.path.basename(metadata["filename"])
+        source_filename = os.path.basename(
+            metadata.get("source_filename") or uploaded_name
+        )
+
+        # The upload is filed under the instrument the agent reports with it,
+        # and stored under a name that starts with it; without one, under the
+        # first segment of its name, as before (see file_upload_name).
+        stored_name, instrument = file_upload_name(
+            uploaded_name, reported_instrument_or_none(metadata.get("instrument"))
+        )
 
         # Check per-instrument access
-        instrument = get_instrument_name(safe_filename)
         validate_instrument_name(instrument)
         await check_instrument_workspace_access(
             instrument, user, "editor", allow_new=True
         )
 
-        # Rename file from temporary name back to original
-        dest_path = os.path.join(os.path.dirname(file_path), safe_filename)
+        # Rename file from temporary name to the name it is stored under
+        dest_path = os.path.join(os.path.dirname(file_path), stored_name)
         shutil.move(file_path, dest_path)
 
         # Single token validation for the entire upload process
@@ -512,11 +523,11 @@ def get_upload_handler(
             access_token=access_token,
             device_id=_request_device_id(request),
             instrument_timezone=metadata.get("timezone"),
+            source_filename=source_filename,
         )
-        # The instrument the agent says it watches, kept on its device row
-        # when the row has none yet. It is not what routes this upload - the
-        # instrument above still comes from the file name - and attribution
-        # must never fail an ingest, so a failure here is logged, not raised.
+        # The instrument the agent says it watches, kept on its device row so
+        # Paired machines shows where its data goes. Attribution must never
+        # fail an ingest, so a failure here is logged, not raised.
         try:
             await record_reported_instrument(
                 _request_device_id(request), metadata.get("instrument")

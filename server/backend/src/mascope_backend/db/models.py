@@ -674,6 +674,20 @@ def update_modified_timestamp(mapper, connection, target):
     target.sample_batch_utc_modified = dt.now(timezone.utc)
 
 
+def _instrument_type_from_name(context) -> str | None:
+    """The instrument class by the old name rule, for a row created without one.
+
+    The converter records the class it read the file with; this default only
+    covers rows inserted through the ORM without it, which is test fixtures.
+    A name the rule cannot read yields None and the NOT NULL refuses the row,
+    which is the right outcome: nothing should be filing a class-less row.
+    """
+    from mascope_file.name import resolve_instrument_type  # noqa: PLC0415
+
+    instrument = context.get_current_parameters().get("instrument") or ""
+    return resolve_instrument_type(instrument, throw=False)
+
+
 class SampleFile(Base):
     """
     Represents raw acquisition files.
@@ -727,6 +741,17 @@ class SampleFile(Base):
         String(64), nullable=True
     )
     utc_offset_source: Mapped[Optional[str]] = mapped_column(String(8), nullable=True)
+    # The instrument class, "orbi" or "tof", decided by the reader that
+    # converted the file. Recorded rather than parsed from the name, so an
+    # instrument's name need not say which class it is. The default is the
+    # old name rule, for rows created without one - test fixtures, mostly;
+    # the converter always records it.
+    instrument_type: Mapped[str] = mapped_column(
+        String(8), nullable=False, default=_instrument_type_from_name
+    )
+    # The file's name on the uploading machine, before the server filed it
+    # under the instrument the agent reported. NULL when nothing renamed it.
+    source_filename: Mapped[Optional[str]] = mapped_column(String(256), nullable=True)
 
     # Relationships
     instrument_function = relationship(

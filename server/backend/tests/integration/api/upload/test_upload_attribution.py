@@ -309,6 +309,100 @@ async def test_a_tus_upload_reports_its_instrument_under_that_key(monkeypatch):
     assert recorded == {"device_id": 7, "instrument": "Orbi-Lab2"}
 
 
+def _handler_probe(monkeypatch):
+    """A tus completion handler with its side effects captured, not run."""
+    seen = {}
+
+    async def fake_access(instrument, user, role, allow_new=False):
+        seen["instrument"] = instrument
+
+    async def fake_upload(dest_path, **kwargs):
+        seen["dest_path"] = dest_path
+        seen["source_filename"] = kwargs.get("source_filename")
+
+    async def noop(*args, **kwargs):
+        return None
+
+    monkeypatch.setattr(files_routes, "record_reported_instrument", noop)
+    monkeypatch.setattr(files_routes, "check_instrument_workspace_access", fake_access)
+    monkeypatch.setattr(files_routes, "get_access_token", noop)
+    monkeypatch.setattr(files_routes, "upload_sample_file", fake_upload)
+    monkeypatch.setattr(
+        files_routes.shutil, "move", lambda src, dst: seen.update(moved_to=dst)
+    )
+    request = SimpleNamespace(state=SimpleNamespace(token_device_id=7))
+    return files_routes.get_upload_handler(request=request, user=object()), seen
+
+
+@pytest.mark.asyncio
+async def test_a_tus_upload_is_filed_under_the_instrument_it_reports(monkeypatch):
+    """The file name no longer has to carry the instrument.
+
+    An agent that reports what it watches gets its upload stored under a name
+    that starts with it, checked against that instrument's workspace, and the
+    converter is told the name the file had on the instrument PC.
+    """
+    handler, seen = _handler_probe(monkeypatch)
+
+    await handler(
+        "/tmp/tus/upload-body",
+        {
+            "filename": "ambient_2026.09.05-10h12m01s.raw",
+            "source_filename": "ambient_2026.09.05-10h12m01s.raw",
+            "instrument": "Test",
+        },
+    )
+
+    assert seen["instrument"] == "Test"
+    assert (
+        seen["moved_to"]
+        .replace("\\", "/")
+        .endswith("/tmp/tus/Test_ambient_2026.09.05-10h12m01s.raw")
+    )
+    assert seen["source_filename"] == "ambient_2026.09.05-10h12m01s.raw"
+
+
+@pytest.mark.asyncio
+async def test_a_tus_upload_without_a_report_is_filed_by_its_name(monkeypatch):
+    handler, seen = _handler_probe(monkeypatch)
+
+    await handler(
+        "/tmp/tus/upload-body", {"filename": "Orbi-Lab2_2026.09.05-10h12m01s.raw"}
+    )
+
+    assert seen["instrument"] == "Orbi-Lab2"
+    assert (
+        seen["moved_to"]
+        .replace("\\", "/")
+        .endswith("/tmp/tus/Orbi-Lab2_2026.09.05-10h12m01s.raw")
+    )
+    # Nothing renamed it, so the on-disk name is the uploaded one.
+    assert seen["source_filename"] == "Orbi-Lab2_2026.09.05-10h12m01s.raw"
+
+
+@pytest.mark.asyncio
+async def test_a_tus_upload_already_prefixed_by_the_agent_is_not_prefixed_again(
+    monkeypatch,
+):
+    handler, seen = _handler_probe(monkeypatch)
+
+    await handler(
+        "/tmp/tus/upload-body",
+        {
+            "filename": "Test_ambient_2026.09.05-10h12m01s.raw",
+            "source_filename": "ambient_2026.09.05-10h12m01s.raw",
+            "instrument": "Test",
+        },
+    )
+
+    assert seen["instrument"] == "Test"
+    assert (
+        seen["moved_to"]
+        .replace("\\", "/")
+        .endswith("/tmp/tus/Test_ambient_2026.09.05-10h12m01s.raw")
+    )
+
+
 @pytest.mark.asyncio
 async def test_a_failure_to_record_the_instrument_does_not_fail_the_upload(monkeypatch):
     """Attribution never fails an ingest: the file is already stored."""

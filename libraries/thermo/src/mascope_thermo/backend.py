@@ -416,14 +416,6 @@ _RECON_PTS = 15  # samples per peak across +-_RECON_SIGMA sigma (~Thermo's densi
 _AVG_CENTROID_HEIGHT_PPM = 3.0  # window to source centroid height from profile apex
 _AVG_CENTROID_HEIGHT_BAND = (0.85, 1.15)  # apply the apex only as a modest refinement
 _AVG_CENTROID_MERGE_FWHM = 0.5  # merge centroids whose gap is below this * local FWHM
-# ... or below this, if the scans hold one or the other side, not both:
-_AVG_CENTROID_EXCLUSIVE_MERGE_FWHM = 1.5
-_AVG_CENTROID_EXCLUSIVE_OVERLAP = 0.2  # max share of the smaller side in shared scans
-_AVG_CENTROID_EXCLUSIVE_COVERAGE = 0.6  # min fraction of the scans the two sides span
-_AVG_CENTROID_EXCLUSIVE_MIN_SIDE = 0.35  # min fraction of the scans on each side
-_AVG_CENTROID_EXCLUSIVE_MIN_ALTERNATIONS = (
-    2  # side changes along the scans; a hand-over is 1
-)
 _ZEROFILL_GAP_FACTOR = 4.0  # profile m/z gap > this * median = a cluster boundary
 _ZEROFILL_EDGE_PPM = 2.0  # place baseline zeros this far outside each cluster edge
 
@@ -456,8 +448,7 @@ def _ppm_bin(
     intensity: np.ndarray,
     extras: list[np.ndarray],
     ppm: float,
-    groups: np.ndarray | None = None,
-) -> tuple[np.ndarray, np.ndarray, list[np.ndarray], np.ndarray, list | None]:
+) -> tuple[np.ndarray, np.ndarray, list[np.ndarray], np.ndarray]:
     """Greedily cluster ``(mz, intensity)`` points within ``ppm`` and aggregate.
 
     Points (pooled across scans) are sorted by m/z; a new bin starts wherever
@@ -467,24 +458,13 @@ def _ppm_bin(
     Vectorized with ``np.add.reduceat`` so it scales to the hundreds of
     thousands of profile points a multi-scan window produces.
 
-    Returns ``(binned_mz, summed_intensity, [binned_extra, ...], counts,
-    members)`` where ``counts`` is the number of pooled points in each bin (=
-    scans contributing a centroid, used to scale the averaged S:N) and
-    ``members`` is ``(scans, intensities, starts, ends)``: the ``groups`` id
-    and the intensity of every point in bin order, and where each bin starts
-    and ends in them -- or None when ``groups`` is not given. Nothing is
-    sliced up front; a consumer takes the bins it looks at.
+    Returns ``(binned_mz, summed_intensity, [binned_extra, ...], counts)`` where
+    ``counts`` is the number of pooled points in each bin (= scans contributing
+    a centroid, used to scale the averaged S:N).
     """
     empty = np.array([], dtype=np.float64)
     if mz.size == 0:
-        empty_idx = np.array([], dtype=np.intp)
-        return (
-            empty,
-            empty,
-            [empty for _ in extras],
-            empty,
-            None if groups is None else (empty_idx, empty, empty_idx, empty_idx),
-        )
+        return empty, empty, [empty for _ in extras], empty
 
     order = np.argsort(mz, kind="stable")
     mz = mz[order]
@@ -497,11 +477,6 @@ def _ppm_bin(
         gap_ppm = np.diff(mz) / mz[:-1] * 1e6
         starts = np.concatenate(([0], np.flatnonzero(gap_ppm > ppm) + 1))
 
-    members = (
-        None
-        if groups is None
-        else (groups[order], intensity, starts, np.append(starts[1:], mz.size))
-    )
     counts = np.diff(np.append(starts, mz.size))
     isum = np.add.reduceat(intensity, starts)
     # Guard against zero-intensity bins (fall back to a plain mean for m/z and
@@ -519,7 +494,7 @@ def _ppm_bin(
         plain_e = np.add.reduceat(e, starts) / counts
         binned_extras.append(np.where(nonzero, we, plain_e))
 
-    return binned_mz, isum, binned_extras, counts.astype(np.float64), members
+    return binned_mz, isum, binned_extras, counts.astype(np.float64)
 
 
 class ThermoBackend:
@@ -1283,18 +1258,17 @@ class OpenTFRawBackend:
         average: bool = False,
     ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
         # NumPy reimplementation of Thermo's AverageScans over centroids: pool
-        # the per-scan FT label peaks, key them by physical frequency, and
-        # ppm-bin them for m/z (sub-ppm exact), resolution and S:N
-        # (approximate). The HEIGHT, however, is then sourced from the
-        # frequency-averaged profile apex (below): Thermo re-centroids the
-        # averaged profile, whose apex incurs an interpolation loss that a
-        # per-scan centroid-apex sum does not, so the ppm-bin sum runs ~5-6%
-        # high; the profile apex matches Thermo to ~1-2%.
+        # the per-scan FT label peaks and ppm-bin them for m/z (sub-ppm
+        # exact), resolution and S:N (approximate). The HEIGHT, however, is then
+        # sourced from the frequency-averaged profile apex (below): Thermo
+        # re-centroids the averaged profile, whose apex incurs an interpolation
+        # loss that a per-scan centroid-apex sum does not, so the ppm-bin sum runs
+        # ~5-6% high; the profile apex matches Thermo to ~1-2%.
         if ppm <= 0:
             raise ValueError(f"Invalid ppm value: {ppm}. ppm must be > 0.")
 
-        mz_parts, int_parts, res_parts, sn_parts, scan_parts = [], [], [], [], []
-        for ordinal, scan_number in enumerate(scan_indices):
+        mz_parts, int_parts, res_parts, sn_parts = [], [], [], []
+        for scan_number in scan_indices:
             labels = self._raw.centroid_labels(int(scan_number))
             mz = np.asarray(labels["mz"], dtype=np.float64)
             intensity = np.asarray(labels["intensity"], dtype=np.float64)
@@ -1305,51 +1279,21 @@ class OpenTFRawBackend:
             int_parts.append(intensity[keep])
             res_parts.append(resolution[keep])
             sn_parts.append(signal_to_noise[keep])
-            scan_parts.append(np.full(int(keep.sum()), ordinal, dtype=np.intp))
 
         num_combined = len(scan_indices)
         mz_all = np.concatenate(mz_parts) if mz_parts else np.array([])
         int_all = np.concatenate(int_parts) if int_parts else np.array([])
         res_all = np.concatenate(res_parts) if res_parts else np.array([])
         sn_all = np.concatenate(sn_parts) if sn_parts else np.array([])
-        scan_all = (
-            np.concatenate(scan_parts) if scan_parts else np.array([], dtype=np.intp)
-        )
 
-        # Bin by frequency, report by label. The bin key is each scan's m/z
-        # re-expressed on one calibration (_labels_on_one_calibration), so a
-        # calibration step between scans cannot put one peak's centroids into
-        # two bins; the reported m/z stays the intensity-weighted mean of the
-        # labels as the instrument wrote them, which is what a merged peak has
-        # always reported. Labels bin as written when a scan carries no B/C.
-        # Each bin also remembers which scans its centroids came from, for the
-        # scan-exclusive merge below.
-        key_parts = self._labels_on_one_calibration(scan_indices, mz_parts)
-        if key_parts is None:
-            masses, summed, (resolutions, signal_to_noise), present, members = _ppm_bin(
-                mz_all, int_all, [res_all, sn_all], ppm, groups=scan_all
-            )
-        else:
-            key_all = np.concatenate(key_parts) if key_parts else np.array([])
-            _, summed, (resolutions, signal_to_noise, masses), present, members = (
-                _ppm_bin(key_all, int_all, [res_all, sn_all, mz_all], ppm, scan_all)
-            )
-            # Bins come out in key order. Two close bins with different scan
-            # membership can have their label means in the other order, and
-            # the merge and the profile-apex lookup below need sorted masses.
-            order = np.argsort(masses, kind="stable")
-            masses, summed, present = masses[order], summed[order], present[order]
-            resolutions, signal_to_noise = resolutions[order], signal_to_noise[order]
-            scans_sorted, weights_sorted, bin_starts, bin_ends = members
-            members = (scans_sorted, weights_sorted, bin_starts[order], bin_ends[order])
-        # Merge jitter-splits: the residual between-scan m/z wobble can still
-        # exceed the ppm bin, splitting one peak's per-scan centroids into
-        # adjacent bins. Collapse neighbours whose gap is well below the local
-        # FWHM (so a real peak's split merges, while genuinely-resolved peaks
-        # stay separate) -- mirroring Thermo's profile re-centroid, which never
-        # splits one peak -- and, up to a wider gap, neighbours the scans hold
-        # one or the other of, which is how one ion looks when its position
-        # jitters from scan to scan by about its own width.
+        masses, summed, (resolutions, signal_to_noise), present = _ppm_bin(
+            mz_all, int_all, [res_all, sn_all], ppm
+        )
+        # Merge jitter-splits: the between-scan m/z jitter (~2 ppm) can exceed the
+        # ppm bin, splitting one peak's per-scan centroids into adjacent bins.
+        # Collapse neighbours whose gap is well below the local FWHM (so a real
+        # peak's split merges, while genuinely-resolved peaks stay separate) --
+        # mirroring Thermo's profile re-centroid, which never splits one peak.
         (
             masses,
             summed,
@@ -1357,7 +1301,7 @@ class OpenTFRawBackend:
             signal_to_noise,
             present,
         ) = self._merge_split_centroids(
-            masses, summed, resolutions, signal_to_noise, present, members, num_combined
+            masses, summed, resolutions, signal_to_noise, present
         )
         # Scale the pooled per-scan S:N up to the averaged-spectrum S:N. Thermo
         # reads S:N off the noise-reduced *averaged* profile: averaging N scans
@@ -1388,48 +1332,6 @@ class OpenTFRawBackend:
                 )
         return masses, intensities, resolutions, signal_to_noise
 
-    def _labels_on_one_calibration(
-        self, scan_indices: list[int], mz_parts: list[np.ndarray]
-    ) -> list[np.ndarray] | None:
-        """Re-express each scan's centroid m/z on one scan's calibration.
-
-        An ion's frequency is the same in every scan; what moves its centroid
-        m/z between scans is the per-scan frequency->m/z calibration, i.e. the
-        Conversion Parameters B/C, which carry the lock-mass and other
-        compensations. Usually that is a sub-ppm wobble, but when a lock mass
-        engages part-way through a file (the instrument finds the lock-mass ion
-        only after the first scans) the calibration steps by a few ppm at once.
-        At low m/z, where the FWHM is itself only a few ppm, such a step is
-        wider than the ppm bin and than half a FWHM, so one peak's centroids
-        land in two bins and the jitter-split merge cannot recover them.
-        Converting every scan's labels to frequency with its own B/C and back
-        with one reference calibration removes the step -- the profile
-        averaging does the same, see ``_average_profile_in_frequency`` -- so the
-        bin groups a peak's centroids by physical frequency.
-
-        Returns one array per scan, aligned with ``mz_parts``, or None when a
-        selected scan carries no B/C (non-FTMS data), in which case the caller
-        bins the labels as written.
-        """
-        params = [self._profile_conversion_params(int(n)) for n in scan_indices]
-        if not params or any(b is None for b, _ in params):
-            return None
-        # The reference only fixes the key's scale, so any scan serves; the
-        # densest one, as the profile averaging picks.
-        ref = max(range(len(mz_parts)), key=lambda i: mz_parts[i].size)
-        b_ref, c_ref = params[ref]
-        keys = []
-        for (b, c), mz in zip(params, mz_parts):
-            if mz.size == 0 or (b == b_ref and c == c_ref):
-                keys.append(mz)
-                continue
-            key = mz.astype(np.float64, copy=True)
-            ok = np.isfinite(mz) & (mz > 0)
-            f2 = self._mz_to_freq(mz[ok], b, c) ** 2
-            key[ok] = b_ref / f2 + c_ref / (f2 * f2)
-            keys.append(key)
-        return keys
-
     @staticmethod
     def _merge_split_centroids(
         masses: np.ndarray,
@@ -1437,8 +1339,6 @@ class OpenTFRawBackend:
         resolutions: np.ndarray,
         sn: np.ndarray,
         present: np.ndarray,
-        members: tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray],
-        n_scans: int,
     ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
         """Merge adjacent centroids that are a jitter-split of one peak.
 
@@ -1448,99 +1348,13 @@ class OpenTFRawBackend:
         (gap >= FWHM) stay separate. Per cluster: intensity-weighted m/z, summed
         intensity, intensity-weighted resolution / S:N, and summed ``present``
         (the split halves' scans add up to the merged peak's scan count).
-
-        A second, wider rule applies up to ``_AVG_CENTROID_EXCLUSIVE_MERGE_FWHM``
-        * the local FWHM, read from ``members`` (the scan and intensity of every
-        pooled centroid in bin order, with each bin's start and end into them,
-        as ``_ppm_bin`` returns them) and ``n_scans`` (how many scans were
-        pooled): neighbours are merged when the scans hold one side or the
-        other, not both, and alternate between them. An ion whose measured
-        position jitters from scan to scan by about its own width (seen on a
-        dominant ion at a few million counts per scan, with the calibration
-        steady) yields one centroid per scan, landing now in one bin and now
-        in the other; two ions that close are resolved within a scan, so their
-        bins share scans; and two ions that hand over in time, one present
-        before a transition and the other after, share no scan either but
-        change side only once. Concretely, at most
-        ``_AVG_CENTROID_EXCLUSIVE_OVERLAP`` of the smaller side's intensity may
-        sit in scans where the other side has a centroid too -- a stray weak
-        label in one scan does not veto the merge, while a real minor ion
-        beside a major one, present in the same scans, does; each side must
-        hold at least ``_AVG_CENTROID_EXCLUSIVE_MIN_SIDE`` of the scans, which
-        one ion alternating between two positions does and the wobbling
-        fragments beside an intense peak, present in a couple of scans each,
-        do not, and which also keeps two noise labels from different scans
-        apart (on any window the alternation count below can pass, that share
-        is two scans or more); the two sides together must cover at least
-        ``_AVG_CENTROID_EXCLUSIVE_COVERAGE`` of the scans, which only decides
-        when they overlap in scans; and, walking the scans in order, the side
-        holding more intensity must change at least
-        ``_AVG_CENTROID_EXCLUSIVE_MIN_ALTERNATIONS`` times. The per-scan
-        intensities are carried along the cluster on both sides of the pair
-        under test, so a fence of satellites cannot chain through a peak pair
-        by pair.
         """
         if masses.size <= 1:
             return masses, intensities, resolutions, sn, present
         fwhm_ppm = np.where(resolutions > 0, 1e6 / resolutions, np.inf)
         gap_ppm = np.diff(masses) / masses[:-1] * 1e6
-        local = np.minimum(fwhm_ppm[:-1], fwhm_ppm[1:])
-        merge = gap_ppm < _AVG_CENTROID_MERGE_FWHM * local
-        exclusive = np.flatnonzero(
-            (gap_ppm < _AVG_CENTROID_EXCLUSIVE_MERGE_FWHM * local) & ~merge
-        )
-        if n_scans and exclusive.size:
-            scans, weights, bin_starts, bin_ends = members
-            min_side = _AVG_CENTROID_EXCLUSIVE_MIN_SIDE * n_scans
-            min_covered = _AVG_CENTROID_EXCLUSIVE_COVERAGE * n_scans
-
-            def per_scan(first: int, last: int) -> np.ndarray:
-                """Intensity per scan over bins ``first`` to ``last`` inclusive."""
-                acc = np.zeros(n_scans)
-                for k in range(first, last + 1):
-                    part = slice(bin_starts[k], bin_ends[k])
-                    acc += np.bincount(
-                        scans[part], weights=weights[part], minlength=n_scans
-                    )
-                return acc
-
-            # `left` accumulates the cluster ending at bin `left_end`. The
-            # next pair either begins at that bin, carrying the cluster
-            # forward, or starts one of its own, running back over the merged
-            # pairs whose decisions are final by now.
-            left, left_end = None, -1
-            for i in exclusive:
-                if left is None or left_end != i:
-                    start = i
-                    while start > 0 and merge[start - 1]:
-                        start -= 1
-                    left = per_scan(start, i)
-                # The right side runs forward over the pairs already merged
-                # unconditionally, so a bin that will join it either way is
-                # weighed now rather than slipping in afterwards.
-                end = i + 1
-                while end < masses.size - 1 and merge[end]:
-                    end += 1
-                right = per_scan(i + 1, end)
-                smaller = min(left.sum(), right.sum())
-                shared = np.minimum(left, right).sum()
-                held = (left > 0) | (right > 0)
-                side = min(np.count_nonzero(left > 0), np.count_nonzero(right > 0))
-                dominant = (right > left)[held]
-                alternations = np.count_nonzero(dominant[1:] != dominant[:-1])
-                if (
-                    smaller > 0
-                    and shared <= _AVG_CENTROID_EXCLUSIVE_OVERLAP * smaller
-                    and side >= min_side
-                    and np.count_nonzero(held) >= min_covered
-                    and alternations >= _AVG_CENTROID_EXCLUSIVE_MIN_ALTERNATIONS
-                ):
-                    merge[i] = True
-                    left += right
-                else:
-                    left = right
-                left_end = end
-        starts = np.concatenate(([0], np.flatnonzero(~merge) + 1))
+        thresh = _AVG_CENTROID_MERGE_FWHM * np.minimum(fwhm_ppm[:-1], fwhm_ppm[1:])
+        starts = np.concatenate(([0], np.flatnonzero(gap_ppm >= thresh) + 1))
         isum = np.add.reduceat(intensities, starts)
         counts = np.diff(np.append(starts, masses.size))
         safe = np.where(isum > 0, isum, 1.0)

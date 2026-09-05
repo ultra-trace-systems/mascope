@@ -134,8 +134,11 @@ def acquisition_drift_limit_ppm(filename: str) -> float:
         files (a TOF mass axis wanders tens of ppm in normal operation), the
         tighter ``ACQUISITION_DRIFT_WARNING_PPM`` otherwise.
     """
-    instrument_name = m_name.get_instrument_name(filename)
-    if m_name.resolve_instrument_type(instrument_name, throw=False) == "tof":
+    try:
+        instrument_type = m_name.get_instrument_type(filename)
+    except ValueError:
+        instrument_type = None
+    if instrument_type == "tof":
         return calibration_config.TOF_ACQUISITION_DRIFT_WARNING_PPM
     return calibration_config.ACQUISITION_DRIFT_WARNING_PPM
 

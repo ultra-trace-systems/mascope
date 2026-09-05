@@ -40,11 +40,15 @@ Name files as:
 <instrument>_<timestamp>_<ionization-token>...<.raw|.h5>
 ```
 
-- **Instrument** — the first segment, before the first underscore. It must
-  identify the instrument type: names containing `orbi` are treated as Orbitrap,
-  and names containing `tof` or `api` as TOF. The instrument type must match the
-  extension (`orbi…` with `.raw`, `tof…` with `.h5`). Use only letters, digits,
-  and hyphens in this segment.
+- **Instrument** — the first segment, before the first underscore. Use only
+  letters, digits, and hyphens in this segment. Whether the file is an
+  Orbitrap or a TOF acquisition is decided by the file itself when it is
+  converted, not by the name, so the instrument can be called anything. A
+  paired **File Agent** that names its instrument in its configuration files
+  every upload under that name, and its file names need not carry the
+  instrument at all: the server puts `<instrument>_` in front of the stored
+  name. For files uploaded from the browser the name is the only source, so
+  there it still has to start with the instrument.
 - **Timestamp** — an acquisition date/time somewhere in the name, in one of the
   recognised forms (for example `20240115_1430`, `20240115143000`, or
   `2024.01.15-14h30m00s`). Mascope uses it to place and order the file.

@@ -19,6 +19,7 @@ from mascope_backend.api.new.instruments.service import get_instruments
 from mascope_backend.db import (
     AgentDevice,
     Dataset,
+    SampleFile,
     User,
     Workspace,
     WorkspaceMember,
@@ -225,6 +226,26 @@ async def _find_acquisition_dataset(
 
 
 @api_controller()
+async def instrument_type_of(instrument: str) -> str | None:
+    """The class of an instrument, "orbi" or "tof".
+
+    From the files converted under its name, where the reader recorded it;
+    the name itself when it has none yet and says.
+
+    :param instrument: The instrument name
+    :type instrument: str
+    :return: The instrument class, or None when nothing says
+    :rtype: str | None
+    """
+    async with async_session() as session:
+        recorded = await session.scalar(
+            select(SampleFile.instrument_type)
+            .where(SampleFile.instrument == instrument)
+            .limit(1)
+        )
+    return recorded or resolve_instrument_type(instrument, throw=False)
+
+
 async def get_acquisition_dataset(
     instrument: str,
     year: int | None = None,
@@ -307,7 +328,7 @@ async def get_acquisition_dataset(
         room=workspace_id,
     )
 
-    instrument_type = resolve_instrument_type(instrument, throw=False)
+    instrument_type = await instrument_type_of(instrument)
     await emit_record_created(
         record_type="instrument",
         record_id=instrument,

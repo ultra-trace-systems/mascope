@@ -62,7 +62,11 @@ from mascope_backend.socket.records.service import (
 )
 from mascope_backend.socket.storage.services import is_service_connected
 from mascope_file.io import load_peak_data
-from mascope_file.name import parse_path_from_item_filename
+from mascope_file.name import (
+    get_instrument_name,
+    parse_path_from_item_filename,
+    validate_instrument_name,
+)
 from mascope_signal.peak import get_peaks
 
 
@@ -83,12 +87,69 @@ async def ensure_converter_available() -> None:
         )
 
 
+def file_upload_name(
+    uploaded_name: str, reported_instrument: str | None
+) -> tuple[str, str]:
+    """The name an upload is stored under, and the instrument it is filed under.
+
+    The instrument is the first underscore-separated segment of a stored
+    name, and everything that files, reads or lists a sample relies on that.
+    An agent that reports the instrument it watches therefore gets its
+    uploads stored under ``<instrument>_<name>``, unless the name already
+    starts with that instrument - the agent's own upload prefix, or an
+    acquisition setup that names files that way - in which case nothing is
+    added. Without a reported instrument the name is stored as it arrived,
+    and its first segment is the instrument, as before.
+
+    :param uploaded_name: The file's name as uploaded (base name only)
+    :type uploaded_name: str
+    :param reported_instrument: The instrument the uploader reported, cleaned,
+        or None
+    :type reported_instrument: str | None
+    :return: The stored name and the instrument it is filed under
+    :rtype: tuple[str, str]
+    """
+    if not reported_instrument:
+        return uploaded_name, get_instrument_name(uploaded_name)
+    if get_instrument_name(uploaded_name) == reported_instrument:
+        return uploaded_name, reported_instrument
+    return f"{reported_instrument}_{uploaded_name}", reported_instrument
+
+
+def reported_instrument_or_none(value: str | None) -> str | None:
+    """A reported instrument name the server can file under, or None.
+
+    The agent validates the name before it starts, so a bad one here is a
+    bug on the far side rather than a user error - and the upload has already
+    been accepted, so it is filed by its name as before, with a warning, rather
+    than dropped.
+
+    :param value: The instrument named in the upload's metadata, if any
+    :type value: str | None
+    :return: The cleaned name, or None
+    :rtype: str | None
+    """
+    instrument = (value or "").strip()
+    if not instrument:
+        return None
+    try:
+        validate_instrument_name(instrument)
+    except ValueError as e:
+        runtime.logger.warning(
+            f"Ignoring the instrument reported with an upload and filing the "
+            f"file by its name instead: {e}"
+        )
+        return None
+    return instrument
+
+
 async def _register_file_with_converter(
     filename: str,
     user: User,
     access_token: str,
     device_id: int | None,
     instrument_timezone: str | None,
+    source_filename: str | None = None,
 ) -> None:
     """Tell the converter who uploaded a file, before the file is stored.
 
@@ -116,6 +177,9 @@ async def _register_file_with_converter(
     :type device_id: int | None
     :param instrument_timezone: IANA timezone the uploading machine reported.
     :type instrument_timezone: str | None
+    :param source_filename: The file's name on the uploading machine, when the
+        server stores it under another.
+    :type source_filename: str | None
     """
     await event_emitter.emit(
         "file-converter.auth",
@@ -127,6 +191,7 @@ async def _register_file_with_converter(
             "access_token": access_token,
             "device_id": device_id,
             "instrument_timezone": instrument_timezone,
+            "source_filename": source_filename,
         },
     )
 
@@ -957,6 +1022,7 @@ async def upload_sample_files(
                 access_token=access_token,
                 device_id=device_id,
                 instrument_timezone=instrument_timezone,
+                source_filename=filename,
             )
 
             tmp_path = f"{file_path}.{uuid4().hex}.part"
@@ -1047,6 +1113,7 @@ async def upload_sample_file(
     access_token: str,
     device_id: int | None = None,
     instrument_timezone: str | None = None,
+    source_filename: str | None = None,
 ) -> dict:
     """
     Handles upload of a single sample file from a given file path to the `filestreams` directory.
@@ -1064,6 +1131,9 @@ async def upload_sample_file(
     :type device_id: int | None, optional
     :param instrument_timezone: IANA timezone the uploading machine reported.
     :type instrument_timezone: str | None, optional
+    :param source_filename: The file's name on the uploading machine, when
+        the server stores it under another (see :func:`file_upload_name`).
+    :type source_filename: str | None, optional
     :return: Dictionary with file upload result.
     :rtype: dict
     """
@@ -1119,6 +1189,7 @@ async def upload_sample_file(
             access_token=access_token,
             device_id=device_id,
             instrument_timezone=instrument_timezone,
+            source_filename=source_filename,
         )
 
         # A cross-filesystem move degrades to a non-atomic copy, which the

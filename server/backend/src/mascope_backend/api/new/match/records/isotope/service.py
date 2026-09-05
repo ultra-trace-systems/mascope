@@ -36,7 +36,6 @@ from mascope_backend.db import (
     TargetIsotope,
     async_session,
 )
-from mascope_file.name import get_instrument_name, resolve_instrument_type
 from mascope_match.params import (
     ORBI_DEFAULT_ISOTOPE_ABUNDANCE_THRESHOLD,
     TOF_DEFAULT_ISOTOPE_ABUNDANCE_THRESHOLD,
@@ -147,8 +146,7 @@ async def _get_sample_match_isotope_records(
         )
 
         # Determine instrument type and resolution for filtering
-        instrument_type = resolve_instrument_type(get_instrument_name(sample.filename))
-        isotope_resolution = "LOW" if instrument_type == "tof" else "HIGH"
+        isotope_resolution = "LOW" if sample.instrument_type == "tof" else "HIGH"
 
         query = (
             select(
@@ -425,12 +423,7 @@ async def _get_batch_match_isotope_records(
 
         # Determine resolution based on instrument types in batch
         samples = await get_samples(sample_batch_id=sample_batch.sample_batch_id)
-        instrument_types = set(
-            [
-                resolve_instrument_type(get_instrument_name(sample["filename"]))
-                for sample in samples["data"]
-            ]
-        )
+        instrument_types = {sample["instrument_type"] for sample in samples["data"]}
         isotope_resolution = "HIGH" if "orbi" in instrument_types else "LOW"
 
         query = (

@@ -245,6 +245,29 @@ async def test_an_unchanged_instrument_costs_no_write(
 
 
 @pytest.mark.asyncio
+async def test_an_upload_that_reports_no_instrument_clears_the_row(
+    fake_redis, public_client, editor_client, async_session_factory
+):
+    # The row says what the machine last reported, as the version beside it
+    # does: an agent whose instrument was cleared in setup stops showing the
+    # old name on its next upload, instead of keeping it indefinitely.
+    _, device_id = await _pair(
+        public_client, editor_client, "CLEAR-PC", instrument="Orbi-A"
+    )
+    async with async_session_factory() as session:
+        assert (await session.get(AgentDevice, device_id)).instrument == "Orbi-A"
+
+    await record_reported_instrument(device_id, None)
+    async with async_session_factory() as session:
+        assert (await session.get(AgentDevice, device_id)).instrument is None
+
+    # And an upload that reports one again fills it back in.
+    await record_reported_instrument(device_id, "Orbi-B")
+    async with async_session_factory() as session:
+        assert (await session.get(AgentDevice, device_id)).instrument == "Orbi-B"
+
+
+@pytest.mark.asyncio
 async def test_rename_device(fake_redis, public_client, editor_client):
     _, device_id = await _pair(public_client, editor_client, "OLD-NAME")
 
