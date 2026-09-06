@@ -65,7 +65,7 @@ class RatioChart:
             rows.append(
                 {
                     "composition": parent_comp,
-                    "group": group,
+                    "activation": group.activation,
                     "mz": pp,
                     "fragment_frac": fragment_tic_pct / total * 100,
                     "parent_frac": parent_tic_pct / total * 100,
@@ -74,16 +74,52 @@ class RatioChart:
 
         if not rows:
             return pd.DataFrame(
-                columns=["composition", "mz", "fragment_frac", "parent_frac"]
+                columns=[
+                    "composition",
+                    "activation",
+                    "mz",
+                    "fragment_frac",
+                    "parent_frac",
+                ]
             )
 
         df = pd.DataFrame(rows)
+        # Activation is part of the key, not just the composition: precursors
+        # sharing a formula still merge into one bar, but the steps of a
+        # stepped-energy run stay apart. Averaging across them would report a
+        # fragment fraction measured at no collision energy the instrument used.
         df = (
-            df.groupby("composition", sort=False)
+            df.groupby(["composition", "activation"], sort=False)
             .agg({"mz": "mean", "fragment_frac": "mean", "parent_frac": "mean"})
             .reset_index()
         )
-        return df.sort_values("mz", ascending=True).reset_index(drop=True)
+        return df.sort_values(["mz", "activation"], ascending=True).reset_index(
+            drop=True
+        )
+
+    @staticmethod
+    def _tick_labels(df: pd.DataFrame) -> list[str]:
+        """One tick label per bar: m/z, formula, and the activation.
+
+        The activation appears only when the frame carries more than one,
+        because that is when it distinguishes bars: a stepped-energy run puts
+        several bars at one m/z with one formula, and without it they are
+        labelled identically.
+
+        :param df: Frame with 'mz' and 'composition', optionally 'activation'.
+        :return: HTML tick labels, one per row.
+        :rtype: list[str]
+        """
+        stepped = "activation" in df.columns and df["activation"].nunique() > 1
+        labels = []
+        for _, row in df.iterrows():
+            label = (
+                f"{row['mz']:.1f}<br>{RatioChart._to_html_formula(row['composition'])}"
+            )
+            if stepped and row["activation"]:
+                label += f"<br>{row['activation']}"
+            labels.append(label)
+        return labels
 
     @staticmethod
     def _to_html_formula(formula: str) -> str:
@@ -137,11 +173,7 @@ class RatioChart:
         n = len(df)
         x_pos = list(range(n))
 
-        # Build tick labels: m/z value + HTML formula
-        tick_labels = [
-            f"{row['mz']:.1f}<br>{self._to_html_formula(row['composition'])}"
-            for _, row in df.iterrows()
-        ]
+        tick_labels = RatioChart._tick_labels(df)
 
         fig = go.FigureWidget()
 

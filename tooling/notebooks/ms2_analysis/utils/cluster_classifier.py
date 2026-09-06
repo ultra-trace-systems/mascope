@@ -90,20 +90,31 @@ class ClusterClassifier:
         sign = "+" if self._mechanism.charge > 0 else "-"
         return self._mechanism.formula + sign
 
-    @property
-    def declustering_parents(self) -> np.ndarray:
+    def _groups_of_type(self, frag_type: str) -> list:
+        """The MS2 groups classified as ``frag_type``.
+
+        Groups, not parent m/z values: classification runs per group, and one
+        precursor's steps can classify differently -- a low collision energy
+        declustering where a high one shows proton transfer. Returning m/z
+        would put that precursor in two categories at once and pull all of its
+        steps into both.
+        """
         df = self._classification
-        return df.loc[df["type"] == "Declustering", "mz"].values
+        if df.empty:
+            return []
+        return list(df.loc[df["type"] == frag_type, "group"])
 
     @property
-    def proton_transfer_parents(self) -> np.ndarray:
-        df = self._classification
-        return df.loc[df["type"] == "Proton transfer", "mz"].values
+    def declustering_groups(self) -> list:
+        return self._groups_of_type("Declustering")
 
     @property
-    def undetermined_parents(self) -> np.ndarray:
-        df = self._classification
-        return df.loc[df["type"] == "Undetermined", "mz"].values
+    def proton_transfer_groups(self) -> list:
+        return self._groups_of_type("Proton transfer")
+
+    @property
+    def undetermined_groups(self) -> list:
+        return self._groups_of_type("Undetermined")
 
     def _classify(self) -> pd.DataFrame:
         rows: list[dict] = []
