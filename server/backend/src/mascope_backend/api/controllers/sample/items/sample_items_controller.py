@@ -67,7 +67,6 @@ from mascope_backend.socket.records.service import (
     emit_record_updated,
 )
 from mascope_file.name import get_instrument_type
-from mascope_thermo.thermo import NoScansFoundError
 
 
 @api_controller()
@@ -280,11 +279,14 @@ async def create_sample_items(
                         base_filename=sample_file.filename,
                         polarity=sample_item.polarity,
                     )
-                except (TypeError, NoScansFoundError) as e:
-                    # NoScansFoundError is what the raw readers raise for a
-                    # polarity the file does not carry; without it here that
-                    # request came back a 500 rather than the message below,
-                    # and only the TOF path's TypeError was ever caught.
+                except (TypeError, ValueError) as e:
+                    # One condition, three spellings: the TOF path raises
+                    # TypeError on an empty selection, the raw readers raise
+                    # NoScansFoundError for a polarity the file does not carry,
+                    # and get_acquisition_window raises a bare ValueError for a
+                    # zarr time axis that reads back empty. NoScansFoundError
+                    # subclasses ValueError, so the pair covers all three; each
+                    # means the file holds no scans matching this selection.
                     verbose_polarity = (
                         "positive" if sample_item.polarity == "+" else "negative"
                     )
