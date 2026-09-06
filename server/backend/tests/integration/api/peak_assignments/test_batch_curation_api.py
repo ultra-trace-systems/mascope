@@ -22,6 +22,7 @@ from mascope_backend.api.new.peak_assignments import (
 from mascope_backend.api.new.peak_assignments.batch_curation import (
     NOT_CURATED_CODE,
     UNKNOWN_CANDIDATE_CODE,
+    curation_outcome,
     run_batch_peak_curation,
 )
 from mascope_backend.api.new.peak_assignments.batch_peak_verification import (
@@ -440,3 +441,72 @@ async def test_a_release_on_an_uncurated_anchor_is_refused(
     )
     assert response.status_code == 409, response.text
     assert NOT_CURATED_CODE in response.text
+
+
+async def test_a_sample_that_cannot_be_measured_keeps_its_identity_and_the_pin_stands(
+    async_session_factory, anchor, stubbed_scorer, monkeypatch
+):
+    """The pin is written before the walk. A sample whose measurement raises is
+    counted, skipped and keeps what it read before; the other dissenting sample
+    is re-pointed; the archive on the pin names exactly the member that moved,
+    so a release restores exactly it; and the consensus is recomputed."""
+    now = datetime.now(timezone.utc)
+    async with async_session_factory() as session:
+        s3 = await _seed_sample(
+            session,
+            anchor["batch_id"],
+            "S3",
+            [("p1", 181.0707, "C6H12O6", "C6H13O6+", "assigned", 0.90, 3000.0)],
+            now,
+        )
+        await session.commit()
+    assert await fold_sample_into_batch_peaks(s3) == anchor["batch_id"]
+    bp = await _anchor_row(async_session_factory, anchor["batch_peak_id"])
+    other = next(i for i, e in enumerate(bp.candidates) if e["formula"] == "C7H14O7")
+
+    scorer = batch_untargeted.score_seeds  # the fixture's canned pairing
+
+    async def failing(sample, seeds, params):
+        if sample.sample_item_id == anchor["s1"]:
+            raise FileNotFoundError("S1's peak file has moved")
+        return await scorer(sample, seeds, params)
+
+    monkeypatch.setattr(batch_untargeted, "score_seeds", failing)
+
+    counts = await run_batch_peak_curation(
+        anchor["batch_id"],
+        anchor["batch_peak_id"],
+        other,
+        "C6H12O6",
+        PeakAssignmentConfig(),
+        user_id=7,
+    )
+
+    assert counts == {
+        "formula": "C7H14O7",
+        "samples_measured": 1,
+        "members_repointed": 1,
+        "samples_failed": 1,
+    }
+    # S2 already carried the identity; S1 raised before its stub could answer.
+    assert [call[0] for call in stubbed_scorer] == [s3]
+
+    bp = await _anchor_row(async_session_factory, anchor["batch_peak_id"])
+    pin = manual_pin_of(bp)
+    assert pin["candidate"] == other
+    assert bp.consensus_formula == "C7H14O7"
+    assert [state["sample_item_id"] for state in pin["displaced_members"]] == [s3]
+    members = await _members(async_session_factory, anchor["batch_peak_id"])
+    assert (
+        resolve_candidate(bp.candidates, members[anchor["s1"]].candidate)["formula"]
+        == "C6H12O6"
+    )
+    assert (
+        resolve_candidate(bp.candidates, members[s3].candidate)["formula"] == "C7H14O7"
+    )
+    outcome = curation_outcome(counts, anchor["batch_id"])
+    assert outcome["status"] == "partial"
+    assert (
+        "1 sample could not be measured and keeps its previous identity."
+        in outcome["message"]
+    )

@@ -433,7 +433,7 @@ def import_outcome(counts: dict, sample_batch_id: str, engine: str) -> dict:
     failed = counts.get("samples_failed", 0)
     failed_text = (
         f" {failed} sample{'s' if failed != 1 else ''} could not be measured "
-        "and were skipped."
+        f"and {'were' if failed != 1 else 'was'} skipped."
         if failed
         else ""
     )

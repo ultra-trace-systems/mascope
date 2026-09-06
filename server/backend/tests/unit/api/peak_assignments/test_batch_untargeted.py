@@ -139,3 +139,23 @@ def test_the_outcome_counts_what_was_done():
     assert "12 unassigned batch peaks across 3 samples" in outcome["message"]
     assert "7 assigned a composition" in outcome["message"]
     assert "30 member peaks" in outcome["message"]
+
+
+def test_the_outcome_names_the_samples_it_could_not_read():
+    """A sample that raised is reported, not left to the log: the counts alone
+    read like a batch that simply had less to find."""
+    counts = {
+        "anchors_searched": 12,
+        "anchors_annotated": 7,
+        "members_propagated": 30,
+        "samples_searched": 2,
+        "samples_rescored": 9,
+        "samples_failed": 1,
+    }
+    outcome = search_outcome(counts, "sb-1")
+    assert outcome["status"] == "partial"
+    assert outcome["message"].endswith("1 sample could not be read and was skipped.")
+
+    two = search_outcome({**counts, "samples_failed": 2}, "sb-1")
+    assert two["status"] == "partial"
+    assert two["message"].endswith("2 samples could not be read and were skipped.")

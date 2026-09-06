@@ -106,3 +106,26 @@ def test_the_outcome_says_what_landed_and_why_the_rest_did_not():
     nothing = import_outcome({**counts, "anchors_matched": 0}, "sb-1", "peaky")
     assert nothing["status"] == "partial"
     assert "No row of the peaky import landed" in nothing["message"]
+
+
+def test_the_outcome_names_the_samples_it_could_not_measure():
+    """A sample that raised is reported, not left to the log: its members carry
+    none of the imported identities, which the counts alone would not say."""
+    counts = {
+        "rows": 3,
+        "anchors_matched": 2,
+        "members_measured": 5,
+        "samples_rescored": 1,
+        "samples_failed": 1,
+        "rows_skipped_by_reason": {},
+        "mz_tolerance_ppm": 5.0,
+    }
+    outcome = import_outcome(counts, "sb-1", "peaky")
+    assert outcome["status"] == "partial"
+    assert outcome["message"].endswith(
+        "1 sample could not be measured and was skipped."
+    )
+
+    two = import_outcome({**counts, "samples_failed": 2}, "sb-1", "peaky")
+    assert two["status"] == "partial"
+    assert two["message"].endswith("2 samples could not be measured and were skipped.")

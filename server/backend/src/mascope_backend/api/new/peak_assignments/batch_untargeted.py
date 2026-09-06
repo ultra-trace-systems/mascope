@@ -629,7 +629,7 @@ def search_outcome(counts: dict, sample_batch_id: str) -> dict:
     failed = counts.get("samples_failed", 0)
     skipped = (
         f" {failed} sample{'s' if failed != 1 else ''} could not be read and "
-        "were skipped."
+        f"{'were' if failed != 1 else 'was'} skipped."
         if failed
         else ""
     )

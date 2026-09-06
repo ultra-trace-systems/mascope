@@ -29,6 +29,7 @@ from mascope_backend.api.new.peak_assignments.batch_peaks_controller import (
 )
 from mascope_backend.api.new.peak_assignments.batch_untargeted import (
     run_batch_untargeted_search,
+    search_outcome,
 )
 from mascope_backend.api.new.peak_assignments.config import PeakAssignmentConfig
 from mascope_backend.api.new.peak_assignments.fold_view import fold_run_id
@@ -390,3 +391,77 @@ async def test_the_route_launches_for_an_editor_and_refuses_a_guest(
     assert launched["sample_batch_id"] == batch_id
     assert launched["config"].mz_precision_ppm == 2.5
     assert launched["independent_transaction"] is True
+
+
+async def test_a_sample_that_cannot_be_measured_is_skipped_and_the_pass_finishes(
+    async_session_factory, folded_batch, stubbed_engine, monkeypatch
+):
+    """One sample's measurement raising - a peak file that has moved, a spectrum
+    that will not read - is counted and skipped. The other samples are still
+    measured, and the deferred consensus pass still runs over every anchor the
+    search set out from, so the anchors describe the members they now have."""
+    batch_id, samples = folded_batch["batch_id"], folded_batch["samples"]
+    scorer = batch_untargeted.score_seeds  # the fixture's canned pairing
+
+    async def failing(sample, seeds, params):
+        if sample.sample_item_id == samples["S2"]:
+            raise FileNotFoundError("S2's peak file has moved")
+        return await scorer(sample, seeds, params)
+
+    recomputed = []
+    recompute = batch_untargeted.recompute_batch_consensus
+
+    async def recording(sample_batch_id, batch_peak_ids):
+        recomputed.append(set(batch_peak_ids))
+        return await recompute(sample_batch_id, batch_peak_ids)
+
+    monkeypatch.setattr(batch_untargeted, "score_seeds", failing)
+    monkeypatch.setattr(batch_untargeted, "recompute_batch_consensus", recording)
+
+    counts = await run_batch_untargeted_search(batch_id, PeakAssignmentConfig())
+
+    assert counts["samples_failed"] == 1
+    assert counts["samples_rescored"] == 1
+    assert counts["anchors_annotated"] == 2
+    anchors = await _anchors_by_mz(async_session_factory, batch_id)
+    # The searched sample carries the composition; the one that could not be
+    # measured keeps its members as they were.
+    s1 = await _members(async_session_factory, samples["S1"])
+    assert role_name(s1["p1"].role) == "M0"
+    s2 = await _members(async_session_factory, samples["S2"])
+    assert s2["p1"].candidate is None
+    assert s2["p2"].candidate is None
+    # The deferred pass ran once, over every anchor searched, and the consensus
+    # counts the one supporter the anchor has.
+    assert recomputed == [{anchor.batch_peak_id for anchor in anchors.values()}]
+    assert anchors[181].consensus_formula == "C6H12O6"
+    assert anchors[181].provenance["n_assigned"] == 1
+    outcome = search_outcome(counts, batch_id)
+    assert outcome["status"] == "partial"
+    assert "1 sample could not be read and was skipped." in outcome["message"]
+
+
+async def test_a_sample_that_will_not_read_leaves_its_anchors_unsearched(
+    async_session_factory, folded_batch, stubbed_engine, monkeypatch
+):
+    """The search itself raising on a sample is the same stand-down: its anchors
+    stay unsearched and the failure is counted, rather than the pass aborting."""
+    batch_id = folded_batch["batch_id"]
+
+    def unreadable(sample):
+        raise FileNotFoundError("the peak file has moved")
+
+    monkeypatch.setattr(batch_untargeted, "load_sample_peaks", unreadable)
+
+    counts = await run_batch_untargeted_search(batch_id, PeakAssignmentConfig())
+
+    # The brighter sample represents every anchor, so the one search there was
+    # is the one that failed.
+    assert counts["anchors_searched"] == 3
+    assert counts["samples_failed"] == 1
+    assert counts["samples_searched"] == 0
+    assert counts["anchors_annotated"] == 0
+    assert counts["members_propagated"] == 0
+    anchors = await _anchors_by_mz(async_session_factory, batch_id)
+    assert all(anchor.consensus_formula is None for anchor in anchors.values())
+    assert search_outcome(counts, batch_id)["status"] == "partial"

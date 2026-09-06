@@ -180,7 +180,7 @@ def curation_outcome(counts: dict, sample_batch_id: str) -> dict:
         f"{'s' if repointed == 1 else ''} it."
         + (
             f" {failed} sample{'s' if failed != 1 else ''} could not be measured "
-            "and keep their previous identity."
+            f"and keep{'s its' if failed == 1 else ' their'} previous identity."
             if failed
             else ""
         )

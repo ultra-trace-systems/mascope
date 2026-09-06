@@ -253,3 +253,24 @@ def test_the_outcome_counts_what_was_measured():
     assert "3 samples" in outcome["message"]
     assert "2 now read it" in outcome["message"]
     assert outcome["_notification_data"] == {"sample_batch_id": "sb-1"}
+
+
+def test_the_outcome_names_the_samples_it_could_not_measure():
+    """A sample that raised still reads whatever it did before the pin, which
+    the counts alone would not say."""
+    counts = {
+        "formula": "C7H14O7",
+        "samples_measured": 2,
+        "members_repointed": 2,
+        "samples_failed": 1,
+    }
+    outcome = curation_outcome(counts, "sb-1")
+    assert outcome["status"] == "partial"
+    assert outcome["message"].endswith(
+        "1 sample could not be measured and keeps its previous identity."
+    )
+
+    two = curation_outcome({**counts, "samples_failed": 2}, "sb-1")
+    assert two["message"].endswith(
+        "2 samples could not be measured and keep their previous identity."
+    )
