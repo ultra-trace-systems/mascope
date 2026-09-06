@@ -219,7 +219,10 @@ def test_a_verdict_against_a_derived_row_snapshots_the_member_and_links_no_row()
     assert target.assigned_formula == "C6H12O6"
     assert target.ionization_mechanism_id == "m-h"
     assert target.fit_score == 0.91
-    assert target.provenance == {"p_correct": 0.9, "evidence": None}
+    # The evidence is carried, not left unset: a verdict without one is filtered
+    # out of the confidence calibration's label pool. It is fit x plausibility,
+    # and C6H12O6 is plausible at 1.0, so here it is the fit itself.
+    assert target.provenance == {"p_correct": 0.9, "evidence": 0.91}
     assert target.peak_assignment_id is None
     assert target.peak_assignment_run_id is None
 

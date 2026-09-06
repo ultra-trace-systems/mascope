@@ -47,7 +47,10 @@ from mascope_backend.api.new.peak_assignments.config import (
     FOLD_ENGINE,
     PEAK_ASSIGNMENT_ENGINE_VERSION,
 )
-from mascope_backend.api.new.peak_assignments.engine import ROLE_UNASSIGNED
+from mascope_backend.api.new.peak_assignments.engine import (
+    ROLE_UNASSIGNED,
+    evidence_for,
+)
 from mascope_backend.api.new.peak_assignments.tiers import TIER_UNASSIGNED
 from mascope_backend.db import BatchPeak, BatchPeakOccurrence
 
@@ -239,17 +242,27 @@ class VerificationTarget:
 def verification_target(member: Any, anchor: Any) -> VerificationTarget:
     """The verification snapshot of a derived row.
 
+    The evidence is derived here rather than left unset: it is the score the
+    confidence calibration fits its curve over, and a verdict that carries none
+    is filtered out of the label pool. A member holds the fit the fold measured
+    and the anchor names the formula, which is exactly what
+    :func:`~mascope_backend.api.new.peak_assignments.engine.evidence_for` takes.
+
     :param member: The sample's ``BatchPeakOccurrence``.
     :param anchor: The ``BatchPeak`` the member sits in.
     """
     identity = resolve_candidate(anchor.candidates, member.candidate)
+    formula = identity.get("formula")
     return VerificationTarget(
         sample_item_id=member.sample_item_id,
         sample_peak_id=member.sample_peak_id,
-        assigned_formula=identity.get("formula"),
+        assigned_formula=formula,
         ionization_mechanism_id=identity.get("ionization_mechanism_id"),
         fit_score=member.fit_score,
-        provenance={"p_correct": member.p_correct, "evidence": None},
+        provenance={
+            "p_correct": member.p_correct,
+            "evidence": evidence_for(member.fit_score, formula),
+        },
     )
 
 
