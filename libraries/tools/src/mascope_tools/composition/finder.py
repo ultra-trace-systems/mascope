@@ -309,17 +309,23 @@ def process_isotopes(
     isotope_mz_errors = matched_isotopes["mass_errors_ppm"]
     isotope_intensity_errors = matched_isotopes["intensity_errors"]
     if isotope_mzs[0] != 0:
-        # Extract and process base peak (M0)
-        m0_mass = isotope_mzs[0]
-        main_candidate["mz"] = m0_mass
-        main_candidate["observed_mass"] = m0_mass
+        # Extract and process the base peak: the pattern's most abundant
+        # isotopologue, which is what IsoSpec orders first and what the pattern's
+        # intensities are relative to. It is not necessarily the monoisotopic
+        # one - for a bromine- or chlorine-rich ion they are different rows - so
+        # its label comes from its own configuration like every other
+        # isotopologue's. Exactly one configuration reads as `M0`, the one with
+        # every element at its lightest isotope, and it may be any index here.
+        base_mass = isotope_mzs[0]
+        main_candidate["mz"] = base_mass
+        main_candidate["observed_mass"] = base_mass
         main_candidate["predicted_mz"] = isotope_pred_mzs[0]
         main_candidate["predicted_intensity"] = isotope_pred_ints[0]
-        main_candidate["isotope_label"] = "M0"
+        main_candidate["isotope_label"] = isotope_labels[0]
         main_candidate["mz_error_ppm"] = isotope_mz_errors[0]
         main_candidate["intensity_error"] = isotope_intensity_errors[0]
         results_per_peak.append(main_candidate)
-        assigned_mzs.add(m0_mass)
+        assigned_mzs.add(base_mass)
 
         # Extract and process higher isotopes
         for idx in range(1, len(isotope_mzs)):
@@ -336,7 +342,9 @@ def process_isotopes(
             iso_result["predicted_intensity"] = isotope_pred_ints[idx]
             iso_result["mz_error_ppm"] = isotope_mz_errors[idx]
             iso_result["intensity_error"] = isotope_intensity_errors[idx]
-            iso_result["neutral_mass"] = iso_result["neutral_mass"] + (iso_mz - m0_mass)
+            iso_result["neutral_mass"] = iso_result["neutral_mass"] + (
+                iso_mz - base_mass
+            )
             results_per_peak.append(iso_result)
             assigned_mzs.add(iso_mz)
 

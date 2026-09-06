@@ -6,6 +6,7 @@ from mascope_tools.composition.finder import (
     _other_candidate_formulas,
     assign_compositions,
     find_compositions,
+    process_isotopes,
     replace_atom_with_isotope,
 )
 from mascope_tools.composition.models import CompositionSearchConfig
@@ -237,3 +238,63 @@ def test_assign_compositions_enumerates_only_the_targets(monkeypatch):
     assert enumerated == [200.0]
     assert len(matches) == 3
     assert (matches["formula"] == "---").all()
+
+
+# IsoSpec orders a pattern's configurations by abundance, not by mass, so the
+# row at index 0 is the most abundant isotopologue and only coincidentally the
+# monoisotopic one. These are the real arrays for Br3-, whose monoisotopic peak
+# is third: 236.755 (13%) against a 238.753 (38%) base peak.
+_BROMINE_PATTERN = {
+    "masses": [238.7530, 240.7509, 236.7550, 242.7489],
+    "labels": ["81Br", "81Br2", "M0", "81Br3"],
+    "predicted_masses": [238.7529, 240.7508, 236.7549, 242.7488],
+    "predicted_intensities": [1.0, 0.973, 0.343, 0.315],
+    "mass_errors_ppm": [0.4, 0.4, 0.4, 0.4],
+    "intensity_errors": [0.0, 0.01, 0.01, 0.01],
+}
+
+
+def _rows_of(pattern: dict) -> list[dict]:
+    """The rows `process_isotopes` builds from one matched pattern."""
+    rows, _ = process_isotopes(
+        {"neutral_mass": 238.7530, "formula": "Br3"}, [pattern], set()
+    )
+    return rows
+
+
+def test_only_the_monoisotopic_row_is_labelled_m0():
+    """M0 is the ion's monoisotopic isotopologue, wherever it falls in the
+    pattern - one row, and not necessarily the base peak.
+
+    The base peak carries its own configuration's label, so a bromine-rich ion
+    is assigned on the lightest peak of its cluster with the tallest as a
+    satellite. Labelling index 0 `M0` unconditionally would put the label on
+    two rows at once, since the monoisotopic row already carries it.
+    """
+    rows = _rows_of(_BROMINE_PATTERN)
+    labels = [row["isotope_label"] for row in rows]
+
+    assert labels.count("M0") == 1
+    assert sorted(labels) == ["81Br", "81Br2", "81Br3", "M0"]
+    by_label = {row["isotope_label"]: row["mz"] for row in rows}
+    assert by_label["M0"] == pytest.approx(236.7550)
+    # The base peak is a satellite here, labelled by its own substitution.
+    assert by_label["81Br"] == pytest.approx(238.7530)
+
+
+def test_the_base_peak_is_m0_when_it_is_also_the_monoisotopic_one():
+    """The ordinary case is unchanged: for an ion with no heavy-isotope-rich
+    element the most abundant configuration is the monoisotopic one, and
+    IsoSpec puts it first."""
+    glucose = {
+        "masses": [180.0634, 181.0667, 182.0676],
+        "labels": ["M0", "13C", "18O"],
+        "predicted_masses": [180.0634, 181.0667, 182.0676],
+        "predicted_intensities": [1.0, 0.065, 0.012],
+        "mass_errors_ppm": [0.1, 0.1, 0.1],
+        "intensity_errors": [0.0, 0.01, 0.01],
+    }
+
+    by_label = {row["isotope_label"]: row["mz"] for row in _rows_of(glucose)}
+
+    assert by_label["M0"] == pytest.approx(180.0634)
