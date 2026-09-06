@@ -67,6 +67,7 @@ from mascope_backend.api.new.peak_assignments.batch_untargeted import (
 )
 from mascope_backend.api.new.peak_assignments.config import PeakAssignmentConfig
 from mascope_backend.db import BatchPeak, BatchPeakOccurrence, async_session
+from mascope_backend.runtime import runtime
 from mascope_backend.socket.notifications import (
     UserNotification,
     send_progress_user_notification,
@@ -170,13 +171,22 @@ def curation_outcome(counts: dict, sample_batch_id: str) -> dict:
     """The task's closing message."""
     measured = counts["samples_measured"]
     repointed = counts["members_repointed"]
+    # A sample that raised is reported rather than left to the log: it still
+    # reads whatever it did before the pin, which the counts alone would not say.
+    failed = counts.get("samples_failed", 0)
     message = (
         f"Pinned {counts['formula']} on the batch peak; measured it in {measured} "
         f"sample{'s' if measured != 1 else ''}, {repointed} now read"
         f"{'s' if repointed == 1 else ''} it."
+        + (
+            f" {failed} sample{'s' if failed != 1 else ''} could not be measured "
+            "and keep their previous identity."
+            if failed
+            else ""
+        )
     )
     return {
-        "status": "success",
+        "status": "partial" if failed else "success",
         "message": message,
         "results": repointed,
         "data": counts,
@@ -332,6 +342,7 @@ async def run_batch_peak_curation(
         "formula": pin["formula"],
         "samples_measured": 0,
         "members_repointed": 0,
+        "samples_failed": 0,
     }
     annotation = Annotation(
         formula=pin["formula"],
@@ -342,31 +353,63 @@ async def run_batch_peak_curation(
     )
     displaced: list[dict] = []
     total = len(samples)
-    for step, sample_item_id in enumerate(samples):
-        if process_id is not None:
-            await send_progress_user_notification(
-                _progress(
-                    sample_batch_id,
-                    step,
-                    total,
-                    f"Measuring {pin['formula']}, sample {step + 1}/{total}.",
-                    user_id,
-                    process_id,
-                    parent_id,
+    walked_the_batch = False
+    try:
+        for step, sample_item_id in enumerate(samples):
+            if process_id is not None:
+                await send_progress_user_notification(
+                    _progress(
+                        sample_batch_id,
+                        step,
+                        total,
+                        f"Measuring {pin['formula']}, sample {step + 1}/{total}.",
+                        user_id,
+                        process_id,
+                        parent_id,
+                    )
                 )
+            try:
+                counts["members_repointed"] += await _propagate_to_sample(
+                    sample_batch_id,
+                    sample_item_id,
+                    {batch_peak_id: annotation},
+                    config,
+                    only_unassigned=False,
+                    skip_candidate={batch_peak_id: candidate},
+                    displaced=displaced,
+                )
+                counts["samples_measured"] += 1
+            except Exception:  # noqa: BLE001 - one bad sample must not abort the pin
+                # The pin is already written and the other samples still hold the
+                # peak; a sample that cannot be measured keeps what it read
+                # before, which is what `release-curation` would restore anyway.
+                counts["samples_failed"] += 1
+                runtime.logger.exception(
+                    f"Measuring the pinned {pin['formula']} failed for sample "
+                    f"'{sample_item_id}'."
+                )
+        walked_the_batch = True
+    finally:
+        # Both of these belong to every sample already committed above, so they
+        # run whether or not the loop finished - the archive above all: it is the
+        # only record of what the re-pointed members read before, and
+        # `release_batch_peak_curation` restores from nothing else. Written from
+        # the partial list, it puts back exactly the members that were moved.
+        try:
+            await _archive_displaced(sample_batch_id, batch_peak_id, displaced)
+            await recompute_batch_consensus(sample_batch_id, {batch_peak_id})
+        except Exception:
+            if walked_the_batch:
+                raise
+            # Already unwinding. Raising here would REPLACE the exception that
+            # interrupted the loop - a CancelledError above all, which has to
+            # reach the caller as a cancellation and not as a database error.
+            runtime.logger.exception(
+                "The batch curation was interrupted and its deferred archive and "
+                f"consensus pass then failed for batch '{sample_batch_id}'. The "
+                "members it re-pointed may have no undo record; rebuilding the "
+                "ledger recomputes the anchor."
             )
-        counts["members_repointed"] += await _propagate_to_sample(
-            sample_batch_id,
-            sample_item_id,
-            {batch_peak_id: annotation},
-            config,
-            only_unassigned=False,
-            skip_candidate={batch_peak_id: candidate},
-            displaced=displaced,
-        )
-        counts["samples_measured"] += 1
-    await _archive_displaced(sample_batch_id, batch_peak_id, displaced)
-    await recompute_batch_consensus(sample_batch_id, {batch_peak_id})
     return counts
 
 

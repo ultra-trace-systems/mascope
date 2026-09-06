@@ -502,6 +502,7 @@ async def run_batch_untargeted_search(
         "members_propagated": 0,
         "samples_searched": 0,
         "samples_rescored": 0,
+        "samples_failed": 0,
     }
     if not anchors:
         return counts
@@ -517,54 +518,95 @@ async def run_batch_untargeted_search(
     step = 0
 
     annotations: dict[str, Annotation] = {}
-    for sample_item_id, sample_representatives in by_sample.items():
-        if reports:
-            await send_progress_user_notification(
-                _progress(
-                    sample_batch_id,
-                    step,
-                    total,
-                    f"Searching untargeted compositions, sample {step + 1}/{total}.",
-                    user_id,
-                    process_id,
-                    parent_id,
-                )
-            )
-        rows = await _search_sample(
-            sample_item_id,
-            {member.sample_peak_id for member in sample_representatives},
-            config,
-        )
-        annotations.update(
-            await _apply_search_rows(
-                sample_batch_id, sample_item_id, rows, set(anchors)
-            )
-        )
-        counts["samples_searched"] += 1
-        step += 1
-    counts["anchors_annotated"] = len(annotations)
-
-    if annotations:
-        for sample_item_id in members_by_sample:
+    walked_the_batch = False
+    try:
+        for sample_item_id, sample_representatives in by_sample.items():
             if reports:
                 await send_progress_user_notification(
                     _progress(
                         sample_batch_id,
                         step,
                         total,
-                        f"Measuring the found compositions, sample {step + 1}/{total}.",
+                        f"Searching untargeted compositions, sample {step + 1}/{total}.",
                         user_id,
                         process_id,
                         parent_id,
                     )
                 )
-            counts["members_propagated"] += await _propagate_to_sample(
-                sample_batch_id, sample_item_id, annotations, config
-            )
-            counts["samples_rescored"] += 1
+            try:
+                rows = await _search_sample(
+                    sample_item_id,
+                    {member.sample_peak_id for member in sample_representatives},
+                    config,
+                )
+                annotations.update(
+                    await _apply_search_rows(
+                        sample_batch_id, sample_item_id, rows, set(anchors)
+                    )
+                )
+                counts["samples_searched"] += 1
+            except Exception:  # noqa: BLE001 - one bad sample must not abort the search
+                # A sample reaches here for reasons that are about that sample
+                # alone - a peak file that has moved, a spectrum that will not
+                # read - and the other samples' anchors are still searchable.
+                # Logged with the traceback: the caller only ever sees a count.
+                counts["samples_failed"] += 1
+                runtime.logger.exception(
+                    f"The untargeted batch search failed for sample '{sample_item_id}'."
+                )
             step += 1
+        counts["anchors_annotated"] = len(annotations)
 
-    await recompute_batch_consensus(sample_batch_id, set(anchors))
+        if annotations:
+            for sample_item_id in members_by_sample:
+                if reports:
+                    await send_progress_user_notification(
+                        _progress(
+                            sample_batch_id,
+                            step,
+                            total,
+                            "Measuring the found compositions, sample "
+                            f"{step + 1}/{total}.",
+                            user_id,
+                            process_id,
+                            parent_id,
+                        )
+                    )
+                try:
+                    counts["members_propagated"] += await _propagate_to_sample(
+                        sample_batch_id, sample_item_id, annotations, config
+                    )
+                    counts["samples_rescored"] += 1
+                except Exception:  # noqa: BLE001 - one bad sample must not abort the pass
+                    counts["samples_failed"] += 1
+                    runtime.logger.exception(
+                        "Measuring the found compositions failed for sample "
+                        f"'{sample_item_id}'."
+                    )
+                step += 1
+        walked_the_batch = True
+    finally:
+        # In a finally for the reason `backfill_sample_batch_peaks` sets out at
+        # length: every sample above has COMMITTED its members while the anchors
+        # still describe the members they had before, and nothing else will fix
+        # them - a later arriving fold recomputes only the anchors its own sample
+        # touched. The vector is cancellation, which walks past the per-sample
+        # `except` arms above because it is a BaseException.
+        try:
+            await recompute_batch_consensus(sample_batch_id, set(anchors))
+        except Exception:
+            if walked_the_batch:
+                raise
+            # Already unwinding. Raising here would REPLACE the exception that
+            # interrupted the loop - a CancelledError above all, which has to
+            # reach the caller as a cancellation and not as a database error.
+            runtime.logger.exception(
+                "The untargeted batch search was interrupted and its deferred "
+                "consensus pass then failed for batch "
+                f"'{sample_batch_id}'. The anchors its committed samples touched "
+                "still describe their previous members; rebuilding the ledger "
+                "recomputes them."
+            )
     return counts
 
 
@@ -581,8 +623,18 @@ def search_outcome(counts: dict, sample_batch_id: str) -> dict:
             "data": counts,
             "_notification_data": notification_data,
         }
+    # A sample that raised is reported rather than left to the log: the counts
+    # below are otherwise indistinguishable from a batch that simply had less
+    # to find, and the anchors it holds were not searched.
+    failed = counts.get("samples_failed", 0)
+    skipped = (
+        f" {failed} sample{'s' if failed != 1 else ''} could not be read and "
+        "were skipped."
+        if failed
+        else ""
+    )
     return {
-        "status": "success",
+        "status": "partial" if failed else "success",
         "message": (
             f"Searched {counts['anchors_searched']} unassigned batch peak"
             f"{'s' if counts['anchors_searched'] != 1 else ''} across "
@@ -591,7 +643,7 @@ def search_outcome(counts: dict, sample_batch_id: str) -> dict:
             f"{counts['anchors_annotated']} assigned a composition, and "
             f"{counts['members_propagated']} member peak"
             f"{'s' if counts['members_propagated'] != 1 else ''} in other samples "
-            "measured against it."
+            f"measured against it.{skipped}"
         ),
         "data": counts,
         "_notification_data": notification_data,
