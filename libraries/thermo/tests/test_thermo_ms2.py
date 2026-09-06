@@ -282,6 +282,40 @@ class TestClusterScansByParent:
     def test_empty_input(self):
         assert m_thermo._cluster_scans_by_parent({}) == {}
 
+    def test_groups_come_back_in_acquisition_order(self):
+        """Ordering is by first scan, not by the activation string.
+
+        A stepped run whose energies cross a digit-count boundary sorts
+        "hcd100.00" between "hcd10.00" and "hcd20.00" lexicographically, and
+        the summary reports each precursor's energies in this order.
+        """
+        events = {
+            1: (137.096, "hcd10.00"),
+            2: (137.096, "hcd20.00"),
+            3: (137.096, "hcd40.00"),
+            4: (137.096, "hcd100.00"),
+            5: (137.096, "hcd120.00"),
+        }
+        assert [a for _, a in m_thermo._cluster_scans_by_parent(events)] == [
+            "hcd10.00",
+            "hcd20.00",
+            "hcd40.00",
+            "hcd100.00",
+            "hcd120.00",
+        ]
+
+    def test_precursors_are_ordered_before_their_activations(self):
+        events = {
+            1: (300.5, "hcd10.00"),
+            2: (200.5, "hcd80.00"),
+            3: (200.5, "hcd10.00"),
+        }
+        assert [mz for mz, _ in m_thermo._cluster_scans_by_parent(events)] == [
+            200.5,
+            200.5,
+            300.5,
+        ]
+
 
 class TestParseMs2Event:
     """The scan-filter parse both backends share."""
@@ -299,15 +333,37 @@ class TestParseMs2Event:
             ),
             ("FTMS + p NSI Full ms [120.0000-200.0000]", None),
             # The precursor is what has to be resolved; a scan must not go
-            # missing over how the dissociation next to it is spelled.
+            # missing over how the dissociation next to it is spelled. The
+            # activation becomes the group key and the two backends render the
+            # filter by different routes, so it is lower-cased.
             (
                 "FTMS + p NSI Full ms2 137.0960@ETD50.00 [40.0000-160.0419]",
-                (137.0960, "ETD50.00"),
+                (137.0960, "etd50.00"),
             ),
+            # ... nor over the energy being absent from the rendering. This
+            # resolved before the shared parse and must keep resolving: an
+            # unparsed filter drops its scan from every MS2 surface silently.
+            (
+                "FTMS + p NSI Full ms2 137.0960@etd [40.0000-160.0419]",
+                (137.0960, "etd"),
+            ),
+            # A malformed precursor yields no event rather than a ValueError
+            # out of float() on the way up through the reader.
+            ("FTMS + p NSI Full ms2 1.2.3@hcd40.00 [40-160]", None),
         ],
     )
     def test_parse(self, filter_string, expected):
         assert m_backend._parse_ms2_event(filter_string) == expected
+
+    def test_case_is_the_only_thing_normalized(self):
+        """Both backends render the filter themselves - Thermo re-renders it
+        from the parsed scan filter, OpenTFRaw returns the stored string - so a
+        difference in case alone must not split one precursor into two groups."""
+        upper = m_backend._parse_ms2_event("FTMS + p NSI Full ms2 137.0960@HCD40.00 []")
+        lower = m_backend._parse_ms2_event("FTMS + p NSI Full ms2 137.0960@hcd40.00 []")
+        assert upper == lower
+        # Digits are left as rendered, so the key still mirrors the filter.
+        assert lower == (137.0960, "hcd40.00")
 
 
 @requires_ms2
@@ -316,9 +372,11 @@ class TestMs2SummaryGroups:
     internally consistent with the rest of the summary."""
 
     def test_groups_cover_every_ms2_scan_once(self, summary):
+        # Equality, not "at most": a scan whose filter the parse cannot resolve
+        # is dropped from the groups while ms2_scan_count still counts it, and
+        # that silent loss is the failure this pins.
         assert (
-            sum(g["scan_count"] for g in summary["groups"])
-            <= (summary["ms2_scan_count"])
+            sum(g["scan_count"] for g in summary["groups"]) == summary["ms2_scan_count"]
         )
         assert all(g["scan_count"] > 0 for g in summary["groups"])
 

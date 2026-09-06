@@ -614,9 +614,13 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
   /api/samples/{id}/ms2/centroids` keys its spectra `"<parent m/z>@<activation>"`
   (e.g. `"137.096@hcd40.00"`), mirroring the instrument's own scan-filter
   notation, and each carries `parent_peak_mz` and `activation` of its own.
-  `.../ms2/summary` gains `groups`, one record per step with its activation,
-  calibrated `hcd_energy`, scan count and time span, and its `hcd_energy_map`
-  now lists the energies a precursor was measured at instead of their mean.
+  The activation is lower-cased, so the two reader backends key a spectrum
+  identically whichever of them read the file. `.../ms2/summary` gains
+  `groups`, one record per step with its activation, calibrated `hcd_energy`,
+  scan count and time span, ordered by precursor and then by acquisition; its
+  `hcd_energy_map` now lists the energies a precursor was measured at instead
+  of their mean, flattened across the steps, so read `groups` when the step an
+  energy belongs to matters.
   `.../ms2/timeseries` takes an optional `activation` to narrow to one step and
   still spans them all by default, which is the view that shows fragments
   changing as the energy steps. `Ms2Resource` in the SDK passes the new
