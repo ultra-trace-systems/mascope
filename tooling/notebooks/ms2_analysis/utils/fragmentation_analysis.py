@@ -61,8 +61,8 @@ class FragmentationAnalysis:
 
     def show_declustering(self):
         """Display the declustering (charge stays with reagent) chart."""
-        parents = self._classifier.declustering_parents
-        if parents.size == 0:
+        groups = self._classifier.declustering_groups
+        if not groups:
             display(
                 HTML(
                     '<p style="font-family: Arial, Helvetica, sans-serif; '
@@ -71,7 +71,7 @@ class FragmentationAnalysis:
             )
             return
 
-        df = self._build_declustering_df(parents)
+        df = self._build_declustering_df(groups)
         if df.empty:
             display(
                 HTML(
@@ -86,8 +86,8 @@ class FragmentationAnalysis:
 
     def show_proton_transfer(self):
         """Display the proton-transfer (analyte deprotonated/protonated) chart."""
-        parents = self._classifier.proton_transfer_parents
-        if parents.size == 0:
+        groups = self._classifier.proton_transfer_groups
+        if not groups:
             display(
                 HTML(
                     '<p style="font-family: Arial, Helvetica, sans-serif; '
@@ -97,7 +97,7 @@ class FragmentationAnalysis:
             )
             return
 
-        df = self._build_proton_transfer_df(parents)
+        df = self._build_proton_transfer_df(groups)
         if df.empty:
             display(
                 HTML(
@@ -146,24 +146,21 @@ class FragmentationAnalysis:
 
     # --- Declustering chart building (m/z-based reagent ion lookup) ---
 
-    def _build_declustering_df(self, parents: np.ndarray) -> pd.DataFrame:
+    def _build_declustering_df(self, groups: list) -> pd.DataFrame:
         """Build DataFrame for declustering chart, calculating reagent ion and parent
-        fractions for each parent peak.
+        fractions for each MS2 group.
 
-        :param parents: Parent peaks classified as declustering by the ClusterClassifier
-        :type parents: np.ndarray
-        :return: DataFrame with columns: composition, mz, fragment_frac (reagent ion
-                fraction), parent_frac (parent ion fraction)
+        :param groups: MS2 groups classified as declustering by the ClusterClassifier
+        :type groups: list[Ms2Group]
+        :return: DataFrame with columns: composition, activation, mz, fragment_frac
+                (reagent ion fraction), parent_frac (parent ion fraction)
         :rtype: pd.DataFrame
         """
-        parent_set = set(parents)
         reagent_mz = self._classifier.reagent_ion_mz
         rows = []
 
-        for group in self._data.groups:
+        for group in groups:
             pp = group.parent_peak_mz
-            if pp not in parent_set:
-                continue
 
             ms2 = self._data.ms2_spectra[group]
             tic = self._data.ms2_tic[group]
@@ -191,7 +188,7 @@ class FragmentationAnalysis:
             rows.append(
                 {
                     "composition": parent_comp,
-                    "group": group,
+                    "activation": group.activation,
                     "mz": pp,
                     "fragment_frac": reagent_tic_pct / total * 100,
                     "parent_frac": parent_tic_pct / total * 100,
@@ -208,10 +205,7 @@ class FragmentationAnalysis:
         n = len(df)
         x_pos = list(range(n))
 
-        tick_labels = [
-            f"{row['mz']:.1f}<br>{RatioChart._to_html_formula(row['composition'])}"
-            for _, row in df.iterrows()
-        ]
+        tick_labels = RatioChart._tick_labels(df)
 
         fig = go.FigureWidget()
 
@@ -321,26 +315,23 @@ class FragmentationAnalysis:
 
     # --- Proton-transfer chart building ---
 
-    def _build_proton_transfer_df(self, parents: np.ndarray) -> pd.DataFrame:
+    def _build_proton_transfer_df(self, groups: list) -> pd.DataFrame:
         """Build DataFrame for proton-transfer chart, calculating analyte fragment and
         parent fractions for each parent peak.
 
-        :param parents: Parent peaks classified as proton-transfer by the
-                        ClusterClassifier
-        :type parents: np.ndarray
-        :return: DataFrame with columns: composition, fragment_composition, mz,
-                fragment_mz, fragment_frac (analyte fragment fraction),
-                parent_frac (parent ion fraction)
+        :param groups: MS2 groups classified as proton-transfer by the
+                       ClusterClassifier
+        :type groups: list[Ms2Group]
+        :return: DataFrame with columns: composition, fragment_composition,
+                activation, mz, fragment_mz, fragment_frac (analyte fragment
+                fraction), parent_frac (parent ion fraction)
         :rtype: pd.DataFrame
         """
-        parent_set = set(parents)
         pt_mass = self._classifier.proton_transfer_mass
         rows = []
 
-        for group in self._data.groups:
+        for group in groups:
             pp = group.parent_peak_mz
-            if pp not in parent_set:
-                continue
 
             ms2 = self._data.ms2_spectra[group]
             tic = self._data.ms2_tic[group]
@@ -372,7 +363,7 @@ class FragmentationAnalysis:
                 {
                     "composition": parent_comp,
                     "fragment_composition": frag_comp,
-                    "group": group,
+                    "activation": group.activation,
                     "mz": pp,
                     "fragment_mz": float(ms2.mz[frag_idx]),
                     "fragment_frac": frag_tic_pct / total * 100,
@@ -390,10 +381,7 @@ class FragmentationAnalysis:
         n = len(df)
         x_pos = list(range(n))
 
-        tick_labels = [
-            f"{row['mz']:.1f}<br>{RatioChart._to_html_formula(row['composition'])}"
-            for _, row in df.iterrows()
-        ]
+        tick_labels = RatioChart._tick_labels(df)
 
         fig = go.FigureWidget()
 

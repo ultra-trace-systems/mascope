@@ -79,6 +79,15 @@ class DataExtractor:
 
         summary_groups = summary.get("groups", [])
         isolation_width = summary.get("isolation_width", None)
+        if "groups" not in summary and summary.get("parent_peaks"):
+            # The sample has MS2 data; the server is older than per-activation
+            # grouping and cannot say which collision energy each spectrum was
+            # measured at. Say that, rather than report an empty acquisition.
+            raise ValueError(
+                "This server reports MS2 parent peaks but no per-activation "
+                "groups, so it predates grouping by collision energy. Upgrade "
+                "the server, or use a toolkit matching its version."
+            )
         if not summary_groups or isolation_width is None:
             raise ValueError(
                 "No MS2 scans were found for the sample; MS2 analysis requires "
