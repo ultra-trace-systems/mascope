@@ -150,18 +150,22 @@ class RawProcessor(BaseFileProcessor):
         ``NoScansFoundError`` from inside a traceback, which reads as a fault
         in Mascope and wakes error monitoring.
 
-        The unfiltered selection first, deliberately: it raises for a file
-        that holds no scans at all, so that file keeps being named the empty
-        acquisition it is rather than an MS1-less one.
+        A file holding no scans at all must keep being named the empty
+        acquisition it is rather than the narrower MS1-less condition, so the
+        two are told apart -- but only once the MS1 selection has already come
+        back empty, and by the scan count, which the reader knows without
+        walking the file. Selecting every scan up front to answer the same
+        question would put a second whole-file sweep on every import.
 
         :return: True when at least one MS1 scan was recorded
         :rtype: bool
         :raises NoScansFoundError: When the file holds no scans at all.
         """
-        self.file_handle.scan_indices(ms_type=None)
         try:
             self.file_handle.scan_indices(ms_type="Ms")
         except NoScansFoundError:
+            if not self.file_handle.num_scans():
+                raise
             return False
         return True
 
