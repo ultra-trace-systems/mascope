@@ -204,6 +204,30 @@ automatically on startup; `db_init` takes a **pre-migration dump** into
 running stack is touched. (You do **not** need `mascope prod down` first - that
 only adds downtime.)
 
+#### Running a release candidate
+
+A **pre-release** (`vX.Y.Z-rc.N`, also `-beta.N` / `-alpha.N`) deploys exactly
+like a release - `--version v2.0.0-rc.1`, or check the tag out - and the UI
+reports it as `v2.0.0-rc.1`. It is simply invisible to anything that follows
+releases on its own: `--auto` and the update timer stay on the newest real
+release, and so does the in-app **Download File Agent** button, so pair the
+machines of a piloting site from the pre-release's own versioned installer
+asset on its GitHub release page.
+
+Two things to get right, because a candidate is normally short-lived:
+
+- **Migrations are forward-only.** A candidate's schema changes are the
+  release's schema changes; going back to the previous release means restoring
+  the pre-migration dump `db_init` just took, losing everything written since.
+  Confirm you can restore *before* updating, not after.
+- **Pin it where the boot service reads it.** If you deploy by checking the tag
+  out, `mascope prod update` aligns the checkout for you and a reboot redeploys
+  the same candidate. If you instead pin by hand, put
+  `MASCOPE_VERSION=vX.Y.Z-rc.N` in `/etc/environment` (the unit's environment),
+  not just in your shell - a pin only your shell can see leaves the boot
+  service deploying something else against a database the candidate has already
+  migrated.
+
 ### Unattended updates (the timer)
 
 `mascope-update.timer` runs `mascope prod update --auto` nightly. It is

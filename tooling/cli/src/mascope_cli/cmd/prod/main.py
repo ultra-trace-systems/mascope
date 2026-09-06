@@ -24,7 +24,6 @@ Database management:
 import json
 import os
 import platform
-import re
 import subprocess
 import time
 from pathlib import Path
@@ -40,7 +39,7 @@ from mascope_cli.cmd.prod.db import prod_db_app
 from mascope_cli.cmd.prod.mfa import mfa_app
 from mascope_cli.pg.utils import check_data_dirs, is_container_running
 from mascope_cli.runtime import runtime
-from mascope_runtime import Runtime
+from mascope_runtime import Runtime, is_release_tag
 
 
 _MODE = "prod"
@@ -116,10 +115,11 @@ def _deploy_version() -> str:
     Resolve the image tag for pulling/running published production images.
 
     Published prod images exist only for master (``latest``) and release tags
-    (``vX.Y.Z``) - never for the branch-derived dev build id - so this ignores
-    the checked-out branch entirely: an explicit ``MASCOPE_VERSION`` pin wins;
-    otherwise a semver tag at HEAD selects that release; otherwise ``latest``
-    (the rolling master build).
+    (``vX.Y.Z``, including a pre-release such as ``v2.0.0-rc.1``) - never for
+    the branch-derived dev build id - so this ignores the checked-out branch
+    entirely: an explicit ``MASCOPE_VERSION`` pin wins; otherwise a release tag
+    at HEAD selects that release; otherwise ``latest`` (the rolling master
+    build).
 
     :return: The image tag to deploy.
     :rtype: str
@@ -137,7 +137,7 @@ def _deploy_version() -> str:
     # image tags (vX.Y.Z), so it must never be used as a deploy tag. A
     # pip-installed CLI without a pin deploys `latest`.
     version = runtime.parse_version(cwd=os.environ.get("MASCOPE_PATH"))
-    if re.fullmatch(r"v\d+\.\d+\.\d+", version):
+    if is_release_tag(version):
         return version
     if version == "unknown-version":
         # Git resolved nothing at all (no checkout, or a directory that is not
@@ -172,10 +172,11 @@ def _align_checkout(target: str, mascope_path: Optional[str]) -> None:
     success into an error.
 
     :param target: The image tag just deployed. Only a release tag
-        (``vX.Y.Z``) aligns; ``latest`` tracks master and has no tag.
+        (``vX.Y.Z``, or a pre-release of it) aligns; ``latest`` tracks master
+        and has no tag.
     :param mascope_path: The deployment checkout, or None when unset.
     """
-    if not mascope_path or not re.fullmatch(r"v\d+\.\d+\.\d+", target):
+    if not mascope_path or not is_release_tag(target):
         return
 
     def git(*args: str) -> subprocess.CompletedProcess:
@@ -906,8 +907,9 @@ def update(
         Optional[str],
         typer.Option(
             "--version",
-            help="Release to update to: vX.Y.Z or 'latest'. Defaults to the "
-            "MASCOPE_VERSION pin, or 'latest'.",
+            help="Release to update to: vX.Y.Z, a pre-release of one "
+            "(vX.Y.Z-rc.N), or 'latest'. Defaults to the MASCOPE_VERSION pin, "
+            "or 'latest'.",
         ),
     ] = None,
     check: Annotated[
@@ -1007,10 +1009,11 @@ def update(
         _auto(pull=pull)
 
     if version is not None:
-        if version != "latest" and not re.fullmatch(r"v\d+\.\d+\.\d+", version):
+        if version != "latest" and not is_release_tag(version):
             runtime.logger.error(
-                f"Invalid release '{version}' - expected vX.Y.Z or 'latest'. "
-                "For other image tags, pin via the MASCOPE_VERSION env var."
+                f"Invalid release '{version}' - expected vX.Y.Z, a pre-release "
+                "of one (vX.Y.Z-rc.N, -beta.N, -alpha.N), or 'latest'. For "
+                "other image tags, pin via the MASCOPE_VERSION env var."
             )
             raise typer.Exit(1)
         # Same effect as an env pin: _deploy_version honors it for both the

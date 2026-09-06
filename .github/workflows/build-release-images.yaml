@@ -323,6 +323,16 @@ jobs:
     # up under the concept record so a broken sync turns this run red instead
     # of going unnoticed. Recovery: developer guide, "Cutting a citable
     # release".
+    #
+    # Skipped for a pre-release, which is deliberately not citable: the concept
+    # DOI resolves to the most recently ARCHIVED version, so a vX.Y.Z-rc.N
+    # record would point the README badge and CITATION.cff at a release
+    # candidate. Nothing here can stop Zenodo from archiving one - the bridge
+    # is driven by its own webhook on the same `published` event - so the
+    # operator disables the repository at zenodo.org for the duration
+    # (developer guide, "Cutting a pre-release"). This guard only keeps the
+    # poll from failing a run that was never meant to produce a DOI.
+    if: ${{ !github.event.release.prerelease }}
     runs-on: ubuntu-latest
     timeout-minutes: 30
     permissions:
