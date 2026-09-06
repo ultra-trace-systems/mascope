@@ -28,7 +28,20 @@ from .state import RuntimeJsonState, RuntimeTempState
 #: tags must stay build ids, or a release build would tag its images with a
 #: name no deployment pulls. A hexadecimal hash cannot spell ``rc``, ``alpha``
 #: or ``beta``, so no build id can pass as a release here.
-RELEASE_TAG_PATTERN = re.compile(r"v\d+\.\d+\.\d+(?:-(?:alpha|beta|rc)\.?\d*)?")
+#:
+#: The number after the label is required, the dot before it is not: a
+#: candidate is one of a numbered series, so both ``-rc.1`` and ``-rc1``
+#: resolve while a bare ``-rc`` names no image any release build publishes.
+RELEASE_TAG_PATTERN = re.compile(
+    r"v(?P<major>\d+)\.(?P<minor>\d+)\.(?P<patch>\d+)"
+    r"(?:-(?P<label>alpha|beta|rc)\.?(?P<number>\d+))?"
+)
+
+#: Pre-release labels in ascending precedence. A tag with no label ranks above
+#: every candidate of the same ``X.Y.Z``, which is what makes the final
+#: ``v2.0.0`` supersede ``v2.0.0-rc.1``.
+_PRERELEASE_RANK = {"alpha": 0, "beta": 1, "rc": 2}
+_RELEASE_RANK = 3
 
 
 def is_release_tag(tag: str | None) -> bool:
@@ -41,6 +54,64 @@ def is_release_tag(tag: str | None) -> bool:
     :rtype: bool
     """
     return bool(tag) and RELEASE_TAG_PATTERN.fullmatch(tag) is not None
+
+
+def release_sort_key(tag: str) -> tuple[int, int, int, int, int]:
+    """
+    Order release tags by precedence, the way SemVer orders them.
+
+    Comparing the tag strings does not work in either direction that matters:
+    ``v2.0.0-rc.1`` sorts *after* ``v2.0.0`` alphabetically, and
+    ``v2.0.0-rc.10`` sorts *before* ``v2.0.0-rc.9``, while precedence runs the
+    other way around in both cases. Compare these keys instead - a candidate
+    ranks below the release it is a candidate for, and a higher candidate
+    number ranks above a lower one.
+
+    :param tag: A release tag, as accepted by :func:`is_release_tag`.
+    :type tag: str
+    :return: A key ordering release tags by precedence.
+    :rtype: tuple
+    :raises ValueError: If ``tag`` is not a release tag.
+    """
+    match = RELEASE_TAG_PATTERN.fullmatch(tag) if tag else None
+    if match is None:
+        raise ValueError(f"Not a release tag: {tag!r}")
+    label = match["label"]
+    return (
+        int(match["major"]),
+        int(match["minor"]),
+        int(match["patch"]),
+        _RELEASE_RANK if label is None else _PRERELEASE_RANK[label],
+        int(match["number"] or 0),
+    )
+
+
+def _git_output(cmd: str, cwd: str | None) -> str | None:
+    """
+    Run a git command and return its trimmed output, or None if it failed.
+
+    :param cmd: The command line to run.
+    :type cmd: str
+    :param cwd: Directory to run it in, or None for the process's own.
+    :type cwd: str, Optional
+    :return: Trimmed stdout, or None if the command could not be run.
+    :rtype: str, Optional
+    """
+    try:
+        return (
+            subprocess.check_output(
+                shlex.split(cmd), stderr=subprocess.DEVNULL, cwd=cwd
+            )
+            .decode("utf-8")
+            # strip(), not replace("\n", ""): callers such as
+            # `git tag --points-at HEAD` return one item per line, so
+            # collapsing every newline would glue them into a single
+            # unmatchable token (e.g. "v1.1.0v2026.07.03-abc1234") and
+            # break the tag detection in parse_version. Only trim the ends.
+            .strip()
+        )
+    except Exception:
+        return None
 
 
 class Runtime:
@@ -356,6 +427,25 @@ class Runtime:
             f"Secret could not be found using env var {envvar} and path {path}"
         )
 
+    def tags_at_head(self, cwd: str | None = None) -> list[str]:
+        """
+        Every git tag pointing at HEAD, in the order git lists them.
+
+        Exposed beside `parse_version` because a caller that falls back when
+        the version is not a release has to say *why*: `parse_version` answers
+        with a build identifier whether HEAD carries no tag at all or carries
+        one this codebase does not recognize, and those two deserve different
+        handling.
+
+        :param cwd: Checkout to consult, or None for the process's own.
+        :type cwd: str, Optional
+        :return: The tag names at HEAD; empty when there are none, or when git
+            could not be consulted.
+        :rtype: list
+        """
+        tags = _git_output("git tag --points-at HEAD", cwd) or ""
+        return [tag.strip() for tag in tags.splitlines() if tag.strip()]
+
     def parse_version(self, cwd: str | None = None):
         """
         Construct a version string for the app from git.
@@ -387,32 +477,21 @@ class Runtime:
         """
 
         def exec(cmd: str):
-            """
-            Run a command in a subprocess and return the output
-            """
-            try:
-                return (
-                    subprocess.check_output(
-                        shlex.split(cmd), stderr=subprocess.DEVNULL, cwd=cwd
-                    )
-                    .decode("utf-8")
-                    # strip(), not replace("\n", ""): callers such as
-                    # `git tag --points-at HEAD` return one item per line, so
-                    # collapsing every newline would glue them into a single
-                    # unmatchable token (e.g. "v1.1.0v2026.07.03-abc1234") and
-                    # break the semver-tag detection below. Only trim the ends.
-                    .strip()
-                )
-            except Exception:
-                return None
+            return _git_output(cmd, cwd)
 
         # A release tag at HEAD wins (e.g. v1.0.0, or a pre-release of it such
         # as v2.0.0-rc.1) - report it as the version. Dated build tags
         # (v{date}-{hash}) are intentionally excluded; see RELEASE_TAG_PATTERN.
-        tags = exec("git tag --points-at HEAD") or ""
-        for tag in tags.splitlines():
-            if is_release_tag(tag.strip()):
-                return tag.strip()
+        #
+        # The HIGHEST release tag, not the first git happens to list: git sorts
+        # tags by refname, so a commit carrying both v2.0.0-rc.1 and
+        # v2.0.0-rc.2 would otherwise report the superseded candidate, and a
+        # checkout configured with `tag.sort=version:refname` plus
+        # `versionsort.suffix=-rc` lists a candidate ahead of the release it
+        # belongs to. release_sort_key orders them by precedence instead.
+        releases = [tag for tag in self.tags_at_head(cwd) if is_release_tag(tag)]
+        if releases:
+            return max(releases, key=release_sort_key)
 
         # Otherwise a build identifier from the latest commit's date + short hash.
         # Use a fixed 7-char hash, not git's %h: %h auto-scales its abbreviation

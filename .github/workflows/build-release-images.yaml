@@ -10,15 +10,69 @@ name: Build release images
 # vX.Y.Z) then reports vX.Y.Z in the UI. `latest` is left untouched (it tracks
 # master).
 #
-# NOTE: `release` events run the workflow from the repository's DEFAULT branch,
-# so this file must be present there to take effect.
+# NOTE: `release` events run the workflow from the repository's DEFAULT branch
+# (`master`), so this file must be present there to take effect. That bites
+# hardest for a release CANDIDATE, which is by definition cut BEFORE the
+# develop->master merge that would carry a change to this file: until it lands
+# on master, `check-release-kind` does not gate anything and `verify-zenodo`
+# polls for a DOI the candidate was never meant to get, ending the run red
+# after 20 minutes. Carry this file to master before publishing the first
+# pre-release - developer guide, "Cutting a pre-release".
 
 on:
   release:
     types: [published]
 
 jobs:
+  # Whether a release is a candidate is asserted twice, independently: by the
+  # tag's suffix, and by the "Set as a pre-release" checkbox in the Publish UI.
+  # Everything that keeps a candidate opt-in hangs off the CHECKBOX -
+  # `releases/latest` (which `prod update --auto` and the in-app File Agent
+  # download button both read) excludes a pre-release and nothing else does -
+  # while everything that deploys one reads the TAG. Nobody reconciled them, so
+  # one forgotten click published a candidate as the release every unattended
+  # deployment in the fleet follows, and every customer downloads the agent
+  # from.
+  #
+  # This gates the jobs that publish, so a mismatch costs a red run rather than
+  # a fleet-wide rollout. It is cheap and it runs first: the mistake it catches
+  # is a click, and clicks are not caught by review.
+  check-release-kind:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: The tag suffix and the pre-release flag must agree
+        env:
+          TAG: ${{ github.event.release.tag_name }}
+          PRERELEASE: ${{ github.event.release.prerelease }}
+        run: |
+          set -euo pipefail
+          # Keep this in step with RELEASE_TAG_PATTERN in mascope_runtime.
+          if printf '%s' "$TAG" | grep -Eq -- '-(alpha|beta|rc)\.?[0-9]+$'; then
+            suffixed=true
+          else
+            suffixed=false
+          fi
+          echo "tag=$TAG suffixed=$suffixed prerelease=$PRERELEASE"
+          if [ "$suffixed" = "$PRERELEASE" ]; then
+            exit 0
+          fi
+          if [ "$suffixed" = "true" ]; then
+            echo "::error::$TAG carries a pre-release suffix but was published"\
+                 "as a full release. releases/latest now points at a candidate,"\
+                 "so every deployment on the update timer will take it and the"\
+                 "in-app File Agent download will serve its installer. Edit the"\
+                 "release, tick 'Set as a pre-release', and re-run."
+          else
+            echo "::error::$TAG has no pre-release suffix but was published as"\
+                 "a pre-release, so releases/latest still points at the"\
+                 "previous release and nothing will pick this one up. Either"\
+                 "untick 'Set as a pre-release', or re-tag as vX.Y.Z-rc.N."
+          fi
+          exit 1
+
   build-images:
+    needs: check-release-kind
     runs-on: ubuntu-latest
     timeout-minutes: 60
     permissions:
@@ -107,6 +161,7 @@ jobs:
           gh release upload "$TAG" mascope-manifest.json --clobber
 
   build-file-agent:
+    needs: check-release-kind
     runs-on: windows-latest
     timeout-minutes: 30
     # Referencing a GitHub environment is what makes OIDC federation work at
@@ -332,7 +387,13 @@ jobs:
     # operator disables the repository at zenodo.org for the duration
     # (developer guide, "Cutting a pre-release"). This guard only keeps the
     # poll from failing a run that was never meant to produce a DOI.
-    if: ${{ !github.event.release.prerelease }}
+    #
+    # `success() &&` is load-bearing, not decoration: a custom `if` REPLACES
+    # the implicit success() check on `needs`, so without it this would poll -
+    # and report a reassuring green - on exactly the mis-flagged release
+    # check-release-kind just rejected.
+    needs: check-release-kind
+    if: ${{ success() && !github.event.release.prerelease }}
     runs-on: ubuntu-latest
     timeout-minutes: 30
     permissions:

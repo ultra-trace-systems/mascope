@@ -371,3 +371,68 @@ def test_auto_uses_manifest_head_when_available(auto_env, tmp_path):
     with pytest.raises(typer.Exit):
         prod_main._auto(pull=True)
     assert seen["target_head"] == _HEAD
+
+
+# --- an unattended update only ever moves forward ---
+
+
+def test_auto_refuses_to_move_a_prerelease_pilot_backwards(auto_env):
+    # `releases/latest` excludes pre-releases, so a site piloting a candidate
+    # resolves a target BEHIND it. Nothing further down orders the two -
+    # preflight classifies on inequality of the Alembic head and the image
+    # digest - so the older release would read as a pending update and be
+    # applied: the pilot reverted, or the stack booted on images whose
+    # migrations do not know the revision the candidate already wrote.
+    auto_env.setattr(prod_main, "_deploy_version", lambda: "v2.0.0-rc.1")
+    cleared = []
+    auto_env.setattr(
+        prod_main.auto_update, "clear_pending", lambda p: cleared.append(p)
+    )
+
+    def _never(**kwargs):
+        raise AssertionError("classified an older release as an update")
+
+    auto_env.setattr(prod_main.preflight, "build_plan", _never)
+
+    with pytest.raises(typer.Exit) as e:
+        prod_main._auto(pull=True)
+
+    assert e.value.exit_code == au.AUTO_OK
+    assert cleared
+
+
+def test_auto_applies_the_release_a_candidate_was_a_candidate_for(auto_env):
+    # The other side of the same comparison: v1.4.0 does not supersede
+    # v1.4.0-rc.1, so the pilot graduates by itself when the real release
+    # ships, with no operator step.
+    auto_env.setattr(prod_main, "_deploy_version", lambda: "v1.4.0-rc.1")
+    auto_env.setattr(
+        prod_main.preflight, "build_plan", lambda **k: _plan("fast-update")
+    )
+    auto_env.setattr(prod_main.auto_update, "in_window", lambda now, window: True)
+    auto_env.setattr(prod_main.auto_update, "wait_healthy", lambda c: True)
+    applied = []
+    auto_env.setattr(
+        prod_main, "_run_compose", lambda *a, **k: applied.append(a) or None
+    )
+    auto_env.setattr(prod_main, "_align_checkout", lambda *a, **k: None)
+    auto_env.setattr(prod_main.auto_update, "clear_pending", lambda p: None)
+
+    with pytest.raises(typer.Exit) as e:
+        prod_main._auto(pull=True)
+
+    assert e.value.exit_code == au.AUTO_OK
+    assert applied
+
+
+def test_auto_still_updates_a_latest_deployment(auto_env):
+    # The guard must not touch the ordinary case: `latest` is not a release
+    # tag, so a plain master deployment is compared against nothing.
+    auto_env.setattr(prod_main, "_deploy_version", lambda: "latest")
+    auto_env.setattr(prod_main.preflight, "build_plan", lambda **k: _plan("up-to-date"))
+    auto_env.setattr(prod_main.auto_update, "clear_pending", lambda p: None)
+
+    with pytest.raises(typer.Exit) as e:
+        prod_main._auto(pull=True)
+
+    assert e.value.exit_code == au.AUTO_OK

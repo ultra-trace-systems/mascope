@@ -15,6 +15,7 @@ import pytest
 from mascope_cli import version as version_mod
 from mascope_cli.runtime import runtime
 from mascope_cli.version import resolve_version
+from mascope_runtime import is_release_tag, release_sort_key
 
 
 BUILD_ID = r"\d{4}\.\d{2}\.\d{2}-[0-9a-f]{7}"
@@ -152,3 +153,69 @@ def test_resolve_version_ignores_workspace_placeholder(no_repo, monkeypatch):
     # The monorepo workspace pins 0.0.0 — not a meaningful deploy tag.
     monkeypatch.setattr(version_mod.metadata, "version", lambda name: "0.0.0")
     assert resolve_version(runtime) == "unknown-version"
+
+
+# --- release precedence ---
+
+
+@pytest.mark.parametrize(
+    "lower, higher",
+    [
+        # a candidate ranks below the release it is a candidate for
+        ("v2.0.0-rc.1", "v2.0.0"),
+        # ... and the labels rank among themselves
+        ("v2.0.0-alpha.1", "v2.0.0-beta.1"),
+        ("v2.0.0-beta.1", "v2.0.0-rc.1"),
+        # numerically, not lexically: rc.9 < rc.10
+        ("v2.0.0-rc.9", "v2.0.0-rc.10"),
+        # the dot is optional and must not change the ordering
+        ("v2.0.0-rc1", "v2.0.0-rc2"),
+        # ... and X.Y.Z still dominates the suffix
+        ("v1.9.9", "v2.0.0-alpha.1"),
+        ("v2.0.0", "v2.0.1-rc.1"),
+    ],
+)
+def test_release_precedence(lower, higher):
+    assert release_sort_key(lower) < release_sort_key(higher)
+
+
+@pytest.mark.parametrize("tag", ["v2026.09.01-9b9e54d", "2.0.0", "v2.0.0-rc", "", None])
+def test_release_sort_key_rejects_a_non_release(tag):
+    with pytest.raises(ValueError):
+        release_sort_key(tag)
+
+
+@pytest.mark.parametrize("tag", ["v2.0.0-rc", "v2.0.0-rc.", "v2.0.0-alpha", "v2.0.0-"])
+def test_a_suffix_without_a_number_is_not_a_release(tag):
+    # A candidate is one of a numbered series. `v2.0.0-rc` names no image any
+    # release build publishes, and `v2.0.0-rc.` is not even a legal git ref -
+    # accepting either only defers the failure to `docker compose pull`.
+    assert not is_release_tag(tag)
+
+
+def test_the_highest_release_tag_at_head_is_the_version(git_repo):
+    # git lists tags by refname, so the first match is the LOWEST candidate.
+    # Created out of order on purpose: creation order must not decide it
+    # either.
+    _git(git_repo, "tag", "v2.0.0-rc.2")
+    _git(git_repo, "tag", "v2.0.0-rc.1")
+
+    assert runtime.parse_version() == "v2.0.0-rc.2"
+
+
+def test_a_release_outranks_its_own_candidate_at_head(git_repo):
+    # Promoting by tagging the same commit: the release is what runs, whatever
+    # `tag.sort` is configured to do locally.
+    _git(git_repo, "tag", "v2.0.0-rc.1")
+    _git(git_repo, "tag", "v2.0.0")
+    _git(git_repo, "config", "versionsort.suffix", "-rc")
+    _git(git_repo, "config", "tag.sort", "version:refname")
+
+    assert runtime.parse_version() == "v2.0.0"
+
+
+def test_tags_at_head_reports_what_git_lists(git_repo):
+    _git(git_repo, "tag", "v2.0.0-hotfix.1")
+    _git(git_repo, "tag", "some-marker")
+
+    assert sorted(runtime.tags_at_head()) == ["some-marker", "v2.0.0-hotfix.1"]

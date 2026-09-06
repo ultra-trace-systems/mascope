@@ -39,7 +39,7 @@ from mascope_cli.cmd.prod.db import prod_db_app
 from mascope_cli.cmd.prod.mfa import mfa_app
 from mascope_cli.pg.utils import check_data_dirs, is_container_running
 from mascope_cli.runtime import runtime
-from mascope_runtime import Runtime, is_release_tag
+from mascope_runtime import Runtime, is_release_tag, release_sort_key
 
 
 _MODE = "prod"
@@ -136,20 +136,42 @@ def _deploy_version() -> str:
     # calver (e.g. v2026.7.7) in a different series from the app's release
     # image tags (vX.Y.Z), so it must never be used as a deploy tag. A
     # pip-installed CLI without a pin deploys `latest`.
-    version = runtime.parse_version(cwd=os.environ.get("MASCOPE_PATH"))
+    mascope_path = os.environ.get("MASCOPE_PATH")
+    version = runtime.parse_version(cwd=mascope_path)
     if is_release_tag(version):
         return version
+    # Falling back to `latest` is the only safe published tag, but it silently
+    # changes release channel - and a `latest` build can carry migrations the
+    # intended release has not seen - so every way of arriving here says so.
+    # `parse_version` reports a build identifier both when HEAD carries no tag
+    # and when it carries one that is not a release, so the tags themselves
+    # have to be re-read to tell those apart.
     if version == "unknown-version":
         # Git resolved nothing at all (no checkout, or a directory that is not
-        # a repository). Deploying `latest` is still the only safe published
-        # tag, but it silently changes release channel - and a `latest` build
-        # can carry migrations the pinned release has not seen - so say so.
+        # a repository).
         runtime.logger.warning(
-            f"No git checkout found at '{os.environ.get('MASCOPE_PATH')}' - "
+            f"No git checkout found at '{mascope_path}' - "
             "cannot tell which release this deployment runs, falling back to "
             "the rolling 'latest' image tag. Pin the release explicitly with "
             "MASCOPE_VERSION=vX.Y.Z, or deploy from a checkout at the release "
             "tag."
+        )
+        return "latest"
+    # A tag that looks like a release but is not one this codebase recognizes
+    # (a typo, a suffix outside alpha/beta/rc, a scheme from another project).
+    # The images the operator expects may well exist - the release pipeline
+    # tags them from the release tag verbatim - so a checkout that was moved
+    # deliberately must not be read as an ordinary branch checkout.
+    refused = [
+        tag for tag in runtime.tags_at_head(cwd=mascope_path) if tag.startswith("v")
+    ]
+    if refused:
+        runtime.logger.warning(
+            f"The checkout at '{mascope_path}' is at "
+            f"{', '.join(refused)}, which is not a release tag - falling back "
+            "to the rolling 'latest' image tag. A release tag is vX.Y.Z, "
+            "optionally with an -alpha.N/-beta.N/-rc.N suffix. To deploy this "
+            "image tag anyway, pin it with MASCOPE_VERSION."
         )
     return "latest"
 
@@ -786,6 +808,8 @@ def _auto(*, pull: bool) -> None:
     """
     Unattended update: resolve the newest release, classify it, and act.
 
+    - already ahead of the newest release (a pre-release pilot, or a pin):
+      nothing to do - this never moves a deployment backwards.
     - up-to-date: nothing to do.
     - fast update: apply inside the maintenance window (health-checked); outside
       the window, do nothing and retry on the next tick.
@@ -818,6 +842,36 @@ def _auto(*, pull: bool) -> None:
             "and read access to the repository releases."
         )
         raise typer.Exit(auto_update.AUTO_ERROR)
+
+    # An unattended update only ever moves forward. `/releases/latest` excludes
+    # pre-releases, so a deployment piloting a candidate resolves a target that
+    # is BEHIND it - and nothing further down orders the two: preflight
+    # classifies on inequality of the Alembic head and of the image digest, so
+    # an older release reads as a pending update and gets applied. That silently
+    # ends the pilot at best, and at worst boots images whose Alembic scripts do
+    # not contain the revision the candidate already migrated the database to,
+    # which db_init fails and the backend never starts from.
+    #
+    # Comparing against _deploy_version() covers the pin as well as the
+    # checkout, since that is what a boot would deploy. `latest` is not a
+    # release tag, so a plain master deployment is untouched by this.
+    current = _deploy_version()
+    if (
+        is_release_tag(current)
+        and is_release_tag(target)
+        and release_sort_key(target) <= release_sort_key(current)
+    ):
+        auto_update.clear_pending(mascope_path)
+        message = (
+            f"This deployment runs {current}, which already supersedes the "
+            f"newest release of '{repo}' ({target}) - nothing to do. An "
+            "unattended update never moves a deployment backwards; leaving "
+            f"{current} is a deliberate step ('mascope prod update --version "
+            "vX.Y.Z')."
+        )
+        runtime.logger.success(message)
+        auto_update.record_status(mascope_path, message)
+        raise typer.Exit(auto_update.AUTO_OK)
 
     # Prefer the release manifest's Alembic head; fall back to image inspection.
     target_head: Optional[str] = None
