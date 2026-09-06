@@ -368,8 +368,11 @@ async def derived_ledger(
 
     ``None`` when the batch ledger does not know the sample at all - the caller
     then answers as it always has for a sample with no run. Filters on what a
-    member does not carry (an engine's own tier, a source) match nothing rather
-    than everything: absence is not a match.
+    member does not carry - an engine's own tier, and whether it disagreed with
+    one - match nothing rather than everything: absence is not a match. The
+    source is not one of those. It is on the identity the member's registry
+    entry names, which is where ``member_row`` reads it from and where the
+    export writes it, so a row that shows one has to be findable by it.
 
     :param session: An open session.
     :param sample: The sample view row.
@@ -380,7 +383,7 @@ async def derived_ledger(
     if not await member_count(session, sample.sample_item_id):
         return None
 
-    if engine_tier is not None or tier_disagrees is not None or source is not None:
+    if engine_tier is not None or tier_disagrees is not None:
         total, rows = 0, []
     else:
         conditions = []
@@ -398,11 +401,29 @@ async def derived_ledger(
                 func.coalesce(BatchPeakOccurrence.role, role_code(ROLE_UNASSIGNED))
                 == (code if code is not None else -1)
             )
+        # The source is on the anchor's registry entry, which the member's
+        # `candidate` index names - the same hop `member_row` makes to show it.
+        # A member with no entry (unassigned, or an index the registry does not
+        # reach) reads as NULL here and so matches no source, which is right:
+        # it displays none either.
+        if source:
+            conditions.append(
+                BatchPeak.candidates[BatchPeakOccurrence.candidate][
+                    "source"
+                ].as_string()
+                == _plain(source)
+            )
+        count = select(func.count()).select_from(BatchPeakOccurrence)
+        if source:
+            # Only the source filter reaches the anchor, so only it pays for the
+            # join; the ordinary read counts the member table alone.
+            count = count.join(
+                BatchPeak,
+                BatchPeak.batch_peak_id == BatchPeakOccurrence.batch_peak_id,
+            )
         total = (
             await session.execute(
-                select(func.count())
-                .select_from(BatchPeakOccurrence)
-                .where(
+                count.where(
                     BatchPeakOccurrence.sample_item_id == sample.sample_item_id,
                     *conditions,
                 )

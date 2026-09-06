@@ -311,9 +311,21 @@ async def test_the_derived_ledger_pages_and_filters(
     assert by_role["total"] == 1
     assert by_role["data"][0]["sample_peak_id"] == "p2"
 
-    # What a member does not carry matches nothing, rather than everything.
+    # The source is on the identity the member's registry entry names, and the
+    # rows show it - so a row that shows one is findable by it. The unassigned
+    # peak carries no identity and so no source.
     by_source = await _ledger(guest_client, s1, source="database")
-    assert (by_source["total"], by_source["data"]) == (0, [])
+    assert by_source["total"] == 2
+    assert [row["sample_peak_id"] for row in by_source["data"]] == ["p1", "p2"]
+
+    # What no member carries still matches nothing, rather than everything.
+    by_untargeted = await _ledger(guest_client, s1, source="untargeted")
+    assert (by_untargeted["total"], by_untargeted["data"]) == (0, [])
+
+    # An engine's own tier is genuinely absent from a member, so filtering on
+    # one matches nothing: absence is not a match.
+    by_engine_tier = await _ledger(guest_client, s1, engine_tier="assigned")
+    assert (by_engine_tier["total"], by_engine_tier["data"]) == (0, [])
 
     explicit = await _ledger(guest_client, s1, peak_assignment_run_id=fold_run_id(s1))
     assert explicit["total"] == 3
