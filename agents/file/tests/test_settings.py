@@ -49,10 +49,18 @@ def test_start_refuses_an_instrument_the_server_would(monkeypatch):
         main._validate_instrument()
 
 
-def test_start_accepts_a_valid_or_absent_instrument(monkeypatch):
-    for value in ("Orbi-Lab2", "", None):
+def test_start_accepts_a_valid_instrument(monkeypatch):
+    monkeypatch.setattr(main, "runtime", _Runtime("Orbi-Lab2"))
+    main._validate_instrument()
+
+
+def test_start_refuses_a_missing_instrument(monkeypatch):
+    # The server files this machine's uploads under the name, so an agent
+    # without one has nowhere to put its data and says so instead of running.
+    for value in ("", "   ", None):
         monkeypatch.setattr(main, "runtime", _Runtime(value))
-        main._validate_instrument()
+        with pytest.raises(main.ConfigError, match="needs one"):
+            main._validate_instrument()
 
 
 def test_dev_mode_checks_the_instrument_once_the_runtime_exists(monkeypatch):

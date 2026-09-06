@@ -111,6 +111,10 @@ async def start_pairing(
         "device_code": device_code,
         "expires_in": ttl,
         "interval": pairing_settings.POLL_INTERVAL_SECONDS,
+        # What this server does with what the agent reports, so the agent's
+        # setup can skip the questions an older server needed answered - the
+        # upload prefix, in particular. An older server sends no such key.
+        "capabilities": {"files_uploads_under_reported_instrument": True},
     }
 
 

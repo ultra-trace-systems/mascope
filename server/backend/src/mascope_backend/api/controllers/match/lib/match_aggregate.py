@@ -99,9 +99,10 @@ def reconstruct_full_isotope_frame(
     expected_frames = []
     for sample in samples_df.itertuples(index=False):
         instrument = sample.instrument
-        resolution = "LOW" if get_instrument_type(sample.filename) == "tof" else "HIGH"
+        instrument_type = get_instrument_type(sample.filename)
+        resolution = "LOW" if instrument_type == "tof" else "HIGH"
         default_threshold = instrument_default_match_params(
-            instrument
+            instrument, instrument_type=instrument_type
         ).isotope_abundance_threshold
 
         applicable = targets_df[targets_df["resolution"] == resolution]

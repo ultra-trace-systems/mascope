@@ -70,11 +70,16 @@ async def record_reported_instrument(
     """
     Keep the instrument an upload reports, on the device that sent it.
 
-    The row follows what the agent currently reports, the way the agent
-    release beside it does: a machine repointed at another instrument says so
-    on its next upload, and a sponsor reading Paired machines sees where its
-    data is actually going. A sponsor can still override it by hand, and that
-    override stands until the agent reports something different.
+    The row follows what the agent currently reports: a machine repointed at
+    another instrument says so on its next upload, and a sponsor reading
+    Paired machines sees where its data is actually going. Uploads are filed
+    under this same name, so the row and the filing cannot disagree.
+
+    An upload that reports nothing leaves the row alone rather than clearing
+    it. An agent of this release always reports one - it refuses to start
+    without it, because the server files its uploads under the name - so
+    silence means an older agent, and taking its silence for an answer would
+    drop a name with nothing to replace it.
 
     The name is reported, not verified, and an invalid one is dropped with a
     log line rather than raised - attribution never fails an ingest.
@@ -99,12 +104,7 @@ async def record_reported_instrument(
         await session.execute(
             update(AgentDevice)
             .where(AgentDevice.device_id == device_id)
-            .where(
-                or_(
-                    AgentDevice.instrument.is_(None),
-                    AgentDevice.instrument != instrument,
-                )
-            )
+            .where(AgentDevice.instrument.is_distinct_from(instrument))
             .values(instrument=instrument)
         )
         await session.commit()

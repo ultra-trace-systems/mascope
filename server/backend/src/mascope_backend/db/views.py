@@ -62,6 +62,8 @@ sample_view_table = Table(
     # Sample file columns (joined via FK)
     Column("filename", String(256)),
     Column("instrument", String(64)),
+    Column("instrument_type", String(8)),
+    Column("source_filename", String(256)),
     Column("method_file", String(256)),
     Column("length", Float),
     Column("range", JSON),
@@ -166,6 +168,8 @@ class Sample:
                 -- Sample file columns (joined via FK)
                 sf.filename,
                 sf.instrument,
+                sf.instrument_type,
+                sf.source_filename,
                 sf.method_file,
                 sf.length,
                 sf.range,

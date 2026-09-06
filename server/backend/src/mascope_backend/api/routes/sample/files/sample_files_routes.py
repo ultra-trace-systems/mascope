@@ -15,6 +15,10 @@ from fastapi import (
 )
 from tuspyserver import create_tus_router
 
+from mascope_backend.api.controllers.dataset.acquisition.service import (
+    instrument_type_of,
+    recorded_instrument_type,
+)
 from mascope_backend.api.controllers.sample.files.process.service import (
     re_process_sample_files,
     spawn_auto_process_sample_file,
@@ -25,12 +29,14 @@ from mascope_backend.api.controllers.sample.files.sample_files_controller import
     delete_sample_file,
     delete_sample_files,
     ensure_converter_available,
+    file_upload_name,
     get_sample_file,
     get_sample_file_metadata,
     get_sample_file_peak_timeseries,
     get_sample_file_peaks,
     get_sample_file_spectrum,
     get_sample_files,
+    reported_instrument_or_none,
     update_sample_file,
     upload_sample_file,
     upload_sample_files,
@@ -59,7 +65,12 @@ from mascope_backend.api.new.workspaces.dependencies import (
 )
 from mascope_backend.db.id import gen_id
 from mascope_backend.runtime import runtime
-from mascope_file.name import get_instrument_name, validate_instrument_name
+from mascope_file.name import (
+    INSTRUMENT_TYPE_BY_EXTENSION,
+    get_instrument_name,
+    resolve_instrument_type,
+    validate_instrument_name,
+)
 
 
 sample_files_router = APIRouter(prefix="/api/sample/files", tags=["Sample Files"])
@@ -423,6 +434,77 @@ def _request_device_id(request: Request) -> int | None:
     return getattr(request.state, "token_device_id", None)
 
 
+async def check_instrument_taken_from_a_file_name(instrument: str) -> None:
+    """Refuse an upload whose file name names no instrument the server knows.
+
+    An instrument's name no longer has to say whether it is an Orbitrap or a
+    TOF - the reader records that when it converts the file. But that only
+    helps an upload that says which instrument it is *for*: a File Agent
+    reports one, and the server files under it. An upload that carries only a
+    file name has nothing else to go on, so its first segment still has to
+    resolve - to an instrument the server already has files for, or to a name
+    that says its own class. Otherwise a file called ``ambient_....raw``
+    would quietly bring an instrument called "ambient" into being, with a
+    workspace and a year's dataset behind it.
+
+    :param instrument: The instrument read off the uploaded file name.
+    :type instrument: str
+    :raises ValueError: The name is not one the server can file under.
+    """
+    validate_instrument_name(instrument)
+    if resolve_instrument_type(instrument, throw=False) is not None:
+        # The name says its own class, as every name had to until now. No
+        # lookup needed, and none of the existing sites pays for one.
+        return
+    if await instrument_type_of(instrument) is None:
+        raise ValueError(
+            f"Cannot tell what instrument '{instrument}' is. A file uploaded "
+            "without a reported instrument is filed under the first segment of "
+            "its name, which has to be an instrument this server already holds "
+            "files for, or a name that says its own class (one containing "
+            "'orbi', 'tof' or 'api'). Name the file for the instrument it came "
+            "from, or upload it from a File Agent configured with the "
+            "instrument it watches."
+        )
+
+
+async def check_upload_matches_the_instrument_class(
+    instrument: str, uploaded_name: str
+) -> None:
+    """Refuse a file the other reader would have to open.
+
+    An instrument is one kind of thing, and its class is its acquisition
+    files': a ``.raw`` is an Orbitrap acquisition and a ``.h5`` a TOF one.
+    Filing both under one name would leave that name with no class at all -
+    the instrument list, the match defaults, the isotope resolution and the
+    spectrum window each pick one, and they would not have to pick the same
+    one. Refusing the second kind at the door is what keeps the question from
+    arising, and it is the upload that is wrong: whoever pointed an agent at
+    this instrument named someone else's.
+
+    :param instrument: The instrument the upload is filed under.
+    :type instrument: str
+    :param uploaded_name: The uploaded file's name, extension included.
+    :type uploaded_name: str
+    :raises ValueError: The file's class contradicts the instrument's own.
+    """
+    extension = os.path.splitext(uploaded_name)[1].lower()
+    uploaded_class = INSTRUMENT_TYPE_BY_EXTENSION.get(extension)
+    if uploaded_class is None:
+        # Not a source data file. Which extensions may be uploaded at all is
+        # SampleFilesUpload's question, and it has already been asked.
+        return
+    recorded = await recorded_instrument_type(instrument)
+    if recorded is not None and recorded != uploaded_class:
+        raise ValueError(
+            f"Instrument '{instrument}' is a {recorded} instrument, and "
+            f"'{uploaded_name}' is a {uploaded_class} acquisition. One "
+            "instrument records one kind of file, so this upload belongs "
+            "under another instrument - check which one the uploading agent "
+            "is configured to watch."
+        )
+
+
 @sample_files_router.post("/upload")
 @api_route(status_code=201, token_access=True)
 async def upload_sample_files_route(
@@ -454,7 +536,8 @@ async def upload_sample_files_route(
         # Normalize to basename to prevent path traversal
         f.filename = os.path.basename(f.filename)
         instrument = get_instrument_name(f.filename)
-        validate_instrument_name(instrument)
+        await check_instrument_taken_from_a_file_name(instrument)
+        await check_upload_matches_the_instrument_class(instrument, f.filename)
         await check_instrument_workspace_access(
             instrument, user, "editor", allow_new=True
         )
@@ -489,18 +572,32 @@ def get_upload_handler(
     """
 
     async def handler(file_path: str, metadata: dict):
-        # Sanitize filename to prevent path traversal
-        safe_filename = os.path.basename(metadata["filename"])
+        # Sanitize filenames to prevent path traversal
+        uploaded_name = os.path.basename(metadata["filename"])
+        source_filename = os.path.basename(
+            metadata.get("source_filename") or uploaded_name
+        )
 
-        # Check per-instrument access
-        instrument = get_instrument_name(safe_filename)
-        validate_instrument_name(instrument)
+        # The upload is filed under the instrument the agent reports with it,
+        # and stored under a name that starts with it; without one, under the
+        # first segment of its name, as before (see file_upload_name).
+        reported = reported_instrument_or_none(metadata.get("instrument"))
+        stored_name, instrument = file_upload_name(uploaded_name, reported)
+
+        # Check per-instrument access. A reported instrument is the agent's to
+        # name, whatever it is called; one read off the file name has to be one
+        # the server can already place.
+        if reported:
+            validate_instrument_name(instrument)
+        else:
+            await check_instrument_taken_from_a_file_name(instrument)
+        await check_upload_matches_the_instrument_class(instrument, uploaded_name)
         await check_instrument_workspace_access(
             instrument, user, "editor", allow_new=True
         )
 
-        # Rename file from temporary name back to original
-        dest_path = os.path.join(os.path.dirname(file_path), safe_filename)
+        # Rename file from temporary name to the name it is stored under
+        dest_path = os.path.join(os.path.dirname(file_path), stored_name)
         shutil.move(file_path, dest_path)
 
         # Single token validation for the entire upload process
@@ -512,11 +609,11 @@ def get_upload_handler(
             access_token=access_token,
             device_id=_request_device_id(request),
             instrument_timezone=metadata.get("timezone"),
+            source_filename=source_filename,
         )
-        # The instrument the agent says it watches, kept on its device row
-        # when the row has none yet. It is not what routes this upload - the
-        # instrument above still comes from the file name - and attribution
-        # must never fail an ingest, so a failure here is logged, not raised.
+        # The instrument the agent says it watches, kept on its device row so
+        # Paired machines shows where its data goes. Attribution must never
+        # fail an ingest, so a failure here is logged, not raised.
         try:
             await record_reported_instrument(
                 _request_device_id(request), metadata.get("instrument")

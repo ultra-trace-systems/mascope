@@ -74,3 +74,11 @@ class SampleFileProps(BaseModel):
             "took precedence."
         ),
     )
+
+    instrument_type: str = Field(
+        description=(
+            "The instrument class, 'orbi' or 'tof', decided by the reader that "
+            "converted the file. Recorded here and on the sample_file row so "
+            "an instrument's name need not say which class it is."
+        ),
+    )

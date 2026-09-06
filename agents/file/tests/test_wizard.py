@@ -39,6 +39,24 @@ def _connection_ok(monkeypatch):
     )
 
 
+@pytest.fixture(autouse=True)
+def _older_server():
+    """Each test starts against a server that announced no capabilities."""
+    wizard._server_capabilities.clear()
+    yield
+    wizard._server_capabilities.clear()
+
+
+def _server_files_by_report(monkeypatch):
+    """A pairing stub whose server files uploads under the reported instrument."""
+
+    def run_pairing(host, verify=True, instrument=None):
+        wizard._server_capabilities[wizard.FILES_UNDER_REPORTED_INSTRUMENT] = True
+        return "paired-token"
+
+    monkeypatch.setattr(wizard, "run_pairing", run_pairing)
+
+
 def test_verify_connection_accepts_200_json(monkeypatch):
     captured = {}
 
@@ -98,7 +116,8 @@ def test_run_setup_wizard_happy_path(monkeypatch, tmp_path, capsys):
             str(source),  # watched folder
             "",  # subfolders: accept default (no)
             "",  # mask: accept default
-            "",  # instrument: skip
+            "Orbi-Lab2",  # instrument: required
+            "",  # example file name for the prefix offer: skip
         ]
     )
     monkeypatch.setattr("builtins.input", lambda prompt: next(answers))
@@ -114,7 +133,7 @@ def test_run_setup_wizard_happy_path(monkeypatch, tmp_path, capsys):
     assert settings["verify_tls"] is True
     assert settings["mask"] == "*.raw"
     assert settings["timeout"] == 3
-    assert settings["instrument"] == ""
+    assert settings["instrument"] == "Orbi-Lab2"
     assert settings["filename_prefix"] == ""
     assert "accepted the access token" in capsys.readouterr().out
 
@@ -129,7 +148,8 @@ def test_run_setup_wizard_enables_subfolder_watching(monkeypatch, tmp_path):
             str(source),  # watched folder
             "y",  # subfolders: yes
             "",  # mask default
-            "",  # instrument: skip
+            "Orbi-Lab2",  # instrument: required
+            "",  # example file name for the prefix offer: skip
         ]
     )
     monkeypatch.setattr("builtins.input", lambda prompt: next(answers))
@@ -151,7 +171,8 @@ def test_run_setup_wizard_tls_verification_can_be_disabled(monkeypatch, tmp_path
             str(source),  # watched folder
             "",  # subfolders default
             "",  # mask default
-            "",  # instrument: skip
+            "Orbi-Lab2",  # instrument: required
+            "",  # example file name for the prefix offer: skip
         ]
     )
     monkeypatch.setattr("builtins.input", lambda prompt: next(answers))
@@ -175,8 +196,9 @@ def test_run_setup_wizard_re_pairs_on_bad_token(monkeypatch, tmp_path):
             str(source),  # watched folder
             "",  # subfolders default (no)
             "",  # mask default
-            "",  # instrument: skip
+            "Orbi-Lab2",  # instrument: required
             "a",  # verification failed: pair again
+            "",  # example file name for the prefix offer: skip
         ]
     )
     monkeypatch.setattr("builtins.input", lambda prompt: next(answers))
@@ -208,7 +230,8 @@ def test_run_setup_wizard_pairing_retry_then_give_up(monkeypatch, tmp_path):
             str(source),  # watched folder
             "",  # subfolders default (no)
             "",  # mask default
-            "",  # instrument: skip
+            "Orbi-Lab2",  # instrument: required
+            "",  # example file name for the prefix offer: skip
             "n",  # pairing did not complete - do not try again
         ]
     )
@@ -230,7 +253,8 @@ def test_run_setup_wizard_creates_missing_source(monkeypatch, tmp_path):
             "y",  # create it
             "",  # subfolders default (no)
             "",  # mask default
-            "",  # instrument: skip
+            "Orbi-Lab2",  # instrument: required
+            "",  # example file name for the prefix offer: skip
         ]
     )
     monkeypatch.setattr("builtins.input", lambda prompt: next(answers))
@@ -273,10 +297,17 @@ def test_the_instrument_name_reaches_pairing(monkeypatch, tmp_path):
     assert captured["instrument"] == "Orbi-Lab2"
 
 
-def test_skipping_the_instrument_pairs_without_one(monkeypatch, tmp_path):
+def test_the_instrument_cannot_be_skipped(monkeypatch, tmp_path, capsys):
+    # The server files this machine's uploads under the name, so an agent
+    # without one has nowhere to put its data. Enter re-asks rather than
+    # accepting nothing.
     captured = {}
-    _run_with(monkeypatch, tmp_path, [""], captured=captured)
-    assert captured["instrument"] is None
+    settings = _run_with(
+        monkeypatch, tmp_path, ["", "Orbi-Lab2", ""], captured=captured
+    )
+    assert settings["instrument"] == "Orbi-Lab2"
+    assert captured["instrument"] == "Orbi-Lab2"
+    assert "A value is required." in capsys.readouterr().out
 
 
 def test_the_instrument_prompt_rejects_names_the_server_would_not(
@@ -506,13 +537,94 @@ def test_an_empty_folder_with_no_example_changes_nothing(monkeypatch, tmp_path, 
     assert "set 'filename_prefix' by hand" in capsys.readouterr().out
 
 
-def test_a_configured_instrument_can_be_cleared(monkeypatch, tmp_path):
-    # Enter keeps the configured name, so without an explicit answer there
-    # would be no way to remove one but hand-editing config.toml.
-    settings = _run_with(
-        monkeypatch, tmp_path, [wizard.CLEAR_ANSWER], settings={"instrument": "Orbi-A"}
+def test_no_prefix_is_offered_when_the_server_files_by_report(
+    monkeypatch, tmp_path, capsys
+):
+    source = tmp_path / "watched"
+    source.mkdir()
+    (source / "ambient_2026.09.03-10h12m01s.raw").write_bytes(b"x")
+    # Against an older server this folder gets the prefix offer; this server
+    # files under the reported name, so the file names can stay as the
+    # acquisition software wrote them and no question is asked.
+    sequence = iter(["mascope.example.com", "", str(source), "", "", "Orbi-Lab2"])
+    monkeypatch.setattr("builtins.input", lambda prompt: next(sequence))
+    _server_files_by_report(monkeypatch)
+    _connection_ok(monkeypatch)
+
+    settings = wizard.run_setup_wizard({"mask": "*.raw", "timeout": 3})
+
+    assert settings["instrument"] == "Orbi-Lab2"
+    assert settings["filename_prefix"] == ""
+    assert "need not carry it" in capsys.readouterr().out
+
+
+def test_a_prefix_is_offered_for_removal_by_a_server_that_files_by_report(
+    monkeypatch, tmp_path
+):
+    # The server files under the reported name, so the prefix does nothing;
+    # setup offers to drop it, and the default answer takes it away.
+    source = tmp_path / "watched"
+    source.mkdir()
+    sequence = iter(["mascope.example.com", "", str(source), "", "", "Orbi-Lab2", ""])
+    monkeypatch.setattr("builtins.input", lambda prompt: next(sequence))
+    _server_files_by_report(monkeypatch)
+    _connection_ok(monkeypatch)
+
+    settings = wizard.run_setup_wizard(
+        {"mask": "*.raw", "timeout": 3, "filename_prefix": "Orbi-Lab2_"}
     )
-    assert settings["instrument"] == ""
+
+    assert settings["filename_prefix"] == ""
+
+
+def test_a_prefix_left_from_an_earlier_instrument_is_caught(monkeypatch, tmp_path):
+    # The case nothing else in setup looks at: the machine was repointed, the
+    # prefix was not, and the server would store every upload under both names
+    # as Orbi-B_Orbi-A_... . Setup is the only place that can catch it.
+    source = tmp_path / "watched"
+    source.mkdir()
+    sequence = iter(["mascope.example.com", "", str(source), "", "", "Orbi-B", ""])
+    monkeypatch.setattr("builtins.input", lambda prompt: next(sequence))
+    _server_files_by_report(monkeypatch)
+    _connection_ok(monkeypatch)
+
+    settings = wizard.run_setup_wizard(
+        {"mask": "*.raw", "timeout": 3, "filename_prefix": "Orbi-A_"}
+    )
+
+    assert settings["instrument"] == "Orbi-B"
+    assert settings["filename_prefix"] == ""
+
+
+def test_a_prefix_can_be_kept_against_a_server_that_files_by_report(
+    monkeypatch, tmp_path
+):
+    # Removing it is only the default; an operator who wants the names as they
+    # are keeps them.
+    source = tmp_path / "watched"
+    source.mkdir()
+    sequence = iter(["mascope.example.com", "", str(source), "", "", "Orbi-Lab2", "n"])
+    monkeypatch.setattr("builtins.input", lambda prompt: next(sequence))
+    _server_files_by_report(monkeypatch)
+    _connection_ok(monkeypatch)
+
+    settings = wizard.run_setup_wizard(
+        {"mask": "*.raw", "timeout": 3, "filename_prefix": "Site3_"}
+    )
+
+    assert settings["filename_prefix"] == "Site3_"
+
+
+def test_a_configured_instrument_cannot_be_cleared(monkeypatch, tmp_path):
+    # The clearing answer works for settings that may be absent. This one may
+    # not, so it is refused like any other empty answer and the prompt repeats.
+    settings = _run_with(
+        monkeypatch,
+        tmp_path,
+        [wizard.CLEAR_ANSWER, "Orbi-B", ""],
+        settings={"instrument": "Orbi-A"},
+    )
+    assert settings["instrument"] == "Orbi-B"
 
 
 def test_an_invalid_configured_instrument_is_not_offered_back(
@@ -521,9 +633,9 @@ def test_an_invalid_configured_instrument_is_not_offered_back(
     # Offering it as the default would make Enter re-submit a name the agent
     # refuses to start with, and the prompt would never accept an answer.
     settings = _run_with(
-        monkeypatch, tmp_path, [""], settings={"instrument": "orbi lab"}
+        monkeypatch, tmp_path, ["Orbi-Lab2", ""], settings={"instrument": "orbi lab"}
     )
-    assert settings["instrument"] == ""
+    assert settings["instrument"] == "Orbi-Lab2"
     assert "is not one the server accepts" in capsys.readouterr().out
 
 
@@ -604,6 +716,25 @@ def test_run_pairing_polls_until_approved(monkeypatch, capsys):
     assert "instrument" not in calls[0]["json"]
     assert calls[0]["headers"]["X-Agent-Version"] == __version__
     assert calls[1]["url"].endswith("/api/auth/pairing/poll")
+    # A start response without capabilities is an older server.
+    assert wizard.server_files_under_reported_instrument() is False
+
+
+def test_run_pairing_keeps_what_the_server_says_it_does(monkeypatch):
+    monkeypatch.setattr(wizard.time, "sleep", lambda seconds: None)
+    started = _started()
+    started._body["capabilities"] = {"files_uploads_under_reported_instrument": True}
+    _post_sequence(
+        monkeypatch,
+        [
+            started,
+            FakeJsonResponse(
+                200, {"status": "approved", "access_token": "paired-token"}
+            ),
+        ],
+    )
+    assert wizard.run_pairing("mascope.example.com") == "paired-token"
+    assert wizard.server_files_under_reported_instrument() is True
 
 
 def test_run_pairing_reports_the_instrument(monkeypatch):
@@ -665,7 +796,8 @@ def test_cancelling_pairing_keeps_the_answers_given_before_it(monkeypatch, tmp_p
             "y",  # subfolders
             "*.h5",  # mask
             "Orbi-Lab2",  # instrument
-            "",  # no example file name to offer
+            # The prefix offer comes after pairing, so nothing else is asked
+            # before the pairing attempt.
             "n",  # pairing did not complete - do not try again
         ]
     )

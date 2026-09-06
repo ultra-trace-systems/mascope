@@ -13,9 +13,11 @@ import { ref, computed, watch } from 'vue'
 
 import { useApp } from '@/stores'
 import { collectionTypes, getAllowedCollectionTypes } from '@/lib/constants'
-import { beautifyConstant, instrumentType } from '@/lib/utils'
+import { beautifyConstant } from '@/lib/utils'
+import { useInstrument } from '@/stores/data/modules/instrument'
 
 const app = useApp()
+const instrumentClass = useInstrument().typeOf
 
 const selected = defineModel('selected')
 
@@ -43,10 +45,9 @@ const allowedTypes = computed(() => {
   // For targets mode, use batch type constraints
   let allowed = getAllowedCollectionTypes(props.batch.type)
 
-  // Special case: TOF instruments can use CALIBRANTS for ACQUISITION batches
+  // Special case: TOF instruments can use CALIBRANTS for ACQUISITION batches.
   if (props.batch.type === 'ACQUISITION') {
-    const currentInstrument = app.data.dataset.focused?.instrument
-    if (instrumentType(currentInstrument) === 'tof') {
+    if (instrumentClass(app.data.dataset.focused?.instrument) === 'tof') {
       allowed = [...new Set([...allowed, 'CALIBRANTS'])]
     }
   }
