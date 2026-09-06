@@ -8,6 +8,7 @@ writes onto the members and the registry, the consensus, and the run
 bookkeeping around them.
 """
 
+import asyncio
 from datetime import datetime, timezone
 from types import SimpleNamespace
 
@@ -16,11 +17,15 @@ import pytest
 import pytest_asyncio
 from sqlalchemy import select
 
-from mascope_backend.api.new.peak_assignments import batch_untargeted
+from mascope_backend.api.new.peak_assignments import (
+    batch_import,
+    batch_untargeted,
+)
 from mascope_backend.api.new.peak_assignments.batch_import import (
     REASON_CURATED,
     REASON_ISOTOPOLOGUE,
     REASON_NO_ANCHOR,
+    import_outcome,
     perform_batch_import,
     run_batch_import,
 )
@@ -423,3 +428,87 @@ async def test_the_route_opens_a_run_and_refuses_what_it_cannot_honour(
     # The stub never closed the run, so a second import finds it in flight.
     again = await editor_client.post(url, json=body)
     assert again.status_code == 409
+
+
+async def test_a_sample_that_cannot_be_measured_is_skipped_and_the_rest_are_measured(
+    async_session_factory, folded_batch, stubbed_scorer, monkeypatch
+):
+    """One sample's measurement raising is counted and skipped: the rows have
+    already matched their anchors, the other samples are measured against them,
+    and the deferred consensus pass runs over the matched anchors."""
+    batch_id, samples = folded_batch["batch_id"], folded_batch["samples"]
+    scorer = batch_untargeted.score_seeds  # the fixture's canned pairing
+
+    async def failing(sample, seeds, params):
+        if sample.sample_item_id == samples["S2"]:
+            raise FileNotFoundError("S2's peak file has moved")
+        return await scorer(sample, seeds, params)
+
+    recomputed = []
+    recompute = batch_import.recompute_batch_consensus
+
+    async def recording(sample_batch_id, batch_peak_ids):
+        recomputed.append(set(batch_peak_ids))
+        return await recompute(sample_batch_id, batch_peak_ids)
+
+    monkeypatch.setattr(batch_untargeted, "score_seeds", failing)
+    monkeypatch.setattr(batch_import, "recompute_batch_consensus", recording)
+
+    counts = await run_batch_import(
+        batch_id, "peaky", 5.0, _rows((181.0709, "C6H12O6")), POLARITY
+    )
+
+    assert counts["anchors_matched"] == 1
+    assert counts["samples_rescored"] == 1
+    assert counts["samples_failed"] == 1
+    assert counts["members_measured"] == 1
+    anchors = await _anchors_by_mz(async_session_factory, batch_id)
+    glucose = anchors[181]
+    entry = next(c for c in glucose.candidates if c["formula"] == "C6H12O6")
+    s1 = await _members(async_session_factory, samples["S1"])
+    assert s1["p1"].candidate == glucose.candidates.index(entry)
+    s2 = await _members(async_session_factory, samples["S2"])
+    assert s2["p1"].candidate is None
+    assert recomputed == [{glucose.batch_peak_id}]
+    assert glucose.consensus_formula == "C6H12O6"
+    outcome = import_outcome(counts, batch_id, "peaky")
+    assert outcome["status"] == "partial"
+    assert "1 sample could not be measured and was skipped." in outcome["message"]
+
+
+@pytest.mark.parametrize("recompute_fails", [False, True])
+async def test_a_cancellation_mid_import_still_recomputes_and_stays_a_cancellation(
+    async_session_factory, folded_batch, stubbed_scorer, monkeypatch, recompute_fails
+):
+    """Cancellation walks past the per-sample arm, being a BaseException. The
+    samples measured before it have committed their members while the anchors
+    still describe the members they had, so the deferred pass runs on the way
+    out - and a failure there is logged rather than allowed to replace the
+    cancellation, which has to reach the caller as what it is."""
+    batch_id, samples = folded_batch["batch_id"], folded_batch["samples"]
+    scorer = batch_untargeted.score_seeds
+
+    async def cancelled(sample, seeds, params):
+        if sample.sample_item_id == samples["S2"]:
+            raise asyncio.CancelledError()
+        return await scorer(sample, seeds, params)
+
+    recomputed = []
+    recompute = batch_import.recompute_batch_consensus
+
+    async def recording(sample_batch_id, batch_peak_ids):
+        recomputed.append(set(batch_peak_ids))
+        if recompute_fails:
+            raise RuntimeError("the database went away")
+        return await recompute(sample_batch_id, batch_peak_ids)
+
+    monkeypatch.setattr(batch_untargeted, "score_seeds", cancelled)
+    monkeypatch.setattr(batch_import, "recompute_batch_consensus", recording)
+
+    with pytest.raises(asyncio.CancelledError):
+        await run_batch_import(
+            batch_id, "peaky", 5.0, _rows((181.0709, "C6H12O6")), POLARITY
+        )
+
+    anchors = await _anchors_by_mz(async_session_factory, batch_id)
+    assert recomputed == [{anchors[181].batch_peak_id}]
