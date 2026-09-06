@@ -309,6 +309,100 @@ async def test_a_tus_upload_reports_its_instrument_under_that_key(monkeypatch):
     assert recorded == {"device_id": 7, "instrument": "Orbi-Lab2"}
 
 
+def _handler_probe(monkeypatch):
+    """A tus completion handler with its side effects captured, not run."""
+    seen = {}
+
+    async def fake_access(instrument, user, role, allow_new=False):
+        seen["instrument"] = instrument
+
+    async def fake_upload(dest_path, **kwargs):
+        seen["dest_path"] = dest_path
+        seen["source_filename"] = kwargs.get("source_filename")
+
+    async def noop(*args, **kwargs):
+        return None
+
+    monkeypatch.setattr(files_routes, "record_reported_instrument", noop)
+    monkeypatch.setattr(files_routes, "check_instrument_workspace_access", fake_access)
+    monkeypatch.setattr(files_routes, "get_access_token", noop)
+    monkeypatch.setattr(files_routes, "upload_sample_file", fake_upload)
+    monkeypatch.setattr(
+        files_routes.shutil, "move", lambda src, dst: seen.update(moved_to=dst)
+    )
+    request = SimpleNamespace(state=SimpleNamespace(token_device_id=7))
+    return files_routes.get_upload_handler(request=request, user=object()), seen
+
+
+@pytest.mark.asyncio
+async def test_a_tus_upload_is_filed_under_the_instrument_it_reports(monkeypatch):
+    """The file name no longer has to carry the instrument.
+
+    An agent that reports what it watches gets its upload stored under a name
+    that starts with it, checked against that instrument's workspace, and the
+    converter is told the name the file had on the instrument PC.
+    """
+    handler, seen = _handler_probe(monkeypatch)
+
+    await handler(
+        "/tmp/tus/upload-body",
+        {
+            "filename": "ambient_2026.09.05-10h12m01s.raw",
+            "source_filename": "ambient_2026.09.05-10h12m01s.raw",
+            "instrument": "Test",
+        },
+    )
+
+    assert seen["instrument"] == "Test"
+    assert (
+        seen["moved_to"]
+        .replace("\\", "/")
+        .endswith("/tmp/tus/Test_ambient_2026.09.05-10h12m01s.raw")
+    )
+    assert seen["source_filename"] == "ambient_2026.09.05-10h12m01s.raw"
+
+
+@pytest.mark.asyncio
+async def test_a_tus_upload_without_a_report_is_filed_by_its_name(monkeypatch):
+    handler, seen = _handler_probe(monkeypatch)
+
+    await handler(
+        "/tmp/tus/upload-body", {"filename": "Orbi-Lab2_2026.09.05-10h12m01s.raw"}
+    )
+
+    assert seen["instrument"] == "Orbi-Lab2"
+    assert (
+        seen["moved_to"]
+        .replace("\\", "/")
+        .endswith("/tmp/tus/Orbi-Lab2_2026.09.05-10h12m01s.raw")
+    )
+    # Nothing renamed it, so the on-disk name is the uploaded one.
+    assert seen["source_filename"] == "Orbi-Lab2_2026.09.05-10h12m01s.raw"
+
+
+@pytest.mark.asyncio
+async def test_a_tus_upload_already_prefixed_by_the_agent_is_not_prefixed_again(
+    monkeypatch,
+):
+    handler, seen = _handler_probe(monkeypatch)
+
+    await handler(
+        "/tmp/tus/upload-body",
+        {
+            "filename": "Test_ambient_2026.09.05-10h12m01s.raw",
+            "source_filename": "ambient_2026.09.05-10h12m01s.raw",
+            "instrument": "Test",
+        },
+    )
+
+    assert seen["instrument"] == "Test"
+    assert (
+        seen["moved_to"]
+        .replace("\\", "/")
+        .endswith("/tmp/tus/Test_ambient_2026.09.05-10h12m01s.raw")
+    )
+
+
 @pytest.mark.asyncio
 async def test_a_failure_to_record_the_instrument_does_not_fail_the_upload(monkeypatch):
     """Attribution never fails an ingest: the file is already stored."""
@@ -338,3 +432,108 @@ async def test_a_failure_to_record_the_instrument_does_not_fail_the_upload(monke
     )
 
     assert uploaded == [True]
+
+
+@pytest.mark.asyncio
+async def test_a_name_that_names_no_instrument_is_refused_rather_than_filed(
+    monkeypatch,
+):
+    """A file name alone still has to name an instrument the server can place.
+
+    An agent that reports its instrument may call it anything. An upload that
+    reports nothing is filed under the first segment of its name, and that
+    segment has to be an instrument the server already holds files for, or a
+    name that says its own class - otherwise every stray file name would bring
+    an instrument, a workspace and a year's dataset into being.
+    """
+    handler, seen = _handler_probe(monkeypatch)
+
+    async def unknown_instrument(instrument):
+        return None
+
+    monkeypatch.setattr(files_routes, "instrument_type_of", unknown_instrument)
+
+    with pytest.raises(ValueError, match="Cannot tell what instrument 'ambient' is"):
+        await handler(
+            "/tmp/tus/upload-body",
+            {"filename": "ambient_2026.09.05-10h12m01s.raw"},
+        )
+
+    assert "moved_to" not in seen
+
+
+@pytest.mark.asyncio
+async def test_a_name_the_server_already_files_under_is_accepted(monkeypatch):
+    """The free-named instruments an agent created stay reachable by name.
+
+    A browser upload cannot report an instrument, so a file named for one the
+    server already holds files for has to be filed under it - otherwise the
+    instruments this release lets an agent create could never be uploaded to
+    from the web app.
+    """
+    handler, seen = _handler_probe(monkeypatch)
+
+    async def known_instrument(instrument):
+        assert instrument == "Test"
+        return "orbi"
+
+    monkeypatch.setattr(files_routes, "instrument_type_of", known_instrument)
+
+    await handler("/tmp/tus/upload-body", {"filename": "Test_2026.09.05-10h12m01s.raw"})
+
+    assert seen["instrument"] == "Test"
+    assert (
+        seen["moved_to"]
+        .replace("\\", "/")
+        .endswith("/tmp/tus/Test_2026.09.05-10h12m01s.raw")
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_file_of_the_other_class_is_refused_for_that_instrument(monkeypatch):
+    """One instrument records one kind of file.
+
+    A name that held both a .raw and a .h5 would have no class at all - the
+    instrument list, the match defaults, the isotope resolution and the
+    spectrum window each pick one, with nothing making them agree - so the
+    second kind is refused at the door rather than reconciled afterwards.
+    """
+    handler, seen = _handler_probe(monkeypatch)
+
+    async def already_a_tof(instrument):
+        return "tof"
+
+    monkeypatch.setattr(files_routes, "recorded_instrument_type", already_a_tof)
+
+    with pytest.raises(ValueError, match="is a tof instrument"):
+        await handler(
+            "/tmp/tus/upload-body",
+            {
+                "filename": "ambient_2026.09.06-10h12m01s.raw",
+                "instrument": "Lab-1",
+            },
+        )
+
+    assert "moved_to" not in seen
+
+
+@pytest.mark.asyncio
+async def test_the_first_file_settles_an_instrument_with_no_class_yet(monkeypatch):
+    handler, seen = _handler_probe(monkeypatch)
+
+    async def no_files_yet(instrument):
+        return None
+
+    monkeypatch.setattr(files_routes, "recorded_instrument_type", no_files_yet)
+
+    await handler(
+        "/tmp/tus/upload-body",
+        {"filename": "ambient_2026.09.06-10h12m01s.raw", "instrument": "Lab-1"},
+    )
+
+    assert seen["instrument"] == "Lab-1"
+    assert (
+        seen["moved_to"]
+        .replace("\\", "/")
+        .endswith("/tmp/tus/Lab-1_ambient_2026.09.06-10h12m01s.raw")
+    )

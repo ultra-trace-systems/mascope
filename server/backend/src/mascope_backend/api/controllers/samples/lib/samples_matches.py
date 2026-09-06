@@ -27,6 +27,7 @@ async def query_peak_matches(
     sample_item_id: str,
     instrument: str,
     peak_ids: list[str],
+    instrument_type: str | None = None,
 ) -> list[list[dict]]:
     """Query and group match data for a list of peaks.
 
@@ -36,6 +37,9 @@ async def query_peak_matches(
     :param sample_item_id: The sample to query matches for.
     :param instrument: Instrument name (passed through for match filtering).
     :param peak_ids: Ordered list of peak IDs to align results to.
+    :param instrument_type: The class the reader recorded for the sample's
+        file, carried into the frame so the match defaults do not have to be
+        read back out of the instrument name.
     :return: Per-peak list of match dictionaries.
     """
     async with async_session() as session:
@@ -62,6 +66,10 @@ async def query_peak_matches(
                     "instrument",
                     instrument,  # type: ignore
                 ),  # Add instrument as a column for filtering logic
+                label(
+                    "instrument_type",
+                    instrument_type,  # type: ignore
+                ),  # ... and its class, which the name need not say
             )
             .select_from(MatchIsotope)
             .join(

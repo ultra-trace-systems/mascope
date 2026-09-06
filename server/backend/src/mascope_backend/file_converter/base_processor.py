@@ -15,6 +15,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 import mascope_sdk
 from mascope_file.io import write_props
 from mascope_file.name import (
+    INSTRUMENT_TYPE_BY_EXTENSION,
     get_instrument_name,
     parse_path_from_item_filename,
 )
@@ -345,6 +346,7 @@ class BaseFileProcessor(Thread, ABC, metaclass=FileProcessorMeta):
                 instrument_function_id,
                 access_token=file_context.access_token,
                 device_id=getattr(file_context, "device_id", None),
+                source_filename=getattr(file_context, "source_filename", None),
             )
 
         except Exception as e:
@@ -500,6 +502,18 @@ class BaseFileProcessor(Thread, ABC, metaclass=FileProcessorMeta):
         """IANA timezone of the uploading machine, when it reported a valid one."""
         zone = self._context_timezone()
         return zone.key if zone is not None else None
+
+    @property
+    def instrument_type(self) -> str:
+        """The instrument class, from the reader that opened the file.
+
+        Each processor reads one file type, and the watcher routes files to
+        processors by extension, so the extension names the reader and the
+        reader names the class. Recorded in the props and on the database row
+        rather than parsed from the file name, which lets an instrument be
+        called what its operator calls it.
+        """
+        return INSTRUMENT_TYPE_BY_EXTENSION[self.file_extension]
 
     def _get_sample_file_props(self) -> SampleFileProps:
         """Extract sample file properties from the opened file.

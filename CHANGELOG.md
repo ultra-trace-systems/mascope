@@ -6,6 +6,52 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
 
 ### Added
 
+- **Uploads from a paired File Agent are filed under the instrument the agent
+  reports, so the file names no longer have to carry it.** An agent whose
+  setup named its instrument gets each upload stored under
+  `<instrument>_<file name>`, checked against that instrument's workspace and
+  converted into its `Acquisitions <instrument>` dataset, whatever the
+  acquisition software called the file; a name that already starts with the
+  instrument is left alone, and an upload that reports nothing is filed by
+  its name as before. The file's name on the instrument PC is kept as
+  `sample_file.source_filename`. With that, an instrument's name no longer
+  has to contain "orbi" or "tof": the class is the acquisition file's own -
+  a `.raw` is an Orbitrap acquisition and a `.h5` a TOF one - recorded by the
+  reader that converts the file, in the file's props and as
+  `sample_file.instrument_type` (migration `c2d9f4a71b3e`, backfilled from
+  the old name rule and carried by `sample_view`), and that recorded class is
+  what every place choosing Orbitrap or TOF behaviour reads - the instrument
+  list, match and calibration parameters, isotope resolution, the spectrum
+  window and the calibrants allowance in the web app. A sample that keeps no
+  source file answers from its props, and only a file converted before that
+  field existed falls back to its name: a name that merely looks like it says
+  its class - "Rapid" and "Capillary" both contain "api" - no longer
+  overrules the file itself. The pairing start response now
+  announces `capabilities.files_uploads_under_reported_instrument`, and the
+  agent's guided setup skips its upload-prefix offer against a server that
+  says so. An `.h5` file whose name carries no acquisition time gets it
+  inserted after the instrument segment, as `.raw` files always did, so TOF
+  acquisition software need not stamp its files either. A browser upload
+  still takes the instrument from the file name, and may now name any
+  instrument the server already holds files for, so the instruments an agent
+  creates can be uploaded to from the web app as well; a name that is neither
+  known nor self-describing is refused, rather than quietly bringing a new
+  instrument, workspace and dataset into being. **One instrument records one
+  kind of file:** an upload whose data file contradicts the class already
+  recorded for that instrument is refused, so a name cannot come to hold both
+  a `.raw` and a `.h5` and leave every reader of its class to guess.
+
+- **The File Agent now requires an instrument name.** The server files the
+  machine's uploads under it, so an agent without one has nowhere to put its
+  data: the guided setup no longer lets the answer be left empty or cleared,
+  and the agent refuses to start without it, naming the setting and pointing
+  at `--setup`. An upload that reports no instrument therefore means an older
+  agent, and it now leaves the machine's recorded instrument alone instead of
+  clearing it. Setup also offers to remove a `filename_prefix` once paired
+  with a server that files by the reported name: that server has no use for
+  one, and a prefix left from an earlier instrument name would otherwise have
+  every upload stored under both.
+
 - **The File Agent reports which instrument it watches, and its version.** Its
   guided setup now asks for the instrument name (letters, digits and hyphens,
   e.g. `Orbi-Lab2`), offering the name the watched folder's files already start

@@ -36,7 +36,6 @@ from mascope_backend.db import (
     async_session,
 )
 from mascope_backend.runtime import runtime
-from mascope_file.name import resolve_instrument_type
 
 
 @api_controller()
@@ -130,7 +129,7 @@ async def get_match_ions(
             ).where(Sample.sample_batch_id == sample_batch_id)
 
         if sample_batch_id or sample_item_id:
-            query = query.add_columns(Sample.instrument)
+            query = query.add_columns(Sample.instrument, Sample.instrument_type)
 
         # Step 4: Join TargetIon if requested
         if (
@@ -234,7 +233,7 @@ async def get_match_ions(
 
         try:
             # Resolve correct intensity units based on the instrument type of the sample
-            instrument_type = resolve_instrument_type(row.instrument)
+            instrument_type = row.instrument_type
             if instrument_type == "tof":
                 unit = "ions"
             else:

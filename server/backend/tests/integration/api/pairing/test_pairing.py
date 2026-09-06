@@ -92,6 +92,9 @@ async def test_full_pairing_flow(
     started = await _start(public_client)
     assert "-" in started["user_code"]
     assert started["expires_in"] > 0
+    # What this server does with what the agent reports, so the agent's setup
+    # can skip the upload-prefix question an older server needed answered.
+    assert started["capabilities"] == {"files_uploads_under_reported_instrument": True}
 
     # Agent polls before approval: pending
     resp = await public_client.post(

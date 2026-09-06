@@ -60,20 +60,29 @@ async def remove_subthreshold_match_isotopes(
     :rtype: dict
     """
     async with async_session() as session:
+        # One row per instrument: the count and delete below are scoped by
+        # name alone, so a name carrying two classes - refused at upload, but
+        # possible in data that predates that - would otherwise be counted
+        # and deleted twice, the second time at the other class's threshold.
         instruments = (
-            (await session.execute(text("SELECT DISTINCT instrument FROM sample_file")))
-            .scalars()
-            .all()
-        )
+            await session.execute(
+                text(
+                    "SELECT instrument, min(instrument_type) FROM sample_file "
+                    "GROUP BY instrument"
+                )
+            )
+        ).all()
 
         per_instrument: list[dict] = []
         total_subthreshold = 0
         total_matched = 0
         skipped_instruments: list[str] = []
 
-        for instrument in instruments:
+        for instrument, instrument_type in instruments:
             try:
-                params = instrument_default_match_params(instrument)
+                params = instrument_default_match_params(
+                    instrument, instrument_type=instrument_type
+                )
             except ValueError:
                 # resolve_instrument_type raises on unrecognized instrument names.
                 params = None

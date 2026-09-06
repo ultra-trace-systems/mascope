@@ -587,23 +587,31 @@ def resolve_settings(mascope_path: str, env_path: str) -> dict:
 
 
 def _validate_instrument() -> None:
-    """Refuse to start on an instrument name the server would not accept.
+    """Refuse to start without an instrument name the server will accept.
 
     Checked against the loaded runtime config rather than the settings dict,
     so it covers dev mode too, where the CLI owns the configuration and
     :func:`resolve_settings` never runs. Refused rather than ignored the way
-    an unresolvable timezone is: the server files uploads under this name, so
-    a wrong one misfiles data instead of merely degrading a timestamp.
+    an unresolvable timezone is: the server files this machine's uploads
+    under this name, so a missing or wrong one misfiles data instead of
+    merely degrading a timestamp.
 
-    :raises ConfigError: When a configured instrument name is not valid
+    :raises ConfigError: When the instrument name is missing or not valid
     """
     instrument = (getattr(runtime.config, "instrument", "") or "").strip()
-    if instrument and not agent_config.is_valid_instrument(instrument):
+    if not instrument:
+        raise ConfigError(
+            "No instrument name is configured, and the agent needs one: the "
+            "server files this machine's uploads under it. Set 'instrument' in "
+            "the agent configuration (letters, digits and hyphens, for example "
+            "Orbi-Lab2), or start the agent with --setup to enter it in the "
+            "guided setup."
+        )
+    if not agent_config.is_valid_instrument(instrument):
         raise ConfigError(
             f"The instrument name is not valid: {instrument!r}\n"
-            "Use letters, digits and hyphens only (for example Orbi-Lab2), or "
-            "leave 'instrument' empty in the agent configuration. Start the "
-            "agent with --setup to fix it in the guided setup."
+            "Use letters, digits and hyphens only (for example Orbi-Lab2). "
+            "Start the agent with --setup to fix it in the guided setup."
         )
 
 

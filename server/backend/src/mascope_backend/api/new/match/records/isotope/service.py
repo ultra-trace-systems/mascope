@@ -36,7 +36,6 @@ from mascope_backend.db import (
     TargetIsotope,
     async_session,
 )
-from mascope_file.name import get_instrument_name, resolve_instrument_type
 from mascope_match.params import (
     ORBI_DEFAULT_ISOTOPE_ABUNDANCE_THRESHOLD,
     TOF_DEFAULT_ISOTOPE_ABUNDANCE_THRESHOLD,
@@ -147,8 +146,7 @@ async def _get_sample_match_isotope_records(
         )
 
         # Determine instrument type and resolution for filtering
-        instrument_type = resolve_instrument_type(get_instrument_name(sample.filename))
-        isotope_resolution = "LOW" if instrument_type == "tof" else "HIGH"
+        isotope_resolution = "LOW" if sample.instrument_type == "tof" else "HIGH"
 
         query = (
             select(
@@ -215,7 +213,10 @@ async def _get_sample_match_isotope_records(
             # override in filter_params, else instrument default). These carry no
             # stored match data; the switch lets a future UI opt into showing them.
             default_threshold = (
-                match_params or instrument_default_match_params(sample.instrument)
+                match_params
+                or instrument_default_match_params(
+                    sample.instrument, instrument_type=sample.instrument_type
+                )
             ).isotope_abundance_threshold
             query = query.where(
                 TargetIsotope.relative_abundance
@@ -255,7 +256,9 @@ async def _get_sample_match_isotope_records(
                 "mz": row.TargetIsotope.mz,
                 "relative_abundance": row.TargetIsotope.relative_abundance,
                 "resolution": row.TargetIsotope.resolution,
-                "instrument": sample.instrument,  # Add instrument for _apply_match_params logic
+                # Both carried for _apply_match_params, then dropped again
+                "instrument": sample.instrument,
+                "instrument_type": sample.instrument_type,
             }
 
             # Build match data with proper match_params application
@@ -304,6 +307,7 @@ async def _get_sample_match_isotope_records(
 
             # Remove instrument from isotope_data before final response
             del isotope_data["instrument"]
+            del isotope_data["instrument_type"]
             isotope_data["match"] = match_data
             data.append(isotope_data)
 
@@ -338,7 +342,8 @@ def _apply_match_params(
         params = isotope_data["filter_params"][isotope_data["instrument"]]
     else:
         params = instrument_default_match_params(
-            isotope_data["instrument"]
+            isotope_data["instrument"],
+            instrument_type=isotope_data.get("instrument_type"),
         ).model_dump()
 
     # Check if all required fields are present and valid
@@ -425,12 +430,7 @@ async def _get_batch_match_isotope_records(
 
         # Determine resolution based on instrument types in batch
         samples = await get_samples(sample_batch_id=sample_batch.sample_batch_id)
-        instrument_types = set(
-            [
-                resolve_instrument_type(get_instrument_name(sample["filename"]))
-                for sample in samples["data"]
-            ]
-        )
+        instrument_types = {sample["instrument_type"] for sample in samples["data"]}
         isotope_resolution = "HIGH" if "orbi" in instrument_types else "LOW"
 
         query = (

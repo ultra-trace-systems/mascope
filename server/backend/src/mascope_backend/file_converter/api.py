@@ -151,6 +151,7 @@ def create_sample_file_db_record(
     instrument_function_id: str,
     access_token: str,
     device_id: int | None = None,
+    source_filename: str | None = None,
 ) -> None:
     """Create a sample file database record via HTTP request.
 
@@ -162,6 +163,9 @@ def create_sample_file_db_record(
     :type access_token: str
     :param device_id: The paired device the upload came from, for attribution
     :type device_id: int | None, optional
+    :param source_filename: The file's name on the uploading machine, before
+        the server filed it under an instrument; None when not reported
+    :type source_filename: str | None, optional
     :raises Exception: HTTP request failed
     """
     runtime.logger.info(
@@ -190,6 +194,8 @@ def create_sample_file_db_record(
         "uploaded_by_device_id": device_id,
         "acquisition_timezone": data.acquisition_timezone,
         "utc_offset_source": data.utc_offset_source,
+        "instrument_type": data.instrument_type,
+        "source_filename": source_filename,
     }
 
     headers = {

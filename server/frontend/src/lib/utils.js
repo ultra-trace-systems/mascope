@@ -83,6 +83,18 @@ export function debounce(callback, timeout = 500) {
   }
 }
 
+/**
+ * Instrument class of a sample: what the reader recorded when the file was
+ * converted, which every sample row carries as `instrument_type`; the name
+ * rule of `instrumentType` for rows that predate the field.
+ *
+ * @param {object|null|undefined} sample A sample row (or sample file row)
+ * @returns {'orbi'|'tof'|null}
+ */
+export function sampleInstrumentType(sample) {
+  return sample?.instrument_type ?? instrumentType(sample?.instrument)
+}
+
 export function instrumentType(instrument) {
   if (!instrument) {
     return null

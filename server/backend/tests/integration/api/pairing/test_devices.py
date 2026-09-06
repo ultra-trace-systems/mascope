@@ -245,6 +245,30 @@ async def test_an_unchanged_instrument_costs_no_write(
 
 
 @pytest.mark.asyncio
+async def test_an_upload_that_reports_no_instrument_leaves_the_row_alone(
+    fake_redis, public_client, editor_client, async_session_factory
+):
+    # An agent of this release always reports an instrument - it refuses to
+    # start without one - so silence means an older agent, and taking it for
+    # an answer would drop a name with nothing to replace it.
+    _, device_id = await _pair(
+        public_client, editor_client, "QUIET-PC", instrument="Orbi-A"
+    )
+    async with async_session_factory() as session:
+        assert (await session.get(AgentDevice, device_id)).instrument == "Orbi-A"
+
+    await record_reported_instrument(device_id, None)
+    await record_reported_instrument(device_id, "")
+    async with async_session_factory() as session:
+        assert (await session.get(AgentDevice, device_id)).instrument == "Orbi-A"
+
+    # A machine repointed at another instrument still says so.
+    await record_reported_instrument(device_id, "Orbi-B")
+    async with async_session_factory() as session:
+        assert (await session.get(AgentDevice, device_id)).instrument == "Orbi-B"
+
+
+@pytest.mark.asyncio
 async def test_rename_device(fake_redis, public_client, editor_client):
     _, device_id = await _pair(public_client, editor_client, "OLD-NAME")
 

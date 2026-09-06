@@ -19,6 +19,7 @@ from mascope_backend.api.new.instruments.service import get_instruments
 from mascope_backend.db import (
     AgentDevice,
     Dataset,
+    SampleFile,
     User,
     Workspace,
     WorkspaceMember,
@@ -224,6 +225,42 @@ async def _find_acquisition_dataset(
     return datasets[0] if datasets else None
 
 
+async def recorded_instrument_type(instrument: str) -> str | None:
+    """The class the files already converted under a name were read with.
+
+    One instrument is one class - an upload whose data file contradicts this
+    is refused - so any of its files answers for all of them. The lowest is
+    taken so the answer does not depend on which row the planner reaches
+    first, for a name that carried both before that was refused.
+
+    :param instrument: The instrument name
+    :type instrument: str
+    :return: The instrument class, or None when the name has no files yet
+    :rtype: str | None
+    """
+    async with async_session() as session:
+        return await session.scalar(
+            select(func.min(SampleFile.instrument_type)).where(
+                SampleFile.instrument == instrument
+            )
+        )
+
+
+async def instrument_type_of(instrument: str) -> str | None:
+    """The class of an instrument, "orbi" or "tof".
+
+    From the files converted under its name, where the reader recorded it;
+    the name itself when it has none yet and says.
+
+    :param instrument: The instrument name
+    :type instrument: str
+    :return: The instrument class, or None when nothing says
+    :rtype: str | None
+    """
+    recorded = await recorded_instrument_type(instrument)
+    return recorded or resolve_instrument_type(instrument, throw=False)
+
+
 @api_controller()
 async def get_acquisition_dataset(
     instrument: str,
@@ -307,7 +344,7 @@ async def get_acquisition_dataset(
         room=workspace_id,
     )
 
-    instrument_type = resolve_instrument_type(instrument, throw=False)
+    instrument_type = await instrument_type_of(instrument)
     await emit_record_created(
         record_type="instrument",
         record_id=instrument,

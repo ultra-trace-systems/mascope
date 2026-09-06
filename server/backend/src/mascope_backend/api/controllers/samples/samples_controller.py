@@ -372,7 +372,10 @@ async def get_sample_peaks(
 
     if matches:
         response_data["match"] = await query_peak_matches(
-            sample.sample_item_id, sample.instrument, peak_data.peak_ids
+            sample.sample_item_id,
+            sample.instrument,
+            peak_data.peak_ids,
+            instrument_type=sample.instrument_type,
         )
     else:
         response_data["match"] = None

@@ -2,7 +2,7 @@ import { ref, computed, reactive, watch } from 'vue'
 import { defineStore } from 'pinia'
 
 import { api } from '@/api'
-import { debounce, instrumentType as getInstrumentType } from '@/lib/utils'
+import { debounce, sampleInstrumentType } from '@/lib/utils'
 
 import { useUi } from '@/stores/ui'
 
@@ -35,7 +35,7 @@ export const useMatchVisualized = defineStore('app.data.match.visualized', () =>
   })
 
   const instrument = computed(() => sample.focused?.instrument)
-  const instrumentType = computed(() => getInstrumentType(sample.focused?.instrument))
+  const instrumentType = computed(() => sampleInstrumentType(sample.focused))
 
   // actions
   /**
