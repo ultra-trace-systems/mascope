@@ -133,17 +133,31 @@ try:
 except Exception:
     print("")' 2>/dev/null)"
 
-    semver='^v[0-9]+\.[0-9]+\.[0-9]+$'
+    # Keep this in step with RELEASE_TAG_PATTERN in mascope_runtime: a box
+    # piloting a pre-release runs a real release tag, and leaving it out here
+    # would silently disarm the staleness check for the deployments most likely
+    # to be forgotten - a candidate is short-lived by intention, not by
+    # mechanism.
+    release_tag='^v[0-9]+\.[0-9]+\.[0-9]+(-(alpha|beta|rc)\.?[0-9]+)?$'
+
+    # `sort -V` reads a pre-release suffix as a longer version and orders
+    # v2.0.0-rc.1 ABOVE v2.0.0, which inverts precedence. It does understand
+    # `~` as sorting before everything, so map the suffix onto that: the rc
+    # then ranks below its own release and rc.10 above rc.9.
+    _precedence() { printf '%s' "${1#v}" | sed -E 's/-(alpha|beta|rc)/~\1/'; }
+
     lag=unknown
-    if [[ "$assessed" =~ $semver ]] && [[ "$current" =~ $semver ]]; then
+    if [[ "$assessed" =~ $release_tag ]] && [[ "$current" =~ $release_tag ]]; then
         if [ "$assessed" = "$current" ]; then
             lag=current
-        elif [ "$(printf '%s\n%s\n' "$assessed" "$current" \
-                  | sort -V | tail -1)" = "$current" ]; then
+        elif [ "$(printf '%s\n%s\n' "$(_precedence "$assessed")" \
+                  "$(_precedence "$current")" \
+                  | sort -V | tail -1)" = "$(_precedence "$current")" ]; then
             lag=behind
         else
-            # Ahead is legitimate: a release candidate is assessed before its
-            # tag exists. Recorded, not failed.
+            # Ahead is legitimate: `releases/latest` excludes pre-releases, so
+            # a box piloting a candidate outranks the newest release the API
+            # will name. Recorded, not failed.
             lag=ahead
         fi
     fi

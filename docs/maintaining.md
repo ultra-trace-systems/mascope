@@ -208,14 +208,22 @@ only adds downtime.)
 
 A **pre-release** (`vX.Y.Z-rc.N`, also `-beta.N` / `-alpha.N`) deploys exactly
 like a release - `--version v2.0.0-rc.1`, or check the tag out - and the UI
-reports it as `v2.0.0-rc.1`. It is simply invisible to anything that follows
-releases on its own: `--auto` and the update timer stay on the newest real
-release, and so does the in-app **Download File Agent** button, so pair the
-machines of a piloting site from the pre-release's own versioned installer
-asset on its GitHub release page.
+reports it as `v2.0.0-rc.1`. Nothing that follows releases on its own will
+adopt it: `releases/latest` excludes a pre-release, and that is what `--auto`,
+the update timer and the in-app **Download File Agent** button all read. So
+pair the machines of a piloting site from the pre-release's own versioned
+installer asset on its GitHub release page.
 
-Two things to get right, because a candidate is normally short-lived:
+Three things to get right, because a candidate is normally short-lived:
 
+- **CLI before stack**, as for any release and more so: the candidate's
+  `docker-compose.yaml` can want a secret only the matching CLI creates, and a
+  candidate cut on `develop` is further from the installed CLI than a release
+  ever is. Check the tag out, reinstall the CLI from that checkout, then
+  update - the recipe above. Deploying with `--version` alone moves the images
+  while the checkout stays put until the update succeeds, so the stack starts
+  under the *previous* checkout's compose file; prefer the tag checkout for a
+  candidate.
 - **Migrations are forward-only.** A candidate's schema changes are the
   release's schema changes; going back to the previous release means restoring
   the pre-migration dump `db_init` just took, losing everything written since.
@@ -228,11 +236,24 @@ Two things to get right, because a candidate is normally short-lived:
   service deploying something else against a database the candidate has already
   migrated.
 
+You can leave the update timer enabled. `--auto` never moves a deployment
+backwards: it compares the newest release against what this deployment would
+boot, and when the candidate already supersedes it the run reports "nothing to
+do" and changes nothing. Without that check the timer would read the older
+release as a pending update and apply it - reverting the pilot silently, or
+booting images whose migrations do not know the revision the candidate has
+already written to the database. Leaving a candidate is therefore always a
+deliberate step: `mascope prod update --version vX.Y.Z`. The timer picks the
+site back up on its own once the real `vX.Y.Z` ships, because that supersedes
+the candidate.
+
 ### Unattended updates (the timer)
 
 `mascope-update.timer` runs `mascope prod update --auto` nightly. It is
 installed **disabled**. `--auto` automatically tracks the newest GitHub
-**release tag** (`vX.Y.Z`) - there is no version to pin by hand. To turn it on:
+**release tag** (`vX.Y.Z`) - there is no version to pin by hand. It only ever
+moves forward, so a deployment already running something newer than the newest
+release (a release candidate; see above) is left alone. To turn it on:
 
 1. Make sure the stack is running - the applied database revision is read from
    the live Postgres container. **No credentials are needed**: `--auto` reads
@@ -246,6 +267,7 @@ installed **disabled**. `--auto` automatically tracks the newest GitHub
 
 Each run:
 
+- **Already ahead** (this deployment supersedes the newest release) -> nothing.
 - **Up to date** -> nothing.
 - **Fast update** -> applied inside the maintenance window
   (`MASCOPE_UPDATE_WINDOW`, e.g. `2-5`), then health-checked. A failed health

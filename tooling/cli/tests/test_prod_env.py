@@ -119,11 +119,37 @@ def test_branch_checkout_does_not_warn(monkeypatch):
     monkeypatch.setattr(
         prod_main.runtime, "parse_version", lambda **kw: "2026.01.01-abc1234"
     )
+    monkeypatch.setattr(prod_main.runtime, "tags_at_head", lambda **kw: [])
     warnings = []
     monkeypatch.setattr(prod_main.runtime.logger, "warning", warnings.append)
 
     assert prod_main._deploy_version() == "latest"
     assert warnings == []
+
+
+def test_a_tag_that_is_not_a_release_warns_before_falling_back(monkeypatch):
+    # `parse_version` answers with a build id both when HEAD carries no tag and
+    # when it carries one that is not a release, so this case used to be as
+    # silent as an ordinary branch checkout - even though someone had moved the
+    # checkout on purpose and the release pipeline, which tags images from the
+    # release tag verbatim, may well have published the image they expect.
+    monkeypatch.setenv("_MASCOPE_VERSION_PINNED", "0")
+    monkeypatch.setattr(
+        prod_main.runtime, "parse_version", lambda **kw: "2026.01.01-abc1234"
+    )
+    monkeypatch.setattr(
+        prod_main.runtime, "tags_at_head", lambda **kw: ["v2.0.0-hotfix.1", "nightly"]
+    )
+    warnings = []
+    monkeypatch.setattr(prod_main.runtime.logger, "warning", warnings.append)
+
+    assert prod_main._deploy_version() == "latest"
+    assert len(warnings) == 1
+    # Name the tag it refused, not just the fallback: the operator has to be
+    # able to tell which of their tags this is about.
+    assert "v2.0.0-hotfix.1" in warnings[0]
+    assert "nightly" not in warnings[0]
+    assert "latest" in warnings[0]
 
 
 # --- _compose_env ---
@@ -269,6 +295,16 @@ def test_update_accepts_a_prerelease_version(cli_runner, compose):
     assert all(
         call["env_vars"]["MASCOPE_VERSION"] == "v2.0.0-rc.1" for call in compose.calls
     )
+
+
+@pytest.mark.parametrize("version", ["v2.0.0-rc", "v2.0.0-rc.", "v2.0.0-alpha"])
+def test_update_rejects_a_suffix_without_a_number(cli_runner, compose, version):
+    # `v2.0.0-rc.` is not even a legal git ref. Accepting these only swaps the
+    # CLI's own message for a registry error minutes later.
+    result = cli_runner.invoke(app, ["prod", "update", "--version", version])
+
+    assert result.exit_code == 1
+    assert compose.calls == []
 
 
 def test_update_rejects_a_dated_build_tag(cli_runner, compose):

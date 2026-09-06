@@ -86,9 +86,19 @@ if ($Installer) {
         throw 'Inno Setup 6 (ISCC.exe) not found - install it or drop -Installer'
     }
 
-    # VersionInfoVersion must be numeric a.b.c.d; derive it from a vX.Y.Z
-    # release tag, fall back to zeros for dev/dated builds
-    $numericVersion = if ($Version -match '^v?(\d+)\.(\d+)\.(\d+)$') {
+    # VersionInfoVersion must be numeric a.b.c.d; derive it from a release tag,
+    # fall back to zeros for dev/dated builds.
+    #
+    # The pre-release suffix is matched and then dropped: a candidate IS a
+    # release here (the workflow builds and publishes its installer like any
+    # other), so v2.0.0-rc.1 must not land in the dev bucket and ship a signed,
+    # published installer whose Windows file version reads 0.0.0.0 - the one
+    # field an inventory tool or an admin reads to tell two builds apart. The
+    # numeric resource has no room for the suffix; the full tag is carried by
+    # AppVersion and by the agent's own __version__. Keep the accepted shapes
+    # in step with RELEASE_TAG_PATTERN in mascope_runtime - the anchors matter,
+    # or a dated build tag (v2026.09.01-9b9e54d) would pass as 2026.9.1.
+    $numericVersion = if ($Version -match '^v?(\d+)\.(\d+)\.(\d+)(-(alpha|beta|rc)\.?\d+)?$') {
         "$($Matches[1]).$($Matches[2]).$($Matches[3]).0"
     } else {
         '0.0.0.0'

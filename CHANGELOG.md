@@ -900,12 +900,64 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
   (pin it, pass `--version`, or check the tag out). Dated build tags
   (`v{date}-{sha}`) still resolve as build ids and not as releases, which is
   why the accepted suffixes are the three conventional labels rather than
-  SemVer's full grammar - a hexadecimal hash cannot spell `rc`. The
+  SemVer's full grammar - a hexadecimal hash cannot spell `rc`. The label must
+  carry a number (`-rc.1` or `-rc1`, not a bare `-rc`), since a candidate is
+  one of a numbered series and no image is published under the bare name. The
   `verify-zenodo` release job is skipped for a pre-release, since the concept
   DOI resolves to the most recently archived version and a candidate must not
   become the one the citation badge points at. See the developer guide,
   "Cutting a pre-release", and the maintainer runbook, "Running a release
   candidate".
+
+- **An unattended update never moves a deployment backwards.** `prod update
+  --auto` resolves its target from `releases/latest`, which excludes
+  pre-releases - so a site piloting a candidate resolved a target *behind*
+  what it was running, and nothing downstream ordered the two: the update is
+  classified on inequality of the Alembic head and of the image digest, so the
+  older release read as a pending update and the nightly timer applied it.
+  That ended the pilot silently where the candidate carried no schema change,
+  and where it did, booted images whose migrations do not contain the revision
+  the candidate had already written - which `db_init` fails and the backend
+  never starts from. `--auto` now compares the newest release against what the
+  deployment would boot and reports "nothing to do" when it is already ahead,
+  so the timer can stay enabled during a pilot and picks the site back up by
+  itself once the real `vX.Y.Z` ships.
+
+- **A checkout at a tag that is not a release now says so.** `_deploy_version`
+  warned only when git resolved nothing at all, so a checkout deliberately
+  moved to a `v`-prefixed tag this codebase does not recognize - a typo, a
+  suffix outside `alpha`/`beta`/`rc`, another project's scheme - deployed the
+  rolling `latest` build in silence, and `prod doctor` read it as clean
+  because both sides of its comparison collapse the same way. The fallback now
+  names the tag it refused and the shape it accepts.
+
+- **The highest release tag at HEAD wins**, rather than the first git happens
+  to list. Git sorts tags by refname, so a commit carrying both `v2.0.0-rc.1`
+  and `v2.0.0-rc.2` reported the superseded candidate, and a checkout
+  configured with `tag.sort=version:refname` plus `versionsort.suffix=-rc`
+  reported the candidate over the release itself. Ordering is by SemVer
+  precedence now: a candidate ranks below its own release, and `-rc.10` above
+  `-rc.9`.
+
+- **A mis-flagged release fails its own run.** Whether a release is a
+  candidate was asserted twice and reconciled nowhere - by the tag's suffix,
+  and by the "Set as a pre-release" checkbox that `releases/latest` (and so
+  the update timer and the in-app File Agent download) actually follows. One
+  forgotten click published a candidate as the release the whole fleet
+  follows. `check-release-kind` now gates the jobs that publish and fails when
+  the two disagree in either direction. Because `release` events run the
+  workflow from the default branch, the file has to be on `master` before the
+  first pre-release is published; the workflow and the developer guide both
+  say so.
+
+- **The two consumers that restated the release-tag rule follow it again.**
+  The security assessment's currency check could not classify a box running a
+  candidate, so its "assessed build is stale" alarm silently never fired for
+  the deployments most likely to be forgotten (and it now orders a candidate
+  below its own release, which `sort -V` does not). The File Agent installer
+  build fell back to `0.0.0.0` for a pre-release tag, shipping a signed,
+  published installer whose Windows file version was indistinguishable from a
+  dev build's.
 
 - **The assignment ledger stores its JSON leaner, without changing what it
   serves.** Two of the ledger's largest costs were repetition rather than
