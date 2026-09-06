@@ -246,6 +246,7 @@ async def test_curation_pins_propagates_and_recomputes(
         "formula": "C7H14O7",
         "samples_measured": 1,
         "members_repointed": 1,
+        "samples_failed": 0,
     }
     # Only the dissenting sample was measured: S2 already carried the identity.
     assert [call[0] for call in stubbed_scorer] == [anchor["s1"]]

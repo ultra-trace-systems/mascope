@@ -65,6 +65,7 @@ from mascope_backend.db import (
     IonizationMode,
     async_session,
 )
+from mascope_backend.runtime import runtime
 from mascope_backend.socket.notifications import (
     UserNotification,
     send_progress_user_notification,
@@ -322,6 +323,7 @@ async def run_batch_import(
         "anchors_matched": len(annotations),
         "members_measured": 0,
         "samples_rescored": 0,
+        "samples_failed": 0,
         "rows_skipped": sum(skipped.values()),
         "rows_skipped_by_reason": dict(sorted(skipped.items())),
         "mz_tolerance_ppm": tolerance_ppm,
@@ -345,29 +347,62 @@ async def run_batch_import(
     config = PeakAssignmentConfig()
     reports = process_id is not None
     total = len(sample_ids)
-    for step, sample_item_id in enumerate(sample_ids):
-        if reports:
-            await send_progress_user_notification(
-                _progress(
-                    sample_batch_id,
-                    step,
-                    total,
-                    f"Measuring the imported compositions, sample {step + 1}/{total}.",
-                    user_id,
-                    process_id,
-                    parent_id,
+    walked_the_batch = False
+    try:
+        for step, sample_item_id in enumerate(sample_ids):
+            if reports:
+                await send_progress_user_notification(
+                    _progress(
+                        sample_batch_id,
+                        step,
+                        total,
+                        "Measuring the imported compositions, sample "
+                        f"{step + 1}/{total}.",
+                        user_id,
+                        process_id,
+                        parent_id,
+                    )
                 )
+            try:
+                counts["members_measured"] += await _propagate_to_sample(
+                    sample_batch_id,
+                    sample_item_id,
+                    annotations,
+                    config,
+                    only_unassigned=False,
+                    source=engine,
+                )
+                counts["samples_rescored"] += 1
+            except Exception:  # noqa: BLE001 - one bad sample must not abort the import
+                # The rows have already matched their anchors; what fails here is
+                # measuring them in one sample, which says nothing about the rest.
+                # Logged with the traceback: the caller only ever sees a count.
+                counts["samples_failed"] += 1
+                runtime.logger.exception(
+                    "Measuring the imported compositions failed for sample "
+                    f"'{sample_item_id}'."
+                )
+        walked_the_batch = True
+    finally:
+        # In a finally for the reason `backfill_sample_batch_peaks` sets out at
+        # length: every sample above has COMMITTED its members while the anchors
+        # still describe the members they had before, and nothing else will fix
+        # them. The vector is cancellation, which walks past the per-sample
+        # `except` arm above because it is a BaseException.
+        try:
+            await recompute_batch_consensus(sample_batch_id, set(annotations))
+        except Exception:
+            if walked_the_batch:
+                raise
+            # Already unwinding. Raising here would REPLACE the exception that
+            # interrupted the loop - a CancelledError above all, which has to
+            # reach the caller as a cancellation and not as a database error.
+            runtime.logger.exception(
+                "The batch import was interrupted and its deferred consensus "
+                f"pass then failed for batch '{sample_batch_id}'. The anchors "
+                "its committed samples touched still describe their previous "
+                "members; rebuilding the ledger recomputes them."
             )
-        counts["members_measured"] += await _propagate_to_sample(
-            sample_batch_id,
-            sample_item_id,
-            annotations,
-            config,
-            only_unassigned=False,
-            source=engine,
-        )
-        counts["samples_rescored"] += 1
-    await recompute_batch_consensus(sample_batch_id, set(annotations))
     return counts
 
 
@@ -392,8 +427,18 @@ def import_outcome(counts: dict, sample_batch_id: str, engine: str) -> dict:
             "data": counts,
             "_notification_data": notification_data,
         }
+    # A sample that raised is reported rather than left to the log: the counts
+    # are otherwise indistinguishable from an import that simply reached fewer
+    # samples, and that sample's members carry none of the imported identities.
+    failed = counts.get("samples_failed", 0)
+    failed_text = (
+        f" {failed} sample{'s' if failed != 1 else ''} could not be measured "
+        "and were skipped."
+        if failed
+        else ""
+    )
     return {
-        "status": "success",
+        "status": "partial" if failed else "success",
         "message": (
             f"Imported {engine}: {counts['anchors_matched']} of {counts['rows']} row"
             f"{'s' if counts['rows'] != 1 else ''} landed on a batch peak, and "
@@ -401,7 +446,7 @@ def import_outcome(counts: dict, sample_batch_id: str, engine: str) -> dict:
             f"{'s' if counts['members_measured'] != 1 else ''} across "
             f"{counts['samples_rescored']} sample"
             f"{'s' if counts['samples_rescored'] != 1 else ''} measured against "
-            f"them.{skipped_text}"
+            f"them.{skipped_text}{failed_text}"
         ),
         "data": counts,
         "_notification_data": notification_data,
