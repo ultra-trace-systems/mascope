@@ -26,7 +26,7 @@ const hit = (searchedMz, children = PATTERN) => ({
 })
 
 describe('isotopeOfHit', () => {
-  it('calls the most abundant isotopologue M0', () => {
+  it('calls the monoisotopic isotopologue M0', () => {
     expect(isotopeOfHit(hit(180.0634))).toEqual({
       label: 'M0',
       formula: 'C6H12O6'
@@ -42,16 +42,28 @@ describe('isotopeOfHit', () => {
     expect(isotopeOfHit(hit(181.0668)).formula).toBe('[13C]C5H12O6')
   })
 
-  // Abundance decides which one is M0, not position or m/z order: a pattern
-  // whose main isotopologue is not the lightest is ordinary (chlorine, bromine),
-  // and reading the first row as M0 would label the real main peak 'M-2'.
-  it('takes M0 from abundance, not from the lightest isotopologue', () => {
-    const heavyMain = [
+  // The monoisotopic isotopologue decides, not abundance. A pattern whose
+  // tallest peak is not its lightest is ordinary (chlorine, bromine), and an
+  // isotope table counts from the lightest peak of the cluster: Br3- reads M0
+  // at 236.76 with the taller 238.75 as its M+2.
+  it('takes M0 from the monoisotopic isotopologue, not the most abundant one', () => {
+    const bromine = [
+      { mz: 236.7551, relative_abundance: 0.34, target_isotope_formula: 'Br3-' },
+      { mz: 238.753, relative_abundance: 1.0, target_isotope_formula: '[81Br]Br2-' }
+    ]
+    expect(isotopeOfHit(hit(236.7551, bromine)).label).toBe('M0')
+    expect(isotopeOfHit(hit(238.753, bromine)).label).toBe('M+2')
+  })
+
+  // Nothing marks the substitution, so there is no way to tell the two apart:
+  // the lightest row stands in, the same fallback `monoisotopic_row` takes.
+  it('falls back to the lightest isotopologue when no formula is marked', () => {
+    const unmarked = [
       { mz: 100.0, relative_abundance: 0.24 },
       { mz: 102.0, relative_abundance: 1.0 }
     ]
-    expect(isotopeOfHit(hit(102.0, heavyMain)).label).toBe('M0')
-    expect(isotopeOfHit(hit(100.0, heavyMain)).label).toBe('M-2')
+    expect(isotopeOfHit(hit(100.0, unmarked)).label).toBe('M0')
+    expect(isotopeOfHit(hit(102.0, unmarked)).label).toBe('M+2')
   })
 
   // The searched m/z is the observed peak's, so it sits near the predicted

@@ -122,8 +122,9 @@ worktree, not the repo).
 
 ## 3. The model
 
-Inputs, per predicted isotopologue $i$ (index $0$ = the monoisotopic / base peak, ordered
-by descending predicted abundance):
+Inputs, per predicted isotopologue $i$ (the pattern is ordered by descending predicted
+abundance, so index $0$ is the **base peak** — the most abundant isotopologue, which for a
+bromine- or chlorine-rich ion is not the monoisotopic one):
 
 | symbol | meaning |
 |---|---|
@@ -133,8 +134,8 @@ by descending predicted abundance):
 | $s_i$ | observed signal-to-noise of the matched peak |
 | $\sigma$ | instrument mass-error std in ppm (`sigma_ppm`) |
 
-**Guard.** If the monoisotopic peak is absent ($o_0 \le 0$) the score is $0$ — without the
-base peak there is no assignment.
+**Guard.** If the base peak is absent ($o_0 \le 0$) the score is $0$ — without the
+most abundant isotopologue there is no assignment.
 
 ### 3.1 Mass likelihood (Gaussian, resolution- and SNR-aware)
 
