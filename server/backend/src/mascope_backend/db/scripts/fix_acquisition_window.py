@@ -30,6 +30,7 @@ import os
 
 from sqlalchemy import text
 
+import mascope_file.name as m_name
 import mascope_signal.compute as m_compute
 from mascope_backend.db import async_session, configure_database_engine
 from mascope_backend.runtime import runtime
@@ -47,6 +48,13 @@ _PREVIEW_LIMIT = 20
 async def _candidates() -> list[dict]:
     """ACQUISITION items whose window ends before their file does.
 
+    A prefilter only. ``sample_file.length`` does not mean the same thing for
+    every reader -- the Thermo processor records the last scan time, the TOF
+    processor a duration measured from a time axis that starts at zero -- so
+    ``t1 < length`` is systematically true for TOF rows, and it is true for
+    either polarity of a dual-polarity acquisition. :func:`_is_repairable`
+    narrows the result to the rows that could actually carry a short window.
+
     :return: One dict per candidate with its ids, filename, polarity, window.
     :rtype: list[dict]
     """
@@ -62,6 +70,7 @@ async def _candidates() -> list[dict]:
                 FROM sample_item si
                 JOIN sample_file sf ON sf.sample_file_id = si.sample_file_id
                 WHERE si.sample_item_type = 'ACQUISITION'
+                  AND si.t0 IS NOT NULL
                   AND si.t1 IS NOT NULL
                   AND sf.length IS NOT NULL
                   AND si.t1 < sf.length - :tol
@@ -70,6 +79,26 @@ async def _candidates() -> list[dict]:
             {"tol": _TOLERANCE_S},
         )
         return [dict(row._mapping) for row in result]
+
+
+def _is_repairable(candidate: dict) -> bool:
+    """Whether this candidate's window could have been cut short by the bug.
+
+    Only a Thermo raw file has an MS2 scan type for an MS1-derived window to
+    leave out, so only ``orbi_raw`` can have been shortened. Every other row
+    the SQL prefilter returns is short for a reason of its own, and answering
+    that here costs two filesystem stats rather than a full reader open.
+
+    :param candidate: Row from :func:`_candidates`.
+    :return: True when the file is a Thermo raw acquisition.
+    :rtype: bool
+    """
+    try:
+        return m_name.get_sample_file_type(candidate["filename"]) == "orbi_raw"
+    except Exception:  # noqa: BLE001
+        # An unresolvable filename is not this script's to diagnose; _recompute
+        # reports the ones it cannot read.
+        return False
 
 
 def _recompute(candidate: dict) -> tuple[float, float] | None:
@@ -111,7 +140,7 @@ async def _apply(updates: list[dict]) -> int:
                 UPDATE sample_item
                 SET t0 = :t0,
                     t1 = :t1,
-                    sample_item_utc_modified = NOW() AT TIME ZONE 'UTC'
+                    sample_item_utc_modified = NOW()
                 WHERE sample_item_id = :sample_item_id
             """),
             updates,
@@ -140,11 +169,19 @@ async def run() -> None:
     unchanged = 0
     unreadable = 0
     for candidate in candidates:
+        if not _is_repairable(candidate):
+            unchanged += 1
+            continue
         window = await asyncio.to_thread(_recompute, candidate)
         if window is None:
             unreadable += 1
             continue
-        t0, t1 = window
+        # Widen only, never narrow: this repairs windows that ended early, and
+        # a recomputed endpoint that falls inside the stored one describes
+        # something else -- a file replaced in the filestore, or a window an
+        # earlier run already corrected -- which is not this script's to undo.
+        t0 = min(candidate["t0"], window[0])
+        t1 = max(candidate["t1"], window[1])
         if (
             t1 - candidate["t1"] <= _TOLERANCE_S
             and candidate["t0"] - t0 <= _TOLERANCE_S
