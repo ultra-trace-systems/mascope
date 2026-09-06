@@ -7,7 +7,7 @@ written to ``peak_assignment``. Everything it reads is patched, so these pin
 the contract between the hook and the fold rather than the engine.
 """
 
-from contextlib import ExitStack
+from contextlib import ExitStack, asynccontextmanager
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
@@ -50,13 +50,40 @@ def _stage_a_row(sample_item_id: str, run_id: str) -> dict:
     }
 
 
-def _patched(ineligible: str | None = None):
+def _claim(acquired: bool):
+    """Stand in for the cross-worker advisory claim, granted or not."""
+
+    @asynccontextmanager
+    async def claim(kind, resource_id):
+        yield acquired
+
+    return claim
+
+
+def _patched(
+    ineligible: str | None = None,
+    *,
+    acquired: bool = True,
+    in_flight: str | None = None,
+):
     """Patch everything the fold reads; return the stack and its mocks."""
     stack = ExitStack()
     sample = SimpleNamespace(
         sample_item_id="si-1", sample_item_name="S1", filename="f.zarr", polarity="+"
     )
     mocks = {
+        # The fold takes the same admission an explicit run does, so both halves
+        # of it are patched here rather than reaching the database.
+        "claim": stack.enter_context(
+            patch(f"{_SVC}.assignment_claim", _claim(acquired))
+        ),
+        "in_flight": stack.enter_context(
+            patch(
+                f"{_SVC}.in_flight_run_id",
+                new_callable=AsyncMock,
+                return_value=in_flight,
+            )
+        ),
         "fetch": stack.enter_context(
             patch(f"{_SVC}.fetch_sample", new_callable=AsyncMock, return_value=sample)
         ),
@@ -149,5 +176,45 @@ async def test_an_ineligible_sample_is_skipped_and_nothing_is_written():
     with stack:
         assert await fold_sample_peaks_without_run("si-1") is None
 
+    mocks["stage_a"].assert_not_called()
+    mocks["fold"].assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_a_sample_with_a_run_in_flight_is_not_folded():
+    """An explicit run is assigning the sample, so the fold stands down.
+
+    Both write the sample's members and the fold keeps only what Stage A found,
+    so folding here would drop the run's untargeted results from the ledger
+    while its `peak_assignment` rows stayed. The run folds itself when it
+    completes, so nothing is lost by standing down.
+    """
+    from mascope_backend.api.new.peak_assignments.service import (
+        fold_sample_peaks_without_run,
+    )
+
+    stack, mocks = _patched(in_flight="run-9")
+    with stack:
+        assert await fold_sample_peaks_without_run("si-1") is None
+
+    mocks["stage_a"].assert_not_called()
+    mocks["fold"].assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_a_sample_another_worker_holds_is_not_folded():
+    """The claim is what makes the stand-down hold across workers: the
+    in-process set only knows about folds this process started."""
+    from mascope_backend.api.new.peak_assignments.service import (
+        fold_sample_peaks_without_run,
+    )
+
+    stack, mocks = _patched(acquired=False)
+    with stack:
+        assert await fold_sample_peaks_without_run("si-1") is None
+
+    # Refused before the durable check, which is a query the claim holder has
+    # already made.
+    mocks["in_flight"].assert_not_called()
     mocks["stage_a"].assert_not_called()
     mocks["fold"].assert_not_called()

@@ -1926,6 +1926,51 @@ async def _run_sample_assignment(
 async def fold_sample_peaks_without_run(
     sample_item_id: str, *, defer_consensus_to: set[str] | None = None
 ) -> str | None:
+    """Fold the sample under the same admission an explicit run takes.
+
+    Both paths write the sample's members, and whichever commits second replaces
+    the other's. A fold keeps only what Stage A found, so a run's untargeted
+    results would vanish from the ledger while its ``peak_assignment`` rows
+    stayed - and nothing puts them back, because a later fold recomputes only
+    the anchors its own sample touched.
+
+    Stands down rather than refusing, unlike :func:`assign_sample_peaks`: the
+    run in flight folds itself when it completes, so the sample is covered
+    either way, and the ingest hook has nobody to report a refusal to.
+
+    :param sample_item_id: The sample to fold.
+    :param defer_consensus_to: As for :func:`_fold_sample_peaks_without_run`.
+    :return: The batch folded into, or None when the sample was skipped.
+    """
+    # Claimed before the first await: checking and adding either side of one
+    # would let two concurrent folds both pass the check.
+    if sample_item_id in _sample_assignments_in_flight:
+        return None
+    _sample_assignments_in_flight.add(sample_item_id)
+    try:
+        async with assignment_claim("sample", sample_item_id) as acquired:
+            if not acquired:
+                # Another worker holds the sample - the same stand-down,
+                # discovered one process further out.
+                return None
+            # Checked under the claim so the read and the fold that follows it
+            # cannot interleave with a run's own pair.
+            if await in_flight_run_id(sample_item_id) is not None:
+                runtime.logger.info(
+                    f"Batch-ledger fold skipped for sample '{sample_item_id}': "
+                    "an assignment run is already in flight for it."
+                )
+                return None
+            return await _fold_sample_peaks_without_run(
+                sample_item_id, defer_consensus_to=defer_consensus_to
+            )
+    finally:
+        _sample_assignments_in_flight.discard(sample_item_id)
+
+
+async def _fold_sample_peaks_without_run(
+    sample_item_id: str, *, defer_consensus_to: set[str] | None = None
+) -> str | None:
     """Assign a newly processed sample database-first and fold the result straight
     into its batch's batch peaks, writing no per-sample run.
 
