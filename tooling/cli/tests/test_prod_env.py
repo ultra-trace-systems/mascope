@@ -39,6 +39,28 @@ def test_release_tag_at_head_deploys_that_release(monkeypatch):
     assert prod_main._deploy_version() == "v2.0.0"
 
 
+def test_prerelease_tag_at_head_deploys_that_prerelease(monkeypatch):
+    # The trap this closes: an unrecognized tag fell through to `latest`
+    # silently, so a checkout sitting at v2.0.0-rc.1 deployed the rolling
+    # master build instead - and a reboot would do it again, against a
+    # database the pre-release had already migrated.
+    monkeypatch.setenv("_MASCOPE_VERSION_PINNED", "0")
+    monkeypatch.setattr(prod_main.runtime, "parse_version", lambda **kw: "v2.0.0-rc.1")
+    assert prod_main._deploy_version() == "v2.0.0-rc.1"
+
+
+def test_dated_build_tag_deploys_latest(monkeypatch):
+    # A build id must stay a build id even though it reads as a semver with a
+    # pre-release suffix ({2026.9.1} + {9b9e54d}): no `v{date}-{sha}` image is
+    # published under that name as a release. The `v` prefix is the point -
+    # that is the form a master checkout's tag actually takes.
+    monkeypatch.setenv("_MASCOPE_VERSION_PINNED", "0")
+    monkeypatch.setattr(
+        prod_main.runtime, "parse_version", lambda **kw: "v2026.09.01-9b9e54d"
+    )
+    assert prod_main._deploy_version() == "latest"
+
+
 def test_branch_build_deploys_latest(monkeypatch):
     # A stray branch checkout must never ask for an unpublished image tag.
     monkeypatch.setenv("_MASCOPE_VERSION_PINNED", "0")
@@ -235,6 +257,26 @@ def test_update_version_pin_reaches_compose(cli_runner, compose):
 def test_update_rejects_a_non_release_version(cli_runner, compose):
     # Missing the leading `v` — must fail before any compose call.
     result = cli_runner.invoke(app, ["prod", "update", "--version", "1.2.0"])
+
+    assert result.exit_code == 1
+    assert compose.calls == []
+
+
+def test_update_accepts_a_prerelease_version(cli_runner, compose):
+    result = cli_runner.invoke(app, ["prod", "update", "--version", "v2.0.0-rc.1"])
+
+    assert result.exit_code == 0
+    assert all(
+        call["env_vars"]["MASCOPE_VERSION"] == "v2.0.0-rc.1" for call in compose.calls
+    )
+
+
+def test_update_rejects_a_dated_build_tag(cli_runner, compose):
+    # `--version` names a release; a build id is reachable only through the
+    # MASCOPE_VERSION pin, which is what the error says.
+    result = cli_runner.invoke(
+        app, ["prod", "update", "--version", "v2026.09.01-9b9e54d"]
+    )
 
     assert result.exit_code == 1
     assert compose.calls == []

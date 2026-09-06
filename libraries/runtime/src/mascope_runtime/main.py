@@ -14,6 +14,35 @@ from .module import RuntimeModule
 from .state import RuntimeJsonState, RuntimeTempState
 
 
+#: The shape of a release tag: ``vMAJOR.MINOR.PATCH``, optionally carrying a
+#: pre-release suffix (``v2.0.0-rc.1``, ``v2.0.0-rc1``, ``v2.0.0-beta.2``). A
+#: release tag is what makes a checkout deployable - it selects the published
+#: image of the same name and bakes itself in as the version the app reports -
+#: so it lives here, beside `parse_version`, and every consumer matches against
+#: this one rule instead of restating it and drifting.
+#:
+#: The suffix is restricted to ``alpha``/``beta``/``rc`` rather than SemVer's
+#: full pre-release grammar, and that restriction is load-bearing. Every merge
+#: to master is tagged ``v{date}-{sha7}`` (e.g. ``v2026.09.01-9b9e54d``), which
+#: SemVer reads as ``2026.9.1`` plus the pre-release ``9b9e54d`` - and those
+#: tags must stay build ids, or a release build would tag its images with a
+#: name no deployment pulls. A hexadecimal hash cannot spell ``rc``, ``alpha``
+#: or ``beta``, so no build id can pass as a release here.
+RELEASE_TAG_PATTERN = re.compile(r"v\d+\.\d+\.\d+(?:-(?:alpha|beta|rc)\.?\d*)?")
+
+
+def is_release_tag(tag: str | None) -> bool:
+    """
+    Whether ``tag`` names a release - ``vX.Y.Z``, or a pre-release of one.
+
+    :param tag: Candidate git tag or image tag.
+    :type tag: str, Optional
+    :return: ``True`` if the tag matches :data:`RELEASE_TAG_PATTERN`.
+    :rtype: bool
+    """
+    return bool(tag) and RELEASE_TAG_PATTERN.fullmatch(tag) is not None
+
+
 class Runtime:
     """
     The main runtime instance, providing a localized interface
@@ -339,7 +368,7 @@ class Runtime:
 
         If HEAD is exactly at a release tag (``v*``), that tag IS the version, so
         a pinned release reports its release version:
-          example: v1.0.0
+          example: v1.0.0, or a pre-release of it: v2.0.0-rc.1
 
         Otherwise a build identifier from the latest commit is used (no ``v`` -
         the leading ``v`` is what distinguishes a release from a build):
@@ -377,12 +406,12 @@ class Runtime:
             except Exception:
                 return None
 
-        # A semver release tag at HEAD wins (e.g. v1.0.0) - report it as the
-        # version. Dated build tags (v{date}-{hash}) are intentionally excluded
-        # by the strict `vMAJOR.MINOR.PATCH` match.
+        # A release tag at HEAD wins (e.g. v1.0.0, or a pre-release of it such
+        # as v2.0.0-rc.1) - report it as the version. Dated build tags
+        # (v{date}-{hash}) are intentionally excluded; see RELEASE_TAG_PATTERN.
         tags = exec("git tag --points-at HEAD") or ""
         for tag in tags.splitlines():
-            if re.fullmatch(r"v\d+\.\d+\.\d+", tag.strip()):
+            if is_release_tag(tag.strip()):
                 return tag.strip()
 
         # Otherwise a build identifier from the latest commit's date + short hash.

@@ -2997,6 +2997,24 @@ So the one version flows everywhere: git tag, GitHub Release, Zenodo DOI, the im
 
 Citers reference the **DOI** on the Zenodo record (or the `vX.Y.Z` release); deployers pin `MASCOPE_VERSION=X.Y.Z` - neither needs the per-merge build tags.
 
+### Cutting a pre-release
+
+A **pre-release** is a release candidate you deploy somewhere real before committing the version to everyone: `vX.Y.Z-rc.1` (also `-rc1`, `-beta.2`, `-alpha3`). It is a first-class release tag - `parse_version()` resolves it, `_deploy_version()` selects it, `prod update --version` accepts it, and a successful update aligns the checkout to it - so a deployment runs and reports `v2.0.0-rc.1` exactly the way it would run `v2.0.0`.
+
+What separates it from a release is **who finds it**:
+
+- Mark it **"Set as a pre-release"** when publishing. GitHub then keeps `releases/latest` on the newest *non*-pre-release, which is what `mascope prod update --auto` reads - so an unattended deployment never wanders onto a candidate. Reaching it is opt-in: pin `MASCOPE_VERSION=vX.Y.Z-rc.N`, pass `--version`, or check the tag out.
+- The same rule governs the **in-app File Agent download button**, which points at `releases/latest/download/Mascope-File-Agent-Setup.exe`. It keeps serving the last real release, so a site piloting the candidate installs the agent from the pre-release's own versioned asset instead.
+- The `verify-zenodo` job is **skipped** for a pre-release: the concept DOI resolves to the most recently archived version, so a candidate must not be archived or the README badge and `CITATION.cff` would start pointing at it. That guard only keeps the run green - the Zenodo bridge fires on its own webhook, so **disable the repository at <https://zenodo.org/account/settings/github/> before publishing** and re-enable it afterwards. (If one slips through, the recovery is the same as any bad archive above: delete the Zenodo record, then re-archive the real release so the concept DOI lands on it last.)
+
+Everything else runs exactly as for a release: `build-release-images` builds and pushes `ghcr.io/ultra-trace-systems/mascope/<service>:vX.Y.Z-rc.N`, uploads the release manifest, and builds and signs the File Agent installer.
+
+The tag does **not** have to be on `master`. Tagging the candidate on `develop` leaves the rolling `latest` images - what the demo stack, CI and any unpinned deployment follow - on the current release, so the pilot changes nothing for anyone else. (`release` events still run the workflow from the default branch, so `build-release-images.yaml` must already be on `master`.) Cut the real `vX.Y.Z` afterwards the normal way, from `master`.
+
+Steps 1 and 2 of the release procedure change accordingly: leave `CITATION.cff` alone (a candidate is not citable), and title the GitHub Release `vX.Y.Z-rc.N` with notes saying what the pilot is meant to exercise.
+
+Do not reuse a candidate's number: `v2.0.0-rc.2` supersedes `v2.0.0-rc.1`, and the final `v2.0.0` is its own tag on its own commit.
+
 ## 📒 Notebooks
 
 The notebooks - found in `tooling/notebooks` - provide a set of Jupyter notebooks along with a `uv` environment that includes

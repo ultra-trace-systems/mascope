@@ -885,6 +885,27 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
   it, which is what a recompute could recover for it before. Nothing changes
   in the API or the UI. First step of the batch-primary design note
   (`docs/dev/peak_assignment_batch_primary.md`).
+- **A release can now be published as a candidate first.** A pre-release tag -
+  `vX.Y.Z-rc.1`, also `-beta.N` / `-alpha.N` - is a first-class release
+  everywhere a version is resolved: the checkout reports it, `mascope prod
+  update --version` accepts it, the deploy pulls the images published under
+  that name, and a successful update aligns the checkout to it. Previously
+  only a bare `vX.Y.Z` matched, so a checkout sitting at a candidate tag fell
+  through to the rolling `latest` build **silently** - the fallback's warning
+  fires only when git resolves nothing at all - and a reboot would do it again,
+  against a database the candidate had already migrated. What a candidate
+  deliberately does *not* do is find anyone by itself: `prod update --auto`,
+  the update timer and the in-app File Agent download all read GitHub's
+  `releases/latest`, which excludes pre-releases, so reaching one is opt-in
+  (pin it, pass `--version`, or check the tag out). Dated build tags
+  (`v{date}-{sha}`) still resolve as build ids and not as releases, which is
+  why the accepted suffixes are the three conventional labels rather than
+  SemVer's full grammar - a hexadecimal hash cannot spell `rc`. The
+  `verify-zenodo` release job is skipped for a pre-release, since the concept
+  DOI resolves to the most recently archived version and a candidate must not
+  become the one the citation badge points at. See the developer guide,
+  "Cutting a pre-release", and the maintainer runbook, "Running a release
+  candidate".
 
 - **The assignment ledger stores its JSON leaner, without changing what it
   serves.** Two of the ledger's largest costs were repetition rather than

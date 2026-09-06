@@ -61,9 +61,26 @@ def test_release_tag_at_head_is_the_version(git_repo):
     assert runtime.parse_version() == "v1.2.3"
 
 
-def test_dated_build_tag_is_not_a_release(git_repo):
-    # v{date}-{hash} tags must not be mistaken for a semver release.
-    _git(git_repo, "tag", "v2024.01.01-abcdef1")
+@pytest.mark.parametrize(
+    "tag", ["v2.0.0-rc.1", "v2.0.0-rc1", "v2.0.0-beta.2", "v2.0.0-alpha3"]
+)
+def test_prerelease_tag_at_head_is_the_version(git_repo, tag):
+    # A pre-release deploys like any other release: the tag selects the
+    # published image of that name and is the version the app reports.
+    _git(git_repo, "tag", tag)
+    version = runtime.parse_version()
+
+    assert version == tag
+    # It also has to survive as a Docker image tag.
+    assert re.fullmatch(r"[A-Za-z0-9_.-]+", version)
+
+
+@pytest.mark.parametrize("tag", ["v2024.01.01-abcdef1", "v2026.09.01-9b9e54d"])
+def test_dated_build_tag_is_not_a_release(git_repo, tag):
+    # v{date}-{hash} tags must not be mistaken for a release - SemVer would
+    # read one as {2026.9.1} plus the pre-release {9b9e54d}, and a release
+    # build would then tag its images with a name no deployment pulls.
+    _git(git_repo, "tag", tag)
     assert re.fullmatch(BUILD_ID, runtime.parse_version())
 
 

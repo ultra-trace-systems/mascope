@@ -163,6 +163,37 @@ def test_align_checkout_noop_when_already_on_the_release(release_repo):
     assert _head(release_repo) == before
 
 
+def test_align_checkout_moves_to_a_prerelease(release_repo):
+    """A pre-release is a release here: the checkout must name what runs."""
+    _git(release_repo, "checkout", "--quiet", "v9.0.2")
+    (release_repo / "file.txt").write_text("three")
+    _git(release_repo, "commit", "--quiet", "-am", "three")
+    _git(release_repo, "tag", "v9.1.0-rc.1")
+    _git(release_repo, "checkout", "--quiet", "v9.0.1")
+
+    prod_main._align_checkout("v9.1.0-rc.1", str(release_repo))
+
+    tag = _git(
+        release_repo, "rev-parse", "refs/tags/v9.1.0-rc.1^{commit}"
+    ).stdout.strip()
+    assert _head(release_repo) == tag
+
+
+def test_align_checkout_ignores_a_dated_build_tag(release_repo):
+    """`v{date}-{sha}` names a build, not a release - nothing to align to.
+
+    The tag is created here on purpose: were it accepted as a release, the
+    checkout would move to it, so this fails rather than passing by accident
+    on a tag git could not resolve anyway.
+    """
+    _git(release_repo, "tag", "v2026.09.01-9b9e54d", "v9.0.2")
+    before = _head(release_repo)
+
+    prod_main._align_checkout("v2026.09.01-9b9e54d", str(release_repo))
+
+    assert _head(release_repo) == before
+
+
 def test_align_checkout_ignores_latest(release_repo):
     """`latest` tracks master - there is no tag to align to."""
     before = _head(release_repo)
