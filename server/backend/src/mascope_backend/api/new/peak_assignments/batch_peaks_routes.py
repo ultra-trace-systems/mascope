@@ -216,7 +216,7 @@ async def get_batch_peak_counterpart_route(
 @batch_peaks_router.get(
     "/batch/{sample_batch_id}", response_model=BatchPeakRecordsResponse
 )
-@api_route()
+@api_route(token_access=True)
 async def get_batch_peak_ledger_route(
     sample_batch_id: str,
     tier: AssignmentTier | None = None,
@@ -347,7 +347,7 @@ async def search_untargeted_batch_peaks_route(
     "/batch/{sample_batch_id}/verdicts",
     response_model=BatchPeakVerificationsResponse,
 )
-@api_route()
+@api_route(token_access=True)
 async def get_batch_peak_verdicts_route(
     sample_batch_id: str,
     user: User = Depends(current_active_user),
@@ -545,7 +545,7 @@ async def release_batch_peak_curation_route(
     "/batch/{sample_batch_id}/members",
     response_model=BatchPeakMembersResponse,
 )
-@api_route()
+@api_route(token_access=True)
 async def get_batch_peak_members_route(
     sample_batch_id: str,
     sample_item_id: str | None = None,
@@ -619,7 +619,7 @@ async def export_batch_ledger_route(
 @batch_peaks_router.get(
     "/batch/{sample_batch_id}/runs", response_model=BatchPeakRunsResponse
 )
-@api_route()
+@api_route(token_access=True)
 async def get_batch_peak_runs_route(
     sample_batch_id: str,
     user: User = Depends(current_active_user),
