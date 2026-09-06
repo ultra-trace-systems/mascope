@@ -32,6 +32,7 @@ from threading import Event
 import numpy as np
 import pytest
 
+from mascope_backend.file_converter.base_processor import BaseFileProcessor
 from mascope_backend.file_converter.errors import (
     EMPTY_ACQUISITION_MESSAGE,
     NO_MS1_SCANS_MESSAGE,
@@ -226,22 +227,33 @@ class TestThermoMs1LessAcquisition:
     def test_it_is_reported_as_data_not_as_a_fault(self):
         assert is_routine_file_failure(EmptyAcquisitionError(NO_MS1_SCANS_MESSAGE))
 
-    def test_nothing_along_the_way_reports_a_fault(self):
+    def test_the_scan_properties_all_answer_and_report_no_fault(self):
+        """This is what makes the refusal necessary rather than incidental.
+
+        Every property that asks the reader for scans answers for an MS1-less
+        file - the MS2 scans satisfy all of them - so extraction cannot be what
+        catches such a file, and none of them makes monitoring noise on the way
+        to answering. The scanless case is the contrast: there the same
+        properties raise, which is what ``_get_sample_file_props`` converts.
+        """
         from mascope_runtime.logging import _SENTRY_LEVELS
 
         processor = _thermo(_Ms2OnlyRawFile())
+        answered = {}
 
-        def _walk():
-            with pytest.raises(EmptyAcquisitionError):
-                processor._get_sample_file_props()
+        def _read():
+            for name in ("length", "interval", "acquisition_params", "range"):
+                answered[name] = getattr(processor, name)
 
-        records = _captured(_walk)
+        records = _captured(_read)
+        assert set(answered) == {"length", "interval", "acquisition_params", "range"}
+        assert answered["length"] > 0
         assert [r for r in records if r["level"].name in _SENTRY_LEVELS] == []
 
     def test_a_scanless_file_is_still_named_the_empty_acquisition_it_is(self):
-        # The guard asks for the unfiltered selection first for exactly this:
-        # a file with no scans at all has no MS1 scans either, and would
-        # otherwise be reported as the narrower condition.
+        # A file with no scans at all has no MS1 scans either, so the guard
+        # tells the two apart by the scan count and re-raises for this one
+        # rather than reporting the narrower condition.
         with pytest.raises(EmptyAcquisitionError, match="contains no scans"):
             _thermo(_ScanlessRawFile())._get_sample_file_props()
 
@@ -552,8 +564,12 @@ class TestPropertyExtractionReportsNoFault:
         processor = _thermo(handle)
 
         def _walk():
-            with pytest.raises(EmptyAcquisitionError):
-                processor._get_sample_file_props()
+            # The base walk, not RawProcessor's override. The override refuses
+            # a scanless file before reading a single property, so driving it
+            # here would observe no walk at all and pass over any amount of
+            # noise the properties make.
+            with pytest.raises(NoScansFoundError):
+                BaseFileProcessor._get_sample_file_props(processor)
 
         return _captured(_walk)
 
