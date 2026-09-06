@@ -44,20 +44,29 @@ _SECONDS_PER_MINUTE = 60
 #   "FTMS + p NSI Full ms2 137.0960@hcd25.00 [40.0000-160.0419]"
 #   "FTMS + c NSI Full ms2 445.1200@cid30.00@hcd20.00 [50.0000-500.0000]"
 # The suffix repeats when a scan chains activations, so it is captured whole.
-# Case-insensitive on the activation name: every filter seen renders it in
-# lower case, but the precursor is what this has to resolve, and a scan should
-# not go missing over the spelling of the dissociation next to it.
-# Both backends share this expression so the two agree by construction.
-_MS2_EVENT = re.compile(r"ms2 ([\d.]+)((?:@[A-Za-z]+[\d.]+)+)")
+# The energy after the activation name is optional: the precursor is what this
+# has to resolve, and a scan must not go missing because the dissociation next
+# to it was rendered without one ("@etd"). The precursor itself is matched as a
+# single number rather than a run of digits and dots, so a malformed filter
+# yields no event instead of a ValueError out of float().
+_MS2_EVENT = re.compile(r"ms2 (\d+(?:\.\d+)?)((?:@[A-Za-z]+[\d.]*)+)")
 
 
 def _parse_ms2_event(filter_string: str) -> tuple[float, str] | None:
     """``(precursor_mz, activation)`` parsed from a rendered scan filter, or
-    ``None`` when the filter carries no resolvable MS2 event."""
+    ``None`` when the filter carries no resolvable MS2 event.
+
+    The activation is lower-cased. It becomes the group key, and the two
+    backends render the filter by different routes -- Thermo re-renders it from
+    the parsed ``IScanFilter``, OpenTFRaw returns the stored string -- so a
+    difference in case alone would otherwise split one acquisition's scans into
+    two groups depending on which backend read it. Digits are left as rendered,
+    so the key still mirrors the instrument's own notation.
+    """
     match = _MS2_EVENT.search(filter_string)
     if not match:
         return None
-    return float(match.group(1)), match.group(2).lstrip("@")
+    return float(match.group(1)), match.group(2).lstrip("@").lower()
 
 
 @runtime_checkable

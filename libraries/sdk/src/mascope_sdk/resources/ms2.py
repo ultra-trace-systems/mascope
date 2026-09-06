@@ -48,8 +48,12 @@ class Ms2Resource(BaseResource):
         ``groups`` holds one record per (parent peak, activation) pair --
         ``parent_peak_mz``, ``activation``, ``hcd_energy``, ``scan_count``,
         ``t_min``, ``t_max`` -- so a stepped-energy acquisition is reported step
-        by step. ``hcd_energy_map`` lists the energies each precursor was
-        measured at, one per step.
+        by step, ordered by precursor and then by acquisition.
+
+        ``hcd_energy_map`` lists the energies each precursor was measured at,
+        flattened across its steps. A step whose scans carry no trailer energy
+        contributes nothing to it, so it does not index against ``groups`` --
+        read ``groups`` when the step an energy belongs to matters.
 
         :param parent_peak_tolerance: Tolerance in Da for merging near-duplicate
                                       parent peaks.

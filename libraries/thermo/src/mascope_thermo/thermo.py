@@ -780,7 +780,14 @@ def _cluster_scans_by_parent(
                 )
                 break
 
-    return dict(sorted(parent_peak_mapping.items()))
+    # Ordered by parent m/z, then by the group's first scan - acquisition
+    # order. Sorting on the activation string instead would order a stepped
+    # run's groups lexicographically, putting "hcd100.00" between "hcd10.00"
+    # and "hcd20.00", and the energies the summary reports for that precursor
+    # follow this order.
+    return dict(
+        sorted(parent_peak_mapping.items(), key=lambda item: (item[0][0], min(item[1])))
+    )
 
 
 def get_ms2_centroids_by_parent(
@@ -867,8 +874,12 @@ def get_ms2_summary_metadata(
     (precursor, activation) pair separately, so a stepped-energy acquisition is
     reported step by step -- including each step's scan count and time span,
     which is what shows that its steps ran as consecutive blocks rather than
-    interleaved. ``hcd_energy_map`` gives the calibrated energies a precursor
-    was measured at, one entry per step, in group order.
+    interleaved. Groups are ordered by precursor, then by acquisition.
+
+    ``hcd_energy_map`` flattens each precursor's group energies into one list.
+    A group whose scans carry no trailer energy contributes nothing to it, so
+    it does not index against ``groups``; read ``groups`` when the step a given
+    energy belongs to matters.
 
     :param datafile_path: Path to the Thermo Fisher raw file (.raw).
     :type datafile_path: str
@@ -931,11 +942,9 @@ def get_ms2_summary_metadata(
 
         parent_peaks: list[float] = []
         groups: list[dict] = []
-        hcd_energy_map: dict[float, list[float]] = {}
         for (pp, activation), scan_indices in parent_peak_mapping.items():
-            if pp not in hcd_energy_map:
+            if pp not in parent_peaks:
                 parent_peaks.append(pp)
-                hcd_energy_map[pp] = []
 
             # Averaged within the group, so the energies reported are ones the
             # instrument actually used. A value may itself be comma-separated
@@ -960,7 +969,6 @@ def get_ms2_summary_metadata(
                         if step_idx < len(row)
                     ]
                     energies.append(round(float(np.mean(step_values)), 2))
-            hcd_energy_map[pp].extend(energies)
 
             group_times = [
                 scan_idx_to_time[idx] for idx in scan_indices if idx in scan_idx_to_time
@@ -975,6 +983,21 @@ def get_ms2_summary_metadata(
                     "t_max": max(group_times) if group_times else None,
                 }
             )
+
+        # Derived from `groups` rather than accumulated alongside it, so the
+        # two cannot drift. It is a flattening: a group whose scans carry no
+        # trailer energy contributes nothing, so the i-th entry here is not the
+        # i-th group of that precursor. `groups` is what carries the per-step
+        # breakdown; this stays for callers that only want the energies.
+        hcd_energy_map: dict[float, list[float]] = {
+            pp: [
+                energy
+                for group in groups
+                if group["parent_peak_mz"] == pp
+                for energy in group["hcd_energy"]
+            ]
+            for pp in parent_peaks
+        }
 
         return {
             "parent_peaks": parent_peaks,
@@ -1027,11 +1050,24 @@ def get_ms2_centroids_per_scan_for_parent(
         events = backend.ms2_events_by_scan(polarity, t_min, t_max)
         parent_peak_mapping = _cluster_scans_by_parent(events, parent_peak_tolerance)
 
-        # Collect every group of this parent peak (one per activation), so the
-        # scans stay in acquisition order across the steps.
+        # One parent peak, then every group of it (one per activation), so the
+        # scans stay in acquisition order across the steps. Resolving the
+        # parent first is what keeps two precursors apart: clusters need only
+        # be more than the tolerance apart from each other, so a requested m/z
+        # can sit within tolerance of two of them, and taking both would
+        # average two different precursors into one timeseries.
+        candidates = [
+            pp
+            for pp, _ in parent_peak_mapping
+            if abs(pp - parent_peak_mz) <= parent_peak_tolerance
+        ]
+        if not candidates:
+            return [], []
+        closest = min(candidates, key=lambda pp: abs(pp - parent_peak_mz))
+
         matching_scan_indices: list[int] = []
         for (pp, group_activation), scan_indices in parent_peak_mapping.items():
-            if abs(pp - parent_peak_mz) > parent_peak_tolerance:
+            if pp != closest:
                 continue
             if activation is not None and group_activation != activation:
                 continue
