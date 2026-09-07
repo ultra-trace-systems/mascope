@@ -280,10 +280,17 @@ The confidence layer. This is where "assigned" starts meaning something.
   fit is what evidence and tier are read from. The finder's v1 score stays
   in provenance for audit.
 - **Why.** Cause 2: the v1 fit cannot rank, and Stage A and Stage B evidence
-  are on different scales (noted in `config.py`).
+  are on different scales (noted in `config.py`). It is also what makes a
+  TOF assignable at all: v1 scales its mass term by a fixed 5 ppm, v2 by the
+  sample's fitted mass width.
+- **Sibling task.** A TOF-capable reference: peaky's local scorer scoring
+  through `score_pattern_v2` with the sample's fitted sigma (a small change
+  in peaky, beside the `PEAKY_MATCH_PPM` window it already gained), so the
+  TOF gate sets get a reference run worth comparing against.
 - **Verify.** Fit distributions per verdict class separate; the goldens in
   `tooling/score_eval` are untouched; the config comment about stage
-  heterogeneity is retired.
+  heterogeneity is retired; on gate set E both engines commit more than the
+  reagent ions.
 - **Size.** M. Depends on stage 1.
 
 ### 2.2 Self-calibrated mass gate
@@ -461,9 +468,36 @@ Corroboration that only a batch can give, on the batch ledger.
 
 ## Metrics and targets
 
-Measured on the gate sets so far: A is the sparse uronium Orbitrap (427-461
-peaks per sample), B the dense one (1,003-2,577), C the 15N-nitrate batch
-on Orbitrap A (308-329 peaks per sample). The targets apply per set.
+### Baselines (2026-09-07)
+
+Both engines on every gate set, from the store with `compare_runs.py`.
+"Own Assigned" is peaky's own tier; the same-formula share is of the peaks
+both engines commit to.
+
+| set | peaks | Mascope M0 (assigned tier) | peaky M0 (own Assigned) | both M0: same formula | G1 assigned rows unconfirmed | G2 peaky Assigned recovered, same formula | N >= 5, Mascope / peaky | mass error MAD, Mascope / peaky | peaky reagent peaks |
+|---|---|---|---|---|---|---|---|---|---|
+| A uronium, Orbitrap sparse | 2,626 | 1,631 (1,535) | 1,192 (949) | 416 of 892 (47%) | 73% | 39% | 13% / 0% | 0.20 / 0.17 ppm | 58 |
+| B uronium, Orbitrap dense | 12,055 | 1,631 (1,587) | 7,614 (5,372) | 685 of 1,394 (49%) | 57% | 12% | 15% / 0.1% | 0.20 / 0.29 ppm | 24 |
+| C 15N-nitrate, Orbitrap A | 1,583 | 1,078 (787) | 753 (527) | 92 of 568 (16%) | 99% | 18% | 17% / 0% | 1.13 / 0.14 ppm | 29 |
+| D bromide, Orbitrap A | 5,217 | 947 (818) | 2,108 (1,595) | 281 of 657 (43%) | 68% | 17% | 31% / 0% | 0.37 / 0.26 ppm | 262 |
+| E bromide, TOF | 3,493 | 409 (206) | 119 (28) | 3 of 29 | 99% | 7% | 22% / 0% | 1.56 / 1.16 ppm | 336 |
+| F bromide and nitrate, multi-scheme TOF | running | | | | | | | | |
+
+Set E is a finding of its own: on a TOF the reference fails as well. Peaky
+commits 119 main peaks in 3,493 and calls 28 of them Assigned even with its
+windows opened to 8 and 25 ppm, because `score_pattern` (v1) scales its
+mass term by a fixed 5 ppm, so the 5-15 ppm errors of a TOF score near zero
+in both engines; the reagent ions on this TOF also sit 10 ppm off, an
+uncorrected offset neither engine estimates. For TOF sets G1 and G2 are
+recorded but do not gate; the TOF gate uses the intrinsic metrics (reagent
+peaks labelled, chemistry sanity, mass-error spread against the instrument's
+own sigma, coverage of the brightest 300 peaks) until step 2.1 gives Stage B
+an instrument-scaled fit, and step 2.1 gains a sibling task: a TOF-capable
+reference run, peaky scoring through `score_pattern_v2` with the sample's
+fitted sigma, so the TOF sets get a reference at all.
+
+The stage targets below are stated for the Orbitrap sets A-D; C and D
+start from a worse baseline than A and B and are held to the same targets.
 
 | metric | today A | today B | today C | after stage 1 | after stage 2 | after stage 3 |
 |---|---|---|---|---|---|---|
