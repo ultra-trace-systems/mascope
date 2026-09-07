@@ -100,6 +100,19 @@ justify.
   reviewed into `develop` per stage. Each stage ends with an engine version
   bump (`PEAK_ASSIGNMENT_ENGINE_VERSION` 0.4.0, 0.5.0, 0.6.0) because each
   changes results; steps inside a stage do not bump.
+- **Steps in parallel.** Two steps may be in flight at once when their
+  footprints are disjoint, and the footprint is what decides, not the step
+  number. Stage 1's steps all end in two places - the finder's ranking
+  (`assign_compositions`, `match_isotopic_pattern`) and the engine's Stage B
+  conversion (`untargeted_matches_to_peak_assignments`) - so a step that
+  touches both is split: the library half first, as its own PR with tests
+  in `libraries/tools/tests`, and the engine half after the step it would
+  collide with has merged, rebased onto it. The status table of this note
+  is edited by every step and conflicts trivially; CHANGELOG merges by
+  union. The testbed is one deployed build, and the comparison reads the
+  latest completed run of each engine per sample, so deploy, gate re-run
+  and comparison are one critical section per step, done at the end of its
+  PR, one branch at a time, with the build tag named in the PR comment.
 - **The gate.** Every step ends by re-running the in-app engine on the fixed
   twelve-sample testbed set (six per instrument, peaky's runs already in the
   store) and running `compare_runs.py`; the numbers go into the status table
@@ -235,7 +248,20 @@ and 5 as far as they are search problems.
   ranking and the deterministic tie-break; gate metric G2 same-formula
   agreement (from 47% to at least 85% on A). Stage A still wins a peak for a
   curated target, so a curated `[M+H]+` reading is unaffected.
-- **Size.** S-M. Independent of 1.1 and 1.2.
+- **With 1.2.** The two steps meet on the ammonium peaks and must not
+  contradict each other there. The family rule decides the *reading* and
+  lives in the finder: X.[M+NH4]+ beats (X+NH3).[M+H]+ because the mechanism
+  carries the mass. The minor-channel rule of 1.2 decides the *tier* of a
+  reading on a secondary channel and lives in the engine: a winner on
+  `+NH4+` commits as assigned only with corroboration, and on equal
+  evidence a primary-channel isotope child beats a secondary-channel M0 for
+  the same observed peak. Neither rule re-ranks the other's decision. The
+  library half of this step (the family ranking, the deterministic
+  tie-break, the family carried on the finder's result rows) is independent
+  of 1.2 and lands first; the engine half (the `same_ion` flag on the
+  stored alternatives) edits the function 1.2 is editing and lands after
+  1.2 has merged, rebased onto it.
+- **Size.** S-M. Library half independent of 1.1 and 1.2; engine half after 1.2.
 
 ### 1.4 Reagent-cluster pre-pass
 
@@ -251,7 +277,11 @@ and 5 as far as they are search problems.
   and excluded from both stages' candidate peaks. Bare clusters and
   hydrates only: organic-acid adducts of the reagent are analyte channels
   and stay out, which is the lesson peaky learned.
-- **Where.** A `reagent_pass.py` beside `engine.py`; `engine.py` gains
+- **Where.** `mascope_tools.composition.reagents` already exists from step
+  1.2, holding the channel probes (the narrow half of this library: enough
+  exact masses to say whether a carrier is in the spectrum); this step grows
+  that module into the full cluster grammar with isotopologues and hydrates
+  rather than starting a second one. A `reagent_pass.py` beside `engine.py`; `engine.py` gains
   `ROLE_REAGENT` and `ROLE_ARTIFACT`; `schemas.AssignmentSource` gains
   `reagent` (the read model and the import path already accept the roles);
   `batch_peaks.ROLE_CODES` must carry both roles into the fold.
