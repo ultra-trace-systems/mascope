@@ -12,6 +12,7 @@ from pyteomics.mass import Composition
 from scipy.spatial.distance import cosine
 
 from mascope_tools.composition.config import (
+    CONTEXT_RATIO_MIN_CARBON,
     ELECTRON_MASS,
     ISOTOPE_ABUNDANCE_THRESHOLD,
     ISOTOPE_MATCHING_INTENSITY_TOLERANCE,
@@ -506,11 +507,105 @@ def rule_known_chemical_space(
     return mask, log_messages  # Placeholder, always returns True
 
 
+# Elements that count as carbon and as hydrogen when a ratio window is
+# evaluated. Silicon is a tetravalent backbone atom, so it belongs in the
+# denominator with carbon; the halogens are monovalent H-substituents, so they
+# belong in the numerator with hydrogen. Without the substitution a halogenated
+# compound fails a window it never violated: trichloroacetic acid C2HCl3O2 reads
+# H/C 0.5 raw and (H+X)/C 2.0 effective.
+_CARBON_EQUIVALENT = ("C", "Si")
+_HYDROGEN_EQUIVALENT = ("H", "F", "Cl", "Br", "I")
+
+# DBE = 1 + (C+Si) + (N+P)/2 - (H+F+Cl+Br+I)/2. Divalent O and S contribute
+# nothing. The same convention as `finder.get_unsaturation`, restated on element
+# counts because this rule reads a formula, not the finder's atom list.
+_DBE_PLUS = ("C", "Si")
+_DBE_HALF_PLUS = ("N", "P")
+
+
+def _effective_counts(counts: dict[str, int]) -> tuple[float, float, float]:
+    """(carbon-equivalent, hydrogen-equivalent, DBE) for a formula's counts."""
+    carbon = float(sum(counts.get(el, 0) for el in _CARBON_EQUIVALENT))
+    hydrogen = float(sum(counts.get(el, 0) for el in _HYDROGEN_EQUIVALENT))
+    dbe = 1.0 + carbon + sum(counts.get(el, 0) for el in _DBE_HALF_PLUS) / 2.0
+    dbe -= hydrogen / 2.0
+    return carbon, hydrogen, dbe
+
+
+def _context_ratios_ok(
+    counts: dict[str, int], windows: dict[str, tuple[float, float]]
+) -> bool:
+    """Whether a formula's counts sit inside a context's ratio windows.
+
+    Above the carbon floor the four windows apply on effective counts. Below it
+    the windows are meaningless (see ``CONTEXT_RATIO_MIN_CARBON``) and give way
+    to two valence-level checks that catch the O- and N-stuffed one- and
+    two-carbon formulas a narrow mass window still admits.
+    """
+    carbon, hydrogen, dbe = _effective_counts(counts)
+    n_o = counts.get("O", 0)
+    n_n = counts.get("N", 0)
+    if carbon >= CONTEXT_RATIO_MIN_CARBON:
+        values = {
+            "H/C": hydrogen / carbon,
+            "O/C": n_o / carbon,
+            "N/C": n_n / carbon,
+            "DBE/C": dbe / carbon,
+        }
+        for key, (low, high) in windows.items():
+            value = values.get(key)
+            if value is not None and not (low <= value <= high):
+                return False
+        return True
+    if carbon >= 1:
+        return n_o <= 2 * carbon + 2 and n_n <= carbon + 1
+    # No carbon-equivalent backbone at all. The organic grid floors carbon at 1,
+    # so a formula reaching this rule carbon-free came from a caller that wanted
+    # it; a context has nothing to say about it either way.
+    return True
+
+
+def rule_context_ratios(
+    candidates: pl.DataFrame, **kwargs
+) -> tuple[pl.Series, list[str]]:
+    """The chemistry context's Van Krevelen windows, as a boolean gate.
+
+    A matrix prior: ambient air does not produce a C10 neutral with fifteen
+    oxygens, and a uronium source does not produce one with eight nitrogens,
+    however well either fits the mass. The windows and the elements they are
+    computed on come from ``mascope_tools.composition.profiles``; this rule only
+    applies them.
+
+    Off unless a caller supplies ``context_ratio_windows``, so the long-standing
+    composition search and any caller that names no context are untouched. Like
+    every rule here it fails open: an unparseable formula is deferred, never
+    rejected.
+    """
+    log_messages: list[str] = []
+    if candidates.is_empty():
+        return pl.Series([], dtype=pl.Boolean), log_messages
+
+    heuristics_config = kwargs.get("heuristics_config") or HeuristicFilterConfig()
+    windows = heuristics_config.context_ratio_windows
+    if not windows:
+        return pl.Series([True] * candidates.height, dtype=pl.Boolean), log_messages
+
+    mask: list[bool] = []
+    for formula in candidates.get_column("formula").to_list():
+        counts = element_counts(formula)
+        if counts is None:
+            mask.append(True)  # unparseable here -> defer, never reject
+            continue
+        mask.append(_context_ratios_ok(counts, windows))
+    return pl.Series(mask, dtype=pl.Boolean), log_messages
+
+
 # From lightweight to heavyweight, these rules are applied in order.
 HEURISTIC_RULES = [
     rule_element_ratio,
     rule_valence,
     rule_senior,
+    rule_context_ratios,
     rule_known_chemical_space,
 ]
 

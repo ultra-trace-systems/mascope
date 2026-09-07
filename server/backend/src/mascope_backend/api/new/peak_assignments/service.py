@@ -85,6 +85,11 @@ from mascope_backend.api.new.peak_assignments.fold_view import (
     member_detail,
     verification_target,
 )
+from mascope_backend.api.new.peak_assignments.profiles import (
+    RESOLVED_PROFILE_KEY,
+    ResolvedProfile,
+    resolve_profile,
+)
 from mascope_backend.api.new.peak_assignments.schemas import DEFAULT_PAGE_LIMIT
 from mascope_backend.db import (
     AssignmentVerification,
@@ -109,7 +114,6 @@ from mascope_backend.socket.notifications import (
 from mascope_file.name import get_instrument_type
 from mascope_match import compute_match_isotopes
 from mascope_reference import iter_known_compositions, known_state_fingerprint
-from mascope_tools.composition import CompositionSearchConfig, HeuristicFilterConfig
 from mascope_tools.composition.calibration import (
     InsufficientCalibrationData,
     recalibrate,
@@ -1316,7 +1320,9 @@ RUNNING_RUN_STATUS = "running"
 REFERENCE_LICENSES_KEY = "reference_licenses"
 
 
-def _stored_run_config(config: PeakAssignmentConfig) -> dict:
+def _stored_run_config(
+    config: PeakAssignmentConfig, resolved_profile: ResolvedProfile | None = None
+) -> dict:
     """The blob persisted on a run: the requested config plus server-side state.
 
     A result should record what it was allowed to match, not only what it was
@@ -1326,12 +1332,44 @@ def _stored_run_config(config: PeakAssignmentConfig) -> dict:
     "everything was allowed" is distinguishable from a run written before this
     was recorded at all.
 
+    The resolved profile is the same argument one step further: a run whose
+    config says ``profile: "auto"`` records nothing about what auto meant unless
+    the resolution is snapshotted beside it. It is absent until the run reaches
+    the engine, because it is the sample's mechanisms that resolve it.
+
     :param config: The validated client-supplied run configuration.
+    :param resolved_profile: The chemistry the run resolved to, when known.
     :return: A JSON-serializable dict for ``PeakAssignmentRun.config``.
     """
     stored = config.model_dump()
     stored[REFERENCE_LICENSES_KEY] = reference_license_gate()
+    if resolved_profile is not None:
+        stored[RESOLVED_PROFILE_KEY] = resolved_profile.snapshot()
     return stored
+
+
+async def _record_resolved_profile(
+    peak_assignment_run_id: str,
+    config: PeakAssignmentConfig,
+    resolved_profile: ResolvedProfile,
+) -> None:
+    """Write the resolved chemistry onto a run that is about to use it.
+
+    A separate write because the run row exists before its sample's mechanisms
+    have been read - a request answers with a run id, and an adopted run was
+    created by that request - so the snapshot cannot be part of the insert.
+
+    :param peak_assignment_run_id: The run to stamp.
+    :param config: The run's configuration, re-serialized with the snapshot.
+    :param resolved_profile: The chemistry the run resolved to.
+    """
+    async with async_session() as session:
+        await session.execute(
+            update(PeakAssignmentRun)
+            .where(PeakAssignmentRun.peak_assignment_run_id == peak_assignment_run_id)
+            .values(config=_stored_run_config(config, resolved_profile))
+        )
+        await session.commit()
 
 
 async def _create_run(
@@ -1725,6 +1763,20 @@ async def _run_sample_assignment(
         # consumes the same resolution.
         mechanism_ids, mechanisms = await fetch_sample_mechanisms(sample)
 
+        # -- Resolve the chemistry this run searches under, and record it on the
+        # run. Recorded here rather than at creation because the mechanisms it
+        # reads are only known now, and recorded even when the untargeted stage
+        # goes on to be skipped: a run has to say what it would have searched.
+        resolved_profile = resolve_profile(
+            config,
+            mechanism_notations=[m.ionization_mechanism for m in mechanisms],
+            instrument_type=get_instrument_type(sample.filename),
+            polarity=sample.polarity,
+        )
+        await _record_resolved_profile(
+            run.peak_assignment_run_id, config, resolved_profile
+        )
+
         # -- Stage A: database-first assignment from the known composition set:
         # the curated target library plus (when loaded) the reference mirror.
         stage_a_assignments, confidence_calibration = await _stage_a_assignments(
@@ -1769,14 +1821,13 @@ async def _run_sample_assignment(
                 )
                 runtime.logger.info(f"Skipping untargeted stage: {skip_reason}")
             else:
-                formula_ranges, _ = to_explicit_isotope_format(config.formula_ranges)
-                search_config = CompositionSearchConfig(
-                    ionizations=",".join(notations),
-                    mass_range_ppm=config.mz_precision_ppm,
-                    element_count_ranges=formula_ranges,
-                    use_unsaturation=True,
-                    min_unsaturation=-1000.0,
-                    max_unsaturation=10000.0,
+                search_config = resolved_profile.search_config(notations)
+                runtime.logger.info(
+                    f"Untargeted stage for sample '{sample.sample_item_name}' "
+                    f"searches profile '{resolved_profile.profile.name}' / "
+                    f"context '{resolved_profile.context.name}': "
+                    f"{search_config.element_count_ranges} at "
+                    f"{search_config.mass_range_ppm} ppm"
                 )
                 # assign_compositions is synchronous and CPU-bound (recursive
                 # composition enumeration over up to max_untargeted_peaks). This
@@ -1786,8 +1837,9 @@ async def _run_sample_assignment(
                 # Stage B opts into the Senior/RDBE feasibility cut: the
                 # peak-centric engine wants chemically impossible formulas gone
                 # before arbitration. It stays off for the legacy composition
-                # search, which predates the rule being implemented.
-                heuristics_config = HeuristicFilterConfig(use_senior=True)
+                # search, which predates the rule being implemented. The
+                # resolved context's ratio windows ride along with it.
+                heuristics_config = resolved_profile.heuristics_config()
                 # One positionally-indexed frame feeds both the search and the
                 # join back. The finder returns rows in the order it was given
                 # them, so position - not float m/z equality - is what maps a
