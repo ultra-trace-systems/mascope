@@ -79,6 +79,12 @@ class ReagentProfile:
     :param element_ranges: The neutral element grid the untargeted stage
         enumerates, in the ``element_count_ranges`` grammar. A context may
         narrow it; nothing widens it.
+    :param reagent_formula: The reagent ion's own composition (``"Br"``,
+        ``"NO3"``, ``"^NO3"`` for the labelled nitrate, ``"CH4N2O"`` for urea),
+        charge excluded. The cluster ions a source makes are built from it, so
+        a labelled reagent's label follows into every one of them rather than
+        being restated per cluster. None where the source has no single reagent
+        species, as an electrospray does not.
     :param detection: Ionization-mechanism notations whose presence on a
         sample's mode identifies this profile. The fingerprint, in the
         notation the mechanism table stores.
@@ -105,6 +111,7 @@ class ReagentProfile:
     label: str
     polarity: str
     element_ranges: str
+    reagent_formula: str | None = None
     detection: tuple[str, ...] = ()
     secondary_adducts: tuple[str, ...] = ()
     default_context: str = "none"
@@ -374,6 +381,7 @@ BR = ReagentProfile(
     label="Bromide CIMS",
     polarity="-",
     element_ranges="C0-40 H0-80 N0-3 O0-18 S0-2 Cl0-2 Br0-2",
+    reagent_formula="Br",
     detection=("+Br-",),
     # Carbonate and the dibromide cluster: channels a bromide source produces
     # that a mode is seldom configured with. 145 of the reference engine's main
@@ -388,6 +396,7 @@ UR = ReagentProfile(
     label="Uronium (urea) CIMS",
     polarity="+",
     element_ranges="C0-40 H0-90 N0-8 O0-15 S0-2",
+    reagent_formula="CH4N2O",
     detection=("+(CH4N2O)H+",),
     # Ammonium only. It is a real channel on this source - 1,648 [M+NH4]+ main
     # peaks on one Orbitrap that the engine could otherwise only read as
@@ -407,6 +416,7 @@ NO3 = ReagentProfile(
     label="Nitrate CIMS",
     polarity="-",
     element_ranges="C0-40 H0-60 N0-3 O0-25 S0-2",
+    reagent_formula="NO3",
     detection=("+NO3-",),
     # Carbonate, the channel the nitrate sets need most: the reference engine
     # reads 145 and 212 main peaks through it on those sets, and the mode does
@@ -422,6 +432,7 @@ NO3_15N = ReagentProfile(
     label="15N-nitrate CIMS",
     polarity="-",
     element_ranges="C0-40 H0-60 N0-3 O0-25 S0-2",
+    reagent_formula="^NO3",
     detection=("+^NO3-",),
     # Carbonate carries no reagent nitrogen, so it is the same channel here as
     # on the unlabelled profile.
@@ -440,6 +451,7 @@ IODIDE = ReagentProfile(
     # 127I is monoisotopic, so covalent iodine reaches a neutral through the
     # adduct or a curated list, never through a mass fit.
     element_ranges="C0-40 H0-80 N0-3 O0-20 S0-2 Cl0-1",
+    reagent_formula="I",
     detection=("+I-",),
     secondary_adducts=("+I2-",),
     default_context=AMBIENT_AIR.name,

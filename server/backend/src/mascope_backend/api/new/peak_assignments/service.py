@@ -89,6 +89,7 @@ from mascope_backend.api.new.peak_assignments.profiles import (
     RESOLVED_PROFILE_KEY,
     ResolvedProfile,
     resolve_profile,
+    with_secondary_channels,
 )
 from mascope_backend.api.new.peak_assignments.schemas import DEFAULT_PAGE_LIMIT
 from mascope_backend.db import (
@@ -120,6 +121,7 @@ from mascope_tools.composition.calibration import (
 )
 from mascope_tools.composition.finder import assign_compositions
 from mascope_tools.composition.heuristic_filter import SCORE_VERSION
+from mascope_tools.composition.reagents import secondary_channels
 
 
 # -------------------------------------------------------------------
@@ -935,6 +937,47 @@ async def fetch_sample_mechanisms(
         for m in mechanisms
     ]
     return mechanism_ids, mechanism_specs
+
+
+async def fetch_mechanisms_by_notation(
+    notations: list[str], polarity: str | None
+) -> list[SimpleNamespace]:
+    """The deployment's mechanism rows for these notations, at this polarity.
+
+    The secondary channels of a reagent profile are by definition not on the
+    sample's ionization mode - that is what makes them opportunistic - so they
+    cannot come from :func:`fetch_sample_mechanisms`. They still have to exist
+    as rows, because an assignment references a mechanism by id; a channel the
+    deployment has never declared is reported rather than invented.
+
+    :param notations: Mechanism notations to look up.
+    :param polarity: The sample's polarity; a mechanism of the wrong polarity
+        cannot ionize this sample whatever its notation says.
+    :return: The matching rows, detached for use off the event loop.
+    """
+    if not notations:
+        return []
+    async with async_session() as session:
+        rows = (
+            (
+                await session.execute(
+                    select(IonizationMechanism).where(
+                        IonizationMechanism.ionization_mechanism.in_(notations),
+                        IonizationMechanism.ionization_mechanism_polarity == polarity,
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+    return [
+        SimpleNamespace(
+            ionization_mechanism_id=row.ionization_mechanism_id,
+            ionization_mechanism=row.ionization_mechanism,
+            ionization_mechanism_polarity=row.ionization_mechanism_polarity,
+        )
+        for row in rows
+    ]
 
 
 async def _fetch_known_target_isotopes(
@@ -1773,6 +1816,31 @@ async def _run_sample_assignment(
             instrument_type=get_instrument_type(sample.filename),
             polarity=sample.polarity,
         )
+        # -- Opportunistic channels: the profile names what the source can
+        # produce, the spectrum says whether it does, and the mechanism table
+        # says whether this deployment can express it. All three have to agree
+        # before a channel is searched.
+        secondary_mechanisms = await fetch_mechanisms_by_notation(
+            [
+                channel.notation
+                for channel in secondary_channels(resolved_profile.profile.name)
+            ],
+            sample.polarity,
+        )
+        resolved_profile = with_secondary_channels(
+            resolved_profile,
+            peaks_df["mz"].to_numpy(),
+            peaks_df["intensity"].to_numpy(),
+            [m.ionization_mechanism for m in secondary_mechanisms],
+        )
+        if resolved_profile.unavailable_channels:
+            # Once per run, and only for a channel the sample actually shows:
+            # an operator can act on this by adding the mechanism.
+            runtime.logger.info(
+                f"Sample '{sample.sample_item_name}' shows the fingerprint of "
+                f"{', '.join(resolved_profile.unavailable_channels)}, which this "
+                "deployment has no ionization mechanism for; not searched."
+            )
         await _record_resolved_profile(
             run.peak_assignment_run_id, config, resolved_profile
         )
@@ -1810,8 +1878,19 @@ async def _run_sample_assignment(
                 config.max_untargeted_peaks, "intensity"
             ).sort_values("mz")
 
+            # The mode's own mechanisms decide whether there is anything to
+            # search at all; the opportunistic channels are an addition to a
+            # sample's chemistry, not a substitute for it. A mode that declares
+            # nothing is one nobody has configured, and searching it through a
+            # channel the source happens to show would assign a sample whose
+            # ionization is unknown.
+            searched_mechanisms = mechanisms + [
+                mechanism
+                for mechanism in secondary_mechanisms
+                if mechanism.ionization_mechanism in resolved_profile.minor_channels
+            ]
             notations, mechanism_id_by_notation = _untargeted_ionization_notations(
-                mechanisms
+                searched_mechanisms if mechanisms else []
             )
             if remainder_df.empty or not notations:
                 skip_reason = (
@@ -1822,12 +1901,18 @@ async def _run_sample_assignment(
                 runtime.logger.info(f"Skipping untargeted stage: {skip_reason}")
             else:
                 search_config = resolved_profile.search_config(notations)
+                secondary = sorted(resolved_profile.minor_channels)
                 runtime.logger.info(
                     f"Untargeted stage for sample '{sample.sample_item_name}' "
                     f"searches profile '{resolved_profile.profile.name}' / "
                     f"context '{resolved_profile.context.name}': "
                     f"{search_config.element_count_ranges} at "
                     f"{search_config.mass_range_ppm} ppm"
+                    + (
+                        f"; secondary channels {', '.join(secondary)}"
+                        if secondary
+                        else ""
+                    )
                 )
                 # assign_compositions is synchronous and CPU-bound (recursive
                 # composition enumeration over up to max_untargeted_peaks). This
@@ -1861,6 +1946,7 @@ async def _run_sample_assignment(
                     mechanism_id_by_notation=mechanism_id_by_notation,
                     formula_formatter=to_custom_element_format,
                     max_alternatives=config.max_alternatives,
+                    minor_channels=resolved_profile.minor_channels,
                 )
                 runtime.logger.info(
                     f"Stage B assigned {len(stage_b_assignments)} of "
