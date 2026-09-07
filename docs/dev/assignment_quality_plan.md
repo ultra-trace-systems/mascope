@@ -114,9 +114,9 @@ justify.
   | A | Orbitrap, sparse spectra | urea CIMS, positive | 6 | measured |
   | B | Orbitrap, dense spectra | urea CIMS, positive | 6 | measured |
   | C | Orbitrap A | 15N-nitrate CIMS, negative | 5 | measured |
-  | D | Orbitrap A | bromide CIMS, negative (the demo dataset's source batch) | 6 | files being brought onto the testbed |
-  | E | TOF, single acquisition set | bromide CIMS, negative | 3 | files being brought onto the testbed |
-  | F | TOF, multi-scheme source | bromide and nitrate CIMS, negative, one day each | 6 + 6 | files being brought onto the testbed |
+  | D | Orbitrap A | bromide CIMS, negative (the demo dataset's source batch) | 6 | measured |
+  | E | TOF, single acquisition set | bromide CIMS, negative | 3 | measured |
+  | F | TOF, multi-scheme source | bromide and nitrate CIMS, negative, one day each | 6 + 5 | running |
 
   Sets D to F need peaky reference runs with TOF-appropriate windows where
   the instrument is a TOF (its Orbitrap defaults of 1 ppm trust and 3 ppm
