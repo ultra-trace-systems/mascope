@@ -121,13 +121,15 @@ class TestTheRecord:
     def test_an_absent_channel_is_recorded_as_considered(self):
         # A run has to say a channel was looked for and not found, or nothing
         # distinguishes that from a channel nobody thought of.
-        mz, intensity = _spectrum((UREA_AMMONIUM, 0.01))
+        # Wide enough that every bromide probe could have been seen, so a
+        # verdict of "not found" is about the source rather than the window.
+        mz, intensity = _spectrum((50.0, 0.01), (400.0, 0.01))
         records = R.evidence_records(
             R.detect_channels(R.secondary_channels("BR"), mz, intensity, ppm=5.0)
         )
         assert records == [
-            {"channel": "+CO3-", "present": False},
-            {"channel": "+Br2-", "present": False},
+            {"channel": "+CO3-", "present": False, "status": "not_found"},
+            {"channel": "+Br2-", "present": False, "status": "not_found"},
         ]
 
     def test_a_present_channel_records_what_it_was_found_on(self):
@@ -159,3 +161,106 @@ class TestTheRecord:
             R.detect_channels(R.secondary_channels("UR"), mz, intensity, ppm=3.0)
         )
         assert json.loads(json.dumps(records)) == records
+
+
+class TestTheReagentAcidClusters:
+    """Carbonate's evidence has to be reachable from a window that starts above
+    it, and a labelled reagent's label has to follow into the cluster."""
+
+    def _probe_labels(self, profile):
+        return [
+            probe.label
+            for channel in R.secondary_channels(profile)
+            for probe in channel.probes
+        ]
+
+    def test_the_clusters_are_built_from_the_profiles_reagent(self):
+        assert "[CO3+HNO3]-" in self._probe_labels("NO3")
+
+    def test_bromide_keeps_the_bare_ions_only(self):
+        # The acid cluster is measured for nitrate and not for bromide, where
+        # the candidate line is an order of magnitude weaker and reading it as
+        # a carrier cost the gate set 24 same-formula agreements.
+        assert "[CO3+HBr]-" not in self._probe_labels("BR")
+        assert "[CO3]-" in self._probe_labels("BR")
+
+    def test_the_label_follows_into_the_cluster(self):
+        # One table, not two: the labelled profile's clusters come out 0.997 Da
+        # above the unlabelled ones because they are built from '^NO3'.
+        def cluster(profile, label):
+            for channel in R.secondary_channels(profile):
+                for probe in channel.probes:
+                    if probe.label == label:
+                        return probe.mz
+            raise AssertionError(f"{label} not among {profile}'s probes")
+
+        light = cluster("NO3", "[CO3+HNO3]-")
+        heavy = cluster("NO3_15N", "[CO3+H^NO3]-")
+        assert heavy - light == pytest.approx(0.99703, abs=1e-4)
+        assert heavy == pytest.approx(123.978, abs=1e-3)
+
+    def test_they_reach_a_window_the_bare_ion_cannot(self):
+        # Measured on a broad-window run of the nitrate chemistry: [CO3]- sits
+        # at 0.5-1.0% of base and the labelled acid clusters at 0.1-0.44%. An
+        # acquisition starting at 120 sees only the clusters.
+        mz, intensity = _spectrum((123.978, 0.003), base=1.0e6)
+        mz, intensity = mz[1:], intensity[1:]  # drop the m/z 100 base peak
+        mz = np.append(mz, [400.0])
+        intensity = np.append(intensity, [1.0e6])
+        evidence = R.detect_channels(R.secondary_channels("NO3_15N"), mz, intensity)
+        assert evidence[0].present is True
+        assert evidence[0].status == R.STATUS_FOUND
+        assert evidence[0].probe == "[CO3+H^NO3]-"
+
+
+class TestUnobservableIsNotAbsent:
+    """A channel no probe of which is inside the acquisition was never asked,
+    and its silence is a fact about the window, not about the source."""
+
+    def _narrow_nitrate(self):
+        # The gate's narrow nitrate acquisition: from m/z 131, above every
+        # carbonate carrier the source makes.
+        return np.array([131.0, 200.0, 300.0]), np.array([1.0e6, 1.0e4, 1.0e3])
+
+    def test_it_is_recorded_as_its_own_status(self):
+        mz, intensity = self._narrow_nitrate()
+        record = R.evidence_records(
+            R.detect_channels(R.secondary_channels("NO3_15N"), mz, intensity)
+        )[0]
+        assert record["status"] == R.STATUS_UNOBSERVABLE
+        assert "probe" not in record
+
+    def test_a_profile_may_default_it_on(self):
+        # Nitrate does: the source makes no carbonate carrier above m/z 126, so
+        # a window starting higher can never show the channel.
+        mz, intensity = self._narrow_nitrate()
+        evidence = R.detect_channels(R.secondary_channels("NO3_15N"), mz, intensity)
+        assert evidence[0].present is True
+
+    def test_the_default_is_off(self):
+        # Silence is not evidence unless a profile has a reason to say so.
+        channel = R.SecondaryChannel(
+            notation="+Xx-",
+            label="Unmeasured",
+            probes=(R.ProbeIon("CO3", -1, "[CO3]-"),),
+        )
+        mz, intensity = self._narrow_nitrate()
+        evidence = R.detect_channels([channel], mz, intensity)
+        assert evidence[0].present is False
+        assert evidence[0].status == R.STATUS_UNOBSERVABLE
+
+    def test_an_observable_channel_that_is_absent_stays_absent(self):
+        # The policy applies to the window, never to the source: a broad
+        # acquisition with no carbonate in it switches nothing on.
+        mz = np.array([50.0, 200.0, 400.0])
+        intensity = np.array([1.0e6, 1.0e4, 1.0e3])
+        evidence = R.detect_channels(R.secondary_channels("NO3_15N"), mz, intensity)
+        assert evidence[0].present is False
+        assert evidence[0].status == R.STATUS_NOT_FOUND
+
+    def test_a_channel_with_no_probes_is_not_called_unobservable(self):
+        channel = R.SecondaryChannel(notation="+Xx+", label="Unprovable")
+        mz, intensity = self._narrow_nitrate()
+        evidence = R.detect_channels([channel], mz, intensity)
+        assert evidence[0].present is False
+        assert evidence[0].status == R.STATUS_NOT_FOUND

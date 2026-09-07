@@ -84,6 +84,14 @@ class ProbeIon:
         return mass - self.charge * ELECTRON_MASS
 
 
+#: What a channel does when the spectrum could not have shown its fingerprint -
+#: every probe below the acquisition's first mass or above its last. This is a
+#: fact about the acquisition, not about the source, so it is not the same
+#: question as "was the carrier there", and a channel says which answer it wants.
+UNOBSERVABLE_OFF = "off"
+UNOBSERVABLE_ON = "on"
+
+
 @dataclass(frozen=True)
 class SecondaryChannel:
     """An adduct channel a source can produce, and the evidence that it does.
@@ -94,6 +102,12 @@ class SecondaryChannel:
     :param probes: Cluster ions of the channel's own carrier. One hit above the
         floor switches the channel on; a channel with no probes never switches
         on, which is deliberate - an unprovable channel is not searched.
+    :param when_unobservable: What to do when no probe could have been seen at
+        all. :data:`UNOBSERVABLE_OFF` by default - silence is not evidence -
+        but a channel whose carrier is known to exist only below a mass some
+        acquisitions start above can say :data:`UNOBSERVABLE_ON` instead, and
+        then it is the acquisition rather than the source that failed to
+        answer.
     :param note: Why these probes are the right evidence, for the reader who
         wonders why a channel stayed off.
     """
@@ -101,6 +115,7 @@ class SecondaryChannel:
     notation: str
     label: str
     probes: tuple[ProbeIon, ...] = ()
+    when_unobservable: str = UNOBSERVABLE_OFF
     note: str = ""
 
 
@@ -151,13 +166,35 @@ def _solvated(symbol: str, label: str, waters: Iterable[int] = (1, 2)) -> tuple:
     return tuple(probes)
 
 
-#: Carbonate: the bare radical anion and bicarbonate. A carbonate channel exists
-#: where the source's CO2 chemistry runs, and these two ions are that chemistry
-#: showing itself.
-_CARBONATE_PROBES = (
-    ProbeIon("CO3", -1, "[CO3]-"),
-    ProbeIon("CHO3", -1, "[HCO3]-"),
-)
+def _carbonate_probes(reagent_formula: str | None) -> tuple[ProbeIon, ...]:
+    """Carbonate's own ions, and its clusters with the reagent's acid.
+
+    The bare radical anion and bicarbonate are the chemistry showing itself,
+    but both sit near m/z 60 and plenty of acquisitions start above that. The
+    reagent-acid clusters carry the same evidence 60-65 Da higher, which is
+    what puts the channel within reach of a window starting at 120.
+
+    They are built from the profile's own reagent formula rather than written
+    out, so a labelled reagent's label follows into the cluster: the 15N-nitrate
+    profile gets ``[CO3+H(15N)O3]-`` at m/z 124 and ``[HCO3+H(15N)O3]-`` at 125,
+    0.997 Da above their unlabelled twins, without a second table to keep in
+    step with the first.
+
+    :param reagent_formula: The reagent ion's composition, or None.
+    :return: The probe ions, the clusters omitted when there is no reagent.
+    """
+    probes = [
+        ProbeIon("CO3", -1, "[CO3]-"),
+        ProbeIon("CHO3", -1, "[HCO3]-"),
+    ]
+    if reagent_formula:
+        acid = f"H{reagent_formula}"
+        probes += [
+            ProbeIon(f"CO3{acid}", -1, f"[CO3+{acid}]-"),
+            ProbeIon(f"CHO3{acid}", -1, f"[HCO3+{acid}]-"),
+        ]
+    return tuple(probes)
+
 
 #: The bare dihalide radical anions. In a halide source these are rungs of the
 #: reagent's own cluster ladder, so their presence is exactly the statement that
@@ -166,6 +203,23 @@ _CARBONATE_PROBES = (
 _DIBROMIDE_PROBES = (ProbeIon("Br2", -1, "[Br2]-"),)
 _DIIODIDE_PROBES = (ProbeIon("I2", -1, "[I2]-"),)
 
+
+#: Why the nitrate profiles default their carbonate channel ON where a spectrum
+#: could not have shown it. Measured on a broad-window (m/z 50-650) run of the
+#: same chemistry as the narrow gate set: every sample carries [CO3]- at 0.5-1.0%
+#: of the base peak and the labelled acid clusters at 0.1-0.44%, and there is no
+#: carbonate carrier above m/z 126 at all - no dimer at 188, no trimer at 191,
+#: because the source declusters beyond the dimer. So an acquisition starting
+#: above 126 cannot show this channel however hard the source runs it, and
+#: reading its silence as absence would be reading a fact about the window as a
+#: fact about the chemistry. What the channel may then do is still bounded: it
+#: takes no peak from a declared mechanism, and commits as assigned only with
+#: corroboration.
+_NITRATE_CARBONATE_NOTE = (
+    "carbonate and its clusters with the reagent's acid; the source makes no "
+    "carbonate carrier above m/z 126, so a window starting higher cannot show "
+    "the channel and its silence is not evidence"
+)
 
 #: Secondary channels per reagent profile name. The panel is a fact about the
 #: source chemistry; whether a given sample ran a channel is the fingerprint's
@@ -186,7 +240,15 @@ SECONDARY_CHANNELS: dict[str, tuple[SecondaryChannel, ...]] = {
         SecondaryChannel(
             notation="+CO3-",
             label="Carbonate adduct",
-            probes=_CARBONATE_PROBES,
+            # The bare ions only. The reagent-acid cluster is measured for
+            # nitrate and not for bromide, and on the bromide gate set the
+            # candidate [HCO3+HBr]- line is an order of magnitude weaker than
+            # nitrate's clusters (0.06% of base against 0.1-0.44%) - weak enough
+            # to be an analyte at that mass rather than a carrier. Reading it as
+            # a fingerprint switched the channel on and cost 24 of the set's
+            # same-formula agreements with the reference, so bromide keeps the
+            # evidence it can actually show.
+            probes=_carbonate_probes(None),
             note="the source's own carbonate ions",
         ),
         SecondaryChannel(
@@ -200,17 +262,21 @@ SECONDARY_CHANNELS: dict[str, tuple[SecondaryChannel, ...]] = {
         SecondaryChannel(
             notation="+CO3-",
             label="Carbonate adduct",
-            probes=_CARBONATE_PROBES,
-            note="the source's own carbonate ions",
+            probes=_carbonate_probes("NO3"),
+            when_unobservable=UNOBSERVABLE_ON,
+            note=_NITRATE_CARBONATE_NOTE,
         ),
     ),
     "NO3_15N": (
         SecondaryChannel(
             notation="+CO3-",
             label="Carbonate adduct",
-            probes=_CARBONATE_PROBES,
-            note="carbonate carries no reagent nitrogen, so the label does not "
-            "reach this channel",
+            # Built from the labelled reagent, so the clusters land 0.997 Da
+            # above the unlabelled ones. Carbonate itself carries no reagent
+            # nitrogen, which is why the bare ions are the same either way.
+            probes=_carbonate_probes("^NO3"),
+            when_unobservable=UNOBSERVABLE_ON,
+            note=_NITRATE_CARBONATE_NOTE,
         ),
     ),
     "IODIDE": (
@@ -253,12 +319,30 @@ def secondary_channels(profile_name: str) -> tuple[SecondaryChannel, ...]:
     return SECONDARY_CHANNELS.get(profile_name, ())
 
 
+#: A probe matched a peak above the floor.
+STATUS_FOUND = "found"
+#: Every probe was inside the acquisition and none matched: the carrier is not
+#: there, which is evidence.
+STATUS_NOT_FOUND = "not_found"
+#: No probe was inside the acquisition at all, so the spectrum was never asked.
+#: Silence here says nothing about the source; what happens next is the
+#: channel's ``when_unobservable``.
+STATUS_UNOBSERVABLE = "unobservable"
+
+
 @dataclass(frozen=True)
 class ChannelEvidence:
     """What a spectrum said about one secondary channel.
 
+    ``present`` is the decision - was the channel searched - and ``status`` is
+    the reason. They come apart exactly once: an unobservable channel whose
+    profile defaults it on is present on no evidence, and the record says so
+    rather than implying a fingerprint nobody found.
+
     :param notation: The channel's mechanism notation.
-    :param present: Whether its fingerprint was found above the floor.
+    :param present: Whether the channel is searched for this sample.
+    :param status: One of :data:`STATUS_FOUND`, :data:`STATUS_NOT_FOUND`,
+        :data:`STATUS_UNOBSERVABLE`.
     :param probe: The probe ion that matched, when one did.
     :param mz: The observed m/z of that match.
     :param mz_error_ppm: How far that observation sat from the probe's mass.
@@ -267,6 +351,7 @@ class ChannelEvidence:
 
     notation: str
     present: bool
+    status: str = STATUS_NOT_FOUND
     probe: str | None = None
     mz: float | None = None
     mz_error_ppm: float | None = None
@@ -274,7 +359,11 @@ class ChannelEvidence:
 
     def as_dict(self) -> dict:
         """A JSON-serializable record for a run's config snapshot."""
-        record: dict = {"channel": self.notation, "present": self.present}
+        record: dict = {
+            "channel": self.notation,
+            "present": self.present,
+            "status": self.status,
+        }
         if self.probe is not None:
             record["probe"] = self.probe
             record["mz"] = round(self.mz, 5) if self.mz is not None else None
@@ -304,6 +393,12 @@ def detect_channels(
     spectrum's base peak. The brightest qualifying match is the one recorded, so
     the evidence a run stores is the strongest the spectrum offered.
 
+    A channel none of whose probes falls inside the acquisition's own mass range
+    is a third case and is recorded as one: the spectrum was never asked, so its
+    silence is not evidence of absence, and the channel's
+    ``when_unobservable`` decides. That is the difference between a source that
+    does not run a channel and an acquisition that could not have shown it.
+
     :param channels: The candidate channels, from :func:`secondary_channels`.
     :param mz: The spectrum's m/z values.
     :param intensity: Their intensities, in the same order.
@@ -315,13 +410,22 @@ def detect_channels(
     mz_array = np.asarray(mz, dtype=float)
     intensity_array = np.asarray(intensity, dtype=float)
     base_peak = float(intensity_array.max()) if intensity_array.size else 0.0
+    usable = base_peak > 0.0 and mz_array.size > 0
+    # The acquisition's own range, which is what makes a probe answerable at
+    # all. Read off the peaks rather than configured: it is the mass range this
+    # sample actually produced peaks over.
+    low, high = (float(mz_array.min()), float(mz_array.max())) if usable else (0.0, 0.0)
     evidence: list[ChannelEvidence] = []
     for channel in channels:
         best: ChannelEvidence | None = None
-        if base_peak > 0.0 and mz_array.size:
+        observable = False
+        if usable:
             for probe in channel.probes:
                 target = probe.mz
                 window = target * ppm * 1e-6
+                if not (low - window <= target <= high + window):
+                    continue
+                observable = True
                 hits = np.flatnonzero(np.abs(mz_array - target) <= window)
                 for hit in hits:
                     relative = float(intensity_array[hit]) / base_peak
@@ -332,12 +436,29 @@ def detect_channels(
                         best = ChannelEvidence(
                             notation=channel.notation,
                             present=True,
+                            status=STATUS_FOUND,
                             probe=probe.label,
                             mz=observed,
                             mz_error_ppm=(observed - target) / target * 1e6,
                             relative_intensity=relative,
                         )
-        evidence.append(best or ChannelEvidence(channel.notation, present=False))
+        if best is not None:
+            evidence.append(best)
+        elif channel.probes and not observable:
+            # The spectrum was never asked, so its silence is not an answer.
+            evidence.append(
+                ChannelEvidence(
+                    channel.notation,
+                    present=channel.when_unobservable == UNOBSERVABLE_ON,
+                    status=STATUS_UNOBSERVABLE,
+                )
+            )
+        else:
+            evidence.append(
+                ChannelEvidence(
+                    channel.notation, present=False, status=STATUS_NOT_FOUND
+                )
+            )
     return evidence
 
 
