@@ -10,7 +10,7 @@ step PRs land on the epic and are named here as they merge.
 | step | PR | state |
 |---|---|---|
 | 0 - gate, epic branch, design commit | #2077 | done: testbed, comparison tool, baselines A-F, epic branch |
-| 1.1 - assignment profiles (library presets, resolution, stamping) | #2078 | in review: presets, resolution, grid and window, context ratio gate |
+| 1.1 - assignment profiles (library presets, resolution, stamping) | #2078 | measured on the fixed engine: G3 met, mass-error target met on all four Orbitrap sets, C and D move furthest |
 | 1.1 fix - finder: deprotonation charge and labelled reagent mass | #2079 | merged: found by the 1.1 gate run; sets C-F re-run with 1.1 on top of it |
 | 1.1 fix - finder: the labelled reagent's atom in ion formulas | #2080 | merged: the label reaching the ion string is what pyteomics could not parse |
 | 1.2 - opportunistic adduct channels | - | planned |
@@ -536,19 +536,20 @@ fitted sigma, so the TOF sets get a reference at all.
 
 ### After step 1.1, assignment profiles (2026-09-07)
 
-Both engines re-read from the store after re-running the in-app engine over
-every gate sample with the default config; peaky's runs are the ones already
-published. Same columns as the baselines above, so the two tables subtract.
+Every gate sample re-assigned with the default config on a build carrying step
+1.1 and the two finder fixes it uncovered (#2079, #2080); peaky's runs are the
+ones already published. Same columns as the baselines above, so the two tables
+subtract.
 
 | set | peaks | Mascope M0 (assigned tier) | both M0: same formula | G1 assigned rows unconfirmed | G2 peaky Assigned recovered, same formula | N >= 5, Mascope | carbon-free, Mascope | mass error MAD, Mascope |
 |---|---|---|---|---|---|---|---|---|
 | A uronium, Orbitrap sparse | 2,626 | 1,561 (1,510) | 450 of 890 (51%) | 71% | 41% | 1.4% | 6 | 0.19 ppm |
 | B uronium, Orbitrap dense | 12,055 | 1,593 (1,561) | 743 of 1,385 (54%) | 53% | 13% | 3.9% | 0 | 0.19 ppm |
-| C 15N-nitrate, Orbitrap A | 1,583 | 586 (210) | 114 of 330 (35%) | 98% | 22% | 0% | 0 | 1.31 ppm |
-| D bromide, Orbitrap A | 5,217 | 647 (548) | 421 of 512 (82%) | 31% | 26% | 0% | 12 | 0.36 ppm |
-| E bromide, TOF | 3,493 | 253 (100) | 3 of 19 | 99% | 7% | 0% | 6 | 2.22 ppm |
-| F1 bromide, multi-scheme TOF | 13,595 | 967 (452) | 15 of 86 | 97% | 15% | 0% | 41 | 1.81 ppm |
-| F2 nitrate, multi-scheme TOF | 8,905 | 1,170 (830) | 25 of 168 | 98% | 44% | 0% | 45 | 1.19 ppm |
+| C 15N-nitrate, Orbitrap A | 1,583 | 1,069 (1,046) | 458 of 681 (67%) | 57% | 86% | 0% | 0 | 0.17 ppm |
+| D bromide, Orbitrap A | 5,217 | 834 (783) | 588 of 687 (86%) | 26% | 36% | 0% | 12 | 0.24 ppm |
+| E bromide, TOF | 3,493 | 226 (91) | 3 of 20 | 99% | 7% | 0% | 6 | 2.14 ppm |
+| F1 bromide, multi-scheme TOF | 13,595 | 978 (468) | 15 of 85 | 97% | 14% | 0% | 41 | 1.75 ppm |
+| F2 nitrate, multi-scheme TOF | 8,905 | 1,160 (725) | 28 of 162 | 97% | 44% | 0% | 45 | 1.44 ppm |
 
 Every sample resolved the profile its mechanisms imply, with no configuration:
 A and B `UR`/uronium, C `NO3_15N`/ambient-air, D, E and F1 `BR`/ambient-air,
@@ -559,39 +560,43 @@ grid at 3 ppm, against minutes under `C0-100 H0-100 O0-100 N0-100` at 10.
 nitrogens fall from 13-38% to 0-3.9%, and every carbon-free formula left is a
 Stage A row from the curated set - HNO3, H2SO4, HBr, Br2, HIO3, NH3, water -
 which is precisely the allowlist the target names; the untargeted stage
-produces none, because the organic grid floors carbon at 1. The B set's 3.9%
-is above the <= 1% target and is the uronium context's own N cap of 5 showing
-through: the remaining rows are N5, not N8-N11.
+produces none on any set, because the organic grid floors carbon at 1. The B
+set's 3.9% is above the <= 1% target and is the uronium context's own N cap of
+5 showing through: the remaining rows are N5, not N8-N11.
 
-**G1 and G2 move the right way and stay far from their stage-1 targets**, as
-the plan expects them to at this point: G1 73 -> 71% (A), 57 -> 53% (B),
-68 -> 31% (D), 99 -> 98% (C); G2 39 -> 41% (A), 12 -> 13% (B), 18 -> 22% (C),
-17 -> 26% (D). Same-formula agreement where both engines commit rises on every
-Orbitrap set: 47 -> 51% (A), 49 -> 54% (B), 16 -> 35% (C), 43 -> 82% (D).
-Recovery (G2) is bounded by the 300-peak cap and the missing channels until
-steps 1.2, 1.3 and 1.6.
+**The mass-error target is met on every Orbitrap set, for the first time**:
+0.19, 0.19, 0.17 and 0.24 ppm MAD against a <= 0.35 target, with medians
+inside 0.15 ppm of zero. Set C's 1.13 -> 0.17 is the deprotonation-charge fix
+(#2079) landing: its committed rows were never 1 ppm off, they were scored
+against a cation mass.
 
-**Two metrics moved the wrong way and are the open question of this step.**
+**The negative-mode sets move furthest**, which is the same fix seen from the
+agreement side. Set C: same-formula agreement 16 -> 67%, G1 99 -> 57%, G2
+18 -> 86%. Set D: same-formula 43 -> 86%, G1 68 -> 26%, G2 17 -> 36%. Set C
+therefore already clears the stage-1 G2 target (>= 80% same formula) and set D
+the stage-1 G1 target (<= 45%). The positive-mode sets, which the fix does not
+touch, move on the grid alone: A 47 -> 51% and G1 73 -> 71%, B 49 -> 54% and
+57 -> 53%. G2 on B stays low because the 300-peak cap leaves most of a dense
+spectrum unsearched until step 1.6.
 
-- *Set C's committed mass error*, MAD 1.13 -> 1.31 ppm with the median at
-  +3.33. It is one channel: on a re-run of one sample under both profiles, the
-  `+^NO3-` channel sits at -0.14 ppm either way, while the deprotonation
-  channel goes from +0.38 ppm (identity profile, 174 rows) to +3.75 ppm
-  (bounded grid, 86 rows, 87% beyond 2 ppm). The bounded grid did not make
-  that channel's chemistry worse - it made its wrongness legible. Under the
-  wide grid the deprotonation reading could always find some N- or O-rich
-  formula within a fraction of a ppm; under the profile grid the same peaks
-  are fitted at the edge of the window, and the disagreement between the two
-  channels' offsets on one sample is the proof that these are wrong formulas
-  rather than an instrument offset. This is exactly the population step 2.2's
-  3-sigma self-calibrated gate demotes, and the number should be read again
-  after it.
-- *The TOF sets' committed mass error*, E 1.56 -> 2.22, F1 0.94 -> 1.81,
-  F2 0.73 -> 1.19 ppm MAD. This is the instrument-class window doing what it
-  was set to do: 20 ppm admits fits a 10 ppm window refused. The TOF sets gate
-  on intrinsic metrics until step 2.1 gives Stage B an instrument-scaled fit,
-  and the same step is what makes a wide window safe. Whether 20 ppm is the
-  right default is worth revisiting with the fitted sigma of these files.
+**The one number still below its baseline is the TOF sets' committed mass
+error** (E 1.56 -> 2.14, F1 0.94 -> 1.75, F2 0.73 -> 1.44 ppm MAD), and it is
+not the window: those sets run at the same 10 ppm they always did. An A/B on
+one TOF sample under the identity profile and the resolved one shows both
+channels widening together, 139 rows at 1.0-1.4 ppm MAD becoming 72 rows at
+2.0-2.3, with the medians near zero either way.
+
+The reading is that on a spectrum whose real accuracy is 5-15 ppm, an
+unbounded grid can nearly always find *some* formula within a ppm, so a low
+MAD there measures the density of the grid rather than the quality of the
+answer. Set C is the proof: it showed the same "MAD got worse" pattern, and
+once the charge bug behind it was fixed the bounded grid's MAD came out seven
+times *better* than the wide grid's. What the TOF sets show alongside the wider
+spread is their nitrogen-heavy share going from 22-38% to zero - the rows the
+grid removed are the implausible ones. Their gate stays the intrinsic metrics
+until step 2.1 gives Stage B an instrument-scaled fit, which is also what would
+let the window widen beyond 10 ppm; it was tried at 20 here and made all three
+sets worse, so it stays at 10.
 
 Unchanged by this step, as designed: G4 (no reagent role yet, step 1.4), G5
 (the 300-peak cap stands until step 1.6), G6 (satellite claiming is step 1.5).
