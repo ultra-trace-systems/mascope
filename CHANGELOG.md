@@ -13,9 +13,14 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
   hypothesis split two ways rather than two candidates: they sit at one mass,
   predict one isotope envelope and score identically, so no spectrum can
   separate them. They are now collapsed into one family, scored once, and
-  ranked by policy - the reading whose mechanism carries the mass wins, because
-  that is the chemistry a chemical-ionization source runs, and reading the
-  reagent into the analyte's own formula invents a neutral nobody sampled. The
+  ranked by policy. First the neutral has to be a molecule: a family's members
+  differ by a fragment like HCO3, so their neutrals differ by half a DBE unit
+  and exactly one of the two is closed-shell, and the molecule is by far the
+  likelier analyte. Then the reading whose mechanism carries the mass wins,
+  because that is the chemistry a chemical-ionization source runs, and reading
+  the reagent into the analyte's own formula invents a neutral nobody sampled.
+  Neither key is a filter: where a radical is the only reading of an ion it is
+  still committed, which is what a nitrate source measuring RO2 requires. The
   displaced readings are kept on the committed row as alternatives flagged
   `same_ion`, carrying the winner's own fit and mass error because the ion is
   the same one, so the ledger records that the split was a choice and says what
