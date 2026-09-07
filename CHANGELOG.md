@@ -6,6 +6,20 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
 
 ### Fixed
 
+- **A labelled reagent's own atom no longer breaks the untargeted search.**
+  Keeping the isotope label on a mechanism like `+^NO3-` put the reagent's
+  `^N` into the ion formulas the finder builds, and pyteomics - which every
+  element-counting helper hands a formula to - cannot parse the caret symbol
+  at all, so a 15N-nitrate sample failed its run outright on the first
+  isotopologue. `to_pyteomics` now converts the caret form as well as the
+  bracket-first one, and the ion formula is rebuilt in the notation it arrived
+  in rather than pyteomics', so an isotopologue of a labelled ion carries both
+  labels (`[13C]C14H13O10^N-`). Two other callers that would have raised the
+  same way - the candidate sort key and the isotope-label extraction - are
+  fixed by the same change.
+
+### Fixed
+
 - **Deprotonated candidates are scored at the anion mass, and a labelled
   reagent adduct keeps its label in the untargeted search.** The composition
   finder read the trailing sign of a mechanism notation as the ion's charge,
