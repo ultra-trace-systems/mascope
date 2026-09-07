@@ -51,9 +51,16 @@ RATIO_DBE_TO_C = "DBE/C"
 
 #: The untargeted stage's m/z window per instrument class, in ppm. An Orbitrap
 #: assigns at 0.2-0.3 ppm and a 10 ppm window there is nothing but candidate
-#: space; a TOF at 5-15 ppm needs the room. Keyed by
-#: ``mascope_file.name.get_instrument_type`` values.
-INSTRUMENT_MZ_PRECISION_PPM: dict[str, float] = {"orbi": 3.0, "tof": 20.0}
+#: space. Keyed by ``mascope_file.name.get_instrument_type`` values.
+#:
+#: A TOF keeps the historical 10 ppm rather than the wider window its raw
+#: accuracy suggests. Measured on the gate's three TOF sets, 20 ppm made the
+#: committed mass error worse on all three (MAD 1.56 to 2.22, 0.94 to 1.81,
+#: 0.73 to 1.19 ppm) and bought nothing: the multi-scheme TOF spreads 0.7-1.0
+#: ppm, so 20 ppm is twenty sigma there and admits fits that are only noise.
+#: Widening it needs the instrument-scaled fit of step 2.1 behind it, which is
+#: what would let a wide window be scored rather than merely searched.
+INSTRUMENT_MZ_PRECISION_PPM: dict[str, float] = {"orbi": 3.0, "tof": 10.0}
 
 #: The window an unrecognised instrument class falls back to.
 DEFAULT_MZ_PRECISION_PPM = 10.0
@@ -401,6 +408,11 @@ NO3 = ReagentProfile(
     polarity="-",
     element_ranges="C0-40 H0-60 N0-3 O0-25 S0-2",
     detection=("+NO3-",),
+    # Carbonate, the channel the nitrate sets need most: the reference engine
+    # reads 145 and 212 main peaks through it on those sets, and the mode does
+    # not offer it, so every one of them can only be read here as some heavier
+    # neutral through another channel.
+    secondary_adducts=("+CO3-",),
     default_context=AMBIENT_AIR.name,
     aliases=("no3", "nitrate", "nitrate-cims"),
 )
@@ -411,6 +423,9 @@ NO3_15N = ReagentProfile(
     polarity="-",
     element_ranges="C0-40 H0-60 N0-3 O0-25 S0-2",
     detection=("+^NO3-",),
+    # Carbonate carries no reagent nitrogen, so it is the same channel here as
+    # on the unlabelled profile.
+    secondary_adducts=("+CO3-",),
     default_context=AMBIENT_AIR.name,
     label_isotope="^N",
     label_purity=0.98,
