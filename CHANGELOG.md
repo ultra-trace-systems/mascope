@@ -4,6 +4,35 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
 
 ## [Unreleased]
 
+### Added
+
+- **The untargeted stage searches the adduct channels the source is actually
+  running, and only those.** A reagent profile now carries the secondary
+  channels its chemistry can produce - ammonium for the urea and ESI presets,
+  carbonate and dibromide for bromide, carbonate for nitrate, sodium and
+  potassium in the ESI presets only - and each is switched on per sample by its
+  own fingerprint: the carrier's cluster ions matched against that spectrum
+  above an intensity floor. A channel the source does not show is not searched
+  however the mechanism panel is configured, which is what keeps an adduct
+  channel from absorbing unexplained mass; on the measured spectra the ammonium
+  cluster is present and sodium's is not. A channel the spectrum shows but the
+  deployment has no mechanism row for is reported instead, since only that one
+  is worth fixing by configuration. An opportunistic channel is additive: it
+  takes peaks the declared chemistry leaves unexplained and never displaces a
+  reading a declared mechanism won, and a winner on one is capped at
+  `candidate` unless a confirmed isotopologue or the same neutral on a declared
+  channel corroborates it. The run records every channel considered, whether it
+  was found, on which cluster ion, how far off its mass and at what fraction of
+  the base peak. A channel whose probes all lie outside the acquisition's own
+  mass range is recorded as unobservable rather than absent - the spectrum was
+  never asked - and each channel declares what to do then; the nitrate profiles
+  default their carbonate channel on, because that source makes no carbonate
+  carrier above m/z 126 and an acquisition starting higher can never show it.
+  Carbonate's probes include its clusters with the reagent's own acid, built
+  from the profile's reagent formula so a labelled reagent's label follows into
+  them, which brings the channel within reach of a window starting at m/z 120.
+  Step 1.2 of `docs/dev/assignment_quality_plan.md`.
+
 ### Fixed
 
 - **A labelled reagent's own atom no longer breaks the untargeted search.**
