@@ -15,6 +15,7 @@ from mascope_tools.composition.exceptions import (
     CompositionFinderWarning,
 )
 from mascope_tools.composition.heuristic_filter import (
+    SAME_ION_ALTERNATIVES,
     apply_heuristic_rules,
     match_isotopic_pattern,
 )
@@ -86,6 +87,11 @@ def assign_compositions(
         those few, with the pattern scored against the whole spectrum.
     :type targets: Sequence[float], optional
     :return: A DataFrame with assigned compositions and related information.
+        An M0 row whose ion could also be read as a different neutral/adduct
+        pair carries those readings under ``same_ion_alternatives``: the
+        composition, ion and mechanism of each, the same peak explained the
+        same well by a different split. The column is absent when no peak had
+        such a family, and null on the rows that did not.
     :rtype: tuple[pd.DataFrame, dict[float, list[str]]]
     """
     # Convert peaks to Polars DataFrame
@@ -335,6 +341,12 @@ def process_isotopes(
             if iso_mz in assigned_mzs:
                 continue
             iso_result = main_candidate.copy()
+            # The same-ion family is a statement about how the ION was read, and
+            # the M0 row is where that reading is committed; a satellite is
+            # owned by it. Restating the family on every child would store the
+            # same ambiguity once per isotopologue and invite an inspector to
+            # resolve it in a place that cannot act on it.
+            iso_result.pop(SAME_ION_ALTERNATIVES, None)
             iso_result["mz"] = iso_mz
             iso_result["observed_mass"] = iso_mz
             iso_result["isotope_label"] = isotope_labels[idx]
