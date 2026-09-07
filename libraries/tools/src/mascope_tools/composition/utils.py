@@ -11,18 +11,71 @@ from mascope_tools.composition.models import (
 )
 
 
-def to_pyteomics(formula: str) -> str:
-    """Convert bracket-first isotope notation to Pyteomics element-first.
-    e.g. '[15N]O3' -> 'N[15]O3'
-    """
-    return re.sub(r"\[(\d+)([A-Z][a-z]?)\]", r"\2[\1]", formula)
-
-
 # Caret-prefixed heavy isotopes used for labelled reagents, e.g. '^N' = 15N (the
 # 15N-labelled nitrate reagent '+^NO3-'). pyteomics masses isotopes via 'N[15]'
 # notation and cannot mass the bare '^N' symbol, so map them for mass computation.
 # Derived from the single custom-element registry (custom_elements.py).
 CARET_ISOTOPES = {sym: ce.pyteomics_isotope for sym, ce in CUSTOM_ELEMENTS.items()}
+
+#: The inverse: the caret symbol a pyteomics isotope token stands for. Used to
+#: put a formula back into the notation the rest of the system writes, so a
+#: round trip through pyteomics does not leave 'N[15]' where '^N' went in.
+PYTEOMICS_CARET_ISOTOPES = {token: sym for sym, token in CARET_ISOTOPES.items()}
+
+_BRACKET_ISOTOPE = re.compile(r"\[(\d+)([A-Z][a-z]?)\]")
+_CARET_ISOTOPE = re.compile(r"\^([A-Z][a-z]?)")
+
+
+def to_pyteomics(formula: str) -> str:
+    """Convert this codebase's isotope notations to Pyteomics element-first.
+
+    Two notations reach here and pyteomics parses neither: the bracket-first
+    form of an ordinary isotope (``'[15N]O3'``), which it merely spells
+    differently, and the caret form of a labelled-reagent custom element
+    (``'^NO3'``), which it rejects outright. The second is why a formula built
+    from a labelled adduct has to pass through here before any pyteomics call.
+
+    A caret symbol with no custom element behind it is left alone, so pyteomics
+    raises on it rather than this function inventing a mass for it.
+
+    Examples
+    --------
+    >>> to_pyteomics("[15N]O3")
+    'N[15]O3'
+    >>> to_pyteomics("C15H13O10^N")
+    'C15H13O10N[15]'
+    >>> to_pyteomics("C6H12O6")
+    'C6H12O6'
+
+    :param formula: Formula in bracket-first and/or caret notation.
+    :return: The same formula in the notation pyteomics parses.
+    """
+    formula = _BRACKET_ISOTOPE.sub(r"\2[\1]", formula)
+    return _CARET_ISOTOPE.sub(
+        lambda match: CARET_ISOTOPES.get(f"^{match.group(1)}", match.group(0)),
+        formula,
+    )
+
+
+def from_pyteomics_symbol(symbol: str) -> str:
+    """The spelling this codebase writes for a pyteomics element symbol.
+
+    Only the labelled-reagent tokens move: ``'N[15]'`` is written ``'^N'``
+    everywhere outside a pyteomics call. An ordinary isotope token is left as
+    pyteomics spells it, which is what the formulas built from it already
+    carry.
+
+    Examples
+    --------
+    >>> from_pyteomics_symbol("N[15]")
+    '^N'
+    >>> from_pyteomics_symbol("C")
+    'C'
+
+    :param symbol: A pyteomics element symbol.
+    :return: The symbol as this codebase writes it.
+    """
+    return PYTEOMICS_CARET_ISOTOPES.get(symbol, symbol)
 
 
 def composition_mass(composition: Composition) -> float:

@@ -12,6 +12,7 @@ step PRs land on the epic and are named here as they merge.
 | 0 - gate, epic branch, design commit | #2077 | done: testbed, comparison tool, baselines A-F, epic branch |
 | 1.1 - assignment profiles (library presets, resolution, stamping) | - | in progress (handed over 2026-09-07) |
 | 1.1 fix - finder: deprotonation charge and labelled reagent mass | #2079 | open: found by the 1.1 gate run; re-run sets C-F with 1.1 on top of it |
+| 1.1 fix - finder: the labelled reagent's atom in ion formulas | #TBD | open: the label reaching the ion string is what pyteomics could not parse |
 | 1.2 - opportunistic adduct channels | - | planned |
 | 1.3 - same-ion tie policy in the finder | - | planned |
 | 1.4 - reagent-cluster pre-pass | - | planned |
