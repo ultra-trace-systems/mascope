@@ -1,5 +1,5 @@
 <script setup>
-import { ref, reactive, computed, watch, watchEffect, onMounted } from 'vue'
+import { ref, computed, watch, watchEffect, onMounted } from 'vue'
 import { watchDebounced } from '@vueuse/core'
 
 import FloatLabel from 'primevue/floatlabel'
@@ -17,6 +17,7 @@ import { BaseTierTag, BaseMatchTag } from '@/lib/base'
 import { PopoverTargetCompoundAdd } from '@/lib/dialogs'
 import { num } from '@/lib/formatters'
 import { peakAssignmentEnabled } from '@/lib/features'
+import { isFormulaRange, usePeakAssignParams } from '@/lib/peakAssignParams'
 
 import { usePreview } from './preview.js'
 import { canCurateHit, curationBodyForHit, hitKey } from './searchHit.js'
@@ -112,34 +113,19 @@ const curationHelp = {
   doc: app.ui.help.docUrl('how-it-works/peak-assignment/#assigning-a-peak-yourself')
 }
 
-const PARAMS_STORAGE_KEY = 'mascope.peakAssign.params'
+// The search parameters are the shared ones. m/z precision and formula range
+// mean the same thing here and in an assignment run's untargeted stage - the
+// backend derives both from one pair of constants - so this pane binds the same
+// persisted record the launcher dialogs bind, instead of keeping its own two
+// values under its own storage key. Tuning them against one peak here is what
+// the next run launches with, and a value set in a launcher is what this pane
+// searches with. The store also carries the search debounce and the bounds,
+// which used to be a second /params fetch from this component.
+const store = usePeakAssignParams()
+const params = store.params
 
-function loadStoredParams() {
-  try {
-    const stored = localStorage.getItem(PARAMS_STORAGE_KEY)
-    if (stored) return JSON.parse(stored)
-  } catch {}
-  return null
-}
-
-function saveParams(mzPrecision, formulaRange) {
-  try {
-    localStorage.setItem(PARAMS_STORAGE_KEY, JSON.stringify({ mzPrecision, formulaRange }))
-  } catch {}
-}
-
-// Fallback debounce for the search, used until /params answers. watchDebounced
-// evaluates the delay before the callback's own guards run -- including on the
-// immediate pass during setup, when chemConfig is still null.
-const DEFAULT_DEBOUNCE_DELAY_MS = 800
-
-const chemConfig = ref(null)
 const ionMechs = ref([])
-const params = reactive({
-  mzPrecision: null,
-  formulaRange: null
-})
-const formulaRangeModel = ref('')
+const formulaRangeModel = ref(params.formula_ranges ?? '')
 const results = ref([])
 // Which peak the rows currently in `results` were found for. Kept beside the
 // rows themselves and updated only where they are, because the two must never
@@ -151,40 +137,26 @@ const displayedMatches = ref(0)
 const loading = ref(false)
 const lastRequestParams = ref(null)
 
-// Regex pattern for formula range validation: "C0-100 H0-100 Cl0-10"
-const ELEMENT_PATTERN = '(?:[A-Z][a-z]?|\\^[A-Z][a-z]?|\\[\\d*[A-Z][a-z]?\\])'
-const RANGE_PATTERN = '\\d+-\\d+'
-const FORMULA_RANGE_PATTERN = new RegExp(
-  `^(${ELEMENT_PATTERN}${RANGE_PATTERN})(\\s+${ELEMENT_PATTERN}${RANGE_PATTERN})*$`
+// The range validates against the shared rule rather than a copy of it: the
+// launcher dialog binds the same field, so a string one surface would reject
+// must not be able to arrive from the other.
+const isFormulaRangeValid = computed(
+  () => !formulaRangeModel.value || isFormulaRange(formulaRangeModel.value)
 )
 
-const isFormulaRangeValid = computed(() => {
-  if (!formulaRangeModel.value) return true
-  return FORMULA_RANGE_PATTERN.test(formulaRangeModel.value.trim())
-})
-
-onMounted(() => {
-  api.http
-    .get('/params', { type: 'read_params' })
-    .then(({ data }) => {
-      chemConfig.value = data?.data?.params?.cheminfo_config
-      if (chemConfig.value) {
-        const stored = loadStoredParams()
-        params.mzPrecision = stored?.mzPrecision ?? chemConfig.value.DEFAULT_MZ_PRECISION
-        params.formulaRange = stored?.formulaRange ?? chemConfig.value.DEFAULT_FORMULA_RANGE
-        formulaRangeModel.value = params.formulaRange
-      }
-    })
-    .catch((err) => {
-      console.error('Error fetching params:', err)
-    })
-})
+onMounted(() => store.ensureLoaded())
 
 const updateFormulaRange = () => {
-  if (isFormulaRangeValid.value) {
-    params.formulaRange = formulaRangeModel.value.trim()
+  if (isFormulaRangeValid.value && formulaRangeModel.value) {
+    params.formula_ranges = formulaRangeModel.value.trim()
   }
 }
+
+// The reset control clears exactly the two fields this pane shows. The record
+// is shared, so resetting everything from here would silently discard a peak
+// ceiling or an alternatives count set in a launcher dialog - fields the user
+// cannot see from this pane and would have no reason to expect it to touch.
+const RESETTABLE = ['mz_precision_ppm', 'formula_ranges']
 
 app.ui.notification.on('match_compositions_by_mz', (payload) => {
   if (payload.status === 'error') {
@@ -220,26 +192,20 @@ app.ui.notification.on('match_compositions_by_mz', (payload) => {
   }
 })
 
+// Follow the store into the text box. This is no longer only the defaults
+// landing: the launcher dialog binds the same field and so does the reset
+// button, so the committed range can change while this pane is mounted.
 watch(
-  () => params.formulaRange,
+  () => params.formula_ranges,
   (newValue) => {
-    if (formulaRangeModel.value !== newValue) {
+    if (newValue != null && formulaRangeModel.value !== newValue) {
       formulaRangeModel.value = newValue
     }
   }
 )
 
-watch(
-  () => ({ mzPrecision: params.mzPrecision, formulaRange: params.formulaRange }),
-  ({ mzPrecision, formulaRange }) => {
-    if (mzPrecision != null && formulaRange && FORMULA_RANGE_PATTERN.test(formulaRange.trim())) {
-      saveParams(mzPrecision, formulaRange)
-    }
-  }
-)
-
 watchEffect(() => {
-  if (!chemConfig.value) return
+  if (!store.loaded) return
   if (!app.data.sample.focused) return
   const ionMode = app.data.ionization.mode.list.find(
     (im) => im.ionization_mode_id === app.data.sample.focused.ionization_mode_id
@@ -256,17 +222,17 @@ watchEffect(() => {
 // is focused and re-runs when the peak or parameters change.
 watchDebounced(
   () => {
-    if (!chemConfig.value) return {}
+    if (!store.loaded) return {}
     return {
       peakFocused: app.data.peak.focused ? app.data.peak.focused.mz : null,
       sampleId: app.data.sample.focusedId,
-      mzPrecision: params.mzPrecision,
-      formulaRange: params.formulaRange,
+      mzPrecision: params.mz_precision_ppm,
+      formulaRange: params.formula_ranges,
       ionMechanismIds: ionMechs.value.map((m) => m.ionization_mechanism_id).join(',')
     }
   },
   async (deps) => {
-    if (!chemConfig.value || !deps.peakFocused || !deps.mzPrecision || !deps.formulaRange) {
+    if (!store.loaded || !deps.peakFocused || !deps.mzPrecision || !deps.formulaRange) {
       results.value = []
       resultsPeakId.value = null
       loading.value = false
@@ -304,7 +270,7 @@ watchDebounced(
     )
   },
   {
-    debounce: computed(() => chemConfig.value?.DEBOUNCE_DELAY_MS ?? DEFAULT_DEBOUNCE_DELAY_MS),
+    debounce: computed(() => store.debounceMs),
     deep: true,
     immediate: true
   }
@@ -322,7 +288,8 @@ function getIsotopeRows(data) {
     0
   return data.children.map((record) => ({
     ...record,
-    close: (Math.abs(record.mz - app.data.peak.focused?.mz) * 1e6) / record.mz < params.mzPrecision,
+    close:
+      (Math.abs(record.mz - app.data.peak.focused?.mz) * 1e6) / record.mz < params.mz_precision_ppm,
     abundance_reference: mainIsotopeAbundance,
     intensity_reference: mainIsotopeIntensity
   }))
@@ -472,7 +439,13 @@ watch(
           `)
         "
       >
-        <InputNumber v-model="params.mzPrecision" id="mzPrecision" :min="1" :max="100" fluid />
+        <InputNumber
+          v-model="params.mz_precision_ppm"
+          id="mzPrecision"
+          :min="1"
+          :max="store.limits.max_mz_precision_ppm"
+          fluid
+        />
         <label for="mzPrecision">m/z precision</label>
       </FloatLabel>
       <FloatLabel
@@ -482,7 +455,7 @@ watch(
             <h1>Formula Range</h1>
             <p>
             Allowed element counts for candidate formulas, as space-separated
-            ranges &mdash; e.g. <code>C0-100 H0-200 [15N]0-1</code>, isotopes in
+            ranges &mdash; e.g. <code>C0-80 H0-160 [15N]0-1</code>, isotopes in
             brackets. Narrowing the ranges makes the search faster and keeps
             chemically irrelevant candidates out.
             </p>
@@ -497,7 +470,7 @@ watch(
           @blur="updateFormulaRange"
           @keydown.enter="updateFormulaRange"
           v-tooltip.bottom="{
-            value: 'Format: Element + range, e.g. C0-100 H0-200 [15N]0-1 ^N0-1',
+            value: 'Format: Element + range, e.g. C0-80 H0-160 [15N]0-1 ^N0-1',
             showDelay: 500
           }"
         />
@@ -529,6 +502,21 @@ watch(
         />
         <label for="ionmechs">Ion. Mechanisms</label>
       </FloatLabel>
+      <!-- These two persist and are shared with the assignment launchers, so
+           the way back to the shipped defaults has to be reachable from here
+           too. Disabled while both are already at their default, which makes it
+           the answer to "have I changed these?" as well as the way to undo. -->
+      <Button
+        icon="pi ph ph-arrow-counter-clockwise"
+        size="small"
+        text
+        severity="secondary"
+        class="reset-params"
+        aria-label="Reset search parameters to defaults"
+        :disabled="store.isDefault(RESETTABLE)"
+        v-tooltip.bottom="'Reset m/z precision and formula range to defaults'"
+        @click="store.reset(RESETTABLE)"
+      />
     </menu>
     <DataTable
       v-if="!loading && results.length > 0"
@@ -812,6 +800,14 @@ watch(
   flex-flow: row nowrap;
   gap: 1rem;
   width: 100%;
+}
+
+/* Sits with the fields it resets rather than stretched to their height: the bar
+   stretches its children by default, and FloatLabel wraps each input in a box
+   as tall as the row. */
+.reset-params {
+  flex: 0 0 auto;
+  align-self: center;
 }
 /* The element the curation help card is registered on. It is a hook for the
    directive and nothing else, so with its glyph gone it takes up no space -

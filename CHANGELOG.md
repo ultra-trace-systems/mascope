@@ -806,6 +806,28 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
 
 ### Changed
 
+- **The untargeted search now starts on narrower defaults, and remembers what
+  you set.** A composition search opened on 10 ppm over
+  `C0-100 H0-100 O0-100 N0-100`, which is wider than high-resolution data
+  warrants and slower than it needs to be; it now starts on 3 ppm over
+  `C0-80 H0-160 O0-50 N0-20`. The three controls that ask for these
+  parameters - the composition search pane, the per-sample "Assign peaks"
+  launcher and the batch "Search untargeted" launcher - used to disagree about
+  where a value came from: the pane restored its last two values from browser
+  storage while both launchers reset to the server defaults on every open, so
+  the same parameter had two answers depending on which control you opened,
+  and a range narrowed for a search was gone by the time you ran an assignment
+  with it. They now share one record: the shipped default until you change
+  something, your value afterwards, on every surface and across reloads. Each
+  form carries a **Reset to defaults** control, which clears exactly the
+  fields that form shows, and is disabled while they are all still at the
+  default. Only fields you actually changed are remembered, so a default
+  Mascope moves in a later release moves for everyone who never touched that
+  knob. The formula range is validated wherever it is typed, so a half-written
+  range can no longer be saved or launched with. The batch search still forces
+  the untargeted stage on - that button *is* the stage - regardless of the
+  shared switch.
+
 - **MS2 spectra are now grouped by collision energy as well as precursor.** A
   stepped-energy acquisition measures one precursor at several energies as
   separate scan events; grouping on precursor m/z alone averaged them into a

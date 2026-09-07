@@ -10,6 +10,7 @@ import BaseVerdictBadge from '@/lib/base/BaseVerdictBadge.vue'
 // The real store, not a stub: it is the whole channel between the Assign-peaks
 // button in the switch bar and the dialog this pane owns.
 import { useAssignmentLauncher } from '@/lib/panes/PaneBrowserMatch/stores'
+import { usePeakAssignParams } from '@/lib/peakAssignParams'
 import { tierRank } from '@/lib/tiers'
 
 // The per-sample launcher's job after the assign endpoint became synchronous:
@@ -131,6 +132,13 @@ vi.mock('@/lib/base', async () => ({
 }))
 
 vi.mock('@/lib/dialogs', () => ({ PeakAssignConfigForm: true }))
+
+// The pane imports the shared parameter store, which reaches for /params.
+// The launcher dialog's form is stubbed above, so nothing here fetches it;
+// the tests that care seed the store directly.
+vi.mock('@/api', () => ({
+  api: { http: { get: () => Promise.resolve({ data: { data: { params: {} } } }) } }
+}))
 // The row's verdict form has a spec of its own; here it only has to show
 // which row the cell opened it for.
 vi.mock('@/lib/panes/PaneBrowserMatch/AssignmentVerdictPopover.vue', () => ({
@@ -370,7 +378,14 @@ describe('PaneBrowserAssignment launcher', () => {
   })
   afterEach(() => vi.clearAllMocks())
 
-  it('launches with the config and reports nothing when accepted', async () => {
+  it('launches with the shared config and reports nothing when accepted', async () => {
+    // The run configuration is no longer built here: it is the shared, persisted
+    // one, so the launch posts whatever the store holds - the server defaults
+    // until the user changes something, their value afterwards.
+    const params = usePeakAssignParams()
+    params.params.run_untargeted = true
+    params.params.mz_precision_ppm = 3
+
     const wrapper = await mountPane()
     wrapper.vm.configVisible = true
     await wrapper.vm.$nextTick()
@@ -379,9 +394,31 @@ describe('PaneBrowserAssignment launcher', () => {
 
     expect(assign).toHaveBeenCalledTimes(1)
     expect(assign.mock.calls[0][0]).toBe('si-1')
-    expect(assign.mock.calls[0][1].run_untargeted).toBe(true)
+    expect(assign.mock.calls[0][1]).toEqual({ run_untargeted: true, mz_precision_ppm: 3 })
     expect(wrapper.vm.launchError).toBeNull()
     expect(wrapper.vm.configVisible).toBe(false)
+  })
+
+  it('keeps the configuration between opens rather than resetting it', async () => {
+    // It used to be wiped on every open, because the form could only fill
+    // fields that were still unset. Now it is the user's and it persists, so a
+    // value set for one run is still there for the next - the reset control in
+    // the form is the way back to the defaults.
+    const params = usePeakAssignParams()
+    const wrapper = await mountPane()
+
+    wrapper.vm.configVisible = true
+    await wrapper.vm.$nextTick()
+    params.params.max_untargeted_peaks = 42
+    wrapper.vm.configVisible = false
+    await wrapper.vm.$nextTick()
+
+    wrapper.vm.configVisible = true
+    await wrapper.vm.$nextTick()
+    expect(params.params.max_untargeted_peaks).toBe(42)
+
+    await wrapper.vm.launch()
+    expect(assign.mock.calls[0][1].max_untargeted_peaks).toBe(42)
   })
 
   it('closes the dialog and shows the reason when the sample is ineligible', async () => {

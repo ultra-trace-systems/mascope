@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { mount } from '@vue/test-utils'
 import { h, ref, Fragment } from 'vue'
+import { createPinia, setActivePinia } from 'pinia'
 
 // The write path out of the composition search: the hand button on a result row
 // commits that composition onto the focused peak's ledger row. It had no
@@ -93,9 +94,9 @@ function makeApp() {
 
 vi.mock('@/stores', () => ({ useApp: () => makeApp() }))
 
-// `/params` answers without a cheminfo_config, which leaves `chemConfig` unset:
-// the pane then never launches a search of its own, so the results under test
-// are exactly the ones the test delivered.
+// `/params` answers without a `peak_assignment` block, which leaves the shared
+// parameter store unloaded: the pane then never launches a search of its own,
+// so the results under test are exactly the ones the test delivered.
 vi.mock('@/api', () => ({
   api: {
     http: {
@@ -223,6 +224,11 @@ async function deliverResults(wrapper, peak, hits) {
 const handButtons = (wrapper) => wrapper.findAll('.dt-row button')
 
 beforeEach(() => {
+  // The pane's search parameters live in a Pinia store that persists overrides
+  // to localStorage. A fresh Pinia and a cleared store per test keep a value
+  // set in one from being the next one's starting point.
+  localStorage.clear()
+  setActivePinia(createPinia())
   helpMounted.length = 0
   helpUnmounted.length = 0
   socketHandlers = new Map()

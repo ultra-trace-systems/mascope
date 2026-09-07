@@ -1,49 +1,43 @@
 <script setup>
-import { onMounted, ref } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
 
+import Button from 'primevue/button'
 import FloatLabel from 'primevue/floatlabel'
 import InputNumber from 'primevue/inputnumber'
 import InputText from 'primevue/inputtext'
 import ToggleSwitch from 'primevue/toggleswitch'
 
-import { api } from '@/api'
 import { useApp } from '@/stores'
+import { PARAM_KEYS, isFormulaRange, usePeakAssignParams } from '@/lib/peakAssignParams'
 
 // The peak-assignment run configuration, shared by the per-sample launcher and
 // the batch launcher so both offer the same knobs and the same bounds.
 //
-// Defaults and limits come from /params rather than being duplicated here: the
-// limits are the constants PeakAssignmentConfig validates against, so an input
-// can never offer a value the API would reject. The caller owns the config
-// object (and therefore the defaults that matter to it, notably whether the
-// untargeted stage starts on), so this only fills in what it has not set.
+// Defaults, bounds and the values themselves come from the shared parameter
+// store rather than from a config object each caller owns: the limits are the
+// constants PeakAssignmentConfig validates against, so an input can never offer
+// a value the API would reject, and the values are the same ones the search
+// pane binds - set here, they are what the pane searches with next, and the
+// other way round. What the user sets persists; the reset control below puts it
+// back. A caller reads `store.params` at launch time and applies whatever it
+// decides for itself on top.
 
 const props = defineProps({
-  // The caller's reactive config object. Mutated in place rather than bound with
-  // v-model: it is already reactive, and the form only ever sets its fields, so
-  // a two-way binding on the object itself would add nothing but a compiler
-  // warning about reassigning a const.
-  config: {
-    type: Object,
-    required: true
-  },
-  // Fields the caller has set deliberately and this form must not overwrite
-  // when the server defaults arrive.
-  pinned: {
-    type: Array,
-    default: () => []
-  },
   // Fields the caller has decided for the user and does not show: a launcher
   // that IS the untargeted stage pins `run_untargeted` on and hides its switch.
+  // A hidden field is never bound, so it is never persisted from here and the
+  // reset control below leaves it alone.
   hidden: {
     type: Array,
     default: () => []
   }
 })
 
-const config = props.config
-
 const app = useApp()
+const store = usePeakAssignParams()
+const params = store.params
+
+onMounted(() => store.ensureLoaded())
 
 // Help cards in this form live on the launcher dialogs' shared help layer:
 // both hosts call app.ui.help.set('dialog_peak_assign') while their dialog is
@@ -52,35 +46,31 @@ const layer = 'dialog_peak_assign'
 const vHelpLayer = app.ui.help.directive(layer)
 const stagesDoc = app.ui.help.docUrl('how-it-works/peak-assignment/#the-two-stages')
 
-// Generous fallbacks used only until /params answers; replaced on mount.
-const limits = ref({
-  max_untargeted_peaks_ceiling: 5000,
-  max_mz_precision_ppm: 100,
-  max_alternatives_ceiling: 50
-})
+// Reset clears exactly the fields this form shows. A hidden field was never the
+// user's to set here, so it is not this control's to clear either.
+const resettable = computed(() => PARAM_KEYS.filter((key) => !props.hidden.includes(key)))
+const atDefaults = computed(() => store.isDefault(resettable.value))
 
-onMounted(() => {
-  api.http
-    .get('/params', { type: 'read_params' })
-    .then(({ data }) => {
-      const params = data?.data?.params
-      if (params?.peak_assignment_limits) limits.value = params.peak_assignment_limits
-      const defaults = params?.peak_assignment
-      if (!defaults) return
-      for (const [key, value] of Object.entries(defaults)) {
-        // Only fill fields this form actually exposes, never a pinned one, and
-        // never clobber something the user has already touched.
-        if (!(key in config)) continue
-        if (props.pinned.includes(key)) continue
-        if (config[key] === null || config[key] === undefined) {
-          config[key] = value
-        }
-      }
-    })
-    .catch(() => {
-      // Bounds and defaults are a convenience; the API validates regardless.
-    })
-})
+// The range is committed to the store only once it parses, so a half-typed
+// range is never persisted and never reaches the pane's next search. The raw
+// text lives here meanwhile; the same two-model split the search pane uses.
+const formulaRangeModel = ref(params.formula_ranges ?? '')
+const formulaRangeValid = computed(
+  () => !formulaRangeModel.value || isFormulaRange(formulaRangeModel.value)
+)
+
+watch(
+  () => params.formula_ranges,
+  (value) => {
+    if (value != null && formulaRangeModel.value !== value) formulaRangeModel.value = value
+  }
+)
+
+function commitFormulaRange() {
+  if (formulaRangeValid.value && formulaRangeModel.value) {
+    params.formula_ranges = formulaRangeModel.value.trim()
+  }
+}
 </script>
 
 <template>
@@ -100,7 +90,7 @@ onMounted(() => {
         doc: stagesDoc
       }"
     >
-      <ToggleSwitch v-model="config.run_untargeted" inputId="run_untargeted" />
+      <ToggleSwitch v-model="params.run_untargeted" inputId="run_untargeted" />
       <label for="run_untargeted">
         Untargeted search
         <small>Search compositions for peaks the library leaves unassigned.</small>
@@ -122,11 +112,11 @@ onMounted(() => {
       "
     >
       <InputNumber
-        v-model="config.mz_precision_ppm"
+        v-model="params.mz_precision_ppm"
         inputId="mz_precision_ppm"
         :min="1"
-        :max="limits.max_mz_precision_ppm"
-        :disabled="!config.run_untargeted"
+        :max="store.limits.max_mz_precision_ppm"
+        :disabled="!params.run_untargeted"
         fluid
       />
       <label for="mz_precision_ppm">m/z precision (ppm)</label>
@@ -139,7 +129,7 @@ onMounted(() => {
           <p>
           Element-count bounds for untargeted candidate formulas, as
           space-separated ranges &mdash; e.g.
-          <code>C0-100 H0-100 O0-100 N0-100</code>, isotopes in brackets
+          <code>C0-80 H0-160 O0-50 N0-20</code>, isotopes in brackets
           (<code>[15N]0-1</code>). At most 12 element species; every added
           element multiplies the search space.
           </p>`,
@@ -148,9 +138,16 @@ onMounted(() => {
       "
     >
       <InputText
-        v-model="config.formula_ranges"
+        v-model="formulaRangeModel"
         id="formula_ranges"
-        :disabled="!config.run_untargeted"
+        :disabled="!params.run_untargeted"
+        :invalid="!formulaRangeValid"
+        @blur="commitFormulaRange"
+        @keydown.enter="commitFormulaRange"
+        v-tooltip.bottom="{
+          value: 'Format: Element + range, e.g. C0-80 H0-160 [15N]0-1 ^N0-1',
+          showDelay: 500
+        }"
         fluid
       />
       <label for="formula_ranges">Formula range</label>
@@ -170,11 +167,11 @@ onMounted(() => {
       "
     >
       <InputNumber
-        v-model="config.max_untargeted_peaks"
+        v-model="params.max_untargeted_peaks"
         inputId="max_untargeted_peaks"
         :min="1"
-        :max="limits.max_untargeted_peaks_ceiling"
-        :disabled="!config.run_untargeted"
+        :max="store.limits.max_untargeted_peaks_ceiling"
+        :disabled="!params.run_untargeted"
         fluid
       />
       <label for="max_untargeted_peaks">Max untargeted peaks</label>
@@ -194,10 +191,10 @@ onMounted(() => {
       "
     >
       <InputNumber
-        v-model="config.peak_intensity_threshold"
+        v-model="params.peak_intensity_threshold"
         inputId="peak_intensity_threshold"
         :min="0"
-        :disabled="!config.run_untargeted"
+        :disabled="!params.run_untargeted"
         fluid
       />
       <label for="peak_intensity_threshold">Peak intensity threshold</label>
@@ -221,14 +218,38 @@ onMounted(() => {
       "
     >
       <InputNumber
-        v-model="config.max_alternatives"
+        v-model="params.max_alternatives"
         inputId="max_alternatives"
         :min="0"
-        :max="limits.max_alternatives_ceiling"
+        :max="store.limits.max_alternatives_ceiling"
         fluid
       />
       <label for="max_alternatives">Max alternatives kept</label>
     </FloatLabel>
+    <!-- These settings persist, so the way back to the shipped defaults has to
+         be visible: without it a range narrowed once would quietly shape every
+         later run. Disabled while nothing is overridden, which also makes the
+         control double as the answer to "am I on the defaults?". -->
+    <div class="reset-row">
+      <Button
+        label="Reset to defaults"
+        icon="pi ph ph-arrow-counter-clockwise"
+        size="small"
+        text
+        severity="secondary"
+        :disabled="atDefaults"
+        @click="store.reset(resettable)"
+        v-help-layer.right="{
+          message: `
+            <h1>Reset to Defaults</h1>
+            <p>
+            These settings are remembered between runs and shared with the
+            composition search. This puts every field above back to the value
+            Mascope ships, and stops remembering yours.
+            </p>`
+        }"
+      />
+    </div>
   </div>
 </template>
 
@@ -242,5 +263,14 @@ onMounted(() => {
   display: flex;
   align-items: flex-start;
   gap: 0.75rem;
+}
+
+/* Trails the fields it acts on rather than sharing the dialog footer: the
+   footer is where the run is launched from, and a destructive-ish reset beside
+   the primary action is a misclick waiting to happen. */
+.reset-row {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: -0.5rem;
 }
 </style>

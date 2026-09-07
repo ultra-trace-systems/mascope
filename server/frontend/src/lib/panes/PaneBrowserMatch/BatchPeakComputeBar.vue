@@ -1,9 +1,10 @@
 <script setup>
-import { ref, reactive, watch } from 'vue'
+import { ref, watch } from 'vue'
 import Button from 'primevue/button'
 import Dialog from 'primevue/dialog'
 
 import { PeakAssignConfigForm } from '@/lib/dialogs'
+import { usePeakAssignParams } from '@/lib/peakAssignParams'
 import { useApp } from '@/stores'
 
 import BatchPeakRunSelect from './BatchPeakRunSelect.vue'
@@ -28,33 +29,23 @@ const compute = useBatchPeakCompute()
 
 // The search's parameters dialog: the untargeted stage's own settings (m/z
 // precision, formula ranges, the peak ceiling, the intensity threshold, the
-// alternatives kept), on the same form the per-sample launcher uses - with
-// the stage itself pinned on and its switch hidden, since this button IS the
-// untargeted stage. Reset on every open, as the per-sample launcher does, so
-// a value typed for one search never carries silently into the next.
+// alternatives kept), on the same form the per-sample launcher uses - with the
+// stage's own switch hidden, since this button IS the untargeted stage.
+//
+// The values come from the shared parameter store, so what the user set in the
+// per-sample launcher or the composition search pane is what this dialog opens
+// on, and what they set here persists in turn. `run_untargeted` is the one
+// field that does not: it is hidden here, so the form never binds it and this
+// dialog can neither read nor write the user's setting for it - the launch
+// forces it on instead.
 const searchVisible = ref(false)
-function initialSearchConfig() {
-  return {
-    run_untargeted: true,
-    mz_precision_ppm: null,
-    formula_ranges: null,
-    max_untargeted_peaks: null,
-    peak_intensity_threshold: null,
-    max_alternatives: null
-  }
-}
-const searchConfig = reactive(initialSearchConfig())
+const searchParams = usePeakAssignParams()
 watch(searchVisible, (open) => {
-  if (open) Object.assign(searchConfig, initialSearchConfig())
   // The form's help cards live on the launcher dialogs' shared layer.
   app.ui.help.set(open ? 'dialog_peak_assign' : null)
 })
 async function launchSearch() {
-  // Drop anything still unset so the backend default applies rather than a
-  // null overriding it.
-  const payload = Object.fromEntries(
-    Object.entries(searchConfig).filter(([, value]) => value !== null && value !== '')
-  )
+  const payload = searchParams.payload({ run_untargeted: true })
   searchVisible.value = false
   await compute.searchUntargeted(payload)
 }
@@ -124,11 +115,7 @@ async function launchSearch() {
       header="Search untargeted"
       :style="{ width: '26rem' }"
     >
-      <PeakAssignConfigForm
-        :config="searchConfig"
-        :pinned="['run_untargeted']"
-        :hidden="['run_untargeted']"
-      />
+      <PeakAssignConfigForm :hidden="['run_untargeted']" />
       <template #footer>
         <Button label="Cancel" text severity="secondary" @click="searchVisible = false" />
         <Button

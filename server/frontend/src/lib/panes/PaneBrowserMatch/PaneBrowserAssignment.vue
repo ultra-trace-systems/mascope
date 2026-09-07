@@ -19,6 +19,7 @@ import {
   BaseVerdictBadge
 } from '@/lib/base'
 import { PeakAssignConfigForm } from '@/lib/dialogs'
+import { usePeakAssignParams } from '@/lib/peakAssignParams'
 import { num } from '@/lib/formatters'
 import { formatIsotopeFormula } from '@/lib/chem'
 import {
@@ -138,22 +139,13 @@ onScopeDispose(() => {
   launcher.configVisible = false
 })
 const submitting = ref(false)
-// A per-sample run is cheap and the user is looking at one spectrum, so the
-// untargeted stage starts on here - unlike a batch, where cost scales with the
-// number of samples. The rest is left unset for PeakAssignConfigForm to fill
-// from the server defaults.
-function initialConfig() {
-  return {
-    run_untargeted: true,
-    mz_precision_ppm: null,
-    formula_ranges: null,
-    max_untargeted_peaks: null,
-    peak_intensity_threshold: null,
-    max_alternatives: null
-  }
-}
-
-const config = reactive(initialConfig())
+// The run configuration lives in the shared parameter store, not here: the same
+// values back the batch launcher and the composition search pane, and they
+// persist, so what the user set last time is what this dialog opens on. The
+// untargeted stage still starts on for a per-sample run - that is the server
+// default and a per-sample run is cheap - but it is now a switch the user can
+// leave off, rather than one forced back on at every open.
+const assignParams = usePeakAssignParams()
 
 // Why the last launch produced no run. The endpoint decides synchronously, so a
 // sample already being assigned or one that cannot usefully be assigned comes
@@ -169,16 +161,12 @@ watch(
   () => (launchError.value = null)
 )
 
-// Reset each time the dialog opens, the same way the batch launcher does: the
-// form only fills fields that are still unset, so without this a value typed
-// for one sample would silently carry into the next run. Also scope help mode
-// to the dialog's cards while it is open (the config form registers its cards
-// on this layer).
+// The configuration deliberately carries between opens now - it is the user's,
+// held in the store and persisted - so only the stale refusal is cleared here.
+// Also scope help mode to the dialog's cards while it is open (the config form
+// registers its cards on this layer).
 watch(configVisible, (open) => {
-  if (open) {
-    Object.assign(config, initialConfig())
-    launchError.value = null
-  }
+  if (open) launchError.value = null
   app.ui.help.set(open ? 'dialog_peak_assign' : null)
 })
 
@@ -187,12 +175,7 @@ async function launch() {
   if (!sampleItemId) return
   submitting.value = true
   try {
-    // Drop anything still unset so the backend default applies rather than a
-    // null overriding it.
-    const payload = Object.fromEntries(
-      Object.entries(config).filter(([, value]) => value !== null && value !== '')
-    )
-    await runs.value.assign(sampleItemId, payload)
+    await runs.value.assign(sampleItemId, assignParams.payload())
     launchError.value = null
   } catch (error) {
     // A refusal is an answer, not a crash: the request was understood and
@@ -1005,7 +988,7 @@ const breadcrumb = computed(() => {
     </div>
 
     <Dialog v-model:visible="configVisible" modal header="Assign peaks" :style="{ width: '26rem' }">
-      <PeakAssignConfigForm :config="config" :pinned="['run_untargeted']" />
+      <PeakAssignConfigForm />
       <template #footer>
         <Button label="Cancel" text severity="secondary" @click="configVisible = false" />
         <Button label="Assign" icon="pi ph ph-magic-wand" :loading="submitting" @click="launch" />

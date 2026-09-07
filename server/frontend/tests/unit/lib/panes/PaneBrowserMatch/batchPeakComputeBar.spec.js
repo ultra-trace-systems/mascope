@@ -3,6 +3,8 @@ import { mount } from '@vue/test-utils'
 import { reactive } from 'vue'
 import { createPinia, setActivePinia } from 'pinia'
 
+import { usePeakAssignParams } from '@/lib/peakAssignParams'
+
 // The button that builds the batch peaks launches a background task, so the two
 // things it must get right are both about time: it may not offer an action that
 // cannot run, and it may not report "done" when all it has is an acknowledgement
@@ -12,7 +14,16 @@ import { createPinia, setActivePinia } from 'pinia'
 
 const post = vi.fn()
 
-vi.mock('@/api', () => ({ api: { http: { post: (...args) => post(...args) } } }))
+vi.mock('@/api', () => ({
+  api: {
+    http: {
+      post: (...args) => post(...args),
+      // The shared parameter store fetches the defaults; the bar itself
+      // never calls this, but the store it imports would.
+      get: () => Promise.resolve({ data: { data: { params: {} } } })
+    }
+  }
+}))
 
 let app
 // Callbacks the store registered through app.ui.notification.on, by type.
@@ -28,7 +39,7 @@ vi.mock('@/lib/panes/PaneBrowserMatch/BatchPeakRunSelect.vue', () => ({
 }))
 vi.mock('@/lib/dialogs', () => ({
   PeakAssignConfigForm: {
-    props: ['config', 'pinned', 'hidden'],
+    props: ['hidden'],
     template: '<div class="config-form" />'
   }
 }))
@@ -93,6 +104,7 @@ function mountBar(options = {}) {
   // The app facade first: the store reads it while it is being created, and the
   // component creates the store on mount.
   app = makeApp(options)
+  localStorage.clear()
   setActivePinia(createPinia())
   wrapper = mount(BatchPeakComputeBar, {
     global: { stubs: GLOBAL_STUBS, directives: { tooltip: {}, help: {} } }
@@ -358,9 +370,14 @@ describe('BatchPeakComputeBar untargeted search', () => {
     const dialog = wrapper.find('.search-dialog')
     expect(dialog.exists()).toBe(true)
     expect(dialog.find('.config-form').exists()).toBe(true)
-    // The stage is pinned on and its switch hidden: this button is the stage.
-    expect(wrapper.vm.searchConfig.run_untargeted).toBe(true)
-    wrapper.vm.searchConfig.mz_precision_ppm = 2
+    // The parameters are the shared ones, so a value set anywhere - here, the
+    // per-sample launcher, the composition search pane - is what this launches
+    // with. `run_untargeted` is the exception: the switch is hidden here
+    // because this button IS the untargeted stage, so the launch forces it on
+    // even when the shared switch has been turned off elsewhere.
+    const params = usePeakAssignParams()
+    params.params.mz_precision_ppm = 2
+    params.params.run_untargeted = false
     const launch = dialog.findAll('.compute-button').find((b) => b.text() === 'Search')
     await launch.trigger('click')
     await Promise.resolve()
