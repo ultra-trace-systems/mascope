@@ -6,6 +6,17 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
 
 ### Added
 
+- **Two peak-assignment engines can be compared peak by peak on the same
+  samples.** `tooling/assignment_compare/compare_runs.py` reads, per sample,
+  the latest completed run of each engine through the SDK - the in-app run
+  and one published through `runs/import` - joins the two ledgers on
+  `sample_peak_id` and classifies every peak: the same formula, the same ion
+  under another neutral/adduct split, a different formula, or committed by
+  one engine only. Its summary carries each engine's tiers, the share of its
+  assigned rows the other engine does not confirm, mass-error statistics, a
+  chemistry sanity check on the committed formulas and agreement by peak
+  intensity, as JSON and as Markdown tables.
+
 - **Uploads from a paired File Agent are filed under the instrument the agent
   reports, so the file names no longer have to carry it.** An agent whose
   setup named its instrument gets each upload stored under

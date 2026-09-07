@@ -1471,7 +1471,11 @@ Each step is its own PR, and each leaves the system shippable:
    to share thresholds), and this engine's `p_correct` beside the
    external one's under `provenance.engine_provenance`. This is the comparison
    the reserved-key rule exists to keep honest, and the notebook is where it is
-   demonstrated.
+   demonstrated. The comparison half exists as a script rather than a notebook:
+   `tooling/assignment_compare/compare_runs.py` takes the latest completed run
+   of two engines per sample, joins them on `sample_peak_id` and reports where
+   they agree, where they read the same ion as different neutral/adduct pairs,
+   and how that varies with peak intensity (its README lists the outputs).
 7. **`peaky publish`** - the consumer, in the peaky repository (out of this
    repo's scope; listed so the sequence has its end state).
 8. **Demo bundle seeds a completed assignment run** - unblocks the v1
