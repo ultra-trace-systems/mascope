@@ -9,8 +9,8 @@ step PRs land on the epic and are named here as they merge.
 
 | step | PR | state |
 |---|---|---|
-| 0 - gate, epic branch, design commit | - | planned |
-| 1.1 - assignment profiles (library presets, resolution, stamping) | - | planned |
+| 0 - gate, epic branch, design commit | #2077 | done: testbed, comparison tool, baselines A-E, epic branch |
+| 1.1 - assignment profiles (library presets, resolution, stamping) | - | in progress (handed over 2026-09-07) |
 | 1.2 - opportunistic adduct channels | - | planned |
 | 1.3 - same-ion tie policy in the finder | - | planned |
 | 1.4 - reagent-cluster pre-pass | - | planned |
