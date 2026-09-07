@@ -157,9 +157,15 @@ class TestInstrumentWindow:
     def test_an_orbitrap_gets_the_narrow_window(self):
         assert P.resolve_mz_precision_ppm(P.BR, "orbi") == 3.0
 
-    def test_a_tof_gets_the_wide_one(self):
-        # A TOF assigns at 5-15 ppm; a 3 ppm window would find nothing there.
-        assert P.resolve_mz_precision_ppm(P.BR, "tof") == 20.0
+    def test_a_tof_gets_the_wider_one(self):
+        # Wider than an Orbitrap's, because a 3 ppm window would find nothing
+        # on a TOF - but not wider than the engine's historical window, which
+        # the gate measured as a regression on all three TOF sets. Widening it
+        # waits for the instrument-scaled fit of step 2.1.
+        assert P.resolve_mz_precision_ppm(P.BR, "tof") == 10.0
+        assert P.resolve_mz_precision_ppm(P.BR, "tof") > P.resolve_mz_precision_ppm(
+            P.BR, "orbi"
+        )
 
     def test_an_unknown_instrument_class_falls_back(self):
         assert P.resolve_mz_precision_ppm(P.BR, None) == P.DEFAULT_MZ_PRECISION_PPM

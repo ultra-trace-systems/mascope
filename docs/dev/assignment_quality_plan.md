@@ -131,7 +131,11 @@ justify.
   config a run must reproduce today's ledger content for content (ids and
   timestamps excluded); the scoring goldens in `tooling/score_eval` do not
   move, because no step touches the fit score's arithmetic; the four CI
-  suites stay green.
+  suites stay green. "Today's" means the engine as fixed, not as shipped: the
+  deprotonation-charge fix of #2079 legitimately changes every `-H+` row's ion
+  string and mass error, so the identity comparison is against an engine
+  carrying that fix, and a guard written before it is re-pinned rather than
+  defended.
 - **Tests.** Pure logic lands in `mascope_tools` with tests in
   `libraries/tools/tests`; engine logic in `server/backend/tests/unit/api/peak_assignments`
   and the integration suite there; frontend in Vitest. Backend suites run on
