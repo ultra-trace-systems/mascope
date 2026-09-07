@@ -401,6 +401,31 @@ def test_auto_refuses_to_move_a_prerelease_pilot_backwards(auto_env):
     assert cleared
 
 
+def test_auto_still_updates_a_deployment_already_named_the_newest_release(auto_env):
+    # Equality is not "nothing to do". `_deploy_version` reports what a boot
+    # would deploy, not what is running, so a checkout moved to v1.4.0 whose
+    # containers still run the release before it reads as equal here while a
+    # real update is outstanding - exactly the drift `prod doctor` reports.
+    # Only preflight compares image digests and the applied revision, so
+    # equality must reach it.
+    auto_env.setattr(prod_main, "_deploy_version", lambda: "v1.4.0")
+    auto_env.setattr(
+        prod_main.preflight, "build_plan", lambda **k: _plan("fast-update")
+    )
+    auto_env.setattr(prod_main.auto_update, "in_window", lambda now, window: True)
+    auto_env.setattr(prod_main.auto_update, "wait_healthy", lambda c: True)
+    auto_env.setattr(prod_main.auto_update, "clear_pending", lambda p: None)
+    auto_env.setattr(prod_main, "check_data_dirs", lambda mode: None)
+    applied = []
+    auto_env.setattr(prod_main, "_run_compose", lambda args: applied.append(args))
+
+    with pytest.raises(typer.Exit) as e:
+        prod_main._auto(pull=True)
+
+    assert e.value.exit_code == au.AUTO_OK
+    assert ["up", "--detach"] in applied  # the outstanding update was applied
+
+
 def test_auto_applies_the_release_a_candidate_was_a_candidate_for(auto_env):
     # The other side of the same comparison: v1.4.0 does not supersede
     # v1.4.0-rc.1, so the pilot graduates by itself when the real release

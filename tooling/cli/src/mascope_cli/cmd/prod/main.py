@@ -855,11 +855,20 @@ def _auto(*, pull: bool) -> None:
     # Comparing against _deploy_version() covers the pin as well as the
     # checkout, since that is what a boot would deploy. `latest` is not a
     # release tag, so a plain master deployment is untouched by this.
+    #
+    # Strictly behind, not "not ahead": equality means the deployment is on the
+    # newest release by NAME, which says nothing about whether it is running
+    # it. `_deploy_version` reports what a boot would deploy, so a checkout
+    # moved to vX.Y.Z whose containers still run the release before it - the
+    # drift `prod doctor` reports - reads as equal here while a genuine update
+    # is outstanding. Only preflight can tell, because only preflight compares
+    # the image digests and the applied database revision, so equality has to
+    # fall through to it.
     current = _deploy_version()
     if (
         is_release_tag(current)
         and is_release_tag(target)
-        and release_sort_key(target) <= release_sort_key(current)
+        and release_sort_key(target) < release_sort_key(current)
     ):
         auto_update.clear_pending(mascope_path)
         message = (
