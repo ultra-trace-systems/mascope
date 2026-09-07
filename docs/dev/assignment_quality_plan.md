@@ -13,7 +13,7 @@ step PRs land on the epic and are named here as they merge.
 | 1.1 - assignment profiles (library presets, resolution, stamping) | #2078 | measured on the fixed engine: G3 met, mass-error target met on all four Orbitrap sets, C and D move furthest |
 | 1.1 fix - finder: deprotonation charge and labelled reagent mass | #2079 | merged: found by the 1.1 gate run; sets C-F re-run with 1.1 on top of it |
 | 1.1 fix - finder: the labelled reagent's atom in ion formulas | #2080 | merged: the label reaching the ion string is what pyteomics could not parse |
-| 1.2 - opportunistic adduct channels | - | planned |
+| 1.2 - opportunistic adduct channels | - | in progress (handed over 2026-09-07) |
 | 1.3 - same-ion tie policy in the finder | - | planned |
 | 1.4 - reagent-cluster pre-pass | - | planned |
 | 1.5 - satellite claim and ringing artifacts | - | planned |
