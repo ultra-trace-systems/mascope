@@ -188,6 +188,15 @@ async def update_sample_file_route(
     """
     await check_sample_file_instrument_access(sample_file_id, user, "admin")
 
+    # Before the workspace check, so a malformed name is answered as the client
+    # error it is rather than as "no permission on that workspace". Unconditional
+    # because the field is required: the guard below only skips an empty string,
+    # which is exactly a name that must not reach the column. A row whose
+    # instrument the name rules reject is not merely untidy - every later
+    # instrument sweep validates each stored name, so one such row makes
+    # acquisition-dataset creation fail for the whole deployment.
+    validate_instrument_name(sample_file.instrument)
+
     # If the instrument is being changed, also require admin on the target
     if sample_file.instrument:
         await check_instrument_workspace_access(sample_file.instrument, user, "admin")
