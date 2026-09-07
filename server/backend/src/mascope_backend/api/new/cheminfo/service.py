@@ -374,8 +374,8 @@ async def _annotate_with_reference(results: list[dict], known_only: bool) -> lis
 async def match_compositions_by_mz(
     sample_item_id: str,
     mz: float,
-    mz_precision: float = 30,
-    formula_ranges: str | None = "C0-100 H0-100 O0-100 N0-100",
+    mz_precision: float = cheminfo_config.DEFAULT_MZ_PRECISION,
+    formula_ranges: str | None = cheminfo_config.DEFAULT_FORMULA_RANGE,
     ionization_mechanism_ids: list[str] | None = None,
     match_params: BaseMatchParams | None = None,
     independent_transaction: bool = False,

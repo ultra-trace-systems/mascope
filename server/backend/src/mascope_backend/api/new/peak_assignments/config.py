@@ -236,7 +236,7 @@ class PeakAssignmentConfig(BaseModel):
         cheminfo_config.DEFAULT_FORMULA_RANGE,
         description=(
             "Element count ranges permitted in untargeted candidates, e.g. "
-            "'C0-100 H0-100 O0-100 N0-100'. Enumeration is a tree search whose "
+            "'C0-80 H0-160 O0-50 N0-20'. Enumeration is a tree search whose "
             "depth is the number of element species, so the species count is "
             "capped."
         ),

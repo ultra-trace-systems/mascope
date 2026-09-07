@@ -96,7 +96,7 @@ class TestDirectCompositionAssignment:
         # Basic test cases
         (46.00603, "CH2O2", ""),
         (62.99619, "HNO3", ""),
-        (90.03169, "C3H6O3", ""),
+        (90.03224, "C3H6O3", ""),
         (227.00313, "C3H5N3O9", ""),
         (317.15923, "C13H23N3O6", ""),
         (323.07322, "C10H15N2O10", ""),
