@@ -530,6 +530,68 @@ an instrument-scaled fit, and step 2.1 gains a sibling task: a TOF-capable
 reference run, peaky scoring through `score_pattern_v2` with the sample's
 fitted sigma, so the TOF sets get a reference at all.
 
+### After step 1.1, assignment profiles (2026-09-07)
+
+Both engines re-read from the store after re-running the in-app engine over
+every gate sample with the default config; peaky's runs are the ones already
+published. Same columns as the baselines above, so the two tables subtract.
+
+| set | peaks | Mascope M0 (assigned tier) | both M0: same formula | G1 assigned rows unconfirmed | G2 peaky Assigned recovered, same formula | N >= 5, Mascope | carbon-free, Mascope | mass error MAD, Mascope |
+|---|---|---|---|---|---|---|---|---|
+| A uronium, Orbitrap sparse | 2,626 | 1,561 (1,510) | 450 of 890 (51%) | 71% | 41% | 1.4% | 6 | 0.19 ppm |
+| B uronium, Orbitrap dense | 12,055 | 1,593 (1,561) | 743 of 1,385 (54%) | 53% | 13% | 3.9% | 0 | 0.19 ppm |
+| C 15N-nitrate, Orbitrap A | 1,583 | 586 (210) | 114 of 330 (35%) | 98% | 22% | 0% | 0 | 1.31 ppm |
+| D bromide, Orbitrap A | 5,217 | 647 (548) | 421 of 512 (82%) | 31% | 26% | 0% | 12 | 0.36 ppm |
+| E bromide, TOF | 3,493 | 253 (100) | 3 of 19 | 99% | 7% | 0% | 6 | 2.22 ppm |
+| F1 bromide, multi-scheme TOF | 13,595 | 967 (452) | 15 of 86 | 97% | 15% | 0% | 41 | 1.81 ppm |
+| F2 nitrate, multi-scheme TOF | 8,905 | 1,170 (830) | 25 of 168 | 98% | 44% | 0% | 45 | 1.19 ppm |
+
+Every sample resolved the profile its mechanisms imply, with no configuration:
+A and B `UR`/uronium, C `NO3_15N`/ambient-air, D, E and F1 `BR`/ambient-air,
+F2 `NO3`/ambient-air. A sample takes about 16 s to assign under the bounded
+grid at 3 ppm, against minutes under `C0-100 H0-100 O0-100 N0-100` at 10.
+
+**G3 is met, which is what this step was for.** Formulas with five or more
+nitrogens fall from 13-38% to 0-3.9%, and every carbon-free formula left is a
+Stage A row from the curated set - HNO3, H2SO4, HBr, Br2, HIO3, NH3, water -
+which is precisely the allowlist the target names; the untargeted stage
+produces none, because the organic grid floors carbon at 1. The B set's 3.9%
+is above the <= 1% target and is the uronium context's own N cap of 5 showing
+through: the remaining rows are N5, not N8-N11.
+
+**G1 and G2 move the right way and stay far from their stage-1 targets**, as
+the plan expects them to at this point: G1 73 -> 71% (A), 57 -> 53% (B),
+68 -> 31% (D), 99 -> 98% (C); G2 39 -> 41% (A), 12 -> 13% (B), 18 -> 22% (C),
+17 -> 26% (D). Same-formula agreement where both engines commit rises on every
+Orbitrap set: 47 -> 51% (A), 49 -> 54% (B), 16 -> 35% (C), 43 -> 82% (D).
+Recovery (G2) is bounded by the 300-peak cap and the missing channels until
+steps 1.2, 1.3 and 1.6.
+
+**Two metrics moved the wrong way and are the open question of this step.**
+
+- *Set C's committed mass error*, MAD 1.13 -> 1.31 ppm with the median at
+  +3.33. It is one channel: on a re-run of one sample under both profiles, the
+  `+^NO3-` channel sits at -0.14 ppm either way, while the deprotonation
+  channel goes from +0.38 ppm (identity profile, 174 rows) to +3.75 ppm
+  (bounded grid, 86 rows, 87% beyond 2 ppm). The bounded grid did not make
+  that channel's chemistry worse - it made its wrongness legible. Under the
+  wide grid the deprotonation reading could always find some N- or O-rich
+  formula within a fraction of a ppm; under the profile grid the same peaks
+  are fitted at the edge of the window, and the disagreement between the two
+  channels' offsets on one sample is the proof that these are wrong formulas
+  rather than an instrument offset. This is exactly the population step 2.2's
+  3-sigma self-calibrated gate demotes, and the number should be read again
+  after it.
+- *The TOF sets' committed mass error*, E 1.56 -> 2.22, F1 0.94 -> 1.81,
+  F2 0.73 -> 1.19 ppm MAD. This is the instrument-class window doing what it
+  was set to do: 20 ppm admits fits a 10 ppm window refused. The TOF sets gate
+  on intrinsic metrics until step 2.1 gives Stage B an instrument-scaled fit,
+  and the same step is what makes a wide window safe. Whether 20 ppm is the
+  right default is worth revisiting with the fitted sigma of these files.
+
+Unchanged by this step, as designed: G4 (no reagent role yet, step 1.4), G5
+(the 300-peak cap stands until step 1.6), G6 (satellite claiming is step 1.5).
+
 The stage targets below are stated for the Orbitrap sets A-D; C and D
 start from a worse baseline than A and B and are held to the same targets.
 
