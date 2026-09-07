@@ -382,10 +382,15 @@ UR = ReagentProfile(
     polarity="+",
     element_ranges="C0-40 H0-90 N0-8 O0-15 S0-2",
     detection=("+(CH4N2O)H+",),
-    # The two channels the gate set showed missing outright: 1,648 [M+NH4]+ and
-    # 317 [M+Na]+ main peaks on one Orbitrap that the engine could otherwise
-    # only read as heavier N- or Na-free neutrals.
-    secondary_adducts=("+NH4+", "+Na+"),
+    # Ammonium only. It is a real channel on this source - 1,648 [M+NH4]+ main
+    # peaks on one Orbitrap that the engine could otherwise only read as
+    # heavier N-free neutrals, the urea-NH4+ cluster present in every spectrum,
+    # four in five of the reference engine's ammonium readings corroborated by
+    # a second channel. Sodium is deliberately absent: no sodium cluster is
+    # present in these spectra, and the reference engine's [M+Na]+ readings
+    # there are mostly dim uncorroborated candidates - a channel that absorbs
+    # unexplained mass rather than one the source produces.
+    secondary_adducts=("+NH4+",),
     default_context=URONIUM.name,
     aliases=("ur", "uronium", "urea", "urea-cims"),
 )
@@ -435,6 +440,10 @@ ESI_POS = ReagentProfile(
     # itself rather than a source's selectivity. No matrix prior either - the
     # sampled matrix of a generic positive-mode run is unknown.
     element_ranges="C0-60 H0-120 N0-6 O0-25 S0-3",
+    # The alkali adducts belong here and only here: an electrospray source
+    # really does produce them from residual salt, where a CIMS source's
+    # spectra show no such cluster at all.
+    secondary_adducts=("+NH4+", "+Na+", "+K+"),
     default_context=NO_CONTEXT.name,
     aliases=("esi+", "esi-pos", "positive"),
 )
