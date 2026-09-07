@@ -4,8 +4,11 @@ import os
 
 from pydantic import AliasChoices, BaseModel, ConfigDict, Field, field_validator
 
-from mascope_backend.api.new.cheminfo.config import cheminfo_config
 from mascope_backend.runtime import runtime
+from mascope_tools.composition.profiles import (
+    get_chemistry_context,
+    get_reagent_profile,
+)
 
 
 # Bump when the assignment algorithm changes in a way that affects results.
@@ -76,6 +79,12 @@ MAX_UNTARGETED_PEAKS_CEILING = 5000
 MAX_MZ_PRECISION_PPM = 100.0
 MAX_FORMULA_RANGE_SPECIES = 12
 MAX_ALTERNATIVES_CEILING = 50
+
+# The value of `profile` / `context` that asks the engine to work the chemistry
+# out from the sample rather than being told it. Lives here, with the model that
+# validates it, so `peak_assignments/profiles.py` can import it without the
+# config importing the resolver back.
+DEFAULT_PROFILE = "auto"
 
 
 class PeakAssignmentLimits(BaseModel):
@@ -226,19 +235,50 @@ class PeakAssignmentConfig(BaseModel):
             "database stage left unassigned."
         ),
     )
-    mz_precision_ppm: float = Field(
-        cheminfo_config.DEFAULT_MZ_PRECISION,
+    # -- The chemistry the run searches under (docs/dev/assignment_quality_plan.md
+    # step 1.1). Two names, resolved against the library presets in
+    # `mascope_tools.composition.profiles` by `peak_assignments/profiles.py`; the
+    # resolved content is snapshotted onto the run, so what a run did stays
+    # readable after a preset is revised.
+    profile: str = Field(
+        DEFAULT_PROFILE,
+        description=(
+            "Reagent chemistry preset for the untargeted stage: 'auto' reads it "
+            "off the sample's ionization mechanisms, 'none' is the identity "
+            "profile (the engine's pre-profile grid and window), or a preset "
+            "name such as 'BR' or 'UR'."
+        ),
+    )
+    context: str = Field(
+        DEFAULT_PROFILE,
+        description=(
+            "Sampled-matrix preset: 'auto' takes the reagent profile's default, "
+            "'none' applies no matrix prior, or a context name such as "
+            "'ambient-air' or 'uronium'."
+        ),
+    )
+    # Both are None by default, meaning "whatever the profile resolves to". They
+    # used to carry the engine's own defaults, which is why they are optional
+    # rather than merely defaulted: a value that IS the default is
+    # indistinguishable from one a client sent deliberately, and the launcher
+    # form sends every field it shows. None is the only way for a request to say
+    # "I did not choose this".
+    mz_precision_ppm: float | None = Field(
+        None,
         gt=0.0,
         le=MAX_MZ_PRECISION_PPM,
-        description="m/z tolerance in ppm for the untargeted composition search.",
+        description=(
+            "m/z tolerance in ppm for the untargeted composition search. "
+            "Omitted, the resolved profile's instrument-class window applies."
+        ),
     )
-    formula_ranges: str = Field(
-        cheminfo_config.DEFAULT_FORMULA_RANGE,
+    formula_ranges: str | None = Field(
+        None,
         description=(
             "Element count ranges permitted in untargeted candidates, e.g. "
             "'C0-100 H0-100 O0-100 N0-100'. Enumeration is a tree search whose "
             "depth is the number of element species, so the species count is "
-            "capped."
+            "capped. Omitted, the resolved profile's grid applies."
         ),
     )
     max_untargeted_peaks: int = Field(
@@ -327,14 +367,22 @@ class PeakAssignmentConfig(BaseModel):
 
     @field_validator("formula_ranges")
     @classmethod
-    def _bound_formula_ranges(cls, value: str) -> str:
+    def _bound_formula_ranges(cls, value: str | None) -> str | None:
         """Cap the number of element species the untargeted search enumerates.
 
         ``find_compositions`` is a depth-first search whose depth is the number
         of element species, so widening the range string is the cheapest way to
         make a run combinatorially expensive. Parsing the ranges belongs to
         ``mascope_tools``; this only bounds the species count.
+
+        The presets are bounded by their own test rather than here: they are
+        library data, not a request, and a preset that outgrew the cap should
+        fail the suite rather than every run that resolves to it.
         """
+        if value is None or not value.strip():
+            # A form whose field the user cleared sends "", which means the same
+            # thing as never having set it: let the profile decide.
+            return None
         species = [token for token in value.split() if token]
         if len(species) > MAX_FORMULA_RANGE_SPECIES:
             raise ValueError(
@@ -343,3 +391,26 @@ class PeakAssignmentConfig(BaseModel):
                 "enumeration is exponential in the number of species."
             )
         return value
+
+    @field_validator("profile", "context")
+    @classmethod
+    def _known_profile_name(cls, value: str, info) -> str:
+        """Reject a profile or context name nothing would resolve.
+
+        Caught here rather than at resolution time so a typo answers 422 on the
+        request that carried it, instead of failing a run that has already been
+        created and reported to the client.
+        """
+        name = (value or "").strip()
+        if not name or name.lower() == DEFAULT_PROFILE:
+            return DEFAULT_PROFILE
+        lookup = (
+            get_reagent_profile
+            if info.field_name == "profile"
+            else get_chemistry_context
+        )
+        try:
+            lookup(name)
+        except KeyError as unknown:
+            raise ValueError(str(unknown)) from unknown
+        return name

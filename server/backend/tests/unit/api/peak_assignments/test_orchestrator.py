@@ -23,6 +23,7 @@ path rather than reaching Socket.IO.
 """
 
 from contextlib import asynccontextmanager
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pandas as pd
@@ -103,6 +104,20 @@ class _Recorder:
         ctx.__aexit__ = AsyncMock(return_value=False)
         return ctx
 
+    def recorded_configs(self) -> list:
+        """The `config` blobs written on the run, in order.
+
+        Read off the compiled statements for the same reason the calibrations
+        are: what matters is that the run row carries the resolution, not that
+        some helper was called.
+        """
+        values = []
+        for statement in self.statements:
+            params = statement.compile().params
+            if "config" in params:
+                values.append(params["config"])
+        return values
+
     def recorded_calibrations(self) -> list:
         """The `confidence_calibration` values written on the run, in order.
 
@@ -175,7 +190,16 @@ def _patches(
         "mechanisms": patch(
             f"{_MOD}.fetch_sample_mechanisms",
             new_callable=AsyncMock,
-            return_value=(["im-1"], [MagicMock()]),
+            return_value=(
+                ["im-1"],
+                [
+                    SimpleNamespace(
+                        ionization_mechanism_id="im-1",
+                        ionization_mechanism="+H+",
+                        ionization_mechanism_polarity="+",
+                    )
+                ],
+            ),
         ),
         "ionizations": patch(
             f"{_MOD}._untargeted_ionization_notations",
@@ -586,6 +610,94 @@ class TestRunFinalization:
             )
 
         assert mocks["finalize"].await_args.args[:2] == ("run-1", "failed")
+
+
+class TestResolvedProfile:
+    """The chemistry a run searched under is recorded on the run.
+
+    A run whose config says ``profile: "auto"`` records nothing about what auto
+    meant unless the resolution is snapshotted beside it, and the presets are
+    library data that will be revised. Without the snapshot two runs months
+    apart would carry identical configs and incomparable results.
+    """
+
+    @pytest.mark.asyncio
+    async def test_the_resolution_is_stamped_on_the_run(self):
+        from mascope_backend.api.new.peak_assignments.config import (
+            PeakAssignmentConfig,
+        )
+
+        peaks = _peaks_df([("p1", 181.0707, 10000.0), ("p2", 182.0741, 660.0)])
+        recorder = _Recorder()
+        _start(_patches(recorder, peaks, _stage_a_rows()))
+
+        await _run(PeakAssignmentConfig(run_untargeted=False))
+
+        configs = recorder.recorded_configs()
+        assert len(configs) == 1
+        snapshot = configs[0]["resolved_profile"]
+        # '+H+' is diagnostic of nothing, so a positive sample falls back to
+        # the generic positive preset - and says that it did.
+        assert snapshot["profile"] == "ESI_POS"
+        assert snapshot["requested_profile"] == "auto"
+        assert snapshot["element_ranges_source"] == "profile"
+        assert snapshot["mz_precision_ppm"] == 3.0  # the sample file is a .raw
+
+    @pytest.mark.asyncio
+    async def test_it_is_stamped_even_when_the_untargeted_stage_never_runs(self):
+        # A run has to say what it would have searched: the config is what a
+        # later reader compares two runs on, whether or not Stage B fired.
+        from mascope_backend.api.new.peak_assignments.config import (
+            PeakAssignmentConfig,
+        )
+
+        peaks = _peaks_df([("p1", 181.0707, 10000.0)])
+        recorder = _Recorder()
+        _start(_patches(recorder, peaks, []))
+
+        await _run(PeakAssignmentConfig(run_untargeted=False))
+
+        assert "resolved_profile" in recorder.recorded_configs()[0]
+
+    @pytest.mark.asyncio
+    async def test_the_identity_profile_searches_what_it_always_did(self):
+        from mascope_backend.api.new.peak_assignments.config import (
+            PeakAssignmentConfig,
+        )
+
+        peaks = _peaks_df([("p1", 181.0707, 10000.0)])
+        recorder = _Recorder()
+        mocks = _start(_patches(recorder, peaks, []))
+
+        await _run(PeakAssignmentConfig(profile="none"))
+
+        search_config = mocks["compositions"].call_args.args[1]
+        heuristics = mocks["compositions"].call_args.args[2]
+        assert search_config.element_count_ranges == "C0-100 H0-100 O0-100 N0-100"
+        assert search_config.mass_range_ppm == 10.0
+        assert heuristics.use_senior is True
+        assert heuristics.context_ratio_windows == {}
+
+    @pytest.mark.asyncio
+    async def test_a_named_profile_configures_the_search(self):
+        from mascope_backend.api.new.peak_assignments.config import (
+            PeakAssignmentConfig,
+        )
+        from mascope_tools.composition import profiles as presets
+
+        peaks = _peaks_df([("p1", 181.0707, 10000.0)])
+        recorder = _Recorder()
+        mocks = _start(_patches(recorder, peaks, []))
+
+        await _run(PeakAssignmentConfig(profile="BR"))
+
+        search_config = mocks["compositions"].call_args.args[1]
+        heuristics = mocks["compositions"].call_args.args[2]
+        assert search_config.element_count_ranges == presets.resolve_element_ranges(
+            presets.BR, presets.AMBIENT_AIR
+        )
+        assert search_config.mass_range_ppm == 3.0
+        assert heuristics.context_ratio_windows == (presets.AMBIENT_AIR.ratio_windows())
 
 
 class TestEligibilityGate:

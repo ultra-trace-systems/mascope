@@ -38,6 +38,29 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
 
 ### Added
 
+- **The untargeted assignment stage searches the chemistry the sample was
+  measured with, instead of one universal element box.** A run now resolves an
+  *assignment profile*: a reagent profile (bromide, uronium, nitrate,
+  15N-nitrate, iodide, or the generic ESI preset of the polarity) read off the
+  sample's ionization mechanisms, paired with a chemistry context (ambient air,
+  chamber, indoor air, headspace, combustion, water, food, uronium) that says
+  what was sampled. The pair decides the element grid the search enumerates -
+  the reagent's grid narrowed by the matrix's heteroatom caps, with carbon
+  floored at one - the m/z window (3 ppm on an Orbitrap, 20 ppm on a TOF,
+  instead of 10 ppm everywhere), and a set of Van Krevelen ratio windows that
+  gate candidates on effective counts (silicon counting as carbon, halogens as
+  hydrogen) above a three-carbon floor. That replaces
+  `C0-100 H0-100 O0-100 N0-100` at 10 ppm with a search that cannot reach the
+  nitrogen-stuffed, oxygen-lattice and carbon-free formulas which made up a
+  measured 13-17% of committed answers. The run config gains `profile` and
+  `context` (both `auto` by default, `none` for the identity profile that
+  reproduces the previous behaviour exactly), `formula_ranges` and
+  `mz_precision_ppm` become optional overrides, and the resolved chemistry is
+  snapshotted onto the run so a result stays readable after a preset is
+  revised. Presets are library data in `mascope_tools.composition.profiles`,
+  ported from the reference engine's own profiles; step 1.1 of
+  `docs/dev/assignment_quality_plan.md`.
+
 - **Two peak-assignment engines can be compared peak by peak on the same
   samples.** `tooling/assignment_compare/compare_runs.py` reads, per sample,
   the latest completed run of each engine through the SDK - the in-app run

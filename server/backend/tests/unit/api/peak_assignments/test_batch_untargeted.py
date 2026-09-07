@@ -15,6 +15,7 @@ from mascope_backend.api.new.peak_assignments.batch_untargeted import (
     search_outcome,
 )
 from mascope_backend.api.new.peak_assignments.config import PeakAssignmentConfig
+from mascope_backend.api.new.peak_assignments.profiles import resolve_profile
 
 
 def _member(anchor, sample, peak, intensity):
@@ -101,10 +102,15 @@ def test_an_isotopologue_whose_owner_is_not_a_member_stands_on_its_own():
 
 
 def test_the_search_config_is_the_orchestrators():
-    config = PeakAssignmentConfig()
-    built = search_config(config, ["H+", "Na+"])
+    # Both paths configure the finder from one resolved profile, which is what
+    # makes a batch search comparable with a per-sample run.
+    resolved = resolve_profile(
+        PeakAssignmentConfig(), ["+Br-"], instrument_type="orbi", polarity="-"
+    )
+    built = search_config(resolved, ["H+", "Na+"])
     assert built.ionizations == "H+,Na+"
-    assert built.mass_range_ppm == config.mz_precision_ppm
+    assert built.mass_range_ppm == resolved.mz_precision_ppm
+    assert built.element_count_ranges == resolved.element_ranges
     assert built.use_unsaturation is True
 
 

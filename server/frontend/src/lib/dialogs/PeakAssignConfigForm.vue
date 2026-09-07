@@ -116,6 +116,11 @@ onMounted(() => {
           must land within this window of the peak. Widening it finds more
           candidates, but slower and more ambiguous ones. The library stage is
           unaffected &mdash; it uses the sample's match parameters.
+          </p>
+          <p>
+          Left empty, the run uses the window its chemistry profile implies for
+          the instrument &mdash; an Orbitrap assigns far inside 10&nbsp;ppm, a
+          TOF needs more room.
           </p>`,
           { layer, doc: stagesDoc }
         )
@@ -127,6 +132,7 @@ onMounted(() => {
         :min="1"
         :max="limits.max_mz_precision_ppm"
         :disabled="!config.run_untargeted"
+        placeholder="From the chemistry profile"
         fluid
       />
       <label for="mz_precision_ppm">m/z precision (ppm)</label>
@@ -142,6 +148,11 @@ onMounted(() => {
           <code>C0-100 H0-100 O0-100 N0-100</code>, isotopes in brackets
           (<code>[15N]0-1</code>). At most 12 element species; every added
           element multiplies the search space.
+          </p>
+          <p>
+          Left empty, the run uses the grid its chemistry profile implies
+          &mdash; the elements the sample's reagent chemistry can actually
+          produce, which is both a narrower and a faster search.
           </p>`,
           { layer, doc: stagesDoc }
         )
@@ -151,6 +162,7 @@ onMounted(() => {
         v-model="config.formula_ranges"
         id="formula_ranges"
         :disabled="!config.run_untargeted"
+        placeholder="From the chemistry profile"
         fluid
       />
       <label for="formula_ranges">Formula range</label>
