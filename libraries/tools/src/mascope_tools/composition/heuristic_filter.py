@@ -22,6 +22,7 @@ from mascope_tools.composition.custom_elements import CUSTOM_ELEMENTS
 from mascope_tools.composition.models import HeuristicFilterConfig
 from mascope_tools.composition.utils import (
     normalize_formula_with_isotopes,
+    parse_ionization,
     to_pyteomics,
 )
 
@@ -651,16 +652,134 @@ def apply_heuristic_rules(
     return candidates_df.to_dicts(), log_messages
 
 
+# ---------------------------------------------------------------------------
+# Same-ion families.
+#
+# Two candidates that combine into the same ion formula are not two hypotheses
+# about the peak. They are one hypothesis split two ways between the analyte and
+# the mechanism: X.[M+NH4]+ and (X+NH3).[M+H]+ are the same ion, so they sit at
+# the same mass, predict the same isotope envelope and score identically. No
+# spectrum can separate them, and a ranking that appears to separate them is
+# really ranking the order the finder enumerated its mechanisms in - which is
+# how the [M+H]+ reading kept 378 of 384 such peaks.
+#
+# So the family is scored once, because the evidence belongs to the ion rather
+# than to the split, and ranked by policy: the reading whose mechanism carries
+# the most mass wins. That is the chemistry a chemical-ionization source runs -
+# a reagent attaches to an analyte - and reading the reagent into the analyte's
+# own formula invents a neutral nobody sampled. The losing readings ride along
+# on the winner. They are not weaker candidates; they are the same evidence read
+# differently, which is exactly what an analyst needs to see.
+# ---------------------------------------------------------------------------
+
+#: Key under which an elected family winner carries the readings it displaced.
+SAME_ION_ALTERNATIVES = "same_ion_alternatives"
+
+
+@lru_cache(maxsize=512)
+def mechanism_mass_contribution(notation: str | None) -> float:
+    """The signed mass an ionization mechanism contributes to the ion it makes.
+
+    Positive for an addition, negative for a subtraction - the ``ion_shift`` of
+    :func:`finder.find_compositions`, restated on the notation because a scored
+    candidate carries the notation rather than the parsed mechanism.
+
+    :param notation: A mechanism's Mascope notation (``"+NH4+"``, ``"-H+"``).
+    :return: The contribution in Da. 0.0 when the notation is missing or
+        unparseable, which ranks it below every addition and above every
+        subtraction rather than letting an unreadable mechanism decide a family.
+    """
+    if not notation:
+        return 0.0
+    try:
+        mechanism = parse_ionization(notation)
+    except Exception:
+        # Fail-open: a mechanism this module cannot read is not grounds to drop
+        # a candidate the finder already accepted, only grounds not to rank on it.
+        return 0.0
+    return mechanism.mass if mechanism.addition else -mechanism.mass
+
+
+def elect_same_ion_families(
+    candidates: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Collapse candidates that make the same ion into one ranked hypothesis.
+
+    :param candidates: Scored or unscored candidate dicts, each carrying ``ion``
+        and ``ionization_mechanism``.
+    :return: One candidate per distinct ion, the elected reading of each,
+        carrying the readings it displaced under
+        :data:`SAME_ION_ALTERNATIVES`. A family of one is returned untouched and
+        carries no such key, so the common case adds nothing to the row.
+    """
+    by_ion: dict[str, list[dict[str, Any]]] = {}
+    for candidate in candidates:
+        by_ion.setdefault(str(candidate.get("ion") or ""), []).append(candidate)
+
+    elected: list[dict[str, Any]] = []
+    for members in by_ion.values():
+        if len(members) == 1:
+            elected.append(members[0])
+            continue
+        # Most massive mechanism first; the formula only breaks the impossible
+        # case of two mechanisms of identical mass, so the order is total and
+        # never falls through to enumeration order.
+        ranked = sorted(
+            members,
+            key=lambda c: (
+                -mechanism_mass_contribution(c.get("ionization_mechanism")),
+                str(c.get("formula") or ""),
+            ),
+        )
+        winner = dict(ranked[0])
+        winner[SAME_ION_ALTERNATIVES] = [
+            {
+                "formula": member.get("formula"),
+                "ion": member.get("ion"),
+                "ionization_mechanism": member.get("ionization_mechanism"),
+                "neutral_mass": member.get("neutral_mass"),
+                "unsaturation": member.get("unsaturation"),
+            }
+            for member in ranked[1:]
+        ]
+        elected.append(winner)
+    return elected
+
+
+def _candidate_rank_key(candidate: dict[str, Any]) -> tuple:
+    """Order distinct ions by evidence, then by the data, never by row order.
+
+    Score first, closest mass next, then chemical plausibility, and the ion's
+    own name last so that two hypotheses the measurement cannot separate still
+    come back in the same order on every run and every machine.
+    """
+    error_ppm = candidate.get("composition_error_ppm")
+    return (
+        -float(candidate.get("isotopic_pattern_score") or 0.0),
+        abs(float(error_ppm)) if error_ppm is not None else float("inf"),
+        -formula_plausibility(str(candidate.get("formula") or "")),
+        str(candidate.get("formula") or ""),
+        str(candidate.get("ion") or ""),
+    )
+
+
 def match_isotopic_pattern(
     candidates: list[dict[str, Any]], peaks: pl.DataFrame
 ) -> tuple[list[dict[str, Any]], list[dict[str, np.ndarray | list[str]]]]:
     """Matches isotopic patterns against candidates.
 
+    Candidates making the same ion are collapsed into one hypothesis first (see
+    :func:`elect_same_ion_families`), so what is scored and ranked here is one
+    reading per distinct ion. The returned lists are in ranked order, best
+    first, and the two are aligned index for index: they are ordered by one
+    computed permutation rather than by two sorts that agree only while no two
+    candidates tie.
+
     :param candidates: List of candidate formula dicts.
     :type candidates: list[dict[str, Any]]
     :param peaks: Sorted dataframe of peaks with 'mz' and 'intensity' columns.
     :type peaks: pl.DataFrame
-    :return: Tuple of filtered candidates, and a list of isotope data dicts (per
+    :return: Tuple of ranked candidates, and a list of isotope data dicts (per
         candidate). An isotope dict has one entry per predicted isotopologue, zero
         where nothing matched, and reports BOTH errors signed - `intensity_errors`
         as observed/predicted - 1, `mass_errors_ppm` as
@@ -673,30 +792,29 @@ def match_isotopic_pattern(
     mzs = peaks["mz"].to_numpy()
     intensities = peaks["intensity"].to_numpy()
 
-    candidates_df = pl.DataFrame(candidates)
-    if candidates_df.is_empty():
-        candidates_df = candidates_df.with_columns(
-            pl.lit(0.0, dtype=pl.Float64).alias("isotopic_pattern_score")
-        )
-        return candidates_df.to_dicts(), []
+    if not candidates:
+        return [], []
+
+    # One hypothesis per distinct ion, elected before anything heavy runs. A
+    # family shares an envelope exactly, so scoring it once is not an
+    # optimisation but the statement that its members are one claim - and the
+    # candidate limit below then counts distinct hypotheses instead of spending
+    # three of its slots on three splits of one ion.
+    ranked = elect_same_ion_families(candidates)
 
     # Keep only the most promising candidates for heavy work
-    candidates_df = candidates_df.sort(pl.col("composition_error_ppm").abs()).head(
-        ISOTOPE_CANDIDATE_LIMIT
-    )
+    ranked.sort(key=lambda c: abs(float(c.get("composition_error_ppm") or 0.0)))
+    ranked = ranked[:ISOTOPE_CANDIDATE_LIMIT]
 
     # If ionization peak: skip isotopic matching and return score 1.0
-    if "()" in candidates_df.get_column("formula").to_list():
-        candidates_df = candidates_df.with_columns(
-            pl.lit(1.0, dtype=pl.Float64).alias("isotopic_pattern_score")
-        )
-        return candidates_df.to_dicts(), []
+    if any(candidate.get("formula") == "()" for candidate in ranked):
+        return [dict(candidate, isotopic_pattern_score=1.0) for candidate in ranked], []
 
     ion_formulas, ion_charges = _extract_formulae_and_charges(
-        candidates_df.get_column("ion")
+        pl.Series("ion", [str(candidate.get("ion") or "") for candidate in ranked])
     )
 
-    scores = np.zeros(candidates_df.height, dtype=float)
+    scores = np.zeros(len(ranked), dtype=float)
     all_isotope_data = []
 
     for ind, (ion_formula, ion_charge) in enumerate(zip(ion_formulas, ion_charges)):
@@ -794,14 +912,18 @@ def match_isotopic_pattern(
 
         all_isotope_data.append(matched_isotopes)
 
-    candidates_df = candidates_df.with_columns(
-        pl.Series(values=scores, name="isotopic_pattern_score")
-    ).sort("isotopic_pattern_score", descending=True)
+    ranked = [
+        dict(candidate, isotopic_pattern_score=float(score))
+        for candidate, score in zip(ranked, scores)
+    ]
+    # One permutation for both lists. Two independent sorts on the score alone
+    # agree only while no two candidates tie on it, and a tie is common - every
+    # candidate whose envelope found nothing scores the same. Where they
+    # disagreed, the isotope pattern of one composition was stamped onto
+    # another's row.
+    order = sorted(range(len(ranked)), key=lambda i: _candidate_rank_key(ranked[i]))
 
-    score_sorted_indices = np.argsort(scores)[::-1]
-    all_isotope_data = [all_isotope_data[i] for i in score_sorted_indices]
-
-    return candidates_df.to_dicts(), all_isotope_data
+    return [ranked[i] for i in order], [all_isotope_data[i] for i in order]
 
 
 def _custom_isotope_combinations(
