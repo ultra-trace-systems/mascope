@@ -70,7 +70,9 @@ def _sample() -> MagicMock:
     sample.sample_item_name = "Sample One"
     sample.sample_batch_id = "sb-1"
     sample.filename = "orbi-sample.raw"
-    sample.polarity = "positive"
+    # The single-character form the sample row actually carries (String(1)),
+    # which is what the mechanism join and the profile fallback both read.
+    sample.polarity = "+"
     sample.instrument_function_id = "if-1"
     sample.instrument = "orbi"
     # No calibration record at all is eligible (matching the batch partition
