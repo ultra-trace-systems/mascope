@@ -4,6 +4,9 @@
 
 ## Status
 
+Epic branch `epic/assignment-quality`, draft PR #2077 into `develop`;
+step PRs land on the epic and are named here as they merge.
+
 | step | PR | state |
 |---|---|---|
 | 0 - gate, epic branch, design commit | - | planned |
