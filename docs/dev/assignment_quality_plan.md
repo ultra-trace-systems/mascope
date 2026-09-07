@@ -14,7 +14,7 @@ step PRs land on the epic and are named here as they merge.
 | 1.1 fix - finder: deprotonation charge and labelled reagent mass | #2079 | merged: found by the 1.1 gate run; sets C-F re-run with 1.1 on top of it |
 | 1.1 fix - finder: the labelled reagent's atom in ion formulas | #2080 | merged: the label reaching the ion string is what pyteomics could not parse |
 | 1.2 - opportunistic adduct channels | #2081 | measured: fingerprint gate works and refuses sodium; carbonate settled on the broad-window nitrate set |
-| 1.3 - same-ion tie policy in the finder | #2082 | in progress (handed over 2026-09-07) |
+| 1.3 - same-ion tie policy in the finder | #2082 | measured: the step's target met on A (47 -> 87% same formula); the note's mass-only policy needed a closed-shell key the gate supplied |
 | 1.4 - reagent-cluster pre-pass | - | planned |
 | 1.5 - satellite claim and ringing artifacts | - | planned |
 | 1.6 - cap and mass window | - | planned |
@@ -779,6 +779,90 @@ offer (step 1.2).
 "Hold" means the earlier target still applies. The reference is peaky's
 ledger, which is not truth; the targets are agreement bounds a chemist then
 audits through `tier_disagrees`.
+
+### After step 1.3, the same-ion tie policy (2026-09-07)
+
+Same protocol, on a build carrying steps 1.1 to 1.3. "Peaks with a family" is
+how many committed rows had more than one reading of their ion to choose
+between - the size of the decision this step takes, measured on the ledger.
+
+| set | peaks with a family | Mascope M0 (assigned) | both M0: same formula | G1 | G2 same formula |
+|---|---|---|---|---|---|
+| A uronium | 974 of 1,575 | 1,575 (1,341) | 784 of 898 (87%) | 43% | 76% |
+| B uronium | 821 of 1,599 | 1,599 (1,372) | 1,166 of 1,391 (84%) | 21% | 21% |
+| C 15N-nitrate, from m/z 131 | 488 of 1,079 | 1,079 (820) | 596 of 687 (87%) | 41% | 86% |
+| C2 15N-nitrate, from m/z 50 | 177 of 651 | 651 (517) | 291 of 354 (82%) | 55% | 70% |
+| D bromide | 21 of 797 | 797 (759) | 588 of 672 (88%) | 24% | 36% |
+| E bromide TOF | 34 of 235 | 235 (81) | 3 of 21 | 99% | 7% |
+| F1 bromide TOF | 164 of 983 | 983 (417) | 15 of 85 | 97% | 14% |
+| F2 nitrate TOF | 758 of 1,172 | 1,172 (615) | 25 of 163 | 97% | 41% |
+
+**The step's own target is met.** Set A's same-formula share goes 47% at
+baseline, 52% after 1.2, to 87%, against a target of 85%. B goes 49 -> 54 ->
+84%, C 16 -> 68 -> 87%, C2 54 -> 66 -> 82%. G1 falls wherever families are
+dense: A 73 -> 68 -> 43%, B 57 -> 50 -> 21%, C 99 -> 54 -> 41%, C2 72 -> 62 ->
+55%. G2 same-formula recovery on A goes 39 -> 43 -> 76%.
+
+**Cause 1's first half is as large as the baseline said.** 62% of the peaks
+Mascope commits on set A had a split to decide, 51% on B, 65% on F2, 45% on C.
+The finder was settling all of them by the order it enumerated its mechanisms
+in.
+
+**The policy in the note was not sufficient, and the gate said so.** Ranking a
+family on the mechanism's mass alone - the adduct reading over the covalent one
+- read 159 of set C's deprotonated acids as carbonate adducts instead:
+`C17H23O4-` as `[C16H23O + CO3]-` rather than `[C17H24O4 - H]-`, because
+carbonate carries 60 Da more than a lost proton. `C16H23O` is not a molecule.
+Set C lost 28 same-formula agreements against step 1.2 and its G2 fell 80 ->
+56%.
+
+The fix came out of the same comparison. A family's members differ by a
+fragment like HCO3, whose own DBE is a half-integer, so their neutrals differ
+by half a DBE unit and *exactly one of the two is closed-shell*. The reference
+picks the closed-shell one in **281 of the 281 readings the two engines split
+differently** across the whole gate, and in every reading they agree on. So the
+family is ranked on that first and on the mechanism's mass second. With both
+keys set C reads 596 of 687 the same way (86% G2) and holds its 1.2 chemistry.
+It is a tie-break and not a filter: where a radical is the only reading of an
+ion it is still committed, which is what a nitrate source measuring RO2
+requires.
+
+**The two rules of steps 1.2 and 1.3 do meet, and they hold.** Set C now
+commits 279 carbonate readings where 1.2 committed 130, and 138 of them are the
+reference's own carbonate reading of the same peak. Only 40 are assigned: the
+other 239 are held at candidate by the minor-channel cap, because set C cannot
+fingerprint the channel and has it on by profile default. The family rule
+decides *which reading*, the channel rule decides *what it may commit to*, and
+neither re-ranked the other.
+
+**One metric moved the wrong way**: set F2 loses 2 of its 163 shared peaks. Its
+four remaining splits are `[M+NO3]-` against the reference's `[M-H]-`, where
+both neutrals are molecules, so the parity key is silent and the mass rule
+decides - the same rule that wins A and B. On a TOF set with 163 shared peaks
+out of 8,905 this is not evidence either way.
+
+**The bromide sets cannot benefit from this step, for a reason worth
+recording.** The universal element-ratio band `Br/C <= 0.05` removes any
+neutral carrying a bromine below C20, so the `[M+Br]-` against `[M'-H]-`
+family - whose second member is always brominated - is cut before it can form:
+21 families on 797 committed peaks, against 974 on set A. Eight of set D's 20
+remaining splits want the carbonate channel, which its own fingerprint says
+that acquisition cannot show. This is the Stage B counterpart of the Stage A
+window that keeps halogen families from ever assigning (step 2.5), and it is
+the same rule that makes a genuinely brominated analyte unassignable.
+
+**Stage A is untouched, as intended.** Every peak where Mascope reads
+`[M+H]+` and the reference `[M+NH4]+` - 12 on A, 8 on B - is a curated Stage A
+win, not a Stage B reading.
+
+**What still splits on the uronium sets** is 45 Stage B peaks on A and 38 on B
+where both neutrals are molecules and Mascope takes the heavier mechanism - the
+urea cluster or ammonium - while the reference takes the lighter one. The
+parity key is silent there by construction, so this is the mass rule against
+the reference's own arbitration, on 5% of A's shared peaks. Two more on B go
+the other way. Step 1.4 removes part of the class rather than arbitrating it:
+its reagent library claims the urea clusters as reagent rows, which takes them
+out of the analyte ledger altogether.
 
 ## Decisions (taken 2026-09-07)
 
