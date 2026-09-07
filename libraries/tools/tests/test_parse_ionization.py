@@ -12,17 +12,24 @@ Two things went wrong here before and both are pinned:
 """
 
 import numpy as np
+import pandas as pd
 import pytest
 
-from mascope_tools.composition import CompositionSearchConfig
+from mascope_tools.composition import CompositionSearchConfig, HeuristicFilterConfig
 from mascope_tools.composition.config import ELECTRON_MASS
 from mascope_tools.composition.exceptions import CompositionFinderException
-from mascope_tools.composition.finder import find_compositions
+from mascope_tools.composition.finder import (
+    assign_compositions,
+    find_compositions,
+    replace_atom_with_isotope,
+)
 from mascope_tools.composition.heuristic_filter import predict_isotopes
 from mascope_tools.composition.utils import (
     calculate_mass,
     combine_formula_and_ionization,
+    from_pyteomics_symbol,
     parse_ionization,
+    to_pyteomics,
 )
 
 
@@ -108,3 +115,50 @@ def test_protonation_is_unchanged():
     predicted_mz = predict_isotopes(ion_formula[:-1], mechanism.charge)[0][0]
     assert predicted_mz == pytest.approx(neutral + H - ELECTRON_MASS, abs=1e-6)
     assert np.isfinite(predicted_mz)
+
+
+class TestTheLabelSurvivesTheWholeSearch:
+    """A labelled adduct's atom reaches the ion string, and everything
+    downstream of the ion string has to be able to read it back.
+
+    The label only started reaching the ion string when the mechanism parser
+    stopped dropping it, and that is what exposed this: pyteomics cannot parse
+    the caret symbol at all, so every helper that counts elements by handing a
+    formula to pyteomics raised on the first labelled ion.
+    """
+
+    def test_the_caret_symbol_survives_a_round_trip_through_pyteomics(self):
+        assert to_pyteomics("C15H13O10^N") == "C15H13O10N[15]"
+        assert from_pyteomics_symbol("N[15]") == "^N"
+        # A caret with no custom element behind it is not invented a mass for.
+        assert to_pyteomics("^Xy2") == "^Xy2"
+
+    def test_an_isotopologue_of_a_labelled_ion_keeps_both_labels(self):
+        # The reagent's 15N and the isotopologue's 13C are different things and
+        # both belong in the ion string.
+        assert replace_atom_with_isotope("C15H13O10^N-", "13C") == "[13C]C14H13O10^N-"
+        assert replace_atom_with_isotope("C15H13O10^N-", "M0") == "C15H13O10^N-"
+
+    def test_a_labelled_search_assigns_its_isotopologues(self):
+        target = calculate_mass(formula="C15H13O7") + NO3_15N + ELECTRON_MASS
+        config = CompositionSearchConfig(
+            ionizations="+[15N]O3-",
+            mass_range_ppm=3.0,
+            element_count_ranges="C1-20 H0-30 O0-12",
+            use_unsaturation=True,
+            min_unsaturation=-1000.0,
+            max_unsaturation=10000.0,
+        )
+        peaks = pd.DataFrame(
+            {
+                "mz": [target, target + 1.00336],
+                "intensity": [1.0e6, 1.6e5],
+            }
+        )
+        matches, _ = assign_compositions(
+            peaks, config, HeuristicFilterConfig(use_senior=True)
+        )
+        ions = matches["ion"].tolist()
+        assert ions[0] == "C15H13O10^N-"
+        assert ions[1].startswith("[13C]"), ions[1]
+        assert ions[1].endswith("^N-"), ions[1]
