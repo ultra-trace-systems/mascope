@@ -35,6 +35,7 @@ from mascope_tools.composition.calibration import (
     calibration_for,
 )
 from mascope_tools.composition.heuristic_filter import (
+    SAME_ION_ALTERNATIVES,
     SCORE_VERSION,
     element_counts,
     formula_plausibility,
@@ -845,6 +846,26 @@ def _untargeted_row_score(row) -> tuple[float, float | None, float | None]:
     return score, mz_error_ppm, abundance_error
 
 
+def _same_ion_family(row) -> list[dict]:
+    """The readings of this row's own ion that the finder's policy displaced.
+
+    Same ion means same mass and same predicted envelope, so these are not
+    runners-up that scored lower - they are the winner's evidence read as a
+    different split between the analyte and the mechanism, and the spectrum
+    cannot say which split is right. The finder writes them on the M0 row only;
+    a satellite is owned by that row.
+
+    :param row: One row of the finder's result frame.
+    :return: The displaced readings, empty when the row carries none (the
+        column is absent entirely on a run where no peak had a family, and
+        null on the rows that did not).
+    """
+    family = row.get(SAME_ION_ALTERNATIVES)
+    if not isinstance(family, list):
+        return []
+    return [member for member in family if isinstance(member, dict)]
+
+
 def untargeted_matches_to_peak_assignments(
     matches_df: pd.DataFrame,
     peaks_df: pd.DataFrame,
@@ -879,6 +900,14 @@ def untargeted_matches_to_peak_assignments(
     ``evidence = fit x plausibility``, the same currency Stage A arbitrates in, and the
     loser is kept as an alternative on the winner rather than dropped: a peak that two
     compositions explain is exactly the peak an analyst needs to see both explanations for.
+
+    A third kind of alternative arrives already decided. Compositions that make the
+    SAME ion are ranked in the finder, by the policy that the mechanism carrying the
+    mass is the reading (``heuristic_filter.elect_same_ion_families``); this stores
+    the readings it displaced, flagged ``same_ion``, so the ledger records that the
+    split between analyte and adduct was a choice and says what the alternative was.
+    That policy is not re-run here, and this function's own contest does not re-rank
+    it.
 
     :param matches_df: First element returned by assign_compositions.
     :param peaks_df: The observed peaks that were fed into the untargeted search, with
@@ -1032,10 +1061,39 @@ def untargeted_matches_to_peak_assignments(
             )
             != (formula, notation)
         ]
+        # The other readings of this same ion, ahead of the scored rivals: a
+        # candidate that TIED on the evidence explains the peak at least as well
+        # as one that lost on it, so it is the first alternative worth seeing
+        # when the cap bites. Its fit and mass error are the winner's own -
+        # identical ion, identical envelope - and the flag is what tells a reader
+        # this is the same measurement split differently rather than a weaker
+        # hypothesis.
+        family = _same_ion_family(row)
+        alternatives = [
+            {
+                "assigned_formula": format_formula(str(member.get("formula") or "")),
+                "ion_formula": _str_or_none(member.get("ion")),
+                "ionization_mechanism_id": mechanism_id_by_notation.get(
+                    _str_or_none(member.get("ionization_mechanism"))
+                ),
+                "isotope_label": isotope_label,
+                "fit_score": _score_or_none(winner["score"]),
+                "mz_error_ppm": winner["mz_error_ppm"],
+                "plausibility": round(
+                    float(formula_plausibility(str(member.get("formula") or ""))), 4
+                ),
+                "same_ion": True,
+                "source": SOURCE_UNTARGETED,
+            }
+            for member in family
+        ] + alternatives
         other_candidates = _str_or_none(row.get("other_candidates"))
         if other_candidates:
             # Formula-only entries, all drawn from this peak's own composition search:
-            # one naming the winning formula IS the winner, not a rival mechanism.
+            # one naming the winning formula IS the winner, not a rival mechanism, and
+            # one naming a same-ion reading is that reading stripped of everything the
+            # entry above already says about it.
+            named = {formula} | {str(member.get("formula") or "") for member in family}
             alternatives.extend(
                 {
                     "assigned_formula": format_formula(alt.strip()),
@@ -1043,7 +1101,7 @@ def untargeted_matches_to_peak_assignments(
                     "source": SOURCE_UNTARGETED,
                 }
                 for alt in other_candidates.split(",")
-                if alt.strip() and alt.strip() != formula
+                if alt.strip() and alt.strip() not in named
             )
         alternatives = alternatives[: max_alternatives or 0] or None
 
