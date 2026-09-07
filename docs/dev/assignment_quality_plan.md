@@ -13,7 +13,7 @@ step PRs land on the epic and are named here as they merge.
 | 1.1 - assignment profiles (library presets, resolution, stamping) | #2078 | measured on the fixed engine: G3 met, mass-error target met on all four Orbitrap sets, C and D move furthest |
 | 1.1 fix - finder: deprotonation charge and labelled reagent mass | #2079 | merged: found by the 1.1 gate run; sets C-F re-run with 1.1 on top of it |
 | 1.1 fix - finder: the labelled reagent's atom in ion formulas | #2080 | merged: the label reaching the ion string is what pyteomics could not parse |
-| 1.2 - opportunistic adduct channels | #2081 | measured: fingerprint gate works and refuses sodium; G1 down on every set that opened a channel |
+| 1.2 - opportunistic adduct channels | #2081 | measured: fingerprint gate works and refuses sodium; carbonate settled on the broad-window nitrate set |
 | 1.3 - same-ion tie policy in the finder | - | planned |
 | 1.4 - reagent-cluster pre-pass | - | planned |
 | 1.5 - satellite claim and ringing artifacts | - | planned |
@@ -736,10 +736,11 @@ is the same 51 same-ion carbonate readings the C2 comparison shows.
 43.5 -> 41.3%,
 where the carbonate channel won 62 peaks on a fingerprint that clears the floor
 by 7% (0.011% of the base peak against a 0.01% floor). It is a TOF set, which
-gates on intrinsic metrics, and the floor is the one number here with no
-measurement behind it beyond the sodium counter-example - a candidate to revisit
-when step 1.4's fuller cluster library gives a channel more than one ion to
-prove itself on.
+gates on intrinsic metrics, and the floor looks right for the chemistry rather
+than wrong in general: the same probe clears it by two orders of magnitude on
+the Orbitrap nitrate set, and it is marginal only where the intensity is a peak
+area rather than a height. Left for step 1.4's fuller cluster library, which
+gives a channel more than one ion to prove itself on.
 
 The stage targets below are stated for the Orbitrap sets A-D; C and D
 start from a worse baseline than A and B and are held to the same targets.
@@ -794,6 +795,20 @@ audits through `tier_disagrees`.
    nitrate, bromide, urea and ammonium; opt-in production loading with the
    demo loading automatically; radicals and clusters as separate lists, off
    by default; the Stage A window widened with the seed.
+8. **An unobservable channel is the profile's call, and the nitrate profiles
+   say on** (taken 2026-09-07 with step 1.2). A secondary channel none of
+   whose fingerprint ions lies inside a sample's acquisition window was never
+   asked about, so its silence is not evidence: it is recorded as
+   `unobservable`, distinct from `absent`, and each channel declares what to
+   do. The default is off - silence stays silence unless a profile has a
+   reason. The nitrate profiles' carbonate channel has one: on a broad-window
+   run of that chemistry carbonate is in every sample at 0.5-1.0% of the base
+   peak, and the source makes no carbonate carrier above m/z 126 at all, so an
+   acquisition starting higher can never show a channel it is certainly
+   running. What an unobservable-but-open channel may then do is unchanged: it
+   takes no peak a declared mechanism won, and commits as assigned only with
+   corroboration. Revisit per profile if a later acquisition of the same
+   chemistry shows the carrier absent.
 
 ## Risks
 

@@ -217,11 +217,25 @@ class TestResolution:
         assert snapshot["unavailable_channels"] == []
 
     def test_the_snapshot_of_a_run_that_opened_nothing_says_so(self):
+        # A spectrum that spans the probes and does not carry them: the source
+        # is not running the channel, which is a real answer.
         snapshot = with_secondary_channels(
-            self._resolved(), [100.0], [1.0e6], ["+NH4+"]
+            self._resolved(), [50.0, 100.0, 400.0], [1.0e6, 1.0e5, 1.0e4], ["+NH4+"]
         ).snapshot()
         assert snapshot["secondary_channels"] == []
-        assert snapshot["channel_evidence"] == [{"channel": "+NH4+", "present": False}]
+        assert snapshot["channel_evidence"] == [
+            {"channel": "+NH4+", "present": False, "status": "not_found"}
+        ]
+
+    def test_a_channel_the_window_could_not_show_is_recorded_as_such(self):
+        # And is not searched, because the urea profile does not default it on.
+        snapshot = with_secondary_channels(
+            self._resolved(), [300.0, 400.0], [1.0e6, 1.0e4], ["+NH4+"]
+        ).snapshot()
+        assert snapshot["secondary_channels"] == []
+        assert snapshot["channel_evidence"] == [
+            {"channel": "+NH4+", "present": False, "status": "unobservable"}
+        ]
 
 
 @pytest.mark.parametrize("profile,expected", [("BR", 2), ("NO3", 1), ("UR", 1)])
