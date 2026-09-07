@@ -6,6 +6,24 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
 
 ### Added
 
+- **The untargeted search decides which reading of an ion wins, instead of
+  inheriting the order it enumerated the mechanisms in.** Compositions that
+  combine into the same ion - `X.[M+NH4]+` and `(X+NH3).[M+H]+`, or a reagent
+  adduct and the deprotonated reagent-acid adduct of the same anion - are one
+  hypothesis split two ways rather than two candidates: they sit at one mass,
+  predict one isotope envelope and score identically, so no spectrum can
+  separate them. They are now collapsed into one family, scored once, and
+  ranked by policy - the reading whose mechanism carries the mass wins, because
+  that is the chemistry a chemical-ionization source runs, and reading the
+  reagent into the analyte's own formula invents a neutral nobody sampled. The
+  displaced readings are kept on the committed row as alternatives flagged
+  `same_ion`, carrying the winner's own fit and mass error because the ion is
+  the same one, so the ledger records that the split was a choice and says what
+  the alternative was. Hypotheses the measurement *can* separate break their
+  ties on the data at every step - score, then mass error, then chemical
+  plausibility, then the formula - and never on row order. Step 1.3 of
+  `docs/dev/assignment_quality_plan.md`.
+
 - **The untargeted stage searches the adduct channels the source is actually
   running, and only those.** A reagent profile now carries the secondary
   channels its chemistry can produce - ammonium for the urea and ESI presets,
@@ -34,6 +52,15 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
   Step 1.2 of `docs/dev/assignment_quality_plan.md`.
 
 ### Fixed
+
+- **An untargeted assignment could be committed carrying another composition's
+  isotope pattern.** The candidates and their matched envelopes were ranked by
+  two separate sorts, one of them unstable, which agree only while no two
+  candidates tie on the pattern score - and a tie is ordinary, since every
+  candidate whose envelope matched nothing scores the same. Where they
+  disagreed, the committed row took a runner-up's matched masses, intensities
+  and errors: its satellites, its mass error and its fit all belonged to a
+  different formula. Both lists now come from one computed order.
 
 - **A labelled reagent's own atom no longer breaks the untargeted search.**
   Keeping the isotope label on a mechanism like `+^NO3-` put the reagent's
