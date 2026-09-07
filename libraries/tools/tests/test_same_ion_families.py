@@ -22,6 +22,7 @@ from mascope_tools.composition.heuristic_filter import (
     elect_same_ion_families,
     match_isotopic_pattern,
     mechanism_mass_contribution,
+    neutral_is_closed_shell,
     predict_isotopes,
 )
 from mascope_tools.composition.models import CompositionSearchConfig
@@ -39,8 +40,27 @@ def _candidate(formula, mechanism, ion, error_ppm=0.0):
     }
 
 
+class TestTheNeutralIsAMolecule:
+    """The first key: between two readings of one ion, prefer the molecule."""
+
+    def test_an_integer_dbe_is_closed_shell_and_a_half_integer_one_is_not(self):
+        assert neutral_is_closed_shell("C17H24O4")
+        assert not neutral_is_closed_shell("C16H23O")
+
+    def test_the_two_readings_of_an_ion_always_differ(self):
+        # A family's members differ by a fragment like HCO3, whose own DBE is a
+        # half-integer, so exactly one of the two neutrals is a molecule. That
+        # is why this key decides rather than merely breaking ties.
+        assert neutral_is_closed_shell("C17H24O4") != neutral_is_closed_shell("C16H23O")
+
+    def test_an_unreadable_formula_is_not_demoted_on_a_test_that_could_not_run(
+        self,
+    ):
+        assert neutral_is_closed_shell("not a formula")
+
+
 class TestTheMechanismCarryingTheMass:
-    """The policy itself, on the mechanisms the profiles actually declare."""
+    """The second key, on the mechanisms the profiles actually declare."""
 
     def test_an_addition_contributes_positive_mass_and_a_subtraction_negative(self):
         assert mechanism_mass_contribution("+NH4+") == pytest.approx(18.034, abs=1e-3)
@@ -72,7 +92,10 @@ class TestTheFamilyElection:
     def test_the_nitrate_reading_wins_and_the_others_ride_along(self):
         # C6H10NO8- is all three of these at once: the nitrate adduct of a sugar
         # acid, the carbonate adduct of the same mass with one carbon read as
-        # nitrogen, and the deprotonated nitric-acid adduct.
+        # nitrogen, and the deprotonated nitric-acid adduct. Two of the three
+        # neutrals are molecules; among those the nitrate reading carries the
+        # most mass. The carbonate reading is last because its neutral is a
+        # radical, not because its mechanism is the lightest.
         members = [
             _candidate("C6H11NO8", "-H+", "C6H10NO8-"),
             _candidate("C5H10NO5", "+CO3-", "C6H10NO8-"),
@@ -85,7 +108,30 @@ class TestTheFamilyElection:
         assert [
             (member["formula"], member["ionization_mechanism"])
             for member in elected[SAME_ION_ALTERNATIVES]
-        ] == [("C5H10NO5", "+CO3-"), ("C6H11NO8", "-H+")]
+        ] == [("C6H11NO8", "-H+"), ("C5H10NO5", "+CO3-")]
+
+    def test_a_molecule_outranks_a_radical_however_the_mass_falls(self):
+        # The measured case: C17H23O4- is a deprotonated acid or a carbonate
+        # adduct of a C16H23O radical, and the carbonate mechanism carries 60 Da
+        # more. Ranking on mass alone took 159 of these on the gate's nitrate
+        # set and read every one as an adduct of something that is not a
+        # molecule.
+        members = [
+            _candidate("C16H23O", "+CO3-", "C17H23O4-"),
+            _candidate("C17H24O4", "-H+", "C17H23O4-"),
+        ]
+        (elected,) = elect_same_ion_families(members)
+
+        assert elected["formula"] == "C17H24O4"
+        assert elected["ionization_mechanism"] == "-H+"
+
+    def test_a_radical_still_wins_when_it_is_the_only_reading(self):
+        # A tie-break, not a filter. A nitrate source measuring RO2 must keep
+        # committing the radical where nothing else explains the ion.
+        lone = _candidate("C16H23O", "+CO3-", "C17H23O4-")
+        (elected,) = elect_same_ion_families([lone])
+
+        assert elected is lone
 
     def test_the_election_does_not_depend_on_the_order_they_arrive_in(self):
         members = [
