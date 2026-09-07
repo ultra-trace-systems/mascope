@@ -9,7 +9,7 @@ step PRs land on the epic and are named here as they merge.
 
 | step | PR | state |
 |---|---|---|
-| 0 - gate, epic branch, design commit | #2077 | done: testbed, comparison tool, baselines A-E, epic branch |
+| 0 - gate, epic branch, design commit | #2077 | done: testbed, comparison tool, baselines A-F, epic branch |
 | 1.1 - assignment profiles (library presets, resolution, stamping) | - | in progress (handed over 2026-09-07) |
 | 1.2 - opportunistic adduct channels | - | planned |
 | 1.3 - same-ion tie policy in the finder | - | planned |
@@ -116,7 +116,7 @@ justify.
   | C | Orbitrap A | 15N-nitrate CIMS, negative | 5 | measured |
   | D | Orbitrap A | bromide CIMS, negative (the demo dataset's source batch) | 6 | measured |
   | E | TOF, single acquisition set | bromide CIMS, negative | 3 | measured |
-  | F | TOF, multi-scheme source | bromide and nitrate CIMS, negative, one day each | 6 + 5 | running |
+  | F | TOF, multi-scheme source | bromide and nitrate CIMS, negative, one day each | 6 + 5 | measured |
 
   Sets D to F need peaky reference runs with TOF-appropriate windows where
   the instrument is a TOF (its Orbitrap defaults of 1 ppm trust and 3 ppm
@@ -502,9 +502,12 @@ both engines commit to.
 | C 15N-nitrate, Orbitrap A | 1,583 | 1,078 (787) | 753 (527) | 92 of 568 (16%) | 99% | 18% | 17% / 0% | 1.13 / 0.14 ppm | 29 |
 | D bromide, Orbitrap A | 5,217 | 947 (818) | 2,108 (1,595) | 281 of 657 (43%) | 68% | 17% | 31% / 0% | 0.37 / 0.26 ppm | 262 |
 | E bromide, TOF | 3,493 | 409 (206) | 119 (28) | 3 of 29 | 99% | 7% | 22% / 0% | 1.56 / 1.16 ppm | 336 |
-| F bromide and nitrate, multi-scheme TOF | running | | | | | | | | |
+| F1 bromide, multi-scheme TOF | 13,595 | 1,449 (968) | 698 (100) | 18 of 126 | 98% | 18% | 26% / 0% | 0.94 / 1.01 ppm | 23 |
+| F2 nitrate, multi-scheme TOF | 8,905 | 1,452 (1,195) | 755 (46) | 22 of 190 | 99% | 44% | 38% / 0% | 0.73 / 0.92 ppm | - |
 
-Set E is a finding of its own: on a TOF the reference fails as well. Peaky
+Sets E and F are a finding of their own: on a TOF the reference fails as
+well, and on the better-calibrated multi-scheme TOF (mass error 0.7-1.0 ppm
+MAD) peaky still calls only 100 of 698 and 46 of 755 main peaks Assigned. Peaky
 commits 119 main peaks in 3,493 and calls 28 of them Assigned even with its
 windows opened to 8 and 25 ppm, because `score_pattern` (v1) scales its
 mass term by a fixed 5 ppm, so the 5-15 ppm errors of a TOF score near zero
