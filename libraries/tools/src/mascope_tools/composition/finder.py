@@ -643,15 +643,18 @@ def replace_atom_with_isotope(ion_formula: str, isotope_label: str) -> str:
             f"[{isotope_mass}{isotope_element}]{isotope_count_str}"
         )
 
-    # Rebuild the formula string
+    # Rebuild the formula string, in the notation it arrived in: the counting
+    # above went through pyteomics, which spells a labelled reagent's atom
+    # 'N[15]' where every other layer writes '^N'.
     for element in element_counts.keys():
         count = element_counts[element]
+        symbol = utils.from_pyteomics_symbol(element)
         if count == 0:
             continue  # Skip elements with a count of zero
         elif count == 1:
-            new_formula_parts.append(element)
+            new_formula_parts.append(symbol)
         else:
-            new_formula_parts.append(f"{element}{count}")
+            new_formula_parts.append(f"{symbol}{count}")
 
     # Append the charge and join everything into the final string
     return "".join(new_formula_parts) + ion_charge

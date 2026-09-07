@@ -4,7 +4,50 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
 
 ## [Unreleased]
 
+### Fixed
+
+- **A labelled reagent's own atom no longer breaks the untargeted search.**
+  Keeping the isotope label on a mechanism like `+^NO3-` put the reagent's
+  `^N` into the ion formulas the finder builds, and pyteomics - which every
+  element-counting helper hands a formula to - cannot parse the caret symbol
+  at all, so a 15N-nitrate sample failed its run outright on the first
+  isotopologue. `to_pyteomics` now converts the caret form as well as the
+  bracket-first one, and the ion formula is rebuilt in the notation it arrived
+  in rather than pyteomics', so an isotopologue of a labelled ion carries both
+  labels (`[13C]C14H13O10^N-`). Two other callers that would have raised the
+  same way - the candidate sort key and the isotope-label extraction - are
+  fixed by the same change.
+
+### Fixed
+
+- **Deprotonated candidates are scored at the anion mass, and a labelled
+  reagent adduct keeps its label in the untargeted search.** The composition
+  finder read the trailing sign of a mechanism notation as the ion's charge,
+  so `-H+` (deprotonation) produced a cation and every deprotonated candidate's
+  predicted monoisotopic peak sat two electron masses light - a 2-5 ppm phantom
+  mass error that biased the winner towards wrong formulas under a wide window
+  and mis-tiered the right ones under a tight one, on every negative-mode
+  chemistry. The trailing sign is now the charge of the moiety added or
+  removed, and the ion's charge follows from the direction. The same parser
+  also dropped the isotope label from a bracketed mechanism (`+[15N]O3-`, the
+  explicit form of `+^NO3-`), massing the 15N-nitrate reagent as the unlabelled
+  one, 0.997 Da light, so every candidate on that channel fitted the wrong
+  adduct mass; the label is now kept, and a labelled isotope the finder cannot
+  mass is refused instead of silently unlabelled. Both affect the peak
+  assignment engine's untargeted stage and the on-demand composition search.
+
 ### Added
+
+- **Two peak-assignment engines can be compared peak by peak on the same
+  samples.** `tooling/assignment_compare/compare_runs.py` reads, per sample,
+  the latest completed run of each engine through the SDK - the in-app run
+  and one published through `runs/import` - joins the two ledgers on
+  `sample_peak_id` and classifies every peak: the same formula, the same ion
+  under another neutral/adduct split, a different formula, or committed by
+  one engine only. Its summary carries each engine's tiers, the share of its
+  assigned rows the other engine does not confirm, mass-error statistics, a
+  chemistry sanity check on the committed formulas and agreement by peak
+  intensity, as JSON and as Markdown tables.
 
 - **Uploads from a paired File Agent are filed under the instrument the agent
   reports, so the file names no longer have to carry it.** An agent whose
