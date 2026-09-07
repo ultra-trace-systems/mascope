@@ -465,7 +465,18 @@ _PROFILE_ALIASES: dict[str, str] = {
 _DETECTION_ORDER: tuple[ReagentProfile, ...] = (UR, NO3_15N, NO3, BR, IODIDE)
 
 #: The generic profile per polarity, used when no mechanism is diagnostic.
-_ESI_BY_POLARITY: dict[str, ReagentProfile] = {"+": ESI_POS, "-": ESI_NEG}
+#: Keyed by the single-character form the sample row carries, with the spelled-out
+#: words accepted too - the same polarity is written both ways across the codebase
+#: (a sample is "+", a batch "pos"), and a fallback that silently missed on the
+#: spelling would look like a sample that said nothing at all.
+_ESI_BY_POLARITY: dict[str, ReagentProfile] = {
+    "+": ESI_POS,
+    "positive": ESI_POS,
+    "pos": ESI_POS,
+    "-": ESI_NEG,
+    "negative": ESI_NEG,
+    "neg": ESI_NEG,
+}
 
 
 def get_reagent_profile(name: str) -> ReagentProfile:
@@ -524,7 +535,7 @@ def detect_reagent_profile(
     for profile in _DETECTION_ORDER:
         if seen.intersection(profile.detection):
             return profile
-    return _ESI_BY_POLARITY.get((polarity or "").strip(), NO_PROFILE)
+    return _ESI_BY_POLARITY.get((polarity or "").strip().lower(), NO_PROFILE)
 
 
 def parse_element_ranges(element_ranges: str) -> dict[str, tuple[int, int]]:

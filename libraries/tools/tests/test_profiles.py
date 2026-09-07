@@ -75,6 +75,13 @@ class TestFingerprint:
         assert P.detect_reagent_profile(["+H+"], "+") is P.ESI_POS
         assert P.detect_reagent_profile(["-H+"], "-") is P.ESI_NEG
 
+    def test_the_polarity_is_read_however_it_is_spelled(self):
+        # A sample row carries "+"; other rows and callers spell it out. A
+        # fallback that missed on the spelling would be indistinguishable from
+        # a sample that said nothing.
+        assert P.detect_reagent_profile([], "positive") is P.ESI_POS
+        assert P.detect_reagent_profile([], "Negative") is P.ESI_NEG
+
     def test_nothing_at_all_is_the_identity_profile(self):
         # Not a guess: a sample the engine cannot read keeps the behaviour it
         # had before profiles existed.
