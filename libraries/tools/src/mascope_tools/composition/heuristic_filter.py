@@ -664,12 +664,31 @@ def apply_heuristic_rules(
 # how the [M+H]+ reading kept 378 of 384 such peaks.
 #
 # So the family is scored once, because the evidence belongs to the ion rather
-# than to the split, and ranked by policy: the reading whose mechanism carries
-# the most mass wins. That is the chemistry a chemical-ionization source runs -
-# a reagent attaches to an analyte - and reading the reagent into the analyte's
-# own formula invents a neutral nobody sampled. The losing readings ride along
-# on the winner. They are not weaker candidates; they are the same evidence read
-# differently, which is exactly what an analyst needs to see.
+# than to the split, and ranked by two rules in this order.
+#
+# 1. The neutral must be a molecule. Half the readings of an ion ask the analyte
+#    to be an odd-electron radical - a family's members differ by a fragment
+#    like HCO3, so their neutrals differ by half a DBE unit and exactly one of
+#    the two is closed-shell. A closed-shell molecule is the far more likely
+#    analyte, so it wins the family. This is a tie-break and not a filter: where
+#    a radical is the ONLY reading of an ion it is still committed, which is
+#    what a nitrate source measuring RO2 requires.
+# 2. Then the mechanism carrying the most mass wins - the adduct or cluster
+#    reading over the covalent one. That is the chemistry a chemical-ionization
+#    source runs, and reading the reagent into the analyte's own formula invents
+#    a neutral nobody sampled.
+#
+# The order was measured, not assumed. On the mass rule alone the gate's nitrate
+# set read 159 deprotonated acids as carbonate adducts of radicals instead -
+# C17H23O4- as [C16H23O + CO3]- rather than [C17H24O4 - H]- - and lost that many
+# agreements with the reference. The reference's own neutral is closed-shell in
+# 100% of the readings the two engines split differently (281 of 281 across the
+# gate), and in every reading they agree on, so the rule is what the reference
+# has been doing all along.
+#
+# The losing readings ride along on the winner. They are not weaker candidates;
+# they are the same evidence read differently, which is exactly what an analyst
+# needs to see.
 # ---------------------------------------------------------------------------
 
 #: Key under which an elected family winner carries the readings it displaced.
@@ -700,10 +719,33 @@ def mechanism_mass_contribution(notation: str | None) -> float:
     return mechanism.mass if mechanism.addition else -mechanism.mass
 
 
+@lru_cache(maxsize=4096)
+def neutral_is_closed_shell(formula: str) -> bool:
+    """Whether a neutral formula is an even-electron molecule.
+
+    An integer DBE means every valence is satisfied; a half-integer one means an
+    unpaired electron, so the formula names a radical. Both are real chemistry -
+    a nitrate source measures RO2 radicals - but between two readings of one ion
+    the molecule is the likelier analyte by a wide margin.
+
+    :param formula: A neutral formula in Hill order.
+    :return: True for a closed-shell neutral, and for anything unparseable, so
+        an unreadable formula is never demoted on a test that could not run.
+    """
+    counts = element_counts(formula)
+    if counts is None:
+        return True
+    _, _, dbe = _effective_counts(counts)
+    return float(dbe).is_integer()
+
+
 def elect_same_ion_families(
     candidates: list[dict[str, Any]],
 ) -> list[dict[str, Any]]:
     """Collapse candidates that make the same ion into one ranked hypothesis.
+
+    The reading elected is the one whose neutral is a closed-shell molecule and,
+    among those, whose mechanism carries the most mass.
 
     :param candidates: Scored or unscored candidate dicts, each carrying ``ion``
         and ``ionization_mechanism``.
@@ -721,12 +763,14 @@ def elect_same_ion_families(
         if len(members) == 1:
             elected.append(members[0])
             continue
-        # Most massive mechanism first; the formula only breaks the impossible
-        # case of two mechanisms of identical mass, so the order is total and
-        # never falls through to enumeration order.
+        # Closed-shell neutral first, then the most massive mechanism; the
+        # formula only breaks the impossible case of two mechanisms of identical
+        # mass, so the order is total and never falls through to enumeration
+        # order.
         ranked = sorted(
             members,
             key=lambda c: (
+                not neutral_is_closed_shell(str(c.get("formula") or "")),
                 -mechanism_mass_contribution(c.get("ionization_mechanism")),
                 str(c.get("formula") or ""),
             ),
