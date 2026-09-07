@@ -25,6 +25,15 @@ DEFAULT_ELEMENTAL_RATIO_RANGE = {
     "I/C": (0.0, 0.05),
 }
 
+# Carbon-equivalent count (C + Si) below which a chemistry context's Van Krevelen
+# ratio windows say nothing and are not applied. A one- or two-carbon molecule
+# sits outside every ambient window by construction - methane reads H/C 4.0, urea
+# 4.0, formaldehyde 2.0 with O/C 1.0 - and those are exactly the small molecules a
+# CIMS source is most sensitive to. Below the floor the windows give way to two
+# valence-level checks (see `rule_context_ratios`).
+CONTEXT_RATIO_MIN_CARBON = 3
+
+
 UNSATURATION_COEFFICIENTS = {
     "C": 2,
     "H": -1,

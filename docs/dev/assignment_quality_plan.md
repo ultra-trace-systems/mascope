@@ -159,10 +159,18 @@ and 5 as far as they are search problems.
   `CompositionSearchConfig` from the profile: `element_count_ranges` is the
   profile grid intersected with the context's element caps (carbon at least
   1 for the organic grid), `mass_range_ppm` the profile's instrument-class
-  window (3 ppm Orbitrap, 20 ppm TOF, overridable). Context ratio windows go
-  through `HeuristicFilterConfig.carbon_element_ratio_range`, which
-  `rule_element_ratio` already applies; a `dbe_to_c` window is a new rule
-  beside it. `batch_untargeted.search_config` takes the same profile.
+  window (3 ppm Orbitrap, 20 ppm TOF, overridable). The context's ratio
+  windows - `h_to_c`, `o_to_c`, `n_to_c` and `dbe_to_c` together - ride on
+  `HeuristicFilterConfig` as one new rule, `rule_context_ratios`, rather than
+  through `carbon_element_ratio_range`: that rule reads raw element pairs and
+  would reject urea (H/C 4.0) and a trihalogenated acid (H/C 0.5) on ratios
+  neither violates, where the context windows are peaky's - effective counts
+  (Si with carbon, halogens with hydrogen) above a three-carbon floor.
+  `batch_untargeted.search_config` takes the same profile.
+  peaky's per-context grid box (`grid_c_max`/`grid_o_max`) is deliberately not
+  ported: in Mascope the grid belongs to the reagent profile and a context may
+  only narrow it, so no context can silently widen a grid the reagent
+  chemistry bounded.
 - **Why.** Cause 3. The offline experiment on one sample took N >= 5
   formulas from 17% to 8% with the grid alone and to 10% at 3 ppm with
   no cap.

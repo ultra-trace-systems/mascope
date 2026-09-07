@@ -85,6 +85,18 @@ class HeuristicFilterConfig:
     # search. The peak-centric engine opts in explicitly.
     use_senior: bool = False
 
+    # A chemistry context's Van Krevelen ratio windows, keyed by the constants in
+    # `profiles` ("H/C", "O/C", "N/C", "DBE/C") and evaluated on EFFECTIVE counts
+    # rather than raw ones -- see `rule_context_ratios`, which applies them.
+    #
+    # Deliberately separate from `carbon_element_ratio_range`, which carries the
+    # universal Wiley bands and is applied per raw element pair: a context window
+    # is a much tighter statement about one matrix, and reading it through the
+    # raw-count rule would reject urea (H/C 4.0) and trichloroacetic acid
+    # (H/C 0.5) on ratios neither of them violates. Empty by default, so a caller
+    # that names no context filters exactly as it did before contexts existed.
+    context_ratio_windows: dict[str, tuple[float, float]] = field(default_factory=dict)
+
 
 @dataclass
 class Result:

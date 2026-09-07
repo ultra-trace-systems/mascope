@@ -33,10 +33,7 @@ from sqlalchemy import select
 
 from mascope_backend.api.controllers.samples.lib.samples_fetch import fetch_sample
 from mascope_backend.api.lib.api_features import api_controller_background_task
-from mascope_backend.api.new.cheminfo.utils import (
-    to_custom_element_format,
-    to_explicit_isotope_format,
-)
+from mascope_backend.api.new.cheminfo.utils import to_custom_element_format
 from mascope_backend.api.new.match.params import default_match_params
 from mascope_backend.api.new.peak_assignments.batch_peaks import (
     ROLE_ISO_CHILD,
@@ -63,6 +60,10 @@ from mascope_backend.api.new.peak_assignments.engine import (
     untargeted_matches_to_peak_assignments,
 )
 from mascope_backend.api.new.peak_assignments.fold_view import fold_run_id
+from mascope_backend.api.new.peak_assignments.profiles import (
+    ResolvedProfile,
+    resolve_profile,
+)
 from mascope_backend.api.new.peak_assignments.seeded_scoring import score_seeds
 from mascope_backend.api.new.peak_assignments.service import (
     _untargeted_ionization_notations,
@@ -76,7 +77,7 @@ from mascope_backend.socket.notifications import (
     UserNotification,
     send_progress_user_notification,
 )
-from mascope_tools.composition import CompositionSearchConfig, HeuristicFilterConfig
+from mascope_file.name import get_instrument_type
 from mascope_tools.composition.finder import assign_compositions
 
 
@@ -132,17 +133,15 @@ def owner_anchor_of(
     return owner_member.batch_peak_id if owner_member is not None else None
 
 
-def search_config(config: PeakAssignmentConfig, notations: list[str]):
-    """The finder's configuration for this search - the orchestrator's, verbatim."""
-    formula_ranges, _ = to_explicit_isotope_format(config.formula_ranges)
-    return CompositionSearchConfig(
-        ionizations=",".join(notations),
-        mass_range_ppm=config.mz_precision_ppm,
-        element_count_ranges=formula_ranges,
-        use_unsaturation=True,
-        min_unsaturation=-1000.0,
-        max_unsaturation=10000.0,
-    )
+def search_config(resolved_profile: ResolvedProfile, notations: list[str]):
+    """The finder's configuration for this search - the orchestrator's, verbatim.
+
+    Kept as a named function even though it now forwards: what makes the batch
+    search comparable with a per-sample run is that both are configured from one
+    resolution, and a helper that says so is easier to keep honest than a call
+    site that happens to match.
+    """
+    return resolved_profile.search_config(notations)
 
 
 @dataclass
@@ -226,13 +225,27 @@ async def _search_sample(
             "no polarity-compatible ionization mechanisms."
         )
         return []
+    # Resolved per sample, not per batch: a batch can hold more than one
+    # ionization mode, and the chemistry belongs to the sample that was measured.
+    resolved_profile = resolve_profile(
+        config,
+        mechanism_notations=[m.ionization_mechanism for m in mechanisms],
+        instrument_type=get_instrument_type(sample.filename),
+        polarity=sample.polarity,
+    )
+    runtime.logger.info(
+        f"Untargeted batch search of sample '{sample.sample_item_name}' "
+        f"searches profile '{resolved_profile.profile.name}' / context "
+        f"'{resolved_profile.context.name}': {resolved_profile.element_ranges} "
+        f"at {resolved_profile.mz_precision_ppm} ppm"
+    )
     # The whole spectrum is the frame - isotope patterns are scored against it -
     # while only the representatives are enumerated.
     matches_df, _ = await asyncio.to_thread(
         assign_compositions,
         frame[["mz", "intensity"]],
-        search_config(config, notations),
-        HeuristicFilterConfig(use_senior=True),
+        search_config(resolved_profile, notations),
+        resolved_profile.heuristics_config(),
         targets=targets["mz"].tolist(),
     )
     return untargeted_matches_to_peak_assignments(
