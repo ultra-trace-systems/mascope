@@ -441,7 +441,7 @@ watch(
       >
         <InputNumber
           v-model="params.mz_precision_ppm"
-          id="mzPrecision"
+          inputId="mzPrecision"
           :min="1"
           :max="store.limits.max_mz_precision_ppm"
           fluid
