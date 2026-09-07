@@ -333,6 +333,47 @@ def to_hill_notation(counts: dict[str, int]) -> str:
     return "".join(parts)
 
 
+_BRACKET_ISOTOPE = re.compile(r"\[(\d+)([A-Z][a-z]?)\]")
+
+#: Bracketed isotope token -> the caret custom element it denotes, for every
+#: labelled element the finder knows: "[15N]" -> "^N".
+_CARET_BY_BRACKET = {
+    f"[{ce.labelled_massnumber}{ce.base_element}]": symbol
+    for symbol, ce in CUSTOM_ELEMENTS.items()
+}
+
+
+def _caret_labelled(moiety: str) -> str:
+    """Rewrite bracketed labelled isotopes in a mechanism's moiety to caret form.
+
+    A mechanism reaches the finder in explicit-isotope notation ("+[15N]O3-"),
+    but `parse_composition` reads a bracketed token as its base element - "[15N]"
+    as N - and the label is lost: the labelled nitrate reagent was massed as the
+    unlabelled one, 0.997 Da light, and every candidate on that channel was a
+    formula fitting the wrong adduct mass. The caret form ("^N") is what the
+    custom-element machinery masses and predicts correctly, so the token is
+    rewritten to it; a bracketed isotope with no custom element is refused
+    rather than silently unlabelled.
+
+    :param moiety: The mechanism's moiety, e.g. "[15N]O3" or "(CH4N2O)H".
+    :raises CompositionFinderException: A bracketed isotope the finder cannot
+        mass.
+    :return: The moiety with labelled isotopes in caret notation.
+    """
+
+    def replace(match: re.Match) -> str:
+        token = match.group(0)
+        symbol = _CARET_BY_BRACKET.get(token)
+        if symbol is None:
+            raise CompositionFinderException(
+                f"Unsupported labelled isotope {token!r} in ionization mechanism: "
+                f"the finder can mass only {sorted(_CARET_BY_BRACKET)}"
+            )
+        return symbol
+
+    return _BRACKET_ISOTOPE.sub(replace, moiety)
+
+
 def parse_ionization(ionization_string: str) -> IonizationMechanism:
     """Parse ionization mechanism string from Mascope format into an IonizationMechanism object.
 
@@ -366,10 +407,20 @@ def parse_ionization(ionization_string: str) -> IonizationMechanism:
         match = re.match(pattern, ionization_string)
         if match:
             addition = match.group(1) == "+"
-            composition = parse_composition(match.group(2))
+            composition = parse_composition(_caret_labelled(match.group(2)))
             formula = to_hill_order(composition)
-            charge = 1 if match.group(3) == "+" else -1
-            mass = composition_mass(composition) - ELECTRON_MASS * charge
+            # The trailing sign is the charge of the MOIETY that is added or
+            # removed - the proton in "+H+" and "-H+", the bromide in "+Br-" -
+            # so the moiety's mass accounts for that charge's electron. The
+            # ION's charge follows from what was done with the moiety: adding
+            # a cation or removing an anion leaves a positive ion, removing a
+            # cation or adding an anion a negative one. "-H+" is deprotonation,
+            # and the ion it leaves is the anion: one electron heavier than the
+            # cation the trailing sign used to be read as, which put every
+            # deprotonated candidate's predicted M0 two electron masses light.
+            moiety_charge = 1 if match.group(3) == "+" else -1
+            charge = moiety_charge if addition else -moiety_charge
+            mass = composition_mass(composition) - ELECTRON_MASS * moiety_charge
         else:
             raise CompositionFinderException(
                 f"Unsupported ionization mechanism: '{ionization_string}'"

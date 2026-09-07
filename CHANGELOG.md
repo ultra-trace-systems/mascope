@@ -4,6 +4,24 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
 
 ## [Unreleased]
 
+### Fixed
+
+- **Deprotonated candidates are scored at the anion mass, and a labelled
+  reagent adduct keeps its label in the untargeted search.** The composition
+  finder read the trailing sign of a mechanism notation as the ion's charge,
+  so `-H+` (deprotonation) produced a cation and every deprotonated candidate's
+  predicted monoisotopic peak sat two electron masses light - a 2-5 ppm phantom
+  mass error that biased the winner towards wrong formulas under a wide window
+  and mis-tiered the right ones under a tight one, on every negative-mode
+  chemistry. The trailing sign is now the charge of the moiety added or
+  removed, and the ion's charge follows from the direction. The same parser
+  also dropped the isotope label from a bracketed mechanism (`+[15N]O3-`, the
+  explicit form of `+^NO3-`), massing the 15N-nitrate reagent as the unlabelled
+  one, 0.997 Da light, so every candidate on that channel fitted the wrong
+  adduct mass; the label is now kept, and a labelled isotope the finder cannot
+  mass is refused instead of silently unlabelled. Both affect the peak
+  assignment engine's untargeted stage and the on-demand composition search.
+
 ### Added
 
 - **Two peak-assignment engines can be compared peak by peak on the same
