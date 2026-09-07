@@ -549,6 +549,16 @@ both engines commit to.
 | E bromide, TOF | 3,493 | 409 (206) | 119 (28) | 3 of 29 | 99% | 7% | 22% / 0% | 1.56 / 1.16 ppm | 336 |
 | F1 bromide, multi-scheme TOF | 13,595 | 1,449 (968) | 698 (100) | 18 of 126 | 98% | 18% | 26% / 0% | 0.94 / 1.01 ppm | 23 |
 | F2 nitrate, multi-scheme TOF | 8,905 | 1,452 (1,195) | 755 (46) | 22 of 190 | 99% | 44% | 38% / 0% | 0.73 / 0.92 ppm | - |
+| C2 15N-nitrate, Orbitrap A, from m/z 50 (joined at step 1.2) | 1,420 | 779 (667) | 429 (287) | 201 of 372 (54%) | 72% | 64% | 24% / 0% | 0.55 / 0.21 ppm | 33 |
+
+Set C2 joined the gate at step 1.2, so its baseline was measured then, under
+the identity profile (`none`: 10 ppm, `C0-100 H0-100 O0-100 N0-100`, the
+300-peak cap) on the engine carrying the finder fixes. It is therefore not
+confounded by the deprotonation-charge bug the way set C's row is, which is
+why its same-formula share starts at 54% rather than 16%; the wide grid's
+signature is otherwise the same, a quarter of the committed formulas with
+five or more nitrogens and 90 carbon-free ones. Its step 1.2 numbers are in
+the table for that step.
 
 Sets E and F are a finding of their own: on a TOF the reference fails as
 well, and on the better-calibrated multi-scheme TOF (mass error 0.7-1.0 ppm
@@ -742,8 +752,9 @@ the Orbitrap nitrate set, and it is marginal only where the intensity is a peak
 area rather than a height. Left for step 1.4's fuller cluster library, which
 gives a channel more than one ion to prove itself on.
 
-The stage targets below are stated for the Orbitrap sets A-D; C and D
-start from a worse baseline than A and B and are held to the same targets.
+The stage targets below are stated for the Orbitrap sets A-D and C2; C and D
+start from a worse baseline than A and B and are held to the same targets, and
+C2 is held to C's.
 
 | metric | today A | today B | today C | after stage 1 | after stage 2 | after stage 3 |
 |---|---|---|---|---|---|---|
