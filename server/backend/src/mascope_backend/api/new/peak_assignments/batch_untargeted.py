@@ -63,10 +63,12 @@ from mascope_backend.api.new.peak_assignments.fold_view import fold_run_id
 from mascope_backend.api.new.peak_assignments.profiles import (
     ResolvedProfile,
     resolve_profile,
+    with_secondary_channels,
 )
 from mascope_backend.api.new.peak_assignments.seeded_scoring import score_seeds
 from mascope_backend.api.new.peak_assignments.service import (
     _untargeted_ionization_notations,
+    fetch_mechanisms_by_notation,
     fetch_sample_mechanisms,
     load_sample_peaks,
 )
@@ -79,6 +81,7 @@ from mascope_backend.socket.notifications import (
 )
 from mascope_file.name import get_instrument_type
 from mascope_tools.composition.finder import assign_compositions
+from mascope_tools.composition.reagents import secondary_channels
 
 
 #: The notification channel the search reports on, start to finish.
@@ -218,8 +221,13 @@ async def _search_sample(
     if targets.empty:
         return []
     _, mechanisms = await fetch_sample_mechanisms(sample)
-    notations, mechanism_id_by_notation = _untargeted_ionization_notations(mechanisms)
-    if not notations:
+    # The mode's own mechanisms decide whether there is anything to search at
+    # all. An opportunistic channel is an addition to a sample's chemistry, not
+    # a substitute for it: a mode that declares nothing is a mode nobody has
+    # configured, and searching it through a channel the source happens to show
+    # would be assigning a sample whose ionization is unknown.
+    primary_notations, _ = _untargeted_ionization_notations(mechanisms)
+    if not primary_notations:
         runtime.logger.info(
             f"Untargeted batch search skips sample '{sample.sample_item_name}': "
             "no polarity-compatible ionization mechanisms."
@@ -232,6 +240,30 @@ async def _search_sample(
         mechanism_notations=[m.ionization_mechanism for m in mechanisms],
         instrument_type=get_instrument_type(sample.filename),
         polarity=sample.polarity,
+    )
+    # The opportunistic channels are read off this sample's own spectrum, on the
+    # whole frame rather than the searched representatives: the evidence is the
+    # source's cluster ions, which are bright and belong to no anchor.
+    secondary_mechanisms = await fetch_mechanisms_by_notation(
+        [
+            channel.notation
+            for channel in secondary_channels(resolved_profile.profile.name)
+        ],
+        sample.polarity,
+    )
+    resolved_profile = with_secondary_channels(
+        resolved_profile,
+        frame["mz"].to_numpy(),
+        frame["intensity"].to_numpy(),
+        [m.ionization_mechanism for m in secondary_mechanisms],
+    )
+    notations, mechanism_id_by_notation = _untargeted_ionization_notations(
+        mechanisms
+        + [
+            mechanism
+            for mechanism in secondary_mechanisms
+            if mechanism.ionization_mechanism in resolved_profile.minor_channels
+        ]
     )
     runtime.logger.info(
         f"Untargeted batch search of sample '{sample.sample_item_name}' "
@@ -258,6 +290,7 @@ async def _search_sample(
         mechanism_id_by_notation=mechanism_id_by_notation,
         formula_formatter=to_custom_element_format,
         max_alternatives=config.max_alternatives,
+        minor_channels=resolved_profile.minor_channels,
     )
 
 

@@ -21,7 +21,7 @@ later, after the presets have been revised or a mode's mechanisms edited.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 from mascope_backend.api.new.cheminfo.utils import to_explicit_isotope_format
 from mascope_backend.api.new.peak_assignments.config import (
@@ -40,6 +40,13 @@ from mascope_tools.composition.profiles import (
     get_reagent_profile,
     resolve_element_ranges,
     resolve_mz_precision_ppm,
+)
+from mascope_tools.composition.reagents import (
+    ChannelEvidence,
+    detect_channels,
+    evidence_records,
+    present_notations,
+    secondary_channels,
 )
 
 
@@ -74,6 +81,10 @@ class ResolvedProfile:
     :param element_ranges_source: :data:`SOURCE_PROFILE` when the grid came from
         the presets, :data:`SOURCE_CONFIG` when the run overrode it.
     :param mz_precision_source: The same for the window.
+    :param channel_evidence: What the sample's spectrum said about each of the
+        profile's secondary channels - present or not, and on what.
+    :param unavailable_channels: Channels the spectrum showed but the
+        deployment has no mechanism row for, so they could not be searched.
     """
 
     profile: ReagentProfile
@@ -84,6 +95,24 @@ class ResolvedProfile:
     requested_context: str
     element_ranges_source: str
     mz_precision_source: str
+    channel_evidence: tuple[ChannelEvidence, ...] = ()
+    unavailable_channels: tuple[str, ...] = ()
+
+    @property
+    def minor_channels(self) -> frozenset[str]:
+        """The secondary channels this run searches beside the mode's own.
+
+        A channel reaches this set only if the sample's spectrum showed its
+        carrier *and* the deployment can express it as a mechanism; the two
+        conditions are recorded separately, so a run says which of the two an
+        absent channel failed.
+        """
+        unavailable = set(self.unavailable_channels)
+        return frozenset(
+            notation
+            for notation in present_notations(self.channel_evidence)
+            if notation not in unavailable
+        )
 
     def heuristics_config(self, *, use_senior: bool = True) -> HeuristicFilterConfig:
         """The heuristic filter this run's context implies.
@@ -148,7 +177,55 @@ class ResolvedProfile:
                 key: list(window)
                 for key, window in self.context.ratio_windows().items()
             },
+            "secondary_channels": sorted(self.minor_channels),
+            "channel_evidence": evidence_records(self.channel_evidence),
+            "unavailable_channels": list(self.unavailable_channels),
         }
+
+
+def with_secondary_channels(
+    resolved: ResolvedProfile,
+    mz,
+    intensity,
+    available_notations,
+) -> ResolvedProfile:
+    """Decide which of the profile's secondary channels this sample runs.
+
+    The mechanism panel of a deployment says what an operator configured, not
+    what the source produces, so neither answers this on its own: the spectrum
+    is asked whether the channel's carrier is in it, and the mechanism table
+    whether the result can be expressed at all. A channel needs both, and the
+    resolution records each separately - "the source does not run it" and "this
+    deployment cannot say it" are different facts about a missing channel, and
+    only the second is worth fixing by configuration.
+
+    Stage A is untouched throughout: a curated target carries its own ions.
+
+    :param resolved: The profile resolution to extend.
+    :param mz: The sample's peak m/z values.
+    :param intensity: Their intensities, in the same order.
+    :param available_notations: Mechanism notations the deployment holds for
+        this sample's polarity.
+    :return: A new resolution carrying the channel evidence.
+    """
+    channels = secondary_channels(resolved.profile.name)
+    if not channels:
+        return resolved
+    # The detection window is the reagents module's own, not this run's search
+    # window: a cluster ion's mass is known and uncontested, and the acquisitions
+    # this runs on put those ions several ppm out.
+    evidence = detect_channels(channels, mz, intensity)
+    available = set(available_notations or ())
+    unavailable = tuple(
+        notation
+        for notation in present_notations(evidence)
+        if notation not in available
+    )
+    return replace(
+        resolved,
+        channel_evidence=tuple(evidence),
+        unavailable_channels=unavailable,
+    )
 
 
 def resolve_profile(
