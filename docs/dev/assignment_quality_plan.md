@@ -101,6 +101,27 @@ justify.
   of this note. The metrics and their stage targets are in the table at the
   end. A step that moves a metric the wrong way is discussed before merge,
   not merged on green CI alone.
+- **The gate set.** Decision 6 widens it from the two uronium batches to
+  every chemistry and instrument class the product is judged on, each as a
+  representative sample set (five time-spaced samples plus the max-TIC one
+  of a batch) with peaky's run published beside the in-app run:
+
+  | set | instrument | chemistry | samples | status |
+  |---|---|---|---|---|
+  | A | Orbitrap, sparse spectra | urea CIMS, positive | 6 | measured |
+  | B | Orbitrap, dense spectra | urea CIMS, positive | 6 | measured |
+  | C | Orbitrap A | 15N-nitrate CIMS, negative | 5 | measured |
+  | D | Orbitrap A | bromide CIMS, negative (the demo dataset's source batch) | 6 | files being brought onto the testbed |
+  | E | TOF, single acquisition set | bromide CIMS, negative | 3 | files being brought onto the testbed |
+  | F | TOF, multi-scheme source | bromide and nitrate CIMS, negative, one day each | 6 + 6 | files being brought onto the testbed |
+
+  Sets D to F need peaky reference runs with TOF-appropriate windows where
+  the instrument is a TOF (its Orbitrap defaults of 1 ppm trust and 3 ppm
+  search are meaningless at 10 ppm accuracy), and the in-app engine's TOF
+  window default from step 1.1. The demo dataset carries set D's chemistry
+  in public form, which is what step 3.4 can run in CI. A stage gate is
+  judged on the whole set; a chemistry that regresses blocks the stage even
+  when the pooled number improves.
 - **Regression guards.** With the identity profile (`none`) and today's
   config a run must reproduce today's ledger content for content (ids and
   timestamps excluded); the scoring goldens in `tooling/score_eval` do not
@@ -440,54 +461,60 @@ Corroboration that only a batch can give, on the batch ledger.
 
 ## Metrics and targets
 
-Measured on the twelve testbed samples; A is the sparse instrument (427-461
-peaks per sample), B the dense one (1,003-2,577).
+Measured on the gate sets so far: A is the sparse uronium Orbitrap (427-461
+peaks per sample), B the dense one (1,003-2,577), C the 15N-nitrate batch
+on Orbitrap A (308-329 peaks per sample). The targets apply per set.
 
-| metric | today A | today B | after stage 1 | after stage 2 | after stage 3 |
-|---|---|---|---|---|---|
-| G1 "assigned" rows the reference does not confirm | 73% | 57% | <= 45% | <= 20% | <= 15% |
-| G2 reference Assigned peaks recovered: same formula / same ion | 39% / - | 12% / - | >= 80% / >= 95% (A), >= 70% / >= 95% (B) | >= 85% / >= 95% | hold |
-| G3 committed formulas with N >= 5; carbon-free formulas | 13%; 59 | 15%; - | <= 1%; 0 off the allowlist | hold | hold |
-| G4 reference reagent peaks labelled reagent | 0 of 58 | 0 of 24 | >= 90% | 100% | hold |
-| G5 reference Assigned peaks never searched | 190 | 4,181 | 0 | 0 | 0 |
-| G6 main peaks on reference isotopologues | 96 | - | <= 10 | <= 5 | hold |
-| G7 uncorroborated commits beyond 3 sigma | not gated | not gated | - | 0 | 0 |
-| every committed row carries tier reasons | no | no | - | yes | yes |
-| corroboration from series or time series | none | none | - | - | reported per batch |
+| metric | today A | today B | today C | after stage 1 | after stage 2 | after stage 3 |
+|---|---|---|---|---|---|---|
+| G1 "assigned" rows the reference does not confirm | 73% | 57% | 99% | <= 45% | <= 20% | <= 15% |
+| G2 reference Assigned peaks recovered: same formula / same ion | 39% / - | 12% / - | 18% / - | >= 80% / >= 95% (A, C), >= 70% / >= 95% (B) | >= 85% / >= 95% | hold |
+| G3 committed formulas with N >= 5; carbon-free formulas | 13%; 59 | 15%; - | 17%; - | <= 1%; 0 off the allowlist | hold | hold |
+| G4 reference reagent peaks labelled reagent | 0 of 58 | 0 of 24 | 0 of 29 | >= 90% | 100% | hold |
+| G5 reference Assigned peaks never searched | 190 | 4,181 | 8 | 0 | 0 | 0 |
+| G6 main peaks on reference isotopologues | 96 | - | - | <= 10 | <= 5 | hold |
+| G7 uncorroborated commits beyond 3 sigma | not gated | not gated | not gated | - | 0 | 0 |
+| mass error of committed peaks, MAD | 0.20 ppm | 0.20 ppm | 1.13 ppm | <= 0.35 ppm on an Orbitrap | hold | hold |
+| every committed row carries tier reasons | no | no | no | - | yes | yes |
+| corroboration from series or time series | none | none | none | - | - | reported per batch |
+
+Set C shows the nitrate chemistry is the worst of the three: the covalent
+nitrate reading through `-H+` fits almost any peak within 10 ppm, 63% of the
+committed formulas carry three or more nitrogens, and the committed mass
+errors spread five times wider than the reference's. Peaky reads 145 of its
+main peaks there through the carbonate channel, which the mode does not
+offer (step 1.2).
 
 "Hold" means the earlier target still applies. The reference is peaky's
 ledger, which is not truth; the targets are agreement bounds a chemist then
 audits through `tier_disagrees`.
 
-## Decisions needed before stage 1
+## Decisions (taken 2026-09-07)
 
-1. **Presets before rows.** Ship profiles as library presets resolved from
-   the ionization mode, with the versioned DB rows and settings UI as step
-   3.5. Recommended: yes; the run config snapshot keeps runs reproducible
-   without a schema change.
-2. **The same-ion policy.** Prefer the adduct or cluster reading when two
-   candidates form the same ion, keep the covalent reading as a flagged
-   alternative. Recommended: yes; it matches the source chemistry and
-   Stage A's curated targets still win their peaks.
+1. **Presets before rows.** Profiles ship as library presets resolved from
+   the ionization mode; the versioned DB rows and settings UI are step 3.5.
+   The run config snapshot keeps runs reproducible without a schema change.
+2. **The same-ion policy.** The adduct or cluster reading wins when two
+   candidates form the same ion; the covalent reading is kept as a flagged
+   alternative. It matches the source chemistry, and Stage A's curated
+   targets still win their peaks.
 3. **Tiers may demote Stage A rows.** The mechanical rules and the mass gate
-   apply to curated targets too. Recommended: yes; a target matched 4 ppm
-   off on a 0.2 ppm instrument is not "assigned", and a curated hit within
-   calibration is corroborated by its curation.
-4. **The cap.** Default to every peak with the 5,000 ceiling. Recommended:
-   yes; ingest-time runs are Stage A only, so the cost lands on explicit
+   apply to curated targets too: a target matched 4 ppm off on a 0.2 ppm
+   instrument is not "assigned", and a curated hit within calibration is
+   corroborated by its curation.
+4. **The cap.** Every peak by default, with the 5,000 ceiling as the hard
+   bound; ingest-time runs are Stage A only, so the cost lands on explicit
    runs.
-5. **Release posture.** Hold the feature until the stage 2 gate passes, or
-   ship stage 1 with peaky's published ledgers as the visible result for the
-   profiled chemistries. The import path works today.
-6. **A TOF batch in the gate set.** Both testbed instruments are Orbitraps;
-   the profile windows for TOF are untested. Recommended: add one TOF batch
-   before stage 1 ends.
-7. **The seed proposal's defaults.** Its four decisions are assumed as
-   taken: sweep order nitrate, bromide, urea and ammonium; opt-in production
-   loading with the demo loading automatically; radicals and clusters as
-   separate lists, off by default; the Stage A window widened with the seed.
-   The testbed batches are urea-CIMS, so a nitrate or bromide batch joins
-   the gate set when its lists land (with decision 6).
+5. **Release posture.** The feature stays unreleased until the stage 2 gate
+   passes. Peaky's published ledgers remain available through the import
+   path in the meantime, but are not the release.
+6. **Broader test coverage, including TOF.** The gate set grows beyond the
+   two Orbitrap uronium batches: a TOF batch and further chemistries, as
+   the gate-set section describes. A stage gate is judged on the whole set.
+7. **The seed proposal's defaults** stand as taken there: sweep order
+   nitrate, bromide, urea and ammonium; opt-in production loading with the
+   demo loading automatically; radicals and clusters as separate lists, off
+   by default; the Stage A window widened with the seed.
 
 ## Risks
 
