@@ -101,7 +101,7 @@ class TestOverrides:
             PeakAssignmentConfig(), BROMIDE, instrument_type="tof", polarity="-"
         )
         assert orbi.mz_precision_ppm == 3.0
-        assert tof.mz_precision_ppm == 20.0
+        assert tof.mz_precision_ppm == 10.0
         assert orbi.mz_precision_source == SOURCE_PROFILE
 
     def test_a_run_can_still_pin_its_own_window(self):
@@ -185,7 +185,7 @@ class TestSnapshot:
         assert snapshot["element_ranges"] == presets.resolve_element_ranges(
             presets.BR, presets.AMBIENT_AIR
         )
-        assert snapshot["mz_precision_ppm"] == 20.0
+        assert snapshot["mz_precision_ppm"] == 10.0
         assert snapshot["ratio_windows"]["O/C"] == [0.0, 1.5]
 
     def test_it_is_json_serializable(self):
