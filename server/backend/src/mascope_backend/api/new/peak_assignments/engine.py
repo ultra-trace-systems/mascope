@@ -855,6 +855,7 @@ def untargeted_matches_to_peak_assignments(
     mechanism_id_by_notation: dict[str, str] | None = None,
     formula_formatter=None,
     max_alternatives: int = 5,
+    minor_channels: frozenset[str] | None = None,
 ) -> list[dict]:
     """Map untargeted composition results onto peak assignments (Stage B).
 
@@ -887,12 +888,18 @@ def untargeted_matches_to_peak_assignments(
         search back to IonizationMechanism ids.
     :param formula_formatter: Optional callable applied to formulas (e.g.
         explicit-isotope to custom element notation conversion).
+    :param minor_channels: Notations of the opportunistic secondary channels
+        this run switched on. They are searched beside the mode's own
+        mechanisms but are not equal to them: they only take peaks no primary
+        channel explains, and a winner on one is capped at ``candidate`` unless
+        something corroborates it (see :func:`_apply_minor_channel_policy`).
     :return: One assignment dict per assigned peak, ready for bulk insert.
     """
     if matches_df.empty or peaks_df.empty:
         return []
 
     mechanism_id_by_notation = mechanism_id_by_notation or {}
+    minor_channels = minor_channels or frozenset()
     format_formula = formula_formatter or (lambda formula: formula)
 
     assigned_rows = [
@@ -940,6 +947,8 @@ def untargeted_matches_to_peak_assignments(
                 "plausibility": plausibility,
                 "mz_error_ppm": mz_error_ppm,
                 "abundance_error": abundance_error,
+                "minor": _str_or_none(row.get("ionization_mechanism"))
+                in minor_channels,
             }
         )
     if unmatched_m0:
@@ -962,9 +971,18 @@ def untargeted_matches_to_peak_assignments(
     for position, contenders in contenders_by_position.items():
         # Same ranking as Stage A: evidence first, closest mass next, formula last so a
         # dead heat resolves by the data rather than by the finder's row order.
+        #
+        # An opportunistic secondary channel loses this contest on equal evidence: a
+        # primary-channel isotope child beats a secondary-channel M0 for the same
+        # observed peak. Which READING of a peak wins - X.[M+NH4]+ against
+        # (X+NH3).[M+H]+, the same ion split two ways - is not decided here and must
+        # not be: the finder ranks that hypothesis family under the same-ion policy,
+        # where the mechanism carrying the mass is what settles it. This rule and that
+        # one do not re-rank each other.
         contenders.sort(
             key=lambda c: (
-                -(c["fit"] * c["plausibility"]),
+                -round(c["fit"] * c["plausibility"], 4),
+                c["minor"],
                 abs(c["mz_error_ppm"])
                 if c["mz_error_ppm"] is not None
                 else float("inf"),
@@ -1102,7 +1120,80 @@ def untargeted_matches_to_peak_assignments(
     for assignment, group_key in child_assignments:
         assignment["owner_peak_assignment_id"] = m0_assignment_by_group.get(group_key)
 
+    if minor_channels:
+        _apply_minor_channel_policy(
+            assignments, mechanism_id_by_notation, minor_channels
+        )
+
     return assignments
+
+
+def _apply_minor_channel_policy(
+    assignments: list[dict],
+    mechanism_id_by_notation: dict[str, str],
+    minor_channels: frozenset[str],
+) -> None:
+    """Cap an uncorroborated secondary-channel winner at ``candidate``, in place.
+
+    A secondary channel is searched because the sample's own spectrum shows its
+    carrier, not because any neutral it proposes has been demonstrated. So a
+    winner on one commits at the ledger's strongest word only when something
+    beyond the mass fit agrees:
+
+    - its isotope envelope was confirmed, meaning the search paired the peak
+      with at least one satellite of the formula it proposes; or
+    - the same neutral won a peak on one of the mode's own channels in this
+      sample, which is cross-channel corroboration in its simplest form.
+
+    Neither is a tier rule of its own - stage 2's mechanical tiers take this
+    over and will say it better, with the reasons in provenance. Until then the
+    cap is what keeps an opportunistic channel from adding "assigned" rows on
+    its own authority, which is the failure mode the sodium measurement showed:
+    317 committed readings on a source with no sodium cluster in it.
+
+    Every secondary-channel row records the verdict either way, so a run says
+    which of its rows leaned on a channel it opened for itself.
+
+    :param assignments: The rows built for this sample, modified in place.
+    :param mechanism_id_by_notation: Notation to mechanism id, to recognise a
+        row's channel from the id it carries.
+    :param minor_channels: The notations that are secondary in this run.
+    """
+    minor_ids = {
+        mechanism_id_by_notation[notation]
+        for notation in minor_channels
+        if mechanism_id_by_notation.get(notation)
+    }
+    if not minor_ids:
+        return
+    owners_with_children = {
+        row["owner_peak_assignment_id"]
+        for row in assignments
+        if row["role"] == ROLE_ISO_CHILD and row["owner_peak_assignment_id"]
+    }
+    primary_formulas = {
+        row["assigned_formula"]
+        for row in assignments
+        if row["role"] == ROLE_M0
+        and row["ionization_mechanism_id"] not in minor_ids
+        and row["assigned_formula"]
+    }
+    for row in assignments:
+        if row["role"] != ROLE_M0 or row["ionization_mechanism_id"] not in minor_ids:
+            continue
+        corroboration = None
+        if row["peak_assignment_id"] in owners_with_children:
+            corroboration = "isotopologue"
+        elif row["assigned_formula"] in primary_formulas:
+            corroboration = "second_channel"
+        capped = corroboration is None and row["tier"] == TIER_ASSIGNED
+        provenance = row.setdefault("provenance", {})
+        provenance["minor_channel"] = {
+            "corroborated_by": corroboration,
+            "capped": capped,
+        }
+        if capped:
+            row["tier"] = TIER_CANDIDATE
 
 
 def build_unassigned_assignments(

@@ -13,7 +13,7 @@ step PRs land on the epic and are named here as they merge.
 | 1.1 - assignment profiles (library presets, resolution, stamping) | #2078 | measured on the fixed engine: G3 met, mass-error target met on all four Orbitrap sets, C and D move furthest |
 | 1.1 fix - finder: deprotonation charge and labelled reagent mass | #2079 | merged: found by the 1.1 gate run; sets C-F re-run with 1.1 on top of it |
 | 1.1 fix - finder: the labelled reagent's atom in ion formulas | #2080 | merged: the label reaching the ion string is what pyteomics could not parse |
-| 1.2 - opportunistic adduct channels | - | in progress (handed over 2026-09-07) |
+| 1.2 - opportunistic adduct channels | #TBD | measured: fingerprint gate works and refuses sodium; G1 down on every set that opened a channel |
 | 1.3 - same-ion tie policy in the finder | - | planned |
 | 1.4 - reagent-cluster pre-pass | - | planned |
 | 1.5 - satellite claim and ringing artifacts | - | planned |
@@ -630,6 +630,81 @@ sets worse, so it stays at 10.
 
 Unchanged by this step, as designed: G4 (no reagent role yet, step 1.4), G5
 (the 300-peak cap stands until step 1.6), G6 (satellite claiming is step 1.5).
+
+### After step 1.2, opportunistic adduct channels (2026-09-07)
+
+Same protocol, on a build carrying steps 1.1 and 1.2. Only a set whose profile
+declares a secondary channel can move; set C cannot (see below).
+
+| set | channel switched on, and on what | rows it won | Mascope M0 (assigned) | both M0: same formula | G1 | G2 same formula |
+|---|---|---|---|---|---|---|
+| A uronium | `+NH4+`, on `[(CH4N2O)+NH4]+` at 0.14% of base | 124 | 1,575 (1,426) | 465 of 898 (52%) | 68% | 43% |
+| B uronium | `+NH4+`, on `[(CH4N2O)2+NH4]+` at 0.17% | 112 | 1,599 (1,467) | 747 of 1,391 (54%) | 50% | 13% |
+| C 15N-nitrate | none: no carbonate ion in the acquisition window | - | 1,069 (1,046) | 458 of 681 (67%) | 57% | 86% |
+| D bromide | `+Br2-`, on `[Br2]-` at 1.4% | 17 | 797 (759) | 587 of 672 (87%) | 24% | 36% |
+| E bromide TOF | `+CO3-` at 2.5%, `+Br2-` at 1.1% | 19 | 235 (87) | 3 of 21 | 99% | 7% |
+| F1 bromide TOF | `+CO3-` at 0.09% | 89 | 983 (430) | 15 of 85 | 97% | 14% |
+| F2 nitrate TOF | `+CO3-` at 0.011% | 62 | 1,172 (695) | 27 of 163 | 97% | 41% |
+
+Every fingerprint decision is on the run: which channels were considered, which
+were found, on which cluster ion, how far off its mass and at what fraction of
+the base peak.
+
+**The fingerprint rule works, and it refuses what the measurement said to
+refuse.** Sodium is not on the urea profile's panel, and the same spectra show
+why: neither `[urea+Na]+` nor `[urea2+Na]+` nor a solvated sodium ion is
+present anywhere on set A. Every channel that did switch on was found on a real
+cluster ion of its own carrier.
+
+**G1 improves wherever a channel opened** - 73 -> 68% (A), 57 -> 50% (B),
+68 -> 24% (D) against the pre-profile baseline - and the assigned-tier count
+falls on those same sets, which is the corroboration rule doing what it is for:
+of A's 124 ammonium rows, 25 commit as assigned and 99 are held at candidate
+because neither a confirmed isotopologue nor the same neutral on a declared
+channel backs them. The ledger says "assigned" less often and is wrong less
+often when it does.
+
+**The reference's ammonium peaks are recovered with the same formula for the
+first time**: 0 -> 14 of the 107 the reference calls Assigned on set A, 0 -> 12
+of 1,320 on set B. Both are small against the note's expectation, for two
+reasons that are not this step's to fix. Of the ammonium peaks this step
+claims, a third are the same ion read as a different neutral/adduct pair, which
+step 1.3's family rule decides and this step deliberately does not; and on set B
+we commit on 169 of those 1,320 at all, because the 300-peak cap leaves the
+rest of a 12,055-peak spectrum unsearched until step 1.6.
+
+**Two things about the fingerprint that only the data could say.**
+
+- *The probe window is not the search window.* A cluster ion's mass is known
+  and uncontested, so a tight window buys nothing but missing it - and it does:
+  on set B the reagent's own ladder sits +4.7, +6.6 and +27.5 ppm out, because
+  that acquisition's low-mass end is calibrated against the analytes rather
+  than against ions this bright. A 3 ppm probe finds none of the three. The
+  probe window is 20 ppm and the observed error is recorded with every hit.
+- *The monomer cluster carries the evidence on a sparse spectrum.*
+  `[urea+NH4]+` is the same ion as `[NH3+(urea)H]+`, ambient ammonia through
+  its urea adduct, so the reagent library of step 1.4 must leave it alone - but
+  a probe claims no peak, and on set A it is the only ammonium cluster in the
+  spectrum at all.
+
+**The nitrate sets cannot fingerprint carbonate.** Set C acquires from m/z 131
+and set D from 87; carbonate is at 60. Nothing higher up stands in for it - no
+hydrate, and no `[CO3+HNO3]-` or `[CO3+(HNO3)2]-` cluster within 25 ppm on
+either set. So the channel this note expects to matter most on the nitrate
+chemistry (the reference reads 145 and 212 main peaks through it) stays off,
+fail-closed, and that expectation does not survive contact with the
+acquisitions. Either those acquisitions cannot prove the channel and it needs
+different evidence, or the reference is reading carbonate into spectra whose
+source shows none - worth settling before step 2.3 leans on cross-channel
+corroboration.
+
+**One metric moved the wrong way**: G2 same-formula on set F2, 43.5 -> 41.3%,
+where the carbonate channel won 62 peaks on a fingerprint that clears the floor
+by 7% (0.011% of the base peak against a 0.01% floor). It is a TOF set, which
+gates on intrinsic metrics, and the floor is the one number here with no
+measurement behind it beyond the sodium counter-example - a candidate to revisit
+when step 1.4's fuller cluster library gives a channel more than one ion to
+prove itself on.
 
 The stage targets below are stated for the Orbitrap sets A-D; C and D
 start from a worse baseline than A and B and are held to the same targets.
