@@ -171,19 +171,37 @@ and 5 as far as they are search problems.
 
 ### 1.2 Opportunistic adduct channels
 
-- **What.** The profile's adduct panel lists secondary channels the source
-  produces (`+NH4+` and `+Na+` for `UR` and `ESI_POS`; `+CO3-` and `+Br2-`
-  for `BR`). Stage B searches the union of the mode's mechanisms and the
-  panel's channels that exist in the deployment's mechanism table; missing
-  ones are logged once per run. Stage A is unchanged (targets carry their
-  own ions).
+- **What.** The profile's adduct panel lists the secondary channels a source
+  can produce: `+NH4+` for the urea and ESI presets, `+CO3-` and `+Br2-` for
+  bromide, `+Na+` and `+K+` in the ESI presets only. A secondary channel is
+  switched on per sample by its **fingerprint**, not by its presence in the
+  deployment's mechanism table: the reagent-cluster library of step 1.4
+  looks for the channel's own cluster ions (urea-NH4+ for ammonium, urea-Na+
+  and Na(H2O)n+ for sodium, the carbonate and dibromide clusters for the
+  halide channels) and enables the channel only when they are present above
+  a floor. An enabled secondary channel gets peaky's minor-channel
+  treatment: a ranking penalty against the primary channels, and a commit
+  only with corroboration until stage 2's tiers take that over. The run
+  config records which channels were on and why. Stage A is unchanged
+  (targets carry their own ions).
 - **Where.** `service._untargeted_ionization_notations` and
-  `fetch_sample_mechanisms`; a resolver like peaky's `resolve_mechanism_ids`.
-- **Why.** Cause 1, second half: 1,648 `[M+NH4]+` and 317 `[M+Na]+` main
-  peaks on instrument B that Mascope can only read as heavier N- or
-  Na-free neutrals.
-- **Verify.** Gate metric G2 same-ion recovery on peaky's Assigned peaks.
-- **Size.** S. Depends on 1.1 (the panel lives in the profile).
+  `fetch_sample_mechanisms`; a resolver like peaky's `resolve_mechanism_ids`;
+  the fingerprint from step 1.4's library.
+- **Why.** Cause 1, second half: 1,648 `[M+NH4]+` main peaks on instrument
+  B that Mascope can only read as heavier N-free neutrals. Ammonium is a
+  real channel there: the urea-NH4+ cluster is present in every spectrum,
+  80% of peaky's ammonium readings are corroborated by a second channel and
+  80% are peaky-Assigned. Sodium is the counter-example that motivates the
+  fingerprint rule: no urea-Na+ or Na(H2O)n+ cluster is present in the
+  uronium spectra (one trace at 0.008% of the base peak in one sample), and
+  peaky's 317 `[M+Na]+` readings on instrument B are 81% Candidate, 11%
+  corroborated and dim (median intensity rank 1,859) - a channel that
+  absorbs unexplained mass rather than reads the source's chemistry.
+- **Verify.** Gate metric G2 same-ion recovery on peaky's Assigned ammonium
+  peaks; the sodium channel stays off on every urea set because its
+  fingerprint is absent; the run config names the enabled channels.
+- **Size.** S-M. Depends on 1.1 (the panel lives in the profile) and 1.4
+  (the fingerprint comes from the cluster library).
 
 ### 1.3 Same-ion tie policy in the finder
 
