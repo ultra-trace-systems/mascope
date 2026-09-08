@@ -75,6 +75,12 @@ MAX_IMPORT_JSON_BYTES = 64 * 1024
 # the mass window (more candidates per peak), and exponentially with the number
 # of element species. These bounds keep one API call from scheduling unbounded
 # work; they are deliberately generous, well above any sane analysis.
+#
+# The peak ceiling is also the default, because `max_untargeted_peaks` is unset
+# by default: the stage searches every unexplained peak it is offered and this
+# is what stops "every" from being unbounded. No gate spectrum comes near it -
+# the densest carries about 2,600 peaks, of which the stage is offered fewer -
+# so on real data it is a backstop rather than a setting.
 MAX_UNTARGETED_PEAKS_CEILING = 5000
 MAX_MZ_PRECISION_PPM = 100.0
 MAX_FORMULA_RANGE_SPECIES = 12
@@ -281,14 +287,16 @@ class PeakAssignmentConfig(BaseModel):
             "capped. Omitted, the resolved profile's grid applies."
         ),
     )
-    max_untargeted_peaks: int = Field(
-        300,
+    max_untargeted_peaks: int | None = Field(
+        None,
         gt=0,
         le=MAX_UNTARGETED_PEAKS_CEILING,
         description=(
             "Upper bound on the number of (most intense) unassigned peaks fed "
-            "to the untargeted stage. Composition enumeration is the scaling "
-            "risk; this bounds run time on dense spectra."
+            "to the untargeted stage. Omitted, every eligible peak is searched, "
+            "up to the ceiling; a run that reaches the ceiling records that it "
+            "did. None by default because a spectrum's unexplained peaks are "
+            "what the stage is for, and a cap on them is a cap on the answer."
         ),
     )
     peak_intensity_threshold: float = Field(
