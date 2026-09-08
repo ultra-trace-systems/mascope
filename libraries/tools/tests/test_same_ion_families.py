@@ -47,11 +47,26 @@ class TestTheNeutralIsAMolecule:
         assert neutral_is_closed_shell("C17H24O4")
         assert not neutral_is_closed_shell("C16H23O")
 
-    def test_the_two_readings_of_an_ion_always_differ(self):
-        # A family's members differ by a fragment like HCO3, whose own DBE is a
-        # half-integer, so exactly one of the two neutrals is a molecule. That
-        # is why this key decides rather than merely breaking ties.
+    def test_the_two_readings_differ_when_the_fragment_between_them_does(self):
+        # Adding a fragment F to a neutral moves its DBE by DBE(F) - 1, so two
+        # readings of an ion differ here exactly when F's own DBE is a
+        # half-integer. HCO3 is such a fragment: [M-H]- against [M'+CO3]- puts
+        # a molecule against a radical, and this key decides.
         assert neutral_is_closed_shell("C17H24O4") != neutral_is_closed_shell("C16H23O")
+
+    def test_it_is_silent_where_the_fragment_has_a_whole_dbe(self):
+        # NH3, urea, HNO3 and HBr all do, so on an ammonium, a urea-cluster or a
+        # nitrate-against-deprotonation family both neutrals are molecules, this
+        # key says nothing and the mechanism's mass decides alone. That is most
+        # of the gate.
+        for molecule, heavier in (
+            ("C6H12O6", "C6H15NO6"),  # +NH4+ against +H+, differing by NH3
+            ("C8H16", "C9H20N2O"),  # +(CH4N2O)H+ against +H+, by urea
+            ("C6H10O5", "C6H11NO8"),  # +NO3- against -H+, by HNO3
+            ("C6H12O6", "C6H13BrO6"),  # +Br- against -H+, by HBr
+        ):
+            assert neutral_is_closed_shell(molecule)
+            assert neutral_is_closed_shell(heavier)
 
     def test_an_unreadable_formula_is_not_demoted_on_a_test_that_could_not_run(
         self,
