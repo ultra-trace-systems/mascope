@@ -187,15 +187,19 @@ def assign_compositions(
     matches = pd.DataFrame(results_per_peak)
     # --- Format results --- #
     # One row per peak, so two candidates that both explain it are cut down to
-    # one here. Which one survives decides more than which formula is reported.
-    # A candidate is a whole envelope, and its satellites belong to its
-    # monoisotopic row; drop that row for another candidate's satellite and the
-    # satellites it left behind belong to nothing. So a row that IS somebody's
+    # one here. Which one survives decides more than which formula is reported:
+    # a candidate is a whole envelope, and dropping its monoisotopic row leaves
+    # the satellites it named belonging to nothing. So a row that IS somebody's
     # monoisotopic line outranks another candidate's isotopologue for the same
-    # peak - a peak both readings claim is far more often the former - and only
-    # then does mass error decide. mz_error_ppm is signed, so rank on its
-    # magnitude: the row kept has to be the closest match, not the one furthest
-    # BELOW its prediction.
+    # peak, and only then does mass error decide.
+    #
+    # A guard rather than a live rule. The loop above claims each row's m/z as
+    # it emits it and skips an m/z already claimed, so on real input the
+    # collision this settles does not arise; it is here because nothing in the
+    # loop's structure PROMISES that, and the cost of being wrong is an
+    # envelope's satellites outliving it. mz_error_ppm is signed, so rank on
+    # its magnitude: the row kept has to be the closest match, not the one
+    # furthest BELOW its prediction.
     sort_by = [c for c in ["mz"] if c in matches.columns]
     if "isotope_label" in matches.columns:
         matches = matches.assign(_not_m0=matches["isotope_label"] != "M0")
