@@ -52,7 +52,10 @@ from mascope_backend.api.new.peak_assignments.batch_runs import (
     fail_run,
     start_run,
 )
-from mascope_backend.api.new.peak_assignments.config import PeakAssignmentConfig
+from mascope_backend.api.new.peak_assignments.config import (
+    MAX_UNTARGETED_PEAKS_CEILING,
+    PeakAssignmentConfig,
+)
 from mascope_backend.api.new.peak_assignments.engine import (
     ROLE_ARTIFACT,
     ROLE_REAGENT,
@@ -60,6 +63,7 @@ from mascope_backend.api.new.peak_assignments.engine import (
     evidence_for,
     tier_for_evidence,
     untargeted_matches_to_peak_assignments,
+    untargeted_targets,
 )
 from mascope_backend.api.new.peak_assignments.fold_view import fold_run_id
 from mascope_backend.api.new.peak_assignments.profiles import (
@@ -234,11 +238,19 @@ async def _search_sample(
         .sort_values("mz")
         .reset_index(drop=True)
     )
-    targets = frame[frame["sample_peak_id"].isin(target_peak_ids)].nlargest(
-        config.max_untargeted_peaks, "intensity"
+    targets, search_scope = untargeted_targets(
+        frame[frame["sample_peak_id"].isin(target_peak_ids)],
+        config.max_untargeted_peaks,
+        MAX_UNTARGETED_PEAKS_CEILING,
     )
     if targets.empty:
         return []
+    if search_scope["limited"]:
+        runtime.logger.info(
+            f"Batch untargeted search on sample '{sample.sample_item_name}' "
+            f"searches {search_scope['searched_peaks']} of "
+            f"{search_scope['eligible_peaks']} representative peaks"
+        )
     _, mechanisms = await fetch_sample_mechanisms(sample)
     # The mode's own mechanisms decide whether there is anything to search at
     # all. An opportunistic channel is an addition to a sample's chemistry, not
