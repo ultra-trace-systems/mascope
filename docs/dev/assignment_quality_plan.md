@@ -1706,8 +1706,8 @@ protonated ladder to n = 6, so both ions the reference names are in the library.
 Four of B's six samples acquire from m/z 123, so neither anchor is in the window
 and the base peak is 4.5e5 counts at m/z 158.15 rather than a reagent ion. On
 those four the reference labels m/z 138.0995 `[(urea)2+NH4]+`, whose ion mass is
-138.0986 - 6.9 ppm away - and m/z 181.1052 `C3H13N6O3`, which is the protonated
-trimer at 181.1044, 4.6 ppm away, not the ammoniated one. Those four samples
+138.0986 - 6.6 ppm away - and m/z 181.1052 `C3H13N6O3`, which is the protonated
+trimer at 181.1044, 4.7 ppm away, not the ammoniated one. Those four samples
 carry a -0.24 ppm median error with a 0.33 MAD, and this engine reads the same
 two peaks at 0.05-0.17 and -0.16 to -0.27 ppm: the M+1 line of a curated C9H12O
 it commits in each sample, and the 13C line of an untargeted C10H10O2. At that
@@ -1719,7 +1719,7 @@ below its mass at 5e-4 of the claimed peak.
 
 One thing the same evidence says in passing, for the channel gate's owner rather
 than this one: on those four samples the probe that switched the ammonium
-channel on is that same m/z 138.0995 peak, found 6.9 ppm inside the 20 ppm probe
+channel on is that same m/z 138.0995 peak, found 6.6 ppm inside the 20 ppm probe
 window. The channel is real on this source - the reference commits 1,648 main
 peaks through it - but the record now says the channel was opened on a peak this
 engine itself reads as an M+1 line.
