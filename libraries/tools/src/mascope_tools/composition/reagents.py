@@ -22,11 +22,26 @@ the cluster ions the channel's carrier makes on its own, matched against the
 spectrum above an intensity floor. Present, the channel is searched; absent, it
 is not, whatever the mechanism table offers.
 
-The probes here are the narrow half of the reagent-cluster library that step
-1.4 builds in this module: enough exact masses to answer "is this carrier in
-this spectrum", not the full cluster grammar with isotopologues and hydrates
-that the reagent pre-pass will enumerate. 1.4 grows the module; it does not
-replace it.
+The module has two halves, and the difference between them is what a match is
+allowed to do.
+
+The **probes** are the narrow half: enough exact masses to answer "is this
+carrier in this spectrum". A probe claims no peak and writes no row, so it can
+afford to count evidence that would be unsafe to act on.
+
+The **cluster library** is the wide half: the source's own ion ladder, with
+hydrates and predicted isotopologues, matched against the peak list before
+either assignment stage runs. A library ion CLAIMS the peak it matches - the
+peak becomes a reagent row and leaves the analyte ledger - so it is held to a
+stricter rule: every atom in a library ion comes from the reagent, the solvent
+or the instrument background, and none from the sample. The section comment on
+the library says where the two lists disagree, and why that is deliberate
+rather than an inconsistency.
+
+Why the library exists at all: on the gate's samples the reagent's own clusters
+are the top ten peaks and most of the total signal, and with nowhere to put them
+they land in the residual or, worse, get read as analytes whose formula happens
+to fit.
 """
 
 from __future__ import annotations
@@ -37,7 +52,24 @@ from typing import Iterable, Mapping, Sequence
 import numpy as np
 
 from mascope_tools.composition.config import ELECTRON_MASS
-from mascope_tools.composition.utils import composition_mass, parse_composition
+from mascope_tools.composition.heuristic_filter import predict_isotopes
+from mascope_tools.composition.utils import (
+    composition_mass,
+    parse_composition,
+    to_hill_notation,
+)
+
+
+def ion_mz(formula: str, charge: int) -> float:
+    """The m/z of an ion of this composition and charge.
+
+    :param formula: The ion's elemental composition, charge excluded.
+    :param charge: The ion's charge.
+    :return: Its m/z: the composition's mass less the charge's electrons, over
+        the charge's magnitude.
+    """
+    mass = composition_mass(parse_composition(formula))
+    return (mass - charge * ELECTRON_MASS) / abs(charge)
 
 
 #: Intensity a probe ion must reach, relative to the spectrum's base peak, for
@@ -80,8 +112,7 @@ class ProbeIon:
     @property
     def mz(self) -> float:
         """The ion's m/z: the composition's mass less the charge's electrons."""
-        mass = composition_mass(parse_composition(self.formula))
-        return mass - self.charge * ELECTRON_MASS
+        return ion_mz(self.formula, self.charge)
 
 
 #: What a channel does when the spectrum could not have shown its fingerprint -
@@ -476,3 +507,461 @@ def evidence_records(evidence: Iterable[ChannelEvidence]) -> list[dict]:
 def channel_notes(channels: Sequence[SecondaryChannel]) -> Mapping[str, str]:
     """Notation to the note explaining what its fingerprint means."""
     return {channel.notation: channel.note for channel in channels}
+
+
+# --- the reagent cluster library ----------------------------------------------
+#
+# The wide half of this module. A probe above asks whether a carrier is in the
+# spectrum; a cluster here CLAIMS the peak it matches, so what belongs in this
+# table is a stricter question than what belongs in a fingerprint.
+#
+# The rule is that an entry must be reagent all the way through: every atom in
+# it comes from the reagent, the solvent, or the instrument background, and none
+# from the sample. A cluster of the reagent with something the sample supplied
+# is not a reagent ion at all - it is the analyte, measured through its adduct
+# channel, which is the primary thing this engine is for. So:
+#
+# - bare reagent clusters, hydrates, and the hydrogen halide the reagent sheds
+#   are in;
+# - the reagent's clusters with organic acids are OUT. ``[Br+HCOOH]-`` is
+#   ``[formic acid+Br]-``: the [M+Br]- analyte channel, spelled backwards. The
+#   reference engine carried those for a while and they cost it real ambient
+#   acids, formic acid among them, buried as "reagent";
+# - ``[(CH4N2O)+NH4]+`` is OUT for the same reason one level up. It is the same
+#   ion as ``[NH3+(CH4N2O)H]+`` - ambient ammonia read through its urea adduct -
+#   so the analyte is the NH3. The urea MULTIMERS carrying an ammonium are in:
+#   there the ammonium charges a cluster the source built, and no sample atom is
+#   involved. The same ion is a probe above, where claiming nothing makes it
+#   safe evidence; the two lists disagree on purpose, and that is where.
+#
+# The oxides split by halogen for the same reason. ``BrO3-`` is reagent; ``IO3-``
+# is iodate, the deprotonated iodic acid that an iodide source is usually
+# deployed to measure, so the iodine oxides are left for the assignment stages.
+
+
+#: A bare cluster of the reagent with itself.
+KIND_CLUSTER = "cluster"
+#: The reagent clustered with water or with the acid it sheds.
+KIND_ADDUCT = "adduct"
+#: A reagent-halogen oxide anion.
+KIND_OXIDE = "oxide"
+#: A bright ion the source throws that is not a rung of any ladder.
+KIND_BACKGROUND = "background"
+
+
+@dataclass(frozen=True)
+class ReagentCluster:
+    """One reagent ion the source makes on its own, and may claim a peak.
+
+    :param formula: The ion's elemental composition, charge excluded.
+    :param charge: The ion's charge, ``+1`` or ``-1``.
+    :param label: How the ion is written in a row's provenance.
+    :param kind: Which part of the grammar produced it, for the reader of a
+        claim rather than for the matching.
+    """
+
+    formula: str
+    charge: int
+    label: str
+    kind: str = KIND_CLUSTER
+
+    @property
+    def mz(self) -> float:
+        """The ion's m/z."""
+        return ion_mz(self.formula, self.charge)
+
+
+def _ion_formula(*parts: tuple[str, int]) -> str:
+    """Sum ``(formula, multiplier)`` parts into one Hill-ordered formula.
+
+    Composed rather than written out so a labelled reagent's label follows into
+    every cluster built from it, the way it already does for the probes: the
+    15N-nitrate profile's ladder is ``^NO3``, ``H^N2O6``, ``H2^N3O9`` without a
+    second table to keep in step with the first.
+    """
+    counts = parse_composition("")
+    for formula, multiplier in parts:
+        counts += parse_composition(formula, multiplier)
+    return to_hill_notation(dict(counts))
+
+
+#: How many rungs of a reagent's own cluster ladder to enumerate. Four covers
+#: every rung that carries signal on the gate's halide sets; a fifth would cost
+#: nothing but has never matched.
+DEFAULT_MAX_CLUSTER = 4
+
+#: How many copies of a clustering neutral to put on each rung. Two, because the
+#: dihydrate of a halide reagent is an ordinary bright ion in a humid source.
+DEFAULT_MAX_NEUTRAL = 2
+
+
+def _halide_clusters(
+    symbol: str,
+    *,
+    max_n: int = DEFAULT_MAX_CLUSTER,
+    max_neutral: int = DEFAULT_MAX_NEUTRAL,
+    oxides: bool = True,
+) -> tuple[ReagentCluster, ...]:
+    """The ladder of a halide reagent: bare clusters, hydrates, oxides.
+
+    Both parities of the bare ladder are real ions - odd ``n`` are closed-shell
+    anions, even ``n`` are radical anions - and all of them are pure reagent, so
+    the closed-shell preference a same-ion family is ranked by (see
+    ``heuristic_filter``) has no bearing here. Nothing is being chosen between:
+    the composition is known exactly and it contains no sample atom.
+
+    :param symbol: The halogen's symbol.
+    :param max_n: Rungs of the bare ladder.
+    :param max_neutral: Copies of each clustering neutral per rung.
+    :param oxides: Whether the halogen's oxide anions are reagent ions. False
+        for iodine, whose oxides are the iodine oxyacids' analyte channel.
+    """
+    clusters: list[ReagentCluster] = []
+    for n in range(1, max_n + 1):
+        core = _ion_formula((symbol, n))
+        rung = f"{symbol}{n}" if n > 1 else symbol
+        clusters.append(ReagentCluster(core, -1, f"[{rung}]-", KIND_CLUSTER))
+        # Water, and the hydrogen halide the reagent itself sheds - HBr on a
+        # bromide source, HI on an iodide one, resolved from the reagent rather
+        # than fixed, so an iodide library carries no phantom [In+HBr]-.
+        for neutral in ("H2O", f"H{symbol}"):
+            for k in range(1, max_neutral + 1):
+                copies = f"{k}x" if k > 1 else ""
+                clusters.append(
+                    ReagentCluster(
+                        _ion_formula((symbol, n), (neutral, k)),
+                        -1,
+                        f"[{rung}+{copies}{neutral}]-",
+                        KIND_ADDUCT,
+                    )
+                )
+    if oxides:
+        for oxygens in (1, 2, 3):
+            clusters.append(
+                ReagentCluster(
+                    _ion_formula((symbol, 1), ("O", oxygens)),
+                    -1,
+                    f"[{symbol}O{oxygens if oxygens > 1 else ''}]-",
+                    KIND_OXIDE,
+                )
+            )
+    return tuple(clusters)
+
+
+#: The pure-iodine oxide clusters an iodide source throws, bright and stable in
+#: time. They are background rather than chemistry anyone measures, so they are
+#: claimed instead of being left to be read as exotic organoiodines.
+#:
+#: HOI2- and I2NO2- are deliberately absent: those are the [M+I]- readings of
+#: HOI and INO2, reactive iodine species that vary in time and are exactly what
+#: an iodide deployment is measuring. The same ruling as the oxides.
+_IODINE_BACKGROUND: tuple[ReagentCluster, ...] = (
+    ReagentCluster("I2O", -1, "[I2O]-", KIND_BACKGROUND),
+    ReagentCluster("I3O", -1, "[I3O]-", KIND_BACKGROUND),
+)
+
+
+def _nitrate_clusters(
+    reagent: str,
+    *,
+    max_n: int = 2,
+    max_neutral: int = DEFAULT_MAX_NEUTRAL,
+) -> tuple[ReagentCluster, ...]:
+    """The nitrate reagent's own ladder: ``(HNO3)n.NO3-`` and its hydrates.
+
+    The acid the ladder is built from is the reagent's own, so a labelled
+    reagent's ladder is labelled throughout - which is what makes the 15N
+    profile's rungs land 0.997 Da per nitrogen above the unlabelled ones.
+
+    :param reagent: The reagent ion's composition (``"NO3"``, ``"^NO3"``).
+    :param max_n: How many acid molecules to hang on the core.
+    :param max_neutral: Copies of water on the bare core.
+    """
+    acid = f"H{reagent}"
+    clusters = [ReagentCluster(_ion_formula((reagent, 1)), -1, f"[{reagent}]-")]
+    for n in range(1, max_n + 1):
+        copies = f"{n}x" if n > 1 else ""
+        clusters.append(
+            ReagentCluster(
+                _ion_formula((reagent, 1), (acid, n)),
+                -1,
+                f"[{reagent}+{copies}{acid}]-",
+                KIND_CLUSTER,
+            )
+        )
+    for k in range(1, max_neutral + 1):
+        copies = f"{k}x" if k > 1 else ""
+        clusters.append(
+            ReagentCluster(
+                _ion_formula((reagent, 1), ("H2O", k)),
+                -1,
+                f"[{reagent}+{copies}H2O]-",
+                KIND_ADDUCT,
+            )
+        )
+    return tuple(clusters)
+
+
+def _urea_clusters(
+    unit: str = "CH4N2O", *, max_n: int = 6
+) -> tuple[ReagentCluster, ...]:
+    """The protonated urea ladder, and the ammonium on its multimers.
+
+    ``[(CH4N2O)n+H]+`` at 61.04 / 121.07 / 181.10 / 241.14 are the dominant ions
+    of a uronium source and otherwise sit at the top of the residual.
+
+    The ammonium series starts at ``n = 2`` on purpose; the reason is in the
+    section comment above, and the same ion at ``n = 1`` is a channel probe.
+    """
+    clusters: list[ReagentCluster] = []
+    for n in range(1, max_n + 1):
+        rung = f"({unit}){n}" if n > 1 else unit
+        clusters.append(
+            ReagentCluster(
+                _ion_formula((unit, n), ("H", 1)), 1, f"[{rung}+H]+", KIND_CLUSTER
+            )
+        )
+        if n >= 2:
+            clusters.append(
+                ReagentCluster(
+                    _ion_formula((unit, n), ("NH4", 1)),
+                    1,
+                    f"[{rung}+NH4]+",
+                    KIND_CLUSTER,
+                )
+            )
+    return tuple(clusters)
+
+
+#: The reagent-cluster library per profile, keyed the way
+#: :data:`SECONDARY_CHANNELS` is. A profile with no single reagent species -
+#: an electrospray - has no library, which is not an omission: there is no one
+#: carrier whose clusters could be enumerated.
+REAGENT_CLUSTERS: dict[str, tuple[ReagentCluster, ...]] = {
+    "BR": _halide_clusters("Br"),
+    "IODIDE": _halide_clusters("I", oxides=False) + _IODINE_BACKGROUND,
+    "NO3": _nitrate_clusters("NO3"),
+    "NO3_15N": _nitrate_clusters("^NO3"),
+    "UR": _urea_clusters(),
+}
+
+
+def reagent_library(profile_name: str) -> tuple[ReagentCluster, ...]:
+    """The reagent ions a profile's source makes on its own.
+
+    :param profile_name: The profile's name.
+    :return: Its cluster library, empty when the profile has no reagent.
+    """
+    return REAGENT_CLUSTERS.get(profile_name, ())
+
+
+#: Window a library ion claims a peak in, in ppm. The same width, and the same
+#: reason, as :data:`DEFAULT_CHANNEL_MATCH_PPM`: the mass is known exactly and
+#: the ion is bright, so the only thing a tight window buys is missing a real
+#: reagent peak whose acquisition is calibrated against the analytes instead.
+#: What keeps the width safe is that a claim takes the BRIGHTEST peak in the
+#: window - at a reagent mass that peak is the reagent - and records how far off
+#: it sat.
+DEFAULT_REAGENT_MATCH_PPM = DEFAULT_CHANNEL_MATCH_PPM
+
+#: Predicted satellites below this share of their parent are not looked for.
+#: Small enough to reach the 13C of a monoisotopic-heavy cluster, large enough
+#: that the tail of an IsoSpec envelope does not start claiming peaks.
+DEFAULT_SATELLITE_MIN_RELATIVE = 4e-3
+
+#: How far above its predicted height a satellite may be observed and still be
+#: claimed. A reagent ion is bright, so its satellites are large in absolute
+#: terms and worth claiming - but a peak several times TALLER than the envelope
+#: predicts has an analyte co-eluting on top of it, and claiming that peak would
+#: bury the analyte. Above this ratio the peak is left for the stages.
+DEFAULT_SATELLITE_MAX_EXCESS = 3.0
+
+
+@dataclass(frozen=True)
+class ReagentHit:
+    """One peak claimed by the reagent library.
+
+    :param cluster: The library ion that claimed it.
+    :param index: The peak's position in the spectrum arrays it was matched in.
+    :param mz: The observed m/z.
+    :param intensity: The observed intensity.
+    :param mz_error_ppm: How far the observation sat from the ion's mass.
+    :param isotope_label: Which isotopologue of the cluster this peak is;
+        ``None`` on the cluster's own monoisotopic peak.
+    :param parent_index: The peak the satellite belongs to; ``None`` on a
+        monoisotopic hit.
+    :param predicted_relative: The satellite's predicted height relative to the
+        monoisotopic peak, recorded so a claim can be read back.
+    """
+
+    cluster: ReagentCluster
+    index: int
+    mz: float
+    intensity: float
+    mz_error_ppm: float
+    isotope_label: str | None = None
+    parent_index: int | None = None
+    predicted_relative: float | None = None
+
+    @property
+    def is_satellite(self) -> bool:
+        """Whether this peak is an isotopologue of a claimed cluster."""
+        return self.parent_index is not None
+
+
+def _brightest_in_window(
+    mz_array: np.ndarray,
+    intensity_array: np.ndarray,
+    target: float,
+    ppm: float,
+    taken: set[int],
+) -> int | None:
+    """The brightest unclaimed peak within ``ppm`` of ``target``, if any."""
+    window = target * ppm * 1e-6
+    hits = [
+        index
+        for index in np.flatnonzero(np.abs(mz_array - target) <= window)
+        if int(index) not in taken
+    ]
+    if not hits:
+        return None
+    return int(max(hits, key=lambda index: float(intensity_array[index])))
+
+
+def _satellite_hits(
+    cluster: ReagentCluster,
+    parent: ReagentHit,
+    mz_array: np.ndarray,
+    intensity_array: np.ndarray,
+    taken: set[int],
+    *,
+    ppm: float,
+    purity: float | None,
+    min_relative: float,
+    max_excess: float,
+) -> list[ReagentHit]:
+    """The isotopologue peaks of one claimed cluster.
+
+    The envelope is predicted from the cluster's own known ion formula, so the
+    heavy-halogen, 13C, 15N and 34S satellites all come out of one code path
+    rather than a hand-written table of isotopologue combinations.
+    """
+    predicted_mz, predicted_intensity, labels = predict_isotopes(
+        cluster.formula, cluster.charge, purity
+    )
+    if len(predicted_mz) == 0:
+        return []
+    predicted_mz = np.asarray(predicted_mz, dtype=float)
+    predicted_intensity = np.asarray(predicted_intensity, dtype=float)
+    # The monoisotopic peak is the lightest of the envelope; every other line is
+    # measured against it, because that is the peak the cluster was claimed on.
+    monoisotopic = int(np.argmin(predicted_mz))
+    base = float(predicted_intensity[monoisotopic])
+    if base <= 0.0:
+        return []
+    hits: list[ReagentHit] = []
+    for position in range(len(predicted_mz)):
+        if position == monoisotopic:
+            continue
+        relative = float(predicted_intensity[position]) / base
+        if relative < min_relative:
+            continue
+        target = float(predicted_mz[position])
+        index = _brightest_in_window(mz_array, intensity_array, target, ppm, taken)
+        if index is None:
+            continue
+        observed = float(intensity_array[index])
+        expected = relative * parent.intensity
+        if expected > 0.0 and observed > max_excess * expected:
+            # An analyte is sitting on this mass as well; leave the peak.
+            continue
+        taken.add(index)
+        hits.append(
+            ReagentHit(
+                cluster=cluster,
+                index=index,
+                mz=float(mz_array[index]),
+                intensity=observed,
+                mz_error_ppm=(float(mz_array[index]) - target) / target * 1e6,
+                isotope_label=labels[position] if position < len(labels) else None,
+                parent_index=parent.index,
+                predicted_relative=relative,
+            )
+        )
+    return hits
+
+
+def match_reagent_clusters(
+    library: Sequence[ReagentCluster],
+    mz: Sequence[float] | np.ndarray,
+    intensity: Sequence[float] | np.ndarray,
+    *,
+    ppm: float = DEFAULT_REAGENT_MATCH_PPM,
+    purity: float | None = None,
+    satellite_min_relative: float = DEFAULT_SATELLITE_MIN_RELATIVE,
+    satellite_max_excess: float = DEFAULT_SATELLITE_MAX_EXCESS,
+) -> list[ReagentHit]:
+    """Which peaks of this spectrum the reagent library accounts for.
+
+    Each library ion claims the brightest peak within ``ppm`` of its mass - at a
+    reagent mass that peak is the reagent ion, which is what makes a window this
+    wide safe - and then the isotopologues of that ion claim theirs, gated on
+    intensity so a peak with an analyte co-eluting on it is left alone.
+
+    A peak is claimed at most once. The library is walked brightest-claim-first
+    by mass so the outcome does not depend on the table's order, and a cluster
+    whose monoisotopic peak is absent claims no satellites: the evidence for a
+    satellite is the parent it is a satellite of.
+
+    :param library: The reagent ions, from :func:`reagent_library`.
+    :param mz: The spectrum's m/z values.
+    :param intensity: Their intensities, in the same order.
+    :param ppm: Match tolerance; see :data:`DEFAULT_REAGENT_MATCH_PPM`.
+    :param purity: The labelled reagent's isotopic purity, passed to the
+        envelope prediction; ``None`` for an unlabelled reagent.
+    :param satellite_min_relative: Predicted-height floor for a satellite.
+    :param satellite_max_excess: How far above prediction a satellite may be
+        observed and still be claimed.
+    :return: One hit per claimed peak, monoisotopic hits before their
+        satellites.
+    """
+    mz_array = np.asarray(mz, dtype=float)
+    intensity_array = np.asarray(intensity, dtype=float)
+    if mz_array.size == 0 or not library:
+        return []
+
+    taken: set[int] = set()
+    parents: list[ReagentHit] = []
+    for cluster in sorted(library, key=lambda item: item.mz):
+        target = cluster.mz
+        index = _brightest_in_window(mz_array, intensity_array, target, ppm, taken)
+        if index is None:
+            continue
+        taken.add(index)
+        parents.append(
+            ReagentHit(
+                cluster=cluster,
+                index=index,
+                mz=float(mz_array[index]),
+                intensity=float(intensity_array[index]),
+                mz_error_ppm=(float(mz_array[index]) - target) / target * 1e6,
+            )
+        )
+
+    hits: list[ReagentHit] = []
+    for parent in parents:
+        hits.append(parent)
+        hits.extend(
+            _satellite_hits(
+                parent.cluster,
+                parent,
+                mz_array,
+                intensity_array,
+                taken,
+                ppm=ppm,
+                purity=purity,
+                min_relative=satellite_min_relative,
+                max_excess=satellite_max_excess,
+            )
+        )
+    return hits
