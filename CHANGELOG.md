@@ -53,10 +53,12 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
   analyte on were never offered to the stage at all. A blank ledger row then
   meant one of two things - searched and unexplained, or never looked at - and
   nothing recorded which. The cap is now unset by default, the 5,000-peak
-  ceiling stays as the hard bound on what a single request can schedule, and a
-  run that leaves peaks unsearched for either reason records it on its own
-  config and says so in the log. Setting the cap explicitly still works, for a
-  caller that wants a run cut short.
+  ceiling stays as the hard bound on what a single request can schedule, and
+  peaks left unsearched for either reason are recorded rather than merely
+  omitted: a per-sample run stamps `search_scope` on its own config, and a batch
+  search - which has one config for many samples - counts them in its result.
+  Both log it. Setting the cap explicitly still works, for a caller that wants a
+  run cut short.
 
 - **An isotope envelope is now scored against the whole spectrum, and a
   satellite belongs to the peak that owns it.** The untargeted stage used to
