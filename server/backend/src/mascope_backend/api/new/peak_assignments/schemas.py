@@ -51,7 +51,9 @@ AssignmentRole = Literal["M0", "iso_child", "reagent", "artifact", "unassigned"]
 # the peak to be the source's own chemistry. Filterable in the ledger because
 # "show me what the source made" is the question that separates a bright
 # residual from a real one.
-AssignmentSource = Literal["database", "untargeted", "manual", "reagent"]
+# ...or the artifact pre-pass, which says the same about the instrument: the
+# peak is ringing around a very intense neighbour rather than a species.
+AssignmentSource = Literal["database", "untargeted", "manual", "reagent", "artifact"]
 
 # A run holds one row per detected peak, so an unbounded read serializes tens
 # of megabytes through Pydantic on the event loop. Clients page instead; the
