@@ -18,7 +18,7 @@ step PRs land on the epic and are named here as they merge.
 | 1.4 - reagent-cluster pre-pass | #2086 | measured: 60 peaks carry 81.2% of set A's signal; the claim is anchored on the sample's own base ions and the envelope reaches the floor it searches; no reference analyte taken on A/B/C/D/E/F1 |
 | 1.5 - satellite claim and ringing artifacts | #2088 | measured: G8 met, 0 ownerless isotopologue rows on every set; B claims 969 more satellites and D 423, 88-97% of them confirmed by the reference, and D gains 61 analytes and 27 agreements; two review rounds fixed the envelope's anchor and then restored the requirement anchoring it took away; G6 missed, and the reference's parent ion is outside the searched grid for 78 of A's 79 (decision 11) |
 | 1.6 - cap and mass window | #2090 | measured: G5 met (35,496 unsearched peaks -> 0, of which 5,304 the reference calls Assigned and 8,928 it commits any analyte on) and G2 clears its stage-1 target on A, B, C and D for the first time (B 20.7 -> 95.2%); the mass window was already instrument-class-resolved by 1.1; the grid is enumerated once per band instead of once per peak, so A and C search 5-8x more peaks and finish faster, worst sample 36s; G1 rises on the sets that gained most and G6 with it, and the review found G6's rise has an envelope part beside the grid gap, now decision 11's rider with homes in 2.1 and 2.4 |
-| 1.7 - stage 1 gate, engine 0.4.0 | - | in progress (handed over 2026-09-08) |
+| 1.7 - stage 1 gate, engine 0.4.0 | - | measured: the 0.4.0 build reproduces the 1.6 ledger field for field, so stage 1's numbers are final; G1 met on A, B, C and D (73 -> 41.5, 57 -> 24.3, 99 -> 41.5, 68 -> 37.3%) and missed on C2 (55.2%); G2's same-formula bound met on the same four (39 -> 95.6, 12 -> 95.2, 18 -> 87.3, 17 -> 80.1%) and its same-ion bound on A and B only; G3 met but for B's 2.7% N >= 5, with no carbon-free formula from the untargeted stage on any of the 43 samples; G5 and G8 met everywhere; the mass-error target met on all five Orbitrap sets; G4a below 90% and G6 read, not gated; about half of what stage 1 does not recover carries an element the searched grid cannot build, which is step 2.5b's |
 | 2.1 - v2 fit for Stage B | - | planned |
 | 2.2 - self-calibrated mass gate | - | planned |
 | 2.3 - cross-channel corroboration and the reagent-N rule | - | planned |
@@ -400,6 +400,16 @@ and 5 as far as they are search problems.
   move: the elections the whole-spectrum context flipped toward a candidate
   with fewer observable lines (10 on A, 15 on B after 1.5) and the share of
   untargeted M0 rows whose neutral is odd-electron.
+  Measured 2026-09-08 (section below): G1 met on A, B, C and D and missed on
+  C2; G3, G5 and G8 met, with the untargeted stage writing no carbon-free
+  formula on any of the 43 samples; G2's same-formula bound met on the four G1
+  clears and its same-ion bound on A and B; the mass-error target met on every
+  Orbitrap set. G4a stays below 90% for the reasons step 1.4 recorded, and G6
+  is read but not gated. The stage-1 build reproduces the 1.6 ledger field for
+  field, so the version bump stamps the runs and changes nothing else. The two
+  before-numbers step 2.1 has to move are recorded there: the odd-electron
+  share per set, and that 80-99% of committed analytes stand on the
+  monoisotopic line alone.
 - **Size.** S.
 
 ## Stage 2 - earn the tier (engine 0.5.0)
@@ -869,16 +879,16 @@ C2 is held to C's.
 
 | metric | today A | today B | today C | after stage 1 | after stage 2 | after stage 3 |
 |---|---|---|---|---|---|---|
-| G1 "assigned" rows the reference does not confirm (after 1.6: A 41.5%, B 24.3%, C 41.5%, D 37.3%, C2 55.2%) | 73% | 57% | 99% | <= 45% | <= 20% | <= 15% |
-| G2 reference Assigned peaks recovered: same formula / same ion (after 1.6: A 95.6/97.2%, B 95.2/96.1%, C 87.3/87.9%, D 80.1/82.3%, C2 68.3%) | 39% / - | 12% / - | 18% / - | >= 80% / >= 95% (A, C), >= 70% / >= 95% (B) | >= 85% / >= 95% | hold |
-| G3 committed formulas with N >= 5; carbon-free formulas (after 1.6: A 1.0%, B 2.7%, 0.0% elsewhere; carbon-free unchanged by 1.6 and Stage A's) | 13%; 59 | 15%; - | 17%; - | <= 1%; 0 off the allowlist | hold | hold |
-| G4 reference reagent peaks labelled reagent or artifact | 0 of 58 | 0 of 24 | 0 of 29 | >= 90% | 100% | hold |
-| G4a of those, the ones that **name an ion** (step 1.4's own target) | 0 of 58 | 0 of 24 | 0 of 15 | >= 90% | 100% | hold |
-| G5 reference Assigned peaks never searched (after 1.6: 0 on every set, from 5,304 pooled over A-F2 on the reference's own Assigned tier - A 186, B 4,180, C 7, which reproduces the step-0 baselines beside them) | 190 | 4,181 | 8 | 0 | 0 | 0 |
-| G6 main peaks on reference isotopologues (after 1.6: 107 A, 460 B, 328 D, up from 79/54/75 because the peaks the cap hid are now searched - as a share of committed rows A is flat at 5.2%, B 3.4 -> 5.0%, D 8.8 -> 13.8%. Of the rows 1.6 added, the reference's parent ion is outside the searched grid for 20 of A's 28, 293 of B's 406 and 90 of D's 255 - that part is 2.5b's; the rest have the parent on the grid and are the envelope logic refusing or never predicting the line, which decision 11's rider gives to 2.1 and 2.4. After 1.5 the parent was outside the grid for 78 of A's 79 and 52 of D's 75, which is what decision 11 read) | 96 | - | - | read, not gated (decision 11: <= 10 after 2.5b) | <= 5 | hold |
+| G1 "assigned" rows the reference does not confirm (stage 1 gate: A 41.5%, B 24.3%, C 41.5%, D 37.3% - met; C2 55.2% - missed) | 73% | 57% | 99% | <= 45% | <= 20% | <= 15% |
+| G2 reference Assigned peaks recovered: same formula / same ion (stage 1 gate: A 95.6/97.2% and B 95.2/96.1% - both bounds met; C 87.3/87.9% and D 80.1/82.3% - same formula met, same ion missed; C2 68.3% - missed, and 4.2 points of it are the nitrate ladder the pre-pass correctly claims) | 39% / - | 12% / - | 18% / - | >= 80% / >= 95% (A, C), >= 70% / >= 95% (B) | >= 85% / >= 95% | hold |
+| G3 committed formulas with N >= 5; carbon-free formulas (stage 1 gate: A 1.0% - met, B 2.7% - missed, 0.0% on every other set; every carbon-free formula left on any of the 43 samples is a Stage A curated row and the untargeted stage writes none, so the carbon half is met outright) | 13%; 59 | 15%; - | 17%; - | <= 1%; 0 off the allowlist | hold | hold |
+| G4 reference reagent peaks labelled reagent or artifact (stage 1 gate: A 48 of 58, B 14 of 24, D 123 of 262, E 48 of 336, F1 50 of 333; on C, C2 and F2 the reference's reagent rows are a different claim, so the raw share does not measure this engine's pass) | 0 of 58 | 0 of 24 | 0 of 29 | >= 90% | 100% | hold |
+| G4a of those, the ones that **name an ion** (step 1.4's own target; stage 1 gate: A 82.8%, B 58.3%, D 84.4%, E 87.3%, F1 74.6% - missed, and B's ten are two split peaks plus an ammoniated urea ladder the reagent library does not carry) | 0 of 58 | 0 of 24 | 0 of 15 | >= 90% | 100% | hold |
+| G5 reference Assigned peaks never searched (stage 1 gate: 0 on every set, from 5,304 pooled over A-F2 on the reference's own Assigned tier - A 186, B 4,180, C 7, which reproduces the step-0 baselines beside them) | 190 | 4,181 | 8 | 0 | 0 | 0 |
+| G6 main peaks on reference isotopologues (stage 1 gate: 107 A, 460 B, 328 D, 57 C, 24 C2, 8 E, 57 F1, 33 F2, up from 79/54/75 because the peaks the cap hid are now searched - as a share of committed rows A is flat at 5.2%, B 3.4 -> 5.0%, D 8.8 -> 13.8%. Of the rows 1.6 added, the reference's parent ion is outside the searched grid for 20 of A's 28, 293 of B's 406 and 90 of D's 255 - that part is 2.5b's; the rest have the parent on the grid and are the envelope logic refusing or never predicting the line, which decision 11's rider gives to 2.1 and 2.4. After 1.5 the parent was outside the grid for 78 of A's 79 and 52 of D's 75, which is what decision 11 read) | 96 | - | - | read, not gated (decision 11: <= 10 after 2.5b) | <= 5 | hold |
 | G7 uncorroborated commits beyond 3 sigma | not gated | not gated | not gated | - | 0 | 0 |
-| G8 untargeted isotopologue rows without an owner (step 1.5's coherence count; was 71 over the bromide Orbitrap set's six samples, 0 on every set after 1.5 and still 0 after 1.6 with six to eight times as many peaks searched) | 0 | 0 | 0 | 0 | 0 | 0 |
-| mass error of committed peaks, MAD | 0.20 ppm | 0.20 ppm | 1.13 ppm | <= 0.35 ppm on an Orbitrap | hold | hold |
+| G8 untargeted isotopologue rows without an owner (step 1.5's coherence count; was 71 over the bromide Orbitrap set's six samples, 0 on every set after 1.5 and still 0 at the stage 1 gate, with six to eight times as many peaks searched) | 0 | 0 | 0 | 0 | 0 | 0 |
+| mass error of committed peaks, MAD (stage 1 gate: A 0.22, B 0.30, C 0.17, C2 0.31, D 0.31 ppm - met on all five Orbitrap sets) | 0.20 ppm | 0.20 ppm | 1.13 ppm | <= 0.35 ppm on an Orbitrap | hold | hold |
 | every committed row carries tier reasons | no | no | no | - | yes | yes |
 | corroboration from series or time series | none | none | none | - | - | reported per batch |
 
@@ -1611,6 +1621,165 @@ searched. The 5 rows on C, 20 on C2 and 6 on F1 that the pooled count shows are
 Stage A's, unchanged by this step and unrelated to it: two curated targets
 sharing a peak, the loser's children staying. They are reported inside the total
 by design (see the metric's note) and are step 2.5's to fix.
+
+### The stage 1 gate: engine 0.4.0 (2026-09-08)
+
+Branch `step-1.7-stage-1-gate-2026.09.08-d3dda34` deployed on the testbed in
+prod mode, all 43 gate samples re-assigned, compared against the same peaky
+runs. The only source change since the 1.6 head is
+`PEAK_ASSIGNMENT_ENGINE_VERSION`, and the gate confirms it: **every field of
+every set's summary is identical to the 1.6 run, and no peak changed role on any
+of the 43 samples.** The bump does what a version is for - a 0.3.0 result and a
+0.4.0 one are told apart wherever a run is shown - and nothing else.
+
+The baseline column is the step-0 engine on the same samples against the same
+reference runs; bold marks a stage-1 target met.
+
+| set | analyte M0 (assigned tier) | G1 | G2 same formula / same ion | N >= 5 | mass error MAD |
+|---|---|---|---|---|---|
+| A uronium, Orbitrap sparse | 1,631 (1,535) -> 2,070 (1,774) | 73 -> **41.5%** | 39 -> **95.6 / 97.2%** | 13 -> **1.0%** | 0.20 -> **0.22 ppm** |
+| B uronium, Orbitrap dense | 1,631 (1,587) -> 9,148 (8,098) | 57 -> **24.3%** | 12 -> **95.2 / 96.1%** | 15 -> 2.7% | 0.20 -> **0.30 ppm** |
+| C 15N-nitrate | 1,078 (787) -> 1,115 (846) | 99 -> **41.5%** | 18 -> **87.3** / 87.9% | 17 -> **0.0%** | 1.13 -> **0.17 ppm** |
+| C2 15N-nitrate, broad window | 779 (667) -> 645 (516) | 72 -> 55.2% | 64 -> 68.3 / 68.3% | 24 -> **0.0%** | 0.55 -> **0.31 ppm** |
+| D bromide | 947 (818) -> 2,378 (2,229) | 68 -> **37.3%** | 17 -> **80.1** / 82.3% | 31 -> **0.0%** | 0.37 -> **0.31 ppm** |
+| E bromide, TOF | 409 (206) -> 1,233 (534) | 99 -> 99.4% | 7 -> 10.7 / 25.0% | 22 -> 0.0% | 1.56 -> 1.20 ppm |
+| F1 bromide, multi-scheme TOF | 1,449 (968) -> 8,252 (4,207) | 98 -> 99.4% | 18 -> 21.0 / 23.0% | 26 -> 0.0% | 0.94 -> 0.56 ppm |
+| F2 nitrate, multi-scheme TOF | 1,452 (1,195) -> 6,173 (3,695) | 99 -> 99.2% | 44 -> 21.7 / 21.7% | 38 -> 0.0% | 0.73 -> 0.78 ppm |
+
+G1 and G2 gate on the Orbitrap sets. The TOF rows are recorded because the
+reference itself commits almost nothing there - 28, 100 and 46 Assigned peaks in
+3,493, 13,595 and 8,905 - so agreement measures the shared v1 scorer rather than
+either engine, and step 2.1's sibling task is what gives those sets a reference
+at all.
+
+#### Metric by metric
+
+- **G1 `<= 45%`: met on A, B, C and D, missed on C2** at 55.2%. The four that
+  clear it land at 41.5, 24.3, 41.5 and 37.3%, inside the 45-50% band the
+  offline configuration experiment reached and below it on B and D.
+- **G2 met on A, B, C and D for the same formula; the same-ion bound is met on
+  A and B only.** Same formula against `>= 80%` (A, C, D, C2) and `>= 70%` (B):
+  95.6, 95.2, 87.3 and 80.1%, with C2 at 68.3%. Same ion against `>= 95%`: 97.2
+  and 96.1% on A and B, 87.9% on C, 82.3% on D, 68.3% on C2.
+- **G3 met on four of five for nitrogen, and completely for carbon.** Formulas
+  with five or more nitrogens fall from 13-38% to 1.0% on A and 0.0% on C, C2, D
+  and every TOF set; B's 2.7% is the uronium context's own N cap of 5 showing
+  through and is the one Orbitrap set above the `<= 1%` bound. Every carbon-free
+  formula left anywhere is a Stage A row from the curated library - NH3 on A,
+  HBr and HS3 on C2, HNO3 with its dimer, HIO3 and Br on F1, HNO2, H2SO4 and
+  HIO3 on F2 - and **the untargeted stage produces none on any of the 43
+  samples**, because the organic grid floors carbon at 1. Zero off the
+  allowlist, which is what the target asks.
+- **G4 is below its target where it measures this engine's pass, and on three
+  sets it does not measure it at all.** Of the reference's reagent rows that
+  name an ion: 48 of 58 on A (82.8%), 14 of 24 on B (58.3%), 54 of 64 on D
+  (84.4%), 48 of 55 on E (87.3%) and 50 of 67 on F1 (74.6%). Step 1.4 recorded
+  why A's, D's, E's and F1's misses are the anchored window and the intensity
+  floor doing what they were changed to do. B's ten are new here and name a
+  library gap: two are a second peak 6 ppm from the true `[urea+H]+` at 5e-4 of
+  the base peak, the same split-peak class as A's; the other eight are two ions
+  across four samples, `[(urea)2+NH4]+` and `[(urea)3+NH4]+` at 2-4e-5 of the
+  base peak, which the uronium reagent library does not carry - it has the
+  protonated ladder but not the ammoniated one - so the pass leaves them to
+  Stage B, which reads them as satellites of an organic. On C, C2 and F2 the
+  reference's reagent rows are a different claim entirely: bromide traces
+  (`Br-`, `Br2-`, `BrO3-`) on the two nitrate sets, where this engine's pre-pass
+  claims the nitrate ladder the reference does not label, and on F2 the ladder
+  itself. The raw 0% there is not this engine's pass being wrong.
+- **G5 met: zero on every set.** No peak the reference commits an analyte on
+  went unsearched, and every run records the scope it searched under.
+- **G6 read and not gated, per decision 11.** 107 on A, 460 on B, 57 on C, 24 on
+  C2, 328 on D, 8 on E, 57 on F1, 33 on F2. Its two mechanisms and their homes
+  in steps 2.1, 2.4 and 2.5b are in the step 1.6 section above.
+- **G8 met: the untargeted stage leaves no ownerless isotopologue row on any
+  set.** The 5 rows on C, 20 on C2 and 6 on F1 in the pooled count are Stage A's
+  and are step 2.5's.
+- **Mass error `<= 0.35 ppm` MAD on an Orbitrap: met on all five**, at 0.22,
+  0.30, 0.17, 0.31 and 0.31 ppm - while committing five and a half times as many
+  analytes on B and two and a half times as many on D as the baseline did. C's
+  1.13 -> 0.17 ppm is the largest single move any metric makes in stage 1.
+
+#### F2's recovery falls, and the fall is the pre-pass being right
+
+F2 is the one set whose G2 goes backwards, 44 -> 21.7%, and the whole of it is
+ten peaks. The reference has 46 Assigned peaks there; ten of them are the
+nitrate ladder itself, `NO3-` and `[HNO3+NO3]-`, which it reads as nitric acid
+because it carries no nitrate cluster library. The reagent pre-pass now labels
+those ten `reagent`, so they leave the numerator, and 10 of 46 is 21.7 points.
+Step 1.4 judged that claim correct when it first appeared, and the same ten
+peaks are the whole difference here. Set C2 carries the same class - 12 of its
+287, the same two ions - which is 4.2 points of its G2 shortfall.
+
+#### What stage 1 does not reach, and where it goes
+
+Of the reference's Assigned peaks this engine does not recover as the same ion,
+**about half carry an element or a count the searched grid cannot build**:
+
+| set | reference Assigned | not recovered | of them off-grid | what the grid is missing |
+|---|---|---|---|---|
+| A | 949 | 27 (2.8%) | 13 (48%) | P 12, Si 1 |
+| B | 5,373 | 209 (3.9%) | 70 (33%) | Si 38, P 32 |
+| C | 527 | 64 (12.1%) | 34 (53%) | Si 19, F 9, Br 6 |
+| C2 | 287 | 91 (31.7%) | 24 (26%) | Si 12, F 12 |
+| D | 1,595 | 283 (17.7%) | 146 (52%) | Cl past the 0-2 cap 119, Si 12, F 12, P 2, I 1 |
+| E | 28 | 21 (75.0%) | 15 (71%) | P 8, F 3, I 2, Cl 1, Si 1 |
+| F1 | 100 | 77 (77.0%) | 42 (55%) | P 13, S past the cap 12, I 6, F 6, Cl 3 |
+| F2 | 46 | 36 (78.3%) | 21 (58%) | F 7, P 6, Cl 3, I 3 |
+
+The elements are the same list every time - silicon, phosphorus, fluorine,
+iodine, and chlorine or sulphur past the profile's cap - and it is the list step
+2.5b's window per source exists to open. It is also the grid half of G6: the
+absent parents that cost these agreements are the ones whose isotopologues get a
+phantom formula fitted to them instead. The rest of the residue is this engine
+reading the peak differently (20 of A's 27, 130 of D's 283) or leaving it open
+(7 and 97), and that is the judgement layer stage 2 builds.
+
+#### The numbers step 2.1 has to move
+
+Recorded, not gated, because they are the before-column of the next stage.
+
+**Four in five committed analytes rest on the monoisotopic line alone.** Of the
+untargeted M0 rows the stage commits, the share owning no isotopologue row at
+all is 89.9% on A (1,811 of 2,014), 80.0% on B, 88.4% on C, 89.8% on C2, 46.1%
+on D and 95.9-98.8% on the three TOF sets; at assigned tier that is 1,549 of A's
+1,774 rows and 6,266 of B's 8,098. D is the exception because a bromide adduct
+puts a strong 81Br line beside every ion it makes. A row standing alone is not by
+itself wrong - a faint ion's heavy-isotope line can sit under the noise - but it
+is the population where the v1 fit has nothing but the mass to judge, and where
+a line predicted and not found costs a candidate almost nothing. That is what
+step 2.1's detectability gate and SNR-aware fit are for.
+
+**The odd-electron share of untargeted M0 rows** is 7.9% on A, 12.3% on B, 15.8%
+on C, 22.4% on C2, 23.6% on D, 34.0% on E, 25.7% on F1 and 21.8% on F2, against
+1.0% of the reference's committed formulas on A. Decision 9 keeps the radical
+reading as a tie-break rather than a filter, so these are won on score, and the
+score is step 2.1's.
+
+**The elections the whole-spectrum context flipped** toward a candidate with
+fewer observable lines were counted at step 1.5 as a build-to-build transition -
+10 on A, 15 on B, 29 on D - and that measurement is not repeatable at a stage
+gate, because step 1.6 then changed which peaks are searched at all. What
+carries forward is the population above rather than the transition: on A all ten
+were odd-electron formulas, and A's standing odd-electron rows now number 160.
+
+#### Run time
+
+Wall clock per sample, from the run records rather than the gate's poll loop:
+
+| set | median | worst |
+|---|---|---|
+| A uronium | 1.5 s | 2.2 s |
+| B uronium dense | 5.2 s | 6.4 s |
+| C nitrate | 1.0 s | 1.7 s |
+| C2 nitrate broad | 0.7 s | 0.8 s |
+| D bromide | 5.8 s | 6.8 s |
+| E bromide TOF | 13.4 s | 13.4 s |
+| F1 bromide TOF | 32.7 s | 36.4 s |
+| F2 nitrate TOF | 7.9 s | 9.3 s |
+
+Every sample of the gate is searched whole, and the slowest of the 43 takes 36
+seconds. The whole gate - 43 samples, four at a time - re-runs in about seven
+minutes, which is what lets it be run on every change rather than once a stage.
 
 ## Decisions (taken 2026-09-07)
 
