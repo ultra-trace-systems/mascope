@@ -267,6 +267,43 @@ _FIT_SCORE_COLS = frozenset(
 )
 
 
+def drop_ions_claimed_elsewhere(
+    match_isotope_df: pd.DataFrame, claimed_peak_ids: set[str]
+) -> pd.DataFrame:
+    """Remove target ions whose peaks another pass has already claimed.
+
+    Dropping the matched ROWS is not enough, and the difference is what this
+    function exists for. An ion is inverted as a family - one M0 and its
+    isotopologue children, the children naming the M0 as their owner - so
+    removing only the row that landed on the claimed peak leaves the children
+    behind with nothing to belong to: they invert as ``iso_child`` rows with a
+    null owner, one of them relabelled M0, and the ledger carries an
+    isotopologue family whose ion is not in it.
+
+    So the whole ion goes when its monoisotopic peak is claimed: an ion whose M0
+    is the reagent has the reagent's isotopologues, not its own. Any straggler
+    row that landed on a claimed peak goes too, which keeps the ledger's one row
+    per peak whichever part of the family the claim caught.
+
+    :param match_isotope_df: The gated, scored isotope frame.
+    :param claimed_peak_ids: Peaks another pass owns.
+    :return: The frame without those ions.
+    """
+    if match_isotope_df.empty or not claimed_peak_ids:
+        return match_isotope_df
+    if not {"target_ion_id", "sample_peak_id"} <= set(match_isotope_df.columns):
+        return match_isotope_df
+    claimed_ions = {
+        ion_id
+        for ion_id, group in match_isotope_df.groupby("target_ion_id", sort=False)
+        if str(monoisotopic_row(group).get("sample_peak_id") or "") in claimed_peak_ids
+    }
+    keep = ~match_isotope_df["sample_peak_id"].isin(claimed_peak_ids)
+    if claimed_ions:
+        keep &= ~match_isotope_df["target_ion_id"].isin(claimed_ions)
+    return match_isotope_df[keep]
+
+
 def score_ions_by_fit(match_isotope_df: pd.DataFrame) -> pd.DataFrame:
     """Set each isotopologue's ``match_score`` to its ion's fit score (Stage A).
 

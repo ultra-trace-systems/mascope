@@ -15,6 +15,7 @@ import pytest
 from mascope_backend.api.new.peak_assignments.engine import (
     ROLE_REAGENT,
     SOURCE_REAGENT,
+    drop_ions_claimed_elsewhere,
 )
 from mascope_backend.api.new.peak_assignments.import_validation import (
     coherent_tiers,
@@ -44,9 +45,16 @@ def _peaks(*ions: tuple[str, int, float]) -> pd.DataFrame:
     return frame
 
 
+#: The Orbitrap window a run claims in; the pass matches at the instrument's
+#: own precision against a mass the sample's anchor ions have corrected.
+ORBI_PPM = 3.0
+
+
 def _rows(profile: str = "BR", *ions: tuple[str, int, float]) -> list[dict]:
     peaks = _peaks(*(ions or (("Br", -1, 1e6),)))
-    hits = claim_reagent_peaks(peaks, reagent_library_for(profile))
+    hits, _ = claim_reagent_peaks(
+        peaks, reagent_library_for(profile), claim_ppm=ORBI_PPM
+    )
     return build_reagent_assignments(hits, peaks, "sample1", "run1")
 
 
@@ -90,7 +98,9 @@ class TestTheReagentRow:
 
     def test_every_row_lands_on_a_real_peak_of_the_sample(self):
         peaks = _peaks(("Br", -1, 1e6), ("Br2", -1, 3e5))
-        hits = claim_reagent_peaks(peaks, reagent_library_for("BR"))
+        hits, _ = claim_reagent_peaks(
+            peaks, reagent_library_for("BR"), claim_ppm=ORBI_PPM
+        )
         rows = build_reagent_assignments(hits, peaks, "sample1", "run1")
 
         assert {row["sample_peak_id"] for row in rows} <= set(peaks["sample_peak_id"])
@@ -140,7 +150,10 @@ class TestWhenThereIsNothingToClaim:
     def test_an_empty_peak_frame_writes_no_rows(self):
         empty = pd.DataFrame({"sample_peak_id": [], "mz": [], "intensity": []})
 
-        assert claim_reagent_peaks(empty, reagent_library_for("BR")) == []
+        assert (
+            claim_reagent_peaks(empty, reagent_library_for("BR"), claim_ppm=ORBI_PPM)[0]
+            == []
+        )
 
     def test_a_spectrum_of_analytes_only_writes_no_rows(self):
         peaks = pd.DataFrame(
@@ -151,4 +164,63 @@ class TestWhenThereIsNothingToClaim:
             }
         )
 
-        assert claim_reagent_peaks(peaks, reagent_library_for("BR")) == []
+        assert (
+            claim_reagent_peaks(peaks, reagent_library_for("BR"), claim_ppm=ORBI_PPM)[0]
+            == []
+        )
+
+
+class TestWhatStageALosesWithTheClaim:
+    """An ion is inverted as a family: one M0 and its isotopologue children,
+    the children naming the M0 as their owner. So excluding the single ROW that
+    landed on a claimed peak is not enough - it leaves the children behind with
+    nothing to belong to, and they invert as ownerless `iso_child` rows with one
+    of them relabelled M0. The whole ion has to go.
+    """
+
+    @staticmethod
+    def _frame() -> pd.DataFrame:
+        """One target ion's family: an M0 and two isotopologues."""
+        return pd.DataFrame(
+            {
+                "target_ion_id": ["ion-1", "ion-1", "ion-1", "ion-2"],
+                "target_isotope_formula": [
+                    "C2H9N4O2",
+                    "C1[13C]H9N4O2",
+                    "C2H9[15N]N3O2",
+                    "C6H13O6",
+                ],
+                "sample_peak_id": ["p1", "p2", "p3", "p4"],
+                "mz": [121.0720, 122.0754, 122.0690, 181.0707],
+            }
+        )
+
+    def test_claiming_an_m0_drops_its_whole_family(self):
+        kept = drop_ions_claimed_elsewhere(self._frame(), {"p1"})
+
+        assert kept["target_ion_id"].tolist() == ["ion-2"]
+
+    def test_another_ion_is_untouched(self):
+        kept = drop_ions_claimed_elsewhere(self._frame(), {"p1"})
+
+        assert kept["sample_peak_id"].tolist() == ["p4"]
+
+    def test_a_claimed_child_takes_only_itself(self):
+        """Its M0 is still in the ledger, so the rest of the family still has
+        something to be children of."""
+        kept = drop_ions_claimed_elsewhere(self._frame(), {"p2"})
+
+        assert kept["sample_peak_id"].tolist() == ["p1", "p3", "p4"]
+
+    def test_no_row_survives_on_a_claimed_peak(self):
+        """The invariant the ledger needs whichever part of a family was hit:
+        one row per peak, and the reagent pass owns these."""
+        claimed = {"p1", "p4"}
+        kept = drop_ions_claimed_elsewhere(self._frame(), claimed)
+
+        assert not set(kept["sample_peak_id"]) & claimed
+
+    def test_nothing_claimed_changes_nothing(self):
+        frame = self._frame()
+
+        assert len(drop_ions_claimed_elsewhere(frame, set())) == len(frame)

@@ -45,6 +45,7 @@ from mascope_backend.api.new.peak_assignments.engine import (
 from mascope_backend.api.new.peak_assignments.tiers import TIER_UNASSIGNED
 from mascope_backend.db.id import gen_id
 from mascope_tools.composition.reagents import (
+    ReagentCalibration,
     ReagentCluster,
     ReagentHit,
     match_reagent_clusters,
@@ -147,22 +148,28 @@ def claim_reagent_peaks(
     peaks_df: pd.DataFrame,
     library: tuple[ReagentCluster, ...],
     *,
+    claim_ppm: float,
     purity: float | None = None,
-) -> list[ReagentHit]:
+) -> tuple[list[ReagentHit], ReagentCalibration | None]:
     """Match the library against a sample's peaks.
 
     :param peaks_df: The sample's peaks, with ``mz`` and ``intensity`` columns.
         Hits index into this frame positionally.
     :param library: The reagent ions, from :func:`reagent_library_for`.
+    :param claim_ppm: The run's own m/z precision. A claim is made at the
+        instrument's precision against a mass the sample's anchor ions have
+        corrected, not in a window wide enough to swallow a neighbour.
     :param purity: The labelled reagent's isotopic purity, so a labelled
         reagent's satellites are predicted with the label's own abundance.
-    :return: One hit per claimed peak.
+    :return: One hit per claimed peak, and what the anchors said; the
+        calibration is ``None`` when there was nothing to match.
     """
     if not library or peaks_df.empty:
-        return []
+        return [], None
     return match_reagent_clusters(
         library,
         peaks_df["mz"].to_numpy(),
         peaks_df["intensity"].to_numpy(),
+        claim_ppm=claim_ppm,
         purity=purity,
     )
