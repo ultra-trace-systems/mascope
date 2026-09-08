@@ -16,7 +16,7 @@ step PRs land on the epic and are named here as they merge.
 | 1.2 - opportunistic adduct channels | #2081 | measured: fingerprint gate works and refuses sodium; carbonate settled on the broad-window nitrate set |
 | 1.3 - same-ion tie policy in the finder | #2082 | measured: the step's target met on A (47 -> 87% same formula); the note's mass-only policy needed a closed-shell key the gate supplied |
 | 1.4 - reagent-cluster pre-pass | #2086 | measured: 60 peaks carry 81.2% of set A's signal; the claim is anchored on the sample's own base ions and the envelope reaches the floor it searches; no reference analyte taken on A/B/C/D/E/F1 |
-| 1.5 - satellite claim and ringing artifacts | #2088 | measured: G8 met, 0 ownerless isotopologue rows on every set; B claims 969 more satellites and D 428, 89-97% of them confirmed by the reference; the review found 21 bromide peaks losing their analyte to an envelope anchored on the wrong line, and fixing that gains D 117 analytes and 26 agreements; G6 missed, and the reference's parent ion is outside the searched grid for 78 of A's 79 |
+| 1.5 - satellite claim and ringing artifacts | #2088 | measured: G8 met, 0 ownerless isotopologue rows on every set; B claims 969 more satellites and D 423, 88-97% of them confirmed by the reference, and D gains 61 analytes and 27 agreements; two review rounds fixed the envelope's anchor and then restored the requirement anchoring it took away; G6 missed, and the reference's parent ion is outside the searched grid for 78 of A's 79 (decision 11) |
 | 1.6 - cap and mass window | - | planned |
 | 1.7 - stage 1 gate, engine 0.4.0 | - | planned |
 | 2.1 - v2 fit for Stage B | - | planned |
@@ -858,7 +858,7 @@ C2 is held to C's.
 | G4 reference reagent peaks labelled reagent or artifact | 0 of 58 | 0 of 24 | 0 of 29 | >= 90% | 100% | hold |
 | G4a of those, the ones that **name an ion** (step 1.4's own target) | 0 of 58 | 0 of 24 | 0 of 15 | >= 90% | 100% | hold |
 | G5 reference Assigned peaks never searched | 190 | 4,181 | 8 | 0 | 0 | 0 |
-| G6 main peaks on reference isotopologues (after 1.5: 79 A, 54 B, 94 D; the reference's parent ion is outside the searched grid for 78 of A's and 70 of D's, so the residue needs the grid rather than the envelope logic) | 96 | - | - | <= 10 | <= 5 | hold |
+| G6 main peaks on reference isotopologues (after 1.5: 79 A, 54 B, 75 D; the reference's parent ion is outside the searched grid for 78 of A's and 52 of D's, so the residue needs the grid rather than the envelope logic - decision 11) | 96 | - | - | <= 10 | <= 5 | hold |
 | G7 uncorroborated commits beyond 3 sigma | not gated | not gated | not gated | - | 0 | 0 |
 | G8 untargeted isotopologue rows without an owner (step 1.5's coherence count; was 71 over the bromide Orbitrap set's six samples, 0 on every set after 1.5) | 0 | 0 | 0 | 0 | 0 | 0 |
 | mass error of committed peaks, MAD | 0.20 ppm | 0.20 ppm | 1.13 ppm | <= 0.35 ppm on an Orbitrap | hold | hold |
@@ -1161,7 +1161,7 @@ signal.
 
 ### After step 1.5, the satellite claim and the artifact role (2026-09-08)
 
-Branch `step-1.5-satellite-claim-2026.09.08-ff16e33` deployed on the testbed in
+Branch `step-1.5-satellite-claim-2026.09.08-7db27fd` deployed on the testbed in
 prod mode, the in-app engine re-run over all 43 gate samples, compared with the
 1.4 numbers measured the same afternoon on the same box, so the two differ only
 by this step.
@@ -1177,23 +1177,26 @@ isotopologue of something it committed - and it moves a long way.
 | B uronium | 12,055 | 170 -> **1,139** | 1,102 (97%) | 0 | 0 -> 0 | 1,596 -> 1,596 | 1,372 -> **1,456** | 1,168 -> 1,171 |
 | C 15N-nitrate m/z 131 | 1,583 | 152 -> 155 | 109 (70%) | 0 | 0 -> 0 | 1,079 -> 1,079 | 820 -> 817 | 596 -> 596 |
 | C2 15N-nitrate m/z 50 | 1,420 | 108 -> 108 | 70 (65%) | 0 | 0 -> 0 | 645 -> 645 | 516 -> 516 | 285 -> 285 |
-| D bromide | 5,217 | 619 -> **1,047** | 935 (89%) | 123 | 71 -> **0** | 788 -> **905** | 760 -> **792** | 589 -> **615** |
-| E bromide TOF | 3,493 | 49 -> 50 | 3 | 0 | 6 -> **0** | 233 -> **245** | 76 -> 73 | 3 -> 3 |
+| D bromide | 5,217 | 619 -> **1,042** | 921 (88%) | 123 | 71 -> **0** | 788 -> **849** | 760 -> **795** | 589 -> **616** |
+| E bromide TOF | 3,493 | 49 -> 47 | 3 | 0 | 6 -> **0** | 233 -> 233 | 76 -> 73 | 3 -> 3 |
 | F1 bromide TOF | 13,595 | 183 -> 215 | 23 (11%) | 0 | 1 -> **0** | 972 -> 974 | 418 -> 414 | 15 -> 15 |
 | F2 nitrate TOF | 8,905 | 84 -> 106 | 12 (11%) | 0 | 0 -> 0 | 1,152 -> 1,152 | 599 -> 594 | 16 -> 16 |
 
 The peaks the new isotopologue rows come from are peaks that were unassigned: B
-loses 969 unassigned rows and gains 969 isotopologue rows, D loses 668 and gains
-428 isotopologues, 123 artifacts and 117 analytes. The reference confirms 89-97%
+loses 969 unassigned rows and gains 969 isotopologue rows, D loses 607 and gains
+423 isotopologues, 123 artifacts and 61 analytes. The reference confirms 88-97%
 of the new rows as isotopologues on the three sets where the class is large.
 
 What that buys beyond tidiness: same-formula agreement rises on D from 589 to
-615 and on B from 1,168 to 1,171, B gains 84 assigned-tier rows and D 32,
+616 and on B from 1,168 to 1,171, B gains 84 assigned-tier rows and D 35,
 because an envelope scored against the whole spectrum is scored against the
 satellites that were there all along. The signal each engine can account for
-rises on B from 89.7% to 90.7% and on D from 88.5% to 90.5%. G1 - assigned-tier
-rows the reference does not confirm - is flat everywhere, within 0.2 points on
+rises on B from 89.7% to 90.7% and on D from 88.5% to 90.2%. G1 - assigned-tier
+rows the reference does not confirm - is flat everywhere, within 0.3 points on
 every set, so the rows gained are confirmed at the rate the existing ones are.
+Exactly one peak on the whole gate carried a committed analyte under 1.4 and
+carries none now: m/z 424.857 on D, an 842-count `+Br2-` reading at candidate
+tier that the reference reads as an isotopologue of a hexachloro compound.
 
 Run time is unchanged: 16-19 s per sample. Enumeration cost scales with the
 targets and only the context grew.
@@ -1216,10 +1219,11 @@ matcher matched that line to whatever small peak sat there - 466.988 at 359
 counts, 1.7 ppm off - normalised the envelope to those 359 counts, and then
 found the 7,090-count target 3,700% too bright for its own monoisotopic line and
 left it unmatched. `score_pattern` still gave that reading 0.936, above the
-`+Br-` reading that matched the target and its 13C line at 0.858. `process_isotopes`
-then wrote the main row at the anchor's m/z rather than at the target, and the
-target got no row at all - after which the new orphan rule correctly dropped the
-stray satellite too, so the small peak went unassigned as well.
+`+Br-` reading that matched the target and its 13C line at 0.858.
+`process_isotopes` then wrote the main row at the anchor's m/z rather than at the
+target, and the target got no row at all - after which the new orphan rule
+correctly dropped the stray satellite too, so the small peak went unassigned as
+well.
 
 Under 1.4 the class was mostly invisible, because the small peak two mass units
 up was rarely among the 300 searched peaks. Whole-spectrum context makes it
@@ -1230,19 +1234,47 @@ The fix is to make index 0 mean what three separate places already read it as -
 the intensity the envelope is normalised to, `score_pattern`'s "require
 monoisotopic detection" guard, and the finder's main row. That line is the
 target by construction, because the composition search matched the ion's
-monoisotopic mass against the peak's m/z to propose the candidate at all. A
-candidate whose own line the spectrum does not hold now scores zero. The reagent
-pre-pass had already worked this out for labelled reagents and kept a private
-copy of the rule; the two now share one.
+monoisotopic mass against the peak's m/z to propose the candidate at all. The
+reagent pre-pass had already worked this out for labelled reagents and kept a
+private copy of the rule; the two now share one.
 
-It moves the bromide sets and nothing else: D gains 117 committed analytes, E 12
-and F1 2, while A, B, C, C2 and F2 do not change a single row. **Peaks that lost
-a committed analyte outright: 21 on D before the fix, 0 on every set after.**
+#### ...and anchoring it correctly took a requirement away
+
+Moving the monoisotopic line to index 0 separated two requirements that used to
+be one row. With the brightest predicted line first, `score_pattern`'s
+"require monoisotopic detection" also required the brightest line to be
+observed. With the monoisotopic line first it no longer did, and a reading could
+stand on its M0 alone - which on a bromide grid is the same phantom arriving
+from the other side. The `+Br2-` candidate whose 79Br81Br line should be 1.95
+times the target and is not in the spectrum used to swallow the target; now it
+won the target instead, as an M0 with no envelope. Between the two builds the
+bromide Orbitrap set gained 120 committed analytes, 76 of them `+Br2-` readings,
+half of those matching nothing beyond their own line, and one of the 120
+agreeing with the reference's formula. `+Br2-` untargeted analytes on the set
+went from 17 to 99.
+
+Two lines of logic put it back, and they are worth separating because they are
+different statements. The absence test belongs in `score_pattern`: the ion's own
+line and the line the prediction leads with both have to be observed, or the
+pattern is not evidence. The other belongs in the finder: a candidate whose
+pattern scored zero is not committed at all. That second one was implicit
+before, because a zero score used to come with an unmatched anchor and
+`process_isotopes` wrote nothing; with the anchor on the target the row can
+always be written, and only the score says it should not be. Half of the
+surviving phantoms carried `fit_score` exactly 0.0 in the ledger, which is the
+engine writing down that it had no evidence and committing anyway.
+
+With both, on set D: untargeted analytes 782 under 1.4, 899 anchored, **843**
+now; `+Br2-` among them 17, 99, **20**; every one of the 21 peaks the first
+build lost has a row again.
 
 The class was invisible because no engine-against-engine number can see it: both
 sides of it are one engine's own history. `compare_runs.py` now reads the run
 before the latest one on the same engine and tabulates every role change, with
-"M0 -> unassigned" as the number to read beside G8.
+"M0 -> unassigned" as the number to read beside G8. Read it knowing what the
+previous run was: against 1.4 it is 0 on every set but D, which has the one peak
+above; against the intermediate build it is 49 on D and 12 on E, which is that
+build's phantoms being withdrawn.
 
 #### What it costs, counted the way step 1.4 learned to count it
 
@@ -1250,9 +1282,9 @@ A pass that claims peaks has to be measured against the peaks the reference
 calls analytes, not only against its own agreement. Two claims to report.
 
 The satellite claim takes peaks the reference reads as analyte M0s: **+2 on B
-and +20 on D** (14 of D's at the reference's assigned tier). Of the 24 peaks on
-D newly claimed as satellites in that class, 19 were unassigned in Mascope
-before - a residual becoming an isotopologue - and 5 were committed analytes
+and +23 on D** (33 of D's 51 at the reference's assigned tier). Of the 26 peaks
+on D newly claimed as satellites in that class, 20 were unassigned in Mascope
+before - a residual becoming an isotopologue - and 6 were committed analytes
 this step gave up. The disagreement itself is not settled by the gate: the
 reference's readings there are nitrogen-rich untargeted fits of its own
 (C12H25N3O12, C13H25N3O18), not curated standards.
@@ -1318,7 +1350,7 @@ plainly why, and it is not the satellite claim:
 | B | 54 | 53 (98%) | Si in 43, P in 10 |
 | C | 56 | 39 (70%) | Si in 35, Br in 4 |
 | C2 | 24 | 18 (75%) | Si in 18 |
-| D | 94 | 70 (74%) | Cl4-Cl6 against a Cl0-2 cap in 69 |
+| D | 75 | 52 (69%) | Cl4-Cl6 against a Cl0-2 cap in 51 |
 | F1 | 16 | 2 (12%) | P, S2 |
 | F2 | 7 | 7 (100%) | P in 5, Cl in 3, S2 in 2 |
 
@@ -1332,12 +1364,12 @@ that: an envelope can only claim a line if the ion whose envelope it is has been
 committed.
 
 Set D is the same story in a different element, and it is where the trade shows.
-G6 there rises from 59 to 94 - the 117 analytes the anchor fix recovered include
-peaks the reference reads as chlorine isotopologues - but 70 of the 94 are ions
-the grid cannot build, Cl4 to Cl6 against a Cl0-2 cap, against 34 of 59 before.
-Counting only the peaks whose parent Mascope could have named, D's G6 is 25
-before and 24 after: flat. The set gains 117 analytes, 26 more same-formula agreements
-and 32 assigned-tier rows for that, with G1 unmoved, so the trade is worth
+G6 there rises from 59 to 75 - the 61 analytes the step adds include peaks the
+reference reads as chlorine isotopologues - but 52 of the 75 are ions the grid
+cannot build, Cl4 to Cl6 against a Cl0-2 cap, against 34 of 59 before. Counting
+only the peaks whose parent Mascope could have named, D's G6 is 25 before and 23
+after. The set gains 61 analytes, 27 more same-formula agreements and 35
+assigned-tier rows for that, with G1 within 0.3 points, so the trade is worth
 making; but on a set whose chemistry is outside the grid, more committed
 analytes means more of them landing where the reference sees an envelope.
 
@@ -1351,27 +1383,27 @@ is the question. Naming the peak an isotopologue of the parent means writing a
 statement from the one it replaces; and refusing to commit anything, leaving the
 peak unassigned, costs 26 of set C's 591 agreed rows for 23 of its 56. The rule
 is only sound once the parent can be named, which is the same fix: silicon,
-phosphorus and a wider halogen cap in the Stage B grid. That belongs to step
-2.5b and the reference-seed proposal. Whether the stage 1 gate keeps G6 at 10
-with the grid unchanged, or reads it after 2.5b, is a decision about what stage
-1 is for and is left to the plan owner rather than taken here.
+phosphorus and a wider halogen cap in the Stage B grid, step 2.5b's known window
+per source. Decision 11 takes that reading.
 
-#### The elections that moved are odd-electron on set A
+#### The elections that moved, and what they moved to
 
 Scoring an envelope against the whole spectrum changes which candidate wins some
-peaks: 10 of set A's ~1,560 committed analytes, 15 of B's, 37 of D's. On B and D
-that is an improvement (+3 and +11 agreements gained against 0 and 5 lost); on A
-it costs one agreement, and **all ten of A's new winners are odd-electron
-formulas** - C16H9O5, C27H29S, C21H13S - where two of the readings they replaced
-were. Odd-electron ions are 7% of A's untargeted analytes today, 10% of B's and
-20% of D's, so this is a small move within a large standing population rather
-than a new class.
+peaks: 10 of set A's ~1,560 committed analytes, 15 of B's, 29 of D's. On B and D
+it is an improvement (+3 and +11 agreements gained against 0 and 4 lost). On A
+it is not, and "net -1" understates it: two of the ten replaced a reading the
+reference shared, and **none of the ten new winners agrees with the reference** -
+seven are a different formula, three sit on peaks the reference does not commit.
+**All ten are odd-electron formulas** (C16H9O5, C27H29S, C21H13S), where two of
+the readings they replaced were. Odd-electron ions are 7% of A's untargeted
+analytes, 10% of B's and 17% of D's, so this is a small move within a standing
+population rather than a new class.
 
-Decision 9 keeps the radical reading as a tie-break rather than a filter, which
-is why a better-scored radical wins here. Nothing in this step changes that
-policy and nothing here should: it is a Stage 2 question (2.1's v2 fit and 2.4's
-mechanical tiers), recorded so it is not re-discovered as a regression of this
-one.
+Decision 9 keeps the radical reading as a tie-break rather than a filter, so a
+better-scored radical wins here by design. What ranks them is the v1 pattern
+score, which charges almost nothing for a line it predicted and did not find -
+step 2.1 has the worked examples and owns the fix. Recorded here so the move is
+not re-discovered as a regression of this step.
 
 ## Decisions (taken 2026-09-07)
 
