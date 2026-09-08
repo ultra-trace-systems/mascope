@@ -6,6 +6,24 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
 
 ### Changed
 
+- **The peak assignment engine is version 0.4.0**, and results from it are not
+  comparable with a 0.3.0 run of the same sample. The version is stamped on
+  every run this server computes, so the two are told apart in the run selector
+  and in any export; a sample assigned before the upgrade keeps its old run and
+  is re-assigned to get the new one. What changed under it is the whole of the
+  search: the element ranges and mass window now come from the ionization
+  mode's chemistry rather than from one unbounded default, the source's own
+  reagent clusters and ringing artifacts are labelled before any formula is
+  proposed, a committed formula claims its own heavy-isotope satellites, two
+  candidates that describe the same ion are decided by policy instead of by
+  enumeration order, and every unexplained peak is searched rather than the 300
+  brightest. Measured against a reference engine on 43 samples across six
+  chemistries and three instruments, the share of assigned-tier rows the
+  reference contradicts falls from 73% to 41% on the sparse Orbitrap set and
+  from 57% to 24% on the dense one, and the share of the reference's own
+  confident peaks recovered with the same formula rises from 39% to 96% and
+  from 12% to 95%.
+
 - **The untargeted composition search enumerates the formulas its element
   ranges allow once per mass band instead of once per peak.** It walked the
   element-count tree from the root for every peak, using that peak's mass window
