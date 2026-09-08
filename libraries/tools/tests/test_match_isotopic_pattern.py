@@ -188,8 +188,37 @@ def test_a_bright_peak_is_not_lost_to_a_faint_neighbour_two_mass_units_up():
     # The faint neighbour is what it is: far too weak for the 79Br81Br line of
     # this ion, so it fails the intensity gate and is not claimed.
     assert data["masses"][1] == 0.0
-    # And a pattern resting on one line does not score like a matched envelope.
-    assert ranked[0]["isotopic_pattern_score"] < 0.95
+    # And the reading is worth nothing rather than merely less: a dibromide
+    # whose brightest predicted line is not in the spectrum is not a dibromide,
+    # however well its one matched line agrees. Without this the anchoring
+    # would trade one phantom for another - the reading that used to swallow
+    # the target would win it instead, as an M0 with no envelope at all.
+    assert ranked[0]["isotopic_pattern_score"] == 0.0
+
+
+def test_a_candidate_whose_brightest_line_is_absent_scores_nothing():
+    """The requirement the anchoring separated out and had to state again.
+
+    Before, the caller put the brightest line first and this function required
+    index 0, so "the brightest line is there" was implicit in "the ion's line is
+    there". Once the two are different rows, both have to be asked for.
+    """
+    lines = _dibromide_lines()
+    peaks = pl.DataFrame(
+        {
+            "mz": [lines["M0"][0], lines["13C"][0]],
+            "intensity": [1.0e6, 1.0e6 * lines["13C"][1] / lines["M0"][1]],
+        }
+    ).sort("mz")
+
+    ranked, isotope_data = match_isotopic_pattern(DIBROMIDE_CANDIDATES, peaks)
+
+    # The ion's own line is matched, and so is a satellite...
+    assert isotope_data[0]["masses"][0] > 0
+    assert np.count_nonzero(isotope_data[0]["masses"]) == 2
+    # ...but not the one the prediction leads with, so the reading is not
+    # evidence of this ion.
+    assert ranked[0]["isotopic_pattern_score"] == 0.0
 
 
 def test_a_candidate_whose_own_line_is_absent_scores_nothing():

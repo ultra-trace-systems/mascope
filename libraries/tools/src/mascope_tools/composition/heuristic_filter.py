@@ -1274,9 +1274,25 @@ def score_pattern(
     """
     Scores the match between observed and predicted isotopic patterns.
     Returns a score between 0 and 1, where 1 is a perfect match.
+
+    Two lines have to be there for the pattern to be evidence of anything: the
+    ion's own, at index 0, and the one the prediction says is brightest. The
+    first is the peak the candidate was proposed for. The second is what stops a
+    reading standing on its M0 alone - a dibromide whose 79Br81Br line should be
+    1.95 times the target and is not in the spectrum is not a dibromide,
+    however well that single line's mass agrees. Both are absence tests, not
+    quality tests: what the observed lines are worth is scored below.
+
+    The second used to be implicit, because the caller passed the brightest line
+    first and this function required index 0. Anchoring the envelope on the
+    monoisotopic line (`anchor_on_monoisotopic`) separated the two, and without
+    stating it again the anchoring would have traded one phantom for another -
+    on a bromide grid, `+Br2-` readings winning peaks with no envelope at all.
     """
-    # Require monoisotopic detection
-    if observed_intensities[0] > 0:
+    predicted_rel = np.asarray(predicted_rel, dtype=float)
+    brightest = int(np.argmax(predicted_rel)) if predicted_rel.size else 0
+    # Require the ion's own line, and the line the prediction leads with.
+    if observed_intensities[0] > 0 and observed_intensities[brightest] > 0:
         observed_rel_intensities = observed_intensities / observed_intensities[0]
         matched_peaks_count = np.sum(observed_masses > 0)
 
