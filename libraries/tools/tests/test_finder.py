@@ -353,6 +353,8 @@ def test_a_monoisotopic_row_outranks_another_candidates_satellite(monkeypatch):
                     comp_results[0],
                     neutral_mass=100.0,
                     ion=f"{comp_results[0]['formula']}H+",
+                    # A scored pattern; the finder commits nothing on a zero.
+                    isotopic_pattern_score=0.9,
                 )
             ],
             {},
@@ -389,3 +391,50 @@ def test_a_monoisotopic_row_outranks_another_candidates_satellite(monkeypatch):
         105.0,
         106.0,
     }
+
+
+def test_a_peak_whose_best_reading_has_no_envelope_is_left_alone(monkeypatch):
+    """A candidate whose pattern scored zero is not committed.
+
+    Zero is not a weak match: `score_pattern` returns it only when a line the
+    prediction requires is absent. Candidates are ranked by that score, so a
+    zero at the top means no reading of this peak has an envelope - and the row
+    can always be written anyway, because the candidate's monoisotopic line IS
+    the peak. Only the score says it should not be, and the finder has to read
+    it. On a bromide grid this is what keeps a `+Br2-` reading whose 79Br81Br
+    line is missing from taking the peak it used to swallow.
+    """
+    from mascope_tools.composition import finder
+
+    monkeypatch.setattr(
+        finder,
+        "find_compositions",
+        lambda target_mz, config: [{"formula": "C2H2"}],
+    )
+    monkeypatch.setattr(
+        finder,
+        "apply_heuristic_rules",
+        lambda comp_results, heuristics_config=None: (
+            [dict(comp_results[0], neutral_mass=26.0, ion="C2H3+")],
+            {},
+        ),
+    )
+    scored = {"isotopic_pattern_score": 0.0}
+    monkeypatch.setattr(
+        finder,
+        "match_isotopic_pattern",
+        lambda candidates, peaks: (
+            [dict(candidates[0], **scored)],
+            [_pattern([100.0], ["M0"], [0.2])],
+        ),
+    )
+    peaks = pd.DataFrame({"mz": [100.0], "intensity": [1000.0]})
+    config = CompositionSearchConfig(
+        ionizations="H+", element_count_ranges="C0-2 H0-2", mass_range_ppm=5.0
+    )
+
+    matches, _ = assign_compositions(peaks, config, targets=[100.0])
+
+    assert list(matches["formula"]) == ["---"]
+    # ...and the runner-up formulas stay visible for an inspector.
+    assert matches.iloc[0]["other_candidates"] == "C2H2"

@@ -362,8 +362,9 @@ and 5 as far as they are search problems.
   names the parent ion of 78 of A's 79 with an element Mascope's grid has no
   room for, silicon in 76 of them. Those are column-bleed siloxanes, and no
   envelope logic reaches them while the search cannot build the parent. The
-  residue is a search-space gap, and it is step 2.5b's to close; see "What G6
-  measures, and what step 1.5 could not reach".
+  residue is a search-space gap, which is what decision 11 settles: stage 1
+  records G6 and step 2.5b is where its target is met. See "What G6 measures,
+  and what step 1.5 could not reach".
 - **Size.** S-M. Depends on 1.1 (windows) and 1.4 (role constants).
 
 ### 1.6 Cap and mass window
