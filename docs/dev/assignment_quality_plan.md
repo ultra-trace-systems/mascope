@@ -17,7 +17,7 @@ step PRs land on the epic and are named here as they merge.
 | 1.3 - same-ion tie policy in the finder | #2082 | measured: the step's target met on A (47 -> 87% same formula); the note's mass-only policy needed a closed-shell key the gate supplied |
 | 1.4 - reagent-cluster pre-pass | #2086 | measured: 60 peaks carry 81.2% of set A's signal; the claim is anchored on the sample's own base ions and the envelope reaches the floor it searches; no reference analyte taken on A/B/C/D/E/F1 |
 | 1.5 - satellite claim and ringing artifacts | #2088 | measured: G8 met, 0 ownerless isotopologue rows on every set; B claims 969 more satellites and D 423, 88-97% of them confirmed by the reference, and D gains 61 analytes and 27 agreements; two review rounds fixed the envelope's anchor and then restored the requirement anchoring it took away; G6 missed, and the reference's parent ion is outside the searched grid for 78 of A's 79 (decision 11) |
-| 1.6 - cap and mass window | #2090 | measured: G5 met (35,496 unsearched peaks -> 0, of which 8,928 the reference commits an analyte on) and G2 clears its stage-1 target on A, B, C and D for the first time (B 20.7 -> 95.2%); the mass window was already instrument-class-resolved by 1.1; the grid is enumerated once per band instead of once per peak, so A and C search 5-8x more peaks and finish faster, worst sample 36s; G1 rises on the sets that gained most and G6 with it (decision 11) |
+| 1.6 - cap and mass window | #2090 | measured: G5 met (35,496 unsearched peaks -> 0, of which 5,304 the reference calls Assigned and 8,928 it commits any analyte on) and G2 clears its stage-1 target on A, B, C and D for the first time (B 20.7 -> 95.2%); the mass window was already instrument-class-resolved by 1.1; the grid is enumerated once per band instead of once per peak, so A and C search 5-8x more peaks and finish faster, worst sample 36s; G1 rises on the sets that gained most and G6 with it (decision 11) |
 | 1.7 - stage 1 gate, engine 0.4.0 | - | planned |
 | 2.1 - v2 fit for Stage B | - | planned |
 | 2.2 - self-calibrated mass gate | - | planned |
@@ -862,8 +862,8 @@ C2 is held to C's.
 | G3 committed formulas with N >= 5; carbon-free formulas (after 1.6: A 1.0%, B 2.7%, 0.0% elsewhere; carbon-free unchanged by 1.6 and Stage A's) | 13%; 59 | 15%; - | 17%; - | <= 1%; 0 off the allowlist | hold | hold |
 | G4 reference reagent peaks labelled reagent or artifact | 0 of 58 | 0 of 24 | 0 of 29 | >= 90% | 100% | hold |
 | G4a of those, the ones that **name an ion** (step 1.4's own target) | 0 of 58 | 0 of 24 | 0 of 15 | >= 90% | 100% | hold |
-| G5 reference Assigned peaks never searched (after 1.6: 0 on every set, from 8,928 pooled over A-F2) | 190 | 4,181 | 8 | 0 | 0 | 0 |
-| G6 main peaks on reference isotopologues (after 1.6: 107 A, 460 B, 328 D, up from 79/54/75 because the peaks the cap hid are now searched - as a share of committed rows A is flat at 5.2%, B 3.4 -> 5.0%, D 8.8 -> 13.8%; the reference's parent ion is outside the searched grid for 78 of A's and 52 of D's, so the residue needs the grid rather than the envelope logic - decision 11) | 96 | - | - | read, not gated (decision 11: <= 10 after 2.5b) | <= 5 | hold |
+| G5 reference Assigned peaks never searched (after 1.6: 0 on every set, from 5,304 pooled over A-F2 on the reference's own Assigned tier - A 186, B 4,180, C 7, which reproduces the step-0 baselines beside them) | 190 | 4,181 | 8 | 0 | 0 | 0 |
+| G6 main peaks on reference isotopologues (after 1.6: 107 A, 460 B, 328 D, up from 79/54/75 because the peaks the cap hid are now searched - as a share of committed rows A is flat at 5.2%, B 3.4 -> 5.0%, D 8.8 -> 13.8%. Of the rows 1.6 added, the reference's parent ion is outside the searched grid for 20 of A's 28, 293 of B's 406 and 90 of D's 255 - that part is 2.5b's; the rest have the parent on the grid and are the envelope logic refusing or never predicting the line, which no step owns yet; the reference's parent ion is outside the searched grid for 78 of A's and 52 of D's, so the residue needs the grid rather than the envelope logic - decision 11) | 96 | - | - | read, not gated (decision 11: <= 10 after 2.5b) | <= 5 | hold |
 | G7 uncorroborated commits beyond 3 sigma | not gated | not gated | not gated | - | 0 | 0 |
 | G8 untargeted isotopologue rows without an owner (step 1.5's coherence count; was 71 over the bromide Orbitrap set's six samples, 0 on every set after 1.5 and still 0 after 1.6 with six to eight times as many peaks searched) | 0 | 0 | 0 | 0 | 0 | 0 |
 | mass error of committed peaks, MAD | 0.20 ppm | 0.20 ppm | 1.13 ppm | <= 0.35 ppm on an Orbitrap | hold | hold |
@@ -1423,7 +1423,7 @@ resolved profile's instrument class (`resolve_mz_precision_ppm`), and both the
 per-sample and the batch path already pass the sample's instrument type into
 the resolution. What was left of this step was the cap, and what the cap cost.
 
-| set | analyte M0 | assigned tier | G1 | G2 same formula | reference Assigned left blank | G6 |
+| set | analyte M0 | assigned tier | G1 | G2 same formula | reference Assigned we commit no analyte on | G6 |
 |---|---|---|---|---|---|---|
 | A uronium | 1,561 -> 2,070 | 1,327 -> 1,774 | 42.0 -> 41.5% | 76.3 -> **95.6%** | 20.3 -> 0.7% | 79 -> 107 |
 | B uronium dense | 1,596 -> 9,148 | 1,456 -> 8,098 | 20.9 -> 24.3% | 20.7 -> **95.2%** | 78.1 -> 1.0% | 54 -> 460 |
@@ -1434,13 +1434,21 @@ the resolution. What was left of this step was the cap, and what the cap cost.
 | F1 bromide TOF | 974 -> 8,252 | 414 -> 4,207 | 97.1 -> 99.4% | 14.0 -> 21.0% | 73.0 -> 36.0% | 16 -> 57 |
 | F2 nitrate TOF | 1,152 -> 6,173 | 594 -> 3,695 | 98.1 -> 99.2% | 21.7 -> 21.7% | 69.6 -> 50.0% | 7 -> 33 |
 
-**G5 is met on every set: 35,496 peaks were never searched, now none are, and
-8,928 of them were peaks the reference commits an analyte on** (A 275, B 6,187,
-C 7, C2 0, D 1,268, E 77, F1 561, F2 553). The metric is reconstructed rather
+**G5 is met on every set: 35,496 peaks were never searched, now none are.** On
+the gate row's own definition - peaks the reference calls *Assigned* - that is
+5,304 pooled (A 186, B 4,180, C 7, C2 0, D 843, E 12, F1 60, F2 16), which
+reproduces the 190 / 4,181 / 8 the row records from the step-0 engine. Counting
+every peak the reference commits an analyte on at any tier it is 8,928. The metric is reconstructed rather
 than recorded - the stage takes the most intense of what the pre-passes and
 Stage A left, so ranking that remainder by intensity reproduces exactly the set
 it saw - and a run now records the scope it searched under, so a later reading
 does not have to reconstruct anything.
+
+The last column but one counts reference-Assigned peaks Mascope commits no
+analyte on, which is not the same as leaving them blank: on D 9.6% carry no
+analyte and 6.1% carry nothing at all, the 3.5 points between being peaks
+Mascope reads as somebody's isotopologue. A and B are within a tenth of a point
+either way; D and F2 are where the two readings part.
 
 **G2 clears its stage-1 target on A, B, C and D for the first time**, and on B
 it is the difference between measuring the engine and measuring its cap: 20.7%
@@ -1449,6 +1457,11 @@ because 78% of them were peaks Mascope never looked at. The same reading holds
 on D (37.6 -> 80.1%) and A (76.3 -> 95.6%). C moves barely and C2 not at all,
 which is the control: their spectra were already inside the cap, so the step
 could not touch them, and it did not.
+
+A per-sample run records what it searched under `search_scope` on its own
+config; a batch run has one config for many samples and no per-sample row to
+stamp, so its search reports the anchors the cap left unsearched in the batch
+result's counts instead. Both paths also log it.
 
 **C2 is byte-identical before and after** - same analyte count, same tiers, same
 G1, same G6. Nothing there was ever past the cap. A step that changed a set it
@@ -1466,15 +1479,45 @@ reference commits on fewer of them too.
 
 **G6 rises, and part of the old number's smallness was the cap.** A 79 -> 107,
 B 54 -> 460, D 75 -> 328. As a share of Mascope's own analyte rows the picture
-is narrower: A 5.1 -> 5.2%, B 3.4 -> 5.0%, D 8.8 -> 13.8%. On B the newly
-searched peaks land on a reference isotopologue at 5.4%, indistinguishable from
-the rate on the peaks that were already searched, so B's rise is arithmetic
-rather than a new defect. D is the exception at 16.5%, which is the same
-chemistry gap step 1.5 recorded: the reference reads Cl4-Cl6 envelopes there and
-the searched grid caps chlorine at two, so an envelope Mascope cannot build is
-an envelope whose lines it explains one at a time. Judged after step 2.5b by
-decision 11; recorded here so the rise is not re-discovered as a regression of
-that step.
+is narrower: A 5.1 -> 5.2%, B 3.4 -> 5.0%, D 8.8 -> 13.8%. Most of these rows
+sit at assigned tier - 332 of B's 460, 275 of D's 328 - so they are not a
+low-confidence fringe.
+
+**The rise has two mechanisms, not one, and only the first is step 2.5b's.**
+Classifying each row step 1.6 added by what the searched element box could have
+built, using the reference's own parent ion:
+
+| set | rows added | parent outside the searched grid | parent on the grid |
+|---|---|---|---|
+| A | 28 | 20 | 8 |
+| B | 406 | 293 | 113 |
+| D | 255 | 90 | 165 |
+
+The first column is the chemistry gap step 1.5 recorded - the reference reads
+Cl4-Cl6 envelopes on D and Si-bearing ones on A, the grid caps chlorine at two
+and has no silicon, and an envelope Mascope cannot build is an envelope whose
+lines it explains one at a time. **The second column is not that.** There the
+parent is a neutral the grid can build, and on most of those rows Mascope reads
+the parent with the reference's own formula (100 of B's 113) and still does not
+claim the line. Three things stop it, all in the envelope logic rather than the
+grid: the line is never predicted, because `ISOTOPE_ABUNDANCE_THRESHOLD` is 1%
+and IsoSpec drops the 18O line of an ion with four or fewer oxygens (0.8%) and
+the 15N line of one with one or two nitrogens; the line is predicted but
+observed outside the 40% intensity tolerance; or it is inside the tolerance and
+unclaimed anyway. A peak nobody predicts, or nobody accepts, cannot be claimed -
+and under the cap it was never searched either, so it stayed blank and cost
+nothing. Now it is searched, and a 3 ppm whole-spectrum search finds a formula
+there nearly every time.
+
+**So decision 11's premise no longer describes the residue.** "The residue needs
+the grid rather than the envelope logic" was true of the 1.5 measurement; after
+1.6 the residue has a grid part, which step 2.5b owns, and an envelope part,
+which nothing owns yet. Two candidates for the second, for the plan owner:
+step 2.1, where a detectability-gated fit would predict a faint line and judge
+it rather than dropping it below a fixed 1% cutoff, and step 2.4, where an M0
+committed on a peak that a committed neighbour's envelope predicts a line for
+could carry that as a tier reason and be kept off assigned tier. Recorded here
+so it is not re-discovered as a regression of 2.5b.
 
 #### G3 and the mass error do not move, which is the reassuring part
 
