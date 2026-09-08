@@ -6,6 +6,29 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
 
 ### Added
 
+- **The ions the source makes are now recognised as the source's, not the
+  sample's.** A chemical-ionization reagent clusters with itself, with water
+  and with the acid it sheds, and those ions are the brightest peaks in the
+  spectrum - the top ten of every sample on the assignment gate, most of the
+  total signal - without being sample chemistry at all. A reagent library is
+  now matched against the peak list before either assignment stage runs, and
+  the peaks it claims are taken out of what those stages may assign. They come
+  back as rows with `role = reagent` and `source = reagent`, naming the ion
+  formula, which is known exactly, and no assigned formula, because there is no
+  analyte: such a row counts toward no cross-sample formula vote and no
+  confidence tier, so a bright source background stops reading as either an
+  unexplained residual or - the worse failure - a phantom analyte that an
+  untargeted search happily fits a neutral to. Isotopologue satellites of a
+  claimed ion are claimed too, predicted from the ion's own envelope and gated
+  on intensity, so a peak with an analyte co-eluting on top of it is left
+  alone. What the library will *not* claim matters as much as what it will: a
+  cluster of the reagent with anything the sample supplied IS the analyte's
+  adduct channel, so the reagent's organic-acid clusters stay out, the urea
+  monomer's ammonium adduct stays out because that ion is ambient ammonia, and
+  the iodine oxides stay out because they are iodic acid - the signature
+  analyte of an iodide deployment - while the bromine oxides are reagent and
+  are claimed. Step 1.4 of `docs/dev/assignment_quality_plan.md`.
+
 - **The untargeted search decides which reading of an ion wins, instead of
   inheriting the order it enumerated the mechanisms in.** Compositions that
   combine into the same ion - `X.[M+NH4]+` and `(X+NH3).[M+H]+`, or a reagent

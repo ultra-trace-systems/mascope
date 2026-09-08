@@ -278,19 +278,26 @@ and 5 as far as they are search problems.
   water adducts; for `BR` the `Brn-` ladder, hydrates and HBr clusters;
   the nitrate and iodide ladders likewise. Before Stage A the library is
   matched against the peak list within the instrument window; hits are
-  written as `role = reagent`, locked, with their isotopologue satellites
-  claimed as reagent children (intensity-gated through IsoSpec envelopes),
-  and excluded from both stages' candidate peaks. Bare clusters and
-  hydrates only: organic-acid adducts of the reagent are analyte channels
-  and stay out, which is the lesson peaky learned.
+  written as `role = reagent`, with their isotopologue satellites claimed as
+  reagent rows too (intensity-gated through IsoSpec envelopes), and excluded
+  from both stages' candidate peaks. Bare clusters and hydrates only:
+  organic-acid adducts of the reagent are analyte channels and stay out,
+  which is the lesson peaky learned. Nothing is "locked": the ordering does
+  that work, because a peak the pre-pass claimed is never offered to a stage
+  in the first place (decision 10).
 - **Where.** `mascope_tools.composition.reagents` already exists from step
   1.2, holding the channel probes (the narrow half of this library: enough
   exact masses to say whether a carrier is in the spectrum); this step grows
   that module into the full cluster grammar with isotopologues and hydrates
   rather than starting a second one. A `reagent_pass.py` beside `engine.py`; `engine.py` gains
   `ROLE_REAGENT` and `ROLE_ARTIFACT`; `schemas.AssignmentSource` gains
-  `reagent` (the read model and the import path already accept the roles);
-  `batch_peaks.ROLE_CODES` must carry both roles into the fold.
+  `reagent` (the read model, `batch_peaks.ROLE_CODES` and the import path
+  already accept the roles). Three call paths need it, not one: the
+  run-backed orchestrator, the run-less ingest fold, and
+  `batch_untargeted.choose_representatives` - a reagent anchor's consensus
+  tier is `unassigned`, having no formula to vote on, so the batch search
+  would otherwise be the one path that puts an analyte formula back on a
+  reagent peak.
 - **Why.** Cause 5: 82% of the signal, the top-ten peaks of every sample.
 - **Verify.** Unit tests on the library masses; on the testbed every peak
   peaky labels reagent must be a reagent row (G4) and no confident analyte
@@ -931,6 +938,37 @@ out of the analyte ledger altogether.
    is closed-shell in every one of the 390 split readings whose DBE the
    comparison computes, and in every reading the two engines agree on. Revisit
    if a chemistry turns up where the radical reading is the common one.
+10. **A reagent row names its ion and no analyte, and is kept by ordering
+    rather than by a lock** (taken 2026-09-08 with step 1.4). Three parts, and
+    each is a choice the note's own wording did not settle.
+
+    *No `assigned_formula`.* A reagent cluster's composition is known exactly,
+    so it is tempting to record it as the assignment - the reference engine
+    does. Here it would be read as an analyte: the consensus votes over members
+    that carry a formula, so a reagent cluster would enter every cross-sample
+    formula vote it touched. The `ion_formula` is recorded and the analyte slot
+    is left empty, which makes the row inert everywhere an analyte is counted.
+    The tier follows from that and is `unassigned`, meaning exactly what it
+    says - no analyte was assigned to this peak - and it is also the tier the
+    import path's coherence rule requires of a formula-less row, so the engine
+    writes a shape it would accept back. What says the peak is explained is the
+    role, so a reader measuring residual signal must key on the role, not on
+    the tier.
+
+    *No lock.* peaky locks a reagent peak because its passes run over one
+    mutable ledger. Here the pre-pass runs before either stage and its peaks
+    are removed from both stages' inputs, so there is nothing to lock against.
+    The cost is that the pre-pass wins any collision with a curated target
+    outright, which is why library membership is drawn as narrowly as it is.
+
+    *Satellites are reagent rows that name no owner.* Owner linkage models one
+    thing in this ledger - an isotopologue naming the M0 analyte it belongs to
+    - and the import path enforces it, refusing a reagent row that names an
+    owner. Rather than widen a published contract as a side effect of this
+    step, the satellite carries the reagent role (so G4 counts it, as the
+    reference engine also labels these reagent) and records its parent as
+    provenance. Revisit if the inspector needs to collapse a reagent envelope
+    structurally.
 
 ## Risks
 
