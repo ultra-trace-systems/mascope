@@ -329,16 +329,21 @@ and 5 as far as they are search problems.
   outside that set was not found, leaving its peak to be searched on its own
   account. A satellite row is written by the M0 that claims it and names that
   M0 as its owner from the start; it is never linked to a parent after the
-  fact, and a satellite whose ion commits no M0 is not written at all. The
-  finder's duplicate resolution ranks a row that IS somebody's monoisotopic
-  line ahead of another candidate's satellite for the same peak, so resolving
-  a shared peak cannot strand the loser's envelope. FT sidelobes come from the
-  existing `mascope_tools.alignment.utils.flag_satellite_peaks` and get
+  fact, and a satellite whose ion commits no M0 is not written at all - that
+  second pass is the fix for the ownerless rows. The matcher anchors a
+  predicted envelope on the ion's own monoisotopic line rather than on the
+  predictor's most abundant one, which is the same line by accident for an
+  ordinary ion and two mass units away for a dibromide. The finder's duplicate
+  resolution ranks a row that IS somebody's monoisotopic line ahead of another
+  candidate's satellite for the same peak; that one is a guard rather than a
+  live rule, because the loop claims each m/z as it emits it. FT sidelobes come
+  from the existing `mascope_tools.alignment.utils.flag_satellite_peaks` and get
   `role = artifact` in a pre-pass beside the reagent one, excluded from both
   stages.
 - **Where.** `service._run_sample_assignment` (the `assign_compositions` call
   and the new pre-pass), `engine.untargeted_matches_to_peak_assignments`,
-  `peak_assignments/artifact_pass.py`, and the finder's duplicate resolution in
+  `peak_assignments/artifact_pass.py`, `heuristic_filter.match_isotopic_pattern`
+  (the envelope's anchor), and the finder's duplicate resolution in
   `assign_compositions`.
 - **Why.** Mascope commits an analyte M0 on peaks the reference reads as
   isotopologues (79 on instrument A), and the artifact role was unused. And the
