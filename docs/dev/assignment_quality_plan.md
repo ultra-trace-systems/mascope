@@ -15,7 +15,7 @@ step PRs land on the epic and are named here as they merge.
 | 1.1 fix - finder: the labelled reagent's atom in ion formulas | #2080 | merged: the label reaching the ion string is what pyteomics could not parse |
 | 1.2 - opportunistic adduct channels | #2081 | measured: fingerprint gate works and refuses sodium; carbonate settled on the broad-window nitrate set |
 | 1.3 - same-ion tie policy in the finder | #2082 | measured: the step's target met on A (47 -> 87% same formula); the note's mass-only policy needed a closed-shell key the gate supplied |
-| 1.4 - reagent-cluster pre-pass | - | planned |
+| 1.4 - reagent-cluster pre-pass | #TBD | measured: 40 peaks carry 80.7% of set A's signal; no analyte agreement lost; peaky's formula-less reagent rows are ringing, which is 1.5 |
 | 1.5 - satellite claim and ringing artifacts | - | planned |
 | 1.6 - cap and mass window | - | planned |
 | 1.7 - stage 1 gate, engine 0.4.0 | - | planned |
@@ -300,8 +300,13 @@ and 5 as far as they are search problems.
   reagent peak.
 - **Why.** Cause 5: 82% of the signal, the top-ten peaks of every sample.
 - **Verify.** Unit tests on the library masses; on the testbed every peak
-  peaky labels reagent must be a reagent row (G4) and no confident analyte
-  may be claimed (checked against the agreed rows).
+  peaky labels reagent **and names an ion formula for** must be a reagent row
+  (G4) and no confident analyte may be claimed (checked against the agreed
+  rows). The qualification is not a softening: peaky's reagent role also covers
+  the ringing skirt of a bright cluster, which it records without a formula and
+  which this engine gives the separate `artifact` role in step 1.5. Comparing
+  the unqualified counts measures the two engines' vocabularies, not their
+  chemistry - see the measured section for what each holds.
 - **Size.** M. Depends on 1.1.
 
 ### 1.5 Satellite claim and ringing artifacts
@@ -773,7 +778,7 @@ C2 is held to C's.
 | G1 "assigned" rows the reference does not confirm | 73% | 57% | 99% | <= 45% | <= 20% | <= 15% |
 | G2 reference Assigned peaks recovered: same formula / same ion | 39% / - | 12% / - | 18% / - | >= 80% / >= 95% (A, C), >= 70% / >= 95% (B) | >= 85% / >= 95% | hold |
 | G3 committed formulas with N >= 5; carbon-free formulas | 13%; 59 | 15%; - | 17%; - | <= 1%; 0 off the allowlist | hold | hold |
-| G4 reference reagent peaks labelled reagent | 0 of 58 | 0 of 24 | 0 of 29 | >= 90% | 100% | hold |
+| G4 reference reagent peaks **that name an ion** labelled reagent | 36 of 58 | 18 of 24 | 0 of 15 | >= 90% | 100% | hold |
 | G5 reference Assigned peaks never searched | 190 | 4,181 | 8 | 0 | 0 | 0 |
 | G6 main peaks on reference isotopologues | 96 | - | - | <= 10 | <= 5 | hold |
 | G7 uncorroborated commits beyond 3 sigma | not gated | not gated | not gated | - | 0 | 0 |
@@ -880,6 +885,89 @@ the reference's own arbitration, on 5% of A's shared peaks. Two more on B go
 the other way. Step 1.4 removes part of the class rather than arbitrating it:
 its reagent library claims the urea clusters as reagent rows, which takes them
 out of the analyte ledger altogether.
+
+### After step 1.4, the reagent pre-pass (2026-09-08)
+
+Same protocol, on a build carrying steps 1.1 to 1.4. The columns that matter
+here are different from the earlier steps': this step does not change which
+formula a peak gets, it changes which peaks are offered a formula at all.
+
+| set | peaks | reagent rows | share of peaks | **share of signal** | of a sample's 10 brightest |
+|---|---|---|---|---|---|
+| A uronium | 2,626 | 40 | 1.5% | **80.7%** | 24 of 60 |
+| B uronium | 12,055 | 40 | 0.3% | **59.7%** | 8 of 60 |
+| C 15N-nitrate, from m/z 131 | 1,583 | 0 | 0% | 0% | 0 of 50 |
+| C2 15N-nitrate, from m/z 50 | 1,420 | 32 | 2.3% | **90.4%** | 18 of 60 |
+| D bromide | 5,217 | 72 | 1.4% | **60.1%** | 26 of 60 |
+| E bromide TOF | 3,493 | 54 | 1.5% | **59.1%** | 18 of 30 |
+| F1 bromide TOF | 13,595 | 75 | 0.6% | **79.8%** | 41 of 60 |
+| F2 nitrate TOF | 8,905 | 30 | 0.3% | **84.6%** | 11 of 50 |
+
+**Cause 5 is the size the baseline said, and this is what it looks like when
+it is named.** Forty peaks on set A - one and a half percent of the peak list -
+carry 80.7% of the total signal, and 24 of the six samples' sixty brightest
+peaks are among them. They are now reagent rows rather than either residual or
+analytes.
+
+**No analyte is lost to the claim.** Across the gate the pre-pass costs one
+same-formula agreement on C2 and gains one on D; every other set's `both M0`
+and `same_formula` counts are identical to the 1.3 build's, digit for digit.
+That is the number to check when the library is widened, and it is the reason
+the library is drawn as narrowly as it is.
+
+**The claim window had to be measured, not chosen.** At the probe window of
+20 ppm the dense uronium set claimed only the first rung of its urea ladder:
+that acquisition's low-mass end is calibrated against the analytes, not against
+ions this bright, and the ladder sits at +4.7, +21.0 and +27.5 ppm, drifting
+further with mass. The two brighter rungs sat in the residual for an untargeted
+search to fit a neutral to. Each is the only peak within 40 ppm of its mass, so
+the window was widened to 40 ppm; set B's reagent rows went 20 to 40 - exactly
+`[(urea)4+H]+`, `[(urea)5+H]+` and `[(urea)4+NH4]+` - and no set lost an
+analyte agreement. See `DEFAULT_REAGENT_MATCH_PPM`.
+
+### What G4 actually measures, and why the raw number is not it
+
+G4 was written as "every peak peaky labels reagent must be a reagent row". The
+gate says that metric compares two different words.
+
+Of peaky's reagent rows **that name an ion formula** - the ones that are
+reagent-cluster identifications - Mascope agrees on 93% (D), 98% (E) and 92%
+(F1). The rest of peaky's reagent rows on those sets name no formula at all:
+198, 281 and 266 peaks. On set D 44% of them sit within 60 mDa of a peak
+Mascope has claimed, at a median 0.4% of its height - they are the FT ringing
+skirt of the enormous Br3 cluster, and the same peaks around set A's
+five-million-count `[urea+H]+` are ones peaky itself labels `artifact`.
+**That class is step 1.5's, not this one's**, and Mascope's roles keep them
+apart on purpose: `reagent` means the peak IS a reagent ion, `artifact` means
+it is an instrument response to one.
+
+Set A's remaining 22 are the same story one step in: Mascope claims the true
+`[urea+H]+` at -1.0 ppm and 4.9M counts on every sample of the set, and what it
+declines is a second peak 6 ppm away at 5% of that height, which peaky's
+reagent window swept up before its own ringing pass could see it. One library
+ion claims one peak, and the one it claims is the ion.
+
+**On the nitrate sets the two engines name different carriers.** Mascope claims
+the nitrate ladder - `NO3`, `NO3.HNO3`, `NO3.(HNO3)2`, `NO3.H2O` - while
+peaky's reagent rows there are `Br`, `Br2` and `BrO3`: it resolved a bromide
+library for a 15N-nitrate acquisition. So the 0% is disagreement about which
+carrier the source runs, not a library that missed one. peaky has no nitrate
+cluster library at all (`build_library` returns nothing for `NO3`), which is
+why F2 has Mascope claiming 30 reagent rows against peaky's 10.
+
+**Set C claims nothing, and that is correct.** Its acquisition starts at m/z
+131 and contains no peak within 100 ppm of any rung of the nitrate ladder - the
+source declusters beyond the dimer, the same fact step 1.2 recorded for
+carbonate. A window that starts above the ladder cannot show it. C2 is the same
+chemistry acquired from m/z 50 and claims 90.4% of its signal.
+
+**The one confident disagreement is Stage A's, not the pre-pass's.** On C2 six
+peaks peaky calls reagent are Mascope analyte M0 rows, five at assigned tier:
+all six are m/z 78.919 at ~100k counts, which Stage A matches to the curated
+`HBr` target from the database. Bromide really is in that spectrum; whether it
+is background or an analyte is a judgement neither engine can make from the
+mass, and peaky only calls it reagent because it chose a bromide library.
+Recorded rather than fixed - it is a curated-library question, not this step's.
 
 ## Decisions (taken 2026-09-07)
 
