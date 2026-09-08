@@ -317,9 +317,15 @@ def test_a_monoisotopic_row_outranks_another_candidates_satellite(monkeypatch):
     survives, even when the other candidate's satellite fits the mass better.
 
     A candidate is a whole envelope. Drop its monoisotopic row here and the
-    satellites it left behind belong to nothing - the ledger's isotopologue rows
-    with no owner. Mass error alone cannot see that, because it compares two
-    rows without asking what each row's loss costs the rest of its envelope.
+    satellites it left behind belong to nothing. Mass error alone cannot see
+    that, because it compares two rows without asking what each row's loss
+    costs the rest of its envelope.
+
+    The fixture builds a collision the finder itself does not produce: a
+    candidate whose monoisotopic line is not the peak it was enumerated for.
+    That is deliberate. The rule is a guard - the loop claims each m/z as it
+    emits it, so real input does not reach the tie - and a guard can only be
+    tested by constructing the case it guards against.
     """
     from mascope_tools.composition import finder
 
