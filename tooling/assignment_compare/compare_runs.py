@@ -221,9 +221,21 @@ def summarize(j: pd.DataFrame, engine_a: str, engine_b: str) -> dict:
             .value_counts(dropna=False)
             .to_dict(),
         },
+        # Two shares per engine, and reading them together is the point. The
+        # analyte share counts only what the engine calls sample chemistry, so
+        # it FALLS when reagent ions stop being read as analytes - which is an
+        # improvement, not a regression. The second share is what the engine
+        # accounts for at all, analyte or source background, and that is the one
+        # to compare across engines.
         "signal_explained_pct": {
             "a_analyte": pct(
                 j[j.a_role.isin([ROLE_MAIN, "iso_child"])]["intensity"].sum(),
+                total_intensity,
+            ),
+            "a_analyte_reagent_artifact": pct(
+                j[j.a_role.isin([ROLE_MAIN, "iso_child", "reagent", "artifact"])][
+                    "intensity"
+                ].sum(),
                 total_intensity,
             ),
             "b_analyte": pct(
@@ -236,6 +248,38 @@ def summarize(j: pd.DataFrame, engine_a: str, engine_b: str) -> dict:
                 ].sum(),
                 total_intensity,
             ),
+        },
+        # G4: the reagent agreement. Of the peaks engine B calls reagent - the
+        # source's own cluster ions, which are the brightest in the spectrum -
+        # how many does engine A call reagent too, and how many does it still
+        # commit an analyte M0 on? The second number is the one that matters:
+        # an analyte fitted to a reagent cluster is a phantom, and a confident
+        # one is a phantom presented as a result.
+        "reagent_agreement": {
+            "b_reagent": int((j.b_role == "reagent").sum()),
+            "a_reagent_too": int(
+                ((j.b_role == "reagent") & (j.a_role == "reagent")).sum()
+            ),
+            "a_reagent_too_pct": pct(
+                ((j.b_role == "reagent") & (j.a_role == "reagent")).sum(),
+                (j.b_role == "reagent").sum(),
+            ),
+            "a_claims_analyte": int(
+                ((j.b_role == "reagent") & (j.a_role == ROLE_MAIN)).sum()
+            ),
+            "a_claims_analyte_assigned": int(
+                (
+                    (j.b_role == "reagent")
+                    & (j.a_role == ROLE_MAIN)
+                    & (j.a_tier == "assigned")
+                ).sum()
+            ),
+            "a_reagent": int((j.a_role == "reagent").sum()),
+            # What engine B makes of the peaks A calls reagent, so a claim A
+            # makes on its own is visible rather than only its agreement.
+            "b_role_where_a_reagent": j[j.a_role == "reagent"]["b_role"]
+            .value_counts()
+            .to_dict(),
         },
         "both_main": int(len(both)),
         "verdicts_where_both_main": both["verdict"].value_counts().to_dict(),
@@ -325,10 +369,21 @@ def markdown_summary(result: dict) -> str:
         f"| tiered assigned | {pooled['tiers_of_main_peaks']['a'].get('assigned', 0)} | {pooled['tiers_of_main_peaks']['b'].get('assigned', 0)} |",
         f"| unassigned peaks | {pooled['roles']['a'].get('unassigned', 0)} | {pooled['roles']['b'].get('unassigned', 0)} |",
         f"| analyte signal explained | {pooled['signal_explained_pct']['a_analyte']}% | {pooled['signal_explained_pct']['b_analyte']}% |",
+        f"| signal accounted for (incl. reagent/artifact) | {pooled['signal_explained_pct']['a_analyte_reagent_artifact']}% | {pooled['signal_explained_pct']['b_analyte_reagent_artifact']}% |",
         f"| assigned-tier rows the other engine does not confirm | {pooled['a_assigned_tier_not_confirmed_by_b_pct']}% | {pooled['b_assigned_tier_not_confirmed_by_a_pct']}% |",
+        f"| reagent peaks | {pooled['roles']['a'].get('reagent', 0)} | {pooled['roles']['b'].get('reagent', 0)} |",
         "",
         f"Peaks both call M0: {pooled['both_main']} - "
         + ", ".join(f"{k} {v}" for k, v in pooled["verdicts_where_both_main"].items()),
+        "",
+        f"G4 reagent agreement: of {pooled['reagent_agreement']['b_reagent']} peaks "
+        f"{b} calls reagent, {a} calls "
+        f"{pooled['reagent_agreement']['a_reagent_too']} reagent too "
+        f"({pooled['reagent_agreement']['a_reagent_too_pct']}%) and still commits "
+        f"an analyte M0 on {pooled['reagent_agreement']['a_claims_analyte']} "
+        f"({pooled['reagent_agreement']['a_claims_analyte_assigned']} of them at "
+        f"assigned tier). {a} calls "
+        f"{pooled['reagent_agreement']['a_reagent']} peaks reagent in total.",
         "",
         "| intensity rank | peaks | a M0 % | a assigned % | b M0 % | b assigned % | b unassigned % | both M0 | same formula % | same ion % |",
         "|---|---|---|---|---|---|---|---|---|---|",
