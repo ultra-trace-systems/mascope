@@ -218,3 +218,63 @@ async def test_a_sample_another_worker_holds_is_not_folded():
     mocks["in_flight"].assert_not_called()
     mocks["stage_a"].assert_not_called()
     mocks["fold"].assert_not_called()
+
+
+class TestTheFoldClaimsInTheRunsWindow:
+    """The reagent pre-pass claims within the resolved profile's
+    ``mz_precision_ppm``, and that comes from the sample's instrument class. The
+    fold has to read the same class an explicit run does, or the two ledgers
+    disagree about which peaks are reagent - which is the one thing the shared
+    helper exists to prevent.
+    """
+
+    @staticmethod
+    def _resolve_spy(stack, instrument):
+        """Patch the instrument read and capture what resolve_profile is told."""
+        from mascope_backend.api.new.peak_assignments import service
+
+        seen = {}
+        stack.enter_context(
+            patch(f"{_SVC}.get_instrument_type", side_effect=instrument)
+        )
+        real = service.resolve_profile
+
+        def spy(config, **kwargs):
+            seen.update(kwargs)
+            return real(config, **kwargs)
+
+        stack.enter_context(patch(f"{_SVC}.resolve_profile", side_effect=spy))
+        return seen
+
+    @pytest.mark.asyncio
+    async def test_the_instrument_class_reaches_the_profile(self):
+        from mascope_backend.api.new.peak_assignments.service import (
+            fold_sample_peaks_without_run,
+        )
+
+        stack, _ = _patched()
+        with stack:
+            seen = self._resolve_spy(stack, lambda _filename: "orbi")
+            await fold_sample_peaks_without_run("si-1")
+
+        assert seen["instrument_type"] == "orbi"
+
+    @pytest.mark.asyncio
+    async def test_a_filename_that_names_no_instrument_does_not_fail_the_fold(self):
+        """The parse raises for a sample that keeps no data file and whose name
+        does not say. Standing down is this path's contract, so the fold reads
+        it defensively and carries on with no class."""
+        from mascope_backend.api.new.peak_assignments.service import (
+            fold_sample_peaks_without_run,
+        )
+
+        def boom(_filename):
+            raise ValueError("the name does not say")
+
+        stack, mocks = _patched()
+        with stack:
+            seen = self._resolve_spy(stack, boom)
+            assert await fold_sample_peaks_without_run("si-1") == "batch-1"
+
+        assert seen["instrument_type"] is None
+        mocks["fold"].assert_awaited_once()
