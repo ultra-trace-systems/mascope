@@ -1692,6 +1692,7 @@ def _artifact_assignments(
     instrument_type: str | None,
     sample_item_id: str,
     peak_assignment_run_id: str,
+    claimed_peak_ids: set[str] | None = None,
 ) -> tuple[list[dict], set[str]]:
     """The artifact pre-pass: the detector's ringing, claimed before the stages.
 
@@ -1704,10 +1705,12 @@ def _artifact_assignments(
         instrument's spectrum rings (see :mod:`artifact_pass`).
     :param sample_item_id: The sample these rows belong to.
     :param peak_assignment_run_id: The run they are stamped with.
+    :param claimed_peak_ids: What the reagent pre-pass took, so the two passes
+        cannot both write a row for one peak.
     :return: The artifact rows, and the peaks they take out of both stages.
     """
     rows = build_artifact_assignments(
-        claim_artifact_peaks(peaks_df, instrument_type),
+        claim_artifact_peaks(peaks_df, instrument_type, claimed_peak_ids),
         sample_item_id=sample_item_id,
         peak_assignment_run_id=peak_assignment_run_id,
     )
@@ -1958,7 +1961,11 @@ async def _run_sample_assignment(
         # drops them - so this claims the residue a sample's own time window
         # shows that the file's summed heights did not.
         artifact_assignments, artifact_peak_ids = _artifact_assignments(
-            peaks_df, instrument_type, sample_item_id, run.peak_assignment_run_id
+            peaks_df,
+            instrument_type,
+            sample_item_id,
+            run.peak_assignment_run_id,
+            claimed_peak_ids=reagent_peak_ids,
         )
         if artifact_assignments:
             runtime.logger.info(
@@ -2314,7 +2321,7 @@ async def _fold_sample_peaks_without_run(
         peaks_df, resolved_profile, sample_item_id, run_id
     )
     artifact, artifact_peak_ids = _artifact_assignments(
-        peaks_df, instrument_type, sample_item_id, run_id
+        peaks_df, instrument_type, sample_item_id, run_id, reagent_peak_ids
     )
     claimed_peak_ids = reagent_peak_ids | artifact_peak_ids
     stage_a, _ = await _stage_a_assignments(

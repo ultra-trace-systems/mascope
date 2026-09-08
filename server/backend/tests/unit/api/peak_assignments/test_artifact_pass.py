@@ -76,6 +76,32 @@ class TestWhenThePassRuns:
         empty = pd.DataFrame({"sample_peak_id": [], "mz": [], "intensity": []})
         assert claim_artifact_peaks(empty, "orbi").empty
 
+    def test_a_peak_the_reagent_pass_owns_is_not_claimed_again(self):
+        # The ledger holds one row per peak, and these two passes can both want
+        # the same one: a reagent cluster's weakest satellite sitting in the
+        # ringing skirt of a brighter line. Found on the bromide gate set, where
+        # a run died on the ledger's own uniqueness constraint - one peak per
+        # sample was both the 81Br satellite of a bromide cluster and a sidelobe
+        # of the peak beside it.
+        peaks = _ringing_spectrum()
+        claimed_first = set(claim_artifact_peaks(peaks, "orbi")["sample_peak_id"])
+        assert claimed_first, "fixture claims nothing"
+
+        taken = sorted(claimed_first)[0]
+        left = claim_artifact_peaks(peaks, "orbi", {taken})
+
+        assert taken not in set(left["sample_peak_id"])
+        assert set(left["sample_peak_id"]) == claimed_first - {taken}
+
+    def test_the_reagent_peak_still_counts_as_context(self):
+        # Excluded after the flag, not before it: a reagent peak is often the
+        # intense centroid the ringing is around, and hiding it from the rule
+        # would take the sidelobes with it.
+        peaks = _ringing_spectrum()
+        base_id = peaks.loc[peaks["intensity"].idxmax(), "sample_peak_id"]
+
+        assert len(claim_artifact_peaks(peaks, "orbi", {base_id})) == 4
+
     def test_an_ordinary_spectrum_claims_nothing(self):
         # Nothing intense enough to ring, and no mirror pairs: the flag has to
         # stay silent, or every crowded spectrum would lose peaks to it.

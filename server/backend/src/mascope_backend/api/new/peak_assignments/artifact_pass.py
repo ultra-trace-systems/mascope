@@ -63,21 +63,36 @@ FT_INSTRUMENTS = frozenset({"orbi"})
 
 
 def claim_artifact_peaks(
-    peaks_df: pd.DataFrame, instrument_type: str | None
+    peaks_df: pd.DataFrame,
+    instrument_type: str | None,
+    claimed_peak_ids: set[str] | None = None,
 ) -> pd.DataFrame:
     """The peaks of the sample that are the detector's ringing, not ions.
 
-    :param peaks_df: The sample's peaks, with ``mz`` and ``intensity`` columns.
+    :param peaks_df: The sample's peaks, with ``sample_peak_id``, ``mz`` and
+        ``intensity`` columns.
     :param instrument_type: The sample's instrument class. Anything but an FT
         instrument claims nothing, including an unknown one: a pass that cannot
         say what made the spectrum has no basis for saying a peak is an artifact
         of how it was made.
+    :param claimed_peak_ids: Peaks the reagent pre-pass already owns. A reagent
+        cluster's weakest satellite can sit in the ringing skirt of a brighter
+        line and be flagged here too - on the bromide gate set one peak per
+        sample is both - and two rows for one peak is not a ledger. The reagent
+        claim wins because it is the more specific statement: it names the ion
+        and predicts the peak's height, where this rule only says a peak is
+        small and close to a big one. Excluded after the flag rather than
+        before it, so a reagent peak still serves as a base peak or a mirror
+        partner for the peaks around it.
     :return: The rows of ``peaks_df`` the sidelobe rule fires on.
     """
     if instrument_type not in FT_INSTRUMENTS or peaks_df.empty:
         return peaks_df.iloc[:0]
     flagged = flag_satellite_peaks(peaks_df[["mz", "intensity"]])
-    return peaks_df[flagged["is_satellite_peak"].to_numpy()]
+    claimed = peaks_df[flagged["is_satellite_peak"].to_numpy()]
+    if claimed_peak_ids:
+        claimed = claimed[~claimed["sample_peak_id"].isin(claimed_peak_ids)]
+    return claimed
 
 
 def build_artifact_assignments(
