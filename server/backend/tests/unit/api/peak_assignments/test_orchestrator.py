@@ -382,8 +382,11 @@ class TestStageHandoff:
     async def test_stage_b_is_never_offered_a_peak_stage_a_owns(self):
         """The single-owner invariant across the stage boundary.
 
-        Stage A's peaks must not reach the untargeted search, or two stages could
-        claim the same peak and violate the per-run uniqueness constraint.
+        Stage A's peaks must not be searched, or two stages could claim the same
+        peak and violate the per-run uniqueness constraint. They are still handed
+        to the finder - as isotope-pattern context, which is what lets a Stage B
+        ion's envelope be scored against the whole spectrum - so what says the
+        boundary holds is the target list, not the frame.
         """
         from mascope_backend.api.new.peak_assignments.config import (
             PeakAssignmentConfig,
@@ -402,10 +405,12 @@ class TestStageHandoff:
         await _run(PeakAssignmentConfig(run_untargeted=True))
 
         mocks["compositions"].assert_called_once()
-        offered = mocks["compositions"].call_args.args[0]
-        offered_mz = set(offered["mz"].tolist())
-        # p1/p2 belong to the Stage A ion; only p3 is unexplained.
-        assert offered_mz == {300.1234}
+        call = mocks["compositions"].call_args
+        # The whole spectrum is the context...
+        assert set(call.args[0]["mz"].tolist()) == {181.0707, 182.0741, 300.1234}
+        # ...and only the peak no earlier pass explains is enumerated: p1/p2
+        # belong to the Stage A ion.
+        assert set(call.kwargs["targets"]) == {300.1234}
 
     @pytest.mark.asyncio
     async def test_untargeted_stage_is_skipped_when_disabled(self):
