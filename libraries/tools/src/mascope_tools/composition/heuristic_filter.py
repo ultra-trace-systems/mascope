@@ -666,13 +666,20 @@ def apply_heuristic_rules(
 # So the family is scored once, because the evidence belongs to the ion rather
 # than to the split, and ranked by two rules in this order.
 #
-# 1. The neutral must be a molecule. Half the readings of an ion ask the analyte
-#    to be an odd-electron radical - a family's members differ by a fragment
-#    like HCO3, so their neutrals differ by half a DBE unit and exactly one of
-#    the two is closed-shell. A closed-shell molecule is the far more likely
-#    analyte, so it wins the family. This is a tie-break and not a filter: where
-#    a radical is the ONLY reading of an ion it is still committed, which is
-#    what a nitrate source measuring RO2 requires.
+# 1. Prefer the reading whose neutral is a molecule. Whether two readings of an
+#    ion differ on that at all depends on the fragment between them: adding a
+#    fragment F to a neutral moves its DBE by DBE(F) - 1, so the two neutrals
+#    differ in parity exactly when F's own DBE is a half-integer. HCO3 is such
+#    a fragment, and so is a carbon read as a nitrogen, which is why this key
+#    decides the carbonate readings. NH3, urea, HNO3 and HBr are not: there the
+#    two neutrals are both molecules or both radicals, the key is silent, and
+#    rule 2 decides alone - which covers the ammonium, urea-cluster and
+#    nitrate-against-deprotonation families, most of the gate's.
+#
+#    Where the key does speak, the molecule is the far likelier analyte and
+#    wins. It is a tie-break and not a filter: where a radical is the ONLY
+#    reading of an ion it is still committed, which is what a nitrate source
+#    measuring RO2 requires.
 # 2. Then the mechanism carrying the most mass wins - the adduct or cluster
 #    reading over the covalent one. That is the chemistry a chemical-ionization
 #    source runs, and reading the reagent into the analyte's own formula invents
@@ -681,10 +688,11 @@ def apply_heuristic_rules(
 # The order was measured, not assumed. On the mass rule alone the gate's nitrate
 # set read 159 deprotonated acids as carbonate adducts of radicals instead -
 # C17H23O4- as [C16H23O + CO3]- rather than [C17H24O4 - H]- - and lost that many
-# agreements with the reference. The reference's own neutral is closed-shell in
-# 100% of the readings the two engines split differently (281 of 281 across the
-# gate), and in every reading they agree on, so the rule is what the reference
-# has been doing all along.
+# agreements with the reference. On that same build the reference's own neutral
+# is closed-shell in 390 of the 390 readings the two engines split differently
+# whose DBE the comparison computes (the three it leaves blank are carbon-free,
+# ammonia and nitric acid, and closed-shell as well), and in every reading the
+# two agree on. The rule is what the reference has been doing all along.
 #
 # The losing readings ride along on the winner. They are not weaker candidates;
 # they are the same evidence read differently, which is exactly what an analyst
@@ -727,6 +735,12 @@ def neutral_is_closed_shell(formula: str) -> bool:
     unpaired electron, so the formula names a radical. Both are real chemistry -
     a nitrate source measures RO2 radicals - but between two readings of one ion
     the molecule is the likelier analyte by a wide margin.
+
+    Two readings of an ion do not always differ here. They differ exactly when
+    the fragment between them has a half-integer DBE of its own, as HCO3 does
+    and NH3, urea, HNO3 and HBr do not, so on an ammonium or reagent-cluster
+    family this test returns the same answer for both members and the ranking
+    falls through to :func:`mechanism_mass_contribution`.
 
     :param formula: A neutral formula in Hill order.
     :return: True for a closed-shell neutral, and for anything unparseable, so

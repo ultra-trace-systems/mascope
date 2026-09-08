@@ -235,14 +235,19 @@ and 5 as far as they are search problems.
 
 - **What.** Candidates that form the same ion under different neutral/adduct
   pairs are one hypothesis family. In `heuristic_filter.match_isotopic_pattern`
-  and `finder.assign_compositions` the family is ranked by policy - the
-  reading whose mechanism contributes the most mass (the adduct or cluster
-  reading) wins, the covalent reading is kept as a structured alternative
-  flagged `same_ion` - and ties between genuinely different ions break on
-  score, then |ppm|, then plausibility, then formula, never on enumeration
-  order. `engine.untargeted_matches_to_peak_assignments` stores the family
-  members as alternatives with the flag so the inspector can show the
-  ambiguity.
+  and `finder.assign_compositions` the family is scored once - the evidence
+  belongs to the ion and not to the split - and ranked by two keys in this
+  order. First the reading whose neutral is a closed-shell molecule wins
+  (decision 9). That key separates two readings only when the fragment between
+  them carries a half-integer DBE of its own, as HCO3 does and NH3, urea, HNO3
+  and HBr do not, so on most families it is silent. Then, among readings it
+  does not separate, the one whose mechanism contributes the most mass - the
+  adduct or cluster reading - wins, and the covalent reading is kept as a
+  structured alternative flagged `same_ion`. Ties between genuinely different
+  ions break on score, then |ppm|, then plausibility, then formula and ion,
+  never on enumeration order.
+  `engine.untargeted_matches_to_peak_assignments` stores the family members as
+  alternatives with the flag so the inspector can show the ambiguity.
 - **Why.** Cause 1, first half: 384 of 892 overlapping peaks on instrument A,
   416 of 1,394 on B.
 - **Verify.** `libraries/tools/tests/test_finder.py` cases for the family
@@ -816,16 +821,21 @@ carbonate carries 60 Da more than a lost proton. `C16H23O` is not a molecule.
 Set C lost 28 same-formula agreements against step 1.2 and its G2 fell 80 ->
 56%.
 
-The fix came out of the same comparison. A family's members differ by a
-fragment like HCO3, whose own DBE is a half-integer, so their neutrals differ
-by half a DBE unit and *exactly one of the two is closed-shell*. The reference
-picks the closed-shell one in **281 of the 281 readings the two engines split
-differently** across the whole gate, and in every reading they agree on. So the
-family is ranked on that first and on the mechanism's mass second. With both
-keys set C reads 596 of 687 the same way (86% G2) and holds its 1.2 chemistry.
-It is a tie-break and not a filter: where a radical is the only reading of an
-ion it is still committed, which is what a nitrate source measuring RO2
-requires.
+The fix came out of the same comparison. Adding a fragment to a neutral moves
+its DBE by that fragment's own DBE less one, so two readings of an ion differ
+on closed-shell-ness exactly when the fragment between them carries a
+half-integer DBE. HCO3 does, and so does a carbon read as a nitrogen; NH3,
+urea, HNO3 and HBr do not, which is why this key decides the carbonate readings
+and is silent on the uronium and nitrate-against-deprotonation families below.
+Where it does speak the reference picks the closed-shell reading every time: on
+the build that motivated the change, in **390 of the 390 split readings whose
+DBE the comparison computes** (the three it leaves blank are carbon-free,
+ammonia and nitric acid, and closed-shell as well), and in every reading the
+two engines agree on. So the family is ranked on that first and on the
+mechanism's mass second. With both keys set C reads 596 of 687 the same way
+(86% G2) and holds its 1.2 chemistry. It is a tie-break and not a filter: where
+a radical is the only reading of an ion it is still committed, which is what a
+nitrate source measuring RO2 requires.
 
 **The two rules of steps 1.2 and 1.3 do meet, and they hold.** Set C now
 commits 279 carbonate readings where 1.2 committed 130, and 138 of them are the
@@ -904,6 +914,23 @@ out of the analyte ledger altogether.
    takes no peak a declared mechanism won, and commits as assigned only with
    corroboration. Revisit per profile if a later acquisition of the same
    chemistry shows the carrier absent.
+9. **A same-ion family is ranked on its neutral before its mechanism** (taken
+   2026-09-08 with step 1.3, after the gate refused this note's own rule). The
+   policy written for step 1.3 - the mechanism carrying the most mass is the
+   reading - is right where the two readings are equally chemistry, and wrong
+   where one of them is not chemistry at all: on the nitrate set it read 159
+   deprotonated acids as carbonate adducts of odd-electron radicals, because
+   carbonate carries 60 Da more than a lost proton. So the first key is that
+   the neutral should be a closed-shell molecule, and the mass rule decides
+   among the readings that key does not separate - which is most of them, since
+   it separates two readings only when the fragment between them has a
+   half-integer DBE. It stays a tie-break and never a filter: a radical that is
+   the only reading of its ion is still committed, which is what a nitrate
+   source measuring RO2 requires. The evidence is the reference's own
+   behaviour, not a prior: on the build that motivated the change its neutral
+   is closed-shell in every one of the 390 split readings whose DBE the
+   comparison computes, and in every reading the two engines agree on. Revisit
+   if a chemistry turns up where the radical reading is the common one.
 
 ## Risks
 
