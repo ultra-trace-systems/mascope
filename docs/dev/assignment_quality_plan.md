@@ -1509,10 +1509,16 @@ The off-the-grid column is the chemistry gap step 1.5 recorded - the reference r
 Cl4-Cl6 envelopes on D and Si-bearing ones on A, the grid caps chlorine at two
 and has no silicon, and an envelope Mascope cannot build is an envelope whose
 lines it explains one at a time. **The on-the-grid column is not that.** There the
-parent is a neutral the grid can build, and on most of those rows Mascope reads
-the parent with the reference's own formula (100 of B's 113) and still does not
-claim the line. Three things stop it, all in the envelope logic rather than the
-grid: the line is never predicted, because `ISOTOPE_ABUNDANCE_THRESHOLD` is 1%
+parent is a neutral the grid can build, and on many of those rows Mascope reads
+the parent with the reference's own formula - 100 of B's 113, 32 of D's 165,
+5 of A's 8 - and still does not claim the line. Counted through the reference's
+own `owner_peak_assignment_id`, which is what makes them exact: matching a
+parent by formula and label spacing instead over-counts D, because 17 of its
+on-grid rows carry the label "M0" on a satellite row under the compound-envelope
+convention, and any M0 of that formula in the sample then matches.
+
+Three things stop the claim, all in the envelope logic rather than the grid: the
+line is never predicted, because `ISOTOPE_ABUNDANCE_THRESHOLD` is 1%
 and IsoSpec drops the 18O line of an ion with four or fewer oxygens (0.8%) and
 the 15N line of one with one or two nitrogens; the line is predicted but
 observed outside the 40% intensity tolerance; or it is inside the tolerance and
