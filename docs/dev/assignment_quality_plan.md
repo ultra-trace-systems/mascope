@@ -375,8 +375,10 @@ and 5 as far as they are search problems.
 - Run the twelve-sample protocol, fill the status table, bump the engine
   version, changelog entry, and rebuild the stakeholder view (the brightest
   peaks of one sample, both readings) from the new runs. Expected: G1 near
-  the 45-50% the offline experiment reached, G3-G6 at target, and step 1.5's
-  coherence count (untargeted isotopologue rows without an owner) at zero.
+  the 45-50% the offline experiment reached, G3-G5 at target, G6 read and
+  recorded but not gated (decision 11: it is judged after step 2.5b), and
+  step 1.5's coherence count (untargeted isotopologue rows without an owner)
+  at zero.
 - **Size.** S.
 
 ## Stage 2 - earn the tier (engine 0.5.0)
@@ -494,7 +496,11 @@ its own status.
   phosphate resolve on every testbed sample; when a seed loads, the gate
   reports the peaks that change owner between the database and untargeted
   stages, because a seed formula stealing a peak from a better untargeted
-  answer is the main risk; gate metric G3.
+  answer is the main risk; gate metric G3; and gate metric G6 (at most 10
+  on A), which decision 11 moves here from the stage-1 gate: on A the
+  reference's parent ion for 78 of the 79 carries silicon or phosphorus,
+  and the 29Si and 30Si lines of the column-bleed siloxanes attach to their
+  parents only once the known window names them.
 - **Size.** M for 2.5a, S-M for 2.5b. Independent of 2.1-2.4. The seed
   proposal's four decisions (sweep order nitrate, bromide, urea and
   ammonium; opt-in production loading; radicals and clusters off by
@@ -1199,6 +1205,24 @@ signal.
     reference engine also labels these reagent) and records its parent as
     provenance. Revisit if the inspector needs to collapse a reagent envelope
     structurally.
+
+11. **G6 is judged after step 2.5b, not at the stage-1 gate** (taken
+    2026-09-08 with step 1.5). The metric counts peaks Mascope commits an
+    analyte M0 on that the reference reads as part of another ion's envelope,
+    and the stage-1 target was at most 10 on A. Step 1.5 left it at 79, and
+    the measurement says why: for 78 of the 79 the reference's parent ion
+    carries an element the uronium grid does not search - silicon in 76,
+    phosphorus in 2 - because they are the 29Si and 30Si lines of the cyclic
+    siloxane column-bleed series, and an envelope can only claim a line whose
+    ion has been committed. A rule keyed on the isotope spacing alone
+    separates the class (81% of it against 0.3% of the rows both engines
+    agree on) but cannot write anything true while the parent has no name:
+    calling the peak a 29Si line of a silicon-free formula is a different
+    false statement, and refusing to commit costs 26 of set C's 591 agreed
+    rows for 23 of its 56. So the parent has to be named first, which is
+    step 2.5b's known window per source. Until then the stage-1 gate reads G6
+    and records it, the target of at most 10 on A is 2.5b's to meet, and the
+    stage-2 target of at most 5 stands.
 
 ## Risks
 
