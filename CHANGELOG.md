@@ -4,6 +4,24 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
 
 ## [Unreleased]
 
+### Fixed
+
+- **An isotope pattern is now anchored on the ion's own line, so a bright peak
+  is no longer lost to a faint neighbour two mass units above it.** The matcher
+  normalised a predicted envelope to the predictor's first line and matched that
+  line before any other. Isotope predictions come back ordered by abundance, so
+  for an ion with no heavy-isotope-rich element that line IS the monoisotopic
+  one and the assumption held by accident - but for a dibromide the first line
+  sits two mass units above the ion. The envelope was then anchored on whatever
+  small peak happened to be there, and the real peak measured thousands of
+  percent too bright for its own monoisotopic line and went unmatched, while the
+  pattern still scored well enough to win. The peak the candidate was proposed
+  for got no assignment at all. On a bromide-source Orbitrap that cost 21 peaks
+  their assignment across six samples, some of them thousands of counts.
+  Anchoring on the monoisotopic line - the peak the composition search started
+  from - removes the class, and a candidate whose own line the spectrum does not
+  hold now scores zero rather than winning on its satellites.
+
 ### Added
 
 - **An isotope envelope is now scored against the whole spectrum, and a
