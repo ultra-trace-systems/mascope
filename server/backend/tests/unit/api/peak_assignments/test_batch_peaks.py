@@ -328,6 +328,8 @@ def test_role_constant_matches_the_assignment_engine():
     assert ROLE_ISO_CHILD == engine.ROLE_ISO_CHILD
     assert batch_peaks.ROLE_M0 == engine.ROLE_M0
     assert batch_peaks.ROLE_UNASSIGNED == engine.ROLE_UNASSIGNED
+    assert batch_peaks.ROLE_REAGENT == engine.ROLE_REAGENT
+    assert batch_peaks.ROLE_ARTIFACT == engine.ROLE_ARTIFACT
 
 
 def test_the_tier_codes_are_the_tier_ranks():

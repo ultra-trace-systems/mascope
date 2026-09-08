@@ -54,6 +54,7 @@ from mascope_backend.api.new.peak_assignments.batch_runs import (
 )
 from mascope_backend.api.new.peak_assignments.config import PeakAssignmentConfig
 from mascope_backend.api.new.peak_assignments.engine import (
+    ROLE_REAGENT,
     SOURCE_UNTARGETED,
     evidence_for,
     tier_for_evidence,
@@ -87,6 +88,10 @@ from mascope_tools.composition.reagents import secondary_channels
 #: The notification channel the search reports on, start to finish.
 NOTIFICATION_TYPE = "search_batch_untargeted"
 
+#: A member row stores its role as a code; this is the reagent one, resolved
+#: once so the comparison in :func:`choose_representatives` is a plain integer.
+REAGENT_ROLE_CODE = role_code(ROLE_REAGENT)
+
 
 # --- pure helpers ---------------------------------------------------------------
 
@@ -96,12 +101,23 @@ def choose_representatives(members: Iterable[Any]) -> dict[str, Any]:
 
     A member with no intensity counts as the dimmest, not as a candidate.
 
+    A reagent member is not a candidate at all. Its anchor reads as unassigned -
+    a reagent row carries no formula, so the consensus has nothing to vote on -
+    but the peak is the source's own chemistry and was deliberately taken out of
+    the per-sample stages by the reagent pre-pass. Without this the batch search
+    would be the one path that puts an analyte formula back onto it, which is
+    the phantom the pre-pass exists to prevent. An anchor whose members are all
+    reagent is left with no representative and is never searched; a mixed anchor
+    is still searched, on a member that is a real peak.
+
     :param members: Occurrence rows (or anything carrying ``batch_peak_id``,
-        ``sample_item_id``, ``sample_peak_id`` and ``intensity``).
+        ``sample_item_id``, ``sample_peak_id``, ``intensity`` and ``role``).
     :return: anchor id -> the member chosen for it.
     """
     best: dict[str, Any] = {}
     for member in members:
+        if getattr(member, "role", None) == REAGENT_ROLE_CODE:
+            continue
         current = best.get(member.batch_peak_id)
         if current is None or (member.intensity or 0.0) > (current.intensity or 0.0):
             best[member.batch_peak_id] = member
