@@ -2229,14 +2229,21 @@ async def _fold_sample_peaks_without_run(
     # path, but the pre-pass is not part of it: a reagent peak is the source's
     # chemistry whichever way the sample was assigned, and an ingest fold that
     # left it unassigned would disagree with the run that later replaces it.
-    # No instrument type: it decides the untargeted m/z window, and this path
-    # never runs that stage. Leaving it out keeps the ingest hook off the
-    # filename parse, which raises for a sample that keeps no data file and
-    # whose name does not say - and standing down is this path's contract, not
-    # failing the fold over a window nobody reads.
+    # The instrument type matters here even though this path never runs the
+    # untargeted stage: it also sets the window the reagent pre-pass claims in,
+    # so leaving it out had the fold claiming at the 10 ppm fallback while a run
+    # on the same sample claimed at an Orbitrap's 3 - exactly the drift between
+    # the two ledgers the shared helper exists to prevent. It is read
+    # defensively because the parse raises for a sample that keeps no data file
+    # and whose name does not say, and standing down is this path's contract.
+    try:
+        instrument_type = get_instrument_type(sample.filename)
+    except ValueError:
+        instrument_type = None
     resolved_profile = resolve_profile(
         config,
         mechanism_notations=[m.ionization_mechanism for m in mechanisms],
+        instrument_type=instrument_type,
         polarity=sample.polarity,
     )
     reagent, reagent_peak_ids = _reagent_assignments(
