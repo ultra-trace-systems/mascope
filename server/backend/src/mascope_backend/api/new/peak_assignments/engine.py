@@ -57,8 +57,10 @@ ROLE_UNASSIGNED = "unassigned"
 # `assigned_formula`, so it votes on nothing and is counted as explained by its
 # role rather than by a formula it has no business claiming.
 ROLE_REAGENT = "reagent"
-# An instrument artifact - ringing, a sidelobe. Declared here with its peer so
-# the role vocabulary is in one place; step 1.5 is what produces these.
+# An instrument artifact rather than an ion: an FT sidelobe, the ringing a very
+# intense centroid leaves around itself. Like a reagent row it carries no
+# formula and votes on nothing; unlike one it names no ion either, because there
+# is none - the peak is the detector's answer to a neighbour, not a species.
 ROLE_ARTIFACT = "artifact"
 
 # Which stage won the peak
@@ -67,6 +69,8 @@ SOURCE_UNTARGETED = "untargeted"
 # ...or the reagent pre-pass, which is neither: it does not assign a formula to a
 # peak, it declares the peak to be the source's own chemistry.
 SOURCE_REAGENT = "reagent"
+# ...or the artifact pre-pass, which declares it to be the instrument's.
+SOURCE_ARTIFACT = "artifact"
 # ...or, when no stage did, the person who decided it instead. A manually
 # curated row is not the output of a stage, and saying 'database' or
 # 'untargeted' on it would credit an engine with a choice a human made.
@@ -928,6 +932,7 @@ def untargeted_matches_to_peak_assignments(
     formula_formatter=None,
     max_alternatives: int = 5,
     minor_channels: frozenset[str] | None = None,
+    excluded_peak_ids: set[str] | None = None,
 ) -> list[dict]:
     """Map untargeted composition results onto peak assignments (Stage B).
 
@@ -960,10 +965,25 @@ def untargeted_matches_to_peak_assignments(
     That policy is not re-run here, and this function's own contest does not re-rank
     it.
 
+    A satellite is written by the monoisotopic row that claims it and names that row as
+    its owner from the start. It is never linked to a parent afterwards, and when the
+    ion's M0 wins no peak of its own the satellite is not written at all: an
+    isotopologue row that belongs to nothing states that a peak is part of an envelope
+    whose ion the ledger never commits, which is not a verdict a reader can act on. Its
+    peak stays unassigned instead, which is what it is.
+
     :param matches_df: First element returned by assign_compositions.
-    :param peaks_df: The observed peaks that were fed into the untargeted search, with
-        ``sample_peak_id`` / ``mz`` / ``intensity`` columns. Results are joined back to it
-        by position (see :func:`_resolve_peak_positions`).
+    :param peaks_df: The observed peaks the search results are joined back to, by
+        position (see :func:`_resolve_peak_positions`), with ``sample_peak_id`` / ``mz``
+        / ``intensity`` columns. This is the sample's whole peak list, not only the
+        peaks that were enumerated: the finder scores an envelope against every peak it
+        is given, so a satellite lands wherever it sits rather than only inside the
+        searched set.
+    :param excluded_peak_ids: Peaks another pass already owns - the reagent and artifact
+        pre-passes, and Stage A. Rows landing on them are dropped rather than written:
+        the ledger holds one row per peak, and a stage that arrives second does not get
+        to restate a peak somebody else has already accounted for. Dropping the M0 this
+        way takes its satellites with it, by the rule above.
     :param mechanism_id_by_notation: Maps the ionization notation used in the
         search back to IonizationMechanism ids.
     :param formula_formatter: Optional callable applied to formulas (e.g.
@@ -980,6 +1000,7 @@ def untargeted_matches_to_peak_assignments(
 
     mechanism_id_by_notation = mechanism_id_by_notation or {}
     minor_channels = minor_channels or frozenset()
+    excluded_peak_ids = excluded_peak_ids or set()
     format_formula = formula_formatter or (lambda formula: formula)
 
     assigned_rows = [
@@ -1002,8 +1023,16 @@ def untargeted_matches_to_peak_assignments(
     contenders_by_position: dict[int, list[dict]] = {}
     unmatched_m0 = 0
     unmatched_children = 0
+    claimed_elsewhere = 0
     for row, position in zip(assigned_rows, positions):
         isotope_label = _str_or_none(row.get("isotope_label")) or "M0"
+        if position is not None and str(peak_ids[position]) in excluded_peak_ids:
+            # The peak belongs to a pass that ran before this one. It is still
+            # pattern context - the finder scored envelopes against it, which is
+            # the point of feeding the whole peak list in - but no row here may
+            # restate it.
+            claimed_elsewhere += 1
+            continue
         if position is None:
             # An isotope child can legitimately land on an m/z outside the peaks fed to the
             # search (e.g. below the intensity threshold), so a child miss is expected. An
@@ -1043,10 +1072,20 @@ def untargeted_matches_to_peak_assignments(
             f"Untargeted stage: {unmatched_children} isotope-child rows fell outside the "
             f"peaks fed to the search and were skipped."
         )
+    if claimed_elsewhere:
+        runtime.logger.debug(
+            f"Untargeted stage: {claimed_elsewhere} composition rows landed on peaks an "
+            f"earlier pass had already claimed and were dropped."
+        )
 
-    assignments: list[dict] = []
+    # Every row in finder order, each child carrying the group whose M0 has to
+    # own it. Two passes rather than one: an ion's M0 is not necessarily the
+    # first of its rows to appear - for a bromine- or chlorine-rich envelope the
+    # finder reports the most abundant isotopologue first, and the monoisotopic
+    # line can sit at a lower m/z than a satellite already seen - so which
+    # children have an owner is only known once every peak has been settled.
+    ordered: list[tuple[dict, tuple | None]] = []
     m0_assignment_by_group: dict[tuple, str] = {}
-    child_assignments: list[tuple[dict, tuple]] = []
 
     for position, contenders in contenders_by_position.items():
         # Same ranking as Stage A: evidence first, closest mass next, formula last so a
@@ -1217,17 +1256,30 @@ def untargeted_matches_to_peak_assignments(
             "alternatives": alternatives,
             "provenance": provenance,
         }
-        assignments.append(assignment)
+        ordered.append((assignment, None if is_m0 else group_key))
 
         if is_m0:
             m0_assignment_by_group.setdefault(
                 group_key, assignment["peak_assignment_id"]
             )
-        else:
-            child_assignments.append((assignment, group_key))
 
-    for assignment, group_key in child_assignments:
-        assignment["owner_peak_assignment_id"] = m0_assignment_by_group.get(group_key)
+    assignments: list[dict] = []
+    orphaned = 0
+    for assignment, group_key in ordered:
+        if group_key is None:
+            assignments.append(assignment)
+            continue
+        owner = m0_assignment_by_group.get(group_key)
+        if owner is None:
+            orphaned += 1
+            continue
+        assignment["owner_peak_assignment_id"] = owner
+        assignments.append(assignment)
+    if orphaned:
+        runtime.logger.info(
+            f"Untargeted stage: {orphaned} isotopologue rows whose ion committed no "
+            f"monoisotopic peak were not written; their peaks stay unassigned."
+        )
 
     if minor_channels:
         _apply_minor_channel_policy(

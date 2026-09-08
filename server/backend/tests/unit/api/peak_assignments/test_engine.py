@@ -1710,6 +1710,134 @@ class TestUntargetedMatches:
         assert assignments == []
 
 
+class TestASatelliteBelongsToAnM0:
+    """A satellite row is written by the monoisotopic row that claims it.
+
+    The ledger's owner link is what says a peak is part of an envelope, so a
+    satellite with nobody to point at states a claim about an ion the ledger
+    never commits. It is not written; its peak stays unassigned, which is what
+    it is.
+    """
+
+    def _pair(self, *, m0_mz: float, child_mz: float, m0_formula="C5H10O2"):
+        """One ion's M0 and its 13C line, as the finder reports them."""
+        return pd.DataFrame(
+            [
+                {
+                    "mz": m0_mz,
+                    "formula": m0_formula,
+                    "ion": "C5H11O2+",
+                    "isotope_label": "M0",
+                    "ionization_mechanism": "+H+",
+                    "mz_error_ppm": 1.0,
+                    "intensity_error": 0.05,
+                    "other_candidates": "",
+                },
+                {
+                    "mz": child_mz,
+                    "formula": m0_formula,
+                    "ion": "[13C]C4H11O2+",
+                    "isotope_label": "13C",
+                    "ionization_mechanism": "+H+",
+                    "mz_error_ppm": 1.5,
+                    "intensity_error": 0.1,
+                    "other_candidates": "",
+                },
+            ]
+        )
+
+    def _peaks(self) -> pd.DataFrame:
+        return pd.DataFrame(
+            {
+                "sample_peak_id": ["pA", "pB"],
+                "mz": [100.1, 101.1033],
+                "intensity": [5000.0, 300.0],
+            }
+        )
+
+    def test_a_satellite_whose_ion_won_no_peak_is_not_written(self):
+        # The finder reported the 13C line but not the M0 it belongs to - the
+        # monoisotopic line failed the envelope's intensity test, or another
+        # candidate took its peak. Before, the child was written with a null
+        # owner; the reference engines' ledgers show the same peaks as ordinary
+        # isotopologues, and a row that names no owner cannot be read as one.
+        assignments = untargeted_matches_to_peak_assignments(
+            self._pair(m0_mz=100.1, child_mz=101.1033).iloc[1:],
+            self._peaks(),
+            "sample1",
+            "run1",
+            CANDIDATE,
+            ASSIGNED,
+        )
+        assert assignments == []
+
+    def test_the_satellite_is_written_when_its_m0_is(self):
+        assignments = untargeted_matches_to_peak_assignments(
+            self._pair(m0_mz=100.1, child_mz=101.1033),
+            self._peaks(),
+            "sample1",
+            "run1",
+            CANDIDATE,
+            ASSIGNED,
+        )
+        by_peak = {a["sample_peak_id"]: a for a in assignments}
+        assert by_peak["pB"]["role"] == ROLE_ISO_CHILD
+        assert (
+            by_peak["pB"]["owner_peak_assignment_id"]
+            == by_peak["pA"]["peak_assignment_id"]
+        )
+
+    def test_an_m0_reported_after_its_satellite_still_owns_it(self):
+        # For a bromine- or chlorine-rich envelope the finder reports the most
+        # abundant isotopologue first, and the monoisotopic line can sit at a
+        # lower m/z than a satellite already seen. Ownership is therefore
+        # settled in a second pass, not as the rows arrive.
+        rows = self._pair(m0_mz=100.1, child_mz=101.1033)
+        assignments = untargeted_matches_to_peak_assignments(
+            rows.iloc[::-1].reset_index(drop=True),
+            self._peaks(),
+            "sample1",
+            "run1",
+            CANDIDATE,
+            ASSIGNED,
+        )
+        by_peak = {a["sample_peak_id"]: a for a in assignments}
+        assert (
+            by_peak["pB"]["owner_peak_assignment_id"]
+            == by_peak["pA"]["peak_assignment_id"]
+        )
+
+    def test_a_peak_another_pass_claimed_gets_no_row(self):
+        # The whole peak list is pattern context now, so the search sees peaks
+        # the reagent and artifact pre-passes and Stage A already own. They are
+        # context, not territory: the ledger holds one row per peak.
+        assignments = untargeted_matches_to_peak_assignments(
+            self._pair(m0_mz=100.1, child_mz=101.1033),
+            self._peaks(),
+            "sample1",
+            "run1",
+            CANDIDATE,
+            ASSIGNED,
+            excluded_peak_ids={"pB"},
+        )
+        assert [a["sample_peak_id"] for a in assignments] == ["pA"]
+
+    def test_excluding_the_m0_takes_its_satellites_with_it(self):
+        # Stage A owns the monoisotopic peak, so that ion's envelope is Stage
+        # A's to write. A Stage B satellite left behind would claim the peak
+        # for an ion this stage never committed.
+        assignments = untargeted_matches_to_peak_assignments(
+            self._pair(m0_mz=100.1, child_mz=101.1033),
+            self._peaks(),
+            "sample1",
+            "run1",
+            CANDIDATE,
+            ASSIGNED,
+            excluded_peak_ids={"pA"},
+        )
+        assert assignments == []
+
+
 class TestBuildUnassigned:
     def test_every_leftover_peak_gets_a_placeholder_row(self):
         peaks_df = pd.DataFrame(
