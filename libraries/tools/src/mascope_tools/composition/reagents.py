@@ -82,13 +82,24 @@ DEFAULT_CHANNEL_MIN_RELATIVE_INTENSITY = 1e-4
 #: Window a probe ion is looked for in, in ppm - deliberately far wider than the
 #: window the same run searches compositions in.
 #:
-#: Finding a cluster ion is a detection question, not an assignment: its mass is
-#: known exactly and nothing competes with it, so the only thing a tight window
-#: buys is missing it. And it does miss it. On the gate's dense uronium set the
-#: reagent's own cluster ladder sits +4.7, +6.6 and +27.5 ppm out - the
-#: low-mass end of that acquisition is calibrated against the analytes, not
-#: against ions this bright - so a 3 ppm probe finds none of the three while a
-#: composition search at 3 ppm is still right for the analytes.
+#: Finding a cluster ion is a detection question, not an assignment: the answer
+#: is "this carrier is here", nothing is committed to a peak, and a probe that
+#: matched a neighbouring ion by mistake still gives the right answer about the
+#: carrier. So the window is set by how far a real cluster ion can sit from its
+#: mass, which on the gate's bromide TOF set is about 11 ppm across the whole
+#: ladder - a plain calibration offset, which a 3 ppm probe would miss entirely
+#: while a composition search at 3 ppm is still right for the analytes.
+#:
+#: CAUTION, because this comment used to draw the opposite lesson and it was
+#: wrong. A single ion sitting 20-30 ppm from a reagent mass is far more often a
+#: DIFFERENT ion than a drifted one: the peaks 21 to 28 ppm above the urea
+#: tetramer and pentamer masses on the dense uronium set are one ambient
+#: compound read through three channels, each within a ppm of its own exact
+#: mass, while that sample's reagent ladder sits within 5 ppm of its. A width
+#: that is harmless for detection is not evidence of anything, and a pass that
+#: CLAIMS peaks must not reuse it - see :func:`match_reagent_clusters`, which
+#: uses this window only to find its anchors and then claims at the
+#: instrument's own precision against the mass those anchors corrected.
 #:
 #: The observed error is recorded with every hit, so a probe that matched far
 #: off its mass says so rather than passing silently.
