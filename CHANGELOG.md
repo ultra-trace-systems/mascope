@@ -4,6 +4,24 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
 
 ## [Unreleased]
 
+### Changed
+
+- **The untargeted composition search enumerates the formulas its element
+  ranges allow once per mass band instead of once per peak.** It walked the
+  element-count tree from the root for every peak, using that peak's mass window
+  as the pruning bound - so the same tree was walked thousands of times for one
+  spectrum, and on the densest gate sample that was 90% of the stage's time.
+  The compositions a set of element ranges allows do not depend on the peak;
+  only the window into them does. They are now enumerated once, sorted by mass,
+  and each peak is answered by bisecting into them, in ascending mass bands so
+  that a wide element box over a TOF's mass range never has to be held whole.
+  Searching a whole spectrum went from 133 to 39 seconds on the densest TOF
+  sample and from 27 to 5.6 on the densest Orbitrap one, which is what makes
+  searching every peak affordable. Answers are unchanged, with one deliberate
+  exception: where a peak has more candidate formulas than the result cap
+  allows, the ones kept are now the closest in mass rather than whichever the
+  search happened to reach first.
+
 ### Fixed
 
 - **An isotope pattern is now anchored on the ion's own line, so a bright peak
@@ -28,10 +46,22 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
 
 ### Added
 
+- **The untargeted stage now searches every unexplained peak, not the 300 most
+  intense.** The cap was there because the composition search cost grew with the
+  number of peaks fed to it, and on a dense spectrum it left most of the sample
+  unsearched: on one gate set 4,181 of the peaks the reference engine commits an
+  analyte on were never offered to the stage at all. A blank ledger row then
+  meant one of two things - searched and unexplained, or never looked at - and
+  nothing recorded which. The cap is now unset by default, the 5,000-peak
+  ceiling stays as the hard bound on what a single request can schedule, and a
+  run that leaves peaks unsearched for either reason records it on its own
+  config and says so in the log. Setting the cap explicitly still works, for a
+  caller that wants a run cut short.
+
 - **An isotope envelope is now scored against the whole spectrum, and a
   satellite belongs to the peak that owns it.** The untargeted stage used to
   hand the composition finder only the peaks it was about to search, and that
-  set is capped at the 300 most intense unexplained peaks - so an ion's
+  set was capped at the 300 most intense unexplained peaks - so an ion's
   predicted isotope pattern was checked against at most 300 peaks, a fraction
   of a dense spectrum, and a satellite outside that set simply was not found.
   The peak it sits on was then searched on its own account and got a
