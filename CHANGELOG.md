@@ -17,10 +17,10 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
   proposed, a committed formula claims its own heavy-isotope satellites, two
   candidates that describe the same ion are decided by policy instead of by
   enumeration order, and every unexplained peak is searched rather than the 300
-  brightest. Measured against a reference engine on 43 samples across six
-  chemistries and three instruments, the share of assigned-tier rows the
-  reference contradicts falls from 73% to 41% on the sparse Orbitrap set and
-  from 57% to 24% on the dense one, and the share of the reference's own
+  brightest. Measured against a reference engine on 43 samples from four
+  instruments and four ionization chemistries, the share of assigned-tier rows
+  the reference contradicts falls from 73% to 42% on the sparse Orbitrap set
+  and from 57% to 24% on the dense one, and the share of the reference's own
   confident peaks recovered with the same formula rises from 39% to 96% and
   from 12% to 95%.
 
