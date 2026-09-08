@@ -3,7 +3,7 @@ Based on 7 Golden Rules by https://bmcbioinformatics.biomedcentral.com/articles/
 """
 
 from functools import lru_cache
-from typing import Any
+from typing import Any, Sequence
 
 import numpy as np
 import polars as pl
@@ -821,6 +821,75 @@ def _candidate_rank_key(candidate: dict[str, Any]) -> tuple:
     )
 
 
+def monoisotopic_index(predicted_mz, labels: Sequence[str]) -> int:
+    """Which line of a predicted envelope is the ion itself.
+
+    The line LABELLED ``M0``, not the first one and not the lightest one.
+    IsoSpec orders configurations by abundance, so index 0 is the most abundant
+    isotopologue and is the monoisotopic one only for an ion with no
+    heavy-isotope-rich element; for a dibromide the most abundant line sits two
+    mass units above the ion. And the lightest line is not it either: a 98% 15N
+    reagent predicts its 14N impurity one mass unit BELOW the ion.
+
+    :param predicted_mz: The envelope's m/z values, in the predictor's order.
+    :param labels: The isotope label of each line, same order.
+    :return: The position of the monoisotopic line, falling back to the
+        lightest when nothing carries the label.
+    """
+    for position, label in enumerate(labels):
+        if label == "M0":
+            return position
+    return int(np.argmin(predicted_mz))
+
+
+def anchor_on_monoisotopic(
+    predicted_mz, predicted_intensity, labels: Sequence[str]
+) -> tuple[np.ndarray, np.ndarray, list[str]]:
+    """Reorder a predicted envelope so the ion's own line comes first.
+
+    Three separate places downstream read index 0 as "the ion": the intensity
+    an envelope is normalised to, :func:`score_pattern`'s
+    "require monoisotopic detection" guard, and the finder's
+    ``process_isotopes``, which writes its main row there. IsoSpec's order makes
+    that true only by accident - for an ion with no heavy-isotope-rich element
+    the most abundant configuration IS the monoisotopic one - and false exactly
+    where it costs most.
+
+    On a bromide source it cost bright peaks outright. A ``+Br2-`` candidate is
+    enumerated for a peak, its envelope is anchored on the 79Br81Br line two
+    mass units above, that line is matched to whatever small peak sits there,
+    and the target then measures thousands of percent too bright for its own
+    monoisotopic line and goes unmatched - while the pattern still scores well
+    enough to beat the mono-bromide reading that matched the target and its 13C
+    line. The finder then wrote its main row at the anchor's m/z, and the peak
+    the candidate was enumerated FOR got no row at all.
+
+    Anchoring on the monoisotopic line removes the whole class, because that
+    line is the target by construction: the composition search matched the
+    ion's monoisotopic mass against the peak's m/z to propose it.
+
+    :param predicted_mz: The envelope's m/z values.
+    :param predicted_intensity: Their abundances, same order.
+    :param labels: Their isotope labels, same order.
+    :return: The three arrays with the monoisotopic line first, the rest in
+        their original relative order.
+    """
+    predicted_mz = np.asarray(predicted_mz, dtype=float)
+    predicted_intensity = np.asarray(predicted_intensity, dtype=float)
+    labels = list(labels)
+    if predicted_mz.size == 0:
+        return predicted_mz, predicted_intensity, labels
+    position = monoisotopic_index(predicted_mz, labels)
+    if position == 0:
+        return predicted_mz, predicted_intensity, labels
+    order = [position] + [i for i in range(predicted_mz.size) if i != position]
+    return (
+        predicted_mz[order],
+        predicted_intensity[order],
+        [labels[i] for i in order],
+    )
+
+
 def match_isotopic_pattern(
     candidates: list[dict[str, Any]], peaks: pl.DataFrame
 ) -> tuple[list[dict[str, Any]], list[dict[str, np.ndarray | list[str]]]]:
@@ -879,6 +948,14 @@ def match_isotopic_pattern(
         predicted_mzs, predicted_intensities, isotope_labels = predict_isotopes(
             ion_formula, ion_charge
         )
+        # The ion's own line first, whatever order the predictor returned. Every
+        # index-0 assumption below - the intensity the envelope is normalised
+        # to, the line matched before any other, score_pattern's requirement
+        # that it be observed at all - means the monoisotopic line and not the
+        # most abundant one. See :func:`anchor_on_monoisotopic`.
+        predicted_mzs, predicted_intensities, isotope_labels = anchor_on_monoisotopic(
+            predicted_mzs, predicted_intensities, isotope_labels
+        )
         is_isotope_predicted = len(predicted_mzs) > 0
         if not is_isotope_predicted:
             all_isotope_data.append(
@@ -898,7 +975,10 @@ def match_isotopic_pattern(
         observed_mass_errors_ppm = observed_masses.copy()
         observed_intensity_error = observed_masses.copy()
 
-        # Normalize predicted intensities relative to monoisotopic (base) peak
+        # Relative to the ion's own line, which anchor_on_monoisotopic put at
+        # index 0. A satellite's predicted share may therefore exceed 1 - a
+        # dibromide's 79Br81Br line is 1.95 times its monoisotopic one - which
+        # is what an abundance relative to the ion means.
         predicted_rel = predicted_intensities / predicted_intensities[0]
 
         base_peak_intensity = None
@@ -921,9 +1001,9 @@ def match_isotopic_pattern(
             matched_index = np.argmin(np.abs(window_mzs - p_mz))
             matched_mz = window_mzs[matched_index]
             matched_intensity = window_intensities[matched_index]
-            is_base_peak = i == 0
+            is_monoisotopic = i == 0
 
-            if is_base_peak:
+            if is_monoisotopic:
                 base_peak_intensity = matched_intensity
                 observed_intensities[0] = matched_intensity
                 observed_masses[0] = matched_mz
@@ -934,7 +1014,10 @@ def match_isotopic_pattern(
                 observed_intensity_error[0] = 0.0
                 continue  # move to next isotope
 
-            # Require monoisotopic established before evaluating higher isotopes
+            # Require the ion's own line established before any satellite. A
+            # candidate whose monoisotopic line the spectrum does not hold
+            # matches nothing and scores zero, which is the point: that line is
+            # the peak the candidate was enumerated for.
             if base_peak_intensity is None or base_peak_intensity == 0:
                 continue
 
