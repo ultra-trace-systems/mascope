@@ -301,6 +301,22 @@ def summarize(j: pd.DataFrame, engine_a: str, engine_b: str) -> dict:
             ),
             "b": int(j["b_ownerless"].eq(True).sum()),
         },
+        # G6. A peak one engine commits an analyte M0 on and the other reads as
+        # part of another ion's envelope. Only one of the two can be right, and
+        # the M0 is the expensive way to be wrong: it puts a formula, a tier and
+        # a vote on a peak that carries no new species. Counted both ways, so a
+        # move is visible as a move rather than as one engine's number falling.
+        "m0_on_the_others_isotopologue": {
+            "a": int((j.a_role.eq(ROLE_MAIN) & j.b_role.eq("iso_child")).sum()),
+            "a_assigned": int(
+                (
+                    j.a_role.eq(ROLE_MAIN)
+                    & j.b_role.eq("iso_child")
+                    & j.a_tier.eq("assigned")
+                ).sum()
+            ),
+            "b": int((j.b_role.eq(ROLE_MAIN) & j.a_role.eq("iso_child")).sum()),
+        },
         "both_main": int(len(both)),
         "verdicts_where_both_main": both["verdict"].value_counts().to_dict(),
         "a_main_by_verdict": a_main["verdict"].value_counts().to_dict(),
@@ -392,7 +408,9 @@ def markdown_summary(result: dict) -> str:
         f"| signal accounted for (incl. reagent/artifact) | {pooled['signal_explained_pct']['a_analyte_reagent_artifact']}% | {pooled['signal_explained_pct']['b_analyte_reagent_artifact']}% |",
         f"| assigned-tier rows the other engine does not confirm | {pooled['a_assigned_tier_not_confirmed_by_b_pct']}% | {pooled['b_assigned_tier_not_confirmed_by_a_pct']}% |",
         f"| reagent peaks | {pooled['roles']['a'].get('reagent', 0)} | {pooled['roles']['b'].get('reagent', 0)} |",
+        f"| artifact peaks | {pooled['roles']['a'].get('artifact', 0)} | {pooled['roles']['b'].get('artifact', 0)} |",
         f"| isotopologue rows without an owner (of them untargeted) | {pooled['ownerless_iso_child']['a']} ({pooled['ownerless_iso_child']['a_untargeted']}) | {pooled['ownerless_iso_child']['b']} |",
+        f"| M0 on a peak the other engine calls an isotopologue (of them assigned-tier) | {pooled['m0_on_the_others_isotopologue']['a']} ({pooled['m0_on_the_others_isotopologue']['a_assigned']}) | {pooled['m0_on_the_others_isotopologue']['b']} |",
         "",
         f"Peaks both call M0: {pooled['both_main']} - "
         + ", ".join(f"{k} {v}" for k, v in pooled["verdicts_where_both_main"].items()),
