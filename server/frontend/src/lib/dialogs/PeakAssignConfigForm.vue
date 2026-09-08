@@ -175,7 +175,12 @@ onMounted(() => {
           <p>
           At most this many peaks enter the untargeted stage: the most intense
           of the peaks the library left unexplained, after the intensity
-          threshold. Bounds the run time on dense spectra.
+          threshold.
+          </p>
+          <p>
+          Left empty, every unexplained peak is searched. Set it only to cut a
+          run short &mdash; a peak nobody searched looks exactly like a peak
+          nothing could explain.
           </p>`,
           { layer, doc: stagesDoc }
         )
@@ -187,6 +192,7 @@ onMounted(() => {
         :min="1"
         :max="limits.max_untargeted_peaks_ceiling"
         :disabled="!config.run_untargeted"
+        placeholder="Every unexplained peak"
         fluid
       />
       <label for="max_untargeted_peaks">Max untargeted peaks</label>

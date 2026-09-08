@@ -64,6 +64,7 @@ from mascope_backend.api.new.peak_assignments.calibration_store import (
 from mascope_backend.api.new.peak_assignments.config import (
     IN_APP_ENGINE,
     INGEST_LEDGER_BATCH,
+    MAX_UNTARGETED_PEAKS_CEILING,
     PEAK_ASSIGNMENT_ENGINE_VERSION,
     PeakAssignmentConfig,
     peak_assignment_enabled,
@@ -73,12 +74,14 @@ from mascope_backend.api.new.peak_assignments.config import (
 )
 from mascope_backend.api.new.peak_assignments.engine import (
     REFERENCE_IDENTITIES_COL,
+    SEARCH_SCOPE_KEY,
     build_unassigned_assignments,
     calibration_meta,
     drop_ions_claimed_elsewhere,
     invert_matches_to_peak_assignments,
     score_ions_by_fit,
     untargeted_matches_to_peak_assignments,
+    untargeted_targets,
 )
 from mascope_backend.api.new.peak_assignments.fold_view import (
     derived_ledger,
@@ -1374,7 +1377,9 @@ REFERENCE_LICENSES_KEY = "reference_licenses"
 
 
 def _stored_run_config(
-    config: PeakAssignmentConfig, resolved_profile: ResolvedProfile | None = None
+    config: PeakAssignmentConfig,
+    resolved_profile: ResolvedProfile | None = None,
+    search_scope: dict | None = None,
 ) -> dict:
     """The blob persisted on a run: the requested config plus server-side state.
 
@@ -1390,14 +1395,22 @@ def _stored_run_config(
     the resolution is snapshotted beside it. It is absent until the run reaches
     the engine, because it is the sample's mechanisms that resolve it.
 
+    The search scope is the third such fact, and the newest: with the untargeted
+    stage's peak cap unset by default, how much of the spectrum it was offered is
+    a property of the sample rather than of the request, and a blank ledger row
+    means something different depending on whether that peak was searched.
+
     :param config: The validated client-supplied run configuration.
     :param resolved_profile: The chemistry the run resolved to, when known.
+    :param search_scope: What the untargeted stage was offered, once it is known.
     :return: A JSON-serializable dict for ``PeakAssignmentRun.config``.
     """
     stored = config.model_dump()
     stored[REFERENCE_LICENSES_KEY] = reference_license_gate()
     if resolved_profile is not None:
         stored[RESOLVED_PROFILE_KEY] = resolved_profile.snapshot()
+    if search_scope is not None:
+        stored[SEARCH_SCOPE_KEY] = search_scope
     return stored
 
 
@@ -1405,6 +1418,7 @@ async def _record_resolved_profile(
     peak_assignment_run_id: str,
     config: PeakAssignmentConfig,
     resolved_profile: ResolvedProfile,
+    search_scope: dict | None = None,
 ) -> None:
     """Write the resolved chemistry onto a run that is about to use it.
 
@@ -1412,15 +1426,20 @@ async def _record_resolved_profile(
     have been read - a request answers with a run id, and an adopted run was
     created by that request - so the snapshot cannot be part of the insert.
 
+    Called twice: once with the chemistry alone, before the stages, so a run that
+    fails still says what it would have searched; and once more with the search
+    scope, which only the remainder after Stage A can decide.
+
     :param peak_assignment_run_id: The run to stamp.
     :param config: The run's configuration, re-serialized with the snapshot.
     :param resolved_profile: The chemistry the run resolved to.
+    :param search_scope: What the untargeted stage was offered, once known.
     """
     async with async_session() as session:
         await session.execute(
             update(PeakAssignmentRun)
             .where(PeakAssignmentRun.peak_assignment_run_id == peak_assignment_run_id)
-            .values(config=_stored_run_config(config, resolved_profile))
+            .values(config=_stored_run_config(config, resolved_profile, search_scope))
         )
         await session.commit()
 
@@ -1530,7 +1549,7 @@ async def _finalize_run(
 
 
 # Samples with an assignment in flight in this worker. A run is CPU-bound - Stage B
-# enumerates compositions for up to max_untargeted_peaks peaks in a worker thread -
+# enumerates compositions for every unexplained peak in a worker thread -
 # and writes a full ledger, and nothing about a second concurrent run of the same
 # sample is useful: it produces a duplicate run the user did not ask for while
 # competing for the same pool. Mirrors the batch guard in `batch.py`.
@@ -2001,17 +2020,31 @@ async def _run_sample_assignment(
             assignment["sample_peak_id"] for assignment in stage_a_assignments
         )
         stage_b_assignments: list[dict] = []
+        search_scope: dict | None = None
         if config.run_untargeted:
-            remainder_df = peaks_df[
+            eligible_df = peaks_df[
                 ~peaks_df["sample_peak_id"].isin(assigned_peak_ids)
                 & (peaks_df["intensity"] >= config.peak_intensity_threshold)
                 & (peaks_df["intensity"] > 0)
             ]
-            # Composition enumeration cost scales with peak count; bound the
-            # stage to the most intense unexplained peaks.
-            remainder_df = remainder_df.nlargest(
-                config.max_untargeted_peaks, "intensity"
-            ).sort_values("mz")
+            remainder_df, search_scope = untargeted_targets(
+                eligible_df, config.max_untargeted_peaks, MAX_UNTARGETED_PEAKS_CEILING
+            )
+            remainder_df = remainder_df.sort_values("mz")
+            if search_scope["limited"]:
+                # A peak nobody searched is not a peak nobody could explain, and
+                # only the run can say which of the two a blank row is.
+                runtime.logger.info(
+                    f"Untargeted stage for sample '{sample.sample_item_name}' "
+                    f"searches {search_scope['searched_peaks']} of "
+                    f"{search_scope['eligible_peaks']} unexplained peaks"
+                    + (
+                        f"; the rest are past the {search_scope['ceiling']}-peak "
+                        "ceiling"
+                        if search_scope["at_ceiling"]
+                        else ""
+                    )
+                )
 
             # The mode's own mechanisms decide whether there is anything to
             # search at all; the opportunistic channels are an addition to a
@@ -2049,8 +2082,9 @@ async def _run_sample_assignment(
                         else ""
                     )
                 )
-                # assign_compositions is synchronous and CPU-bound (recursive
-                # composition enumeration over up to max_untargeted_peaks). This
+                # assign_compositions is synchronous and CPU-bound (it enumerates
+                # the compositions the element box allows over the spectrum's mass
+                # range, then bisects one window per target). This
                 # runs as a background task on the API event loop, so offload it
                 # to a worker thread to avoid blocking every other request and
                 # the progress notifications for the duration of the search.
@@ -2100,6 +2134,10 @@ async def _run_sample_assignment(
                     f"Stage B assigned {len(stage_b_assignments)} of "
                     f"{len(remainder_df)} remaining peaks via untargeted search"
                 )
+        if search_scope is not None:
+            await _record_resolved_profile(
+                run.peak_assignment_run_id, config, resolved_profile, search_scope
+            )
         await send_progress_user_notification(notification, 0.8)
 
         # -- Persist the complete ledger: one row per observed peak

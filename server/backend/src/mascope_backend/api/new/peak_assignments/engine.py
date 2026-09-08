@@ -92,6 +92,48 @@ UNTARGETED_NO_MATCH = "---"
 # stays as the backstop for a source whose profile has no library.
 UNTARGETED_IONIZATION = "()"
 
+#: Key under which a run records how much of its spectrum the untargeted stage
+#: was actually offered. On the run's config beside the resolved profile, and for
+#: the same reason: "searched 300 of 2,577 peaks" and "searched all 2,577" are
+#: different results, and nothing else on the row would ever say which happened.
+SEARCH_SCOPE_KEY = "search_scope"
+
+
+def untargeted_targets(
+    eligible: pd.DataFrame,
+    max_untargeted_peaks: int | None,
+    ceiling: int,
+) -> tuple[pd.DataFrame, dict]:
+    """The peaks the untargeted stage will enumerate, and what it left behind.
+
+    Every unexplained peak is eligible; the cap decides how many of them are
+    searched, brightest first. Unset, that is all of them up to the ceiling -
+    which exists so "all" cannot mean unbounded work, not because some number of
+    peaks is the right number to look at.
+
+    :param eligible: The unassigned peaks above the run's intensity threshold,
+        with an ``intensity`` column.
+    :param max_untargeted_peaks: The run's cap, or None for every peak.
+    :param ceiling: The hard bound a cap may not exceed, and the effective cap
+        when the run names none.
+    :return: The peaks to search, and a scope dict for the run to record.
+    """
+    limit = (
+        ceiling if max_untargeted_peaks is None else min(max_untargeted_peaks, ceiling)
+    )
+    targets = eligible.nlargest(limit, "intensity")
+    scope = {
+        "eligible_peaks": int(len(eligible)),
+        "searched_peaks": int(len(targets)),
+        "requested_limit": max_untargeted_peaks,
+        "ceiling": int(ceiling),
+        # True only when peaks were left unsearched, which is the question a
+        # reader of the run has: not "was there a bound" but "did it bite".
+        "limited": bool(len(targets) < len(eligible)),
+        "at_ceiling": bool(max_untargeted_peaks is None and len(eligible) > ceiling),
+    }
+    return targets, scope
+
 
 def tier_for_evidence(
     evidence: float | None,
