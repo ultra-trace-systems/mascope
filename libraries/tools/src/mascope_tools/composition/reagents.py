@@ -52,7 +52,10 @@ from typing import Iterable, Mapping, Sequence
 import numpy as np
 
 from mascope_tools.composition.config import ELECTRON_MASS
-from mascope_tools.composition.heuristic_filter import predict_isotopes
+from mascope_tools.composition.heuristic_filter import (
+    monoisotopic_index,
+    predict_isotopes,
+)
 from mascope_tools.composition.utils import (
     composition_mass,
     parse_composition,
@@ -991,22 +994,6 @@ def calibrate_on_anchors(
     return ReagentCalibration(offset, claim_ppm + spread, tuple(anchors))
 
 
-def _monoisotopic_index(predicted_mz: np.ndarray, labels: Sequence[str]) -> int:
-    """Which line of a predicted envelope is the ion itself.
-
-    The line LABELLED ``M0``, not the lightest one. They are the same for an
-    ordinary ion, and they are not the same for a labelled reagent: a 98% 15N
-    nitrate predicts its 14N impurity one mass unit BELOW the ion, at 2% of it,
-    so reading the envelope by mass makes the impurity the reference, the ion
-    itself a satellite of that impurity at 49x its height, and every other
-    relative 50 times too large for the intensity gate to mean anything.
-    """
-    for position, label in enumerate(labels):
-        if label == "M0":
-            return position
-    return int(np.argmin(predicted_mz))
-
-
 def _satellite_hits(
     cluster: ReagentCluster,
     parent: ReagentHit,
@@ -1038,7 +1025,7 @@ def _satellite_hits(
         return []
     predicted_mz = np.asarray(predicted_mz, dtype=float)
     predicted_intensity = np.asarray(predicted_intensity, dtype=float)
-    monoisotopic = _monoisotopic_index(predicted_mz, labels)
+    monoisotopic = monoisotopic_index(predicted_mz, labels)
     base = float(predicted_intensity[monoisotopic])
     if base <= 0.0:
         return []
