@@ -16,7 +16,7 @@ step PRs land on the epic and are named here as they merge.
 | 1.2 - opportunistic adduct channels | #2081 | measured: fingerprint gate works and refuses sodium; carbonate settled on the broad-window nitrate set |
 | 1.3 - same-ion tie policy in the finder | #2082 | measured: the step's target met on A (47 -> 87% same formula); the note's mass-only policy needed a closed-shell key the gate supplied |
 | 1.4 - reagent-cluster pre-pass | #2086 | measured: 60 peaks carry 81.2% of set A's signal; the claim is anchored on the sample's own base ions and the envelope reaches the floor it searches; no reference analyte taken on A/B/C/D/E/F1 |
-| 1.5 - satellite claim and ringing artifacts | #2088 | measured: G8 met, 0 ownerless isotopologue rows on every set; B claims 969 more satellites and D 362, 90-97% of them confirmed by the reference, with the committed-analyte count unmoved; G6 missed, and the reference's parent ion is outside the searched grid for 78 of A's 79 |
+| 1.5 - satellite claim and ringing artifacts | #2088 | measured: G8 met, 0 ownerless isotopologue rows on every set; B claims 969 more satellites and D 428, 89-97% of them confirmed by the reference; the review found 21 bromide peaks losing their analyte to an envelope anchored on the wrong line, and fixing that gains D 117 analytes and 26 agreements; G6 missed, and the reference's parent ion is outside the searched grid for 78 of A's 79 |
 | 1.6 - cap and mass window | - | planned |
 | 1.7 - stage 1 gate, engine 0.4.0 | - | planned |
 | 2.1 - v2 fit for Stage B | - | planned |
@@ -354,8 +354,10 @@ and 5 as far as they are search problems.
   unassigned. The counts were identical before and after step 1.4, so they were
   the stage's own.
 - **Verify.** Gate metric G8, untargeted `iso_child` rows without an owner, at
-  0 on every set - met, from 71 / 6 / 1 on D / E / F1. Artifact rows present
-  where the flag fires. Gate metric G6 (main peaks on reference isotopologues,
+  0 on every set - met, from 71 / 6 / 1 on D / E / F1. Peaks that lose a
+  committed analyte outright between one run and the engine's previous one, at
+  0 on every set - the number the review's finding needed, which the comparison
+  now reports. Artifact rows present where the flag fires. Gate metric G6 (main peaks on reference isotopologues,
   at most 10 on A) - **missed**, and the measurement says why: the reference
   names the parent ion of 78 of A's 79 with an element Mascope's grid has no
   room for, silicon in 76 of them. Those are column-bleed siloxanes, and no
@@ -855,7 +857,7 @@ C2 is held to C's.
 | G4 reference reagent peaks labelled reagent or artifact | 0 of 58 | 0 of 24 | 0 of 29 | >= 90% | 100% | hold |
 | G4a of those, the ones that **name an ion** (step 1.4's own target) | 0 of 58 | 0 of 24 | 0 of 15 | >= 90% | 100% | hold |
 | G5 reference Assigned peaks never searched | 190 | 4,181 | 8 | 0 | 0 | 0 |
-| G6 main peaks on reference isotopologues (after 1.5: 79 A, 54 B, 48 D; the reference's parent ion is outside Mascope's grid for 78 of A's, silicon in 76 - step 2.5b's to close) | 96 | - | - | <= 10 | <= 5 | hold |
+| G6 main peaks on reference isotopologues (after 1.5: 79 A, 54 B, 94 D; the reference's parent ion is outside the searched grid for 78 of A's and 70 of D's, so the residue needs the grid rather than the envelope logic) | 96 | - | - | <= 10 | <= 5 | hold |
 | G7 uncorroborated commits beyond 3 sigma | not gated | not gated | not gated | - | 0 | 0 |
 | G8 untargeted isotopologue rows without an owner (step 1.5's coherence count; was 71 over the bromide Orbitrap set's six samples, 0 on every set after 1.5) | 0 | 0 | 0 | 0 | 0 | 0 |
 | mass error of committed peaks, MAD | 0.20 ppm | 0.20 ppm | 1.13 ppm | <= 0.35 ppm on an Orbitrap | hold | hold |
