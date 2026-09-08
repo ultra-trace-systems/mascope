@@ -8,6 +8,7 @@ outcome says. See ``batch_untargeted.py``.
 from types import SimpleNamespace
 
 from mascope_backend.api.new.peak_assignments.batch_untargeted import (
+    REAGENT_ROLE_CODE,
     choose_representatives,
     group_by_sample,
     owner_anchor_of,
@@ -18,12 +19,13 @@ from mascope_backend.api.new.peak_assignments.config import PeakAssignmentConfig
 from mascope_backend.api.new.peak_assignments.profiles import resolve_profile
 
 
-def _member(anchor, sample, peak, intensity):
+def _member(anchor, sample, peak, intensity, role=None):
     return SimpleNamespace(
         batch_peak_id=anchor,
         sample_item_id=sample,
         sample_peak_id=peak,
         intensity=intensity,
+        role=role,
     )
 
 
@@ -44,6 +46,31 @@ def test_a_member_with_no_intensity_is_never_preferred():
     assert choose_representatives(members)["bp-1"].sample_item_id == "s2"
     # ... but stands in when it is all there is.
     assert choose_representatives([_member("bp-1", "s1", "p1", None)])["bp-1"]
+
+
+def test_a_reagent_anchor_is_never_searched():
+    """Its consensus tier is 'unassigned' because a reagent row carries no
+    formula to vote on - but the peak is the source's own chemistry, taken out
+    of the per-sample stages on purpose. The batch search is the one path that
+    could put an analyte formula back onto it.
+    """
+    members = [
+        _member("bp-1", "s1", "p1", 9e6, role=REAGENT_ROLE_CODE),
+        _member("bp-1", "s2", "p1", 8e6, role=REAGENT_ROLE_CODE),
+    ]
+
+    assert choose_representatives(members) == {}
+
+
+def test_a_mixed_anchor_is_searched_on_a_real_peak():
+    """The brightest member is the reagent one, and it is still not the
+    representative: an anchor is searched on a peak that could be an analyte."""
+    members = [
+        _member("bp-1", "s1", "p1", 9e6, role=REAGENT_ROLE_CODE),
+        _member("bp-1", "s2", "p1", 10.0),
+    ]
+
+    assert choose_representatives(members)["bp-1"].sample_item_id == "s2"
 
 
 def test_representatives_group_into_one_search_per_sample():
