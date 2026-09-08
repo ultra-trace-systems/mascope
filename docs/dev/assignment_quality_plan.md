@@ -1741,8 +1741,8 @@ Recorded, not gated, because they are the before-column of the next stage.
 **Four in five committed analytes rest on the monoisotopic line alone.** Of the
 untargeted M0 rows the stage commits, the share owning no isotopologue row at
 all is 89.9% on A (1,811 of 2,014), 80.0% on B, 88.4% on C, 89.8% on C2, 46.1%
-on D and 95.9-98.8% on the three TOF sets; at assigned tier that is 1,549 of A's
-1,774 rows and 6,266 of B's 8,098. D is the exception because a bromide adduct
+on D and 95.9-98.8% on the three TOF sets. 1,549 of A's 1,774 assigned-tier rows
+and 6,266 of B's 8,098 are untargeted commitments standing alone. D is the exception because a bromide adduct
 puts a strong 81Br line beside every ion it makes. A row standing alone is not by
 itself wrong - a faint ion's heavy-isotope line can sit under the noise - but it
 is the population where the v1 fit has nothing but the mass to judge, and where
