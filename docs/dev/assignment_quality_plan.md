@@ -812,6 +812,7 @@ C2 is held to C's.
 | G5 reference Assigned peaks never searched | 190 | 4,181 | 8 | 0 | 0 | 0 |
 | G6 main peaks on reference isotopologues | 96 | - | - | <= 10 | <= 5 | hold |
 | G7 uncorroborated commits beyond 3 sigma | not gated | not gated | not gated | - | 0 | 0 |
+| G8 untargeted isotopologue rows without an owner (step 1.5's coherence count; the bromide Orbitrap set carries 71 over six samples today) | 0 | 0 | 0 | 0 | 0 | 0 |
 | mass error of committed peaks, MAD | 0.20 ppm | 0.20 ppm | 1.13 ppm | <= 0.35 ppm on an Orbitrap | hold | hold |
 | every committed row carries tier reasons | no | no | no | - | yes | yes |
 | corroboration from series or time series | none | none | none | - | - | reported per batch |
