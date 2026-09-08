@@ -15,7 +15,7 @@ step PRs land on the epic and are named here as they merge.
 | 1.1 fix - finder: the labelled reagent's atom in ion formulas | #2080 | merged: the label reaching the ion string is what pyteomics could not parse |
 | 1.2 - opportunistic adduct channels | #2081 | measured: fingerprint gate works and refuses sodium; carbonate settled on the broad-window nitrate set |
 | 1.3 - same-ion tie policy in the finder | #2082 | measured: the step's target met on A (47 -> 87% same formula); the note's mass-only policy needed a closed-shell key the gate supplied |
-| 1.4 - reagent-cluster pre-pass | #2086 | measured: 40 peaks carry 80.7% of set A's signal; no analyte agreement lost; peaky's formula-less reagent rows are ringing, which is 1.5 |
+| 1.4 - reagent-cluster pre-pass | #2086 | measured: 36 peaks carry 80.7% of set A's signal; the claim is anchored on the sample's own base ions after a flat window was found taking analytes; no reference analyte taken on A/B/C/D/E/F1 |
 | 1.5 - satellite claim and ringing artifacts | - | planned |
 | 1.6 - cap and mass window | - | planned |
 | 1.7 - stage 1 gate, engine 0.4.0 | - | planned |
@@ -301,12 +301,21 @@ and 5 as far as they are search problems.
 - **Why.** Cause 5: 82% of the signal, the top-ten peaks of every sample.
 - **Verify.** Unit tests on the library masses; on the testbed every peak
   peaky labels reagent **and names an ion formula for** must be a reagent row
-  (G4) and no confident analyte may be claimed (checked against the agreed
+  (G4a) and no confident analyte may be claimed (checked against the agreed
   rows). The qualification is not a softening: peaky's reagent role also covers
   the ringing skirt of a bright cluster, which it records without a formula and
-  which this engine gives the separate `artifact` role in step 1.5. Comparing
-  the unqualified counts measures the two engines' vocabularies, not their
-  chemistry - see the measured section for what each holds.
+  which this engine gives the separate `artifact` role in step 1.5. But it is
+  not the whole story either - peaky also writes formula-less reagent rows for
+  peaks that are not skirt, with a bromine twin and a strongly negative mass
+  defect - so the unqualified G4 stays in the table as the 1.7 gate's measure,
+  counted against `reagent` OR `artifact` once 1.5 lands, with G4a as this
+  step's own target beside it.
+- **Also verify.** No peak the reference assigns an analyte to may become a
+  reagent row: `compare_runs.py`'s `b_role_where_a_reagent` has to be free of
+  reference M0 rows on every set whose reagent the reference also models. That
+  is the acceptance test for the claim window, and the one metric that catches
+  a window wide enough to swallow a neighbouring ion - "no analyte agreement
+  lost" cannot, because it only sees peaks this engine had already assigned.
 - **Size.** M. Depends on 1.1.
 
 ### 1.5 Satellite claim and ringing artifacts
@@ -798,7 +807,8 @@ C2 is held to C's.
 | G1 "assigned" rows the reference does not confirm | 73% | 57% | 99% | <= 45% | <= 20% | <= 15% |
 | G2 reference Assigned peaks recovered: same formula / same ion | 39% / - | 12% / - | 18% / - | >= 80% / >= 95% (A, C), >= 70% / >= 95% (B) | >= 85% / >= 95% | hold |
 | G3 committed formulas with N >= 5; carbon-free formulas | 13%; 59 | 15%; - | 17%; - | <= 1%; 0 off the allowlist | hold | hold |
-| G4 reference reagent peaks **that name an ion** labelled reagent | 36 of 58 | 18 of 24 | 0 of 15 | >= 90% | 100% | hold |
+| G4 reference reagent peaks labelled reagent or artifact | 0 of 58 | 0 of 24 | 0 of 29 | >= 90% | 100% | hold |
+| G4a of those, the ones that **name an ion** (step 1.4's own target) | 0 of 58 | 0 of 24 | 0 of 15 | >= 90% | 100% | hold |
 | G5 reference Assigned peaks never searched | 190 | 4,181 | 8 | 0 | 0 | 0 |
 | G6 main peaks on reference isotopologues | 96 | - | - | <= 10 | <= 5 | hold |
 | G7 uncorroborated commits beyond 3 sigma | not gated | not gated | not gated | - | 0 | 0 |
@@ -910,84 +920,146 @@ out of the analyte ledger altogether.
 
 Same protocol, on a build carrying steps 1.1 to 1.4. The columns that matter
 here are different from the earlier steps': this step does not change which
-formula a peak gets, it changes which peaks are offered a formula at all.
+formula a peak gets, it changes which peaks are offered a formula at all. So
+the measure of success is signal accounted for, and the measure of harm is
+whether any peak the reference assigns an analyte to has become a reagent row.
 
-| set | peaks | reagent rows | share of peaks | **share of signal** | of a sample's 10 brightest |
-|---|---|---|---|---|---|
-| A uronium | 2,626 | 40 | 1.5% | **80.7%** | 24 of 60 |
-| B uronium | 12,055 | 40 | 0.3% | **59.7%** | 8 of 60 |
-| C 15N-nitrate, from m/z 131 | 1,583 | 0 | 0% | 0% | 0 of 50 |
-| C2 15N-nitrate, from m/z 50 | 1,420 | 32 | 2.3% | **90.4%** | 18 of 60 |
-| D bromide | 5,217 | 72 | 1.4% | **60.1%** | 26 of 60 |
-| E bromide TOF | 3,493 | 54 | 1.5% | **59.1%** | 18 of 30 |
-| F1 bromide TOF | 13,595 | 75 | 0.6% | **79.8%** | 41 of 60 |
-| F2 nitrate TOF | 8,905 | 30 | 0.3% | **84.6%** | 11 of 50 |
+| set | peaks | reagent rows | % of peaks | **% of signal** | of a sample's 10 brightest | reference analytes taken |
+|---|---|---|---|---|---|---|
+| A uronium | 2,626 | 36 | 1.4% | **80.7%** | 24 of 60 | 0 |
+| B uronium | 12,055 | 10 | 0.1% | **59.7%** | 8 of 60 | 0 |
+| C 15N-nitrate, from m/z 131 | 1,583 | 0 | 0% | 0% | 0 of 50 | 0 |
+| C2 15N-nitrate, from m/z 50 | 1,420 | 30 | 2.1% | **90.9%** | 27 of 60 | 12 (see below) |
+| D bromide | 5,217 | 58 | 1.1% | **60.0%** | 26 of 60 | 0 |
+| E bromide TOF | 3,493 | 48 | 1.4% | **59.1%** | 18 of 30 | 0 |
+| F1 bromide TOF | 13,595 | 62 | 0.5% | **79.8%** | 41 of 60 | 0 |
+| F2 nitrate TOF | 8,905 | 27 | 0.3% | **84.6%** | 11 of 50 | 10 (see below) |
 
-**Cause 5 is the size the baseline said, and this is what it looks like when
-it is named.** Forty peaks on set A - one and a half percent of the peak list -
-carry 80.7% of the total signal, and 24 of the six samples' sixty brightest
-peaks are among them. They are now reagent rows rather than either residual or
-analytes.
+**Cause 5 is the size the baseline said, and this is what it looks like when it
+is named.** Thirty-six peaks on set A - one and a half percent of the peak
+list - carry 80.7% of the total signal, and 24 of the six samples' sixty
+brightest peaks are among them.
 
-**No analyte is lost to the claim.** Across the gate the pre-pass costs one
-same-formula agreement on C2 and gains one on D; every other set's `both M0`
-and `same_formula` counts are identical to the 1.3 build's, digit for digit.
-That is the number to check when the library is widened, and it is the reason
-the library is drawn as narrowly as it is.
+Analyte agreement against the step 1.3 build: A -3 both-M0 / -2 same-formula,
+B -3 / -2, C 0 / 0, C2 -6 / -6, D +3 / +1, E and F1 unchanged, F2 -12 / -9.
+The nitrate movements are the reagent ladder itself leaving the analyte ledger,
+which is the step working.
 
-**The claim window had to be measured, not chosen.** At the probe window of
-20 ppm the dense uronium set claimed only the first rung of its urea ladder:
-that acquisition's low-mass end is calibrated against the analytes, not against
-ions this bright, and the ladder sits at +4.7, +21.0 and +27.5 ppm, drifting
-further with mass. The two brighter rungs sat in the residual for an untargeted
-search to fit a neutral to. Each is the only peak within 40 ppm of its mass, so
-the window was widened to 40 ppm; set B's reagent rows went 20 to 40 - exactly
-`[(urea)4+H]+`, `[(urea)5+H]+` and `[(urea)4+NH4]+` - and no set lost an
-analyte agreement. See `DEFAULT_REAGENT_MATCH_PPM`.
+### The claim window: what the first attempt got wrong
 
-### What G4 actually measures, and why the raw number is not it
+The first build of this step claimed in a flat 40 ppm window, justified by
+reading the peaks 21 to 28 ppm above the urea tetramer and pentamer masses as a
+calibration drift that grew with mass, and by the observation that each was the
+only peak within 40 ppm of its mass.
 
-G4 was written as "every peak peaky labels reagent must be a reagent row". The
-gate says that metric compares two different words.
+Both halves were wrong, and the way they were wrong is worth keeping.
 
-Of peaky's reagent rows **that name an ion formula** - the ones that are
-reagent-cluster identifications - Mascope agrees on 93% (D), 98% (E) and 92%
-(F1). The rest of peaky's reagent rows on those sets name no formula at all:
-198, 281 and 266 peaks. On set D 44% of them sit within 60 mDa of a peak
-Mascope has claimed, at a median 0.4% of its height - they are the FT ringing
+Those three peaks are **one ambient compound read through three uronium
+channels** - `C13H20O4` as `[M+H]+` at 241.1434, `[M+NH4]+` at 258.1700 and
+`[M+(urea)H]+` at 301.1754 - each within about a ppm of its own exact mass, and
+all three assigned by the reference. They are not drifted rungs of anything.
+Nor was there a drift to fit: that sample's own reagent ions sit at +4.0, -0.3
+and +4.7 ppm, and three "rungs" at +27.5, +25.9 and +21.1 are not on that
+curve. **Being alone in a wide window is not evidence that a peak is the
+reagent's**; it is only evidence that the window is wide.
+
+The check that would have caught it is not the one that was run. "No analyte
+agreement lost" cannot see this class at all, because on the previous build
+these peaks were unassigned on the Mascope side - beyond the untargeted cap -
+so there was no agreement to lose. The check that sees it is
+`compare_runs.py`'s `b_role_where_a_reagent`: **reference analytes among this
+engine's reagent rows**, which was 16 on set B and is now 0.
+
+### The rule that replaced it: anchor first, then claim
+
+The pass calibrates itself before it claims anything.
+
+1. The **anchors** are the library's base ions - the bare halide clusters, the
+   protonated urea monomer and dimer, the nitrate core and its first acid rung.
+   They are the brightest ions a source makes and share a mass with nothing, so
+   they are found in the probe's wide window and say where this spectrum puts
+   the reagent's masses.
+2. Every other rung, and every satellite, is claimed at the **instrument's own
+   precision** (3 ppm Orbitrap, 10 ppm TOF) against a mass corrected by that
+   offset, widened by the anchors' own spread where the lock mass jitters. A
+   satellite is searched at its parent's measured offset.
+3. A parent claim must also clear the probes' intensity floor, because a trace
+   sitting on a reagent mass is a coincidence rather than the ion.
+
+The test that separates a reagent ion from an analyte is therefore not how far
+a peak sits from the nominal mass, but whether it sits where the sample's own
+reagent ions say the reagent is. That keeps set E's bromide ladder, which
+really is a uniform -8.6 to -10.2 ppm miscalibration measured across every
+rung, and drops the C13H20O4 channels on B and the Br3 ringing skirt on D.
+
+**With no anchor in range the pass searches nominal masses at the instrument
+window** - conservative rather than clever. That has a measured cost worth
+recording: four of set B's six samples start at m/z 123, above both the urea
+monomer and dimer, so they anchor on nothing and claim nothing; B's reagent
+rows fall from 40 to 10, of which about half of the loss was the analyte theft
+above and the rest are real rungs on those four samples. Letting a higher rung
+anchor when the base ions are out of range - guarded by two rungs agreeing on
+an offset - would recover them, and is deliberately not done here.
+
+### What G4 measures, and why the raw number is not it
+
+Of the reference's reagent rows **that name an ion formula** - the ones that
+are reagent-cluster identifications - this engine agrees on 54 of 64 (D), 48 of
+55 (E) and 50 of 67 (F1). That is G4a, this step's own target.
+
+The rest of the reference's reagent rows on those sets name no formula at all:
+198, 281 and 266 peaks. On set D 44% of them sit within 60 mDa of a peak this
+engine has claimed, at a median 0.4% of its height - they are the FT ringing
 skirt of the enormous Br3 cluster, and the same peaks around set A's
-five-million-count `[urea+H]+` are ones peaky itself labels `artifact`.
-**That class is step 1.5's, not this one's**, and Mascope's roles keep them
-apart on purpose: `reagent` means the peak IS a reagent ion, `artifact` means
-it is an instrument response to one.
+4.9-million-count `[urea+H]+` are ones the reference itself labels `artifact`.
+**That class is step 1.5's**, and the roles are kept apart on purpose:
+`reagent` means the peak IS a reagent ion, `artifact` means it is an instrument
+response to one. The unqualified G4 therefore stays in the gate table, to be
+counted against `reagent` or `artifact` once 1.5 lands.
 
-Set A's remaining 22 are the same story one step in: Mascope claims the true
-`[urea+H]+` at -1.0 ppm and 4.9M counts on every sample of the set, and what it
-declines is a second peak 6 ppm away at 5% of that height, which peaky's
-reagent window swept up before its own ringing pass could see it. One library
-ion claims one peak, and the one it claims is the ion.
+Set A's remaining 22 are the same story one step in: this engine claims the
+true `[urea+H]+` at -1.0 ppm and 4.9M counts on every sample, and declines a
+second peak 6 ppm away at 5% of that height, which the reference's reagent
+window swept up before its own ringing pass could see it. One library ion
+claims one peak, and the one it claims is the ion.
 
-**On the nitrate sets the two engines name different carriers.** Mascope claims
-the nitrate ladder - `NO3`, `NO3.HNO3`, `NO3.(HNO3)2`, `NO3.H2O` - while
-peaky's reagent rows there are `Br`, `Br2` and `BrO3`: it resolved a bromide
-library for a 15N-nitrate acquisition. So the 0% is disagreement about which
-carrier the source runs, not a library that missed one. peaky has no nitrate
-cluster library at all (`build_library` returns nothing for `NO3`), which is
-why F2 has Mascope claiming 30 reagent rows against peaky's 10.
+### The two remaining reference analytes, and why they stand
 
-**Set C claims nothing, and that is correct.** Its acquisition starts at m/z
-131 and contains no peak within 100 ppm of any rung of the nitrate ladder - the
-source declusters beyond the dimer, the same fact step 1.2 recorded for
-carbonate. A window that starts above the ladder cannot show it. C2 is the same
-chemistry acquired from m/z 50 and claims 90.4% of its signal.
+**Set F2's ten are the nitrate ladder itself**, which the reference reads as
+nitric acid because it has no nitrate cluster library at all. Those are right.
 
-**The one confident disagreement is Stage A's, not the pre-pass's.** On C2 six
-peaks peaky calls reagent are Mascope analyte M0 rows, five at assigned tier:
-all six are m/z 78.919 at ~100k counts, which Stage A matches to the curated
-`HBr` target from the database. Bromide really is in that spectrum; whether it
-is background or an analyte is a judgement neither engine can make from the
-mass, and peaky only calls it reagent because it chose a bromide library.
-Recorded rather than fixed - it is a curated-library question, not this step's.
+**Set C2's twelve are the labelled reagent's own 14N lines**, at exactly the
+mass of unlabelled `NO3-`, which the reference assigns as `HNO3`. The
+measurement settles it:
+
+- the lines sit at **0.40-0.44x** the height a 98% pure reagent predicts, so
+  the impurity alone over-explains the mass and leaves no budget for ambient
+  nitric acid (the implied purity is about 99.2%);
+- and they **scale with the number of reagent nitrogens in the cluster** -
+  0.83% of the parent on the monomer, 1.76% on the dimer, a ratio of 2.1 -
+  which ambient nitric acid cannot do, since its abundance is set by the air
+  rather than by how many labelled nitrogens the cluster it sits beside
+  contains.
+
+The intensity gate is what adjudicates this in general: a peak more than three
+times its predicted impurity height is left for the stages, so a sample with
+real nitric acid on top of the impurity keeps it.
+
+That same reference line was also the subject of a defect in the first build:
+`_satellite_hits` took the lightest predicted line as the monoisotopic
+reference, which for a labelled reagent is the 14N impurity one mass unit
+*below* the ion. The ion then became a satellite of its own impurity at 49x its
+height, every relative was 50 times too large for the intensity gate to bite,
+and the real 14N lines were skipped as if they were the M0. The reference is
+now the line the prediction labels `M0`.
+
+### Set C claims nothing, and that is correct
+
+Its acquisition starts at m/z 131 and holds no peak within 100 ppm of any rung
+of the nitrate ladder: the source declusters beyond the dimer, the same fact
+step 1.2 recorded for carbonate. A window that starts above the ladder cannot
+show it. C2 is the same chemistry acquired from m/z 50 and claims 90.9% of its
+signal.
 
 ## Decisions (taken 2026-09-07)
 
