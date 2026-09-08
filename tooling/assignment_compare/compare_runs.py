@@ -90,6 +90,14 @@ def latest_completed_run(runs: pd.DataFrame | None, engine: str) -> str | None:
 
 def prepare(ledger: pd.DataFrame, prefix: str, notation_by_id: dict) -> pd.DataFrame:
     """Reduce one ledger to the prefixed columns the join needs."""
+    # An isotopologue row names the M0 it belongs to, so a child with no owner
+    # is a ledger inconsistency rather than a verdict: counted per engine as
+    # step 1.5's coherence check, which the stage 1 gate wants at zero.
+    owner = (
+        ledger["owner_peak_assignment_id"]
+        if "owner_peak_assignment_id" in ledger.columns
+        else pd.Series(pd.NA, index=ledger.index)
+    )
     out = pd.DataFrame(
         {
             "sample_peak_id": ledger["sample_peak_id"].astype(str),
@@ -106,6 +114,7 @@ def prepare(ledger: pd.DataFrame, prefix: str, notation_by_id: dict) -> pd.DataF
             f"{prefix}_fit": ledger.get("fit_score"),
             f"{prefix}_ppm": ledger.get("mz_error_ppm"),
             f"{prefix}_evidence": ledger.get("evidence"),
+            f"{prefix}_ownerless": (ledger["role"] == "iso_child") & owner.isna(),
         }
     )
     return out
@@ -281,6 +290,17 @@ def summarize(j: pd.DataFrame, engine_a: str, engine_b: str) -> dict:
             .value_counts()
             .to_dict(),
         },
+        # Step 1.5's coherence count. The untargeted figure is the gate's: the
+        # stage that claims satellites must not leave a child behind. A row
+        # of the same shape from Stage A - two curated targets sharing a peak,
+        # the loser's children staying - is reported inside the total.
+        "ownerless_iso_child": {
+            "a": int(j["a_ownerless"].eq(True).sum()),
+            "a_untargeted": int(
+                (j["a_ownerless"].eq(True) & (j["a_source"] == "untargeted")).sum()
+            ),
+            "b": int(j["b_ownerless"].eq(True).sum()),
+        },
         "both_main": int(len(both)),
         "verdicts_where_both_main": both["verdict"].value_counts().to_dict(),
         "a_main_by_verdict": a_main["verdict"].value_counts().to_dict(),
@@ -372,6 +392,7 @@ def markdown_summary(result: dict) -> str:
         f"| signal accounted for (incl. reagent/artifact) | {pooled['signal_explained_pct']['a_analyte_reagent_artifact']}% | {pooled['signal_explained_pct']['b_analyte_reagent_artifact']}% |",
         f"| assigned-tier rows the other engine does not confirm | {pooled['a_assigned_tier_not_confirmed_by_b_pct']}% | {pooled['b_assigned_tier_not_confirmed_by_a_pct']}% |",
         f"| reagent peaks | {pooled['roles']['a'].get('reagent', 0)} | {pooled['roles']['b'].get('reagent', 0)} |",
+        f"| isotopologue rows without an owner (of them untargeted) | {pooled['ownerless_iso_child']['a']} ({pooled['ownerless_iso_child']['a_untargeted']}) | {pooled['ownerless_iso_child']['b']} |",
         "",
         f"Peaks both call M0: {pooled['both_main']} - "
         + ", ".join(f"{k} {v}" for k, v in pooled["verdicts_where_both_main"].items()),
