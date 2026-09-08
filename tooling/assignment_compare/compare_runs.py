@@ -88,6 +88,60 @@ def latest_completed_run(runs: pd.DataFrame | None, engine: str) -> str | None:
     return str(mine.iloc[0]["peak_assignment_run_id"])
 
 
+def previous_completed_run(runs: pd.DataFrame | None, engine: str) -> str | None:
+    """The completed run of ``engine`` before its newest one, or None.
+
+    What one engine's own last two runs did differently, which no
+    engine-against-engine number can show. A step that moves peaks between roles
+    can leave the totals almost unchanged - some peaks gaining an M0 while
+    others lose one - and then a regression is invisible in the role counts.
+    """
+    if runs is None or runs.empty:
+        return None
+    mine = runs[(runs["engine"] == engine) & (runs["status"] == "completed")]
+    if len(mine) < 2:
+        return None
+    return str(mine.iloc[1]["peak_assignment_run_id"])
+
+
+def role_transitions(before: pd.DataFrame, after: pd.DataFrame) -> dict:
+    """How one engine's peaks changed role between two of its own runs.
+
+    :param before: The earlier run's ledger.
+    :param after: The later run's ledger.
+    :return: Every role pair that changed, counted, plus the two the gate reads:
+        peaks that carried a committed analyte and now carry nothing, and the
+        reverse.
+    """
+    pair = (
+        before[["sample_peak_id", "role", "tier"]]
+        .astype({"sample_peak_id": str})
+        .rename(columns={"role": "was", "tier": "was_tier"})
+        .merge(
+            after[["sample_peak_id", "role"]]
+            .astype({"sample_peak_id": str})
+            .rename(columns={"role": "now"}),
+            on="sample_peak_id",
+            how="inner",
+        )
+    )
+    moved = pair[pair.was != pair.now]
+    lost = moved[moved.was.eq(ROLE_MAIN) & moved.now.eq("unassigned")]
+    return {
+        "peaks": int(len(pair)),
+        "changed": int(len(moved)),
+        "m0_to_unassigned": int(len(lost)),
+        "m0_to_unassigned_assigned_tier": int(lost.was_tier.eq("assigned").sum()),
+        "unassigned_to_m0": int(
+            (moved.was.eq("unassigned") & moved.now.eq(ROLE_MAIN)).sum()
+        ),
+        "by_pair": {
+            f"{was} -> {now}": int(count)
+            for (was, now), count in moved.groupby(["was", "now"]).size().items()
+        },
+    }
+
+
 def prepare(ledger: pd.DataFrame, prefix: str, notation_by_id: dict) -> pd.DataFrame:
     """Reduce one ledger to the prefixed columns the join needs."""
     # An isotopologue row names the M0 it belongs to, so a child with no owner
@@ -433,6 +487,22 @@ def markdown_summary(result: dict) -> str:
             f"{row['b_main_pct']} | {row['b_assigned_tier_pct']} | {row['b_unassigned_pct']} | "
             f"{row['both_main']} | {row['same_formula_pct_of_both']} | {row['same_ion_pct_of_both']} |"
         )
+    moved = result.get("since_previous_run")
+    if moved:
+        # What THIS engine's previous run made of the same peaks. Role totals
+        # can hold still while peaks trade places underneath them, so a change
+        # that loses committed analytes is invisible without this.
+        lines += [
+            "",
+            f"Since {a}'s previous run on the same {moved['samples']} sample(s): "
+            f"{moved['changed']} peaks changed role, of which "
+            f"**{moved['m0_to_unassigned']} lost a committed analyte outright** "
+            f"({moved['m0_to_unassigned_assigned_tier']} at assigned tier) and "
+            f"{moved['unassigned_to_m0']} gained one.",
+            "",
+            "| role change | peaks |",
+            "|---|---|",
+        ] + [f"| {pair} | {count} |" for pair, count in moved["by_pair"].items()]
     return "\n".join(lines) + "\n"
 
 
@@ -514,6 +584,18 @@ def main(argv=None) -> int:
         joined.insert(2, "run_b", run_b)
         joined.to_csv(out_dir / f"joined_{sample_id}.csv", index=False)
         per_sample[sample_id] = summarize(joined, args.engine_a, args.engine_b)
+        # What engine A's own previous run made of the same peaks. Reported
+        # per sample rather than pooled: a step is deployed once, so the run
+        # before it is the comparison, and "M0 -> unassigned" is the number a
+        # change can hide behind unchanged role totals.
+        previous_a = previous_completed_run(runs, args.engine_a)
+        if previous_a is not None:
+            ledger_previous = client.peak_assignments.get(sample_id, run_id=previous_a)
+            if ledger_previous is not None:
+                per_sample[sample_id]["since_previous_run"] = dict(
+                    role_transitions(ledger_previous, ledger_a),
+                    run=previous_a,
+                )
         frames.append(joined)
         print(
             f"{sample_id}: {len(joined)} peaks, both M0 {per_sample[sample_id]['both_main']}"
@@ -529,6 +611,26 @@ def main(argv=None) -> int:
         "pooled": summarize(pooled, args.engine_a, args.engine_b),
         "per_sample": per_sample,
     }
+    transitions = [
+        one["since_previous_run"]
+        for one in per_sample.values()
+        if "since_previous_run" in one
+    ]
+    if transitions:
+        pairs: dict[str, int] = {}
+        for one in transitions:
+            for key, count in one["by_pair"].items():
+                pairs[key] = pairs.get(key, 0) + count
+        result["since_previous_run"] = {
+            "samples": len(transitions),
+            "changed": sum(one["changed"] for one in transitions),
+            "m0_to_unassigned": sum(one["m0_to_unassigned"] for one in transitions),
+            "m0_to_unassigned_assigned_tier": sum(
+                one["m0_to_unassigned_assigned_tier"] for one in transitions
+            ),
+            "unassigned_to_m0": sum(one["unassigned_to_m0"] for one in transitions),
+            "by_pair": dict(sorted(pairs.items(), key=lambda kv: -kv[1])),
+        }
     (out_dir / "summary.json").write_text(
         json.dumps(result, indent=2, default=_json_default), encoding="utf-8"
     )
