@@ -186,16 +186,27 @@ def assign_compositions(
 
     matches = pd.DataFrame(results_per_peak)
     # --- Format results --- #
-    # mz_error_ppm is signed, so rank on its magnitude: the duplicate kept below has
-    # to be the closest match, not the one furthest BELOW its prediction.
+    # One row per peak, so two candidates that both explain it are cut down to
+    # one here. Which one survives decides more than which formula is reported.
+    # A candidate is a whole envelope, and its satellites belong to its
+    # monoisotopic row; drop that row for another candidate's satellite and the
+    # satellites it left behind belong to nothing. So a row that IS somebody's
+    # monoisotopic line outranks another candidate's isotopologue for the same
+    # peak - a peak both readings claim is far more often the former - and only
+    # then does mass error decide. mz_error_ppm is signed, so rank on its
+    # magnitude: the row kept has to be the closest match, not the one furthest
+    # BELOW its prediction.
     sort_by = [c for c in ["mz"] if c in matches.columns]
+    if "isotope_label" in matches.columns:
+        matches = matches.assign(_not_m0=matches["isotope_label"] != "M0")
+        sort_by.append("_not_m0")
     if "mz_error_ppm" in matches.columns:
         matches = matches.assign(_mz_error_abs=matches["mz_error_ppm"].abs())
         sort_by.append("_mz_error_abs")
     matches = matches.sort_values(by=sort_by)
     # Drop duplicate m/z entries, keeping the closest match
     matches = matches.drop_duplicates(subset=["mz"], keep="first")
-    matches = matches.drop(columns="_mz_error_abs", errors="ignore")
+    matches = matches.drop(columns=["_not_m0", "_mz_error_abs"], errors="ignore")
     matches = sort_matches_by_formula(matches)
     # Add isotope label to ion string
     matches = update_ion_with_isotope_label(matches)
