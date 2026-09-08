@@ -755,14 +755,24 @@ def reagent_library(profile_name: str) -> tuple[ReagentCluster, ...]:
     return REAGENT_CLUSTERS.get(profile_name, ())
 
 
-#: Window a library ion claims a peak in, in ppm. The same width, and the same
-#: reason, as :data:`DEFAULT_CHANNEL_MATCH_PPM`: the mass is known exactly and
-#: the ion is bright, so the only thing a tight window buys is missing a real
-#: reagent peak whose acquisition is calibrated against the analytes instead.
-#: What keeps the width safe is that a claim takes the BRIGHTEST peak in the
-#: window - at a reagent mass that peak is the reagent - and records how far off
-#: it sat.
-DEFAULT_REAGENT_MATCH_PPM = DEFAULT_CHANNEL_MATCH_PPM
+#: Window a library ion claims a peak in, in ppm. Wider than the probe window
+#: above, and measured rather than chosen.
+#:
+#: The reason a reagent ion needs a wide window at all is the same one the
+#: probes have: its mass is known exactly, nothing competes with it, and the
+#: acquisition is calibrated against the analytes rather than against ions this
+#: bright. The reason it needs a WIDER one is that a probe only has to find any
+#: one rung of a ladder, while a claim has to find every rung it means to take
+#: out of the residual. On the gate's dense uronium set the protonated urea
+#: ladder sits at +4.7, +21.0 and +27.5 ppm - a drift that grows with mass - so
+#: a 20 ppm window claimed the first rung and left the other two, the brighter
+#: pair, in the residual for an untargeted search to fit a neutral to.
+#:
+#: What keeps a window this wide safe is that a claim takes the BRIGHTEST peak
+#: in it - at a reagent mass that peak is the reagent - and records how far off
+#: it sat. Measured on that same set: each of the missed rungs is the ONLY peak
+#: within 40 ppm of its mass, so the width buys the rung without a contest.
+DEFAULT_REAGENT_MATCH_PPM = 40.0
 
 #: Predicted satellites below this share of their parent are not looked for.
 #: Small enough to reach the 13C of a monoisotopic-heavy cluster, large enough
@@ -908,9 +918,12 @@ def match_reagent_clusters(
     wide safe - and then the isotopologues of that ion claim theirs, gated on
     intensity so a peak with an analyte co-eluting on it is left alone.
 
-    A peak is claimed at most once. The library is walked brightest-claim-first
-    by mass so the outcome does not depend on the table's order, and a cluster
-    whose monoisotopic peak is absent claims no satellites: the evidence for a
+    A peak is claimed at most once, and the precedence is deliberate: every
+    monoisotopic claim is made before any satellite claim, so a peak sitting on
+    a library ion's own mass is read as that ion rather than as some other
+    cluster's isotopologue. Within each round the library is walked in mass
+    order, so the outcome does not depend on the table's order. A cluster whose
+    monoisotopic peak is absent claims no satellites at all: the evidence for a
     satellite is the parent it is a satellite of.
 
     :param library: The reagent ions, from :func:`reagent_library`.
