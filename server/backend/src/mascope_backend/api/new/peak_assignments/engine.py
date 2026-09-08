@@ -51,10 +51,22 @@ _CALIBRATION_UNSET = object()
 ROLE_M0 = "M0"
 ROLE_ISO_CHILD = "iso_child"
 ROLE_UNASSIGNED = "unassigned"
+# A peak the source made rather than the sample: a reagent cluster ion or one of
+# its isotopologues, claimed by the pre-pass before either stage runs. The role
+# is what takes such a peak out of the analyte ledger - it carries no
+# `assigned_formula`, so it votes on nothing and is counted as explained by its
+# role rather than by a formula it has no business claiming.
+ROLE_REAGENT = "reagent"
+# An instrument artifact - ringing, a sidelobe. Declared here with its peer so
+# the role vocabulary is in one place; step 1.5 is what produces these.
+ROLE_ARTIFACT = "artifact"
 
 # Which stage won the peak
 SOURCE_DATABASE = "database"
 SOURCE_UNTARGETED = "untargeted"
+# ...or the reagent pre-pass, which is neither: it does not assign a formula to a
+# peak, it declares the peak to be the source's own chemistry.
+SOURCE_REAGENT = "reagent"
 # ...or, when no stage did, the person who decided it instead. A manually
 # curated row is not the output of a stage, and saying 'database' or
 # 'untargeted' on it would credit an engine with a choice a human made.
@@ -71,7 +83,9 @@ REFERENCE_IDENTITIES_COL = "reference_identities"
 UNTARGETED_NO_MATCH = "---"
 # The finder emits "()" for ionization/reagent peaks (an adduct with no
 # molecular core). That is not a molecular formula, so it must not be persisted
-# as one; a dedicated reagent role is a later phase.
+# as one. A reagent peak that reaches the finder at all has escaped the pre-pass
+# (`reagent_pass`), whose library claims these before either stage runs; this
+# stays as the backstop for a source whose profile has no library.
 UNTARGETED_IONIZATION = "()"
 
 
