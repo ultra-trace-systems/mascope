@@ -298,3 +298,88 @@ def test_the_base_peak_is_m0_when_it_is_also_the_monoisotopic_one():
     by_label = {row["isotope_label"]: row["mz"] for row in _rows_of(glucose)}
 
     assert by_label["M0"] == pytest.approx(180.0634)
+
+
+def _pattern(masses, labels, errors):
+    """A matched isotope pattern, in the shape match_isotopic_pattern returns."""
+    return {
+        "masses": list(masses),
+        "labels": list(labels),
+        "predicted_masses": list(masses),
+        "predicted_intensities": [1.0] + [0.3] * (len(masses) - 1),
+        "mass_errors_ppm": list(errors),
+        "intensity_errors": [0.0] * len(masses),
+    }
+
+
+def test_a_monoisotopic_row_outranks_another_candidates_satellite(monkeypatch):
+    """One peak, two candidates: the row that IS somebody's monoisotopic line
+    survives, even when the other candidate's satellite fits the mass better.
+
+    A candidate is a whole envelope. Drop its monoisotopic row here and the
+    satellites it left behind belong to nothing - the ledger's isotopologue rows
+    with no owner. Mass error alone cannot see that, because it compares two
+    rows without asking what each row's loss costs the rest of its envelope.
+    """
+    from mascope_tools.composition import finder
+
+    shared_mz = 101.0034
+    patterns = {
+        # Enumerated first, and its 13C line lands on the shared peak with the
+        # smaller mass error - which used to be the whole contest.
+        100.0: _pattern([100.0, shared_mz], ["M0", "13C"], [0.1, 3.0]),
+        # A chlorine-rich ion, whose most abundant isotopologue is not its
+        # monoisotopic one: the finder reports the base first, and here the
+        # monoisotopic line is the shared peak.
+        105.0: _pattern([shared_mz, 105.0, 106.0], ["M0", "37Cl", "37Cl2"], [5.0] * 3),
+    }
+    monkeypatch.setattr(
+        finder,
+        "find_compositions",
+        lambda target_mz, config: [{"formula": f"F{int(target_mz)}"}],
+    )
+    monkeypatch.setattr(
+        finder,
+        "apply_heuristic_rules",
+        lambda comp_results, heuristics_config=None: (
+            [
+                dict(
+                    comp_results[0],
+                    neutral_mass=100.0,
+                    ion=f"{comp_results[0]['formula']}H+",
+                )
+            ],
+            {},
+        ),
+    )
+    monkeypatch.setattr(
+        finder,
+        "match_isotopic_pattern",
+        lambda candidates, peaks: (
+            candidates,
+            [patterns[float(candidates[0]["formula"][1:])]],
+        ),
+    )
+    peaks = pd.DataFrame(
+        {
+            "mz": [100.0, shared_mz, 105.0, 106.0],
+            "intensity": [1000.0, 300.0, 800.0, 240.0],
+        }
+    )
+    config = CompositionSearchConfig(
+        ionizations="H+", element_count_ranges="C0-2 H0-2", mass_range_ppm=5.0
+    )
+
+    matches, _ = assign_compositions(peaks, config, targets=[100.0, 105.0])
+
+    at_shared = matches[matches["mz"] == shared_mz]
+    assert len(at_shared) == 1
+    assert at_shared.iloc[0]["isotope_label"] == "M0"
+    # ...and the losing candidate keeps its own monoisotopic row, so neither
+    # envelope is left with satellites that own nothing.
+    assert set(matches[matches["formula"] == "F100"]["mz"]) == {100.0}
+    assert set(matches[matches["formula"] == "F105"]["mz"]) == {
+        shared_mz,
+        105.0,
+        106.0,
+    }
