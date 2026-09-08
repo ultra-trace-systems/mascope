@@ -17,7 +17,7 @@ step PRs land on the epic and are named here as they merge.
 | 1.3 - same-ion tie policy in the finder | #2082 | measured: the step's target met on A (47 -> 87% same formula); the note's mass-only policy needed a closed-shell key the gate supplied |
 | 1.4 - reagent-cluster pre-pass | #2086 | measured: 60 peaks carry 81.2% of set A's signal; the claim is anchored on the sample's own base ions and the envelope reaches the floor it searches; no reference analyte taken on A/B/C/D/E/F1 |
 | 1.5 - satellite claim and ringing artifacts | #2088 | measured: G8 met, 0 ownerless isotopologue rows on every set; B claims 969 more satellites and D 423, 88-97% of them confirmed by the reference, and D gains 61 analytes and 27 agreements; two review rounds fixed the envelope's anchor and then restored the requirement anchoring it took away; G6 missed, and the reference's parent ion is outside the searched grid for 78 of A's 79 (decision 11) |
-| 1.6 - cap and mass window | - | in progress (handed over 2026-09-08) |
+| 1.6 - cap and mass window | #2091 | measured: G5 met (35,496 unsearched peaks -> 0, of which 8,928 the reference commits an analyte on) and G2 clears its stage-1 target on A, B, C and D for the first time (B 20.7 -> 95.2%); the mass window was already instrument-class-resolved by 1.1; the grid is enumerated once per band instead of once per peak, so A and C search 5-8x more peaks and finish faster, worst sample 36s; G1 rises on the sets that gained most and G6 with it (decision 11) |
 | 1.7 - stage 1 gate, engine 0.4.0 | - | planned |
 | 2.1 - v2 fit for Stage B | - | planned |
 | 2.2 - self-calibrated mass gate | - | planned |
@@ -381,6 +381,11 @@ and 5 as far as they are search problems.
   grid made exponential.
 - **Verify.** Gate metric G5 (peaky Assigned peaks never searched, from 190
   and 4,181 to 0); runtime per sample recorded in the status table.
+  Measured 2026-09-08: G5 met on every set, and lifting the cap is what let G2
+  clear its stage-1 target on A, B, C and D. The window half of this step was
+  already done by 1.1. The grid rework the size note called conditional was
+  needed: the densest TOF sample cost 133 seconds with the cap lifted, and
+  enumerating once per band brought it to 39 offline and 33 on the testbed.
 - **Size.** S. Depends on 1.1.
 
 ### 1.7 Stage 1 gate, engine 0.4.0
@@ -852,15 +857,15 @@ C2 is held to C's.
 
 | metric | today A | today B | today C | after stage 1 | after stage 2 | after stage 3 |
 |---|---|---|---|---|---|---|
-| G1 "assigned" rows the reference does not confirm | 73% | 57% | 99% | <= 45% | <= 20% | <= 15% |
-| G2 reference Assigned peaks recovered: same formula / same ion | 39% / - | 12% / - | 18% / - | >= 80% / >= 95% (A, C), >= 70% / >= 95% (B) | >= 85% / >= 95% | hold |
-| G3 committed formulas with N >= 5; carbon-free formulas | 13%; 59 | 15%; - | 17%; - | <= 1%; 0 off the allowlist | hold | hold |
+| G1 "assigned" rows the reference does not confirm (after 1.6: A 41.5%, B 24.3%, C 41.5%, D 37.3%, C2 55.2%) | 73% | 57% | 99% | <= 45% | <= 20% | <= 15% |
+| G2 reference Assigned peaks recovered: same formula / same ion (after 1.6: A 95.6/97.2%, B 95.2/96.1%, C 87.3/87.9%, D 80.1/82.3%, C2 68.3%) | 39% / - | 12% / - | 18% / - | >= 80% / >= 95% (A, C), >= 70% / >= 95% (B) | >= 85% / >= 95% | hold |
+| G3 committed formulas with N >= 5; carbon-free formulas (after 1.6: A 1.0%, B 2.7%, 0.0% elsewhere; carbon-free unchanged by 1.6 and Stage A's) | 13%; 59 | 15%; - | 17%; - | <= 1%; 0 off the allowlist | hold | hold |
 | G4 reference reagent peaks labelled reagent or artifact | 0 of 58 | 0 of 24 | 0 of 29 | >= 90% | 100% | hold |
 | G4a of those, the ones that **name an ion** (step 1.4's own target) | 0 of 58 | 0 of 24 | 0 of 15 | >= 90% | 100% | hold |
-| G5 reference Assigned peaks never searched | 190 | 4,181 | 8 | 0 | 0 | 0 |
-| G6 main peaks on reference isotopologues (after 1.5: 79 A, 54 B, 75 D; the reference's parent ion is outside the searched grid for 78 of A's and 52 of D's, so the residue needs the grid rather than the envelope logic - decision 11) | 96 | - | - | read, not gated (decision 11: <= 10 after 2.5b) | <= 5 | hold |
+| G5 reference Assigned peaks never searched (after 1.6: 0 on every set, from 8,928 pooled over A-F2) | 190 | 4,181 | 8 | 0 | 0 | 0 |
+| G6 main peaks on reference isotopologues (after 1.6: 107 A, 460 B, 328 D, up from 79/54/75 because the peaks the cap hid are now searched - as a share of committed rows A is flat at 5.2%, B 3.4 -> 5.0%, D 8.8 -> 13.8%; the reference's parent ion is outside the searched grid for 78 of A's and 52 of D's, so the residue needs the grid rather than the envelope logic - decision 11) | 96 | - | - | read, not gated (decision 11: <= 10 after 2.5b) | <= 5 | hold |
 | G7 uncorroborated commits beyond 3 sigma | not gated | not gated | not gated | - | 0 | 0 |
-| G8 untargeted isotopologue rows without an owner (step 1.5's coherence count; was 71 over the bromide Orbitrap set's six samples, 0 on every set after 1.5) | 0 | 0 | 0 | 0 | 0 | 0 |
+| G8 untargeted isotopologue rows without an owner (step 1.5's coherence count; was 71 over the bromide Orbitrap set's six samples, 0 on every set after 1.5 and still 0 after 1.6 with six to eight times as many peaks searched) | 0 | 0 | 0 | 0 | 0 | 0 |
 | mass error of committed peaks, MAD | 0.20 ppm | 0.20 ppm | 1.13 ppm | <= 0.35 ppm on an Orbitrap | hold | hold |
 | every committed row carries tier reasons | no | no | no | - | yes | yes |
 | corroboration from series or time series | none | none | none | - | - | reported per batch |
@@ -1404,6 +1409,147 @@ better-scored radical wins here by design. What ranks them is the v1 pattern
 score, which charges almost nothing for a line it predicted and did not find -
 step 2.1 has the worked examples and owns the fix. Recorded here so the move is
 not re-discovered as a regression of this step.
+
+### After step 1.6, the cap lifted and the grid enumerated once (2026-09-08)
+
+Branch `step-1.6-cap-and-window-2026.09.08-e9fe159` deployed on the testbed in
+prod mode, all 43 gate samples re-run, compared against the same peaky runs. The
+before-column is each sample's newest run from the previous build, addressed by
+the absence of `search_scope` on its config rather than by recency, because the
+gate was run twice on the new one.
+
+`mz_precision_ppm` needed no work: step 1.1 already defaults it from the
+resolved profile's instrument class (`resolve_mz_precision_ppm`), and both the
+per-sample and the batch path already pass the sample's instrument type into
+the resolution. What was left of this step was the cap, and what the cap cost.
+
+| set | analyte M0 | assigned tier | G1 | G2 same formula | reference Assigned left blank | G6 |
+|---|---|---|---|---|---|---|
+| A uronium | 1,561 -> 2,070 | 1,327 -> 1,774 | 42.0 -> 41.5% | 76.3 -> **95.6%** | 20.3 -> 0.7% | 79 -> 107 |
+| B uronium dense | 1,596 -> 9,148 | 1,456 -> 8,098 | 20.9 -> 24.3% | 20.7 -> **95.2%** | 78.1 -> 1.0% | 54 -> 460 |
+| C nitrate | 1,079 -> 1,115 | 817 -> 846 | 40.3 -> 41.5% | 86.0 -> **87.3%** | 8.3 -> 7.0% | 56 -> 57 |
+| C2 nitrate broad | 645 -> 645 | 516 -> 516 | 55.2 -> 55.2% | 68.3 -> 68.3% | 20.2 -> 20.2% | 24 -> 24 |
+| D bromide | 849 -> 2,378 | 795 -> 2,229 | 24.2 -> 37.3% | 37.6 -> **80.1%** | 58.7 -> 9.6% | 75 -> 328 |
+| E bromide TOF | 233 -> 1,233 | 73 -> 534 | 98.6 -> 99.4% | 7.1 -> 10.7% | 71.4 -> 46.4% | 0 -> 8 |
+| F1 bromide TOF | 974 -> 8,252 | 414 -> 4,207 | 97.1 -> 99.4% | 14.0 -> 21.0% | 73.0 -> 36.0% | 16 -> 57 |
+| F2 nitrate TOF | 1,152 -> 6,173 | 594 -> 3,695 | 98.1 -> 99.2% | 21.7 -> 21.7% | 69.6 -> 50.0% | 7 -> 33 |
+
+**G5 is met on every set: 35,496 peaks were never searched, now none are, and
+8,928 of them were peaks the reference commits an analyte on** (A 275, B 6,187,
+C 7, C2 0, D 1,268, E 77, F1 561, F2 553). The metric is reconstructed rather
+than recorded - the stage takes the most intense of what the pre-passes and
+Stage A left, so ranking that remainder by intensity reproduces exactly the set
+it saw - and a run now records the scope it searched under, so a later reading
+does not have to reconstruct anything.
+
+**G2 clears its stage-1 target on A, B, C and D for the first time**, and on B
+it is the difference between measuring the engine and measuring its cap: 20.7%
+of the reference's Assigned peaks recovered with the same formula becomes 95.2%,
+because 78% of them were peaks Mascope never looked at. The same reading holds
+on D (37.6 -> 80.1%) and A (76.3 -> 95.6%). C moves barely and C2 not at all,
+which is the control: their spectra were already inside the cap, so the step
+could not touch them, and it did not.
+
+**C2 is byte-identical before and after** - same analyte count, same tiers, same
+G1, same G6. Nothing there was ever past the cap. A step that changed a set it
+had no business changing would show up here.
+
+#### What it costs
+
+**G1 rises on the sets that gained most**: B 20.9 -> 24.3%, D 24.2 -> 37.3%, and
+the three TOF sets from 97-99% to 99%. It falls slightly on A (42.0 -> 41.5%) and
+rises a point on C. All four Orbitrap sets stay inside the stage-1 target of
+<= 45%; C2 misses it at 55.2%, exactly as it did before this step. The rise is
+what searching the faint end of a spectrum should do to a disagreement rate: the
+peaks the cap was hiding are the ones both engines find hardest, and the
+reference commits on fewer of them too.
+
+**G6 rises, and part of the old number's smallness was the cap.** A 79 -> 107,
+B 54 -> 460, D 75 -> 328. As a share of Mascope's own analyte rows the picture
+is narrower: A 5.1 -> 5.2%, B 3.4 -> 5.0%, D 8.8 -> 13.8%. On B the newly
+searched peaks land on a reference isotopologue at 5.4%, indistinguishable from
+the rate on the peaks that were already searched, so B's rise is arithmetic
+rather than a new defect. D is the exception at 16.5%, which is the same
+chemistry gap step 1.5 recorded: the reference reads Cl4-Cl6 envelopes there and
+the searched grid caps chlorine at two, so an envelope Mascope cannot build is
+an envelope whose lines it explains one at a time. Judged after step 2.5b by
+decision 11; recorded here so the rise is not re-discovered as a regression of
+that step.
+
+#### G3 and the mass error do not move, which is the reassuring part
+
+Six to eight times as many committed formulas, and the chemistry of them is the
+same chemistry. Formulas carrying five or more nitrogens: A 0.6 -> 1.0%, B 2.7
+-> 2.7%, and 0.0% on every other set. Carbon-free formulas are identical to the
+row before and after on all eight sets (A 6, C2 12, F1 29, F2 26, none
+elsewhere) - the profile grids require at least one carbon, so an untargeted row
+cannot be carbon-free and the count is Stage A's either way.
+
+B's 2.7% is over the stage-1 target of <= 1% and was over it before this step;
+it is a standing miss of G3 on that set, not something the cap was hiding. A at
+1.0% sits exactly on the target having been under it.
+
+Committed mass error, MAD, Mascope against the reference: A 0.215 / 0.171,
+B 0.300 / 0.290, C 0.169 / 0.137, C2 0.311 / 0.213, D 0.305 / 0.260 ppm. All
+four Orbitrap sets and C2 stay inside the <= 0.35 ppm target with the faint end
+of the spectrum now in the population, which is the result that could most
+easily have gone the other way: the peaks the cap was hiding are the weakest
+ones, and a mass error that held there is the grid finding real formulas rather
+than the nearest arithmetic. The TOF sets read 1.199 (E), 0.557 (F1) and 0.780
+(F2); F1 and F2 are now better than the reference's own 1.009 and 0.919.
+
+#### Run time, which is why the cap could go at all
+
+Per-sample wall clock on the testbed, whole run including both stages and the
+ledger write:
+
+| set | peaks searched per sample | before | after |
+|---|---|---|---|
+| A | 414 | 3s | 2s |
+| B | 1,993 | 4s | 5s |
+| C | 310 | 2s | 1s |
+| C2 | 218 | 1s | 1s |
+| D | 838 | 5s | 6s |
+| E | 1,142 | 4s | 13s |
+| F1 | 2,233 | 8s | 33s |
+| F2 | 1,750 | 3s | 8s |
+
+**A and C search five to eight times as many peaks and finish faster than they
+used to.** That is the grid rework, not the cap: the composition search walked
+the element-count tree from the root for every peak, using that peak's window as
+the pruning bound, so one spectrum walked the same tree hundreds of times. The
+compositions an element box allows do not depend on the peak - only the window
+into them does - so they are enumerated once, sorted by mass, and each peak is
+answered by bisecting into them. Measured offline on the two densest samples
+with the whole spectrum searched: the TOF bromide sample 133 -> 39 seconds, the
+Orbitrap uronium one 27 -> 5.6.
+
+The grid is built in ascending mass bands rather than whole. A TOF spectrum
+reaches m/z 1,097 and the bromide box holds 5.5 million compositions over that
+range; banding bounds what is resident to one band, and the band width is found
+by halving until it fits and then carried forward. A box too wide for even one
+band falls back to a window per peak, which is what the search did everywhere
+before, so the fallback is slow rather than wrong. Answers are unchanged: a
+differential test against the old recursion over the gate's five real grids and
+nine masses agrees exactly, ordering included, with one deliberate exception -
+where a peak has more candidates than `max_result_rows` allows, the ones kept
+are now the closest in mass rather than whichever the walk reached first.
+
+F1 at 33 seconds (36 worst case) is the slowest sample on the gate and the only
+one over ten. It is 2,233 peaks at a 10 ppm window with three ionization
+channels, so it enumerates the widest grid over the widest mass range and then
+scores an envelope for each of 2,233 targets. Under a minute, which is the bar
+this step set for itself; what remains is isotope matching and the heuristic
+rules rather than the search, and step 2.1 owns that path.
+
+#### G8 did not move, and the rows that are left are Stage A's
+
+The untargeted stage writes no ownerless isotopologue row on any set, before or
+after - step 1.5's coherence count holds with six to eight times as many peaks
+searched. The 5 rows on C, 20 on C2 and 6 on F1 that the pooled count shows are
+Stage A's, unchanged by this step and unrelated to it: two curated targets
+sharing a peak, the loser's children staying. They are reported inside the total
+by design (see the metric's note) and are step 2.5's to fix.
 
 ## Decisions (taken 2026-09-07)
 
