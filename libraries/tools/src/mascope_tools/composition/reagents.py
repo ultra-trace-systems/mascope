@@ -823,10 +823,34 @@ DEFAULT_ANCHOR_PPM = DEFAULT_CHANNEL_MATCH_PPM
 #: which is a stronger statement than a height threshold.
 DEFAULT_REAGENT_MIN_RELATIVE_INTENSITY = DEFAULT_CHANNEL_MIN_RELATIVE_INTENSITY
 
-#: Predicted satellites below this share of their parent are not looked for.
-#: Small enough to reach the 13C of a monoisotopic-heavy cluster, large enough
-#: that the tail of an IsoSpec envelope does not start claiming peaks.
-DEFAULT_SATELLITE_MIN_RELATIVE = 4e-3
+#: Intensity an ANCHOR must reach, relative to the base peak - an order of
+#: magnitude above the floor for an ordinary claim, because an anchor does more
+#: than claim its own peak: it moves every other mass in the pass.
+#:
+#: A stray peak inside an absent anchor's wide window would pull the median
+#: offset and widen the tolerance by half its spread. Nothing real is lost by
+#: refusing dim ones: measured across the eight gate sets, the urea monomer and
+#: dimer run 28-100% of the base peak, ``Br-`` IS the base peak, ``Br2-`` 1.1-
+#: 1.5%, and the nitrate core and its dimer 100% and 5-60%. An anchor is by
+#: definition one of the loudest things a source makes.
+DEFAULT_ANCHOR_MIN_RELATIVE_INTENSITY = 1e-3
+
+#: Predicted satellites below this share of their parent are not looked for,
+#: and the abundance the envelope itself is predicted down to.
+#:
+#: Set by the 18O line, which is where a floor that looks generous stops being
+#: one: a two-oxygen ion's 18O satellite is 0.401% of its parent and a
+#: one-oxygen ion's is 0.200%, so a 0.4% floor sits exactly on top of the first
+#: and below the second. On the gate that mattered - the urea dimer's 18O line
+#: is the 19th brightest peak of a set A sample at 7e4 counts, and once the
+#: pre-pass claimed its parent and Stage A's target went with it, the untargeted
+#: stage read the freed peak as ethylene glycol on the urea channel.
+#:
+#: What protects an analyte is the excess gate below, not this floor: a peak
+#: taller than the envelope predicts is left alone whatever its predicted share.
+#: So the floor is set low enough to SEE the lines a reagent ion really makes.
+#: At a 2e7-count base peak a 0.1% satellite is still 2e4 counts.
+DEFAULT_SATELLITE_MIN_RELATIVE = 1e-3
 
 #: How far above its predicted height a satellite may be observed and still be
 #: claimed. A reagent ion is bright, so its satellites are large in absolute
@@ -1004,8 +1028,11 @@ def _satellite_hits(
     at the instrument's precision around where this ion actually sits rather
     than where its formula says it should.
     """
+    # Predicted down to the floor this pass will actually look for, not to the
+    # scoring path's 1%: a line the envelope omits is not a rounding error here,
+    # it is a peak left in the residual for another stage to explain.
     predicted_mz, predicted_intensity, labels = predict_isotopes(
-        cluster.formula, cluster.charge, purity
+        cluster.formula, cluster.charge, purity, min_relative
     )
     if len(predicted_mz) == 0:
         return []
@@ -1059,6 +1086,7 @@ def match_reagent_clusters(
     anchor_ppm: float = DEFAULT_ANCHOR_PPM,
     purity: float | None = None,
     min_relative_intensity: float = DEFAULT_REAGENT_MIN_RELATIVE_INTENSITY,
+    anchor_min_relative_intensity: float = DEFAULT_ANCHOR_MIN_RELATIVE_INTENSITY,
     satellite_min_relative: float = DEFAULT_SATELLITE_MIN_RELATIVE,
     satellite_max_excess: float = DEFAULT_SATELLITE_MAX_EXCESS,
 ) -> tuple[list[ReagentHit], ReagentCalibration]:
@@ -1095,6 +1123,9 @@ def match_reagent_clusters(
         envelope prediction; ``None`` for an unlabelled reagent.
     :param min_relative_intensity: Height floor for a claim in its own right,
         relative to the base peak.
+    :param anchor_min_relative_intensity: The higher floor an anchor must clear,
+        since an anchor moves every other mass in the pass rather than only
+        claiming its own peak.
     :param satellite_min_relative: Predicted-height floor for a satellite.
     :param satellite_max_excess: How far above prediction a satellite may be
         observed and still be claimed.
@@ -1114,7 +1145,7 @@ def match_reagent_clusters(
         intensity_array,
         anchor_ppm=anchor_ppm,
         claim_ppm=claim_ppm,
-        floor=floor,
+        floor=base_peak * anchor_min_relative_intensity,
     )
     scale = 1.0 + calibration.offset_ppm * 1e-6
 
