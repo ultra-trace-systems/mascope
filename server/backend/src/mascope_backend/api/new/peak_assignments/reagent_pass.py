@@ -25,6 +25,15 @@ the reagent, the solvent or the instrument background, and a cluster of the
 reagent with anything the sample supplied is deliberately left out, because that
 ion IS the analyte's adduct channel.
 
+Membership is only half of what keeps the claim honest; the other half is the
+mass a claim is made against. It is not a fixed tolerance around the library's
+own number: the source's base ions are found first and say where THIS spectrum
+puts the reagent's masses, and every other rung is claimed at the instrument's
+own precision against a mass they have corrected. Without that a window wide
+enough to absorb a real miscalibration is also wide enough to absorb the
+neighbouring analyte, and on the gate it did exactly that - see
+:func:`mascope_tools.composition.reagents.match_reagent_clusters`.
+
 What a reagent row claims, and what it does not: it names the ion formula, which
 is known exactly, and it names no ``assigned_formula``, because there is no
 analyte. That is the whole point rather than a gap in the data - a row with no
