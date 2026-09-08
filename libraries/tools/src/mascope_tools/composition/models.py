@@ -35,19 +35,6 @@ class CompositionSearchConfig:
     peak_height_threshold: float = 0.0
 
 
-@dataclass()
-class CompositionSearchState:
-    """Current state of the composition search for a given m/z"""
-
-    ion_shift: float
-    mz_tolerance_da: float
-    atoms: list[Atom]
-    min_inner_mass: list[float]
-    max_inner_mass: list[float]
-    ionization_mechanism: IonizationMechanism
-    results_found: int = 0
-
-
 @dataclass(frozen=True)
 class HeuristicFilterConfig:
     """Heuristic filter parameters
