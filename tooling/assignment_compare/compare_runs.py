@@ -142,6 +142,46 @@ def role_transitions(before: pd.DataFrame, after: pd.DataFrame) -> dict:
     }
 
 
+#: Nominal masses for the nitrogen rule. Anything outside the table makes a
+#: formula unjudged rather than judged wrong.
+NOMINAL_MASS = {
+    "C": 12, "H": 1, "N": 14, "O": 16, "S": 32, "P": 31, "F": 19, "Cl": 35,
+    "Br": 79, "I": 127, "Si": 28, "B": 11, "Na": 23, "K": 39, "Se": 80, "As": 75,
+}  # fmt: skip
+
+
+def odd_electron_neutral(formula) -> bool | None:
+    """Whether a committed neutral formula breaks the nitrogen rule.
+
+    A closed-shell neutral has an odd nominal mass exactly when it carries an odd
+    number of nitrogen-like (trivalent) atoms; a formula that breaks that parity
+    is an odd-electron species. Under an even-electron ionization - a proton, an
+    ammonium, a bromide or a nitrate on a molecule - such a neutral is a radical
+    the source did not make, and decision 9 keeps it as a tie-break rather than a
+    filter, so the share of them is the number step 2.1 has to move. None when
+    there is no formula or an element the table does not know.
+    """
+    if not isinstance(formula, str) or not formula:
+        return None
+    counts: dict[str, int] = {}
+    for element, n in re.findall(
+        r"([A-Z][a-z]?)(\d*)", re.sub(r"\[\d+|\]|\^", "", formula)
+    ):
+        if element not in NOMINAL_MASS:
+            return None
+        counts[element] = counts.get(element, 0) + (int(n) if n else 1)
+    if not counts:
+        return None
+    mass = sum(NOMINAL_MASS[element] * n for element, n in counts.items())
+    trivalent = (
+        counts.get("N", 0)
+        + counts.get("P", 0)
+        + counts.get("As", 0)
+        + counts.get("B", 0)
+    )
+    return (mass % 2) != (trivalent % 2)
+
+
 def prepare(ledger: pd.DataFrame, prefix: str, notation_by_id: dict) -> pd.DataFrame:
     """Reduce one ledger to the prefixed columns the join needs."""
     # An isotopologue row names the M0 it belongs to, so a child with no owner
@@ -169,6 +209,9 @@ def prepare(ledger: pd.DataFrame, prefix: str, notation_by_id: dict) -> pd.DataF
             f"{prefix}_ppm": ledger.get("mz_error_ppm"),
             f"{prefix}_evidence": ledger.get("evidence"),
             f"{prefix}_ownerless": (ledger["role"] == "iso_child") & owner.isna(),
+            f"{prefix}_odd_electron": ledger["assigned_formula"].map(
+                odd_electron_neutral
+            ),
         }
     )
     return out
@@ -371,6 +414,34 @@ def summarize(j: pd.DataFrame, engine_a: str, engine_b: str) -> dict:
             ),
             "b": int((j.b_role.eq(ROLE_MAIN) & j.a_role.eq("iso_child")).sum()),
         },
+        # The share of committed formulas that are odd-electron neutrals. Decision
+        # 9 keeps the radical reading as a tie-break, so this is not a gate; it is
+        # the number step 2.1's fit has to move, recorded per engine so the move
+        # is visible. The untargeted figure is the one the plan quotes.
+        "odd_electron_m0": {
+            "a": int((j.a_role.eq(ROLE_MAIN) & j.a_odd_electron.eq(True)).sum()),
+            "a_pct": pct(
+                (j.a_role.eq(ROLE_MAIN) & j.a_odd_electron.eq(True)).sum(),
+                (j.a_role.eq(ROLE_MAIN) & j.a_odd_electron.notna()).sum(),
+            ),
+            "a_untargeted_pct": pct(
+                (
+                    j.a_role.eq(ROLE_MAIN)
+                    & j.a_odd_electron.eq(True)
+                    & j.a_source.eq("untargeted")
+                ).sum(),
+                (
+                    j.a_role.eq(ROLE_MAIN)
+                    & j.a_odd_electron.notna()
+                    & j.a_source.eq("untargeted")
+                ).sum(),
+            ),
+            "b": int((j.b_role.eq(ROLE_MAIN) & j.b_odd_electron.eq(True)).sum()),
+            "b_pct": pct(
+                (j.b_role.eq(ROLE_MAIN) & j.b_odd_electron.eq(True)).sum(),
+                (j.b_role.eq(ROLE_MAIN) & j.b_odd_electron.notna()).sum(),
+            ),
+        },
         "both_main": int(len(both)),
         "verdicts_where_both_main": both["verdict"].value_counts().to_dict(),
         "a_main_by_verdict": a_main["verdict"].value_counts().to_dict(),
@@ -465,6 +536,7 @@ def markdown_summary(result: dict) -> str:
         f"| artifact peaks | {pooled['roles']['a'].get('artifact', 0)} | {pooled['roles']['b'].get('artifact', 0)} |",
         f"| isotopologue rows without an owner (of them untargeted) | {pooled['ownerless_iso_child']['a']} ({pooled['ownerless_iso_child']['a_untargeted']}) | {pooled['ownerless_iso_child']['b']} |",
         f"| M0 on a peak the other engine calls an isotopologue (of them assigned-tier) | {pooled['m0_on_the_others_isotopologue']['a']} ({pooled['m0_on_the_others_isotopologue']['a_assigned']}) | {pooled['m0_on_the_others_isotopologue']['b']} |",
+        f"| committed formulas that are odd-electron neutrals (untargeted share) | {pooled['odd_electron_m0']['a']} ({pooled['odd_electron_m0']['a_pct']}%, untargeted {pooled['odd_electron_m0']['a_untargeted_pct']}%) | {pooled['odd_electron_m0']['b']} ({pooled['odd_electron_m0']['b_pct']}%) |",
         "",
         f"Peaks both call M0: {pooled['both_main']} - "
         + ", ".join(f"{k} {v}" for k, v in pooled["verdicts_where_both_main"].items()),
