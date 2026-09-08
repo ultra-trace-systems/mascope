@@ -2,9 +2,9 @@
 
 import re
 import warnings
-from math import ceil, floor
 from typing import Iterator, Sequence
 
+import numpy as np
 import pandas as pd
 import polars as pl
 from pyteomics.mass import Composition
@@ -14,6 +14,11 @@ from mascope_tools.composition.config import UNSATURATION_COEFFICIENTS
 from mascope_tools.composition.exceptions import (
     CompositionFinderWarning,
 )
+from mascope_tools.composition.grid import (
+    DEFAULT_MAX_GRID_ROWS,
+    NeutralGrid,
+    build_neutral_grid,
+)
 from mascope_tools.composition.heuristic_filter import (
     SAME_ION_ALTERNATIVES,
     apply_heuristic_rules,
@@ -22,7 +27,6 @@ from mascope_tools.composition.heuristic_filter import (
 from mascope_tools.composition.models import (
     Atom,
     CompositionSearchConfig,
-    CompositionSearchState,
     HeuristicFilterConfig,
     IonizationMechanism,
     Result,
@@ -122,11 +126,22 @@ def assign_compositions(
     mzs = peaks_to_match["mz"].to_numpy()
     results_per_peak, assigned_mzs, mass_log_messages = [], set(), {}
 
-    for mz in mzs:
+    # One grid serves many targets, because the compositions the element box
+    # allows are the same set for all of them and only the window into it moves.
+    # Not one grid for the whole spectrum, though: a wide box over a TOF's
+    # thousand-dalton range holds millions of compositions, so the targets are
+    # walked in ascending mass bands and each band's grid is dropped when the
+    # next begins. See :func:`_grids_for_targets`.
+    mechanisms = [
+        utils.parse_ionization(name)
+        for name in get_ionization_mech_string_list(config.ionizations)
+    ]
+
+    for mz, grid in _grids_for_targets(mzs, config, mechanisms):
         if mz in assigned_mzs:
             continue
 
-        comp_results = find_compositions(mz, config)
+        comp_results = find_compositions(mz, config, grid=grid)
 
         if comp_results:
             candidates, log_messages = apply_heuristic_rules(
@@ -246,32 +261,45 @@ def assign_compositions(
     return matches, mass_log_messages
 
 
-def find_compositions(target_mz: float, config: CompositionSearchConfig) -> list[dict]:
-    """Find molecular compositions based on the provided parameters.
+def find_compositions(
+    target_mz: float,
+    config: CompositionSearchConfig,
+    grid: NeutralGrid | None = None,
+) -> list[dict]:
+    """Find molecular compositions whose ion lands on a target m/z.
 
     :param target_mz: The target m/z value for which to find compositions.
     :type target_mz: float
     :param config: Configuration parameters for the composition search.
     :type config: CompositionSearchConfig
+    :param grid: A neutral grid already enumerated over a range covering this
+        target, from :func:`grid.build_neutral_grid`. A caller searching many
+        peaks of one spectrum builds it once and passes it here; without one a
+        grid is built over this target's own window, which is the same walk the
+        search used to make per peak. The grid must have been built from an
+        equivalent config - it carries the element box and the unsaturation cut.
+    :type grid: NeutralGrid, optional
     :return: A list of dictionaries containing composition results.
     :rtype: list[dict]
     """
-    atoms = utils.parse_atom_count_ranges(config.element_count_ranges)
-    atoms.sort(key=lambda a: a.mass, reverse=True)
-
     ionization_mech_string_list = get_ionization_mech_string_list(config.ionizations)
+    mechanisms = [utils.parse_ionization(name) for name in ionization_mech_string_list]
     mz_tolerance_da = target_mz * config.mass_range_ppm * 1e-6
 
-    # Initialise list of results across all ionization mechanisms
+    if grid is None:
+        grid = build_neutral_grid(
+            config,
+            *neutral_mass_bounds([target_mz], mechanisms, config.mass_range_ppm),
+        )
+    if grid is None:
+        # Only reachable when a single target's own window overflows the row
+        # bound, which takes an element box orders of magnitude wider than the
+        # API's species cap allows. Nothing to search rather than a wrong answer.
+        return []
+
     all_results: list[Result] = []
 
-    # Precompute minimal and maximal remaining masses for pruning the search space
-    min_inner_mass, max_inner_mass = calc_min_max_inner_mass(atoms)
-
-    for ionization_mech_string in ionization_mech_string_list:
-        # Reset number of found compositions for this ionization mechanism
-        ionization_mechanism = utils.parse_ionization(ionization_mech_string)
-
+    for ionization_mechanism in mechanisms:
         # Ion shift: ion m/z = neutral_mass + ion_shift
         ion_shift = (
             ionization_mechanism.mass
@@ -285,8 +313,8 @@ def find_compositions(target_mz: float, config: CompositionSearchConfig) -> list
         if abs(required_neutral_mass) <= mz_tolerance_da:
             ion_charge = "+" if ionization_mechanism.charge > 0 else "-"
             ion_formula = ionization_mechanism.formula + ion_charge
-            # Signed, relative to the prediction (see recursive_search); for an
-            # ionization peak the prediction is the adduct's own m/z, ion_shift.
+            # Signed, relative to the prediction; for an ionization peak the
+            # prediction is the adduct's own m/z, ion_shift.
             compositions_error_ppm = (target_mz - ion_shift) / ion_shift * 1e6
             all_results.append(
                 Result(
@@ -305,23 +333,167 @@ def find_compositions(target_mz: float, config: CompositionSearchConfig) -> list
         if required_neutral_mass <= 0:
             continue
 
-        # --- Regular case: search for matching compositions --- #
-        # Initialize search runtime state per ionization mechanism
-        state = CompositionSearchState(
-            ion_shift=ion_shift,
-            mz_tolerance_da=mz_tolerance_da,
-            atoms=atoms,
-            min_inner_mass=min_inner_mass,
-            max_inner_mass=max_inner_mass,
-            ionization_mechanism=ionization_mechanism,
-        )
-
-        for res in recursive_search(0, [], 0.0, target_mz, state, config):
-            all_results.append(res)
+        # --- Regular case: the grid rows whose mass is close enough --- #
+        # Ranked before the row cap applies, so a target with more readings than
+        # the cap allows keeps the closest ones rather than whichever the walk
+        # reached first.
+        rows = grid.window(required_neutral_mass, mz_tolerance_da)
+        errors = [
+            (
+                abs(grid.mass[row] + ion_shift - target_mz),
+                row,
+            )
+            for row in rows
+        ]
+        errors.sort()
+        for _, row in errors[: config.max_result_rows]:
+            neutral_mass = float(grid.mass[row])
+            ion_mz = neutral_mass + ion_shift
+            formula = utils.to_hill_order(grid.composition(row))
+            ion_formula = utils.combine_counts_and_ionization(
+                grid.pyteomics_composition(row), ionization_mechanism
+            )
+            # (observed - predicted)/predicted, signed: the targeted matcher's
+            # match_mz_error convention. Dividing by the PREDICTION (not by the
+            # observation) is what makes the consumers' recovery of the predicted
+            # m/z, observed / (1 + error/1e6), exact.
+            error_ppm = (target_mz - ion_mz) / ion_mz * 1e6
+            all_results.append(
+                Result(
+                    formula=formula,
+                    neutral_mass=neutral_mass,
+                    composition_error_ppm=error_ppm,
+                    unsaturation=(
+                        None
+                        if grid.unsaturation is None
+                        else float(grid.unsaturation[row])
+                    ),
+                    ion=ion_formula,
+                    ionization_mechanism=ionization_mechanism.mascope_notation,
+                    observed_mass=target_mz,
+                )
+            )
 
     all_results.sort(key=lambda r: abs(r.composition_error_ppm))
 
     return [r.to_dict() for r in all_results]
+
+
+#: The narrowest band worth building a shared grid for. A band this small that
+#: still overflows the row bound means an element box no spectrum-wide grid can
+#: hold, and the search falls back to a window per peak.
+_MIN_BAND_DA = 1.0
+
+
+def _grids_for_targets(
+    target_mzs: np.ndarray,
+    config: CompositionSearchConfig,
+    mechanisms: Sequence[IonizationMechanism],
+    max_rows: int = DEFAULT_MAX_GRID_ROWS,
+) -> Iterator[tuple[float, NeutralGrid | None]]:
+    """Pair each target with a grid covering it, rebuilding as the band advances.
+
+    The targets arrive in ascending m/z, so a band is a contiguous run of them
+    and one grid answers every target until the band ends. Bands rather than one
+    grid because the element box is the same everywhere but the compositions it
+    allows are not: a box wide enough for a TOF's whole mass range holds millions
+    of them, and only the band being searched has to be resident.
+
+    The band width is found by halving until it fits, and the width that worked
+    is the first guess for the next band - so a spectrum pays the search for its
+    density once rather than at every band. A grid of None means even one band
+    would not fit, and the caller searches each peak's own window instead.
+
+    :param target_mzs: The peaks to be searched, ascending.
+    :param config: The search, whose element box the grid enumerates.
+    :param mechanisms: The ionization mechanisms, which decide how far a target's
+        m/z is from the neutral masses that could explain it.
+    :param max_rows: The row bound a single band's grid must fit inside.
+    :yield: Each target with the grid that covers it.
+    """
+    if target_mzs.size == 0:
+        return
+    spectrum_end = float(target_mzs[-1])
+    grid: NeutralGrid | None = None
+    band_end = float("-inf")
+    band_width = spectrum_end - float(target_mzs[0])
+    banded = True
+
+    for value in target_mzs:
+        mz = float(value)
+        if banded and mz > band_end:
+            wanted_end = min(spectrum_end, mz + band_width) if band_width else mz
+            grid, band_end, band_width = _grid_for_band(
+                config, mechanisms, mz, max(wanted_end, mz), max_rows
+            )
+            if grid is None:
+                banded = False
+                warnings.warn(
+                    "The element ranges are too wide to enumerate over this "
+                    "spectrum's mass range; searching each peak separately, "
+                    "which is slower.",
+                    CompositionFinderWarning,
+                )
+        yield mz, (grid if banded else None)
+
+
+def _grid_for_band(
+    config: CompositionSearchConfig,
+    mechanisms: Sequence[IonizationMechanism],
+    band_start: float,
+    band_end: float,
+    max_rows: int,
+) -> tuple[NeutralGrid | None, float, float]:
+    """Build the widest band starting here that fits inside the row bound.
+
+    :return: The grid, the m/z its band reaches, and the band's width - which the
+        caller carries forward as the first guess for the band after it.
+    """
+    while True:
+        grid = build_neutral_grid(
+            config,
+            *neutral_mass_bounds(
+                [band_start, band_end], mechanisms, config.mass_range_ppm
+            ),
+            max_rows=max_rows,
+        )
+        if grid is not None:
+            return grid, band_end, band_end - band_start
+        span = band_end - band_start
+        if span <= _MIN_BAND_DA:
+            return None, band_end, span
+        band_end = band_start + span / 2
+
+
+def neutral_mass_bounds(
+    target_mzs: Sequence[float],
+    mechanisms: Sequence[IonizationMechanism],
+    mass_range_ppm: float,
+) -> tuple[float, float]:
+    """The neutral masses any of these targets could be, under any of these ions.
+
+    The range a grid has to span to answer every one of the targets: the lightest
+    neutral the heaviest-adding adduct leaves of the lightest peak, up to the
+    heaviest neutral the heaviest-subtracting adduct leaves of the heaviest peak.
+
+    :param target_mzs: The m/z values to be searched.
+    :param mechanisms: The ionization mechanisms they are searched under.
+    :param mass_range_ppm: The search window, which widens the bounds by its own
+        tolerance at each end.
+    :return: ``(mass_min, mass_max)``; the minimum is never below zero.
+    """
+    if not target_mzs or not mechanisms:
+        return (0.0, -1.0)
+    shifts = [
+        mechanism.mass if mechanism.addition else -mechanism.mass
+        for mechanism in mechanisms
+    ]
+    lowest_mz, highest_mz = min(target_mzs), max(target_mzs)
+    tolerance = highest_mz * mass_range_ppm * 1e-6
+    return (
+        max(0.0, lowest_mz - max(shifts) - tolerance),
+        highest_mz - min(shifts) + tolerance,
+    )
 
 
 def _pattern_is_evidence(candidate: dict) -> bool:
@@ -410,120 +582,6 @@ def process_isotopes(
     return results_per_peak, assigned_mzs
 
 
-def recursive_search(
-    idx: int,
-    counts: list,
-    current_mass: float,
-    target_mz: float,
-    state: CompositionSearchState,
-    config: CompositionSearchConfig,
-) -> Iterator[Result]:
-    """A recursive function to explore all possible combinations of atom counts.
-
-    :param idx: Current index in the list of atoms.
-    :type idx: int
-    :param counts: Current counts of each atom type.
-    :type counts: list
-    :param current_mass: Current total mass of the composition based on counts.
-    :type current_mass: float
-    :param target_mz: The target m/z value for which to find compositions.
-    :type target_mz: float
-    :param state: Current state of the composition search.
-    :type state: CompositionSearchState
-    :param config: Configuration parameters for the composition search.
-    :type config: CompositionSearchConfig
-    :yield: Result objects for valid compositions.
-    :rtype: Iterator[Result]
-    """
-    if state.results_found >= config.max_result_rows:
-        return
-
-    # Evaluate full composition
-    if idx == len(state.atoms):
-        ion_mz = current_mass + state.ion_shift
-        if abs(ion_mz - target_mz) <= state.mz_tolerance_da:
-            if config.use_unsaturation:
-                unsat = get_unsaturation(state.atoms, counts)
-                if not (config.min_unsaturation <= unsat <= config.max_unsaturation):
-                    return
-                if config.only_integer_unsaturation and not unsat.is_integer():
-                    return
-            else:
-                unsat = None
-
-            atomic_counts = {
-                state.atoms[i].symbol: counts[i] for i in range(len(state.atoms))
-            }
-            formula = utils.to_hill_order(atomic_counts)
-            state.results_found += 1
-            ion_formula = utils.combine_formula_and_ionization(
-                formula, state.ionization_mechanism
-            )
-            # (observed - predicted)/predicted, signed: the targeted matcher's
-            # match_mz_error convention. Dividing by the PREDICTION (not by the
-            # observation) is what makes the consumers' recovery of the predicted
-            # m/z, observed / (1 + error/1e6), exact.
-            error_ppm = (target_mz - ion_mz) / ion_mz * 1e6
-            yield Result(
-                formula=formula,
-                neutral_mass=current_mass,
-                composition_error_ppm=error_ppm,
-                unsaturation=unsat,
-                ion=ion_formula,
-                ionization_mechanism=state.ionization_mechanism.mascope_notation,
-                observed_mass=target_mz,
-            )
-        return
-
-    atom = state.atoms[idx]
-    min_inner = state.min_inner_mass[idx]
-    max_inner = state.max_inner_mass[idx]
-    tol = state.mz_tolerance_da
-    shift = state.ion_shift
-
-    # Feasible count bounds for this atom (neutral mass domain)
-    feasible_min = max(
-        atom.min_count,
-        int(ceil(((target_mz - shift) - tol - current_mass - max_inner) / atom.mass))
-        - 1,
-    )
-    feasible_max = min(
-        atom.max_count,
-        int(floor(((target_mz - shift) + tol - current_mass - min_inner) / atom.mass))
-        + 1,
-    )
-    if feasible_min > feasible_max:
-        return
-
-    # Reuse a single counts buffer through recursion to avoid repeated list allocations.
-    counts.append(0)
-    try:
-        for atom_count in range(feasible_min, feasible_max + 1):
-            if state.results_found >= config.max_result_rows:
-                return
-            counts[-1] = atom_count
-            new_mass = current_mass + atom_count * atom.mass
-
-            if idx < len(state.atoms) - 1:
-                min_mass = new_mass + min_inner
-                max_mass = new_mass + max_inner
-                min_ion = min_mass + shift
-                max_ion = max_mass + shift
-
-                # Too heavy already (even minimal remaining mass overshoots)
-                if (min_ion - target_mz) > tol:
-                    break
-                # Still too light (even maximal remaining mass below window)
-                if (target_mz - max_ion) > tol:
-                    continue
-
-            yield from recursive_search(
-                idx + 1, counts, new_mass, target_mz, state, config
-            )
-    finally:
-        counts.pop()
-
-
 def get_ionization_mech_string_list(ionizations: str) -> list[str]:
     """Get a list of ionizations from the params dictionary."""
     if ionizations:
@@ -545,28 +603,6 @@ def get_neutral_mass_and_ionization_mech(
             neutral_mass = target_mass + ionization_mech.mass
         return neutral_mass, ionization_mech
     return target_mass, None
-
-
-def calc_min_max_inner_mass(atoms) -> tuple[list[float], list[float]]:
-    """Prepare suffix arrays of minimal and maximal remaining masses AFTER each index.
-
-    Returns:
-        min_suffix[i]: minimal mass contribution of atoms with index > i
-        max_suffix[i]: maximal mass contribution of atoms with index > i
-        For convenience lengths match len(atoms); min_suffix[-1] == max_suffix[-1] == 0.
-    """
-    n = len(atoms)
-    min_suffix = [0.0] * n
-    max_suffix = [0.0] * n
-    running_min = 0.0
-    running_max = 0.0
-    # Build from the end toward the front; suffix after i
-    for i in range(n - 1, -1, -1):
-        min_suffix[i] = running_min
-        max_suffix[i] = running_max
-        running_min += atoms[i].min_count * atoms[i].mass
-        running_max += atoms[i].max_count * atoms[i].mass
-    return min_suffix, max_suffix
 
 
 def get_unsaturation(atoms: list[Atom], counts: list[int]) -> float:
