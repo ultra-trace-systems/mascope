@@ -161,6 +161,26 @@ def assign_compositions(
                 all_matched_isotopes = [
                     m for m in all_matched_isotopes if len(m.get("masses", [])) > 0
                 ]
+            if all_matched_isotopes and not _pattern_is_evidence(candidates[0]):
+                # The best candidate's envelope was predicted, matched against
+                # the spectrum and came out worth nothing - a line the
+                # prediction requires is not there (see
+                # `heuristic_filter.score_pattern`). Candidates are ranked by
+                # that score, so no other reading of this peak does better
+                # either. Committing the top one anyway is how a `+Br2-` phantom
+                # takes a peak with no envelope at all: its monoisotopic line is
+                # the target, so the row can always be written, and only the
+                # score says it should not be.
+                results_per_peak.append(
+                    {
+                        "formula": "---",
+                        "ion": "---",
+                        "mz": mz,
+                        "other_candidates": _other_candidate_formulas(comp_results),
+                        "isotope_label": "---",
+                    }
+                )
+                continue
             if all_matched_isotopes:
                 isotopic_results, assigned_mzs = process_isotopes(
                     main_candidate, all_matched_isotopes, assigned_mzs
@@ -302,6 +322,17 @@ def find_compositions(target_mz: float, config: CompositionSearchConfig) -> list
     all_results.sort(key=lambda r: abs(r.composition_error_ppm))
 
     return [r.to_dict() for r in all_results]
+
+
+def _pattern_is_evidence(candidate: dict) -> bool:
+    """Whether a scored candidate's isotope pattern supports committing it.
+
+    A zero here is not a weak match: `score_pattern` returns zero only when a
+    line it requires is absent - the ion's own, or the one the prediction leads
+    with - and every other outcome is a positive combination of mass, intensity
+    and pattern terms.
+    """
+    return float(candidate.get("isotopic_pattern_score") or 0.0) > 0.0
 
 
 def process_isotopes(
