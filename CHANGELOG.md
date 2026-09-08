@@ -21,7 +21,14 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
   untargeted search happily fits a neutral to. Isotopologue satellites of a
   claimed ion are claimed too, predicted from the ion's own envelope and gated
   on intensity, so a peak with an analyte co-eluting on top of it is left
-  alone. What the library will *not* claim matters as much as what it will: a
+  alone. What a claim is matched against is the sample's own reagent ions
+  rather than a fixed tolerance: the source's base ions are found first and say
+  where that spectrum puts the reagent's masses, and every other rung is then
+  claimed at the instrument's own precision against a mass they have corrected.
+  That keeps a genuinely miscalibrated ladder - one gate set's bromide ions sit
+  about 10 ppm out across every rung - while refusing an ambient compound that
+  merely lands near a reagent mass. What the library will *not* claim matters
+  as much as what it will: a
   cluster of the reagent with anything the sample supplied IS the analyte's
   adduct channel, so the reagent's organic-acid clusters stay out, the urea
   monomer's ammonium adduct stays out because that ion is ambient ammonia, and
