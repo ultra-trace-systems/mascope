@@ -15,7 +15,7 @@ step PRs land on the epic and are named here as they merge.
 | 1.1 fix - finder: the labelled reagent's atom in ion formulas | #2080 | merged: the label reaching the ion string is what pyteomics could not parse |
 | 1.2 - opportunistic adduct channels | #2081 | measured: fingerprint gate works and refuses sodium; carbonate settled on the broad-window nitrate set |
 | 1.3 - same-ion tie policy in the finder | #2082 | measured: the step's target met on A (47 -> 87% same formula); the note's mass-only policy needed a closed-shell key the gate supplied |
-| 1.4 - reagent-cluster pre-pass | #2086 | measured: 36 peaks carry 80.7% of set A's signal; the claim is anchored on the sample's own base ions after a flat window was found taking analytes; no reference analyte taken on A/B/C/D/E/F1 |
+| 1.4 - reagent-cluster pre-pass | #2086 | measured: 60 peaks carry 81.2% of set A's signal; the claim is anchored on the sample's own base ions and the envelope reaches the floor it searches; no reference analyte taken on A/B/C/D/E/F1 |
 | 1.5 - satellite claim and ringing artifacts | - | planned |
 | 1.6 - cap and mass window | - | planned |
 | 1.7 - stage 1 gate, engine 0.4.0 | - | planned |
@@ -926,24 +926,24 @@ whether any peak the reference assigns an analyte to has become a reagent row.
 
 | set | peaks | reagent rows | % of peaks | **% of signal** | of a sample's 10 brightest | reference analytes taken |
 |---|---|---|---|---|---|---|
-| A uronium | 2,626 | 36 | 1.4% | **80.7%** | 24 of 60 | 0 |
-| B uronium | 12,055 | 10 | 0.1% | **59.7%** | 8 of 60 | 0 |
+| A uronium | 2,626 | 60 | 2.3% | **81.2%** | 24 of 60 | 0 |
+| B uronium | 12,055 | 18 | 0.1% | **60.0%** | 8 of 60 | 0 |
 | C 15N-nitrate, from m/z 131 | 1,583 | 0 | 0% | 0% | 0 of 50 | 0 |
-| C2 15N-nitrate, from m/z 50 | 1,420 | 30 | 2.1% | **90.9%** | 27 of 60 | 12 (see below) |
+| C2 15N-nitrate, from m/z 50 | 1,420 | 42 | 3.0% | **91.0%** | 27 of 60 | 12 (see below) |
 | D bromide | 5,217 | 58 | 1.1% | **60.0%** | 26 of 60 | 0 |
 | E bromide TOF | 3,493 | 48 | 1.4% | **59.1%** | 18 of 30 | 0 |
-| F1 bromide TOF | 13,595 | 62 | 0.5% | **79.8%** | 41 of 60 | 0 |
-| F2 nitrate TOF | 8,905 | 27 | 0.3% | **84.6%** | 11 of 50 | 10 (see below) |
+| F1 bromide TOF | 13,595 | 68 | 0.5% | **79.8%** | 41 of 60 | 0 |
+| F2 nitrate TOF | 8,905 | 37 | 0.4% | **85.2%** | 15 of 50 | 10 (see below) |
 
 **Cause 5 is the size the baseline said, and this is what it looks like when it
-is named.** Thirty-six peaks on set A - one and a half percent of the peak
-list - carry 80.7% of the total signal, and 24 of the six samples' sixty
-brightest peaks are among them.
+is named.** Sixty peaks on set A - 2.3% of the peak list - carry 81.2% of the
+total signal, and 24 of the six samples' sixty brightest peaks are among them.
 
-Analyte agreement against the step 1.3 build: A -3 both-M0 / -2 same-formula,
-B -3 / -2, C 0 / 0, C2 -6 / -6, D +3 / +1, E and F1 unchanged, F2 -12 / -9.
-The nitrate movements are the reagent ladder itself leaving the analyte ledger,
-which is the step working.
+Analyte agreement against the step 1.3 build: A **+3** both-M0 / **+3**
+same-formula, B +2 / +2, C 0 / 0, C2 -6 / -6, D +3 / +1, E 0 / 0, F1 +1 / 0,
+F2 -10 / -9. The nitrate movements are the reagent ladder itself leaving the
+analyte ledger, which is the step working; A and B gain because peaks the
+pre-pass takes out no longer compete for the untargeted stage's cap.
 
 ### The claim window: what the first attempt got wrong
 
@@ -995,7 +995,7 @@ rung, and drops the C13H20O4 channels on B and the Br3 ringing skirt on D.
 **With no anchor in range the pass searches nominal masses at the instrument
 window** - conservative rather than clever. Four of set B's six samples start
 at m/z 123, above both the urea monomer and dimer, so they anchor on nothing
-and claim nothing; B's reagent rows fall from 40 to 10.
+and claim nothing; B claims 18 rows, all on its two anchored samples.
 
 Nothing real is lost there, and it is worth saying why, because the obvious
 repair is a trap. The peaks the flat window claimed on those four samples were
@@ -1009,12 +1009,34 @@ and +6.6 agreeing well enough and claimed two analytes' isotopologues. **Those
 four samples hold no reagent ion the library can see, and claiming nothing on
 them is the right answer**, so the fallback is deliberately not built.
 
+### The envelope has to reach the floor the pass searches
+
+One more defect the anchored build surfaced. The satellite search asked for an
+envelope and then looked for lines in it, but the prediction stopped at the
+scoring path's 1% - so the 18O line, 0.411% of a two-oxygen ion and 0.206% of a
+one-oxygen one, was never in the envelope at all. On set A that line is the
+19th brightest peak of a sample (7e4 counts): once the pre-pass claimed the
+urea dimer and Stage A's urea target went with it, the untargeted stage read
+the freed peak as ethylene glycol on the urea channel, at candidate tier, on
+all six A samples and both anchored B samples. The phantom this step exists to
+prevent, one line below where it used to happen.
+
+`predict_isotopes` now takes a threshold (default unchanged, so the scoring
+path is untouched) and the pre-pass passes its own satellite floor, which drops
+to 1e-3: the two 18O shares sit either side of the old 4e-3, which is not a
+distinction the chemistry supports. What protects an analyte is the excess
+gate, not the floor. Measured against the build before it: A's reagent rows go
+36 to 60 and its same-formula agreement rises 5, with the ethylene glycol rows
+gone; C2, F1 and F2 gain rows on the same account, their ladders being
+oxygen-bearing too, while D and E - whose claims are mostly bare halide
+clusters - do not move.
+
 ### What G4 measures, and why the raw number is not it
 
 Of the reference's reagent rows **that name an ion formula** - the ones that
-are reagent-cluster identifications - this engine agrees on 54 of 64 (D), 48 of
-55 (E) and 50 of 67 (F1). That is G4a, and at **84%, 87% and 75% it is below
-the row's own >= 90% target on all three sets.** The misses are the anchored
+are reagent-cluster identifications - this engine agrees on 48 of 58 (A), 54 of
+64 (D), 48 of 55 (E) and 50 of 67 (F1). That is G4a, and at **82%, 84%, 87% and
+74% it is below the row's own >= 90% target.** The misses are the anchored
 window and the intensity floor doing what they were changed to do, so the
 number is reported rather than reached for:
 
