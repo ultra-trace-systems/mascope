@@ -13,10 +13,12 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
   hypothesis split two ways rather than two candidates: they sit at one mass,
   predict one isotope envelope and score identically, so no spectrum can
   separate them. They are now collapsed into one family, scored once, and
-  ranked by policy. First the neutral has to be a molecule: a family's members
-  differ by a fragment like HCO3, so their neutrals differ by half a DBE unit
-  and exactly one of the two is closed-shell, and the molecule is by far the
-  likelier analyte. Then the reading whose mechanism carries the mass wins,
+  ranked by policy. First the neutral should be a molecule: where the fragment
+  between two readings carries a half-integer DBE of its own, as HCO3 does, one
+  of the two neutrals is an odd-electron radical and the molecule is by far the
+  likelier analyte. Then, among the readings that key does not separate -
+  the ammonium and reagent-cluster families, where both neutrals are molecules
+  and it says nothing - the reading whose mechanism carries the mass wins,
   because that is the chemistry a chemical-ionization source runs, and reading
   the reagent into the analyte's own formula invents a neutral nobody sampled.
   Neither key is a filter: where a radical is the only reading of an ion it is
