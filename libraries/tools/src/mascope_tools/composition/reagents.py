@@ -558,12 +558,20 @@ class ReagentCluster:
     :param label: How the ion is written in a row's provenance.
     :param kind: Which part of the grammar produced it, for the reader of a
         claim rather than for the matching.
+    :param anchor: Whether this ion may be used to calibrate the pass. True for
+        the base ions of a source - the bare halide clusters, the protonated
+        urea monomer and dimer, the nitrate core and its first rung - which are
+        the brightest things the source makes and which nothing else shares a
+        mass with. Those two properties are what let them be found in a wide
+        window and then say where this spectrum puts the reagent's masses; a
+        rung that is neither bright nor unambiguous must not.
     """
 
     formula: str
     charge: int
     label: str
     kind: str = KIND_CLUSTER
+    anchor: bool = False
 
     @property
     def mz(self) -> float:
@@ -620,7 +628,11 @@ def _halide_clusters(
     for n in range(1, max_n + 1):
         core = _ion_formula((symbol, n))
         rung = f"{symbol}{n}" if n > 1 else symbol
-        clusters.append(ReagentCluster(core, -1, f"[{rung}]-", KIND_CLUSTER))
+        # The bare monomer and dimer anchor the pass: they are the two brightest
+        # ions a halide source makes and no analyte shares their mass.
+        clusters.append(
+            ReagentCluster(core, -1, f"[{rung}]-", KIND_CLUSTER, anchor=n <= 2)
+        )
         # Water, and the hydrogen halide the reagent itself sheds - HBr on a
         # bromide source, HI on an iodide one, resolved from the reagent rather
         # than fixed, so an iodide library carries no phantom [In+HBr]-.
@@ -660,6 +672,17 @@ _IODINE_BACKGROUND: tuple[ReagentCluster, ...] = (
     ReagentCluster("I3O", -1, "[I3O]-", KIND_BACKGROUND),
 )
 
+#: The bromide source's own precursors, deprotonated. These are the only
+#: carbon-bearing ions in a halide library, and they are here for the same
+#: reason everything else is: dibromomethane and bromoform are what the source
+#: is dosed with, so their ions are the reagent's, not the sample's. The carbon
+#: is the precursor's own - it is not a cluster with something the sample
+#: supplied, which is the line the rest of this section draws.
+_BROMIDE_PRECURSORS: tuple[ReagentCluster, ...] = (
+    ReagentCluster("CHBr2", -1, "[CH2Br2-H]-", KIND_BACKGROUND),
+    ReagentCluster("CBr3", -1, "[CHBr3-H]-", KIND_BACKGROUND),
+)
+
 
 def _nitrate_clusters(
     reagent: str,
@@ -678,7 +701,11 @@ def _nitrate_clusters(
     :param max_neutral: Copies of water on the bare core.
     """
     acid = f"H{reagent}"
-    clusters = [ReagentCluster(_ion_formula((reagent, 1)), -1, f"[{reagent}]-")]
+    clusters = [
+        ReagentCluster(
+            _ion_formula((reagent, 1)), -1, f"[{reagent}]-", KIND_CLUSTER, anchor=True
+        )
+    ]
     for n in range(1, max_n + 1):
         copies = f"{n}x" if n > 1 else ""
         clusters.append(
@@ -687,6 +714,10 @@ def _nitrate_clusters(
                 -1,
                 f"[{reagent}+{copies}{acid}]-",
                 KIND_CLUSTER,
+                # The core and its first acid rung are the ions a nitrate source
+                # is loudest in; higher rungs decluster away and are not certain
+                # enough to calibrate on.
+                anchor=n == 1,
             )
         )
     for k in range(1, max_neutral + 1):
@@ -718,7 +749,14 @@ def _urea_clusters(
         rung = f"({unit}){n}" if n > 1 else unit
         clusters.append(
             ReagentCluster(
-                _ion_formula((unit, n), ("H", 1)), 1, f"[{rung}+H]+", KIND_CLUSTER
+                _ion_formula((unit, n), ("H", 1)),
+                1,
+                f"[{rung}+H]+",
+                KIND_CLUSTER,
+                # The protonated monomer and dimer: the base peak of a uronium
+                # spectrum and the ion beside it. The higher rungs are what the
+                # anchors are there to protect, so they cannot anchor.
+                anchor=n <= 2,
             )
         )
         if n >= 2:
@@ -738,7 +776,7 @@ def _urea_clusters(
 #: an electrospray - has no library, which is not an omission: there is no one
 #: carrier whose clusters could be enumerated.
 REAGENT_CLUSTERS: dict[str, tuple[ReagentCluster, ...]] = {
-    "BR": _halide_clusters("Br"),
+    "BR": _halide_clusters("Br") + _BROMIDE_PRECURSORS,
     "IODIDE": _halide_clusters("I", oxides=False) + _IODINE_BACKGROUND,
     "NO3": _nitrate_clusters("NO3"),
     "NO3_15N": _nitrate_clusters("^NO3"),
@@ -755,24 +793,24 @@ def reagent_library(profile_name: str) -> tuple[ReagentCluster, ...]:
     return REAGENT_CLUSTERS.get(profile_name, ())
 
 
-#: Window a library ion claims a peak in, in ppm. Wider than the probe window
-#: above, and measured rather than chosen.
+#: Window the ANCHOR ions are looked for in, in ppm. The same width and the
+#: same reason as :data:`DEFAULT_CHANNEL_MATCH_PPM`: an anchor is being detected,
+#: not assigned, and a spectrum whose calibration sits ten ppm out still has to
+#: be able to find its own reagent.
 #:
-#: The reason a reagent ion needs a wide window at all is the same one the
-#: probes have: its mass is known exactly, nothing competes with it, and the
-#: acquisition is calibrated against the analytes rather than against ions this
-#: bright. The reason it needs a WIDER one is that a probe only has to find any
-#: one rung of a ladder, while a claim has to find every rung it means to take
-#: out of the residual. On the gate's dense uronium set the protonated urea
-#: ladder sits at +4.7, +21.0 and +27.5 ppm - a drift that grows with mass - so
-#: a 20 ppm window claimed the first rung and left the other two, the brighter
-#: pair, in the residual for an untargeted search to fit a neutral to.
-#:
-#: What keeps a window this wide safe is that a claim takes the BRIGHTEST peak
-#: in it - at a reagent mass that peak is the reagent - and records how far off
-#: it sat. Measured on that same set: each of the missed rungs is the ONLY peak
-#: within 40 ppm of its mass, so the width buys the rung without a contest.
-DEFAULT_REAGENT_MATCH_PPM = 40.0
+#: This is the only wide window in the pass, and it is wide only for the two or
+#: three ions that cannot be anything else. Everything the pass goes on to claim
+#: is matched at the instrument's own precision against a mass the anchors have
+#: corrected - see :func:`match_reagent_clusters`.
+DEFAULT_ANCHOR_PPM = DEFAULT_CHANNEL_MATCH_PPM
+
+#: Intensity a peak must reach, relative to the base peak, to be claimed as a
+#: reagent ion in its own right. The same floor the channel probes use, for the
+#: same reason: a reagent ion is one of the brightest things in the spectrum, so
+#: a trace at the noise floor sitting on a reagent mass is a coincidence rather
+#: than the ion. Satellites are exempt - their evidence is the parent's envelope,
+#: which is a stronger statement than a height threshold.
+DEFAULT_REAGENT_MIN_RELATIVE_INTENSITY = DEFAULT_CHANNEL_MIN_RELATIVE_INTENSITY
 
 #: Predicted satellites below this share of their parent are not looked for.
 #: Small enough to reach the 13C of a monoisotopic-heavy cluster, large enough
@@ -795,7 +833,9 @@ class ReagentHit:
     :param index: The peak's position in the spectrum arrays it was matched in.
     :param mz: The observed m/z.
     :param intensity: The observed intensity.
-    :param mz_error_ppm: How far the observation sat from the ion's mass.
+    :param mz_error_ppm: How far the observation sat from the ion's own exact
+        mass - the raw error, not the residual after the anchor correction, so
+        a reader sees what the spectrum did rather than what the pass assumed.
     :param isotope_label: Which isotopologue of the cluster this peak is;
         ``None`` on the cluster's own monoisotopic peak.
     :param parent_index: The peak the satellite belongs to; ``None`` on a
@@ -819,23 +859,117 @@ class ReagentHit:
         return self.parent_index is not None
 
 
+@dataclass(frozen=True)
+class ReagentCalibration:
+    """Where this spectrum puts the reagent's own masses.
+
+    :param offset_ppm: The offset to add to a library mass before looking for
+        it, in ppm. Zero when no anchor was found, which is the conservative
+        reading: an unanchored spectrum is searched at its nominal masses.
+    :param tolerance_ppm: The window a corrected mass is claimed in.
+    :param anchors: Label and observed error of each anchor that matched, so a
+        run can say what the correction was derived from.
+    """
+
+    offset_ppm: float
+    tolerance_ppm: float
+    anchors: tuple[tuple[str, float], ...] = ()
+
+
 def _brightest_in_window(
     mz_array: np.ndarray,
     intensity_array: np.ndarray,
     target: float,
     ppm: float,
     taken: set[int],
+    floor: float = 0.0,
 ) -> int | None:
     """The brightest unclaimed peak within ``ppm`` of ``target``, if any."""
     window = target * ppm * 1e-6
     hits = [
         index
         for index in np.flatnonzero(np.abs(mz_array - target) <= window)
-        if int(index) not in taken
+        if int(index) not in taken and float(intensity_array[index]) >= floor
     ]
     if not hits:
         return None
     return int(max(hits, key=lambda index: float(intensity_array[index])))
+
+
+def calibrate_on_anchors(
+    library: Sequence[ReagentCluster],
+    mz_array: np.ndarray,
+    intensity_array: np.ndarray,
+    *,
+    anchor_ppm: float,
+    claim_ppm: float,
+    floor: float,
+) -> ReagentCalibration:
+    """Where this spectrum puts the reagent ions it cannot be wrong about.
+
+    The anchors are the library's own base ions - the bare halide clusters, the
+    protonated urea monomer and dimer, the nitrate core and its first rung.
+    They are the brightest ions a reagent source makes and nothing else has
+    their mass, so they can be found in a wide window and then say where the
+    calibration puts this mass range.
+
+    Every other rung is claimed against a mass corrected by what they said,
+    which is what separates a reagent ion from an analyte that merely lands
+    nearby: a rung sitting 25 ppm off when the anchors sit at 4 ppm is not the
+    reagent's, however alone it is in a wide window.
+
+    :param library: The reagent ions.
+    :param mz_array: The spectrum's m/z values.
+    :param intensity_array: Their intensities.
+    :param anchor_ppm: Window the anchors themselves are found in.
+    :param claim_ppm: The instrument's own precision, the floor of the
+        tolerance the correction is used with.
+    :param floor: Intensity an anchor must reach.
+    :return: The correction, with the anchors it came from.
+    """
+    offsets: list[float] = []
+    anchors: list[tuple[str, float]] = []
+    for cluster in library:
+        if not cluster.anchor:
+            continue
+        target = cluster.mz
+        index = _brightest_in_window(
+            mz_array, intensity_array, target, anchor_ppm, set(), floor
+        )
+        if index is None:
+            continue
+        error = (float(mz_array[index]) - target) / target * 1e6
+        offsets.append(error)
+        anchors.append((cluster.label, error))
+    if not offsets:
+        # Nothing to correct against. Searching the nominal masses at the
+        # instrument's precision is the conservative reading: a well-calibrated
+        # spectrum whose anchors are simply below its first mass still gets its
+        # ladder, and a drifted one claims nothing rather than guessing.
+        return ReagentCalibration(0.0, claim_ppm)
+    offset = float(np.median(offsets))
+    # The anchors' own spread is the natural bound on how tightly a corrected
+    # mass can be held: where the lock mass jitters across the bright low-mass
+    # ions, the ladder inherits that jitter and a window narrower than it would
+    # start dropping real rungs.
+    spread = (max(offsets) - min(offsets)) / 2.0 if len(offsets) > 1 else 0.0
+    return ReagentCalibration(offset, claim_ppm + spread, tuple(anchors))
+
+
+def _monoisotopic_index(predicted_mz: np.ndarray, labels: Sequence[str]) -> int:
+    """Which line of a predicted envelope is the ion itself.
+
+    The line LABELLED ``M0``, not the lightest one. They are the same for an
+    ordinary ion, and they are not the same for a labelled reagent: a 98% 15N
+    nitrate predicts its 14N impurity one mass unit BELOW the ion, at 2% of it,
+    so reading the envelope by mass makes the impurity the reference, the ion
+    itself a satellite of that impurity at 49x its height, and every other
+    relative 50 times too large for the intensity gate to mean anything.
+    """
+    for position, label in enumerate(labels):
+        if label == "M0":
+            return position
+    return int(np.argmin(predicted_mz))
 
 
 def _satellite_hits(
@@ -854,7 +988,10 @@ def _satellite_hits(
 
     The envelope is predicted from the cluster's own known ion formula, so the
     heavy-halogen, 13C, 15N and 34S satellites all come out of one code path
-    rather than a hand-written table of isotopologue combinations.
+    rather than a hand-written table of isotopologue combinations. It is then
+    shifted onto the parent's OWN observed mass, so each satellite is looked for
+    at the instrument's precision around where this ion actually sits rather
+    than where its formula says it should.
     """
     predicted_mz, predicted_intensity, labels = predict_isotopes(
         cluster.formula, cluster.charge, purity
@@ -863,12 +1000,12 @@ def _satellite_hits(
         return []
     predicted_mz = np.asarray(predicted_mz, dtype=float)
     predicted_intensity = np.asarray(predicted_intensity, dtype=float)
-    # The monoisotopic peak is the lightest of the envelope; every other line is
-    # measured against it, because that is the peak the cluster was claimed on.
-    monoisotopic = int(np.argmin(predicted_mz))
+    monoisotopic = _monoisotopic_index(predicted_mz, labels)
     base = float(predicted_intensity[monoisotopic])
     if base <= 0.0:
         return []
+    # What the parent's own mass error was, applied to the whole envelope.
+    shift = parent.mz - float(predicted_mz[monoisotopic])
     hits: list[ReagentHit] = []
     for position in range(len(predicted_mz)):
         if position == monoisotopic:
@@ -876,7 +1013,7 @@ def _satellite_hits(
         relative = float(predicted_intensity[position]) / base
         if relative < min_relative:
             continue
-        target = float(predicted_mz[position])
+        target = float(predicted_mz[position]) + shift
         index = _brightest_in_window(mz_array, intensity_array, target, ppm, taken)
         if index is None:
             continue
@@ -886,13 +1023,14 @@ def _satellite_hits(
             # An analyte is sitting on this mass as well; leave the peak.
             continue
         taken.add(index)
+        exact = float(predicted_mz[position])
         hits.append(
             ReagentHit(
                 cluster=cluster,
                 index=index,
                 mz=float(mz_array[index]),
                 intensity=observed,
-                mz_error_ppm=(float(mz_array[index]) - target) / target * 1e6,
+                mz_error_ppm=(float(mz_array[index]) - exact) / exact * 1e6,
                 isotope_label=labels[position] if position < len(labels) else None,
                 parent_index=parent.index,
                 predicted_relative=relative,
@@ -906,17 +1044,27 @@ def match_reagent_clusters(
     mz: Sequence[float] | np.ndarray,
     intensity: Sequence[float] | np.ndarray,
     *,
-    ppm: float = DEFAULT_REAGENT_MATCH_PPM,
+    claim_ppm: float,
+    anchor_ppm: float = DEFAULT_ANCHOR_PPM,
     purity: float | None = None,
+    min_relative_intensity: float = DEFAULT_REAGENT_MIN_RELATIVE_INTENSITY,
     satellite_min_relative: float = DEFAULT_SATELLITE_MIN_RELATIVE,
     satellite_max_excess: float = DEFAULT_SATELLITE_MAX_EXCESS,
-) -> list[ReagentHit]:
+) -> tuple[list[ReagentHit], ReagentCalibration]:
     """Which peaks of this spectrum the reagent library accounts for.
 
-    Each library ion claims the brightest peak within ``ppm`` of its mass - at a
-    reagent mass that peak is the reagent ion, which is what makes a window this
-    wide safe - and then the isotopologues of that ion claim theirs, gated on
-    intensity so a peak with an analyte co-eluting on it is left alone.
+    Two passes, and the first is what makes the second safe. The anchors - the
+    library's base ions, which nothing else can be - are found in a wide window
+    and say where this spectrum puts the reagent's masses. Every claim is then
+    made against a corrected mass at the instrument's own precision.
+
+    The alternative, a single wide window, does not work and the gate says why:
+    on a uronium set the peaks 21 to 28 ppm above the urea tetramer and pentamer
+    masses are one ambient compound read through three channels, each within a
+    ppm of its own exact mass, while that sample's real reagent ions sit within
+    5 ppm of theirs. Being alone in a wide window is not evidence that a peak is
+    the reagent; being on the reagent's mass, as the sample's own anchors define
+    it, is.
 
     A peak is claimed at most once, and the precedence is deliberate: every
     monoisotopic claim is made before any satellite claim, so a peak sitting on
@@ -929,35 +1077,59 @@ def match_reagent_clusters(
     :param library: The reagent ions, from :func:`reagent_library`.
     :param mz: The spectrum's m/z values.
     :param intensity: Their intensities, in the same order.
-    :param ppm: Match tolerance; see :data:`DEFAULT_REAGENT_MATCH_PPM`.
+    :param claim_ppm: The instrument's m/z precision, the window a corrected
+        mass is claimed in (the resolved profile's ``mz_precision_ppm``).
+    :param anchor_ppm: Window the anchors are found in.
     :param purity: The labelled reagent's isotopic purity, passed to the
         envelope prediction; ``None`` for an unlabelled reagent.
+    :param min_relative_intensity: Height floor for a claim in its own right,
+        relative to the base peak.
     :param satellite_min_relative: Predicted-height floor for a satellite.
     :param satellite_max_excess: How far above prediction a satellite may be
         observed and still be claimed.
-    :return: One hit per claimed peak, monoisotopic hits before their
-        satellites.
+    :return: The hits, monoisotopic before their satellites, and the correction
+        the anchors gave.
     """
     mz_array = np.asarray(mz, dtype=float)
     intensity_array = np.asarray(intensity, dtype=float)
     if mz_array.size == 0 or not library:
-        return []
+        return [], ReagentCalibration(0.0, claim_ppm)
+
+    base_peak = float(intensity_array.max()) if intensity_array.size else 0.0
+    floor = base_peak * min_relative_intensity
+    calibration = calibrate_on_anchors(
+        library,
+        mz_array,
+        intensity_array,
+        anchor_ppm=anchor_ppm,
+        claim_ppm=claim_ppm,
+        floor=floor,
+    )
+    scale = 1.0 + calibration.offset_ppm * 1e-6
 
     taken: set[int] = set()
     parents: list[ReagentHit] = []
     for cluster in sorted(library, key=lambda item: item.mz):
-        target = cluster.mz
-        index = _brightest_in_window(mz_array, intensity_array, target, ppm, taken)
+        exact = cluster.mz
+        index = _brightest_in_window(
+            mz_array,
+            intensity_array,
+            exact * scale,
+            calibration.tolerance_ppm,
+            taken,
+            floor,
+        )
         if index is None:
             continue
         taken.add(index)
+        observed = float(mz_array[index])
         parents.append(
             ReagentHit(
                 cluster=cluster,
                 index=index,
-                mz=float(mz_array[index]),
+                mz=observed,
                 intensity=float(intensity_array[index]),
-                mz_error_ppm=(float(mz_array[index]) - target) / target * 1e6,
+                mz_error_ppm=(observed - exact) / exact * 1e6,
             )
         )
 
@@ -971,10 +1143,10 @@ def match_reagent_clusters(
                 mz_array,
                 intensity_array,
                 taken,
-                ppm=ppm,
+                ppm=claim_ppm,
                 purity=purity,
                 min_relative=satellite_min_relative,
                 max_excess=satellite_max_excess,
             )
         )
-    return hits
+    return hits, calibration
