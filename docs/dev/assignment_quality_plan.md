@@ -305,13 +305,32 @@ and 5 as far as they are search problems.
   13C or 29Si spacing above a brighter committed peak with a consistent
   intensity ratio is claimed before it is enumerated. FT sidelobes come from
   the existing `mascope_tools.alignment.utils.flag_satellite_peaks` and get
-  `role = artifact`, excluded from the search.
+  `role = artifact`, excluded from the search. A satellite row is written by
+  the M0 that claims it and names that M0 as its owner from the start; it is
+  never linked to a parent after the fact, and a satellite whose parent peak
+  commits no M0 is not written at all.
 - **Where.** `service._run_sample_assignment` (the `assign_compositions`
-  call), `engine.untargeted_matches_to_peak_assignments`.
+  call), `engine.untargeted_matches_to_peak_assignments`, and the finder's
+  duplicate resolution in `assign_compositions`.
 - **Why.** 96 of Mascope's main peaks on instrument A are peaks peaky
-  attributes as isotopologues; the artifact role is unused.
+  attributes as isotopologues; the artifact role is unused. And the
+  untargeted stage already writes isotopologue rows that belong to nothing:
+  on the bromide Orbitrap set every sample carries 12-23 `iso_child` rows
+  with no owner (71 over six samples, mostly 81Br lines above m/z 360, some
+  at `assigned` tier), and for 64 of them the parent peak sits in the ledger
+  unassigned. The counts are identical before and after step 1.4, so they
+  are the stage's own. Two mechanisms can strand a child, and the fix above
+  removes both: the finder resolves duplicate rows at one m/z by smallest
+  mass error whether the row is an M0 or another candidate's satellite, and
+  the engine links children to parents only afterwards, by a formula and
+  mechanism key that the parent peak's winner need not share. A local re-run
+  of one sample with the primary channels alone reproduces the class at a
+  smaller scale, so the secondary channels or the same-ion election amplify
+  it on the testbed; the box is needed to see which.
 - **Verify.** Gate metric G6 (main peaks on peaky isotopologues, at most 10
-  on A); artifact rows present where the flag fires.
+  on A); artifact rows present where the flag fires; and a coherence count,
+  untargeted `iso_child` rows without an M0 owner, at 0 on every set. It is
+  a one-line count per engine in `compare_runs.py` and joins the 1.7 gate.
 - **Size.** S-M. Depends on 1.1 (windows) and 1.4 (role constants).
 
 ### 1.6 Cap and mass window
@@ -335,7 +354,8 @@ and 5 as far as they are search problems.
 - Run the twelve-sample protocol, fill the status table, bump the engine
   version, changelog entry, and rebuild the stakeholder view (the brightest
   peaks of one sample, both readings) from the new runs. Expected: G1 near
-  the 45-50% the offline experiment reached, G3-G6 at target.
+  the 45-50% the offline experiment reached, G3-G6 at target, and step 1.5's
+  coherence count (untargeted isotopologue rows without an owner) at zero.
 - **Size.** S.
 
 ## Stage 2 - earn the tier (engine 0.5.0)
