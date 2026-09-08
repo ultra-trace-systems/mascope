@@ -858,7 +858,7 @@ C2 is held to C's.
 | G4 reference reagent peaks labelled reagent or artifact | 0 of 58 | 0 of 24 | 0 of 29 | >= 90% | 100% | hold |
 | G4a of those, the ones that **name an ion** (step 1.4's own target) | 0 of 58 | 0 of 24 | 0 of 15 | >= 90% | 100% | hold |
 | G5 reference Assigned peaks never searched | 190 | 4,181 | 8 | 0 | 0 | 0 |
-| G6 main peaks on reference isotopologues (after 1.5: 79 A, 54 B, 75 D; the reference's parent ion is outside the searched grid for 78 of A's and 52 of D's, so the residue needs the grid rather than the envelope logic - decision 11) | 96 | - | - | <= 10 | <= 5 | hold |
+| G6 main peaks on reference isotopologues (after 1.5: 79 A, 54 B, 75 D; the reference's parent ion is outside the searched grid for 78 of A's and 52 of D's, so the residue needs the grid rather than the envelope logic - decision 11) | 96 | - | - | read, not gated (decision 11: <= 10 after 2.5b) | <= 5 | hold |
 | G7 uncorroborated commits beyond 3 sigma | not gated | not gated | not gated | - | 0 | 0 |
 | G8 untargeted isotopologue rows without an owner (step 1.5's coherence count; was 71 over the bromide Orbitrap set's six samples, 0 on every set after 1.5) | 0 | 0 | 0 | 0 | 0 | 0 |
 | mass error of committed peaks, MAD | 0.20 ppm | 0.20 ppm | 1.13 ppm | <= 0.35 ppm on an Orbitrap | hold | hold |
