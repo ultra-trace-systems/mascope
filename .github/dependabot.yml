@@ -39,6 +39,17 @@ updates:
       interval: weekly
     open-pull-requests-limit: 5
     groups:
+      # vitest and its companions pin exact peers on one another
+      # (@vitest/coverage-v8 5.0.0 requires vitest 5.0.0), so a bump moving
+      # one without the other cannot install at all - every job running
+      # `npm ci` fails with ERESOLVE, including the ones that only want
+      # ESLint or a Docker build. Unlike npm-minor-and-patch this group sets
+      # no update-types, so it covers majors too: those are exactly what
+      # Dependabot would otherwise raise one package at a time, as it did for
+      # vitest 5 in PRs #2084 and #2085. Listed first because a dependency
+      # joins the first group whose rules match it.
+      vitest:
+        patterns: ["vitest", "@vitest/*"]
       npm-minor-and-patch:
         update-types: ["minor", "patch"]
     ignore:
