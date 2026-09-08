@@ -26,3 +26,8 @@ tofdaq
 
 # MkDocs build output
 /site/
+
+# Assignment-comparison output. Names the samples it ran on, and this repository
+# is public; keep gate runs out of it whatever the caller passes to --out.
+assignment_compare_out/
+compare-*/
