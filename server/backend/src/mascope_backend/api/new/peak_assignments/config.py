@@ -13,7 +13,7 @@ from mascope_tools.composition.profiles import (
 
 # Bump when the assignment algorithm changes in a way that affects results.
 # Stored on every PeakAssignmentRun so runs stay reproducible and comparable.
-PEAK_ASSIGNMENT_ENGINE_VERSION = "0.3.0"
+PEAK_ASSIGNMENT_ENGINE_VERSION = "0.4.0"
 
 # The in-app engine's identity, stamped on every run this server computes. It is
 # reserved: an import that could stamp it would defeat the provenance badge that
