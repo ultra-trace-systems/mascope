@@ -378,7 +378,10 @@ and 5 as far as they are search problems.
   the 45-50% the offline experiment reached, G3-G5 at target, G6 read and
   recorded but not gated (decision 11: it is judged after step 2.5b), and
   step 1.5's coherence count (untargeted isotopologue rows without an owner)
-  at zero.
+  at zero. Recorded but not gated, as the before-numbers step 2.1 has to
+  move: the elections the whole-spectrum context flipped toward a candidate
+  with fewer observable lines (10 on A, 15 on B after 1.5) and the share of
+  untargeted M0 rows whose neutral is odd-electron.
 - **Size.** S.
 
 ## Stage 2 - earn the tier (engine 0.5.0)
@@ -392,11 +395,31 @@ The confidence layer. This is where "assigned" starts meaning something.
   `seeded_scoring.score_seeds` - one `compute_match_isotopes` pass per
   sample, the SNR-aware v2 fit with the same gating Stage A uses - and that
   fit is what evidence and tier are read from. The finder's v1 score stays
-  in provenance for audit.
+  in provenance for audit. The same fit also ranks the candidates inside the
+  finder (`match_isotopic_pattern`, where `score_pattern` decides which
+  reading of a peak wins before the same-ion election of decision 9):
+  re-scoring the winner afterwards leaves a wrong election in place, and the
+  election is where the v1 score does its damage.
 - **Why.** Cause 2: the v1 fit cannot rank, and Stage A and Stage B evidence
   are on different scales (noted in `config.py`). It is also what makes a
   TOF assignable at all: v1 scales its mass term by a fixed 5 ppm, v2 by the
-  sample's fitted mass width.
+  sample's fitted mass width. Step 1.5 measured how v1 ranks once the whole
+  spectrum is the pattern context: its score is 60% the mean mass error and
+  20% the mean intensity error over the lines it matched, and a missing line
+  costs it only through a cosine term the M0 dominates - so a candidate that
+  finds one more line, imperfectly, scores below one that finds none. On A
+  the 40,000-count peak at m/z 299.079 moved from C10H19O8S+ (0.893, then
+  0.686 once its 34S line was found at -36%) to C16H13NO5+ (0.825, nothing
+  found, a 13C line that had to be there absent); m/z 358.113 from
+  C15H20NO9+ (0.972 to 0.649 on its 13C at -26%) to C22H18N2OS+ (0.960);
+  m/z 403.233 from C20H35O8+ (0.983 to 0.907) to C27H33NS+ (0.926). Ten
+  elections flipped on A and fifteen on B, toward sulfur-rich,
+  hydrogen-poor radicals that predict lines the score does not charge for
+  missing. The v2 fit charges a missing line when it should have been
+  detectable and ignores one below noise, which is the whole difference.
+  (The other v1 flaw the context exposed, anchoring the match on the most
+  abundant configuration rather than the monoisotopic line, is step 1.5's
+  own fix.)
 - **Sibling task.** A TOF-capable reference: peaky's local scorer scoring
   through `score_pattern_v2` with the sample's fitted sigma (a small change
   in peaky, beside the `PEAKY_MATCH_PPM` window it already gained), so the
@@ -404,8 +427,14 @@ The confidence layer. This is where "assigned" starts meaning something.
 - **Verify.** Fit distributions per verdict class separate; the goldens in
   `tooling/score_eval` are untouched; the config comment about stage
   heterogeneity is retired; on gate set E both engines commit more than the
-  reagent ions.
-- **Size.** M. Depends on stage 1.
+  reagent ions; the 25 elections step 1.5's context flipped on A and B go
+  back to a reading whose predicted lines are present, and the share of
+  untargeted M0 rows whose neutral is odd-electron (7% on A to 37% on E after
+  1.5, one line per engine in `compare_runs.py`) falls on the uronium and
+  bromide sets, where such a neutral is rarely chemistry.
+- **Size.** M. Depends on stage 1. First in stage 2: once step 1.5 made the
+  pattern context whole, the score became the weakest link, and every stage-2
+  number is read off it.
 
 ### 2.2 Self-calibrated mass gate
 
@@ -1174,6 +1203,12 @@ signal.
    is closed-shell in every one of the 390 split readings whose DBE the
    comparison computes, and in every reading the two engines agree on. Revisit
    if a chemistry turns up where the radical reading is the common one.
+   Measured after step 1.5 (2026-09-08): 7% (A) to 37% (E) of the untargeted
+   M0 rows per set carry an odd-electron neutral. Some of that may be
+   chemistry on the nitrate sets; on the uronium and bromide sets it is the
+   v1 score's - the readings step 1.5's context added won by predicting lines
+   the score does not charge for missing - so the number is step 2.1's to
+   move before this decision is revisited.
 10. **A reagent row names its ion and no analyte, and is kept by ordering
     rather than by a lock** (taken 2026-09-08 with step 1.4). Three parts, and
     each is a choice the note's own wording did not settle.
