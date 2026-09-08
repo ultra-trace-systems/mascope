@@ -7,8 +7,8 @@ outcome says. See ``batch_untargeted.py``.
 
 from types import SimpleNamespace
 
+from mascope_backend.api.new.peak_assignments.batch_peaks import role_code
 from mascope_backend.api.new.peak_assignments.batch_untargeted import (
-    REAGENT_ROLE_CODE,
     choose_representatives,
     group_by_sample,
     owner_anchor_of,
@@ -16,7 +16,15 @@ from mascope_backend.api.new.peak_assignments.batch_untargeted import (
     search_outcome,
 )
 from mascope_backend.api.new.peak_assignments.config import PeakAssignmentConfig
+from mascope_backend.api.new.peak_assignments.engine import (
+    ROLE_ARTIFACT,
+    ROLE_REAGENT,
+)
 from mascope_backend.api.new.peak_assignments.profiles import resolve_profile
+
+
+REAGENT_ROLE_CODE = role_code(ROLE_REAGENT)
+ARTIFACT_ROLE_CODE = role_code(ROLE_ARTIFACT)
 
 
 def _member(anchor, sample, peak, intensity, role=None):
@@ -57,6 +65,17 @@ def test_a_reagent_anchor_is_never_searched():
     members = [
         _member("bp-1", "s1", "p1", 9e6, role=REAGENT_ROLE_CODE),
         _member("bp-1", "s2", "p1", 8e6, role=REAGENT_ROLE_CODE),
+    ]
+
+    assert choose_representatives(members) == {}
+
+
+def test_an_artifact_anchor_is_never_searched():
+    """Same rule, same reason: an anchor whose members are the detector's
+    ringing carries no species for the search to name."""
+    members = [
+        _member("bp-1", "s1", "p1", 9e6, role=ARTIFACT_ROLE_CODE),
+        _member("bp-1", "s2", "p1", 8e6, role=ARTIFACT_ROLE_CODE),
     ]
 
     assert choose_representatives(members) == {}
