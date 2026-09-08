@@ -32,3 +32,8 @@ tofdaq
 # where MASCOPE_PATH points at it; the images generate their own at build time
 /THIRD_PARTY_NOTICES.txt
 /DOCS_THIRD_PARTY_NOTICES.txt
+
+# Assignment-comparison output. Names the samples it ran on, and this repository
+# is public; keep gate runs out of it whatever the caller passes to --out.
+assignment_compare_out/
+compare-*/
