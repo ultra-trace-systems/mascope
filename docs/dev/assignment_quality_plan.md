@@ -1798,9 +1798,10 @@ score is step 2.1's.
 fewer observable lines were counted at step 1.5 as a build-to-build transition -
 10 on A, 15 on B, 29 on D. The count is not repeatable at a stage gate, because
 step 1.6 changed which peaks are searched at all, but the peaks are, and step
-2.1's Verify names them. All 25 of A's and B's still carry their 1.5 reading on
-the stage-1 build; of D's 29, re-derived from the same two builds, one is now
-read as an isotopologue.
+2.1's Verify names them. Re-derived from the 1.4 and the final 1.5 run of each
+sample, which are both still in the store, they are 10, 15 and 29; on the
+stage-1 build 53 of the 54 still carry their 1.5 reading, all 25 of A's and B's
+among them, and the one that moved is a D peak now read as an isotopologue.
 
 | set | m/z | samples | before 1.5 | since 1.5, and still | tier now |
 |---|---|---|---|---|---|
