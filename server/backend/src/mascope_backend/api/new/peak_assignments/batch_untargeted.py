@@ -272,7 +272,7 @@ async def _search_sample(
             f"Untargeted batch search skips sample '{sample.sample_item_name}': "
             "no polarity-compatible ionization mechanisms."
         )
-        return []
+        return [], unsearched
     # Resolved per sample, not per batch: a batch can hold more than one
     # ionization mode, and the chemistry belongs to the sample that was measured.
     resolved_profile = resolve_profile(
@@ -331,7 +331,7 @@ async def _search_sample(
         formula_formatter=to_custom_element_format,
         max_alternatives=config.max_alternatives,
         minor_channels=resolved_profile.minor_channels,
-    )
+    ), unsearched
 
 
 async def _apply_search_rows(
