@@ -16,7 +16,7 @@ step PRs land on the epic and are named here as they merge.
 | 1.2 - opportunistic adduct channels | #2081 | measured: fingerprint gate works and refuses sodium; carbonate settled on the broad-window nitrate set |
 | 1.3 - same-ion tie policy in the finder | #2082 | measured: the step's target met on A (47 -> 87% same formula); the note's mass-only policy needed a closed-shell key the gate supplied |
 | 1.4 - reagent-cluster pre-pass | #2086 | measured: 60 peaks carry 81.2% of set A's signal; the claim is anchored on the sample's own base ions and the envelope reaches the floor it searches; no reference analyte taken on A/B/C/D/E/F1 |
-| 1.5 - satellite claim and ringing artifacts | - | in progress (handed over 2026-09-08) |
+| 1.5 - satellite claim and ringing artifacts | #TBD | measured: G8 met, 0 ownerless isotopologue rows on every set; B claims 969 more satellites and D 362, 90-97% of them confirmed by the reference, with the committed-analyte count unmoved; G6 missed, and the reference's parent ion is outside the searched grid for 78 of A's 79 |
 | 1.6 - cap and mass window | - | planned |
 | 1.7 - stage 1 gate, engine 0.4.0 | - | planned |
 | 2.1 - v2 fit for Stage B | - | planned |
@@ -321,37 +321,42 @@ and 5 as far as they are search problems.
 ### 1.5 Satellite claim and ringing artifacts
 
 - **What.** Stage B receives the whole peak list as pattern context and the
-  searched set as `targets` (the finder already supports this split), so an
-  M0's satellites are claimed wherever they sit, and a peak that sits one
-  13C or 29Si spacing above a brighter committed peak with a consistent
-  intensity ratio is claimed before it is enumerated. FT sidelobes come from
-  the existing `mascope_tools.alignment.utils.flag_satellite_peaks` and get
-  `role = artifact`, excluded from the search. A satellite row is written by
-  the M0 that claims it and names that M0 as its owner from the start; it is
-  never linked to a parent after the fact, and a satellite whose parent peak
-  commits no M0 is not written at all.
-- **Where.** `service._run_sample_assignment` (the `assign_compositions`
-  call), `engine.untargeted_matches_to_peak_assignments`, and the finder's
-  duplicate resolution in `assign_compositions`.
-- **Why.** 96 of Mascope's main peaks on instrument A are peaks peaky
-  attributes as isotopologues; the artifact role is unused. And the
-  untargeted stage already writes isotopologue rows that belong to nothing:
-  on the bromide Orbitrap set every sample carries 12-23 `iso_child` rows
-  with no owner (71 over six samples, mostly 81Br lines above m/z 360, some
-  at `assigned` tier), and for 64 of them the parent peak sits in the ledger
-  unassigned. The counts are identical before and after step 1.4, so they
-  are the stage's own. Two mechanisms can strand a child, and the fix above
-  removes both: the finder resolves duplicate rows at one m/z by smallest
-  mass error whether the row is an M0 or another candidate's satellite, and
-  the engine links children to parents only afterwards, by a formula and
-  mechanism key that the parent peak's winner need not share. A local re-run
-  of one sample with the primary channels alone reproduces the class at a
-  smaller scale, so the secondary channels or the same-ion election amplify
-  it on the testbed; the box is needed to see which.
-- **Verify.** Gate metric G6 (main peaks on peaky isotopologues, at most 10
-  on A); artifact rows present where the flag fires; and a coherence count,
-  untargeted `iso_child` rows without an M0 owner, at 0 on every set. It is
-  a one-line count per engine in `compare_runs.py` and joins the 1.7 gate.
+  searched set as `targets` (the finder already supports this split, and the
+  batch search already uses it), so an M0's satellites are claimed wherever
+  they sit. That is the substance of the step: the searched set is capped at
+  the 300 most intense unexplained peaks, so an envelope was previously scored
+  against at most 300 peaks - 2.5% of a dense spectrum - and a satellite
+  outside that set was not found, leaving its peak to be searched on its own
+  account. A satellite row is written by the M0 that claims it and names that
+  M0 as its owner from the start; it is never linked to a parent after the
+  fact, and a satellite whose ion commits no M0 is not written at all. The
+  finder's duplicate resolution ranks a row that IS somebody's monoisotopic
+  line ahead of another candidate's satellite for the same peak, so resolving
+  a shared peak cannot strand the loser's envelope. FT sidelobes come from the
+  existing `mascope_tools.alignment.utils.flag_satellite_peaks` and get
+  `role = artifact` in a pre-pass beside the reagent one, excluded from both
+  stages.
+- **Where.** `service._run_sample_assignment` (the `assign_compositions` call
+  and the new pre-pass), `engine.untargeted_matches_to_peak_assignments`,
+  `peak_assignments/artifact_pass.py`, and the finder's duplicate resolution in
+  `assign_compositions`.
+- **Why.** Mascope commits an analyte M0 on peaks the reference reads as
+  isotopologues (79 on instrument A), and the artifact role was unused. And the
+  untargeted stage wrote isotopologue rows that belong to nothing: on the
+  bromide Orbitrap set every sample carried 12-23 `iso_child` rows with no
+  owner (71 over six samples, mostly 81Br lines above m/z 360, some at
+  `assigned` tier), and for 64 of them the parent peak sat in the ledger
+  unassigned. The counts were identical before and after step 1.4, so they were
+  the stage's own.
+- **Verify.** Gate metric G8, untargeted `iso_child` rows without an owner, at
+  0 on every set - met, from 71 / 6 / 1 on D / E / F1. Artifact rows present
+  where the flag fires. Gate metric G6 (main peaks on reference isotopologues,
+  at most 10 on A) - **missed**, and the measurement says why: the reference
+  names the parent ion of 78 of A's 79 with an element Mascope's grid has no
+  room for, silicon in 76 of them. Those are column-bleed siloxanes, and no
+  envelope logic reaches them while the search cannot build the parent. The
+  residue is a search-space gap, and it is step 2.5b's to close; see "What G6
+  measures, and what step 1.5 could not reach".
 - **Size.** S-M. Depends on 1.1 (windows) and 1.4 (role constants).
 
 ### 1.6 Cap and mass window
@@ -845,9 +850,9 @@ C2 is held to C's.
 | G4 reference reagent peaks labelled reagent or artifact | 0 of 58 | 0 of 24 | 0 of 29 | >= 90% | 100% | hold |
 | G4a of those, the ones that **name an ion** (step 1.4's own target) | 0 of 58 | 0 of 24 | 0 of 15 | >= 90% | 100% | hold |
 | G5 reference Assigned peaks never searched | 190 | 4,181 | 8 | 0 | 0 | 0 |
-| G6 main peaks on reference isotopologues | 96 | - | - | <= 10 | <= 5 | hold |
+| G6 main peaks on reference isotopologues (after 1.5: 79 A, 54 B, 48 D; the reference's parent ion is outside Mascope's grid for 78 of A's, silicon in 76 - step 2.5b's to close) | 96 | - | - | <= 10 | <= 5 | hold |
 | G7 uncorroborated commits beyond 3 sigma | not gated | not gated | not gated | - | 0 | 0 |
-| G8 untargeted isotopologue rows without an owner (step 1.5's coherence count; the bromide Orbitrap set carries 71 over six samples today) | 0 | 0 | 0 | 0 | 0 | 0 |
+| G8 untargeted isotopologue rows without an owner (step 1.5's coherence count; was 71 over the bromide Orbitrap set's six samples, 0 on every set after 1.5) | 0 | 0 | 0 | 0 | 0 | 0 |
 | mass error of committed peaks, MAD | 0.20 ppm | 0.20 ppm | 1.13 ppm | <= 0.35 ppm on an Orbitrap | hold | hold |
 | every committed row carries tier reasons | no | no | no | - | yes | yes |
 | corroboration from series or time series | none | none | none | - | - | reported per batch |
@@ -1145,6 +1150,152 @@ of the nitrate ladder: the source declusters beyond the dimer, the same fact
 step 1.2 recorded for carbonate. A window that starts above the ladder cannot
 show it. C2 is the same chemistry acquired from m/z 50 and claims 90.9% of its
 signal.
+
+### After step 1.5, the satellite claim and the artifact role (2026-09-08)
+
+Branch `step-1.5-satellite-claim-2026.09.08-85181c9` deployed on the testbed in
+prod mode, the in-app engine re-run over all 43 gate samples, compared with the
+same reference runs as every step before it. The comparison is against the
+1.4 numbers measured the same afternoon on the same box, so the two differ only
+by this step.
+
+The step's own gate row is G8, isotopologue rows that name no owner, and it is
+met: **71 on D, 6 on E, 1 on F1 before, 0 on every set after.** The rest of the
+step is one number - how much of each spectrum the engine can say is an
+isotopologue of something it committed - and it moves a long way.
+
+| set | peaks | isotopologue rows | of them the reference calls isotopologues too | artifact rows | G8 | G6 |
+|---|---|---|---|---|---|---|
+| A uronium | 2,626 | 168 -> **244** | 227 (93%) | 0 | 0 -> 0 | 79 -> 79 |
+| B uronium | 12,055 | 170 -> **1,139** | 1,102 (97%) | 0 | 0 -> 0 | 54 -> 54 |
+| C 15N-nitrate m/z 131 | 1,583 | 152 -> 155 | 109 (70%) | 0 | 0 -> 0 | 56 -> 56 |
+| C2 15N-nitrate m/z 50 | 1,420 | 108 -> 108 | 70 (65%) | 0 | 0 -> 0 | 24 -> 24 |
+| D bromide | 5,217 | 619 -> **981** | 881 (90%) | 123 | 71 -> **0** | 59 -> 48 |
+| E bromide TOF | 3,493 | 49 -> 47 | 3 | 0 | 6 -> **0** | 0 -> 0 |
+| F1 bromide TOF | 13,595 | 183 -> 214 | 23 (11%) | 0 | 1 -> **0** | 16 -> 16 |
+| F2 nitrate TOF | 8,905 | 84 -> 106 | 12 (11%) | 0 | 0 -> 0 | 7 -> 7 |
+
+The peaks the new rows come from are peaks that were unassigned: B loses 969
+unassigned rows and gains 969 isotopologue rows, D loses 484 and gains 362
+isotopologues plus 123 artifacts. The count of committed analytes barely
+moves - A 1,561 both times, B 1,596 both times, D 788 to 787 - which is the
+point. The stage is not finding more analytes; it is finding the lines that
+belong to the analytes it had already found, and the reference confirms 90-97%
+of them on the three sets where the class is large.
+
+What that buys beyond tidiness: same-formula agreement rises on D from 589 to
+614 and on B from 1,168 to 1,171, and B gains 84 assigned-tier rows, because an
+envelope scored against the whole spectrum is scored against the satellites
+that were there all along. The signal each engine can account for rises on B
+from 89.7% to 90.7% and on D from 88.5% to 89.6%. Nothing regresses by more
+than six rows on any set.
+
+Run time is unchanged: 16-17 s per sample, three of the 43 at 31 s. Enumeration
+cost scales with the targets and only the context grew.
+
+#### What it costs, counted the way step 1.4 learned to count it
+
+A pass that claims peaks has to be measured against the peaks the reference
+calls analytes, not only against its own agreement. Two claims to report.
+
+The satellite claim takes peaks the reference reads as analyte M0s: **+2 on B
+and +16 on D** (11 of D's at the reference's `assigned` tier). Of D's 21 newly
+claimed peaks in that class, 16 were `unassigned` in Mascope before, so what
+changed for them is a residual becoming an isotopologue rather than an analyte
+being lost; the other 5 were Mascope M0s that this step gave up. Set D's
+committed-analyte count fell by exactly one over the whole set while its
+same-formula agreement rose by 25, so the trade went the right way. The
+disagreement itself is not settled by the gate: the reference's readings there
+are nitrogen-rich untargeted fits of its own (C12H25N3O12, C13H25N3O18), not
+curated standards, and both engines are guessing.
+
+The artifact pass claims 123 peaks, all on D, 0.69% of that set's signal. The
+reference calls 67 of them reagent and 47 artifact - 114 of 123 agreeing that
+they are not sample chemistry - 7 unassigned, and **2 it commits an analyte M0
+on, both at `assigned` tier**. Those two sit 29 and 37 ppm from centroids of
+about 213,000 and 219,000 counts, at 0.48% and 0.26% of their height, which is
+the shape the sidelobe rule looks for and both engines agree on the bright
+neighbours. That is a reason to think the flag is right and the reference's
+analyte is the artifact, but the gate cannot settle it, and it is recorded here
+as a cost rather than as a win.
+
+#### The two passes wanted the same peak
+
+The first deployed build died on one sample of set D with the ledger's own
+uniqueness constraint: a reagent cluster's weakest satellite - the 81Br line of
+`[Br+2xHBr]-` at m/z 240.769, 310 counts - sits in the ringing skirt of the
+bromide cluster beside it and was claimed by both pre-passes. The reagent claim
+wins, because it is the more specific statement: it names the ion and predicts
+the peak's height, where the sidelobe rule only says a peak is small and close
+to a big one. The exclusion is applied after the flag rather than before it, so
+a reagent peak still serves as a base peak or a mirror partner for the peaks
+around it.
+
+Worth keeping: the run's "one row per peak" test existed and passed throughout,
+because its fixture has no reagent peaks. A ledger invariant is only tested by
+a fixture that can break it.
+
+#### What the FT sidelobe flag still has to find
+
+The artifact half of the step is much smaller than the plan expected, and the
+reason is that most of the work is already done upstream. The peak detector
+flags sidelobes when it detects peaks, and `mascope_file.io.load_peak_data`
+drops what it flagged, so the assignment engine is handed a list they have
+already been taken out of. Running the same flag over the engine's own peak
+list fires on **nothing at all on seven of the eight gate sets** and on 124
+peaks on set D. Set D is not a different instrument from A, C and C2 - it is the
+same Orbitrap - so what differs is the intensity the flag reads: the detector
+judges a whole file on summed heights, a run judges one sample's time window on
+averaged intensity, and a ratio that failed the test there can pass it here.
+
+The role now has a producer and 123 rows on the gate, which is what the step
+asked for. The number to watch is not this one, though: the reference labels
+43-236 peaks per Orbitrap set as artifacts that Mascope still calls unassigned,
+and the flag does not fire on them. Around set A's 4.9M-count urea reagent ion
+they sit at -18.3, +16.3, +21.1, +30.0, +40.1, +44.6, -46.8, -49.1 and
+-56.1 ppm - offsets whose mirror pairs are 2 ppm apart in magnitude, where the
+flag's symmetry tolerance is 1.5 ppm. Reaching them means changing the rule,
+not calling it in a new place, and that is not this step.
+
+#### What G6 measures, and what step 1.5 could not reach
+
+G6 counts peaks Mascope commits an analyte M0 on that the reference reads as
+part of another ion's envelope. It is unchanged on every set but D (59 to 48,
+the ownerless rows), and the target of at most 10 on A is missed by a factor of
+eight. The measurement says plainly why, and it is not the satellite claim:
+
+| set | G6 | the reference's parent ion is outside the grid Mascope searched | what is missing |
+|---|---|---|---|
+| A | 79 | 78 (99%) | Si in 76, P in 2 |
+| B | 54 | 53 (98%) | Si in 43, P in 10 |
+| C | 56 | 39 (70%) | Si in 35, Br in 4 |
+| C2 | 24 | 18 (75%) | Si in 18 |
+| D | 48 | 26 (54%) | Cl4-Cl6 against a Cl0-2 cap in 25 |
+| F1 | 16 | 2 (12%) | P, S2 |
+| F2 | 7 | 7 (100%) | P in 5, Cl in 3, S2 in 2 |
+
+The reference's isotope labels on set A are 29Si 27, 30Si 23, 29Si+30Si 14,
+13C 9, 13C+29Si 5: these are the silicon lines of cyclic siloxanes - the
+`C6H18O3Si3` / `C8H24O4Si4` / `C10H30O5Si5` column-bleed series - and the
+uronium grid is `C1-40 H0-90 N0-5 O0-15 S0-2`. Mascope cannot build the parent,
+so it cannot attach the satellite to it, and what it does instead is fit a
+carbon-rich phantom to each silicon line. No amount of pattern context reaches
+that: an envelope can only claim a line if the ion whose envelope it is has been
+committed.
+
+The claim to resist here is that a rule keyed on the spacing alone would fix it.
+It separates the class cleanly - 100% of A's 79 sit one isotope spacing above a
+brighter peak, against 4.3% of the 762 rows both engines agree on - and adding
+the intensity-ratio test the plan describes sharpens it further, to 81% of the
+class against 0.3% of the agreed rows. But what such a rule can honestly write
+is the question. Naming the peak an isotopologue of the parent means writing a
+`29Si` line of a formula with no silicon in it, which is a different false
+statement from the one it replaces; and refusing to commit anything, leaving the
+peak unassigned, costs 26 of set C's 591 agreed rows for 23 of its 56. The rule
+is only sound once the parent can be named, which is the same fix: silicon,
+phosphorus and a wider halogen cap in the Stage B grid. That belongs to step
+2.5b and the reference-seed proposal, and G6 should be judged after it rather
+than before.
 
 ## Decisions (taken 2026-09-07)
 

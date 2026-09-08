@@ -6,6 +6,37 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
 
 ### Added
 
+- **An isotope envelope is now scored against the whole spectrum, and a
+  satellite belongs to the peak that owns it.** The untargeted stage used to
+  hand the composition finder only the peaks it was about to search, and that
+  set is capped at the 300 most intense unexplained peaks - so an ion's
+  predicted isotope pattern was checked against at most 300 peaks, a fraction
+  of a dense spectrum, and a satellite outside that set simply was not found.
+  The peak it sits on was then searched on its own account and got a
+  composition of its own, which is how an engine ends up committing an analyte
+  on a peak that is another ion's isotopologue. The whole peak list is now the
+  pattern context while the same remainder is what gets searched, so a
+  satellite is found wherever it sits - below the stage's intensity threshold,
+  past its cap, or on a peak an earlier pass already owns - at no extra search
+  cost, because the cost scales with what is enumerated rather than with what
+  is looked at. Isotopologue rows are also written by the monoisotopic row that
+  claims them and name it from the start: a satellite whose ion commits no
+  monoisotopic peak is not written at all, and its peak stays unassigned rather
+  than becoming a row that says a peak belongs to an envelope the ledger never
+  committed. Step 1.5 of `docs/dev/assignment_quality_plan.md`.
+
+- **Instrument ringing is now labelled as ringing.** A very intense centroid in
+  an FT spectrum leaves sidelobes around itself, a fraction of a percent of its
+  height a few tens of ppm to either side. The peak detector already removes
+  the ones it can see when it detects them, but a run averages one sample's own
+  time window rather than the file's summed heights, and a ratio that failed
+  the test there can pass it here. Those peaks are now claimed before either
+  assignment stage and written with `role = artifact` - no assigned formula, so
+  they weigh on no tier and no cross-sample vote, and no ion formula either,
+  because a sidelobe is not an ion and naming one would invent a species to
+  explain a detector's response. The pass runs on FT data only, matching the
+  peak detector's own decision not to look for sidelobes in TOF spectra.
+
 - **The ions the source makes are now recognised as the source's, not the
   sample's.** A chemical-ionization reagent clusters with itself, with water
   and with the acid it sheds, and those ions are the brightest peaks in the
