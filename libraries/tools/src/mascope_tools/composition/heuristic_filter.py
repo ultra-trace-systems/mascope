@@ -1003,7 +1003,10 @@ def _custom_isotope_combinations(
 
 
 def _predict_isotopes_custom(
-    ion_formula: str, ion_charge: int, purity: float
+    ion_formula: str,
+    ion_charge: int,
+    purity: float,
+    threshold: float = ISOTOPE_ABUNDANCE_THRESHOLD,
 ) -> tuple[np.ndarray, np.ndarray, list[str]]:
     """predict_isotopes for an ion containing labelled '^X' custom elements: base
     (non-custom) envelope via IsoSpec, convolved with the labelled distribution(s)
@@ -1018,9 +1021,7 @@ def _predict_isotopes_custom(
     base_formula = to_hill_order(base) if base else ""
 
     if base_formula:
-        peaks = IsoThreshold(
-            formula=base_formula, threshold=ISOTOPE_ABUNDANCE_THRESHOLD, get_confs=True
-        )
+        peaks = IsoThreshold(formula=base_formula, threshold=threshold, get_confs=True)
         base_masses = [float(m) for m in peaks.masses]
         base_probs = [float(p) for p in peaks.probs]
         base_labels = extract_isotope_labels(base_formula, peaks)
@@ -1048,7 +1049,7 @@ def _predict_isotopes_custom(
             prob = bp
             for c in combo:
                 prob *= c[1]
-            if prob < ISOTOPE_ABUNDANCE_THRESHOLD:
+            if prob < threshold:
                 continue
             deviations = [
                 f"{light_mn}{regular}" + (str(n_light) if n_light > 1 else "")
@@ -1076,7 +1077,10 @@ def _predict_isotopes_custom(
 
 
 def predict_isotopes(
-    ion_formula: str, ion_charge: int, purity: float | None = None
+    ion_formula: str,
+    ion_charge: int,
+    purity: float | None = None,
+    threshold: float | None = None,
 ) -> tuple[np.ndarray, np.ndarray, list[str]]:
     """Predict isotopic pattern for a given ion formula and charge.
 
@@ -1089,22 +1093,37 @@ def predict_isotopes(
         reagent; the caller passes its value. Ignored for non-labelled ions.
         Defaults to ``LABELLED_REAGENT_PURITY``.
     :type purity: float, optional
+    :param threshold: Abundance below which a line is left out of the envelope,
+        relative to the most abundant one. Defaults to
+        :data:`ISOTOPE_ABUNDANCE_THRESHOLD`, which is what the scoring path
+        wants: a line it cannot measure is noise in a cosine distance.
+
+        A caller that CLAIMS peaks wants a lower one, because for it an omitted
+        line is not a rounding error but a peak left in the residual for
+        something else to explain. The reagent pre-pass passes its own satellite
+        floor: the 18O line of a two-oxygen ion is 0.40% of the parent, under
+        the 1% default, and on the gate that line was bright enough (7e4 counts,
+        19th peak of the sample) for the untargeted stage to fit an analyte to
+        once the reagent claimed its parent.
+    :type threshold: float, optional
     :return: Tuple of predicted m/z values, relative intensities, and isotope labels.
     :rtype: tuple[np.ndarray, np.ndarray, list[str]]
     """
+    cutoff = ISOTOPE_ABUNDANCE_THRESHOLD if threshold is None else threshold
     if "^" in ion_formula:
         try:
             return _predict_isotopes_custom(
                 ion_formula,
                 ion_charge,
                 LABELLED_REAGENT_PURITY if purity is None else purity,
+                cutoff,
             )
         except Exception:
             return [], [], []
     try:
         predicted_peaks = IsoThreshold(
             formula=ion_formula,
-            threshold=ISOTOPE_ABUNDANCE_THRESHOLD,
+            threshold=cutoff,
             get_confs=True,
         )
         predicted_masses_neutral = np.fromiter(predicted_peaks.masses, dtype=float)

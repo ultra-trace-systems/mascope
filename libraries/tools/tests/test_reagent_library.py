@@ -15,6 +15,7 @@ import pytest
 from mascope_tools.composition.heuristic_filter import predict_isotopes
 from mascope_tools.composition.reagents import (
     DEFAULT_ANCHOR_PPM,
+    DEFAULT_SATELLITE_MIN_RELATIVE,
     KIND_BACKGROUND,
     KIND_OXIDE,
     ReagentCluster,
@@ -156,11 +157,18 @@ class TestWhatTheLibraryRefusesToClaim:
 
 
 def _spectrum(*ions: tuple[str, int, float]) -> tuple[np.ndarray, np.ndarray]:
-    """A spectrum holding each ion's full predicted envelope at a given height."""
+    """A spectrum holding each ion's full predicted envelope at a given height.
+
+    Predicted down to the pass's own satellite floor rather than the scoring
+    default, so the faint lines a real spectrum carries - the 18O among them -
+    are present to be claimed or left.
+    """
     mz: list[float] = []
     intensity: list[float] = []
     for formula, charge, height in ions:
-        predicted_mz, predicted_intensity, _ = predict_isotopes(formula, charge)
+        predicted_mz, predicted_intensity, _ = predict_isotopes(
+            formula, charge, None, DEFAULT_SATELLITE_MIN_RELATIVE
+        )
         base = max(predicted_intensity)
         for one_mz, one_intensity in zip(predicted_mz, predicted_intensity):
             mz.append(float(one_mz))
@@ -376,3 +384,78 @@ class TestTheLabelledEnvelope:
         satellites = [h for h in hits if h.is_satellite]
         assert [h.isotope_label for h in satellites] == ["14N"]
         assert satellites[0].predicted_relative == pytest.approx(0.02, abs=0.005)
+
+
+class TestTheEnvelopeReachesTheFloorItSearches:
+    """A line the prediction omits is not a rounding error for a pass that
+    claims peaks: it is a peak left in the residual for another stage to fit an
+    analyte to. The scoring path's 1% cutoff is wrong here, and the 18O line is
+    where it shows.
+    """
+
+    def test_the_default_envelope_omits_the_18o_line(self):
+        """The premise: at the scoring threshold it is not there at all."""
+        _, _, labels = predict_isotopes("C2H9N4O2", 1)
+
+        assert "18O" not in labels
+
+    def test_the_pass_predicts_down_to_its_own_floor(self):
+        _, intensity, labels = predict_isotopes(
+            "C2H9N4O2", 1, None, DEFAULT_SATELLITE_MIN_RELATIVE
+        )
+        share = dict(zip(labels, intensity))
+
+        assert "18O" in share
+        assert share["18O"] / max(intensity) == pytest.approx(0.004, abs=5e-4)
+
+    def test_the_18o_line_of_a_claimed_cluster_is_claimed(self):
+        """The gate's case: the urea dimer's 18O line is the 19th brightest peak
+        of a set A sample, and before this it was read as ethylene glycol on the
+        urea channel once the pre-pass had claimed its parent.
+        """
+        mz, intensity = _spectrum(("CH5N2O", 1, 1e7), ("C2H9N4O2", 1, 2e7))
+        hits, _ = claim(reagent_library("UR"), mz, intensity)
+
+        assert "18O" in {h.isotope_label for h in hits}
+
+    def test_the_old_floor_sat_between_the_two_18o_lines(self):
+        """Why the floor moved as well as the threshold. A two-oxygen ion's 18O
+        line is 0.411% of its parent and a one-oxygen ion's is 0.206%, so the
+        previous 0.4% floor fell between them: it would have kept the urea
+        dimer's and dropped the monomer's, which is not a distinction anything
+        about the chemistry supports.
+        """
+        mz, intensity = _spectrum(("CH5N2O", 1, 2e7))
+        old_floor, _ = claim(
+            reagent_library("UR"), mz, intensity, satellite_min_relative=4e-3
+        )
+        now, _ = claim(reagent_library("UR"), mz, intensity)
+
+        assert "18O" not in {h.isotope_label for h in old_floor}
+        assert "18O" in {h.isotope_label for h in now}
+
+
+class TestTheAnchorFloor:
+    """An anchor moves every other mass in the pass, so it is held to a higher
+    bar than a peak that only claims itself."""
+
+    def test_a_dim_stray_does_not_become_an_anchor(self):
+        """Otherwise a stray peak inside an absent anchor's wide window pulls
+        the median offset and widens the tolerance for everything."""
+        core = _by_label("BR")["[Br]-"]
+        mz = np.array([core.mz * (1 + 15e-6), 300.0])
+        intensity = np.array([50.0, 1e6])  # the stray is 5e-5 of the base peak
+        _, calibration = claim(reagent_library("BR"), mz, intensity)
+
+        assert calibration.anchors == ()
+
+    def test_a_real_anchor_still_anchors(self):
+        """`Br2-` runs 1.1-1.5% of the base peak on the gate's bromide sets,
+        comfortably above the floor."""
+        core = _by_label("BR")["[Br2]-"]
+        mz = np.array([core.mz * (1 - 9e-6), 300.0])
+        intensity = np.array([1.2e4, 1e6])  # 1.2% of the base peak
+        _, calibration = claim(reagent_library("BR"), mz, intensity)
+
+        assert [label for label, _ in calibration.anchors] == ["[Br2]-"]
+        assert calibration.offset_ppm == pytest.approx(-9.0, abs=0.5)
