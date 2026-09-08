@@ -19,8 +19,12 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
   for got no assignment at all. On a bromide-source Orbitrap that cost 21 peaks
   their assignment across six samples, some of them thousands of counts.
   Anchoring on the monoisotopic line - the peak the composition search started
-  from - removes the class, and a candidate whose own line the spectrum does not
-  hold now scores zero rather than winning on its satellites.
+  from - removes the class. Two requirements go with it, because anchoring
+  separated what used to be one row: a pattern is evidence only if both the
+  ion's own line and the line the prediction leads with are observed, and a
+  candidate whose pattern scored nothing is not committed at all. Without them
+  the same phantom returns from the other side, winning the peak it used to
+  swallow with no isotope envelope behind it.
 
 ### Added
 
