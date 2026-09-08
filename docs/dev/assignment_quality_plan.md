@@ -1493,10 +1493,10 @@ built, using the reference's own parent ion:
 | B | 406 | 293 | 113 |
 | D | 255 | 90 | 165 |
 
-The first column is the chemistry gap step 1.5 recorded - the reference reads
+The off-the-grid column is the chemistry gap step 1.5 recorded - the reference reads
 Cl4-Cl6 envelopes on D and Si-bearing ones on A, the grid caps chlorine at two
 and has no silicon, and an envelope Mascope cannot build is an envelope whose
-lines it explains one at a time. **The second column is not that.** There the
+lines it explains one at a time. **The on-the-grid column is not that.** There the
 parent is a neutral the grid can build, and on most of those rows Mascope reads
 the parent with the reference's own formula (100 of B's 113) and still does not
 claim the line. Three things stop it, all in the envelope logic rather than the
