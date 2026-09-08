@@ -45,7 +45,13 @@ AssignmentRole = Literal["M0", "iso_child", "reagent", "artifact", "unassigned"]
 # person's. It is in this shared literal - which types the ledger's read filter
 # AND an imported row - so overrides are filterable in the ledger and survive a
 # round trip through export/import (and, later, a copy between samples).
-AssignmentSource = Literal["database", "untargeted", "manual"]
+#
+# 'reagent' is a peer for the same reason and says something different again:
+# the row came from the reagent pre-pass, which assigns no formula but declares
+# the peak to be the source's own chemistry. Filterable in the ledger because
+# "show me what the source made" is the question that separates a bright
+# residual from a real one.
+AssignmentSource = Literal["database", "untargeted", "manual", "reagent"]
 
 # A run holds one row per detected peak, so an unbounded read serializes tens
 # of megabytes through Pydantic on the event loop. Clients page instead; the
