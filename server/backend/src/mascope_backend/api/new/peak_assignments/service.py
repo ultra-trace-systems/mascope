@@ -53,6 +53,10 @@ from mascope_backend.api.new.peak_assignments.admission import (
     assignment_claim,
     in_flight_run_id,
 )
+from mascope_backend.api.new.peak_assignments.artifact_pass import (
+    build_artifact_assignments,
+    claim_artifact_peaks,
+)
 from mascope_backend.api.new.peak_assignments.calibration_store import (
     load_calibration,
     save_calibration,
@@ -1683,6 +1687,33 @@ def _reagent_assignments(
     return rows, {row["sample_peak_id"] for row in rows}
 
 
+def _artifact_assignments(
+    peaks_df: pd.DataFrame,
+    instrument_type: str | None,
+    sample_item_id: str,
+    peak_assignment_run_id: str,
+) -> tuple[list[dict], set[str]]:
+    """The artifact pre-pass: the detector's ringing, claimed before the stages.
+
+    Shared by the run-backed orchestrator and the run-less ingest fold for the
+    same reason the reagent pre-pass is: a peak is an instrument artifact
+    whichever way the sample was assigned, and the two ledgers have to agree.
+
+    :param peaks_df: Every observed peak of the sample.
+    :param instrument_type: The sample's instrument class; only an FT
+        instrument's spectrum rings (see :mod:`artifact_pass`).
+    :param sample_item_id: The sample these rows belong to.
+    :param peak_assignment_run_id: The run they are stamped with.
+    :return: The artifact rows, and the peaks they take out of both stages.
+    """
+    rows = build_artifact_assignments(
+        claim_artifact_peaks(peaks_df, instrument_type),
+        sample_item_id=sample_item_id,
+        peak_assignment_run_id=peak_assignment_run_id,
+    )
+    return rows, {row["sample_peak_id"] for row in rows}
+
+
 async def _stage_a_assignments(
     sample,
     config: PeakAssignmentConfig,
@@ -1869,10 +1900,11 @@ async def _run_sample_assignment(
         # run. Recorded here rather than at creation because the mechanisms it
         # reads are only known now, and recorded even when the untargeted stage
         # goes on to be skipped: a run has to say what it would have searched.
+        instrument_type = get_instrument_type(sample.filename)
         resolved_profile = resolve_profile(
             config,
             mechanism_notations=[m.ionization_mechanism for m in mechanisms],
-            instrument_type=get_instrument_type(sample.filename),
+            instrument_type=instrument_type,
             polarity=sample.polarity,
         )
         # -- Opportunistic channels: the profile names what the source can
@@ -1919,6 +1951,23 @@ async def _run_sample_assignment(
                 f"for profile '{resolved_profile.profile.name}'"
             )
 
+        # -- The artifact pre-pass, on the same footing: ringing around a very
+        # intense centroid is the detector's answer to a neighbour, not a
+        # species, and the same ordering argument applies. Most of the class is
+        # already gone - the peak detector flags sidelobes and the peak read
+        # drops them - so this claims the residue a sample's own time window
+        # shows that the file's summed heights did not.
+        artifact_assignments, artifact_peak_ids = _artifact_assignments(
+            peaks_df, instrument_type, sample_item_id, run.peak_assignment_run_id
+        )
+        if artifact_assignments:
+            runtime.logger.info(
+                f"Artifact pre-pass claimed {len(artifact_assignments)} of "
+                f"{len(peaks_df)} peaks of sample '{sample.sample_item_name}' "
+                "as instrument ringing"
+            )
+        claimed_peak_ids = reagent_peak_ids | artifact_peak_ids
+
         # -- Stage A: database-first assignment from the known composition set:
         # the curated target library plus (when loaded) the reference mirror.
         stage_a_assignments, confidence_calibration = await _stage_a_assignments(
@@ -1928,7 +1977,7 @@ async def _run_sample_assignment(
             mechanism_ids,
             mechanisms,
             run.peak_assignment_run_id,
-            excluded_peak_ids=reagent_peak_ids,
+            excluded_peak_ids=claimed_peak_ids,
         )
         runtime.logger.info(
             f"Stage A assigned {len(stage_a_assignments)} of {len(peaks_df)} "
@@ -1937,10 +1986,10 @@ async def _run_sample_assignment(
         await send_progress_user_notification(notification, 0.4)
 
         # -- Stage B: untargeted composition search for the remainder. The
-        # reagent peaks are in this set from the start, so the stage never sees
-        # them: a reagent cluster has an ordinary elemental composition and an
-        # untargeted search would fit a neutral to it happily.
-        assigned_peak_ids = set(reagent_peak_ids)
+        # pre-passes' peaks are in this set from the start, so the stage never
+        # searches them: a reagent cluster has an ordinary elemental composition
+        # and an untargeted search would fit a neutral to it happily.
+        assigned_peak_ids = set(claimed_peak_ids)
         assigned_peak_ids.update(
             assignment["sample_peak_id"] for assignment in stage_a_assignments
         )
@@ -2004,16 +2053,28 @@ async def _run_sample_assignment(
                 # search, which predates the rule being implemented. The
                 # resolved context's ratio windows ride along with it.
                 heuristics_config = resolved_profile.heuristics_config()
+                # The whole spectrum is the context, the remainder is what is
+                # enumerated. An isotope envelope is scored against every peak
+                # the frame holds, so a satellite is found wherever it sits -
+                # below the stage's intensity threshold, past its cap, or on a
+                # peak another pass already owns - instead of only inside the
+                # searched set. That is what lets an ion's envelope claim its
+                # own lines before the next target's turn comes, and it is what
+                # keeps a peak that is somebody's isotopologue from being
+                # enumerated as a fresh M0. Enumeration cost is unchanged: it
+                # scales with the targets, not with the context.
+                #
                 # One positionally-indexed frame feeds both the search and the
                 # join back. The finder returns rows in the order it was given
                 # them, so position - not float m/z equality - is what maps a
                 # result to the peak it came from.
-                search_peaks_df = remainder_df.reset_index(drop=True)
+                search_peaks_df = peaks_df.reset_index(drop=True)
                 matches_df, _ = await asyncio.to_thread(
                     assign_compositions,
                     search_peaks_df[["mz", "intensity"]],
                     search_config,
                     heuristics_config,
+                    targets=remainder_df["mz"].tolist(),
                 )
                 stage_b_assignments = untargeted_matches_to_peak_assignments(
                     matches_df,
@@ -2026,6 +2087,7 @@ async def _run_sample_assignment(
                     formula_formatter=to_custom_element_format,
                     max_alternatives=config.max_alternatives,
                     minor_channels=resolved_profile.minor_channels,
+                    excluded_peak_ids=assigned_peak_ids,
                 )
                 runtime.logger.info(
                     f"Stage B assigned {len(stage_b_assignments)} of "
@@ -2046,6 +2108,7 @@ async def _run_sample_assignment(
 
         all_assignments = (
             reagent_assignments
+            + artifact_assignments
             + stage_a_assignments
             + stage_b_assignments
             + unassigned_assignments
@@ -2225,10 +2288,11 @@ async def _fold_sample_peaks_without_run(
     # The rows are shaped as ledger rows - the fold reads them as such - and
     # stamped with the derived run's id: the run they will never be.
     run_id = fold_run_id(sample_item_id)
-    # The reagent pre-pass runs here too. The untargeted stage is off on this
-    # path, but the pre-pass is not part of it: a reagent peak is the source's
-    # chemistry whichever way the sample was assigned, and an ingest fold that
-    # left it unassigned would disagree with the run that later replaces it.
+    # Both pre-passes run here too. The untargeted stage is off on this path,
+    # but they are not part of it: a reagent peak is the source's chemistry and
+    # a sidelobe is the detector's, whichever way the sample was assigned, and
+    # an ingest fold that left either unassigned would disagree with the run
+    # that later replaces it.
     # The instrument type matters here even though this path never runs the
     # untargeted stage: it also sets the window the reagent pre-pass claims in,
     # so leaving it out had the fold claiming at the 10 ppm fallback while a run
@@ -2249,6 +2313,10 @@ async def _fold_sample_peaks_without_run(
     reagent, reagent_peak_ids = _reagent_assignments(
         peaks_df, resolved_profile, sample_item_id, run_id
     )
+    artifact, artifact_peak_ids = _artifact_assignments(
+        peaks_df, instrument_type, sample_item_id, run_id
+    )
+    claimed_peak_ids = reagent_peak_ids | artifact_peak_ids
     stage_a, _ = await _stage_a_assignments(
         sample,
         config,
@@ -2256,9 +2324,9 @@ async def _fold_sample_peaks_without_run(
         mechanism_ids,
         mechanisms,
         run_id,
-        excluded_peak_ids=reagent_peak_ids,
+        excluded_peak_ids=claimed_peak_ids,
     )
-    assigned = reagent_peak_ids | {row["sample_peak_id"] for row in stage_a}
+    assigned = claimed_peak_ids | {row["sample_peak_id"] for row in stage_a}
     unassigned = build_unassigned_assignments(
         peaks_df[~peaks_df["sample_peak_id"].isin(assigned)],
         sample_item_id=sample_item_id,
@@ -2267,7 +2335,8 @@ async def _fold_sample_peaks_without_run(
     runtime.logger.info(
         f"Stage A assigned {len(stage_a)} of {len(peaks_df)} peaks of sample "
         f"'{sample.sample_item_name}' ({len(reagent)} claimed by the reagent "
-        "pre-pass); folding into the batch ledger without a run"
+        f"pre-pass, {len(artifact)} by the artifact one); folding into the "
+        "batch ledger without a run"
     )
     from mascope_backend.api.new.peak_assignments.batch_peaks_controller import (
         fold_sample_into_batch_peaks,
@@ -2275,7 +2344,9 @@ async def _fold_sample_peaks_without_run(
 
     return await fold_sample_into_batch_peaks(
         sample_item_id,
-        rows=[SimpleNamespace(**row) for row in reagent + stage_a + unassigned],
+        rows=[
+            SimpleNamespace(**row) for row in reagent + artifact + stage_a + unassigned
+        ],
         persisted=False,
         defer_consensus_to=defer_consensus_to,
     )
