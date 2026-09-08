@@ -104,6 +104,71 @@ def previous_completed_run(runs: pd.DataFrame | None, engine: str) -> str | None
     return str(mine.iloc[1]["peak_assignment_run_id"])
 
 
+#: What a run's config calls the record of how much of its spectrum the
+#: untargeted stage was offered. Absent on a run written before step 1.6, and on
+#: an imported run, whose config is the other engine's own.
+SEARCH_SCOPE_KEY = "search_scope"
+
+#: The peak cap that applied before it became "every peak". Used to reconstruct
+#: the searched set of a run predating the scope record, so a before/after
+#: comparison of G5 is possible at all.
+LEGACY_MAX_UNTARGETED_PEAKS = 300
+
+
+def run_config(runs: pd.DataFrame | None, run_id: str | None) -> dict:
+    """The stored config of one run, or an empty dict."""
+    if runs is None or runs.empty or run_id is None:
+        return {}
+    row = runs[runs["peak_assignment_run_id"] == run_id]
+    if row.empty:
+        return {}
+    config = row.iloc[0].get("config")
+    return config if isinstance(config, dict) else {}
+
+
+def unsearched_peaks(ledger: pd.DataFrame, config: dict) -> set[str]:
+    """The peaks this run's untargeted stage was never offered (gate metric G5).
+
+    A blank ledger row is two different results - searched and unexplained, or
+    never looked at - and only the run's config separates them. The searched set
+    is reconstructed rather than recorded: the stage takes the most intense of
+    the peaks left after the pre-passes and the database stage, up to its cap, so
+    ranking that remainder by intensity reproduces exactly which peaks it saw.
+
+    Peaks a pre-pass or the database stage explained are not counted: something
+    looked at them and answered. Peaks below the run's intensity threshold are,
+    because the threshold is a choice about what to search.
+
+    :param ledger: The run's ledger.
+    :param config: The run's stored config.
+    :return: The ``sample_peak_id`` of every peak the stage never saw.
+    """
+    if not config.get("run_untargeted", True):
+        return set(ledger["sample_peak_id"].astype(str))
+    role = ledger["role"].fillna("unassigned")
+    source = (
+        ledger["source"]
+        if "source" in ledger.columns
+        else pd.Series(pd.NA, index=ledger.index)
+    )
+    # What Stage B was offered to choose from, in the state it was offered in.
+    remainder = ledger[
+        ~role.isin(["reagent", "artifact"]) & (source.fillna("") != "database")
+    ]
+    threshold = float(config.get("peak_intensity_threshold") or 0.0)
+    intensity = remainder["sample_peak_intensity"].astype(float)
+    eligible = remainder[(intensity >= threshold) & (intensity > 0)]
+    below = set(remainder.loc[~remainder.index.isin(eligible.index), "sample_peak_id"])
+
+    scope = config.get(SEARCH_SCOPE_KEY) or {}
+    limit = scope.get("searched_peaks")
+    if limit is None:
+        limit = config.get("max_untargeted_peaks") or LEGACY_MAX_UNTARGETED_PEAKS
+    searched = eligible.nlargest(int(limit), "sample_peak_intensity")
+    past_cap = set(eligible.loc[~eligible.index.isin(searched.index), "sample_peak_id"])
+    return {str(peak) for peak in below | past_cap}
+
+
 def role_transitions(before: pd.DataFrame, after: pd.DataFrame) -> dict:
     """How one engine's peaks changed role between two of its own runs.
 
@@ -398,6 +463,22 @@ def summarize(j: pd.DataFrame, engine_a: str, engine_b: str) -> dict:
             ),
             "b": int(j["b_ownerless"].eq(True).sum()),
         },
+        # G5. A peak the reference commits an analyte on that engine A's
+        # untargeted stage was never offered - past its peak cap, or under its
+        # intensity threshold. Not a disagreement: engine A did not look. The
+        # stage-1 target is zero, because a cap is a bound on the answer and the
+        # ledger cannot tell a reader which blank rows are one.
+        "reference_main_unsearched": int(
+            (j.b_role.eq(ROLE_MAIN) & j.get("a_unsearched", False)).sum()
+        ),
+        "reference_main_assigned_unsearched": int(
+            (
+                j.b_role.eq(ROLE_MAIN)
+                & j.b_tier.eq("assigned")
+                & j.get("a_unsearched", False)
+            ).sum()
+        ),
+        "unsearched": int(j.get("a_unsearched", pd.Series(dtype=bool)).sum()),
         # G6. A peak one engine commits an analyte M0 on and the other reads as
         # part of another ion's envelope. Only one of the two can be right, and
         # the M0 is the expensive way to be wrong: it puts a formula, a tier and
@@ -536,6 +617,8 @@ def markdown_summary(result: dict) -> str:
         f"| artifact peaks | {pooled['roles']['a'].get('artifact', 0)} | {pooled['roles']['b'].get('artifact', 0)} |",
         f"| isotopologue rows without an owner (of them untargeted) | {pooled['ownerless_iso_child']['a']} ({pooled['ownerless_iso_child']['a_untargeted']}) | {pooled['ownerless_iso_child']['b']} |",
         f"| M0 on a peak the other engine calls an isotopologue (of them assigned-tier) | {pooled['m0_on_the_others_isotopologue']['a']} ({pooled['m0_on_the_others_isotopologue']['a_assigned']}) | {pooled['m0_on_the_others_isotopologue']['b']} |",
+        f"| peaks the untargeted stage never searched | {pooled['unsearched']} | - |",
+        f"| of them, ones the other engine commits an analyte on (assigned-tier) | {pooled['reference_main_unsearched']} ({pooled['reference_main_assigned_unsearched']}) | - |",
         f"| committed formulas that are odd-electron neutrals (untargeted share) | {pooled['odd_electron_m0']['a']} ({pooled['odd_electron_m0']['a_pct']}%, untargeted {pooled['odd_electron_m0']['a_untargeted_pct']}%) | {pooled['odd_electron_m0']['b']} ({pooled['odd_electron_m0']['b_pct']}%) |",
         "",
         f"Peaks both call M0: {pooled['both_main']} - "
@@ -571,6 +654,12 @@ def markdown_summary(result: dict) -> str:
             f"**{moved['m0_to_unassigned']} lost a committed analyte outright** "
             f"({moved['m0_to_unassigned_assigned_tier']} at assigned tier) and "
             f"{moved['unassigned_to_m0']} gained one.",
+            "",
+            f"Peaks the untargeted stage never searched: "
+            f"{moved['unsearched_before']} then, {result['pooled']['unsearched']} now "
+            f"({moved['reference_main_unsearched_before']} -> "
+            f"{result['pooled']['reference_main_unsearched']} of them peaks the "
+            f"other engine commits an analyte on).",
             "",
             "| role change | peaks |",
             "|---|---|",
@@ -651,6 +740,12 @@ def main(argv=None) -> int:
             prepare(ledger_a, "a", notation_by_id),
             prepare(ledger_b, "b", notation_by_id),
         )
+        # Which peaks engine A's untargeted stage never saw, reconstructed from
+        # its run config; the column travels with the join so the pooled frame
+        # can count it too.
+        joined["a_unsearched"] = joined["sample_peak_id"].isin(
+            unsearched_peaks(ledger_a, run_config(runs, run_a))
+        )
         joined.insert(0, "sample_item_id", sample_id)
         joined.insert(1, "run_a", run_a)
         joined.insert(2, "run_b", run_b)
@@ -664,9 +759,26 @@ def main(argv=None) -> int:
         if previous_a is not None:
             ledger_previous = client.peak_assignments.get(sample_id, run_id=previous_a)
             if ledger_previous is not None:
+                # G5 on the previous run as well, so the metric has a before to
+                # be read against: the searched set is a property of the run's
+                # config, and the run before a deployment is the one that had
+                # the old one.
+                unsearched_before = unsearched_peaks(
+                    ledger_previous, run_config(runs, previous_a)
+                )
+                reference_main = set(
+                    ledger_b.loc[
+                        ledger_b["role"].fillna("unassigned") == ROLE_MAIN,
+                        "sample_peak_id",
+                    ].astype(str)
+                )
                 per_sample[sample_id]["since_previous_run"] = dict(
                     role_transitions(ledger_previous, ledger_a),
                     run=previous_a,
+                    unsearched_before=len(unsearched_before),
+                    reference_main_unsearched_before=len(
+                        unsearched_before & reference_main
+                    ),
                 )
         frames.append(joined)
         print(
@@ -701,6 +813,12 @@ def main(argv=None) -> int:
                 one["m0_to_unassigned_assigned_tier"] for one in transitions
             ),
             "unassigned_to_m0": sum(one["unassigned_to_m0"] for one in transitions),
+            "unsearched_before": sum(
+                one.get("unsearched_before", 0) for one in transitions
+            ),
+            "reference_main_unsearched_before": sum(
+                one.get("reference_main_unsearched_before", 0) for one in transitions
+            ),
             "by_pair": dict(sorted(pairs.items(), key=lambda kv: -kv[1])),
         }
     (out_dir / "summary.json").write_text(
