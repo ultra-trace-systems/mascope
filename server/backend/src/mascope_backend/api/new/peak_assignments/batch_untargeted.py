@@ -54,6 +54,7 @@ from mascope_backend.api.new.peak_assignments.batch_runs import (
 )
 from mascope_backend.api.new.peak_assignments.config import PeakAssignmentConfig
 from mascope_backend.api.new.peak_assignments.engine import (
+    ROLE_ARTIFACT,
     ROLE_REAGENT,
     SOURCE_UNTARGETED,
     evidence_for,
@@ -88,9 +89,10 @@ from mascope_tools.composition.reagents import secondary_channels
 #: The notification channel the search reports on, start to finish.
 NOTIFICATION_TYPE = "search_batch_untargeted"
 
-#: A member row stores its role as a code; this is the reagent one, resolved
-#: once so the comparison in :func:`choose_representatives` is a plain integer.
-REAGENT_ROLE_CODE = role_code(ROLE_REAGENT)
+#: A member row stores its role as a code; these are the two a pre-pass writes,
+#: resolved once so the comparison in :func:`choose_representatives` is on plain
+#: integers.
+CLAIMED_ROLE_CODES = frozenset({role_code(ROLE_REAGENT), role_code(ROLE_ARTIFACT)})
 
 
 # --- pure helpers ---------------------------------------------------------------
@@ -101,14 +103,15 @@ def choose_representatives(members: Iterable[Any]) -> dict[str, Any]:
 
     A member with no intensity counts as the dimmest, not as a candidate.
 
-    A reagent member is not a candidate at all. Its anchor reads as unassigned -
-    a reagent row carries no formula, so the consensus has nothing to vote on -
-    but the peak is the source's own chemistry and was deliberately taken out of
-    the per-sample stages by the reagent pre-pass. Without this the batch search
-    would be the one path that puts an analyte formula back onto it, which is
-    the phantom the pre-pass exists to prevent. An anchor whose members are all
-    reagent is left with no representative and is never searched; a mixed anchor
-    is still searched, on a member that is a real peak.
+    A member a pre-pass claimed is not a candidate at all. Its anchor reads as
+    unassigned - a reagent or artifact row carries no formula, so the consensus
+    has nothing to vote on - but the peak is the source's own chemistry or the
+    detector's ringing, and was deliberately taken out of the per-sample stages
+    before either ran. Without this the batch search would be the one path that
+    puts an analyte formula back onto it, which is the phantom the pre-passes
+    exist to prevent. An anchor whose members are all claimed this way is left
+    with no representative and is never searched; a mixed anchor is still
+    searched, on a member that is a real peak.
 
     :param members: Occurrence rows (or anything carrying ``batch_peak_id``,
         ``sample_item_id``, ``sample_peak_id``, ``intensity`` and ``role``).
@@ -116,7 +119,7 @@ def choose_representatives(members: Iterable[Any]) -> dict[str, Any]:
     """
     best: dict[str, Any] = {}
     for member in members:
-        if getattr(member, "role", None) == REAGENT_ROLE_CODE:
+        if getattr(member, "role", None) in CLAIMED_ROLE_CODES:
             continue
         current = best.get(member.batch_peak_id)
         if current is None or (member.intensity or 0.0) > (current.intensity or 0.0):
@@ -361,6 +364,12 @@ async def _apply_search_rows(
         for row in rows:
             member = members_by_peak.get(row["sample_peak_id"])
             if member is None or not row.get("assigned_formula"):
+                continue
+            if member.role in CLAIMED_ROLE_CODES:
+                # A pre-pass owns this peak. It is not a representative, so the
+                # search did not enumerate it - but an envelope scored against
+                # the whole spectrum can still land a satellite on it, and that
+                # row must not overwrite the claim.
                 continue
             anchor = anchors[member.batch_peak_id]
             registry = list(anchor.candidates or [])
