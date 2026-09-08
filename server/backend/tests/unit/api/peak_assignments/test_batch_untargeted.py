@@ -193,6 +193,33 @@ def test_the_outcome_counts_what_was_done():
     assert "30 member peaks" in outcome["message"]
 
 
+def test_the_outcome_says_when_the_cap_left_anchors_unsearched():
+    """A batch run has one config for many samples and no per-sample row to
+    stamp a search scope on, so the count of what it never looked at has to
+    reach the caller through the result. An unsearched anchor and an anchor
+    nothing could explain both read as a blank otherwise."""
+    counts = {
+        "anchors_searched": 12,
+        "anchors_unsearched": 4,
+        "anchors_annotated": 7,
+        "members_propagated": 30,
+        "samples_searched": 3,
+        "samples_rescored": 9,
+    }
+    outcome = search_outcome(counts, "sb-1")
+    assert outcome["message"].endswith(
+        "4 anchors were left unsearched by the peak cap."
+    )
+    assert outcome["data"]["anchors_unsearched"] == 4
+
+    one = search_outcome({**counts, "anchors_unsearched": 1}, "sb-1")
+    assert one["message"].endswith("1 anchor was left unsearched by the peak cap.")
+
+    # The default is every peak, so the sentence is absent on an ordinary run.
+    none = search_outcome({**counts, "anchors_unsearched": 0}, "sb-1")
+    assert "unsearched" not in none["message"]
+
+
 def test_the_outcome_names_the_samples_it_could_not_read():
     """A sample that raised is reported, not left to the log: the counts alone
     read like a batch that simply had less to find."""

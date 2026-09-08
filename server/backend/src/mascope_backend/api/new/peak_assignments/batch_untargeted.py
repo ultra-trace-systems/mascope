@@ -223,11 +223,19 @@ async def _unassigned_anchors_and_members(
 
 async def _search_sample(
     sample_item_id: str, target_peak_ids: set[str], config: PeakAssignmentConfig
-) -> list[dict]:
+) -> tuple[list[dict], int]:
     """Stage B over one sample's representative peaks, in the context of its
-    whole spectrum. Returns the engine's assignment rows for the peaks it
-    explained - the representatives and any isotopologue peaks it paired to
-    them - shaped as ledger rows that will never be written."""
+    whole spectrum.
+
+    :return: The engine's assignment rows for the peaks it explained - the
+        representatives and any isotopologue peaks it paired to them, shaped as
+        ledger rows that will never be written - and the number of this sample's
+        representatives the cap left unsearched. A batch run has one config for
+        many samples and no per-sample run row to stamp, so the count is carried
+        out to the batch's own result instead: an anchor nobody searched is not
+        an anchor nothing could explain, and the counts are otherwise
+        indistinguishable.
+    """
     sample = await fetch_sample(sample_item_id)
     peaks_df = load_sample_peaks(sample)
     frame = (
@@ -243,8 +251,9 @@ async def _search_sample(
         config.max_untargeted_peaks,
         MAX_UNTARGETED_PEAKS_CEILING,
     )
+    unsearched = search_scope["eligible_peaks"] - search_scope["searched_peaks"]
     if targets.empty:
-        return []
+        return [], unsearched
     if search_scope["limited"]:
         runtime.logger.info(
             f"Batch untargeted search on sample '{sample.sample_item_name}' "
@@ -581,6 +590,11 @@ async def run_batch_untargeted_search(
         )
     counts = {
         "anchors_searched": len(anchors),
+        # Anchors the cap kept out of the search. Zero unless a caller set
+        # `max_untargeted_peaks` or a sample carries more representatives than
+        # the ceiling; reported because a blank anchor means something different
+        # when nothing looked at it.
+        "anchors_unsearched": 0,
         "anchors_annotated": 0,
         "members_propagated": 0,
         "samples_searched": 0,
@@ -617,11 +631,12 @@ async def run_batch_untargeted_search(
                     )
                 )
             try:
-                rows = await _search_sample(
+                rows, unsearched = await _search_sample(
                     sample_item_id,
                     {member.sample_peak_id for member in sample_representatives},
                     config,
                 )
+                counts["anchors_unsearched"] += unsearched
                 annotations.update(
                     await _apply_search_rows(
                         sample_batch_id, sample_item_id, rows, set(anchors)
@@ -709,6 +724,13 @@ def search_outcome(counts: dict, sample_batch_id: str) -> dict:
     # A sample that raised is reported rather than left to the log: the counts
     # below are otherwise indistinguishable from a batch that simply had less
     # to find, and the anchors it holds were not searched.
+    left = counts.get("anchors_unsearched", 0)
+    unsearched = (
+        f" {left} anchor{'s' if left != 1 else ''} "
+        f"{'were' if left != 1 else 'was'} left unsearched by the peak cap."
+        if left
+        else ""
+    )
     failed = counts.get("samples_failed", 0)
     skipped = (
         f" {failed} sample{'s' if failed != 1 else ''} could not be read and "
@@ -726,7 +748,7 @@ def search_outcome(counts: dict, sample_batch_id: str) -> dict:
             f"{counts['anchors_annotated']} assigned a composition, and "
             f"{counts['members_propagated']} member peak"
             f"{'s' if counts['members_propagated'] != 1 else ''} in other samples "
-            f"measured against it.{skipped}"
+            f"measured against it.{skipped}{unsearched}"
         ),
         "data": counts,
         "_notification_data": notification_data,
