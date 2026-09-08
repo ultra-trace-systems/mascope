@@ -973,19 +973,46 @@ really is a uniform -8.6 to -10.2 ppm miscalibration measured across every
 rung, and drops the C13H20O4 channels on B and the Br3 ringing skirt on D.
 
 **With no anchor in range the pass searches nominal masses at the instrument
-window** - conservative rather than clever. That has a measured cost worth
-recording: four of set B's six samples start at m/z 123, above both the urea
-monomer and dimer, so they anchor on nothing and claim nothing; B's reagent
-rows fall from 40 to 10, of which about half of the loss was the analyte theft
-above and the rest are real rungs on those four samples. Letting a higher rung
-anchor when the base ions are out of range - guarded by two rungs agreeing on
-an offset - would recover them, and is deliberately not done here.
+window** - conservative rather than clever. Four of set B's six samples start
+at m/z 123, above both the urea monomer and dimer, so they anchor on nothing
+and claim nothing; B's reagent rows fall from 40 to 10.
+
+Nothing real is lost there, and it is worth saying why, because the obvious
+repair is a trap. The peaks the flat window claimed on those four samples were
+not reagent rungs: 138.0995 read as `[(urea)2+NH4]+` at +6.6 ppm is the 13C
+line of `C9H12O` `[M+H]+`, which this engine assigns itself and already carries
+as that ion's `iso_child`, and 181.1052 read as `[(urea)3+H]+` at +4.7 ppm is
+the 13C line of `C10H10O2` `[M+NH4]+`, at 0.0 ppm from it and at the 11% a C10
+ion predicts. The reference labels both reagent too, out of the same wide
+window. A fallback that anchored on two rungs agreeing would have found +4.7
+and +6.6 agreeing well enough and claimed two analytes' isotopologues. **Those
+four samples hold no reagent ion the library can see, and claiming nothing on
+them is the right answer**, so the fallback is deliberately not built.
 
 ### What G4 measures, and why the raw number is not it
 
 Of the reference's reagent rows **that name an ion formula** - the ones that
 are reagent-cluster identifications - this engine agrees on 54 of 64 (D), 48 of
-55 (E) and 50 of 67 (F1). That is G4a, this step's own target.
+55 (E) and 50 of 67 (F1). That is G4a, and at **84%, 87% and 75% it is below
+the row's own >= 90% target on all three sets.** The misses are the anchored
+window and the intensity floor doing what they were changed to do, so the
+number is reported rather than reached for:
+
+- six of D's ten are `[BrO3]-` claims at +10.8 ppm on a ladder whose anchors
+  sit at 0.4-0.9 ppm. A one-bromine ion 10.8 ppm from bromate, on a spectrum
+  calibrated to under a ppm, is not bromate by mass, whatever a 12 ppm window
+  says;
+- the remaining four of D's, seven of E's and most of F1's are traces below
+  1e-4 of the base peak - 5e-5 on E, 1-3e-5 on F1 - which an anchored pass
+  will not claim in their own right;
+- F1's `Br2-` traces then fall to a curated `Br` target in Stage A
+  (`source = database`), the same class as set C2's `HBr` below: a
+  curated-library question rather than this step's.
+
+Widening either bound to reach 90% would undo the fix this step needed, so the
+alternative if the target is to be met as written is to restate G4a's
+denominator as the reference's with-ion rows **above the probe floor**. That is
+left open rather than decided here.
 
 The rest of the reference's reagent rows on those sets name no formula at all:
 198, 281 and 266 peaks. On set D 44% of them sit within 60 mDa of a peak this
