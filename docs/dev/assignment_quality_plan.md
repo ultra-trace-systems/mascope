@@ -17,7 +17,7 @@ step PRs land on the epic and are named here as they merge.
 | 1.3 - same-ion tie policy in the finder | #2082 | measured: the step's target met on A (47 -> 87% same formula); the note's mass-only policy needed a closed-shell key the gate supplied |
 | 1.4 - reagent-cluster pre-pass | #2086 | measured: 60 peaks carry 81.2% of set A's signal; the claim is anchored on the sample's own base ions and the envelope reaches the floor it searches; no reference analyte taken on A/B/C/D/E/F1 |
 | 1.5 - satellite claim and ringing artifacts | #2088 | measured: G8 met, 0 ownerless isotopologue rows on every set; B claims 969 more satellites and D 423, 88-97% of them confirmed by the reference, and D gains 61 analytes and 27 agreements; two review rounds fixed the envelope's anchor and then restored the requirement anchoring it took away; G6 missed, and the reference's parent ion is outside the searched grid for 78 of A's 79 (decision 11) |
-| 1.6 - cap and mass window | - | planned |
+| 1.6 - cap and mass window | - | in progress (handed over 2026-09-08) |
 | 1.7 - stage 1 gate, engine 0.4.0 | - | planned |
 | 2.1 - v2 fit for Stage B | - | planned |
 | 2.2 - self-calibrated mass gate | - | planned |
