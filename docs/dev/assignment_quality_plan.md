@@ -883,7 +883,7 @@ C2 is held to C's.
 | G2 reference Assigned peaks recovered: same formula / same ion (stage 1 gate: A 95.6/97.2% and B 95.2/96.1% - both bounds met; C 87.3/87.9% and D 80.1/82.3% - same formula met, same ion missed; C2 68.3% - missed, and 4.2 points of it are the nitrate ladder the pre-pass correctly claims) | 39% / - | 12% / - | 18% / - | >= 80% / >= 95% (A, C), >= 70% / >= 95% (B) | >= 85% / >= 95% | hold |
 | G3 committed formulas with N >= 5; carbon-free formulas (stage 1 gate: A 1.0% - met, B 2.7% - missed, 0.0% on every other set; every carbon-free formula left on any of the 43 samples is a Stage A curated row and the untargeted stage writes none, so the carbon half is met outright) | 13%; 59 | 15%; - | 17%; - | <= 1%; 0 off the allowlist | hold | hold |
 | G4 reference reagent peaks labelled reagent or artifact (stage 1 gate: A 48 of 58, B 14 of 24, D 123 of 262, E 48 of 336, F1 50 of 333; on C, C2 and F2 the reference's reagent rows are a different claim, so the raw share does not measure this engine's pass) | 0 of 58 | 0 of 24 | 0 of 29 | >= 90% | 100% | hold |
-| G4a of those, the ones that **name an ion** (step 1.4's own target; stage 1 gate: A 82.8%, B 58.3%, D 84.4%, E 87.3%, F1 74.6% - missed, and B's ten are two split peaks plus an ammoniated urea ladder the reagent library does not carry) | 0 of 58 | 0 of 24 | 0 of 15 | >= 90% | 100% | hold |
+| G4a of those, the ones that **name an ion** (step 1.4's own target; stage 1 gate: A 82.8%, B 58.3%, D 84.4%, E 87.3%, F1 74.6% - missed, and A's and B's misses are second centroids and a reference label 5-7 ppm off, not a missing library entry) | 0 of 58 | 0 of 24 | 0 of 15 | >= 90% | 100% | hold |
 | G5 reference Assigned peaks never searched (stage 1 gate: 0 on every set, from 5,304 pooled over A-F2 on the reference's own Assigned tier - A 186, B 4,180, C 7, which reproduces the step-0 baselines beside them) | 190 | 4,181 | 8 | 0 | 0 | 0 |
 | G6 main peaks on reference isotopologues (stage 1 gate: 107 A, 460 B, 328 D, 57 C, 24 C2, 8 E, 57 F1, 33 F2, up from 79/54/75 because the peaks the cap hid are now searched - as a share of committed rows A is flat at 5.2%, B 3.4 -> 5.0%, D 8.8 -> 13.8%. Of the rows 1.6 added, the reference's parent ion is outside the searched grid for 20 of A's 28, 293 of B's 406 and 90 of D's 255 - that part is 2.5b's; the rest have the parent on the grid and are the envelope logic refusing or never predicting the line, which decision 11's rider gives to 2.1 and 2.4. After 1.5 the parent was outside the grid for 78 of A's 79 and 52 of D's 75, which is what decision 11 read) | 96 | - | - | read, not gated (decision 11: <= 10 after 2.5b) | <= 5 | hold |
 | G7 uncorroborated commits beyond 3 sigma | not gated | not gated | not gated | - | 0 | 0 |
@@ -1674,18 +1674,13 @@ at all.
   sets it does not measure it at all.** Of the reference's reagent rows that
   name an ion: 48 of 58 on A (82.8%), 14 of 24 on B (58.3%), 54 of 64 on D
   (84.4%), 48 of 55 on E (87.3%) and 50 of 67 on F1 (74.6%). Step 1.4 recorded
-  why A's, D's, E's and F1's misses are the anchored window and the intensity
-  floor doing what they were changed to do. B's ten are new here and name a
-  library gap: two are a second peak 6 ppm from the true `[urea+H]+` at 5e-4 of
-  the base peak, the same split-peak class as A's; the other eight are two ions
-  across four samples, `[(urea)2+NH4]+` and `[(urea)3+NH4]+` at 2-4e-5 of the
-  base peak, which the uronium reagent library does not carry - it has the
-  protonated ladder but not the ammoniated one - so the pass leaves them to
-  Stage B, which reads them as satellites of an organic. On C, C2 and F2 the
-  reference's reagent rows are a different claim entirely: bromide traces
-  (`Br-`, `Br2-`, `BrO3-`) on the two nitrate sets, where this engine's pre-pass
-  claims the nitrate ladder the reference does not label, and on F2 the ladder
-  itself. The raw 0% there is not this engine's pass being wrong.
+  why D's, E's and F1's misses are the anchored window and the intensity floor
+  doing what they were changed to do; A's and B's are read below, and neither is
+  a missing library entry. On C, C2 and F2 the reference's reagent rows are a
+  different claim entirely: bromide traces (`Br-`, `Br2-`, `BrO3-`) on the two
+  nitrate sets, where this engine's pre-pass claims the nitrate ladder the
+  reference does not label, and on F2 the ladder itself. The raw 0% there is not
+  this engine's pass being wrong.
 - **G5 met: zero on every set.** No peak the reference commits an analyte on
   went unsearched, and every run records the scope it searched under.
 - **G6 read and not gated, per decision 11.** 107 on A, 460 on B, 57 on C, 24 on
@@ -1698,6 +1693,44 @@ at all.
   0.30, 0.17, 0.31 and 0.31 ppm - while committing five and a half times as many
   analytes on B and two and a half times as many on D as the baseline did. C's
   1.13 -> 0.17 ppm is the largest single move any metric makes in stage 1.
+
+#### What A's and B's reagent misses actually are
+
+Neither set's misses are a library entry this engine lacks; both are the metric
+counting the reference's label against a reading this engine makes at the
+instrument's own precision.
+
+**B's eight are a label 5-7 ppm off on a spectrum calibrated to a third of a
+ppm.** `_urea_clusters` carries the ammonium series from n = 2 and the
+protonated ladder to n = 6, so both ions the reference names are in the library.
+Four of B's six samples acquire from m/z 123, so neither anchor is in the window
+and the base peak is 4.5e5 counts at m/z 158.15 rather than a reagent ion. On
+those four the reference labels m/z 138.0995 `[(urea)2+NH4]+`, whose ion mass is
+138.0986 - 6.9 ppm away - and m/z 181.1052 `C3H13N6O3`, which is the protonated
+trimer at 181.1044, 4.6 ppm away, not the ammoniated one. Those four samples
+carry a -0.24 ppm median error with a 0.33 MAD, and this engine reads the same
+two peaks at 0.05-0.17 and -0.16 to -0.27 ppm: the M+1 line of a curated C9H12O
+it commits in each sample, and the 13C line of an untargeted C10H10O2. At that
+precision the reagent label is the doubtful reading. A library edit would change
+nothing either way, because `match_reagent_clusters` claims at the instrument's
+precision against its anchors and would not have claimed a peak 7 ppm off with
+an anchor present. B's other two are second centroids beside the monomer, 10 ppm
+below its mass at 5e-4 of the claimed peak.
+
+One thing the same evidence says in passing, for the channel gate's owner rather
+than this one: on those four samples the probe that switched the ammonium
+channel on is that same m/z 138.0995 peak, found 6.9 ppm inside the 20 ppm probe
+window. The channel is real on this source - the reference commits 1,648 main
+peaks through it - but the record now says the channel was opened on a peak this
+engine itself reads as an M+1 line.
+
+**A's ten are second centroids beside the source's own ions.** Eight sit at m/z
+61.0400 and 62.0437, 6.9 and 13 ppm above the `[urea+H]+` this engine claims and
+its 13C line, at 4-5% of them; two sit at m/z 121.071, 9-10 ppm below the claimed
+dimer at 0.3-0.4% of it. The reference labels them reagent under the parent's
+formula; this engine leaves them unassigned, and the artifact pass - whose class
+this is - flags nothing on A. Whether the reagent pass should claim a second
+centroid of its own anchor is step 1.4's question, not this gate's.
 
 #### F2's recovery falls, and the fall is the pre-pass being right
 
@@ -1715,6 +1748,10 @@ peaks are the whole difference here. Set C2 carries the same class - 12 of its
 Of the reference's Assigned peaks this engine does not recover as the same ion,
 **about half carry an element or a count the searched grid cannot build**:
 
+The last column counts every element or count a formula needs and the grid
+lacks, so a formula short of two adds to both - which is why F1's and F2's
+columns come to more than their row counts.
+
 | set | reference Assigned | not recovered | of them off-grid | what the grid is missing |
 |---|---|---|---|---|
 | A | 949 | 27 (2.8%) | 13 (48%) | P 12, Si 1 |
@@ -1723,16 +1760,18 @@ Of the reference's Assigned peaks this engine does not recover as the same ion,
 | C2 | 287 | 91 (31.7%) | 24 (26%) | Si 12, F 12 |
 | D | 1,595 | 283 (17.7%) | 146 (52%) | Cl past the 0-2 cap 119, Si 12, F 12, P 2, I 1 |
 | E | 28 | 21 (75.0%) | 15 (71%) | P 8, F 3, I 2, Cl 1, Si 1 |
-| F1 | 100 | 77 (77.0%) | 42 (55%) | P 13, S past the cap 12, I 6, F 6, Cl 3 |
-| F2 | 46 | 36 (78.3%) | 21 (58%) | F 7, P 6, Cl 3, I 3 |
+| F1 | 100 | 77 (77.0%) | 42 (55%) | P 15, S past the cap 14, I 6, F 6, Cl 3 |
+| F2 | 46 | 36 (78.3%) | 21 (58%) | P 8, F 7, Cl 5, I 3, Br 1 |
 
 The elements are the same list every time - silicon, phosphorus, fluorine,
 iodine, and chlorine or sulphur past the profile's cap - and it is the list step
 2.5b's window per source exists to open. It is also the grid half of G6: the
 absent parents that cost these agreements are the ones whose isotopologues get a
-phantom formula fitted to them instead. The rest of the residue is this engine
-reading the peak differently (20 of A's 27, 130 of D's 283) or leaving it open
-(7 and 97), and that is the judgement layer stage 2 builds.
+phantom formula fitted to them instead. On the grid the rest is this engine
+reading the peak differently - 13 of A's 27, 92 of D's 283 - or leaving it open,
+1 and 45. Over the whole of D's 283 another 56 are peaks it reads as somebody's
+isotopologue, and every one of those is off the grid too. What is left on the
+grid is the judgement layer stage 2 builds.
 
 #### The numbers step 2.1 has to move
 
@@ -1757,10 +1796,29 @@ score is step 2.1's.
 
 **The elections the whole-spectrum context flipped** toward a candidate with
 fewer observable lines were counted at step 1.5 as a build-to-build transition -
-10 on A, 15 on B, 29 on D - and that measurement is not repeatable at a stage
-gate, because step 1.6 then changed which peaks are searched at all. What
-carries forward is the population above rather than the transition: on A all ten
-were odd-electron formulas, and A's standing odd-electron rows now number 160.
+10 on A, 15 on B, 29 on D. The count is not repeatable at a stage gate, because
+step 1.6 changed which peaks are searched at all, but the peaks are, and step
+2.1's Verify names them. All 25 of A's and B's still carry their 1.5 reading on
+the stage-1 build; of D's 29, re-derived from the same two builds, one is now
+read as an isotopologue.
+
+| set | m/z | samples | before 1.5 | since 1.5, and still | tier now |
+|---|---|---|---|---|---|
+| A | 299.0792 | 4 | C10H18O8S | C16H9O5 | candidate |
+| A | 358.1133 | 1 | C15H16O9 | C21H13S | assigned |
+| A | 403.2326 | 5 | C18H24N5O2 / C20H34O8 | C27H29S | candidate |
+| B | 355.0697 | 1 | C12H18O10S | C10H8N5O4S | assigned |
+| B | 403.2324 | 1 | C18H24N5O2 | C20H34O8 | assigned |
+| B | 432.1321 | 1 | C9H17N5O11 | C18H22O9S | candidate |
+| B | 445.1199 | 1 | C15H16N2O10 | C22H14N3O2S | assigned |
+| B | 521.1348 | 1 | C15H18N5O12 | C24H23O10S | candidate |
+| B | 522.1356 | 3 | C28H17N2O3S | C21H19NO11 | assigned |
+| B | 581.1675 | 1 | C31H24N2O2S2 | C39H20S | assigned |
+| B | 581.1679 | 5 | C33H23O9 / C39H20S | C18H24N4O14 | assigned |
+| B | 582.1684 | 1 | C16H29N2O15S | C38H29O2S2 | assigned |
+
+All ten of A's are odd-electron formulas, which is the population above seen
+from the other side: A's standing odd-electron rows number 160.
 
 #### Run time
 
