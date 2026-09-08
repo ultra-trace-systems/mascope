@@ -1,3 +1,5 @@
+from dataclasses import replace
+
 import pandas as pd
 import pytest
 
@@ -6,9 +8,11 @@ from mascope_tools.composition.finder import (
     _other_candidate_formulas,
     assign_compositions,
     find_compositions,
+    neutral_mass_bounds,
     process_isotopes,
     replace_atom_with_isotope,
 )
+from mascope_tools.composition.grid import build_neutral_grid
 from mascope_tools.composition.models import CompositionSearchConfig
 from mascope_tools.composition.utils import (
     combine_formula_and_ionization,
@@ -162,6 +166,51 @@ def test_predicted_mz_is_recoverable_from_composition_error_ppm():
         assert recovered == pytest.approx(predicted_mz, rel=1e-12)
 
 
+def test_a_shared_grid_answers_a_peak_the_same_as_its_own_window_does():
+    # `assign_compositions` enumerates one grid for the whole spectrum and hands
+    # it to every peak; a peak searched alone builds a grid over its own window.
+    # Those are the same search over the same box, and the second is the fallback
+    # for a box too wide to hold - so a disagreement between them would be a
+    # spectrum answered differently for a reason that is not chemistry.
+    config = CompositionSearchConfig(
+        ionizations="+H+,+Na+",
+        element_count_ranges="C0-20 H0-40 N0-3 O0-10",
+        mass_range_ppm=10.0,
+    )
+    mechanisms = [parse_ionization(name) for name in ("+H+", "+Na+")]
+    targets = [181.0707, 203.0526, 301.1414, 365.1054]
+    shared = build_neutral_grid(
+        config, *neutral_mass_bounds(targets, mechanisms, config.mass_range_ppm)
+    )
+    assert shared is not None
+
+    for target in targets:
+        with_shared = find_compositions(target, config, grid=shared)
+        alone = find_compositions(target, config)
+        assert [r["ion"] for r in with_shared] == [r["ion"] for r in alone]
+        assert with_shared == alone
+
+
+def test_the_row_cap_keeps_the_closest_readings():
+    # A window can hold more compositions than a caller will look at, and the cap
+    # decides which survive. It has to be the closest ones: everything downstream
+    # ranks on mass error, so a cap that kept an arbitrary slice would hand the
+    # ranking a set the ranking cannot repair.
+    config = CompositionSearchConfig(
+        ionizations="-H+",
+        element_count_ranges="C1-40 H0-80 N0-3 O0-18 S0-1 Cl0-2 Br0-2",
+        mass_range_ppm=10.0,
+        max_result_rows=25,
+    )
+    capped = find_compositions(464.991, config)
+    assert len(capped) == 25
+
+    uncapped = find_compositions(464.991, replace(config, max_result_rows=10**9))
+    assert len(uncapped) > 25
+    closest = sorted(abs(r["composition_error_ppm"]) for r in uncapped)[:25]
+    assert sorted(abs(r["composition_error_ppm"]) for r in capped) == closest
+
+
 def test_composition_results_are_ranked_by_error_magnitude():
     # find_compositions returns best-first, and "best" is the smallest deviation
     # in either direction - not the most negative one.
@@ -221,7 +270,7 @@ def test_assign_compositions_enumerates_only_the_targets(monkeypatch):
 
     enumerated = []
 
-    def fake_find_compositions(target_mz, config):
+    def fake_find_compositions(target_mz, config, grid=None):
         enumerated.append(target_mz)
         return []
 
@@ -342,7 +391,7 @@ def test_a_monoisotopic_row_outranks_another_candidates_satellite(monkeypatch):
     monkeypatch.setattr(
         finder,
         "find_compositions",
-        lambda target_mz, config: [{"formula": f"F{int(target_mz)}"}],
+        lambda target_mz, config, grid=None: [{"formula": f"F{int(target_mz)}"}],
     )
     monkeypatch.setattr(
         finder,
@@ -409,7 +458,7 @@ def test_a_peak_whose_best_reading_has_no_envelope_is_left_alone(monkeypatch):
     monkeypatch.setattr(
         finder,
         "find_compositions",
-        lambda target_mz, config: [{"formula": "C2H2"}],
+        lambda target_mz, config, grid=None: [{"formula": "C2H2"}],
     )
     monkeypatch.setattr(
         finder,

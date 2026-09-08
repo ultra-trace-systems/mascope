@@ -1,4 +1,6 @@
 import re
+from collections.abc import Mapping
+from functools import lru_cache
 
 from pyteomics.mass import Composition, calculate_mass
 
@@ -88,6 +90,49 @@ def composition_mass(composition: Composition) -> float:
     return total
 
 
+@lru_cache(maxsize=512)
+def ionization_composition(formula: str) -> dict[str, int]:
+    """The adduct's element counts, parsed once per mechanism.
+
+    Parsed with :func:`parse_composition` rather than raw pyteomics so custom
+    labelled elements like ``'^N'`` (the 15N-nitrate reagent) survive; pyteomics
+    rejects the bare ``'^N'`` symbol. Cached because a search asks for the same
+    handful of mechanisms once per candidate it reports.
+    """
+    return dict(parse_composition(formula)) if formula else {}
+
+
+def combine_counts_and_ionization(
+    counts: Mapping[str, int], ionization_mechanism: IonizationMechanism
+) -> str:
+    """Combine neutral element counts and an ionization into an ion formula.
+
+    The counts-first half of :func:`combine_formula_and_ionization`, for a caller
+    that already holds the composition and would otherwise print it only to have
+    it parsed straight back. Keys must be in pyteomics notation (``'N[15]'``, not
+    ``'[15N]'``), which is what the string path produces; :func:`to_hill_order`
+    normalizes them on the way out either way.
+
+    :param counts: The neutral's element counts.
+    :param ionization_mechanism: The adduct to add or subtract.
+    :return: The ion formula in Hill notation, with a trailing charge sign.
+    """
+    combined = {symbol: count for symbol, count in counts.items() if count}
+    sign = 1 if ionization_mechanism and ionization_mechanism.addition else -1
+    adduct = (
+        ionization_composition(ionization_mechanism.formula)
+        if ionization_mechanism
+        else {}
+    )
+    for symbol, count in adduct.items():
+        combined[symbol] = combined.get(symbol, 0) + sign * count
+
+    charge_sign = (
+        "+" if ionization_mechanism and ionization_mechanism.charge > 0 else "-"
+    )
+    return to_hill_order(combined) + charge_sign
+
+
 def combine_formula_and_ionization(
     formula: str, ionization_mechanism: IonizationMechanism
 ) -> str:
@@ -95,25 +140,9 @@ def combine_formula_and_ionization(
     Combine a neutral formula and ionization into a single ion formula in Hill notation.
     """
     # Parse formula (Pyteomics requires element-first notation)
-    comp_formula = Composition(formula=to_pyteomics(formula))
-    # Parse the adduct with parse_composition (not raw pyteomics) so custom
-    # labelled elements like '^N' (the 15N-nitrate reagent) survive; pyteomics
-    # rejects the bare '^N' symbol.
-    comp_ionization = (
-        parse_composition(ionization_mechanism.formula)
-        if ionization_mechanism
-        else Composition(formula="")
+    return combine_counts_and_ionization(
+        Composition(formula=to_pyteomics(formula)), ionization_mechanism
     )
-    if ionization_mechanism.addition:
-        combined_composition = comp_formula + comp_ionization
-    else:
-        combined_composition = comp_formula - comp_ionization
-
-    charge_sign = (
-        "+" if ionization_mechanism and ionization_mechanism.charge > 0 else "-"
-    )
-    ion_formula = to_hill_order(combined_composition) + charge_sign
-    return ion_formula
 
 
 def parse_composition(formula_string: str, multiplier: int = 1) -> Composition:
@@ -252,7 +281,51 @@ def assert_valid_formula(formula: str) -> None:
         ) from exc
 
 
-def to_hill_order(elements: dict) -> str:
+@lru_cache(maxsize=4096)
+def normalize_symbol(symbol: str) -> str:
+    """Canonicalize an element symbol to the bracket-first isotope notation.
+
+    Accepts both ``[15N]`` and ``N[15]`` and answers ``[15N]``, so a formula that
+    came back from pyteomics is spelled the way the rest of the system writes it.
+    Cached: the symbols are a closed set of a few dozen and this is called once
+    per element of every formula the composition search reports.
+    """
+    # Accept both [15N] and N[15] and canonicalize to [15N].
+    bracket_first = re.fullmatch(r"\[(\d+)([A-Z][a-z]?)\]", symbol)
+    if bracket_first:
+        return symbol
+
+    element_first = re.fullmatch(r"([A-Z][a-z]?)\[(\d+)\]", symbol)
+    if element_first:
+        element, mass_num = element_first.groups()
+        return f"[{mass_num}{element}]"
+
+    return symbol
+
+
+@lru_cache(maxsize=4096)
+def hill_sort_key(symbol: str) -> tuple[int, str, int, int, str]:
+    """Sort key placing carbon first, hydrogen second, the rest alphabetically.
+
+    Expects an already-normalized symbol (see :func:`normalize_symbol`). Cached
+    for the same reason.
+    """
+    bracket_match = re.fullmatch(r"\[(\d+)([A-Z][a-z]?)\]", symbol)
+    if bracket_match:
+        mass_num, element = bracket_match.groups()
+        priority = 0 if element == "C" else 1 if element == "H" else 2
+        return (priority, element, 0, int(mass_num), symbol)
+
+    plain_match = re.fullmatch(r"([A-Z][a-z]?)", symbol)
+    if plain_match:
+        element = plain_match.group(1)
+        priority = 0 if element == "C" else 1 if element == "H" else 2
+        return (priority, element, 1, 0, symbol)
+
+    return (3, symbol, 1, 0, symbol)
+
+
+def to_hill_order(elements: Mapping[str, int]) -> str:
     """Convert a dictionary of elements to Hill notation string."""
     # For empty formula, return '()'
     if not elements:
@@ -260,40 +333,12 @@ def to_hill_order(elements: dict) -> str:
     # Filter out zero and negative counts (can be if -H- is the ionization mechanism)
     elements = {k: v for k, v in elements.items() if v > 0}
 
-    def normalize_symbol(symbol: str) -> str:
-        # Accept both [15N] and N[15] and canonicalize to [15N].
-        bracket_first = re.fullmatch(r"\[(\d+)([A-Z][a-z]?)\]", symbol)
-        if bracket_first:
-            return symbol
-
-        element_first = re.fullmatch(r"([A-Z][a-z]?)\[(\d+)\]", symbol)
-        if element_first:
-            element, mass_num = element_first.groups()
-            return f"[{mass_num}{element}]"
-
-        return symbol
-
-    normalized_elements = {}
+    normalized_elements: dict[str, int] = {}
     for symbol, count in elements.items():
         normalized_symbol = normalize_symbol(symbol)
         normalized_elements[normalized_symbol] = (
             normalized_elements.get(normalized_symbol, 0) + count
         )
-
-    def hill_sort_key(symbol: str) -> tuple[int, str, int, int, str]:
-        bracket_match = re.fullmatch(r"\[(\d+)([A-Z][a-z]?)\]", symbol)
-        if bracket_match:
-            mass_num, element = bracket_match.groups()
-            priority = 0 if element == "C" else 1 if element == "H" else 2
-            return (priority, element, 0, int(mass_num), symbol)
-
-        plain_match = re.fullmatch(r"([A-Z][a-z]?)", symbol)
-        if plain_match:
-            element = plain_match.group(1)
-            priority = 0 if element == "C" else 1 if element == "H" else 2
-            return (priority, element, 1, 0, symbol)
-
-        return (3, symbol, 1, 0, symbol)
 
     atomic_symbols = sorted(normalized_elements.keys(), key=hill_sort_key)
     formula = "".join(
