@@ -17,7 +17,7 @@ step PRs land on the epic and are named here as they merge.
 | 1.3 - same-ion tie policy in the finder | #2082 | measured: the step's target met on A (47 -> 87% same formula); the note's mass-only policy needed a closed-shell key the gate supplied |
 | 1.4 - reagent-cluster pre-pass | #2086 | measured: 60 peaks carry 81.2% of set A's signal; the claim is anchored on the sample's own base ions and the envelope reaches the floor it searches; no reference analyte taken on A/B/C/D/E/F1 |
 | 1.5 - satellite claim and ringing artifacts | #2088 | measured: G8 met, 0 ownerless isotopologue rows on every set; B claims 969 more satellites and D 423, 88-97% of them confirmed by the reference, and D gains 61 analytes and 27 agreements; two review rounds fixed the envelope's anchor and then restored the requirement anchoring it took away; G6 missed, and the reference's parent ion is outside the searched grid for 78 of A's 79 (decision 11) |
-| 1.6 - cap and mass window | #2090 | measured: G5 met (35,496 unsearched peaks -> 0, of which 5,304 the reference calls Assigned and 8,928 it commits any analyte on) and G2 clears its stage-1 target on A, B, C and D for the first time (B 20.7 -> 95.2%); the mass window was already instrument-class-resolved by 1.1; the grid is enumerated once per band instead of once per peak, so A and C search 5-8x more peaks and finish faster, worst sample 36s; G1 rises on the sets that gained most and G6 with it (decision 11) |
+| 1.6 - cap and mass window | #2090 | measured: G5 met (35,496 unsearched peaks -> 0, of which 5,304 the reference calls Assigned and 8,928 it commits any analyte on) and G2 clears its stage-1 target on A, B, C and D for the first time (B 20.7 -> 95.2%); the mass window was already instrument-class-resolved by 1.1; the grid is enumerated once per band instead of once per peak, so A and C search 5-8x more peaks and finish faster, worst sample 36s; G1 rises on the sets that gained most and G6 with it, and the review found G6's rise has an envelope part beside the grid gap, now decision 11's rider with homes in 2.1 and 2.4 |
 | 1.7 - stage 1 gate, engine 0.4.0 | - | planned |
 | 2.1 - v2 fit for Stage B | - | planned |
 | 2.2 - self-calibrated mass gate | - | planned |
@@ -417,7 +417,12 @@ The confidence layer. This is where "assigned" starts meaning something.
   finder (`match_isotopic_pattern`, where `score_pattern` decides which
   reading of a peak wins before the same-ion election of decision 9):
   re-scoring the winner afterwards leaves a wrong election in place, and the
-  election is where the v1 score does its damage.
+  election is where the v1 score does its damage. The envelope predictor's
+  1% abundance cutoff (`ISOTOPE_ABUNDANCE_THRESHOLD`) goes with it: under the
+  detectability gate a faint line is predicted and then judged against the
+  noise rather than dropped before anyone looks. After step 1.6, 45 of the
+  100 G6 rows on B whose parent Mascope reads with the reference's own
+  formula are lines the predictor never emitted (decision 11's rider).
 - **Why.** Cause 2: the v1 fit cannot rank, and Stage A and Stage B evidence
   are on different scales (noted in `config.py`). It is also what makes a
   TOF assignable at all: v1 scales its mass term by a fixed 5 ppm, v2 by the
@@ -449,7 +454,9 @@ The confidence layer. This is where "assigned" starts meaning something.
   back to a reading whose predicted lines are present, and the share of
   untargeted M0 rows whose neutral is odd-electron (7% on A to 37% on E after
   1.5, one line per engine in `compare_runs.py`) falls on the uronium and
-  bromide sets, where such a neutral is rarely chemistry.
+  bromide sets, where such a neutral is rarely chemistry; the G6 rows whose
+  parent Mascope commits with the reference's own formula (100 on B, 32 on D
+  after 1.6) shrink, because their lines are now predicted and judged.
 - **Size.** M. Depends on stage 1. First in stage 2: once step 1.5 made the
   pattern context whole, the score became the weakest link, and every stage-2
   number is read off it.
@@ -499,13 +506,18 @@ The confidence layer. This is where "assigned" starts meaning something.
   detectability gate, second channel, later a series anchor), `mass_z`,
   and plausibility demotes (carbon clusters with DBE/C >= 1 and no fluorine,
   oxygen lattices with O/C > 1.3 on a saturated mass, carbon-free formulas
-  off the allowlist). Rules only demote; every row carries
+  off the allowlist), and one more from decision 11's rider: an M0 committed
+  on a peak that a committed neighbour's envelope predicts a line for, within
+  the matcher's tolerance, carries the neighbour and the line as its reason
+  and cannot sit at assigned tier - after step 1.6, 332 of B's 460 G6 rows
+  and 275 of D's 328 do. Rules only demote; every row carries
   `provenance.tier_reasons`, and the run records the rule version.
 - **Why.** Cause 2: the tier must degrade with evidence, and it must be able
   to say why.
 - **Verify.** Gate metric G1 to 20% or below on both instruments; every
   committed row has at least one reason; the decoy harness
-  (`tooling/score_eval`) confirms the demotes do not lower contested top-1.
+  (`tooling/score_eval`) confirms the demotes do not lower contested top-1;
+  no G6 row of the envelope part (decision 11's rider) at assigned tier.
 - **Size.** L (three PRs: the pure measurements in `mascope_tools`, the
   backend tiering, the reasons in the inspector). Depends on 2.1-2.3.
 
@@ -863,7 +875,7 @@ C2 is held to C's.
 | G4 reference reagent peaks labelled reagent or artifact | 0 of 58 | 0 of 24 | 0 of 29 | >= 90% | 100% | hold |
 | G4a of those, the ones that **name an ion** (step 1.4's own target) | 0 of 58 | 0 of 24 | 0 of 15 | >= 90% | 100% | hold |
 | G5 reference Assigned peaks never searched (after 1.6: 0 on every set, from 5,304 pooled over A-F2 on the reference's own Assigned tier - A 186, B 4,180, C 7, which reproduces the step-0 baselines beside them) | 190 | 4,181 | 8 | 0 | 0 | 0 |
-| G6 main peaks on reference isotopologues (after 1.6: 107 A, 460 B, 328 D, up from 79/54/75 because the peaks the cap hid are now searched - as a share of committed rows A is flat at 5.2%, B 3.4 -> 5.0%, D 8.8 -> 13.8%. Of the rows 1.6 added, the reference's parent ion is outside the searched grid for 20 of A's 28, 293 of B's 406 and 90 of D's 255 - that part is 2.5b's; the rest have the parent on the grid and are the envelope logic refusing or never predicting the line, which no step owns yet; the reference's parent ion is outside the searched grid for 78 of A's and 52 of D's, so the residue needs the grid rather than the envelope logic - decision 11) | 96 | - | - | read, not gated (decision 11: <= 10 after 2.5b) | <= 5 | hold |
+| G6 main peaks on reference isotopologues (after 1.6: 107 A, 460 B, 328 D, up from 79/54/75 because the peaks the cap hid are now searched - as a share of committed rows A is flat at 5.2%, B 3.4 -> 5.0%, D 8.8 -> 13.8%. Of the rows 1.6 added, the reference's parent ion is outside the searched grid for 20 of A's 28, 293 of B's 406 and 90 of D's 255 - that part is 2.5b's; the rest have the parent on the grid and are the envelope logic refusing or never predicting the line, which decision 11's rider gives to 2.1 and 2.4. After 1.5 the parent was outside the grid for 78 of A's 79 and 52 of D's 75, which is what decision 11 read) | 96 | - | - | read, not gated (decision 11: <= 10 after 2.5b) | <= 5 | hold |
 | G7 uncorroborated commits beyond 3 sigma | not gated | not gated | not gated | - | 0 | 0 |
 | G8 untargeted isotopologue rows without an owner (step 1.5's coherence count; was 71 over the bromide Orbitrap set's six samples, 0 on every set after 1.5 and still 0 after 1.6 with six to eight times as many peaks searched) | 0 | 0 | 0 | 0 | 0 | 0 |
 | mass error of committed peaks, MAD | 0.20 ppm | 0.20 ppm | 1.13 ppm | <= 0.35 ppm on an Orbitrap | hold | hold |
@@ -1706,6 +1718,26 @@ by design (see the metric's note) and are step 2.5's to fix.
     step 2.5b's known window per source. Until then the stage-1 gate reads G6
     and records it, the target of at most 10 on A is 2.5b's to meet, and the
     stage-2 target of at most 5 stands.
+
+    *Rider (taken 2026-09-08 with step 1.6).* With every peak searched the
+    residue has two parts. The grid part - the reference's parent ion outside
+    the searched box: 20 of the 28 rows 1.6 added on A, 293 of B's 406, 90 of
+    D's 255 - is what this decision read, and 2.5b still owns it. The envelope
+    part has the parent on the grid, on most rows committed by Mascope with
+    the reference's own formula (100 of B's 113, 32 of D's 165), and the line
+    unclaimed all the same: either the predictor never emits it, because
+    `ISOTOPE_ABUNDANCE_THRESHOLD` drops any line under 1% - the 18O line of an
+    ion with four or fewer oxygens, the 15N line of one with one or two
+    nitrogens - or the 40% intensity tolerance refuses it. A peak nobody
+    predicts, or nobody accepts, cannot be claimed, and a whole-spectrum
+    search at 3 ppm then finds a formula for it nearly every time. Two owners:
+    step 2.1 retires the cutoff with the detectability-gated fit, so a faint
+    line is predicted and judged rather than dropped, and step 2.4 gives an M0
+    committed on a peak that a committed neighbour's envelope predicts a line
+    for a tier reason and keeps it off assigned tier. The target of at most 10
+    on A after 2.5b is read on the grid part; the envelope part is read at the
+    stage-2 gate, where 332 of B's 460 and 275 of D's 328 rows sit at assigned
+    tier today.
 
 ## Risks
 
