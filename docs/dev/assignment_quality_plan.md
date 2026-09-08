@@ -1299,8 +1299,9 @@ statement from the one it replaces; and refusing to commit anything, leaving the
 peak unassigned, costs 26 of set C's 591 agreed rows for 23 of its 56. The rule
 is only sound once the parent can be named, which is the same fix: silicon,
 phosphorus and a wider halogen cap in the Stage B grid. That belongs to step
-2.5b and the reference-seed proposal, and G6 should be judged after it rather
-than before.
+2.5b and the reference-seed proposal. Whether the stage 1 gate keeps G6 at 10
+with the grid unchanged, or reads it after 2.5b, is a decision about what stage
+1 is for and is left to the plan owner rather than taken here.
 
 ## Decisions (taken 2026-09-07)
 
