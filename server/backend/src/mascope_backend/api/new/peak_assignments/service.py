@@ -71,6 +71,7 @@ from mascope_backend.api.new.peak_assignments.engine import (
     REFERENCE_IDENTITIES_COL,
     build_unassigned_assignments,
     calibration_meta,
+    drop_ions_claimed_elsewhere,
     invert_matches_to_peak_assignments,
     score_ions_by_fit,
     untargeted_matches_to_peak_assignments,
@@ -1660,12 +1661,21 @@ def _reagent_assignments(
     :param peak_assignment_run_id: The run they are stamped with.
     :return: The reagent rows, and the peaks they take out of both stages.
     """
+    hits, calibration = claim_reagent_peaks(
+        peaks_df,
+        reagent_library_for(resolved_profile.profile.name),
+        claim_ppm=resolved_profile.mz_precision_ppm,
+        purity=resolved_profile.profile.label_purity,
+    )
+    if calibration is not None and calibration.anchors:
+        runtime.logger.info(
+            "Reagent pre-pass anchored at "
+            f"{calibration.offset_ppm:+.1f} ppm (+/- {calibration.tolerance_ppm:.1f}) "
+            "on "
+            + ", ".join(f"{label} {error:+.1f}" for label, error in calibration.anchors)
+        )
     rows = build_reagent_assignments(
-        claim_reagent_peaks(
-            peaks_df,
-            reagent_library_for(resolved_profile.profile.name),
-            purity=resolved_profile.profile.label_purity,
-        ),
+        hits,
         peaks_df,
         sample_item_id=sample_item_id,
         peak_assignment_run_id=peak_assignment_run_id,
@@ -1701,7 +1711,8 @@ async def _stage_a_assignments(
         Dropped before arbitration rather than after it: a reagent peak left in
         the frame would still fold corroboration into a compound's other
         adducts, so removing its row afterwards would leave a boost behind that
-        no surviving row accounts for.
+        no surviving row accounts for. Whole target ions go, not single rows -
+        see :func:`drop_ions_claimed_elsewhere` for why the difference matters.
     :return: The assignment rows, and what a run records about the confidence
         curve their P(correct) came from - None when Stage A never ran or the
         instrument has no curve.
@@ -1724,9 +1735,9 @@ async def _stage_a_assignments(
             polarity=sample.polarity,
         )
         if excluded_peak_ids and not match_isotope_df.empty:
-            match_isotope_df = match_isotope_df[
-                ~match_isotope_df["sample_peak_id"].isin(excluded_peak_ids)
-            ]
+            match_isotope_df = drop_ions_claimed_elsewhere(
+                match_isotope_df, excluded_peak_ids
+            )
         # Gate raw matches by the sample's match parameters, exactly as the
         # targeted Match pipeline does: this zeroes the score of peaks whose
         # m/z error, isotope-ratio error, or intensity falls outside
