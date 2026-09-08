@@ -326,13 +326,14 @@ def process_isotopes(
     isotope_mz_errors = matched_isotopes["mass_errors_ppm"]
     isotope_intensity_errors = matched_isotopes["intensity_errors"]
     if isotope_mzs[0] != 0:
-        # Extract and process the base peak: the pattern's most abundant
-        # isotopologue, which is what IsoSpec orders first and what the pattern's
-        # intensities are relative to. It is not necessarily the monoisotopic
-        # one - for a bromine- or chlorine-rich ion they are different rows - so
-        # its label comes from its own configuration like every other
-        # isotopologue's. Exactly one configuration reads as `M0`, the one with
-        # every element at its lightest isotope, and it may be any index here.
+        # Index 0 is the ion's own line, which is what the pattern's intensities
+        # are relative to and, for a candidate the composition search proposed,
+        # the peak it was enumerated for
+        # (`heuristic_filter.anchor_on_monoisotopic`). Its label still comes
+        # from its own configuration like every other row's, because a caller
+        # may hand this function a pattern in any order; what index 0 means to
+        # THIS function is the line the rest of the envelope hangs off, and a
+        # pattern whose index 0 went unmatched has no envelope to write.
         base_mass = isotope_mzs[0]
         main_candidate["mz"] = base_mass
         main_candidate["observed_mass"] = base_mass
