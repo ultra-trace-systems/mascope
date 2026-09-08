@@ -15,7 +15,7 @@ step PRs land on the epic and are named here as they merge.
 | 1.1 fix - finder: the labelled reagent's atom in ion formulas | #2080 | merged: the label reaching the ion string is what pyteomics could not parse |
 | 1.2 - opportunistic adduct channels | #2081 | measured: fingerprint gate works and refuses sodium; carbonate settled on the broad-window nitrate set |
 | 1.3 - same-ion tie policy in the finder | #2082 | measured: the step's target met on A (47 -> 87% same formula); the note's mass-only policy needed a closed-shell key the gate supplied |
-| 1.4 - reagent-cluster pre-pass | #TBD | measured: 40 peaks carry 80.7% of set A's signal; no analyte agreement lost; peaky's formula-less reagent rows are ringing, which is 1.5 |
+| 1.4 - reagent-cluster pre-pass | #2086 | measured: 40 peaks carry 80.7% of set A's signal; no analyte agreement lost; peaky's formula-less reagent rows are ringing, which is 1.5 |
 | 1.5 - satellite claim and ringing artifacts | - | planned |
 | 1.6 - cap and mass window | - | planned |
 | 1.7 - stage 1 gate, engine 0.4.0 | - | planned |
