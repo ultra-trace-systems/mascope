@@ -449,9 +449,9 @@ const corrobTooltip = (row) => {
       : 'already folded into P(correct)'
     : 'not included in the P(correct) beside it'
   return row.corrobInherited
-    ? `Supported by ${row.corrobAdducts} adducts, via the M0 of this isotopologue family ` +
+    ? `Supported by ${row.corrobAdducts} channels, via the M0 of this isotopologue family ` +
         `(${scoring})`
-    : `Supported by ${row.corrobAdducts} adducts (${scoring})`
+    : `Supported by ${row.corrobAdducts} channels (${scoring})`
 }
 
 // Two-way selection tied to the focused peak: clicking a row focuses its peak,

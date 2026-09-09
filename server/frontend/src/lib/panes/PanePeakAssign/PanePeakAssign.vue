@@ -355,11 +355,15 @@ const corroboration = computed(() => {
 
 // The badge says "via M0" on its face, not only on hover: the count is the same
 // number the M0 shows, and an isotopologue that displayed it unqualified would read
-// as a peak seen through several adducts in its own right.
+// as a peak seen through several channels in its own right.
+//
+// "channels" rather than "adducts", which is what this said while the count was
+// the curated per-compound one: protonation is in the count and is not an
+// adduct, so the older word named the number wrongly as soon as it changed.
 const corroborationLabel = computed(() => {
   const c = corroboration.value
   if (!c) return ''
-  return `Supported by ${c.n} adducts${c.inherited ? ' via M0' : ''}`
+  return `Supported by ${c.n} channels${c.inherited ? ' via M0' : ''}`
 })
 
 // What the badge must not do is claim the number beside it accounts for this.
@@ -374,7 +378,7 @@ const corroborationTooltip = computed(() => {
   if (!c) return ''
   if (c.inherited) {
     return (
-      `The M0 of this isotopologue family was seen via ${c.n} adducts. ` +
+      `The M0 of this isotopologue family was seen through ${c.n} channels. ` +
       'Independent corroborating evidence for the formula, ' +
       (c.scored
         ? "folded into the M0's P(correct) - not into this isotopologue's, which is " +
@@ -382,9 +386,9 @@ const corroborationTooltip = computed(() => {
         : 'not included in the P(correct) beside it.')
     )
   }
-  const adducts = (c.names ?? []).join(', ')
+  const channels = (c.names ?? []).join(', ')
   return (
-    `Seen via ${c.n} adducts${adducts ? ` (${adducts})` : ''}. ` +
+    `Seen through ${c.n} channels${channels ? ` (${channels})` : ''}. ` +
     'Independent corroborating evidence, ' +
     (c.scored ? 'already folded into P(correct).' : 'not included in the P(correct) beside it.')
   )
