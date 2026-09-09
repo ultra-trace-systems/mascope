@@ -735,6 +735,65 @@ describe('PaneBrowserAssignment adduct corroboration', () => {
     expect(wrapper.vm.corrobLabel(rows.get('a'))).toBe('3')
   })
 
+  // An untargeted family carries no curated count at all - that is the normal
+  // case in a ledger - so the channel count is what has to reach the marker,
+  // parent and isotopologues alike.
+  it('marks an untargeted family from its channel count', async () => {
+    const fam = corroborated(null)
+    fam.parent.corroboration_channels = 3
+    const wrapper = await unfolded(fam)
+    const rows = rowsById(wrapper)
+
+    expect(rows.get('a').corrobAdducts).toBe(3)
+    expect(rows.get('a').corrobInherited).toBe(false)
+    for (const id of ['a-c0', 'a-c1']) {
+      expect(rows.get(id).corrobAdducts, id).toBe(3)
+      expect(rows.get(id).corrobInherited, id).toBe(true)
+    }
+  })
+
+  // The channel count is folded into nothing, so the marker must not repeat the
+  // curated count's claim that P(correct) already accounts for it.
+  it('does not claim a channel count is in P(correct)', async () => {
+    const fam = corroborated(null)
+    fam.parent.corroboration_channels = 3
+    const wrapper = await unfolded(fam)
+    const rows = rowsById(wrapper)
+
+    expect(wrapper.vm.corrobTooltip(rows.get('a'))).toBe(
+      'Supported by 3 adducts (not included in the P(correct) beside it)'
+    )
+    expect(wrapper.vm.corrobTooltip(rows.get('a-c0'))).toBe(
+      'Supported by 3 adducts, via the M0 of this isotopologue family ' +
+        '(not included in the P(correct) beside it)'
+    )
+  })
+
+  // The inheritance is a fallback, not an override. A backend that does put a
+  // count on an isotopologue - the row is the one being described, after all -
+  // must see it rendered as the row's own rather than replaced by its parent's.
+  it("shows an isotopologue's own count rather than inheriting", async () => {
+    const fam = corroborated(null, [{ corroboration_channels: 2 }, {}])
+    fam.parent.corroboration_channels = 4
+    const wrapper = await unfolded(fam)
+    const rows = rowsById(wrapper)
+
+    expect(rows.get('a-c0').corrobAdducts).toBe(2)
+    expect(rows.get('a-c0').corrobInherited).toBe(false)
+    // Its sibling has none of its own and still borrows the family's.
+    expect(rows.get('a-c1').corrobAdducts).toBe(4)
+    expect(rows.get('a-c1').corrobInherited).toBe(true)
+  })
+
+  // Where a curated row carries both, the channel count is the superset.
+  it('prefers the channel count over the curated one', async () => {
+    const fam = corroborated(2)
+    fam.parent.corroboration_channels = 4
+    const wrapper = await unfolded(fam)
+
+    expect(rowsById(wrapper).get('a').corrobAdducts).toBe(4)
+  })
+
   // The marker is gated on `corrobAdducts > 1`, so an uncorroborated family has
   // to stay at 0 rather than inherit a 1 or a null that reads as "supported".
   it('leaves a family whose M0 was not corroborated unmarked', async () => {

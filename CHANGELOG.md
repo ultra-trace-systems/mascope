@@ -23,6 +23,15 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
   A 15N-labelled reagent is exempt, because its label is what makes the
   analyte's own nitrogen count observable.
 
+- The "Supported by N adducts" corroboration marker is on untargeted rows again,
+  in both the assignment inspector and the ledger table. It reads a per-compound
+  adduct count that only a curated identity produces, so it had gone blank on
+  nearly every peak - 25 of 2,062 committed rows on one sample set, and none at
+  all on six of eight. It now prefers the channel count the run measures over the
+  whole ledger, which is the same evidence for every committed row and a superset
+  of the curated count where both exist. Its tooltip no longer claims the count is
+  folded into P(correct) when it is not: only the curated one is.
+
 - **A run now measures its own mass accuracy and says where each of its
   assignments sits in it.** A sample's assignments do not scatter around zero
   ppm; they scatter around the offset that acquisition sat at, with the spread

@@ -339,7 +339,22 @@ const rows = computed(() => {
       // from a backend that predates the slim ledger projection.
       pCorrect: row.p_correct ?? row.provenance?.p_correct ?? null,
       pProvisional: row.p_correct_provisional ?? row.provenance?.calibration?.provisional ?? false,
-      corrobAdducts: row.corroboration_adducts ?? row.provenance?.corroboration?.n_adducts ?? 0,
+      // The ledger-measured channel count first: it reaches every committed
+      // row, where the curated per-compound count reaches only what Stage A
+      // claimed - a handful of rows on most samples and none at all on many.
+      // Where both exist the first is a superset of the second, so preferring
+      // it never shrinks the marker.
+      corrobAdducts:
+        row.corroboration_channels ??
+        row.provenance?.cross_channel?.channels?.length ??
+        row.corroboration_adducts ??
+        row.provenance?.corroboration?.n_adducts ??
+        0,
+      // Whether that count is the one folded into p_correct. Only the curated
+      // count is; the channel count is evidence the run recorded, not a score
+      // it applied, and the marker's tooltip must not claim otherwise.
+      corrobScored:
+        (row.corroboration_channels ?? row.provenance?.cross_channel?.channels?.length) == null,
       corrobInherited: false,
       mech: mechById.value.get(row.ionization_mechanism_id) ?? null,
       isChild: false
@@ -356,12 +371,16 @@ const rows = computed(() => {
       .slice()
       .sort((a, b) => (a.sample_peak_mz ?? 0) - (b.sample_peak_mz ?? 0))
       .map((child) => {
-        // Adduct corroboration is written onto the M0 winner alone: an isotopologue
-        // is the same ion measured at another isotope, not a second sighting of
+        // Corroboration is written onto the M0 winner alone: an isotopologue is
+        // the same ion measured at another isotope, not a second sighting of
         // the compound, so it never carries a count of its own. The evidence is
         // about the formula the family shares, so the isotopologue shows its
         // parent's count and the marker says where it came from.
-        const own = child.corroboration_adducts ?? child.provenance?.corroboration?.n_adducts
+        const own =
+          child.corroboration_channels ??
+          child.provenance?.cross_channel?.channels?.length ??
+          child.corroboration_adducts ??
+          child.provenance?.corroboration?.n_adducts
         return {
           ...child,
           tierRank: parent.tierRank,
@@ -375,6 +394,7 @@ const rows = computed(() => {
           pProvisional:
             child.p_correct_provisional ?? child.provenance?.calibration?.provisional ?? false,
           corrobAdducts: own ?? parent.corrobAdducts,
+          corrobScored: parent.corrobScored,
           // True whenever the count on this row is the parent's, independent of
           // whether it clears the marker's threshold, so the row stays
           // self-describing to anything that reads it below that threshold.
@@ -416,16 +436,23 @@ const pCorrectTooltip = (row) =>
 // dash, where the reason can be the row's own.
 const pCorrectHeaderTooltip = P_CORRECT_TOOLTIP
 
-// Tooltip for the adduct-corroboration marker. An isotopologue shows the count its
-// M0 was corroborated by, so it has to say both that the evidence is the
-// family's and that the boost is in the M0's P(correct) - the engine folds it
-// into the record carrying the corroboration and never into a child's, so
-// the number this marker sits beside does not include it.
-const corrobTooltip = (row) =>
-  row.corrobInherited
+// Tooltip for the corroboration marker. It has two things to be careful about.
+// An isotopologue shows the count its M0 was corroborated by, so it must say the
+// evidence is the family's. And whether the number beside it accounts for the
+// corroboration depends on WHICH count this is: the curated per-compound one is
+// folded into p_correct (into the record carrying it, never into a child's), the
+// ledger-measured channel count is not folded into anything.
+const corrobTooltip = (row) => {
+  const scoring = row.corrobScored
+    ? row.corrobInherited
+      ? "folded into the M0's P(correct), not into this row's"
+      : 'already folded into P(correct)'
+    : 'not included in the P(correct) beside it'
+  return row.corrobInherited
     ? `Supported by ${row.corrobAdducts} adducts, via the M0 of this isotopologue family ` +
-      "(folded into the M0's P(correct), not into this row's)"
-    : `Supported by ${row.corrobAdducts} adducts (already folded into P(correct))`
+        `(${scoring})`
+    : `Supported by ${row.corrobAdducts} adducts (${scoring})`
+}
 
 // Two-way selection tied to the focused peak: clicking a row focuses its peak,
 // and focusing a peak elsewhere (spectrum click, inspector) highlights its row.
