@@ -2660,6 +2660,36 @@ so no assignment rule can discriminate a formula there, and G1 near 99% with G2
 near 15% on E, F1 and F2 has been measuring a calibration fault all along rather
 than an assignment one.
 
+The calibration node's own stored record says the same thing, and says where the
+work is. Each file's `mz_calibration` carries what the fit achieved:
+
+| set | mode | calibrant points | node's post-fit error | what the engine measures |
+|---|---|---|---|---|
+| A | one-point | 8 | 3.66 -> 0.43 ppm | -0.02 to +0.03, width 0.18-0.27 |
+| B | one-point | 3 | 0.52 -> 0.10 ppm | -0.22 to -0.17, width 0.22-0.33 |
+| C | one-point | 1 | 0.43 -> 0.00 ppm | -0.22 to -0.09, width 0.13-0.16 |
+| C2 | one-point | 2 | 1.261 -> 1.261 ppm | -1.14 to -1.11, width 0.18-0.29 |
+| D | one-point | (no quality recorded) | - | -0.18 to -0.08, width 0.36-0.55 |
+| E, F1, F2 | TOF mode 0 | (no quality recorded) | - | up to -2.6 ppm, width 2.8-6.9 |
+
+Three different states, and only the first is a calibration. A is a real fit and
+the engine's independent reading agrees with it. C2's node ran, reported a
+post-fit residual **identical to its pre-fit residual** on two calibrant points -
+1.2613440 to 1.2613450 ppm - and stamped the record `"status": "ok"` and
+`"verified": true`; the engine then measures that same 1.1 ppm on all six samples.
+C's rests on a single calibrant worth 0.07% of the TIC, where a one-point fit
+zeroes its own residual by construction. The TOF files carry only the
+acquisition's two mode-0 coefficients with no quality block at all: Mascope never
+fitted them, and `verified` there means the acquisition's axis was accepted.
+
+So the fix is in the calibration node, and it is two distinct things: fit the TOF
+files at all (a calibrant collection for the mode, which is what the node stands
+down without), and gate `verified` on the fit's own post-fit residual and on how
+many and how strong its calibrant points were, rather than on the fit having
+completed. The tolerance in those records, 5 ppm, is the window calibrants are
+MATCHED in; nothing in them is a quality bar. The per-run reading this step adds
+is the independent check on that bar once it exists.
+
 This turns the engine's own `mu` correction into an open design question rather
 than a feature. The engine corrects by Stage A's fitted offset wherever it has
 the anchors for one - -1.53 ppm on C2, +2.18 on F1 - which papers over exactly
