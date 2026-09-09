@@ -14,7 +14,6 @@ import pandas as pd
 import pytest
 
 from mascope_backend.api.controllers.match.lib.match_score_v2 import (
-    fit_sample_mass_accuracy,
     ion_score_v2,
     match_score_version,
     sample_noise_floor,
@@ -163,20 +162,6 @@ def test_calibrate_refuses_an_instrument_agnostic_curve():
     # prevent, so the caller must name the curve.
     with pytest.raises(ValueError, match="calibration"):
         ion_score_v2(_ion(110.0, snr=[500, 55]), sigma_ppm=0.5, calibrate=True)
-
-
-def test_fit_sample_mass_accuracy():
-    rng = np.random.default_rng(0)
-    df = pd.DataFrame(
-        {
-            "match_mz_error": rng.normal(0.1, 0.3, 50),
-            "sample_peak_intensity": [100.0] * 50,
-        }
-    )
-    mu, sigma = fit_sample_mass_accuracy(df)
-    assert abs(mu - 0.1) < 0.2 and 0.1 < sigma < 0.6
-    # too few anchors -> sigma None (caller falls back)
-    assert fit_sample_mass_accuracy(df.head(3))[1] is None
 
 
 def test_sample_noise_floor_positive():
