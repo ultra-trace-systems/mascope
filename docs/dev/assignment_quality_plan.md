@@ -1874,7 +1874,11 @@ minutes, which is what lets it be run on every change rather than once a stage.
 Measured on `step-2.1-v2-fit-stage-b-2026.09.09-a4c8fae`, all 43 samples
 re-assigned and compared against the same reference runs the stage-1 gate used.
 Every field of the table below is identical on the build before it, which
-carried the same scoring and wrote one provenance field less. The engine version
+carried the same scoring and wrote one provenance field less. One commit lands
+after it, bounding the envelope by the faintest POSITIVE intensity rather than
+by the minimum: no peak of the 48,894 rows these 43 runs wrote has an intensity
+of zero, so it cannot move a number here, and it stops a file that records no
+signal-to-noise from predicting every envelope to the floor. The engine version
 stays 0.4.0: a stage bumps once, at its own gate (2.7).
 
 Two things changed and they do different work. The finder now ranks candidates
