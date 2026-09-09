@@ -314,6 +314,17 @@ def _provenance_scalars(
     checking why one carries a tier its evidence does not explain, needs the two
     together, and the second is on the run rather than the row.
 
+    ``corroboration_channels`` is here because the corroboration marker beside it
+    would otherwise be blank on nearly every row. ``corroboration_adducts`` counts
+    the adducts a CURATED compound was matched through, so it reaches only rows
+    Stage A claimed - 25 of one gate sample set's 2,062 committed rows, and none
+    at all on six of the eight sets. The channel count is the same evidence read
+    off the finished ledger instead (``cross_channel``), so it reaches every
+    committed row; where both exist the second is the first plus whatever the
+    untargeted stage committed of the same neutral, so it is never the smaller
+    number. A reader cannot derive it from one page of a paginated ledger, which
+    is what makes it a column rather than inspector detail.
+
     ``run_calibration`` is the run's ``confidence_calibration``: the curve a
     calibrated row's ``p_correct`` was read off, recorded once per run rather
     than in every row. Which curve applies to this row is
@@ -322,11 +333,13 @@ def _provenance_scalars(
     provenance = provenance or {}
     calibration = _row_calibration(provenance, run_calibration) or {}
     corroboration = provenance.get("corroboration") or {}
+    channels = (provenance.get("cross_channel") or {}).get("channels")
     return {
         "evidence": provenance.get("evidence"),
         "p_correct": provenance.get("p_correct"),
         "p_correct_provisional": calibration.get("provisional"),
         "corroboration_adducts": corroboration.get("n_adducts"),
+        "corroboration_channels": len(channels) if channels else None,
         "mass_z": provenance.get("mass_z"),
     }
 

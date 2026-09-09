@@ -111,6 +111,32 @@ class TestProvenanceScalars:
         assert scalars["evidence"] == 0.85
         assert scalars["corroboration_adducts"] == 2
 
+    def test_the_channel_count_reaches_the_ledger(self):
+        # The corroboration marker is blank on an untargeted row without this:
+        # `corroboration_adducts` counts the adducts a CURATED compound matched
+        # through, so it is null on most of a ledger.
+        row = {**_UNTARGETED_ROW, "cross_channel": {"channels": ["+H+", "+NH4+"]}}
+        assert _provenance_scalars(row, None)["corroboration_channels"] == 2
+
+    def test_a_row_seen_in_one_channel_says_one(self):
+        # Not None: one channel is a measured answer, and the marker's own
+        # threshold is what decides whether it is worth rendering.
+        row = {**_UNTARGETED_ROW, "cross_channel": {"channels": ["+NH4+"]}}
+        assert _provenance_scalars(row, None)["corroboration_channels"] == 1
+
+    def test_a_row_the_pass_never_reached_has_no_count(self):
+        # Absent rather than 0, so "not measured" stays distinguishable from
+        # "measured and found nothing" the way every other scalar here is.
+        assert (
+            _provenance_scalars(_UNTARGETED_ROW, None)["corroboration_channels"] is None
+        )
+        assert (
+            _provenance_scalars({"cross_channel": {"inherited_from": "pa-1"}}, None)[
+                "corroboration_channels"
+            ]
+            is None
+        )
+
 
 @pytest.mark.parametrize("provenance", _SHAPES.values(), ids=list(_SHAPES))
 def test_the_detail_fold_and_the_ledger_scalars_agree(provenance):
