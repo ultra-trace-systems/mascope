@@ -2661,21 +2661,23 @@ measure. They are not close.
 
 | set | searched at (ppm) | measured (ppm) | ratio | Stage A anchors | run anchors |
 |---|---|---|---|---|---|
-| A | 0.319 | 0.242 | 1.31 | 85 | 523 |
-| B | 0.228 | 0.326 | 0.70 | 77 | 3,970 |
-| C | 0.300 (class) | 0.136 | 2.21 | 31 | 322 |
-| C2 | 0.579 | 0.231 | 2.50 | 69 | 212 |
-| D | 0.300 (class) | 0.470 | 0.64 | 10 | 3,022 |
-| E | 3.000 (class) | 6.846 | 0.44 | 19 | 399 |
-| F1 | 5.085 | 4.874 | 1.04 | 127 | 1,168 |
-| F2 | 2.573 | 3.394 | 0.76 | 117 | 421 |
+| A | 0.590 | 0.06 - 0.17 | 5.0 | 14 | 26 - 32 |
+| B | 0.545 | 0.16 - 0.25 | 2.5 | 12 | 65 - 290 |
+| C | 0.599 | 0.08 - 0.10 | 6.8 | 6 | 19 - 25 |
+| C2 | 0.743 | 0.09 - 0.30 | 4.1 | 11 | 12 - 14 |
+| D | 0.583 (class) | 0.27 - 0.36 | 1.8 | 1 | 73 - 196 |
+| E | 3.041 (class) | 2.35 - 3.60 | 1.0 | 6 | 22 - 30 |
+| F1 | 5.392 | 1.85 - 4.48 | 1.6 | 21 | 40 - 52 |
+| F2 | 2.582 | 1.19 - 2.91 | 1.3 | 23 | 24 - 34 |
 
-The search is scored at a width up to 2.5 times too wide (C2, C) or a third too
-narrow (D, E), on 10 to 127 anchors where the run itself has 212 to 3,970. The
-instrument-class fallback is the worst of it: D and E both fall back, and the
-class number is 0.64 and 0.44 of what those samples actually achieve. Re-scoring
-the search at the run's own calibration is circular in one pass and is not this
-step's to do, but it is now a measured gap rather than a suspicion.
+The search is scored at a width two to seven times what the run's own
+corroborated rows turn out to scatter by, on 1 to 23 anchors where the run itself
+has 12 to 290. That gap is why the gate judges at the wider of the two rather
+than at the fit alone: the search's width is the one the committed rows were
+actually selected under, so it is the floor on what may be called off
+calibration. Re-scoring the search at the run's own calibration is circular in
+one pass and is not this step's to do, but it is now a measured gap rather than a
+suspicion.
 
 ### What this step actually found: the axis, not the assignment
 
@@ -2685,18 +2687,25 @@ and it is the reading that outlives the gate:
 
 | set | instrument | offset ppm | width ppm |
 |---|---|---|---|
-| A | Orbitrap | -0.02 to +0.03 | 0.18 - 0.27 |
-| B | Orbitrap | -0.22 to -0.17 | 0.22 - 0.33 |
-| C | Orbitrap | -0.22 to -0.09 | 0.13 - 0.16 |
-| **C2** | Orbitrap | **-1.14 to -1.11** | 0.18 - 0.29 |
-| D | Orbitrap | -0.18 to -0.08 | 0.36 - 0.55 |
-| **E** | TOF | -2.64 to -2.06 | **6.75 - 6.90** |
-| **F1** | TOF | +1.24 to +2.30 | **4.34 - 5.54** |
-| F2 | TOF | -0.12 to +2.00 | 2.75 - 3.76 |
+| A | Orbitrap | -0.00 to +0.04 | 0.06 - 0.17 |
+| B | Orbitrap | -0.20 to -0.16 | 0.16 - 0.25 |
+| C | Orbitrap | -0.22 to -0.13 | 0.08 - 0.10 |
+| **C2** | Orbitrap | **-1.14 to -1.09** | 0.09 - 0.30 |
+| D | Orbitrap | -0.22 to -0.07 | 0.27 - 0.36 |
+| **E** | TOF | +0.44 to +2.02 | **2.35 - 3.60** |
+| **F1** | TOF | +0.57 to +2.34 | **1.85 - 4.48** |
+| F2 | TOF | -0.04 to +2.50 | 1.19 - 2.91 |
+
+(Read on the corroborated monoisotopic rows, and for E on the recalibrated axis.
+The first version of this table anchored on satellites too and read three to
+seven times wider on the TOF sets; the subsection above says why that was the
+satellites' scatter rather than the samples'.)
 
 **A measurable offset across the mass range is a calibration fault, not an
 assignment problem.** C2 sits 1.1 ppm low on an Orbitrap, consistently, on all
-six samples; E sits 2 to 2.6 ppm low on all three. That is the m/z axis being
+six samples; E sat 8 to 10 ppm low on all three until it was recalibrated
+(below), which its own calibrants showed and this fit did not, because the
+satellites it was anchored on scattered wider than the error it was looking for. That is the m/z axis being
 wrong, and the place to fix it is the mass calibration node of the signal
 processing pipeline - the calibration these files already carry, and which
 already claims to be verified - not a correction applied downstream while the
