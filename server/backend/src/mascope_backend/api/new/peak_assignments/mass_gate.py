@@ -17,8 +17,8 @@ the row either way: what the run is withdrawing is its confidence, not its
 reading.
 
 What this is worth, measured rather than assumed: on the 43-sample gate it caps
-34 rows of about 14,600 at the top tier and moves G1 by at most 1.7 points on
-one set. That is not the lever it was designed to be, because the failure it was
+49 rows of about 14,600 at the top tier, demotes none that the reference
+confirms, and moves G1 by at most 1.7 points on one set. That is not the lever it was designed to be, because the failure it was
 designed to catch has already been closed upstream - the finder ranks candidates
 on the v2 fit at the sample's own width (step 2.1), so a formula three sigma out
 does not win its peak in the first place. The widest mass error on any committed
@@ -30,7 +30,7 @@ tiers read; it is not what will move the agreement metrics.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 import numpy as np
 
@@ -45,7 +45,10 @@ from mascope_backend.api.new.peak_assignments.tiers import (
     TIER_CANDIDATE,
     TIER_RANK,
 )
-from mascope_tools.composition.mass_accuracy import fit_mass_accuracy
+from mascope_tools.composition.mass_accuracy import (
+    fit_mass_accuracy,
+    scoring_sigma_ppm,
+)
 
 
 #: Beyond this many fitted sigma from the run's own centre, an uncorroborated
@@ -68,8 +71,18 @@ REASON_OFF_CALIBRATION = "off_calibration"
 CORROBORATED_CURATED = "curated"
 
 #: A confirmed envelope: the ion committed a monoisotopic peak AND at least one
-#: isotopologue of the same reading, so the spectrum agrees with the formula in
-#: more than one place.
+#: isotopologue of the same reading whose own mass error TRACKS its parent's, so
+#: the spectrum agrees with the formula in more than one place.
+#:
+#: The tracking test is what makes this mean anything on a crowded spectrum. A
+#: satellite is paired within the instrument class's matching window - 15 ppm on
+#: a TOF - so on a dense TOF spectrum a peak that is nobody's isotopologue lands
+#: inside that window by coincidence, and counting it as agreement lets the
+#: coincidence corroborate the reading it was matched to. Measured on the gate:
+#: the child-minus-parent error is 0.28 to 0.45 ppm wide on the Orbitrap sets
+#: with 98-99% of children inside 3 ppm of their parent, and 4.6 to 6.5 ppm wide
+#: on the three TOF sets with 37-46% inside it. Two lines of one ion differ only
+#: by what centroiding does to each, so the class's own precision is the bar.
 CORROBORATED_ISOTOPOLOGUE = "isotopologue"
 
 
@@ -89,6 +102,17 @@ class MassCalibration:
     mu_ppm: float | None = None
     sigma_ppm: float | None = None
     anchors: int = 0
+    #: The width a row's distance is actually judged in, which is this fit's
+    #: own width or the width the SEARCH scored at, whichever is wider. They
+    #: differ because the two describe different populations: the anchors are
+    #: the run's best-corroborated rows and are intrinsically its best measured
+    #: ones (0.06-0.17 ppm on the sparse Orbitrap set), while the rows the gate
+    #: judges rest on the mass fit alone and spread wider (0.36 ppm on the same
+    #: set). Judging the second population by the first condemns its tails by
+    #: construction - measured, it demoted 105 rows the reference confirms on
+    #: that set alone. A row cannot be off calibration for a distance its own
+    #: search was told to accept, so the search's width is the floor.
+    gate_sigma_ppm: float | None = None
 
     @property
     def measured(self) -> bool:
@@ -102,13 +126,19 @@ class MassCalibration:
         return self.mu_ppm is not None and self.sigma_ppm is not None
 
     def z_of(self, mz_error_ppm: float | None) -> float | None:
-        """Where a mass error sits in this run's own distribution, in sigma."""
+        """Where a mass error sits in this run's own distribution, in sigma.
+
+        In :attr:`gate_sigma_ppm`, not in the fitted width, so that one number
+        on the row means one thing: a row reads beyond 3 exactly when the gate
+        would cap it for being there.
+        """
         if not self.measured or mz_error_ppm is None:
             return None
         error = float(mz_error_ppm)
         if not np.isfinite(error):
             return None
-        return (error - float(self.mu_ppm)) / float(self.sigma_ppm)
+        width = self.gate_sigma_ppm or self.sigma_ppm
+        return (error - float(self.mu_ppm)) / float(width)
 
     def snapshot(self) -> dict:
         """What the run records about the calibration it judged its rows at."""
@@ -118,6 +148,14 @@ class MassCalibration:
                 None if self.sigma_ppm is None else round(float(self.sigma_ppm), 4)
             ),
             "anchors": int(self.anchors),
+            # What the fit measured, and what a row was judged in. Recorded
+            # apart because a reader comparing two runs needs to know whether a
+            # row escaped the cap on its own accuracy or on the search's.
+            "gate_sigma_ppm": (
+                None
+                if self.gate_sigma_ppm is None
+                else round(float(self.gate_sigma_ppm), 4)
+            ),
             # As on the scoring snapshot: "none" means the run measured nothing,
             # which is a different statement from measuring zero.
             "mu_source": "fitted" if self.mu_ppm is not None else "none",
@@ -140,7 +178,37 @@ def is_committed(row: dict) -> bool:
     )
 
 
-def corroboration_of(assignments: list[dict]) -> dict[str, str | None]:
+def tracks_its_parent(
+    child_error_ppm: float | None,
+    parent_error_ppm: float | None,
+    precision_ppm: float,
+) -> bool:
+    """Whether an isotopologue's mass error is its parent's, within precision.
+
+    Two lines of one ion are one measurement of one axis: their mass errors
+    differ only by what centroiding does to each peak, so a child whose error
+    sits further from its parent's than the instrument class can explain is not
+    that ion's isotopologue - it is another peak the matching window happened to
+    reach. A row missing either error cannot be shown to track and does not.
+
+    :param child_error_ppm: The satellite's own mass error.
+    :param parent_error_ppm: Its owner's.
+    :param precision_ppm: The instrument class's precision.
+    :return: Whether the pair may be read as one envelope.
+    """
+    if child_error_ppm is None or parent_error_ppm is None:
+        return False
+    child, parent = float(child_error_ppm), float(parent_error_ppm)
+    if not (np.isfinite(child) and np.isfinite(parent)):
+        return False
+    return abs(child - parent) <= float(precision_ppm)
+
+
+def corroboration_of(
+    assignments: list[dict],
+    *,
+    precision_ppm: float,
+) -> dict[str, str | None]:
     """Per committed row: what this run has for it beyond the mass fit.
 
     Three answers, and the difference between the first two and the third is
@@ -150,19 +218,38 @@ def corroboration_of(assignments: list[dict]) -> dict[str, str | None]:
       composition set, so the formula was proposed by a library rather than by
       this run's own search over the mass.
     - :data:`CORROBORATED_ISOTOPOLOGUE` - the reading committed a monoisotopic
-      peak and at least one isotopologue of the same ion, so the spectrum
-      agrees in a second place. Both rows are corroborated by the pair: the
-      child by having an owner, the M0 by being one.
+      peak and at least one isotopologue of the same ion WHOSE MASS ERROR
+      TRACKS ITS PARENT'S, so the spectrum agrees in a second place rather than
+      in a place the matching window happened to reach. Both rows of such a
+      pair are corroborated by it; a child that does not track corroborates
+      nothing, including itself.
     - ``None`` - the row rests on the mass fit alone.
 
     :param assignments: Every row built for this sample, in any order.
+    :param precision_ppm: The instrument class's precision, the bar a child's
+        error must meet against its parent's (see :func:`tracks_its_parent`).
     :return: Corroboration keyed by ``peak_assignment_id``, committed rows only.
     """
-    owners = {
-        str(row["owner_peak_assignment_id"])
+    error_by_id = {
+        str(row["peak_assignment_id"]): row.get("mz_error_ppm")
         for row in assignments
-        if row.get("owner_peak_assignment_id")
+        if row.get("peak_assignment_id")
     }
+    # The children that are their parents' isotopologues, and the parents they
+    # confirm. Resolved first, because a row's own corroboration depends on the
+    # whole envelope rather than on the row.
+    tracking_children: set[str] = set()
+    confirmed_owners: set[str] = set()
+    for row in assignments:
+        owner_id = row.get("owner_peak_assignment_id")
+        if not is_committed(row) or not owner_id:
+            continue
+        if tracks_its_parent(
+            row.get("mz_error_ppm"), error_by_id.get(str(owner_id)), precision_ppm
+        ):
+            tracking_children.add(str(row["peak_assignment_id"]))
+            confirmed_owners.add(str(owner_id))
+
     corroboration: dict[str, str | None] = {}
     for row in assignments:
         if not is_committed(row):
@@ -170,7 +257,7 @@ def corroboration_of(assignments: list[dict]) -> dict[str, str | None]:
         row_id = str(row["peak_assignment_id"])
         if row.get("source") == SOURCE_DATABASE:
             corroboration[row_id] = CORROBORATED_CURATED
-        elif row.get("owner_peak_assignment_id") or row_id in owners:
+        elif row_id in tracking_children or row_id in confirmed_owners:
             corroboration[row_id] = CORROBORATED_ISOTOPOLOGUE
         else:
             corroboration[row_id] = None
@@ -196,6 +283,15 @@ def fit_run_mass_accuracy(
     being judged, so the distribution would widen to accommodate whatever sits
     in its tail and the gate would be unable to find anything by construction.
 
+    Monoisotopic rows only. A satellite is the same ion measured on a weaker
+    peak, so it is the wider row wherever it is real - 0.35 ppm against 0.12 for
+    the M0 rows it belongs to on the sparse Orbitrap set - and where it is not
+    real it is a coincidence of the matching window. Letting satellites anchor
+    made the recorded calibration theirs on every TOF set: on the bromide TOF
+    set they and the M0 rows they "confirmed" were two thirds of the anchors and
+    put the run at +0.4 to +1.6 ppm and 4.4 to 4.6 ppm wide, while the run's own
+    uncorroborated M0 rows sat at -0.1 to +0.1 and 2.7 to 2.9 wide.
+
     :param assignments: Every row built for this sample.
     :param corroboration: What :func:`corroboration_of` answered for them.
     :return: The offset and width, each None where too few anchors were found.
@@ -203,7 +299,8 @@ def fit_run_mass_accuracy(
     errors = [
         row["mz_error_ppm"]
         for row in assignments
-        if corroboration.get(str(row.get("peak_assignment_id"))) is not None
+        if row.get("role") == ROLE_M0
+        and corroboration.get(str(row.get("peak_assignment_id"))) is not None
         and row.get("mz_error_ppm") is not None
     ]
     mu, sigma = fit_mass_accuracy(errors)
@@ -214,6 +311,7 @@ def apply_mass_gate(
     assignments: list[dict],
     *,
     stage_a_accuracy: SampleMassAccuracy | None = None,
+    fallback_sigma_ppm: float,
 ) -> dict:
     """Record every commit's ``mass_z`` and cap the uncorroborated outliers.
 
@@ -231,15 +329,35 @@ def apply_mass_gate(
     :param stage_a_accuracy: What Stage A measured, for the run's record. It is
         reported beside this fit rather than folded into it: the two are
         measured over different rows and a reader comparing a run's scoring to
-        its gating needs to see both.
+        its gating needs to see both. It is also half of the width the search
+        scored at, which is the floor on the width this gate judges in.
+    :param fallback_sigma_ppm: The instrument class's width, which is both the
+        other half of that floor and the precision a satellite has to track its
+        parent within (``profiles.resolve_fallback_sigma_ppm``).
     :return: A JSON-serializable summary for the run's config.
     """
-    corroboration = corroboration_of(assignments)
+    # The width the untargeted search actually scored a mass error at, rebuilt
+    # from the same two numbers `pattern_scoring_for` builds it from, so the
+    # floor below is the search's own width rather than an approximation of it.
+    search_sigma = scoring_sigma_ppm(
+        None if stage_a_accuracy is None else stage_a_accuracy.sigma_ppm,
+        float(fallback_sigma_ppm),
+    )
+    corroboration = corroboration_of(assignments, precision_ppm=fallback_sigma_ppm)
     calibration = fit_run_mass_accuracy(assignments, corroboration)
+    if calibration.sigma_ppm is not None:
+        calibration = replace(
+            calibration,
+            gate_sigma_ppm=max(float(calibration.sigma_ppm), float(search_sigma)),
+        )
     summary = {
         **calibration.snapshot(),
         "cap_z": OFF_CALIBRATION_Z,
         "floor_z": BELOW_ASSIGNABILITY_Z,
+        # What the search judged a mass error at, recorded so the gate width
+        # above can be read as the max of the two it is.
+        "search_sigma_ppm": round(float(search_sigma), 4),
+        "precision_ppm": float(fallback_sigma_ppm),
         "applied": calibration.measured,
         "committed": len(corroboration),
         "corroborated": sum(1 for value in corroboration.values() if value),
