@@ -65,7 +65,6 @@ from mascope_backend.api.new.peak_assignments.engine import (
 )
 from mascope_backend.api.new.peak_assignments.mass_gate import is_committed
 from mascope_backend.api.new.peak_assignments.tiers import TIER_CANDIDATE, TIER_RANK
-from mascope_tools.composition.custom_elements import CUSTOM_ELEMENTS
 from mascope_tools.composition.heuristic_filter import element_counts
 from mascope_tools.composition.utils import (
     parse_atom_count_ranges,
@@ -114,19 +113,20 @@ class ReagentSubstitution:
 def _moiety_counts(notation: str) -> tuple[dict[str, int], int, int] | None:
     """A mechanism's moiety, its sign on the neutral, and the ion's charge.
 
-    A moiety carrying a LABELLED atom answers None, and that is the whole point
-    of labelling the reagent: the 15N in a ``+^NO3-`` reagent is 0.997 Da from
-    an analyte's own nitrogen, so the deprotonated nitrate ester is a different
-    ion at a different mass rather than the same one read differently. Two of
-    the gate's sets run that reagent, and treating its label as ordinary
-    nitrogen would have capped 297 of their readings - 93 of which the reference
-    confirms - for an ambiguity the labelling exists to remove.
+    A moiety this cannot read in BASE elements answers None, and a labelled
+    reagent is the case that matters. ``+^NO3-`` masses its nitrogen as 15N, so
+    ``element_counts`` refuses the caret form rather than folding it to N - and
+    that refusal is load-bearing here, not incidental. The 15N of the reagent
+    sits 0.997 Da from an analyte's own nitrogen, so the deprotonated nitrate
+    ester is a DIFFERENT ion at a different mass rather than the same one read
+    differently, and the spectrum decides between them. That is the whole reason
+    to run a labelled reagent. Two of the gate's sets do, and reading the label
+    as ordinary nitrogen would cap 297 of their readings - 93 of which the
+    reference confirms - for an ambiguity the labelling exists to remove.
     """
     try:
         mechanism = parse_ionization(notation)
     except Exception:  # noqa: BLE001 - a mechanism nobody can parse gates nothing
-        return None
-    if any(symbol in (mechanism.formula or "") for symbol in CUSTOM_ELEMENTS):
         return None
     counts = element_counts(mechanism.formula) if mechanism.formula else {}
     if counts is None:
