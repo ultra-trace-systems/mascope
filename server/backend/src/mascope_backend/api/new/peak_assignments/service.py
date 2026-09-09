@@ -304,6 +304,12 @@ def _provenance_scalars(
     number that bucketed the row - and a tier beside a percentage that did not
     produce it is the one pairing guaranteed to be read as a contradiction.
 
+    ``mass_z`` is here for a related reason and a different one: the ledger's
+    ppm column states a distance without a scale, and the scale is the run's own
+    fitted width. A reader scanning for the rows a run is least sure of, or
+    checking why one carries a tier its evidence does not explain, needs the two
+    together, and the second is on the run rather than the row.
+
     ``run_calibration`` is the run's ``confidence_calibration``: the curve a
     calibrated row's ``p_correct`` was read off, recorded once per run rather
     than in every row. Which curve applies to this row is
@@ -317,6 +323,7 @@ def _provenance_scalars(
         "p_correct": provenance.get("p_correct"),
         "p_correct_provisional": calibration.get("provisional"),
         "corroboration_adducts": corroboration.get("n_adducts"),
+        "mass_z": provenance.get("mass_z"),
     }
 
 

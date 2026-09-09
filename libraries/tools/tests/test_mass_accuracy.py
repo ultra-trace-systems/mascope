@@ -90,46 +90,29 @@ class TestTheFit:
 
         assert scoring_sigma_ppm(sigma, 3.0) > PRED_SIGMA_PPM
 
-    def test_an_offset_is_measurable_from_fewer_anchors_than_a_width(self):
-        # The two are different measurements and the difficult one must not
-        # withhold the easy one. Between the minimums the fit answers the
-        # offset it measured and no width at all.
-        anchors = ERRORS[:MASS_OFFSET_MIN_ANCHORS]
-        assert MASS_OFFSET_MIN_ANCHORS < MASS_ACCURACY_MIN_ANCHORS
-
-        mu, sigma = fit_mass_accuracy(anchors)
-
-        assert mu == pytest.approx(float(np.median(anchors)))
-        assert sigma is None
-
     def test_an_unmeasured_offset_is_not_a_zero_one(self):
-        # The whole point of the separation. Six anchors agreeing that this
-        # sample sits 1.2 ppm low HAVE measured its offset, and answering 0.0
-        # there tells the caller the sample is centred - the opposite claim, and
-        # one that moves every candidate it goes on to score by 1.2 ppm.
-        mu, sigma = fit_mass_accuracy([-1.2, -1.18, -1.25, -1.19, -1.22, -1.21])
+        # An offset of zero and no offset are opposite claims, and the pair used
+        # to answer 0.0 for both: every consumer - the score, the run's record
+        # of what it scored at, a comparison against another engine - then read
+        # a sample nothing was measured on as one measured to be well centred.
+        assert fit_mass_accuracy(ERRORS[: MASS_ACCURACY_MIN_ANCHORS - 1]) == (
+            None,
+            None,
+        )
 
-        assert mu == pytest.approx(-1.205)
-        assert sigma is None
+        mu, sigma = fit_mass_accuracy([0.0] * MASS_ACCURACY_MIN_ANCHORS)
+        assert mu == 0.0 and sigma is not None
 
-        # And below the offset minimum the answer is None, not zero: a caller
-        # correcting by zero must be able to tell that it is doing so because
-        # nothing was measured.
-        assert fit_mass_accuracy([-1.2, -1.18, -1.25, -1.19]) == (None, None)
+    def test_the_offset_needs_the_same_anchors_the_width_does(self):
+        # It reads like the easier measurement and the gate measured the
+        # opposite: an anchor set too small to say how wide it is cannot say
+        # where its centre is either. These five scatter over 8 ppm, so their
+        # median is not a centre - and the width the fit refuses to report is
+        # exactly the evidence for that.
+        wide = [-0.4, -10.5, -2.8, -10.4, -0.3]
+        assert MASS_OFFSET_MIN_ANCHORS == MASS_ACCURACY_MIN_ANCHORS
 
-    def test_the_offset_minimum_leaves_a_pair_of_mis_matches_outvoted(self):
-        # Why the minimum is five and not three. A wide matching window admits
-        # mis-matches - on a TOF at 15 ppm, a line matched to the wrong peak
-        # sits 10 ppm out - and the median only resists them while they are a
-        # minority. At five anchors two of them are outvoted by the three real
-        # ones; at three they ARE the median, and the run then corrects every
-        # candidate by their error.
-        real, wrong = [-0.4, -0.3, -0.5], [-10.5, -10.4]
-
-        mu, _ = fit_mass_accuracy(real + wrong)
-        assert mu == pytest.approx(-0.5)
-
-        assert float(np.median(wrong + real[:1])) < -5.0
+        assert fit_mass_accuracy(wide) == (None, None)
 
     def test_an_unusable_error_is_not_an_anchor(self):
         # NaN reaches the fit from a row that matched nothing; counting it would
