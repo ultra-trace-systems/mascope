@@ -309,27 +309,48 @@ const m0 = computed(
   () => family.value.find((f) => f.role === 'M0' || f.isotope_label === 'M0') ?? null
 )
 
-// Adduct-corroboration signal (P3): present only when the compound was seen via
-// several adducts (co-occurrence) -- winner-only, calibrated assignments. The
-// boost is already folded into p_correct, so the badge is purely informational.
+// Corroboration signal: present only when the same neutral was committed through
+// more than one ionization channel, which is independent evidence for the
+// formula rather than for this peak.
 //
-// The engine writes `provenance.corroboration` onto the M0 winner alone: an
-// isotopologue is the same ion measured at another isotope, not a second sighting
-// of the compound. The evidence is about the formula the family shares, so a
-// focused isotopologue shows its M0's count, flagged inherited. Only the count
-// carries across - the corroborating adducts are named in the M0's provenance,
-// and detail is fetched for the focused assignment alone.
+// Two counts feed it and the run may carry either. `cross_channel` is the one
+// the finished ledger measures - every committed row is grouped by neutral
+// across the channels the run searched - and `corroboration` (P3) is the older
+// per-compound count, which reaches only rows a curated identity claimed and is
+// therefore absent from most of a ledger. Where both exist the first is the
+// second plus whatever the untargeted stage committed of the same neutral, so it
+// is never the smaller number and is preferred. `scored` is the difference that
+// matters on screen: only the curated count is folded into p_correct.
+//
+// Neither is written onto an isotopologue: it is the same ion measured at
+// another isotope, not a second sighting of the compound. The evidence is about
+// the formula the family shares, so a focused isotopologue shows its M0's count,
+// flagged inherited. Only the count carries across - the channels are named in
+// the M0's provenance, and detail is fetched for the focused assignment alone.
 const corroboration = computed(() => {
+  const channels = provenance.value?.cross_channel?.channels
+  if (channels?.length) {
+    return { n: channels.length, names: channels, scored: false, inherited: false }
+  }
   const own = provenance.value?.corroboration
-  if (own?.n_adducts != null) return { ...own, inherited: false }
-  // The slim ledger row carries the count flattened, so the badge is there
-  // before the detail fetch lands - just without the adduct names.
+  if (own?.n_adducts != null) {
+    return { n: own.n_adducts, names: own.adducts ?? [], scored: true, inherited: false }
+  }
+  // The slim ledger row carries both counts flattened, so the badge is there
+  // before the detail fetch lands - just without the channel names.
+  const flatChannels = focusedAssignment.value?.corroboration_channels
+  if (flatChannels != null) {
+    return { n: flatChannels, names: [], scored: false, inherited: false }
+  }
   const flat = focusedAssignment.value?.corroboration_adducts
-  if (flat != null) return { n_adducts: flat, adducts: [], inherited: false }
+  if (flat != null) return { n: flat, names: [], scored: true, inherited: false }
   // Same two-step as the ledger's, so the two panes agree about a family whose
   // rows carry provenance inline (a backend predating the slim projection).
+  const m0Channels =
+    m0.value?.corroboration_channels ?? m0.value?.provenance?.cross_channel?.channels?.length
+  if (m0Channels != null) return { n: m0Channels, names: [], scored: false, inherited: true }
   const fromM0 = m0.value?.corroboration_adducts ?? m0.value?.provenance?.corroboration?.n_adducts
-  return fromM0 != null ? { n_adducts: fromM0, adducts: [], inherited: true } : null
+  return fromM0 != null ? { n: fromM0, names: [], scored: true, inherited: true } : null
 })
 
 // The badge says "via M0" on its face, not only on hover: the count is the same
@@ -338,28 +359,34 @@ const corroboration = computed(() => {
 const corroborationLabel = computed(() => {
   const c = corroboration.value
   if (!c) return ''
-  return `Supported by ${c.n_adducts} adducts${c.inherited ? ' via M0' : ''}`
+  return `Supported by ${c.n} adducts${c.inherited ? ' via M0' : ''}`
 })
 
-// The boost is folded into the record that carries the corroboration - the M0's
-// p_correct - and never into a child's, which stays calibrated on its own
-// evidence (engine.py::_fold_adduct_corroboration rewrites M0 winners only). So
-// an inherited badge must not claim the number beside it already accounts for
-// this, which is the one thing the M0's wording does say.
+// What the badge must not do is claim the number beside it accounts for this.
+// The P3 boost is folded into the record that carries the corroboration - the
+// M0's p_correct - and never into a child's, which stays calibrated on its own
+// evidence (engine.py::_fold_adduct_corroboration rewrites M0 winners only); and
+// the ledger-measured count is not folded into anything at all, being evidence
+// the run recorded rather than a score it applied. So the sentence about
+// P(correct) is written from `scored` and `inherited` rather than assumed.
 const corroborationTooltip = computed(() => {
   const c = corroboration.value
   if (!c) return ''
   if (c.inherited) {
     return (
-      `The M0 of this isotopologue family was seen via ${c.n_adducts} adducts. ` +
-      "Independent corroborating evidence for the formula, folded into the M0's " +
-      "P(correct) - not into this isotopologue's, which is calibrated on its own."
+      `The M0 of this isotopologue family was seen via ${c.n} adducts. ` +
+      'Independent corroborating evidence for the formula, ' +
+      (c.scored
+        ? "folded into the M0's P(correct) - not into this isotopologue's, which is " +
+          'calibrated on its own.'
+        : 'not included in the P(correct) beside it.')
     )
   }
-  const adducts = (c.adducts ?? []).join(', ')
+  const adducts = (c.names ?? []).join(', ')
   return (
-    `Seen via ${c.n_adducts} adducts${adducts ? ` (${adducts})` : ''}. ` +
-    'Independent corroborating evidence, already folded into P(correct).'
+    `Seen via ${c.n} adducts${adducts ? ` (${adducts})` : ''}. ` +
+    'Independent corroborating evidence, ' +
+    (c.scored ? 'already folded into P(correct).' : 'not included in the P(correct) beside it.')
   )
 })
 
@@ -959,7 +986,7 @@ const demotedCount = computed(() => {
         </div>
       </div>
       <div
-        v-if="corroboration && corroboration.n_adducts > 1"
+        v-if="corroboration && corroboration.n > 1"
         class="corroboration"
         :class="{ inherited: corroboration.inherited }"
         v-tooltip.top="corroborationTooltip"

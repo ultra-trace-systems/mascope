@@ -411,6 +411,61 @@ describe('PanePeakAssign adduct corroboration', () => {
     expect(wrapper.vm.corroborationTooltip).toContain('Seen via 2 adducts.')
   })
 
+  // The ledger-measured channel count is what reaches an untargeted row: the
+  // curated per-compound count is null on all of them, which is most of a
+  // ledger, so without this the badge is absent from nearly every peak.
+  it('shows the badge for an untargeted row, from the channels it was seen in', async () => {
+    focusedAssignment = { ...M0, corroboration_adducts: null, corroboration_channels: 3 }
+    const wrapper = await mountPane()
+
+    expect(badge(wrapper).text()).toContain('Supported by 3 adducts')
+    expect(badge(wrapper).classes()).not.toContain('inherited')
+  })
+
+  // The one thing the two counts must not share is the claim about P(correct).
+  // The curated count is folded into it; the channel count is evidence the run
+  // recorded and is folded into nothing.
+  it('does not claim the channel count is in P(correct)', async () => {
+    focusedAssignment = { ...M0, corroboration_channels: 2 }
+    detailRecord = { provenance: { cross_channel: { channels: ['+H+', '+NH4+'] } } }
+    const wrapper = await mountPane()
+
+    expect(wrapper.vm.corroborationTooltip).toContain('Seen via 2 adducts (+H+, +NH4+)')
+    expect(wrapper.vm.corroborationTooltip).toContain('not included in the P(correct)')
+    expect(wrapper.vm.corroborationTooltip).not.toContain('already folded')
+  })
+
+  // Where a curated row carries both, the channel count is the superset - the
+  // adducts Stage A matched plus whatever the untargeted stage committed of the
+  // same neutral - so it is the one to show.
+  it('prefers the channel count over the curated one', async () => {
+    focusedAssignment = { ...M0, corroboration_adducts: 2, corroboration_channels: 3 }
+    const wrapper = await mountPane()
+
+    expect(badge(wrapper).text()).toContain('Supported by 3 adducts')
+  })
+
+  // A satellite carries neither count, and inherits whichever its M0 has.
+  it('inherits the family channel count onto a focused isotopologue', async () => {
+    focusedAssignment = ISOTOPOLOGUE
+    familyRows = [{ ...M0, corroboration_channels: 3 }, ISOTOPOLOGUE]
+    const wrapper = await mountPane()
+
+    expect(badge(wrapper).text()).toContain('Supported by 3 adducts via M0')
+    expect(badge(wrapper).classes()).toContain('inherited')
+    expect(wrapper.vm.corroborationTooltip).toContain('not included in the P(correct)')
+  })
+
+  // The badge is gated on more than one, and a capped `ambiguous_nitrogen` row
+  // is exactly the one-channel case: the rule that capped it fires only when
+  // nothing else saw the neutral.
+  it('says nothing for a row seen in one channel only', async () => {
+    focusedAssignment = { ...M0, corroboration_channels: 1 }
+    const wrapper = await mountPane()
+
+    expect(badge(wrapper).exists()).toBe(false)
+  })
+
   it('leaves a peak with no family and no corroboration alone', async () => {
     focusedAssignment = assignment({ formula: 'C10H12', tier: 'assigned' })
     const wrapper = await mountPane()
