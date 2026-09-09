@@ -72,7 +72,7 @@ def ion_score_v2(
     group: pd.DataFrame,
     *,
     sigma_ppm: float | None = None,
-    mu: float = 0.0,
+    mu: float | None = 0.0,
     noise: float = 1.0,
     calibrate: bool = False,
     calibration: tuple[float, float] | None = None,
@@ -96,6 +96,13 @@ def ion_score_v2(
     conflated dynamic range with signal-to-noise; the kwarg stays so the four call sites
     that still pass a `sample_noise_floor` keep working until they are cleaned up.
 
+    `mu` is the sample's fitted mass offset, and ``None`` means none was fitted -
+    `fit_mass_accuracy` answers that for a sample with too few anchors to measure one.
+    An unmeasured offset is scored as no offset, which is what "uncorrected" means;
+    it is stated here rather than at each call site so that the three of them cannot
+    answer it differently, and so that a caller wanting to know whether an offset was
+    measured has to ask the fit rather than read it off a zero.
+
     `calibrate=True` recasts the fit as a single-candidate P(correct) — a confidence-layer
     concern, not the headline match score — and REQUIRES `calibration`, the Platt `(a, b)`
     fitted for this instrument/dataset. The library default was fitted on the demo
@@ -108,6 +115,7 @@ def ion_score_v2(
             "(DEFAULT_CALIBRATION_V2) was fitted on the demo Orbitrap golden set and is "
             "not transferable."
         )
+    mu = 0.0 if mu is None else float(mu)
     g = group.sort_values("relative_abundance", ascending=False)
     pr = pd.to_numeric(g["relative_abundance"], errors="coerce").to_numpy(float)
     if pr.size == 0 or not np.isfinite(pr).any() or np.nanmax(pr) <= 0:
