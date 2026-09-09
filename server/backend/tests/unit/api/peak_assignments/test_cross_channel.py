@@ -135,6 +135,20 @@ class TestWhatCorroboratesANeutral:
         ]
         assert gate(rows)["corroborated"] == 0
 
+    def test_an_orphan_satellite_brings_no_channel_with_it(self):
+        # Where the M0-only rule bites: an isotopologue whose own monoisotopic
+        # row was never committed. Step 2.2 measured what those are on a
+        # crowded spectrum - a peak the matching window reached, paired to an
+        # ion nothing else in the ledger supports - so letting one carry a
+        # channel would corroborate a neutral on a coincidence.
+        rows = [
+            row("a", "C6H12O6", PROTON),
+            row("b", "C6H12O6", AMMONIUM, role="iso_child", owner="gone"),
+        ]
+        summary = gate(rows)
+        assert summary["corroborated"] == 0
+        assert rows[0]["provenance"]["cross_channel"]["channels"] == ["+H+"]
+
     def test_an_uncommitted_row_corroborates_nothing(self):
         rows = [
             row("a", "C6H12O6", PROTON),
