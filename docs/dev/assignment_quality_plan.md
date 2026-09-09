@@ -21,7 +21,7 @@ step PRs land on the epic and are named here as they merge.
 | 1.7 - stage 1 gate, engine 0.4.0 | #2091 | measured: the 0.4.0 build reproduces the 1.6 ledger field for field, so stage 1's numbers are final; G1 met on A, B, C and D (73 -> 41.5, 57 -> 24.3, 99 -> 41.5, 68 -> 37.3%) and missed on C2 (55.2%); G2's same-formula bound met on the same four (39 -> 95.6, 12 -> 95.2, 18 -> 87.3, 17 -> 80.1%) and its same-ion bound on A and B only; G3 met but for B's 2.7% N >= 5, with no carbon-free formula from the untargeted stage on any of the 43 samples; G5 and G8 met everywhere; the mass-error target met on all five Orbitrap sets; G4a below 90% and G6 read, not gated; about half of what stage 1 does not recover carries an element the searched grid cannot build, which is step 2.5b's |
 | 2.1 - v2 fit for Stage B | #2092 | measured: the finder ranks with the v2 fit at the sample's own mass width and on the file's own per-peak signal-to-noise, and every committed reading is measured again as an ion, so the engine computes one fit (decision 12); G1 falls on every Orbitrap set (A 41.5 -> 35.4, B 24.3 -> 18.9, C 41.5 -> 34.7, C2 55.2 -> 40.1, D 37.3 -> 21.0) with G2 unchanged on A and B and up on C, C2 and D, G5 and G8 still zero and the mass error flat or better on the Orbitrap sets; the fit distributions of confirmed and contradicted rows separate for the first time (B -0.001 -> 0.129, D 0.020 -> 0.249) and the odd-electron share of assigned rows falls on seven of the eight sets; the TOF sets gain 293-675 committed analytes at their own width; the sibling task, a TOF-capable reference run from peaky, is not in this PR because publishing one re-bases every set |
 | 2.1b - TOF-capable reference: peaky's scorer through `score_pattern_v2` with the sample's fitted sigma | #2093 + peaky `epic/v2-fit-reference` | measured: all 43 reference runs re-published at the sample's own width, with the engine's runs untouched (same run id on 43 of 43 after the publish); the reference commits less on the Orbitrap sets and more on the TOF ones (B 7,614 -> 4,680 M0, F1 698 -> 1,034), its committed mass error improves on every Orbitrap set (B 0.290 -> 0.174 ppm) and its own fit finally separates its confirmed rows from its contradicted ones (A 0.089 -> 0.174, C 0.066 -> 0.181, C2 -0.051 -> +0.052, on hundreds of rows a side); the share of this engine's assigned rows the reference CONTRADICTS falls on every Orbitrap set (C 2.4 -> 0.3%, C2 4.3 -> 1.3%) while G1 rises because a conservative reference is silent more (A 35.4 -> 40.2, B 18.9 -> 44.2, D 21.0 -> 21.6); G2 formula 93.8 A, 92.8 B, 90.6 C, 77.7 C2, 80.4 D; G5 and G8 still zero; the peaks endpoint did not carry signal-to-noise and now does; two rounds of the gate caught the same defect in the shared fit, that it returns the offset and the width together and reports neither below its anchor minimum |
-| 2.2 - self-calibrated mass gate | #2094 | measured: every committed row records `mass_z` and every run records the calibration it was measured in, fitted over its own corroborated commits - 212 to 3,970 anchors a set where Stage A had 10 to 127. The gate itself is a guard, not a lever: it caps 59 of the 14,600 top-tier rows over the 43 samples and moves G1 on none of them, because the failure it was written for was closed by 2.1 - the widest committed top-tier error on a straight Orbitrap axis is 1.02 ppm, and on A the rows the reference contradicts sit CLOSER to the calibration (0.088 ppm median) than the ones it confirms (0.149). No row the reference confirms was demoted on any set (G2 and its n identical everywhere) and no election changed (0 verdict shifts of 48,894 peaks), so G7 is 0 where the gate applied, which was all 43, and it is vacuous on none of them: the gate reaches the TOF sets (E 4, F1 2, F2 14) once a satellite has to track its parent to count as a confirmed envelope, which is what stopped coincidental children setting the width there. The offset half of the 2.1b defect was tried and withdrawn on the measurement: fitting an offset from the five to seven anchors a width is refused for moved the TOF bromide set 4 ppm the wrong way (MAD 2.03 -> 2.33), so an anchor set too small to say how wide it is cannot say where its centre is. What the runs now report instead is a per-sample calibration reading, and it says the TOF sets carry 2.8-6.9 ppm widths and C2 a flat -1.1 ppm bias on files whose stored calibration is marked verified. The TOF sets were then recalibrated through the node and E re-baselined on both engines: its axis was out by 8-10 ppm and is now inside a ppm, which lifts the reference's G2 on E from 15.4/26.9 to 33.3/42.9% and the signal it explains from 0.5 to 26.2%, while the engine's top tier is the same SIZE on both axes (424 rows) and not the same rows - 147 of them sit on a peak that held it before, 7 keep their formula, tiers moved on 765 of the 1,343 M0 peaks both commit, and 70% of those peaks change formula - so mass is not what constrains a TOF commit, which is 2.4's. F1 and F2 did not move at all (their axes were already right, merely never fitted) and their runs stand; C2 cannot be fitted until its mode has more than two disagreeing calibrants |
+| 2.2 - self-calibrated mass gate | #2094 | measured: every committed row records `mass_z` and every run records the calibration it was measured in, fitted over its own corroborated commits - 212 to 3,970 anchors a set where Stage A had 10 to 127. The gate itself is a guard, not a lever: it caps 49 rows over the 43 samples - 3 analyte commits, all on one TOF set and none of them a row the reference confirms, and 46 satellites the tracking rule reads as coincidences - and moves G1 on no set, because the failure it was written for was closed by 2.1 - the widest committed top-tier error on a straight Orbitrap axis is 1.02 ppm, and on A the rows the reference contradicts sit CLOSER to the calibration (0.088 ppm median) than the ones it confirms (0.149). No row the reference confirms was demoted on any set (G2 and its n identical everywhere) and no election changed (0 verdict shifts of 48,894 peaks), so G7 is 0 where the gate applied, which was all 43. The offset half of the 2.1b defect was tried and withdrawn on the measurement: fitting an offset from the five to seven anchors a width is refused for moved the TOF bromide set 4 ppm the wrong way (MAD 2.03 -> 2.33), so an anchor set too small to say how wide it is cannot say where its centre is. What the runs now report instead is a per-sample calibration reading, and it says the TOF sets carry 2.8-6.9 ppm widths and C2 a flat -1.1 ppm bias on files whose stored calibration is marked verified. The TOF sets were then recalibrated through the node and E re-baselined on both engines: its axis was out by 8-10 ppm and is now inside a ppm, which lifts the reference's G2 on E from 15.4/26.9 to 33.3/42.9% and the signal it explains from 0.5 to 26.2%, while the engine's top tier is the same SIZE on both axes (424 rows) and not the same rows - 147 of them sit on a peak that held it before, 7 keep their formula, tiers moved on 765 of the 1,343 M0 peaks both commit, and 70% of those peaks change formula - so mass is not what constrains a TOF commit, which is 2.4's. F1 and F2 did not move at all (their axes were already right, merely never fitted) and their runs stand; C2 cannot be fitted until its mode has more than two disagreeing calibrants |
 | 2.3 - cross-channel corroboration and the reagent-N rule | - | planned |
 | 2.4 - mechanical tiers with reasons | - | planned |
 | 2.5a - reference seed: peak-list adapter, lift peaky's lists and families (seed proposal phases 0-1) | - | planned |
@@ -2529,24 +2529,39 @@ predecessor published. The before column is the "reference re-based" section
 above, so both sides of every number below are v2.
 
 **The step changes no election.** Across the eight sets and 48,894 joined peaks,
-not one verdict moved. What moved is tiers, on 59 rows.
+not one verdict moved. What moved is tiers, on 49 rows - and the 49 are almost
+all satellites rather than analytes, which the columns below keep apart because
+G7 is read as a statement about analytes:
 
-| set | G1 | G2 formula / ion | its n | fitted width | gate width | capped |
-|---|---|---|---|---|---|---|
-| A | 40.2, flat | 93.8 / 96.2, flat | 784 | 0.06 - 0.17 | 0.53 - 0.64 | 3 |
-| B | 44.2, flat | 92.8 / 94.8, flat | 1933 | 0.16 - 0.25 | 0.53 - 0.57 | 19 |
-| C | 35.4, flat | 90.6 / 90.6, flat | 445 | 0.08 - 0.10 | 0.58 - 0.66 | 5 |
-| C2 | 41.8, flat | 77.7, flat | 264 | 0.09 - 0.30 | 0.66 - 0.79 | 6 |
-| D | 21.6, flat | 80.4 / 82.1, flat | 800 | 0.27 - 0.36 | 0.58 | 6 |
-| E | 97.9, flat | 33.3 / 42.9, flat | 42 | 2.35 - 3.60 | 3.04 - 3.60 | 4 |
-| F1 | 99.1, flat | 13.0 / 14.6, flat | 123 | 1.85 - 4.48 | 3.66 - 7.69 | 2 |
-| F2 | 99.2, flat | 15.9, flat | 69 | 1.19 - 2.91 | 1.61 - 4.11 | 14 |
+- **3 analyte commits capped**, all on F2, all from `assigned` to `candidate`.
+  The reference contradicts one of the three and does not commit on the other
+  two; none is a row it confirms.
+- **46 satellites capped**, spread over every set, each one an isotopologue the
+  tracking rule reads as not its parent's. On 40 of them the parent itself stays
+  at `assigned`, which is the honest outcome: the ion is still committed, and
+  what the run has withdrawn is the second line's claim to be part of it.
+
+Whether a satellite the rule reads as a coincidence should be capped at all
+rather than left un-owned is step 2.4's question, and this step leaves it capped
+rather than inventing a third answer for it.
+
+| set | G1 | G2 formula / ion | its n | fitted width | gate width | analytes capped | satellites capped |
+|---|---|---|---|---|---|---|---|
+| A | 40.2, flat | 93.8 / 96.2, flat | 784 | 0.09 - 0.16 | 0.53 - 0.64 | 0 | 3 |
+| B | 44.2, flat | 92.8 / 94.8, flat | 1933 | 0.18 - 0.28 | 0.53 - 0.57 | 0 | 19 |
+| C | 35.4, flat | 90.6 / 90.6, flat | 445 | 0.09 - 0.11 | 0.58 - 0.66 | 0 | 5 |
+| C2 | 41.8, flat | 77.7, flat | 264 | 0.08 - 0.22 | 0.66 - 0.79 | 0 | 6 |
+| D | 21.6, flat | 80.4 / 82.1, flat | 800 | 0.25 - 0.43 | 0.58 | 0 | 6 |
+| E | 97.9, flat | 33.3 / 42.9, flat | 42 | 3.03 - 4.37 | 3.04 - 4.37 | 0 | 2 |
+| F1 | 99.1, flat | 13.0 / 14.6, flat | 123 | 3.76 - 5.29 | 4.40 - 7.69 | 0 | 0 |
+| F2 | 99.2, flat | 15.9, flat | 69 | 1.41 - 2.31 | 1.61 - 4.11 | 3 | 5 |
 
 G2 and its denominator are identical on every set, which is the step's own bound
 met exactly rather than approximately: **no row the reference confirms was
 demoted anywhere**, so the "agreed rows kept above 95%" clause reads 100%. Eleven
-of the 59 were capped from `candidate` to `below_assignability`. Committed mass
-error is unchanged on all eight sets, and G1 does not move on any of them.
+of the 49 were capped from `candidate` to `below_assignability`, and all eleven
+are satellites. Committed mass error is unchanged on all eight sets, and G1 does
+not move on any of them.
 
 Two widths per set, because they answer different questions and the gate needs
 both. The fitted width is what the run's own corroborated monoisotopic rows
@@ -2565,9 +2580,10 @@ search was told to accept.
 committed row, so "uncorroborated commits beyond 3 sigma" can only reach zero as
 "beyond 3 sigma AT THE ASSIGNED TIER", which is what the gate enforces and what
 is measured here. All 43 samples fitted a calibration and the gate applied on all
-43. It now reaches the TOF sets for the first time - 4 rows on E, 2 on F1, 14 on
-F2, against 0, 0 and 1 when a satellite's coincidental scatter was setting the
-width there.
+43. On analyte commits it fires only on F2, where three rows sit 5.5 to 8.8 ppm
+out at a gate width of 1.6 to 4.1; the other seven sets have no analyte row far
+enough out to reach it, which is the same "the failure was closed upstream"
+result the rest of this section reports.
 
 **What counts as a confirmed envelope, and why the first answer was wrong.** The
 first version of this step anchored the calibration on curated rows, on any
@@ -2594,12 +2610,38 @@ run called its calibration was the scatter of coincidences, and every TOF row's
 `mass_z` was stated in it.
 
 So a child corroborates its parent, and is corroborated by it, only when its own
-mass error tracks the parent's within the class's precision; and only
-monoisotopic rows anchor the fit, a satellite being the wider row wherever it is
-real (0.35 ppm against 0.12 for the M0 rows it belongs to on A). E still fits a
-calibration afterwards rather than standing down - 22 to 30 anchors a sample,
-above the eight the fit needs - and reports 2.35 to 3.60 ppm, which is its
-uncorroborated rows' own spread rather than its satellites'.
+mass error tracks the parent's; and only monoisotopic rows anchor the fit, a
+satellite being the wider row wherever it is real (0.35 ppm against 0.12 for the
+M0 rows it belongs to on A). E still fits a calibration afterwards rather than
+standing down - 48 to 53 anchors a sample, well above the eight the fit needs.
+
+**The bar is three sigma of the difference, not one.** What is being tested is a
+difference of two measurements, and on the sets that have real envelopes that
+difference is about as wide as the class's precision itself, so testing at the
+bare precision is a two-thirds-of-one-sigma test. Measured, the share of children
+it keeps at one, two and three times the precision:
+
+| set | 1x | 2x | 3x |
+|---|---|---|---|
+| A | 59% | 84% | 91% |
+| B | 66% | 88% | 95% |
+| C | 67% | 78% | 81% |
+| C2 | 66% | 82% | 90% |
+| D | 50% | 74% | 84% |
+| E, F1, F2 | 37 - 46% | 61 - 69% | 77 - 82% |
+
+At the bare precision the rule threw away a third to a half of the genuine
+children on the Orbitrap sets - the sets whose children the table above shows to
+be real. What the anchors then fit does not move at any multiple (A +0.02 ppm at
+0.12 wide from one to five times, D -0.17 at 0.35 to 0.40), so the constant never
+decided the calibration; it decides which rows a run calls corroborated, which is
+the flag step 2.4 reads, and at the old bar a third of that flag was wrong.
+
+On a TOF no multiple separates the two populations, because a coincidental
+pairing spreads evenly across the matching window instead of clustering: the
+three TOF sets keep 37-46% at one and 77-82% at three, with no step between. The
+test there is a purity choice rather than a separation, which is why step 2.4
+weighs isotope corroboration by instrument class rather than counting it.
 
 **The gate is a guard, not a lever, and the measurement says why.** Step 2.1 put
 the v2 fit at the sample's own width into the finder's ranking, so a candidate
@@ -2661,14 +2703,14 @@ measure. They are not close.
 
 | set | searched at (ppm) | measured (ppm) | ratio | Stage A anchors | run anchors |
 |---|---|---|---|---|---|
-| A | 0.590 | 0.06 - 0.17 | 5.0 | 14 | 26 - 32 |
-| B | 0.545 | 0.16 - 0.25 | 2.5 | 12 | 65 - 290 |
-| C | 0.599 | 0.08 - 0.10 | 6.8 | 6 | 19 - 25 |
-| C2 | 0.743 | 0.09 - 0.30 | 4.1 | 11 | 12 - 14 |
-| D | 0.583 (class) | 0.27 - 0.36 | 1.8 | 1 | 73 - 196 |
-| E | 3.041 (class) | 2.35 - 3.60 | 1.0 | 6 | 22 - 30 |
-| F1 | 5.392 | 1.85 - 4.48 | 1.6 | 21 | 40 - 52 |
-| F2 | 2.582 | 1.19 - 2.91 | 1.3 | 23 | 24 - 34 |
+| A | 0.590 | 0.09 - 0.16 | 4.7 | 14 | 36 - 45 |
+| B | 0.545 | 0.18 - 0.28 | 2.3 | 12 | 97 - 409 |
+| C | 0.599 | 0.09 - 0.11 | 6.0 | 6 | 23 - 27 |
+| C2 | 0.743 | 0.08 - 0.22 | 5.0 | 11 | 14 - 16 |
+| D | 0.583 (class) | 0.25 - 0.43 | 1.7 | 1 | 123 - 294 |
+| E | 3.041 (class) | 3.03 - 4.37 | 0.8 | 6 | 48 - 53 |
+| F1 | 5.392 | 3.76 - 5.29 | 1.2 | 21 | 61 - 85 |
+| F2 | 2.582 | 1.41 - 2.31 | 1.4 | 23 | 36 - 45 |
 
 The search is scored at a width two to seven times what the run's own
 corroborated rows turn out to scatter by, on 1 to 23 anchors where the run itself
@@ -2687,14 +2729,14 @@ and it is the reading that outlives the gate:
 
 | set | instrument | offset ppm | width ppm |
 |---|---|---|---|
-| A | Orbitrap | -0.00 to +0.04 | 0.06 - 0.17 |
-| B | Orbitrap | -0.20 to -0.16 | 0.16 - 0.25 |
-| C | Orbitrap | -0.22 to -0.13 | 0.08 - 0.10 |
-| **C2** | Orbitrap | **-1.14 to -1.09** | 0.09 - 0.30 |
-| D | Orbitrap | -0.22 to -0.07 | 0.27 - 0.36 |
-| **E** | TOF | +0.44 to +2.02 | **2.35 - 3.60** |
-| **F1** | TOF | +0.57 to +2.34 | **1.85 - 4.48** |
-| F2 | TOF | -0.04 to +2.50 | 1.19 - 2.91 |
+| A | Orbitrap | +0.01 to +0.04 | 0.09 - 0.16 |
+| B | Orbitrap | -0.21 to -0.19 | 0.18 - 0.28 |
+| C | Orbitrap | -0.20 to -0.13 | 0.09 - 0.11 |
+| **C2** | Orbitrap | **-1.11 to -1.10** | 0.08 - 0.22 |
+| D | Orbitrap | -0.21 to -0.09 | 0.25 - 0.43 |
+| **E** | TOF | +0.34 to +1.58 | **3.03 - 4.37** |
+| **F1** | TOF | +0.80 to +2.05 | **3.76 - 5.29** |
+| F2 | TOF | +0.08 to +2.34 | 1.41 - 2.31 |
 
 (Read on the corroborated monoisotopic rows, and for E on the recalibrated axis.
 The first version of this table anchored on satellites too and read three to
@@ -2704,8 +2746,19 @@ satellites' scatter rather than the samples'.)
 **A measurable offset across the mass range is a calibration fault, not an
 assignment problem.** C2 sits 1.1 ppm low on an Orbitrap, consistently, on all
 six samples; E sat 8 to 10 ppm low on all three until it was recalibrated
-(below), which its own calibrants showed and this fit did not, because the
-satellites it was anchored on scattered wider than the error it was looking for. That is the m/z axis being
+(below), which its own calibrants showed and this fit did not - and the reason
+is structural rather than a defect in the anchors. **A self-calibration cannot
+see an axis error larger than the spacing of the candidates it chose from.** It
+is fitted over the run's own commits, and the search picks, for each peak, the
+candidate nearest that peak; on a crowded spectrum there is a candidate near
+zero whatever the axis is doing, so the fit centres on the search's choices
+rather than on the truth. E's uncorroborated M0 rows sat at -0.3 to +0.1 ppm on
+the wrong axis too, so anchoring on them instead would have missed it just the
+same. This section's own "finding that outlives it" is the same fact from the
+other side: 70% of E's formulas changed when the axis moved, and the engine
+never noticed. Only external calibrants can see that error, which is exactly
+the division of labour issue #2095 is filed on - the assignment layer measures
+what it can and the calibration node owns the axis. That is the m/z axis being
 wrong, and the place to fix it is the mass calibration node of the signal
 processing pipeline - the calibration these files already carry, and which
 already claims to be verified - not a correction applied downstream while the
