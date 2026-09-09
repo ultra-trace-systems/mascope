@@ -19,6 +19,7 @@ from mascope_backend.api.new.peak_assignments.mass_gate import (
     apply_mass_gate,
     corroboration_of,
     fit_run_mass_accuracy,
+    tracking_tolerance_ppm,
 )
 from mascope_backend.api.new.peak_assignments.tiers import (
     TIER_ASSIGNED,
@@ -354,12 +355,30 @@ class TestWhenASatelliteIsEvidence:
         assert corroboration["near"] == CORROBORATED_ISOTOPOLOGUE
         assert corroboration["far"] is None
 
-    def test_the_bar_is_the_instrument_class_s(self):
-        # The same pair, read on two instruments: 2 ppm apart is a coincidence
-        # on an Orbitrap and ordinary centroiding on a TOF.
+    def test_the_bar_is_three_sigma_of_the_difference_not_one(self):
+        # The quantity tested is a difference of two measurements, and on the
+        # sets with real envelopes it is about as wide as the class's precision
+        # (0.28 to 0.45 ppm against a 0.3 ppm class). Testing at the bare
+        # precision is a two-thirds-of-one-sigma test: measured on the gate it
+        # threw away a third to a half of the genuine children (A 59% kept, D
+        # 50%), which are exactly the rows step 2.4 reads as corroboration.
         rows = [
             _row("m0", ppm=0.0),
-            _row("child", ppm=2.0, role="iso_child", owner="m0"),
+            _row("child", ppm=0.6, role="iso_child", owner="m0"),
+        ]
+
+        assert corroboration_of(rows, precision_ppm=PRECISION) == {
+            "m0": CORROBORATED_ISOTOPOLOGUE,
+            "child": CORROBORATED_ISOTOPOLOGUE,
+        }
+        assert tracking_tolerance_ppm(PRECISION) == pytest.approx(0.9)
+
+    def test_the_bar_is_the_instrument_class_s(self):
+        # The same pair, read on two instruments: 4 ppm apart is a coincidence
+        # on an Orbitrap (bar 0.9) and ordinary centroiding on a TOF (bar 9.0).
+        rows = [
+            _row("m0", ppm=0.0),
+            _row("child", ppm=4.0, role="iso_child", owner="m0"),
         ]
 
         assert corroboration_of(rows, precision_ppm=0.3)["m0"] is None
