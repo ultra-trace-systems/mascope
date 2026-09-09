@@ -86,6 +86,14 @@ class TestWhichChannelsCouldBeHidingNitrogen:
         assert substitution.label == "HNO3"
         assert substitution.donates_nitrogen
 
+    def test_a_labelled_reagent_hides_nothing(self):
+        # The reason anyone runs a labelled reagent. The 15N of "+^NO3-" is
+        # 0.997 Da from an analyte's own nitrogen, so a deprotonated nitrate
+        # ester is a different ion at a different mass rather than the same one
+        # read differently - and the spectrum, not a sort key, chooses.
+        assert substitution_for("+^NO3-", "-H+") is None
+        assert reagent_substitutions(["-H+", "+^NO3-", "+CO3-"]) == {}
+
     def test_a_bromide_cluster_hides_no_nitrogen(self):
         substitution = substitution_for("+Br-", "-H+")
         assert substitution is not None
