@@ -6,6 +6,31 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
 
 ### Changed
 
+- **A run now measures its own mass accuracy and says where each of its
+  assignments sits in it.** A sample's assignments do not scatter around zero
+  ppm; they scatter around the offset that acquisition sat at, with the spread
+  that instrument achieved that day. Both are now fitted from the run's own
+  corroborated assignments - the ones a curated identity proposed, or whose
+  isotope envelope the spectrum confirmed - and every assigned peak records
+  `mass_z`, its distance from that centre in the run's own widths. An
+  assignment resting on the mass fit alone and sitting more than three of those
+  widths out is capped at "candidate" (reason `off_calibration`) and more than
+  six at "below assignability"; the formula stays on the peak, because what is
+  withdrawn is the confidence, not the reading. A corroborated assignment is
+  never demoted for its mass error, and a run with too few corroborated
+  assignments to measure a calibration gates nothing and records that it stood
+  down. The run stores the calibration beside the scoring it searched at.
+
+- **A sample's mass offset is no longer reported as zero when it was never
+  measured.** `mascope_tools.composition.fit_mass_accuracy` answered `(0.0,
+  None)` for a sample with too few matched ions to fit anything, so a caller
+  could not tell "this sample is centred" from "nothing was measured here" -
+  opposite claims, differing by more than an Orbitrap's whole accuracy. The
+  offset and the width are now reported separately, each absent where it was
+  not measured, and an offset needs fewer anchors than a width does: a sample
+  with five to seven matched ions is now scored at the offset those ions
+  measured instead of at a silent zero.
+
 - **An untargeted assignment is now judged the way a database assignment is,
   and "assigned" means the same thing on both.** The untargeted search scored a
   formula by averaging its errors over the isotope lines it found, so a formula
