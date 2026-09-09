@@ -646,8 +646,15 @@ class TestResolvedProfile:
 
         await _run(PeakAssignmentConfig(run_untargeted=False))
 
+        # Twice: once before the stages, so a run that fails still says what it
+        # would have searched, and once after the ledger is built, which is the
+        # earliest the run's own mass calibration can be measured. Both carry
+        # the resolution and it does not change between them.
         configs = recorder.recorded_configs()
-        assert len(configs) == 1
+        assert len(configs) == 2
+        assert configs[0]["resolved_profile"] == configs[1]["resolved_profile"]
+        assert "mass_calibration" not in configs[0]
+        assert configs[1]["mass_calibration"]["committed"] == len(_stage_a_rows())
         snapshot = configs[0]["resolved_profile"]
         # '+H+' is diagnostic of nothing, so a positive sample falls back to
         # the generic positive preset - and says that it did.
