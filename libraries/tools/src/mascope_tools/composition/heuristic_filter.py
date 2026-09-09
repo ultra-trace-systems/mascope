@@ -19,7 +19,7 @@ from mascope_tools.composition.config import (
     ISOTOPE_MATCHING_MZ_TOLERANCE_PPM,
 )
 from mascope_tools.composition.custom_elements import CUSTOM_ELEMENTS
-from mascope_tools.composition.models import HeuristicFilterConfig
+from mascope_tools.composition.models import HeuristicFilterConfig, PatternScoring
 from mascope_tools.composition.utils import (
     normalize_formula_with_isotopes,
     parse_ionization,
@@ -29,6 +29,21 @@ from mascope_tools.composition.utils import (
 
 # Limit isotopic matching to the most plausible candidates
 ISOTOPE_CANDIDATE_LIMIT = 64
+
+# Expected signal-to-noise at which a predicted line counts as one the spectrum
+# should have shown. The fit score charges an absent line above it and ignores
+# one below (`score_pattern_v2`'s `k_detect`); the envelope predictor stops at
+# the same place, because a line nobody could have seen is not worth predicting
+# either. One constant so the two cannot disagree about what "detectable" means.
+DETECT_SNR_K = 3.0
+
+#: Key under which `match_isotopic_pattern` records whether a candidate's
+#: envelope holds the two lines a reading needs to be evidence at all: the ion's
+#: own, and the one the prediction leads with. A separate statement from the
+#: score because the v2 fit CHARGES an absent line rather than refusing on it -
+#: a reading missing the brightest line scores low, not zero - so the refusal
+#: has to be said out loud instead of being read off a zero.
+PATTERN_REQUIRED_LINES = "pattern_has_required_lines"
 
 # --- Labelled-reagent custom elements ('^X' notation) ------------------------
 # A labelled reagent atom is not 100% pure; e.g. 15N-nitrate is ~98% 15N / 2% 14N.
@@ -890,8 +905,83 @@ def anchor_on_monoisotopic(
     )
 
 
+def envelope_floor_for_peak(
+    base_intensity: float,
+    base_snr: float | None,
+    faintest_intensity: float,
+    scoring: PatternScoring,
+) -> float:
+    """How deep to predict a peak's envelope, relative to the ion's own line.
+
+    Two bounds, and the shallower one wins. What the peak's own noise allows: a
+    line at :data:`DETECT_SNR_K` over its signal-to-noise sits at the edge of
+    visibility, and one below that is exactly what the fit score's
+    detectability gate declines to charge for being absent, so predicting it
+    buys nothing. And what the peak list can hold at all: a line fainter than
+    the faintest measured peak is not in there whatever the noise says.
+
+    The result is clamped between the sample's own abundance floor and the 1%
+    default, so no peak's envelope is shallower than the fixed cutoff the finder
+    used to apply to every peak alike, and none is deeper than the floor Stage A
+    generates its isotopes at. A bright peak on a clean spectrum therefore
+    reaches far below 1% - which is where the faint lines that are really there
+    live - while a weak one does not pay for a depth it could not use.
+
+    :param base_intensity: Intensity of the peak the candidates explain.
+    :param base_snr: Its signal-to-noise, when the file carries one.
+    :param faintest_intensity: The smallest intensity in the peak list.
+    :param scoring: The sample's scoring parameters; its ``abundance_floor`` is
+        the deepest this may return.
+    :return: The relative abundance below which lines are not predicted.
+    """
+    reach = 0.0
+    if base_snr is not None and np.isfinite(base_snr) and base_snr > 0:
+        reach = DETECT_SNR_K / float(base_snr)
+    if base_intensity > 0 and faintest_intensity > 0:
+        reach = max(reach, float(faintest_intensity) / float(base_intensity))
+    if reach <= 0:
+        # Neither bound could be evaluated - an empty frame, or one whose
+        # intensities are all zero. Predict to the floor rather than invent a
+        # depth from nothing.
+        return float(scoring.abundance_floor)
+    return float(min(max(reach, scoring.abundance_floor), ISOTOPE_ABUNDANCE_THRESHOLD))
+
+
+def _target_peak(
+    candidates: list[dict[str, Any]],
+    mzs: np.ndarray,
+    intensities: np.ndarray,
+    snrs: np.ndarray | None,
+) -> tuple[float, float | None]:
+    """The intensity and SNR of the peak a list of candidates was enumerated for.
+
+    Every candidate here explains one observed peak - they are the compositions
+    the search found for its mass - so the peak is a property of the list, read
+    once. Answers ``(0.0, None)`` when the candidates do not say which peak they
+    came from, which is what a hand-built candidate list looks like.
+    """
+    target_mz = None
+    for candidate in candidates:
+        try:
+            value = float(candidate.get("observed_mass"))  # type: ignore[arg-type]
+        except (TypeError, ValueError):
+            continue
+        if np.isfinite(value):
+            target_mz = value
+            break
+    if target_mz is None or not mzs.size:
+        return 0.0, None
+    upper = int(np.searchsorted(mzs, target_mz))
+    nearby = [i for i in (upper - 1, upper) if 0 <= i < mzs.size]
+    position = min(nearby, key=lambda i: abs(float(mzs[i]) - target_mz))
+    snr = float(snrs[position]) if snrs is not None else None
+    return float(intensities[position]), snr
+
+
 def match_isotopic_pattern(
-    candidates: list[dict[str, Any]], peaks: pl.DataFrame
+    candidates: list[dict[str, Any]],
+    peaks: pl.DataFrame,
+    scoring: PatternScoring | None = None,
 ) -> tuple[list[dict[str, Any]], list[dict[str, np.ndarray | list[str]]]]:
     """Matches isotopic patterns against candidates.
 
@@ -902,12 +992,33 @@ def match_isotopic_pattern(
     computed permutation rather than by two sorts that agree only while no two
     candidates tie.
 
+    Ranking is the fit score (:func:`score_pattern_v2`), judged at the sample's
+    own mass width: it charges a predicted line that is absent where the noise
+    says it should have been visible, and ignores one below the noise. That is
+    the difference that decides an election. Its predecessor averaged its terms
+    over the lines a candidate DID match, so a reading that predicted three
+    lines and found one scored above a reading that predicted one and found it -
+    and a reading whose lines cannot be there at all, which is what a
+    sulfur-rich radical is on a spectrum with no sulfur, scored best of all.
+
     :param candidates: List of candidate formula dicts.
     :type candidates: list[dict[str, Any]]
-    :param peaks: Sorted dataframe of peaks with 'mz' and 'intensity' columns.
+    :param peaks: Sorted dataframe of peaks with 'mz' and 'intensity' columns,
+        and optionally 'signal_to_noise' - the per-peak noise estimate the
+        detectability gate and the mass width read. Without it the score falls
+        back to its no-SNR mode, where an absent line is charged on its
+        predicted abundance alone.
     :type peaks: pl.DataFrame
+    :param scoring: The sample's scoring parameters - fitted mass width and
+        offset, match window, envelope floor. Defaults to the fixed
+        Orbitrap-shaped constants the finder carried before a caller could
+        describe the sample.
+    :type scoring: PatternScoring, optional
     :return: Tuple of ranked candidates, and a list of isotope data dicts (per
-        candidate). An isotope dict has one entry per predicted isotopologue, zero
+        candidate). Each candidate also carries
+        :data:`PATTERN_REQUIRED_LINES`, whether its envelope holds the two lines
+        a reading needs to be evidence at all. An isotope dict has one entry per
+        predicted isotopologue, zero
         where nothing matched, and reports BOTH errors signed - `intensity_errors`
         as observed/predicted - 1, `mass_errors_ppm` as
         (observed - predicted)/predicted * 1e6. That is the targeted matcher's
@@ -916,8 +1027,14 @@ def match_isotopic_pattern(
         scoring take the magnitude; the sign is evidence, not a penalty.
     :rtype: tuple[list[dict[str, Any]], list[dict[str, np.ndarray | list[str]]]]
     """
+    scoring = scoring or PatternScoring()
     mzs = peaks["mz"].to_numpy()
     intensities = peaks["intensity"].to_numpy()
+    snrs = (
+        peaks["signal_to_noise"].to_numpy()
+        if "signal_to_noise" in peaks.columns
+        else None
+    )
 
     if not candidates:
         return [], []
@@ -935,18 +1052,35 @@ def match_isotopic_pattern(
 
     # If ionization peak: skip isotopic matching and return score 1.0
     if any(candidate.get("formula") == "()" for candidate in ranked):
-        return [dict(candidate, isotopic_pattern_score=1.0) for candidate in ranked], []
+        return [
+            dict(
+                candidate, isotopic_pattern_score=1.0, **{PATTERN_REQUIRED_LINES: True}
+            )
+            for candidate in ranked
+        ], []
 
     ion_formulas, ion_charges = _extract_formulae_and_charges(
         pl.Series("ion", [str(candidate.get("ion") or "") for candidate in ranked])
     )
 
+    # How deep every candidate's envelope is predicted. One depth for the whole
+    # list, because they all explain the same observed peak and it is that
+    # peak's noise that decides what a line of theirs could look like; scoring
+    # two candidates to different depths would also make their scores
+    # incomparable, which is the one thing this ranking may not do.
+    base_intensity, base_snr = _target_peak(ranked, mzs, intensities, snrs)
+    faintest = float(intensities.min()) if intensities.size else 0.0
+    envelope_floor = envelope_floor_for_peak(
+        base_intensity, base_snr, faintest, scoring
+    )
+
     scores = np.zeros(len(ranked), dtype=float)
+    has_required_lines = np.zeros(len(ranked), dtype=bool)
     all_isotope_data = []
 
     for ind, (ion_formula, ion_charge) in enumerate(zip(ion_formulas, ion_charges)):
         predicted_mzs, predicted_intensities, isotope_labels = predict_isotopes(
-            ion_formula, ion_charge
+            ion_formula, ion_charge, threshold=envelope_floor
         )
         # The ion's own line first, whatever order the predictor returned. Every
         # index-0 assumption below - the intensity the envelope is normalised
@@ -974,6 +1108,10 @@ def match_isotopic_pattern(
         observed_intensities = observed_masses.copy()
         observed_mass_errors_ppm = observed_masses.copy()
         observed_intensity_error = observed_masses.copy()
+        # Per-line signal-to-noise, NaN where the line was not matched or the
+        # file carries none. It only ever widens a tolerance in the score, so a
+        # NaN costs the candidate nothing it had earned.
+        observed_snr = np.full(predicted_mzs.size, np.nan)
 
         # Relative to the ion's own line, which anchor_on_monoisotopic put at
         # index 0. A satellite's predicted share may therefore exceed 1 - a
@@ -983,7 +1121,7 @@ def match_isotopic_pattern(
 
         base_peak_intensity = None
         for i, p_mz in enumerate(predicted_mzs):
-            mz_delta = p_mz * ISOTOPE_MATCHING_MZ_TOLERANCE_PPM * 1e-6
+            mz_delta = p_mz * scoring.mz_tolerance_ppm * 1e-6
             mz_min, mz_max = p_mz - mz_delta, p_mz + mz_delta
 
             start_idx = np.searchsorted(mzs, mz_min, side="left")
@@ -1001,12 +1139,18 @@ def match_isotopic_pattern(
             matched_index = np.argmin(np.abs(window_mzs - p_mz))
             matched_mz = window_mzs[matched_index]
             matched_intensity = window_intensities[matched_index]
+            matched_snr = (
+                float(snrs[start_idx:end_idx][matched_index])
+                if snrs is not None
+                else np.nan
+            )
             is_monoisotopic = i == 0
 
             if is_monoisotopic:
                 base_peak_intensity = matched_intensity
                 observed_intensities[0] = matched_intensity
                 observed_masses[0] = matched_mz
+                observed_snr[0] = matched_snr
                 # Signed, (observed - predicted)/predicted: the same convention as
                 # the targeted matcher's match_mz_error, so a consumer can recover the
                 # predicted m/z as observed / (1 + error/1e6).
@@ -1028,18 +1172,36 @@ def match_isotopic_pattern(
             # the predicted relative abundance as observed_rel / (1 + error).
             intensity_error = observed_rel_intensity / predicted_rel_intensity - 1.0
 
+            # A line whose height is nowhere near its prediction is not this
+            # ion's line, and the deeper envelope makes that gate matter more
+            # than it did: a trace prediction has a real chance of landing on an
+            # unrelated peak, and this is what keeps the ion from claiming it.
+            # What the score then sees is an ABSENT line, which the
+            # detectability gate charges or ignores according to whether the
+            # noise says it should have been there.
             if abs(intensity_error) <= ISOTOPE_MATCHING_INTENSITY_TOLERANCE:
                 observed_intensities[i] = matched_intensity
                 observed_masses[i] = matched_mz
                 observed_mass_errors_ppm[i] = (matched_mz - p_mz) / p_mz * 1e6
                 observed_intensity_error[i] = intensity_error
+                observed_snr[i] = matched_snr
 
-        scores[ind] = score_pattern(
-            observed_masses,
-            observed_mass_errors_ppm,
+        # Two lines have to be there for the envelope to be evidence at all: the
+        # ion's own, which is the peak the candidate was enumerated for, and the
+        # one the prediction leads with. Both are absence tests rather than
+        # quality tests, and they are stated here rather than left to the score
+        # because the fit charges an absent line instead of refusing on it.
+        brightest = int(np.argmax(predicted_rel)) if predicted_rel.size else 0
+        has_required_lines[ind] = bool(
+            observed_intensities[0] > 0 and observed_intensities[brightest] > 0
+        )
+        scores[ind] = score_pattern_v2(
+            observed_mass_errors_ppm - scoring.mu_ppm,
             observed_intensities,
-            observed_intensity_error,
+            observed_snr,
             predicted_rel,
+            sigma_ppm=scoring.sigma_ppm,
+            k_detect=DETECT_SNR_K,
         )
 
         matched_isotopes = {
@@ -1054,8 +1216,12 @@ def match_isotopic_pattern(
         all_isotope_data.append(matched_isotopes)
 
     ranked = [
-        dict(candidate, isotopic_pattern_score=float(score))
-        for candidate, score in zip(ranked, scores)
+        dict(
+            candidate,
+            isotopic_pattern_score=float(score),
+            **{PATTERN_REQUIRED_LINES: bool(required)},
+        )
+        for candidate, score, required in zip(ranked, scores, has_required_lines)
     ]
     # One permutation for both lists. Two independent sorts on the score alone
     # agree only while no two candidates tie on it, and a tie is common - every
@@ -1288,6 +1454,11 @@ def score_pattern(
     monoisotopic line (`anchor_on_monoisotopic`) separated the two, and without
     stating it again the anchoring would have traded one phantom for another -
     on a bromide grid, `+Br2-` readings winning peaks with no envelope at all.
+
+    No longer ranks anything in the composition finder: `match_isotopic_pattern`
+    scores with `score_pattern_v2` (see it, and the block below for what the two
+    do differently). Kept because the scoring harness in `tooling/score_eval`
+    measures v2 against it, and its numbers are what the harness's goldens hold.
     """
     predicted_rel = np.asarray(predicted_rel, dtype=float)
     brightest = int(np.argmax(predicted_rel)) if predicted_rel.size else 0
@@ -1409,8 +1580,14 @@ def score_pattern_v2(
     """Detectability-gated, SNR-aware match score in [0, 1].
 
     Per predicted isotopologue i (predicted relative abundance `predicted_rel[i]`;
-    index 0 is the BASE peak — the most abundant predicted isotopologue, which the caller
-    puts first and which for a polyhalogenated ion is not the monoisotopic one): a matched
+    index 0 is the ANCHOR - the line every other is measured against, which the caller
+    puts first and normalises `predicted_rel` to. The targeted path anchors on the most
+    abundant predicted isotopologue, which for a polyhalogenated ion is not the
+    monoisotopic one; the composition finder anchors on the monoisotopic line, which is
+    the peak its candidates were enumerated for, and then `predicted_rel` runs above 1
+    for a brighter satellite. Every term below is anchor-relative, so both are correct
+    as long as the caller is consistent - the observed intensities, the abundances and
+    the SNR at index 0 must all describe the one line): a matched
     peak contributes a Gaussian mass likelihood (its width the fitted instrument sigma in
     quadrature with an SNR-dependent centroiding term, `MASS_SNR_K/SNR`) times an
     intensity likelihood whose tolerance is set by the peak's own SNR; an ABSENT peak

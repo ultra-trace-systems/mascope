@@ -20,6 +20,7 @@ from mascope_tools.composition.grid import (
     build_neutral_grid,
 )
 from mascope_tools.composition.heuristic_filter import (
+    PATTERN_REQUIRED_LINES,
     SAME_ION_ALTERNATIVES,
     apply_heuristic_rules,
     match_isotopic_pattern,
@@ -29,6 +30,7 @@ from mascope_tools.composition.models import (
     CompositionSearchConfig,
     HeuristicFilterConfig,
     IonizationMechanism,
+    PatternScoring,
     Result,
 )
 
@@ -74,10 +76,13 @@ def assign_compositions(
     config: CompositionSearchConfig,
     heuristics: HeuristicFilterConfig | None = None,
     targets: Sequence[float] | None = None,
+    scoring: PatternScoring | None = None,
 ) -> tuple[pd.DataFrame, dict[float, list[str]]]:
     """Assign molecular compositions to a set of peaks.
 
-    :param peaks: DataFrame with 'mz' and 'intensity' columns.
+    :param peaks: DataFrame with 'mz' and 'intensity' columns, and optionally
+        'signal_to_noise' - the per-peak noise estimate the fit score judges an
+        absent isotopologue against.
     :type peaks: pd.DataFrame
     :param config: Configuration parameters for the composition search.
     :type config: CompositionSearchConfig
@@ -90,6 +95,11 @@ def assign_compositions(
         what lets a caller search a few peaks of a spectrum at the cost of
         those few, with the pattern scored against the whole spectrum.
     :type targets: Sequence[float], optional
+    :param scoring: How the sample's envelopes are predicted, matched and
+        scored - its fitted mass width and offset, its match window, its
+        abundance floor. Defaults to the fixed Orbitrap-shaped constants the
+        finder used before a caller could describe the sample.
+    :type scoring: PatternScoring, optional
     :return: A DataFrame with assigned compositions and related information.
         An M0 row whose ion could also be read as a different neutral/adduct
         pair carries those readings under ``same_ion_alternatives``: the
@@ -150,7 +160,7 @@ def assign_compositions(
             mass_log_messages[mz] = log_messages
             if candidates:
                 candidates, all_matched_isotopes = match_isotopic_pattern(
-                    candidates, peaks_df
+                    candidates, peaks_df, scoring
                 )
             else:
                 all_matched_isotopes = []
@@ -178,10 +188,10 @@ def assign_compositions(
                 ]
             if all_matched_isotopes and not _pattern_is_evidence(candidates[0]):
                 # The best candidate's envelope was predicted, matched against
-                # the spectrum and came out worth nothing - a line the
-                # prediction requires is not there (see
-                # `heuristic_filter.score_pattern`). Candidates are ranked by
-                # that score, so no other reading of this peak does better
+                # the spectrum and came out missing a line the reading cannot do
+                # without - the ion's own, or the one the prediction leads with
+                # (see `heuristic_filter.match_isotopic_pattern`). Candidates are
+                # ranked by the fit, so no other reading of this peak does better
                 # either. Committing the top one anyway is how a `+Br2-` phantom
                 # takes a peak with no envelope at all: its monoisotopic line is
                 # the target, so the row can always be written, and only the
@@ -499,12 +509,14 @@ def neutral_mass_bounds(
 def _pattern_is_evidence(candidate: dict) -> bool:
     """Whether a scored candidate's isotope pattern supports committing it.
 
-    A zero here is not a weak match: `score_pattern` returns zero only when a
-    line it requires is absent - the ion's own, or the one the prediction leads
-    with - and every other outcome is a positive combination of mass, intensity
-    and pattern terms.
+    The two lines a reading cannot do without are the ion's own and the one the
+    prediction leads with, and `match_isotopic_pattern` reports whether they are
+    there. Read off that flag rather than off a zero score: the v2 fit CHARGES
+    an absent line rather than refusing on it, so a reading whose brightest
+    predicted line is missing now scores low instead of scoring nothing, and a
+    zero no longer names the failure by itself.
     """
-    return float(candidate.get("isotopic_pattern_score") or 0.0) > 0.0
+    return bool(candidate.get(PATTERN_REQUIRED_LINES, False))
 
 
 def process_isotopes(

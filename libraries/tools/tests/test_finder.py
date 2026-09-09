@@ -13,6 +13,7 @@ from mascope_tools.composition.finder import (
     replace_atom_with_isotope,
 )
 from mascope_tools.composition.grid import build_neutral_grid
+from mascope_tools.composition.heuristic_filter import PATTERN_REQUIRED_LINES
 from mascope_tools.composition.models import CompositionSearchConfig
 from mascope_tools.composition.utils import (
     combine_formula_and_ionization,
@@ -402,8 +403,10 @@ def test_a_monoisotopic_row_outranks_another_candidates_satellite(monkeypatch):
                     comp_results[0],
                     neutral_mass=100.0,
                     ion=f"{comp_results[0]['formula']}H+",
-                    # A scored pattern; the finder commits nothing on a zero.
+                    # A scored pattern whose required lines are present; the
+                    # finder commits nothing without them.
                     isotopic_pattern_score=0.9,
+                    **{PATTERN_REQUIRED_LINES: True},
                 )
             ],
             {},
@@ -412,7 +415,7 @@ def test_a_monoisotopic_row_outranks_another_candidates_satellite(monkeypatch):
     monkeypatch.setattr(
         finder,
         "match_isotopic_pattern",
-        lambda candidates, peaks: (
+        lambda candidates, peaks, scoring=None: (
             candidates,
             [patterns[float(candidates[0]["formula"][1:])]],
         ),
@@ -443,15 +446,17 @@ def test_a_monoisotopic_row_outranks_another_candidates_satellite(monkeypatch):
 
 
 def test_a_peak_whose_best_reading_has_no_envelope_is_left_alone(monkeypatch):
-    """A candidate whose pattern scored zero is not committed.
+    """A candidate missing a line its prediction requires is not committed.
 
-    Zero is not a weak match: `score_pattern` returns it only when a line the
-    prediction requires is absent. Candidates are ranked by that score, so a
-    zero at the top means no reading of this peak has an envelope - and the row
-    can always be written anyway, because the candidate's monoisotopic line IS
-    the peak. Only the score says it should not be, and the finder has to read
-    it. On a bromide grid this is what keeps a `+Br2-` reading whose 79Br81Br
-    line is missing from taking the peak it used to swallow.
+    The ion's own line and the one the prediction leads with are absence tests,
+    reported by `match_isotopic_pattern` rather than read off a zero score - the
+    v2 fit charges an absent line instead of refusing on it, so a reading
+    missing the brightest one scores low and not nothing. Candidates are ranked
+    by that fit, so a failing candidate at the top means no reading of this peak
+    has an envelope - and the row can always be written anyway, because the
+    candidate's monoisotopic line IS the peak. On a bromide grid this is what
+    keeps a `+Br2-` reading whose 79Br81Br line is missing from taking the peak
+    it used to swallow.
     """
     from mascope_tools.composition import finder
 
@@ -468,11 +473,13 @@ def test_a_peak_whose_best_reading_has_no_envelope_is_left_alone(monkeypatch):
             {},
         ),
     )
-    scored = {"isotopic_pattern_score": 0.0}
+    # A middling fit, and the flag saying a required line is missing: under v2
+    # that is what the absence looks like, and the score alone would commit it.
+    scored = {"isotopic_pattern_score": 0.41, PATTERN_REQUIRED_LINES: False}
     monkeypatch.setattr(
         finder,
         "match_isotopic_pattern",
-        lambda candidates, peaks: (
+        lambda candidates, peaks, scoring=None: (
             [dict(candidates[0], **scored)],
             [_pattern([100.0], ["M0"], [0.2])],
         ),

@@ -12,6 +12,7 @@ import polars as pl
 import pytest
 
 from mascope_tools.composition.heuristic_filter import (
+    PATTERN_REQUIRED_LINES,
     match_isotopic_pattern,
     predict_isotopes,
     score_pattern,
@@ -188,20 +189,26 @@ def test_a_bright_peak_is_not_lost_to_a_faint_neighbour_two_mass_units_up():
     # The faint neighbour is what it is: far too weak for the 79Br81Br line of
     # this ion, so it fails the intensity gate and is not claimed.
     assert data["masses"][1] == 0.0
-    # And the reading is worth nothing rather than merely less: a dibromide
+    # And the reading is refused rather than merely scored down: a dibromide
     # whose brightest predicted line is not in the spectrum is not a dibromide,
     # however well its one matched line agrees. Without this the anchoring
     # would trade one phantom for another - the reading that used to swallow
-    # the target would win it instead, as an M0 with no envelope at all.
-    assert ranked[0]["isotopic_pattern_score"] == 0.0
+    # the target would win it instead, as an M0 with no envelope at all. The
+    # fit charges the absence (a 79Br81Br line at 1.95 times the target, missing
+    # and unmissable, is most of the envelope's weight) but does not refuse on
+    # it, which is why the refusal is a flag of its own.
+    assert ranked[0][PATTERN_REQUIRED_LINES] is False
+    assert ranked[0]["isotopic_pattern_score"] < 0.5
 
 
-def test_a_candidate_whose_brightest_line_is_absent_scores_nothing():
+def test_a_candidate_whose_brightest_line_is_absent_is_not_evidence():
     """The requirement the anchoring separated out and had to state again.
 
-    Before, the caller put the brightest line first and this function required
+    Before, the caller put the brightest line first and the score required
     index 0, so "the brightest line is there" was implicit in "the ion's line is
-    there". Once the two are different rows, both have to be asked for.
+    there". Once the two are different rows, both have to be asked for - and
+    once the fit charges an absent line rather than refusing on it, asked for
+    outside the score.
     """
     lines = _dibromide_lines()
     peaks = pl.DataFrame(
@@ -217,14 +224,15 @@ def test_a_candidate_whose_brightest_line_is_absent_scores_nothing():
     assert isotope_data[0]["masses"][0] > 0
     assert np.count_nonzero(isotope_data[0]["masses"]) == 2
     # ...but not the one the prediction leads with, so the reading is not
-    # evidence of this ion.
-    assert ranked[0]["isotopic_pattern_score"] == 0.0
+    # evidence of this ion, whatever the fit makes of the lines it did find.
+    assert ranked[0][PATTERN_REQUIRED_LINES] is False
 
 
 def test_a_candidate_whose_own_line_is_absent_scores_nothing():
     """The ion's monoisotopic line is the peak the composition search proposed
     the candidate for, so a spectrum that does not hold it is not evidence for
-    the candidate - however well the rest of the envelope lines up."""
+    the candidate - however well the rest of the envelope lines up. This one the
+    fit refuses outright: with no anchor there is nothing to measure against."""
     lines = _dibromide_lines()
     peaks = pl.DataFrame(
         {"mz": [lines["81Br"][0], lines["81Br2"][0]], "intensity": [1.0e6, 4.9e5]}
@@ -233,4 +241,5 @@ def test_a_candidate_whose_own_line_is_absent_scores_nothing():
     ranked, isotope_data = match_isotopic_pattern(DIBROMIDE_CANDIDATES, peaks)
 
     assert ranked[0]["isotopic_pattern_score"] == 0.0
+    assert ranked[0][PATTERN_REQUIRED_LINES] is False
     assert not np.any(isotope_data[0]["masses"] > 0)
