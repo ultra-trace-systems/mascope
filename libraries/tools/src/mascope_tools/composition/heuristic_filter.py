@@ -1086,7 +1086,11 @@ def match_isotopic_pattern(
         if base_snr is not None and np.isfinite(base_snr) and base_snr > 0
         else None
     )
-    faintest = float(intensities.min()) if intensities.size else 0.0
+    # The smallest intensity the list actually HOLDS, which is not its minimum:
+    # a peak frame carries zeros for peaks that averaged to nothing over the
+    # window, and a zero would say the spectrum can hold a line of any depth.
+    positive = intensities[intensities > 0]
+    faintest = float(positive.min()) if positive.size else 0.0
     envelope_floor = envelope_floor_for_peak(
         base_intensity, base_snr, faintest, scoring
     )
