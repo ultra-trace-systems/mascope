@@ -66,19 +66,30 @@ predicted spectrum* — it is a reproducible measurement, **not** a probability 
 candidates is the real one is a separate identification-confidence layer (a distinct
 workstream that builds on this score).
 
-This pipeline scores with **v1** (`score_pattern`): a fixed
-$0.6\,\text{mass} + 0.2\,\text{cosine} + 0.2\,\text{intensity}$ blend over matched peaks
-only, carried on each candidate as `isotopic_pattern_score`. The same module also ships the
-newer **v2** fit score (`score_pattern_v2`), fully documented in
-[`fit_score.md`](fit_score.md). In brief, each predicted isotopologue contributes a Gaussian
-mass likelihood (with a resolution-aware, per-sample-fitted width, valid for both Orbitrap
-and TOF) times an intensity likelihood whose tolerance is set by the peak's own
-signal-to-noise; a predicted peak that is *absent but should have been detectable* is
-penalised, while an undetectable one is excluded; and the per-isotopologue likelihoods are
-combined as a predicted-abundance-weighted geometric mean. Nothing in this pipeline selects
-between the two — the module constant `SCORE_VERSION` records the newest version shipped,
-but no code branches on it. v2 is called directly by the consumers that want the fit score:
-Mascope's peak-assignment engine (Stage A, `score_ions_by_fit`) and the backend's
-`ion_score_v2` adapter behind `MASCOPE_MATCH_SCORE_VERSION=2`.
+This pipeline scores with the **v2** fit score (`score_pattern_v2`), fully documented in
+[`fit_score.md`](fit_score.md), carried on each candidate as `isotopic_pattern_score`. Each
+predicted isotopologue contributes a Gaussian mass likelihood (with a resolution-aware,
+per-sample-fitted width, valid for both Orbitrap and TOF) times an intensity likelihood
+whose tolerance is set by the peak's own signal-to-noise; a predicted peak that is *absent
+but should have been detectable* is penalised, while an undetectable one is excluded; and
+the per-isotopologue likelihoods are combined as a predicted-abundance-weighted geometric
+mean. What the sample is judged at — the fitted mass width and offset, the window a line
+may be matched in, how deep the envelope is predicted — is `PatternScoring`, passed in by
+the caller; its defaults reproduce the fixed Orbitrap-shaped constants this pipeline
+applied to every sample before a caller could describe one.
+
+Two lines still have to be present for a reading to be evidence at all: the ion's own, and
+the one the prediction leads with. The fit *charges* an absent line rather than refusing on
+it, so that requirement is reported separately, as `pattern_has_required_lines` on each
+ranked candidate.
+
+The predecessor **v1** (`score_pattern`) still ships: a fixed
+$0.6\,\text{mass} + 0.2\,\text{cosine} + 0.2\,\text{intensity}$ blend over the matched
+peaks only, which is why an envelope that predicted three lines and found one cost a
+candidate nothing under it. Nothing branches on a version — the module constant
+`SCORE_VERSION` records the newest one shipped — and v1 is kept for the scoring harness
+that measures v2 against it. v2 is also what Mascope's peak-assignment engine scores
+Stage A with (`score_ions_by_fit`) and what the backend's `ion_score_v2` adapter computes
+behind `MASCOPE_MATCH_SCORE_VERSION=2`.
 
 The highest-scoring formula candidate is assigned as the primary chemical identification, and its corresponding higher isotopes are flagged and linked within the final output data tables to complete the processing sequence.

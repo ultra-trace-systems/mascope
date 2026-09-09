@@ -46,10 +46,14 @@ unconditionally, not via the legacy `MASCOPE_MATCH_SCORE_VERSION` switch:
   gating carries into the fit. It scores with **real per-peak SNR** because it computes the
   isotopologue rows itself; the paths that *read* them back from the database have no SNR
   and score in the no-SNR mode of §3.3a (see §6).
-- **Stage B** (`engine.untargeted_matches_to_peak_assignments`): uses the isotope-pattern
-  fit score `assign_compositions` already computes (`match_isotopic_pattern`), i.e. the fit
-  score's **v1 degradation** — the untargeted path carries no SNR — instead of the crude
-  single-peak term.
+- **Stage B** (`engine.untargeted_matches_to_peak_assignments`): two measurements, and
+  they answer different questions. `assign_compositions` scores every candidate's envelope
+  against the peak list (`match_isotopic_pattern`), at the sample's own mass width and with
+  its own noise where the peak list carries a `signal_to_noise` column, and that is what
+  RANKS the readings of a peak. What a committed row is TIERED on is the winner measured
+  again as an ion, through the Stage A chain above (`service._seeded_fits` →
+  `seeded_scoring.score_seeds`): one `compute_match_isotopes` pass per sample with the
+  run's gating. The finder's own score stays on the row under `provenance.pattern_fit`.
 - **Tier bands (landed):** the confidence-tier bands no longer sit on the fit scale. They
   sit on **evidence** — fit × chemical plausibility, the product both stages already
   arbitrate a contested peak in — at `assigned_threshold = 0.75` /
@@ -68,11 +72,10 @@ unconditionally, not via the legacy `MASCOPE_MATCH_SCORE_VERSION` switch:
   old name `identified_threshold` as a validation alias: the config is built from the
   assign request body, so a client pinned to the pre-rename name still tiers the run the
   way it asked instead of silently falling back to the default. One pair covers both
-  stages knowingly — Stage A's fit is `ion_score_v2` and Stage B's the v1 degradation
-  above, so a band means slightly different things to each (holding the upper band at 0.80
-  would cost Stage B 5.3 % of its assigned rows and Stage A only 0.5 %) — but that
-  heterogeneity predates this binding, was equally true under fit-tiering, and per-stage
-  bands were deliberately not introduced. Still open: recalibrating those bands per
+  stages, and now on one scale: the sweep ran while Stage B's fit was the v1 degradation
+  above (holding the upper band at 0.80 would then have cost Stage B 5.3 % of its assigned
+  rows and Stage A only 0.5 %), and Stage B is now tiered on `ion_score_v2` like Stage A,
+  so per-stage bands are moot. Still open: recalibrating those bands per
   instrument once verification labels accumulate.
 
 **Naming.** This is being renamed `match_score` → **`fit_score`** across the schema/API to
@@ -122,9 +125,13 @@ worktree, not the repo).
 
 ## 3. The model
 
-Inputs, per predicted isotopologue $i$ (the pattern is ordered by descending predicted
-abundance, so index $0$ is the **base peak** — the most abundant isotopologue, which for a
-bromine- or chlorine-rich ion is not the monoisotopic one):
+Inputs, per predicted isotopologue $i$ (index $0$ is the **anchor** — the line every other
+is measured against, and the one $p_i$ is normalised to. The targeted path orders the
+pattern by descending predicted abundance, so its anchor is the most abundant
+isotopologue, which for a bromine- or chlorine-rich ion is not the monoisotopic one; the
+composition finder anchors on the monoisotopic line, the peak its candidates were
+enumerated for, and then $p_i > 1$ for a brighter satellite. Every term below is
+anchor-relative, so both orderings are correct as long as the caller is consistent):
 
 | symbol | meaning |
 |---|---|
@@ -134,8 +141,8 @@ bromine- or chlorine-rich ion is not the monoisotopic one):
 | $s_i$ | observed signal-to-noise of the matched peak |
 | $\sigma$ | instrument mass-error std in ppm (`sigma_ppm`) |
 
-**Guard.** If the base peak is absent ($o_0 \le 0$) the score is $0$ — without the
-most abundant isotopologue there is no assignment.
+**Guard.** If the anchor is absent ($o_0 \le 0$) the score is $0$ — with nothing to
+measure the envelope against there is no assignment.
 
 ### 3.1 Mass likelihood (Gaussian, resolution- and SNR-aware)
 
