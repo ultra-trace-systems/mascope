@@ -77,8 +77,16 @@ class FakeServer:
     fails loudly here.
     """
 
-    def __init__(self, peak_matches: list[list[dict]] | None = None):
+    def __init__(
+        self,
+        peak_matches: list[list[dict]] | None = None,
+        *,
+        signal_to_noise: bool = True,
+    ):
         self.peak_matches = PEAK_MATCHES if peak_matches is None else peak_matches
+        #: False models a file that stores no noise estimate: the endpoint sends
+        #: the key with a null rather than omitting it.
+        self.signal_to_noise = signal_to_noise
         self.paths: list[str] = []
 
     def http_get(self, url, path, access_token, params=None, **kwargs):
@@ -108,6 +116,9 @@ class FakeServer:
             "area": [1000.0 * (i + 1) for i in range(n)],
             "height": [500.0 * (i + 1) for i in range(n)],
             "sparsity": [0.0] * n,
+            "signal_to_noise": (
+                [10.0 * (i + 1) for i in range(n)] if self.signal_to_noise else None
+            ),
             "match": self.peak_matches,
         }
         if params.get("matches") == "false":
@@ -139,8 +150,10 @@ class _StubClient:
         return IonizationResource(self)
 
 
-def _serve(monkeypatch, peak_matches=None) -> tuple[SamplesResource, FakeServer]:
-    fake = FakeServer(peak_matches=peak_matches)
+def _serve(
+    monkeypatch, peak_matches=None, *, signal_to_noise: bool = True
+) -> tuple[SamplesResource, FakeServer]:
+    fake = FakeServer(peak_matches=peak_matches, signal_to_noise=signal_to_noise)
     monkeypatch.setattr("mascope_sdk.resources._base.http_get", fake.http_get)
     return SamplesResource(_StubClient()), fake
 
@@ -157,6 +170,33 @@ def resource(served):
 
 def _row(peaks: pd.DataFrame, peak_id: str) -> pd.Series:
     return peaks[peaks["peak_id"] == peak_id].iloc[0]
+
+
+class TestSignalToNoise:
+    """The per-peak noise estimate, for an engine scoring off this read."""
+
+    def test_the_noise_estimate_rides_along_per_peak(self, resource):
+        peaks = resource.get_peaks(SAMPLE_ID)
+
+        assert _row(peaks, "p1")["signal_to_noise"] == 10.0
+        assert _row(peaks, "p2")["signal_to_noise"] == 20.0
+
+    def test_a_file_that_stores_none_says_so_rather_than_zero(self, monkeypatch):
+        # An absent estimate and a peak at the noise floor are different facts,
+        # and a scorer told the second one charges an isotopologue for being
+        # invisible in a file that never measured whether it was.
+        resource, _ = _serve(monkeypatch, signal_to_noise=False)
+
+        peaks = resource.get_peaks(SAMPLE_ID)
+
+        assert peaks["signal_to_noise"].isna().all()
+
+    def test_a_multi_matched_peak_carries_it_on_every_row(self, resource):
+        # The frame is exploded to one row per match; a per-peak column has to
+        # survive the explode or a scorer reading it per row sees a NaN.
+        peaks = resource.get_peaks(SAMPLE_ID)
+
+        assert peaks.loc[peaks["peak_id"] == "p1", "signal_to_noise"].notna().all()
 
 
 class TestTargetCollectionNames:
