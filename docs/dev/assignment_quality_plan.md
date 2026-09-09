@@ -1871,9 +1871,11 @@ minutes, which is what lets it be run on every change rather than once a stage.
 
 ### After step 2.1, the v2 fit for Stage B (2026-09-09)
 
-Measured on `step-2.1-v2-fit-stage-b-2026.09.09-188f7bc`, all 43 samples
+Measured on `step-2.1-v2-fit-stage-b-2026.09.09-a4c8fae`, all 43 samples
 re-assigned and compared against the same reference runs the stage-1 gate used.
-The engine version stays 0.4.0: a stage bumps once, at its own gate (2.7).
+Every field of the table below is identical on the build before it, which
+carried the same scoring and wrote one provenance field less. The engine version
+stays 0.4.0: a stage bumps once, at its own gate (2.7).
 
 Two things changed and they do different work. The finder now ranks candidates
 with the v2 fit at the sample's own mass width and on the file's own per-peak
@@ -1889,6 +1891,17 @@ records beside the fit is the noise the finder's detectability gate judged its
 absent lines against - `provenance.base_snr` - because that is the difference
 between a fit scored against the noise and one scored against abundance alone,
 and nothing else on the row would say which happened.
+
+Read back from the store, all 32,133 untargeted M0 rows of the 43 gate runs
+carry it, so the finder's fit was the SNR-aware one on every set rather than
+assumed to be. What it says about the ledger is worth its own line: the median
+committed peak has a signal-to-noise of 6.4 (quartile 2.5, ninth decile 61.7),
+so on half the rows the detectability gate can only charge for a line predicted
+above about 45% of the parent - absence there really is uninformative, and the
+fit rests on the mass and on the lines that are present. It is the brightest
+18%, the 5,777 rows at SNR 30 or better, where a missing 13C line is charged at
+all. A tier that falls on those rows is the measurement working; one that falls
+on a peak at SNR 2.5 would not be.
 
 | set | G1 | G2 same formula / same ion | G3 N>=5 | G6 | G8 | odd-electron: all / assigned | MAD |
 |---|---|---|---|---|---|---|---|
