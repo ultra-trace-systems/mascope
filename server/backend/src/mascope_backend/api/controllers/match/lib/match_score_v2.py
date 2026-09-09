@@ -58,6 +58,25 @@ def match_score_version() -> int:
         return 1  # malformed value -> the default
 
 
+#: Matched rows below which no width is fitted and the caller falls back.
+MASS_ACCURACY_MIN_ANCHORS = 8
+
+
+def mass_accuracy_anchors(match_isotope_df: pd.DataFrame) -> pd.Series:
+    """The matched mass errors a sample's accuracy is fitted from.
+
+    One definition of "anchor" for the fit and for anything that reports how
+    many it had: a row that paired to a peak with an intensity and a usable
+    mass error. A caller that counted them itself would drift from the fit.
+    """
+    empty = pd.Series(dtype=float)
+    me = pd.to_numeric(match_isotope_df.get("match_mz_error", empty), errors="coerce")
+    inten = pd.to_numeric(
+        match_isotope_df.get("sample_peak_intensity", empty), errors="coerce"
+    )
+    return me[(inten.fillna(0) > 0) & me.notna()]
+
+
 def fit_sample_mass_accuracy(
     match_isotope_df: pd.DataFrame,
 ) -> tuple[float, float | None]:
@@ -66,13 +85,8 @@ def fit_sample_mass_accuracy(
     Returns sigma=None when there are too few matched anchors (caller falls back)
     — including none at all: a frame that carries neither column has not measured
     a mass error, which is the same answer as a frame that carries too few."""
-    empty = pd.Series(dtype=float)
-    me = pd.to_numeric(match_isotope_df.get("match_mz_error", empty), errors="coerce")
-    inten = pd.to_numeric(
-        match_isotope_df.get("sample_peak_intensity", empty), errors="coerce"
-    )
-    me = me[(inten.fillna(0) > 0) & me.notna()]
-    if len(me) < 8:
+    me = mass_accuracy_anchors(match_isotope_df)
+    if len(me) < MASS_ACCURACY_MIN_ANCHORS:
         return 0.0, None
     mu = float(me.median())
     sigma = max(float(1.4826 * (me - mu).abs().median()), 0.05)

@@ -60,6 +60,7 @@ from mascope_backend.api.new.peak_assignments.engine import (
     ROLE_ARTIFACT,
     ROLE_REAGENT,
     SOURCE_UNTARGETED,
+    SampleMassAccuracy,
     evidence_for,
     pattern_scoring_for,
     tier_for_evidence,
@@ -323,7 +324,7 @@ async def _search_sample(
     # run of the same sample would, which is the honest state of it: the width
     # is a measurement, and this path has not made it.
     scoring = pattern_scoring_for(
-        match_params, (0.0, None), resolved_profile.mass_accuracy_ppm
+        match_params, SampleMassAccuracy(), resolved_profile.fallback_sigma_ppm
     )
     search_columns = [
         column

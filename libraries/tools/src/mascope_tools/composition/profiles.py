@@ -65,11 +65,12 @@ INSTRUMENT_MZ_PRECISION_PPM: dict[str, float] = {"orbi": 3.0, "tof": 10.0}
 #: The window an unrecognised instrument class falls back to.
 DEFAULT_MZ_PRECISION_PPM = 10.0
 
-#: What a sample of this instrument class measures a mass to, in ppm - the
-#: width of its mass-error distribution, not the window a formula is searched
-#: in. The fit score's mass term is a Gaussian of this width, and the two
-#: numbers are an order of magnitude apart on an Orbitrap: 3 ppm of candidate
-#: space around a peak whose error is 0.2-0.3 ppm.
+#: The width the fit score's mass term falls back to per instrument class, in
+#: ppm - the Gaussian sigma of the mass likelihood, and NOT a second name for
+#: the search window above. The window says how far from a peak a candidate may
+#: sit; this says how well a hit has to agree once it is there, and on an
+#: Orbitrap the two are an order of magnitude apart: 3 ppm of candidate space
+#: around a peak whose error is 0.2-0.3 ppm.
 #:
 #: Used only where nothing has MEASURED the sample's own width - fewer than
 #: eight known ions matched, which is the state of a bromide set whose curated
@@ -78,11 +79,11 @@ DEFAULT_MZ_PRECISION_PPM = 10.0
 #: is five times an Orbitrap's real accuracy and lets a formula a whole ppm off
 #: win a peak from one that is on it. The TOF number is the spread the gate
 #: measured on its three TOF sets (0.7-2.2 ppm MAD).
-INSTRUMENT_MASS_ACCURACY_PPM: dict[str, float] = {"orbi": 0.3, "tof": 3.0}
+INSTRUMENT_FALLBACK_SIGMA_PPM: dict[str, float] = {"orbi": 0.3, "tof": 3.0}
 
 #: The width an unrecognised instrument class is judged at: the more forgiving
 #: of the two, because an unknown instrument must not be held to an Orbitrap's.
-DEFAULT_MASS_ACCURACY_PPM = 3.0
+DEFAULT_FALLBACK_SIGMA_PPM = 3.0
 
 _RANGE_TOKEN = re.compile(r"^(\^?\[?\d*[A-Z][a-z]?\]?)(\d+)-(\d+)$")
 
@@ -687,17 +688,19 @@ def resolve_mz_precision_ppm(
     )
 
 
-def resolve_mass_accuracy_ppm(instrument_type: str | None) -> float:
-    """The width this instrument class measures a mass to, in ppm.
+def resolve_fallback_sigma_ppm(instrument_type: str | None) -> float:
+    """The mass-term width to score at when nothing has fitted the sample's own.
 
-    What the fit score judges a mass error against when nothing has measured
-    the sample's own width. A property of the instrument and not of the
+    What the fit score judges a mass error against where the run has fewer than
+    :data:`match_score_v2.MASS_ACCURACY_MIN_ANCHORS` known ions matched to fit a
+    width from. Not the search window (:func:`resolve_mz_precision_ppm`), which
+    is a different statement about a different thing. A property of the instrument and not of the
     chemistry, so no profile overrides it - a profile that wanted to would be
     saying the source changes what the analyser can resolve.
 
     :param instrument_type: ``"orbi"``, ``"tof"``, or None/unknown.
     :return: The width in ppm.
     """
-    return INSTRUMENT_MASS_ACCURACY_PPM.get(
-        (instrument_type or "").strip().lower(), DEFAULT_MASS_ACCURACY_PPM
+    return INSTRUMENT_FALLBACK_SIGMA_PPM.get(
+        (instrument_type or "").strip().lower(), DEFAULT_FALLBACK_SIGMA_PPM
     )
