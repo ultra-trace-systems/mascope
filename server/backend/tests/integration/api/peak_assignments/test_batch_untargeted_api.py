@@ -320,7 +320,11 @@ async def test_the_search_runs_on_the_brightest_member_and_annotates_the_anchor(
     s1 = await _members(async_session_factory, samples["S1"])
     assert role_name(s1["p1"].role) == "M0"
     assert tier_name(s1["p1"].tier) == "assigned"
-    assert s1["p1"].fit_score == pytest.approx(0.92)
+    # The fit is the re-score's (0.88), not the finder's ranking score (0.92):
+    # the searched sample's own rows are tiered the same way the propagated
+    # ones are, so one anchor's members are all on one scale.
+    assert s1["p1"].fit_score == pytest.approx(0.88)
+    assert [name for name, _ in stubbed_engine["seeded_fits"]] == ["S1"]
     assert role_name(s1["p2"].role) == "iso_child"
     assert s1["p2"].owner_batch_peak_id == glucose.batch_peak_id
     assert s1["p3"].candidate is None
