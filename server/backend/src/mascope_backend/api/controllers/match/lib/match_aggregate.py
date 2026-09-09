@@ -3,7 +3,6 @@ from typing import Optional, Tuple
 import pandas as pd
 
 from mascope_backend.api.controllers.match.lib.match_score_v2 import (
-    fit_sample_mass_accuracy,
     ion_score_v2,
     match_score_version,
     sample_noise_floor,
@@ -23,6 +22,7 @@ from mascope_match.params import (
     BaseMatchParams,
     unmatched_isotope_params,
 )
+from mascope_tools.composition.mass_accuracy import fit_sample_mass_accuracy
 
 
 # Value columns of a match_isotope row fetched for aggregation (everything except

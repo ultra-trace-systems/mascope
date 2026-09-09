@@ -249,7 +249,7 @@ proportionally less. The result is in $[0,1]$, equals $1$ only for a flawless fi
 | `k_detect` | `3.0` | expected-SNR threshold above which an absent peak is penalised |
 | `miss_penalty` | `0.3` | likelihood assigned to a detectable-but-absent peak |
 | `rel_detect_no_snr` | `0.10` | no-SNR fallback (§3.3a): predicted abundance above which an absent peak is penalised when the base peak's SNR is unknown |
-| `PRED_SIGMA_PPM` | `0.5` (backend adapter) | prediction/centroiding term added to $\sigma$ in quadrature |
+| `PRED_SIGMA_PPM` | `0.5` (`composition.mass_accuracy`) | prediction/centroiding term added to $\sigma$ in quadrature by `scoring_sigma_ppm` |
 
 ## 5. Properties (validated on the demo)
 

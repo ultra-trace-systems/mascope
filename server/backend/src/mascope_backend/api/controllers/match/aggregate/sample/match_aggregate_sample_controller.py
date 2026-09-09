@@ -16,7 +16,6 @@ from mascope_backend.api.controllers.match.lib.match_aggregate import (
     snr_columns_json_safe,
 )
 from mascope_backend.api.controllers.match.lib.match_score_v2 import (
-    fit_sample_mass_accuracy,
     ion_score_v2,
     match_score_version,
     sample_noise_floor,
@@ -50,6 +49,7 @@ from mascope_backend.db.id import gen_id
 from mascope_file.string import norm
 from mascope_match import compute_match_isotopes
 from mascope_match.params import BaseMatchParams
+from mascope_tools.composition.mass_accuracy import fit_sample_mass_accuracy
 
 
 @api_controller()
