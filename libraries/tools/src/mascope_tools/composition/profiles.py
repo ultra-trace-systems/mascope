@@ -85,6 +85,25 @@ INSTRUMENT_FALLBACK_SIGMA_PPM: dict[str, float] = {"orbi": 0.3, "tof": 3.0}
 #: of the two, because an unknown instrument must not be held to an Orbitrap's.
 DEFAULT_FALLBACK_SIGMA_PPM = 3.0
 
+#: How far from its prediction a line may sit and still be claimed as an ion's,
+#: per instrument class. The third of the three windows here and the widest: a
+#: candidate is SEARCHED within `INSTRUMENT_MZ_PRECISION_PPM`, its lines are
+#: MATCHED within this, and the agreement is then SCORED at the sample's own
+#: fitted width or `INSTRUMENT_FALLBACK_SIGMA_PPM`. Matching generously and
+#: scoring strictly is deliberate: a line 3 ppm out on an Orbitrap is this
+#: ion's line, measured badly, and the score says so - refusing to pair it at
+#: all would instead let the candidate off the hook, since a line nobody
+#: matched is only charged for being absent.
+#:
+#: These are the targeted matcher's own class defaults, so a peak that an
+#: untargeted candidate claims here would be claimed by the curated library
+#: too, and the two stages of an engine cannot disagree about what a line is.
+INSTRUMENT_MATCH_TOLERANCE_PPM: dict[str, float] = {"orbi": 5.0, "tof": 15.0}
+
+#: The matching window for an unrecognised class: the wider of the two, so an
+#: unknown instrument is not held to an Orbitrap's pairing.
+DEFAULT_MATCH_TOLERANCE_PPM = 15.0
+
 _RANGE_TOKEN = re.compile(r"^(\^?\[?\d*[A-Z][a-z]?\]?)(\d+)-(\d+)$")
 
 
@@ -685,6 +704,22 @@ def resolve_mz_precision_ppm(
         return profile.mz_precision_ppm
     return INSTRUMENT_MZ_PRECISION_PPM.get(
         (instrument_type or "").strip().lower(), DEFAULT_MZ_PRECISION_PPM
+    )
+
+
+def resolve_match_tolerance_ppm(instrument_type: str | None) -> float:
+    """The window a predicted line is matched to a peak in, for this class.
+
+    Not the search window (:func:`resolve_mz_precision_ppm`) and not the width
+    a fit is judged at (:func:`resolve_fallback_sigma_ppm`); the three are
+    named apart because they are three different statements, and on an
+    Orbitrap they are 3, 5 and 0.3 ppm.
+
+    :param instrument_type: ``"orbi"``, ``"tof"``, or None/unknown.
+    :return: The matching window in ppm.
+    """
+    return INSTRUMENT_MATCH_TOLERANCE_PPM.get(
+        (instrument_type or "").strip().lower(), DEFAULT_MATCH_TOLERANCE_PPM
     )
 
 
