@@ -72,6 +72,27 @@ class TestEnvelopeFloor:
             5e-5
         )
 
+    def test_a_zero_intensity_peak_does_not_open_the_envelope(self):
+        # A peak frame carries zeros for peaks that averaged to nothing over the
+        # window, and the smallest intensity it HOLDS is not its minimum.
+        # Reading the minimum would say the spectrum can hold a line of any
+        # depth, and predict every peak's envelope to the floor - four times the
+        # matching work on a file that records no noise at all.
+        scoring = PatternScoring(abundance_floor=SAMPLE_FLOOR, sigma_ppm=1.0)
+        lines = _lines("C6H13O6", 1)
+        candidates = [_candidate("C6H12O6", "C6H13O6+", lines["M0"][0], 0.5)]
+
+        def envelope(intensities, mzs):
+            _, data = match_isotopic_pattern(
+                candidates,
+                pl.DataFrame({"mz": mzs, "intensity": intensities}).sort("mz"),
+                scoring,
+            )
+            return len(data[0]["predicted_masses"])
+
+        mzs = [lines["M0"][0], lines["13C"][0]]
+        assert envelope([1.0e6, 0.0], mzs) == envelope([1.0e6, 5.0e4], mzs)
+
     def test_the_default_scoring_predicts_exactly_as_deep_as_it_used_to(self):
         # A caller that says nothing about its sample gets the fixed 1% cutoff
         # on every peak, however bright and however clean.
