@@ -45,6 +45,16 @@ DETECT_SNR_K = 3.0
 #: has to be said out loud instead of being read off a zero.
 PATTERN_REQUIRED_LINES = "pattern_has_required_lines"
 
+#: Key under which `match_isotopic_pattern` records the signal-to-noise of the
+#: peak the candidates were enumerated for - the number the detectability gate
+#: divides by, and the one that decides how deep the envelope was predicted.
+#: A property of the peak rather than of the candidate, so every reading of one
+#: peak carries the same value. Absent when the peak list carries no estimate,
+#: which is the difference between a fit scored against the noise and one
+#: scored against abundance alone, and the only way a reader can tell them
+#: apart after the fact.
+PATTERN_BASE_SNR = "pattern_base_snr"
+
 # --- Labelled-reagent custom elements ('^X' notation) ------------------------
 # A labelled reagent atom is not 100% pure; e.g. 15N-nitrate is ~98% 15N / 2% 14N.
 # We model it as a custom element '^X' whose isotope abundances are the labelled
@@ -1017,7 +1027,9 @@ def match_isotopic_pattern(
     :return: Tuple of ranked candidates, and a list of isotope data dicts (per
         candidate). Each candidate also carries
         :data:`PATTERN_REQUIRED_LINES`, whether its envelope holds the two lines
-        a reading needs to be evidence at all. An isotope dict has one entry per
+        a reading needs to be evidence at all, and :data:`PATTERN_BASE_SNR`, the
+        signal-to-noise the detectability gate judged its absent lines against.
+        An isotope dict has one entry per
         predicted isotopologue, zero
         where nothing matched, and reports BOTH errors signed - `intensity_errors`
         as observed/predicted - 1, `mass_errors_ppm` as
@@ -1069,6 +1081,11 @@ def match_isotopic_pattern(
     # two candidates to different depths would also make their scores
     # incomparable, which is the one thing this ranking may not do.
     base_intensity, base_snr = _target_peak(ranked, mzs, intensities, snrs)
+    reported_snr = (
+        float(base_snr)
+        if base_snr is not None and np.isfinite(base_snr) and base_snr > 0
+        else None
+    )
     faintest = float(intensities.min()) if intensities.size else 0.0
     envelope_floor = envelope_floor_for_peak(
         base_intensity, base_snr, faintest, scoring
@@ -1219,7 +1236,10 @@ def match_isotopic_pattern(
         dict(
             candidate,
             isotopic_pattern_score=float(score),
-            **{PATTERN_REQUIRED_LINES: bool(required)},
+            **{
+                PATTERN_REQUIRED_LINES: bool(required),
+                PATTERN_BASE_SNR: reported_snr,
+            },
         )
         for candidate, score, required in zip(ranked, scores, has_required_lines)
     ]
