@@ -101,6 +101,10 @@ justify.
   reviewed into `develop` per stage. Each stage ends with an engine version
   bump (`PEAK_ASSIGNMENT_ENGINE_VERSION` 0.4.0, 0.5.0, 0.6.0) because each
   changes results; steps inside a stage do not bump.
+  The reference engine's own changes live on peaky's `epic/v2-fit-reference`,
+  which pins `mascope-tools` to a Mascope revision by git source so that
+  nothing on peaky's main depends on unreleased code; step 2.7 says when
+  and how that branch merges.
 - **Steps in parallel.** Two steps may be in flight at once when their
   footprints are disjoint, and the footprint is what decides, not the step
   number. Stage 1's steps all end in two places - the finder's ranking
@@ -713,6 +717,28 @@ its own status.
 - Protocol run, status table, version bump, changelog. Expected: G1 at or
   below 20%, G7 at 0, the top-24 view free of reagent peaks in low tiers.
   This is the point at which the feature can be re-presented.
+- **The reference's branch merges at the release, not at the gate.** peaky
+  scores with the library, and its main branch has to run against Mascope's
+  master - the released server and the libraries on PyPI, which the publish
+  workflow ships from master when a library's `pyproject` version changes.
+  The v2 reference therefore lives on peaky's `epic/v2-fit-reference`, which
+  pins `mascope-tools` to a Mascope revision by git source (a direct URL in
+  its `pyproject`, so pip and uv install the same thing), and the stage-2
+  gate is measured against that branch at one named commit, the reference
+  re-published whenever its scoring changes. Until the release the branch
+  is rebased on peaky's main as main moves, and it is the only place that
+  needs the epic's library; against a server older than the release the
+  peaks carry no noise estimate and the reference scores in v2's no-SNR
+  mode rather than failing. When the stage-2 epic has been reviewed into
+  develop and released to master, in this order: the library version on
+  master differs from PyPI's and the publish workflow ships it (check its
+  run, not the tag); peaky's merge PR into main replaces the git source with
+  the released lower bound, re-locks, bumps peaky's version and corrects its
+  package version string, and peaky's CI then installs from PyPI, which is
+  the test that main still works with master; peaky releases; and only then
+  is `score_pattern` deprecated in the library (decision 12), once the
+  goldens harness has moved as well. The stage-2 epic's review into develop
+  does not move the branch: the coupling is to the release.
 
 ## Stage 3 - use the batch (engine 0.6.0)
 
