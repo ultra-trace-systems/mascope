@@ -24,9 +24,6 @@ import pandas as pd
 from fastapi import status
 from sqlalchemy import func, insert, or_, select, update
 
-from mascope_backend.api.controllers.match.lib.match_score_v2 import (
-    fit_sample_mass_accuracy,
-)
 from mascope_backend.api.controllers.samples.lib.samples_fetch import fetch_sample
 from mascope_backend.api.controllers.samples.lib.samples_peaks import extract_peaks
 from mascope_backend.api.controllers.target.lib.compute.target_ions_compute import (
@@ -76,13 +73,17 @@ from mascope_backend.api.new.peak_assignments.config import (
     peak_assignment_on_ingest,
 )
 from mascope_backend.api.new.peak_assignments.engine import (
+    PATTERN_SCORING_KEY,
     REFERENCE_IDENTITIES_COL,
     SEARCH_SCOPE_KEY,
+    SampleMassAccuracy,
     build_unassigned_assignments,
     calibration_meta,
     drop_ions_claimed_elsewhere,
     invert_matches_to_peak_assignments,
     pattern_scoring_for,
+    pattern_scoring_snapshot,
+    sample_mass_accuracy,
     score_ions_by_fit,
     untargeted_matches_to_peak_assignments,
     untargeted_seeds,
@@ -1399,6 +1400,7 @@ def _stored_run_config(
     config: PeakAssignmentConfig,
     resolved_profile: ResolvedProfile | None = None,
     search_scope: dict | None = None,
+    pattern_scoring: dict | None = None,
 ) -> dict:
     """The blob persisted on a run: the requested config plus server-side state.
 
@@ -1419,9 +1421,15 @@ def _stored_run_config(
     a property of the sample rather than of the request, and a blank ledger row
     means something different depending on whether that peak was searched.
 
+    The scoring is the fourth, and the one a disagreement about a committed
+    formula turns on: the width the untargeted stage judged a mass error
+    against, and whether that width was fitted on this sample or fell back to
+    the instrument class. A ppm is not a ppm without it.
+
     :param config: The validated client-supplied run configuration.
     :param resolved_profile: The chemistry the run resolved to, when known.
     :param search_scope: What the untargeted stage was offered, once it is known.
+    :param pattern_scoring: What it scored an envelope at, once it is known.
     :return: A JSON-serializable dict for ``PeakAssignmentRun.config``.
     """
     stored = config.model_dump()
@@ -1430,6 +1438,8 @@ def _stored_run_config(
         stored[RESOLVED_PROFILE_KEY] = resolved_profile.snapshot()
     if search_scope is not None:
         stored[SEARCH_SCOPE_KEY] = search_scope
+    if pattern_scoring is not None:
+        stored[PATTERN_SCORING_KEY] = pattern_scoring
     return stored
 
 
@@ -1438,6 +1448,7 @@ async def _record_resolved_profile(
     config: PeakAssignmentConfig,
     resolved_profile: ResolvedProfile,
     search_scope: dict | None = None,
+    pattern_scoring: dict | None = None,
 ) -> None:
     """Write the resolved chemistry onto a run that is about to use it.
 
@@ -1453,12 +1464,17 @@ async def _record_resolved_profile(
     :param config: The run's configuration, re-serialized with the snapshot.
     :param resolved_profile: The chemistry the run resolved to.
     :param search_scope: What the untargeted stage was offered, once known.
+    :param pattern_scoring: What it scored an envelope at, once known.
     """
     async with async_session() as session:
         await session.execute(
             update(PeakAssignmentRun)
             .where(PeakAssignmentRun.peak_assignment_run_id == peak_assignment_run_id)
-            .values(config=_stored_run_config(config, resolved_profile, search_scope))
+            .values(
+                config=_stored_run_config(
+                    config, resolved_profile, search_scope, pattern_scoring
+                )
+            )
         )
         await session.commit()
 
@@ -1806,7 +1822,7 @@ async def _stage_a_assignments(
     mechanisms,
     peak_assignment_run_id: str,
     excluded_peak_ids: set[str] | None = None,
-) -> tuple[list[dict], dict | None, tuple[float, float | None]]:
+) -> tuple[list[dict], dict | None, SampleMassAccuracy]:
     """Stage A: database-first assignment from the known composition set.
 
     The curated target library plus (when loaded) the reference mirror, matched
@@ -1830,17 +1846,17 @@ async def _stage_a_assignments(
         see :func:`drop_ions_claimed_elsewhere` for why the difference matters.
     :return: The assignment rows; what a run records about the confidence curve
         their P(correct) came from - None when Stage A never ran or the
-        instrument has no curve; and the sample's fitted mass accuracy
-        ``(mu, sigma)`` in ppm, measured on the library's own matched
-        isotopologues. That last one is the instrument's accuracy ON THIS
-        SAMPLE, and Stage B is scored at it: the untargeted stage has no
-        corroborated set of its own to fit a width from, and the curated
-        library is exactly such a set. ``sigma`` is None when there were too
-        few matched rows to fit one.
+        instrument has no curve; and what the library's own matched
+        isotopologues say about this sample's mass error. That last one is the
+        instrument's accuracy ON THIS SAMPLE, and Stage B is scored at it: the
+        untargeted stage has no corroborated set of its own to fit a width
+        from, and the curated library is exactly such a set. Its ``sigma_ppm``
+        is None when too few rows matched to fit one, and its ``anchors`` says
+        how few.
     """
     stage_a_assignments: list[dict] = []
     confidence_calibration: dict | None = None
-    mass_accuracy: tuple[float, float | None] = (0.0, None)
+    mass_accuracy = SampleMassAccuracy()
     target_isotopes_df = await _fetch_known_target_isotopes(
         sample, match_params.isotope_abundance_threshold, mechanism_ids
     )
@@ -1875,7 +1891,7 @@ async def _stage_a_assignments(
             # Read off the frame the fit was computed on, so Stage B is judged
             # at the width Stage A was judged at rather than at one refitted
             # over a different set of rows.
-            mass_accuracy = fit_sample_mass_accuracy(match_isotope_df)
+            mass_accuracy = sample_mass_accuracy(match_isotope_df)
         instrument = get_instrument_type(sample.filename)
         # Load this instrument's confidence calibration from the D6 store (active DB row,
         # else the in-code provisional curve, else None -> uncalibrated). Passing it in keeps
@@ -2098,6 +2114,7 @@ async def _run_sample_assignment(
         )
         stage_b_assignments: list[dict] = []
         search_scope: dict | None = None
+        scoring_snapshot: dict | None = None
         if config.run_untargeted:
             eligible_df = peaks_df[
                 ~peaks_df["sample_peak_id"].isin(assigned_peak_ids)
@@ -2195,7 +2212,15 @@ async def _run_sample_assignment(
                     if column in search_peaks_df.columns
                 ]
                 scoring = pattern_scoring_for(
-                    match_params, mass_accuracy, resolved_profile.mass_accuracy_ppm
+                    match_params, mass_accuracy, resolved_profile.fallback_sigma_ppm
+                )
+                scoring_snapshot = pattern_scoring_snapshot(scoring, mass_accuracy)
+                runtime.logger.info(
+                    f"Untargeted stage for sample '{sample.sample_item_name}' scores "
+                    f"at {scoring.sigma_ppm:.3f} ppm "
+                    f"({scoring_snapshot['sigma_source']}, "
+                    f"{mass_accuracy.anchors} anchors), offset "
+                    f"{scoring.mu_ppm:+.3f} ppm"
                 )
                 matches_df, _ = await asyncio.to_thread(
                     assign_compositions,
@@ -2239,7 +2264,11 @@ async def _run_sample_assignment(
                 )
         if search_scope is not None:
             await _record_resolved_profile(
-                run.peak_assignment_run_id, config, resolved_profile, search_scope
+                run.peak_assignment_run_id,
+                config,
+                resolved_profile,
+                search_scope,
+                scoring_snapshot,
             )
         await send_progress_user_notification(notification, 0.8)
 

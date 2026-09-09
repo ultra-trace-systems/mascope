@@ -11,6 +11,8 @@ so the arbitration logic stays unit-testable. The service layer owns
 persistence.
 """
 
+from dataclasses import dataclass
+
 import numpy as np
 import pandas as pd
 
@@ -18,6 +20,7 @@ from mascope_backend.api.controllers.match.lib.match_score_v2 import (
     PRED_SIGMA_PPM,
     fit_sample_mass_accuracy,
     ion_score_v2,
+    mass_accuracy_anchors,
     sample_noise_floor,
 )
 from mascope_backend.api.new.peak_assignments.tiers import (
@@ -95,6 +98,14 @@ UNTARGETED_NO_MATCH = "---"
 # stays as the backstop for a source whose profile has no library.
 UNTARGETED_IONIZATION = "()"
 
+#: Key under which a run records what the untargeted stage judged a mass error
+#: against: the width, the offset, whether that width was fitted on this sample
+#: or fell back to the instrument class, and how many known ions it was fitted
+#: from. On the run's config beside the resolved profile, because it is the
+#: difference between a candidate a whole ppm off being refused and being
+#: elected, and nothing else on a row would ever say which happened.
+PATTERN_SCORING_KEY = "pattern_scoring"
+
 #: Key under which a run records how much of its spectrum the untargeted stage
 #: was actually offered. On the run's config beside the resolved profile, and for
 #: the same reason: "searched 300 of 2,577 peaks" and "searched all 2,577" are
@@ -138,9 +149,36 @@ def untargeted_targets(
     return targets, scope
 
 
+@dataclass(frozen=True)
+class SampleMassAccuracy:
+    """What Stage A measured of a sample's own mass error, and from how much.
+
+    ``sigma_ppm`` is None when fewer than
+    :data:`match_score_v2.MASS_ACCURACY_MIN_ANCHORS` known ions matched, which
+    is not a small sample of a width but no measurement of one; ``anchors``
+    says how close it came, so a run that fell back records why.
+    """
+
+    mu_ppm: float = 0.0
+    sigma_ppm: float | None = None
+    anchors: int = 0
+
+
+def sample_mass_accuracy(match_isotope_df) -> SampleMassAccuracy:
+    """Fit a sample's mass accuracy off the frame its Stage A fit was scored on.
+
+    :param match_isotope_df: The gated, fit-scored Stage A match frame.
+    :return: The fitted offset and width, and the anchor count behind them.
+    """
+    mu, sigma = fit_sample_mass_accuracy(match_isotope_df)
+    return SampleMassAccuracy(
+        mu_ppm=mu, sigma_ppm=sigma, anchors=len(mass_accuracy_anchors(match_isotope_df))
+    )
+
+
 def pattern_scoring_for(
     match_params,
-    mass_accuracy: tuple[float, float | None],
+    mass_accuracy: SampleMassAccuracy,
     instrument_accuracy_ppm: float,
 ) -> PatternScoring:
     """How the untargeted stage scores this sample's isotope envelopes.
@@ -164,12 +202,11 @@ def pattern_scoring_for(
     good and the election falls to the envelope alone.
 
     :param match_params: The sample's resolved match parameters.
-    :param mass_accuracy: ``(mu, sigma)`` in ppm from Stage A's matched rows;
-        sigma is None when there were too few to fit.
-    :param instrument_accuracy_ppm: The class width to use when it is.
+    :param mass_accuracy: What Stage A measured of this sample's mass error.
+    :param instrument_accuracy_ppm: The class width to use when it measured none.
     :return: The scoring parameters for this sample's search.
     """
-    mu, sigma = mass_accuracy
+    mu, sigma = mass_accuracy.mu_ppm, mass_accuracy.sigma_ppm
     if sigma is None:
         sigma = instrument_accuracy_ppm
     return PatternScoring(
@@ -178,6 +215,35 @@ def pattern_scoring_for(
         mz_tolerance_ppm=float(match_params.mz_tolerance),
         abundance_floor=float(match_params.isotope_abundance_threshold),
     )
+
+
+def pattern_scoring_snapshot(
+    scoring: PatternScoring,
+    mass_accuracy: "SampleMassAccuracy",
+) -> dict:
+    """What a run records about the width it judged a mass error against.
+
+    The first gate round of step 2.1 turned on exactly this and the run could
+    not answer it: whether the width was the sample's own or the instrument
+    class's is the difference between a candidate a whole ppm off being refused
+    and being elected, and the row it decided says nothing about it.
+
+    :param scoring: The scoring parameters the search actually used.
+    :param mass_accuracy: What Stage A measured, and from how many anchors.
+    :return: A JSON-serializable dict for the run's config.
+    """
+    return {
+        "sigma_ppm": round(float(scoring.sigma_ppm), 4),
+        "mu_ppm": round(float(scoring.mu_ppm), 4),
+        # "fitted" means this sample measured its own width; "instrument_class"
+        # means too few known ions matched to fit one and the class stood in.
+        "sigma_source": (
+            "fitted" if mass_accuracy.sigma_ppm is not None else "instrument_class"
+        ),
+        "fitted_anchors": int(mass_accuracy.anchors),
+        "mz_tolerance_ppm": float(scoring.mz_tolerance_ppm),
+        "abundance_floor": float(scoring.abundance_floor),
+    }
 
 
 def tier_for_evidence(

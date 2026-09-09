@@ -14,6 +14,7 @@ from unittest.mock import AsyncMock, patch
 import pandas as pd
 import pytest
 
+from mascope_backend.api.new.peak_assignments.engine import SampleMassAccuracy
 from mascope_backend.api.new.peak_assignments.fold_view import fold_run_id
 
 
@@ -130,7 +131,7 @@ def _patched(
     mocks["stage_a"].return_value = (
         [_stage_a_row("si-1", fold_run_id("si-1"))],
         None,
-        (0.0, None),
+        SampleMassAccuracy(),
     )
     return stack, mocks
 
