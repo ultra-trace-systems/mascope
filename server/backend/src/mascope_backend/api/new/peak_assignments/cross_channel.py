@@ -8,9 +8,9 @@ independent observations of one neutral. Grouping a run's committed winners by
 their neutral and counting the channels each was seen through is the mechanical
 form of the adduct corroboration Stage A already does for curated compounds
 (``mascope_tools.composition.corroboration``), which reaches only rows that
-matched the library: 25 of 2,062 committed rows on the sparse Orbitrap set and
-none at all on three of the eight gate sets. This reaches every committed row,
-because it needs nothing but the ledger.
+matched the library: 25 of 2,062 committed rows on the sparse Orbitrap set, 22
+of 9,077 on the dense one, and none at all on the other six gate sets. This
+reaches every committed row, because it needs nothing but the ledger.
 
 Measured on the 43-sample gate, it is the strongest single separator the engine
 has. Over the rows the reference also calls monoisotopic, the share it confirms
