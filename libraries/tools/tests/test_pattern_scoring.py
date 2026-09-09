@@ -15,6 +15,7 @@ import pytest
 
 from mascope_tools.composition.heuristic_filter import (
     ISOTOPE_ABUNDANCE_THRESHOLD,
+    PATTERN_BASE_SNR,
     PATTERN_REQUIRED_LINES,
     envelope_floor_for_peak,
     match_isotopic_pattern,
@@ -282,6 +283,29 @@ class TestTheFittedOffset:
 
     def test_and_pays_for_it_when_nobody_measured_the_offset(self):
         assert self._score(3.0, 0.0) < 0.1 * self._score(0.0, 0.0)
+
+
+class TestTheNoiseIsReported:
+    """What the detectability gate judged the absent lines against."""
+
+    def _ranked(self, with_snr: bool):
+        lines = _lines("C6H13O6", 1)
+        columns = {"mz": [lines["M0"][0]], "intensity": [1.0e5]}
+        if with_snr:
+            columns["signal_to_noise"] = [412.7]
+        candidates = [_candidate("C6H12O6", "C6H13O6+", lines["M0"][0], 0.5)]
+        ranked, _ = match_isotopic_pattern(
+            candidates, pl.DataFrame(columns), PatternScoring(sigma_ppm=1.0)
+        )
+        return ranked[0]
+
+    def test_the_base_peaks_signal_to_noise_rides_on_every_candidate(self):
+        assert self._ranked(True)[PATTERN_BASE_SNR] == pytest.approx(412.7)
+
+    def test_a_peak_list_without_it_claims_nothing(self):
+        # A fit scored against abundance alone rather than against the noise,
+        # and the row has to be able to say which it was.
+        assert self._ranked(False)[PATTERN_BASE_SNR] is None
 
 
 class TestTheRequiredLinesAreReportedSeparately:
