@@ -19,17 +19,19 @@ from mascope_backend.api.controllers.match.lib.match_score_v2 import PRED_SIGMA_
 from mascope_backend.api.new.peak_assignments.engine import (
     TIER_ASSIGNED,
     TIER_CANDIDATE,
+    SampleMassAccuracy,
     pattern_scoring_for,
+    pattern_scoring_snapshot,
     untargeted_matches_to_peak_assignments,
     untargeted_seeds,
 )
-from mascope_tools.composition.profiles import INSTRUMENT_MASS_ACCURACY_PPM
+from mascope_tools.composition.profiles import INSTRUMENT_FALLBACK_SIGMA_PPM
 
 
 CANDIDATE = 0.45
 ASSIGNED = 0.75
-ORBI_ACCURACY = INSTRUMENT_MASS_ACCURACY_PPM["orbi"]
-TOF_ACCURACY = INSTRUMENT_MASS_ACCURACY_PPM["tof"]
+ORBI_ACCURACY = INSTRUMENT_FALLBACK_SIGMA_PPM["orbi"]
+TOF_ACCURACY = INSTRUMENT_FALLBACK_SIGMA_PPM["tof"]
 MECHANISMS = {"+H+": "mech-h", "+NH4+": "mech-nh4"}
 
 
@@ -78,7 +80,9 @@ class TestPatternScoringForTheSample:
     """What the finder is told about the sample it is searching."""
 
     def test_the_width_is_the_one_stage_a_measured(self):
-        scoring = pattern_scoring_for(_orbi_params(), (-0.24, 0.30), ORBI_ACCURACY)
+        scoring = pattern_scoring_for(
+            _orbi_params(), SampleMassAccuracy(-0.24, 0.30, 14), ORBI_ACCURACY
+        )
 
         assert scoring.sigma_ppm == pytest.approx(math.hypot(0.30, PRED_SIGMA_PPM))
         assert scoring.mu_ppm == pytest.approx(-0.24)
@@ -88,7 +92,9 @@ class TestPatternScoringForTheSample:
         # poor substitute and the only honest one: the 5 ppm match tolerance
         # would be five times this instrument's real accuracy, and at that width
         # every candidate the search enumerated fits equally well.
-        scoring = pattern_scoring_for(_orbi_params(), (0.0, None), ORBI_ACCURACY)
+        scoring = pattern_scoring_for(
+            _orbi_params(), SampleMassAccuracy(), ORBI_ACCURACY
+        )
 
         assert scoring.sigma_ppm == pytest.approx(
             math.hypot(ORBI_ACCURACY, PRED_SIGMA_PPM)
@@ -96,7 +102,7 @@ class TestPatternScoringForTheSample:
 
     def test_a_tof_is_judged_at_a_tofs_width_and_window(self):
         scoring = pattern_scoring_for(
-            _orbi_params(tolerance=15, floor=1e-4), (0.0, None), TOF_ACCURACY
+            _orbi_params(tolerance=15, floor=1e-4), SampleMassAccuracy(), TOF_ACCURACY
         )
 
         assert scoring.sigma_ppm == pytest.approx(
@@ -107,15 +113,61 @@ class TestPatternScoringForTheSample:
 
     def test_a_measured_width_beats_the_class_statement(self):
         # However well or badly this sample measures, what it measured wins.
-        loose = pattern_scoring_for(_orbi_params(), (0.0, 1.4), ORBI_ACCURACY)
+        loose = pattern_scoring_for(
+            _orbi_params(), SampleMassAccuracy(0.0, 1.4, 31), ORBI_ACCURACY
+        )
 
         assert loose.sigma_ppm == pytest.approx(math.hypot(1.4, PRED_SIGMA_PPM))
 
     def test_the_envelope_floor_is_the_samples_own(self):
         # The same floor Stage A generates its isotopes at, so the two stages
         # predict a line to the same depth.
-        scoring = pattern_scoring_for(_orbi_params(), (0.0, 0.3), ORBI_ACCURACY)
+        scoring = pattern_scoring_for(
+            _orbi_params(), SampleMassAccuracy(0.0, 0.3, 9), ORBI_ACCURACY
+        )
         assert scoring.abundance_floor == 1e-5
+
+
+class TestTheRunSaysWhatItJudgedAt:
+    """A ppm is not a ppm without the width it was judged against."""
+
+    def test_a_fitted_width_says_so_and_names_its_anchors(self):
+        accuracy = SampleMassAccuracy(-0.24, 0.30, 14)
+        scoring = pattern_scoring_for(_orbi_params(), accuracy, ORBI_ACCURACY)
+
+        snapshot = pattern_scoring_snapshot(scoring, accuracy)
+
+        assert snapshot["sigma_source"] == "fitted"
+        assert snapshot["fitted_anchors"] == 14
+        assert snapshot["sigma_ppm"] == pytest.approx(
+            math.hypot(0.30, PRED_SIGMA_PPM), abs=1e-4
+        )
+        assert snapshot["mu_ppm"] == pytest.approx(-0.24)
+
+    def test_a_fallback_says_that_instead_and_still_names_them(self):
+        # Two anchors is not a small measurement of a width, it is none - and
+        # the count is what a reader needs to see why the class stood in.
+        accuracy = SampleMassAccuracy(0.0, None, 2)
+        scoring = pattern_scoring_for(_orbi_params(), accuracy, ORBI_ACCURACY)
+
+        snapshot = pattern_scoring_snapshot(scoring, accuracy)
+
+        assert snapshot["sigma_source"] == "instrument_class"
+        assert snapshot["fitted_anchors"] == 2
+        assert snapshot["sigma_ppm"] == pytest.approx(
+            math.hypot(ORBI_ACCURACY, PRED_SIGMA_PPM), abs=1e-4
+        )
+
+    def test_the_window_and_the_floor_ride_along(self):
+        accuracy = SampleMassAccuracy(0.0, 0.3, 11)
+        scoring = pattern_scoring_for(
+            _orbi_params(tolerance=15, floor=1e-4), accuracy, TOF_ACCURACY
+        )
+
+        snapshot = pattern_scoring_snapshot(scoring, accuracy)
+
+        assert snapshot["mz_tolerance_ppm"] == 15
+        assert snapshot["abundance_floor"] == 1e-4
 
 
 class TestWhichReadingsAreMeasuredAgain:
