@@ -337,13 +337,14 @@ no backend or DB, only `mascope_tools` + tests.
   still deferred; this is a step toward it, not its arrival — but the tier and that eventual
   probability are now read off the same number, since evidence is what the calibration maps
   *from*.
-- **One pair of bands for both stages, knowingly.** Stage A's fit is `ion_score_v2`; Stage
-  B's is `score_pattern` (v1, no per-peak SNR), so a single band means slightly different
-  things to each — on the same sweep, holding the upper band at 0.80 would cost Stage B 5.3%
-  of its assigned rows and Stage A only 0.5%. Per-stage bands would fit the data better and
-  are deliberately **not** introduced: the heterogeneity **predates this binding** (it was
-  equally true while the tier sat on the fit) and a second pair of knobs is more apparatus
-  than a directional threshold is worth. Documented, not solved.
+- **One pair of bands for both stages, and now one scale.** The bands were set while Stage
+  A's fit was `ion_score_v2` and Stage B's was `score_pattern` (v1, no per-peak SNR), so a
+  single band meant slightly different things to each — on the sweep, holding the upper
+  band at 0.80 would have cost Stage B 5.3% of its assigned rows and Stage A only 0.5%.
+  That heterogeneity is gone: Stage B's committed readings are measured again as ions
+  through one `compute_match_isotopes` pass with the run's gating, so both stages are
+  tiered on `ion_score_v2`. Per-stage bands, the apparatus this note argued was not worth
+  building, are not needed.
 - **Confidence calibration landed (pipeline; data provisional).**
   `mascope_tools.composition.calibration` turns the arbitration evidence into a calibrated
   **P(correct)** via Platt scaling ([Platt 1999][platt]): `P = sigmoid(a·evidence + b)`, a

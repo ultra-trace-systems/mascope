@@ -63,10 +63,13 @@ def fit_sample_mass_accuracy(
 ) -> tuple[float, float | None]:
     """Robust (mu, sigma) ppm of the matched isotopologues' mass error — the
     instrument's measured mass accuracy (resolution-correct, Orbitrap vs TOF).
-    Returns sigma=None when there are too few matched anchors (caller falls back)."""
-    me = pd.to_numeric(match_isotope_df.get("match_mz_error"), errors="coerce")
+    Returns sigma=None when there are too few matched anchors (caller falls back)
+    — including none at all: a frame that carries neither column has not measured
+    a mass error, which is the same answer as a frame that carries too few."""
+    empty = pd.Series(dtype=float)
+    me = pd.to_numeric(match_isotope_df.get("match_mz_error", empty), errors="coerce")
     inten = pd.to_numeric(
-        match_isotope_df.get("sample_peak_intensity"), errors="coerce"
+        match_isotope_df.get("sample_peak_intensity", empty), errors="coerce"
     )
     me = me[(inten.fillna(0) > 0) & me.notna()]
     if len(me) < 8:

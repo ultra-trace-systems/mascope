@@ -61,8 +61,10 @@ from mascope_backend.api.new.peak_assignments.engine import (
     ROLE_REAGENT,
     SOURCE_UNTARGETED,
     evidence_for,
+    pattern_scoring_for,
     tier_for_evidence,
     untargeted_matches_to_peak_assignments,
+    untargeted_seeds,
     untargeted_targets,
 )
 from mascope_backend.api.new.peak_assignments.fold_view import fold_run_id
@@ -73,6 +75,7 @@ from mascope_backend.api.new.peak_assignments.profiles import (
 )
 from mascope_backend.api.new.peak_assignments.seeded_scoring import score_seeds
 from mascope_backend.api.new.peak_assignments.service import (
+    _seeded_fits,
     _untargeted_ionization_notations,
     fetch_mechanisms_by_notation,
     fetch_sample_mechanisms,
@@ -313,12 +316,32 @@ async def _search_sample(
     )
     # The whole spectrum is the frame - isotope patterns are scored against it -
     # while only the representatives are enumerated.
+    match_params = await default_match_params(sample_item_id)
+    # No Stage A ran on this path, so nothing has fitted this sample's mass
+    # width; the match tolerance stands in for it (see `pattern_scoring_for`).
+    # A batch search therefore judges a candidate a little more loosely than a
+    # run of the same sample would, which is the honest state of it: the width
+    # is a measurement, and this path has not made it.
+    scoring = pattern_scoring_for(match_params, (0.0, None))
+    search_columns = [
+        column
+        for column in ("mz", "intensity", "signal_to_noise")
+        if column in frame.columns
+    ]
     matches_df, _ = await asyncio.to_thread(
         assign_compositions,
-        frame[["mz", "intensity"]],
+        frame[search_columns],
         search_config(resolved_profile, notations),
         resolved_profile.heuristics_config(),
         targets=targets["mz"].tolist(),
+        scoring=scoring,
+    )
+    fit_by_seed = await _seeded_fits(
+        sample,
+        match_params,
+        untargeted_seeds(
+            matches_df, mechanism_id_by_notation, to_custom_element_format
+        ),
     )
     return untargeted_matches_to_peak_assignments(
         matches_df,
@@ -331,6 +354,7 @@ async def _search_sample(
         formula_formatter=to_custom_element_format,
         max_alternatives=config.max_alternatives,
         minor_channels=resolved_profile.minor_channels,
+        fit_by_seed=fit_by_seed,
     ), unsearched
 
 

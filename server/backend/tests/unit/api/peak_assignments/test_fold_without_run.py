@@ -127,7 +127,11 @@ def _patched(
             )
         ),
     }
-    mocks["stage_a"].return_value = ([_stage_a_row("si-1", fold_run_id("si-1"))], None)
+    mocks["stage_a"].return_value = (
+        [_stage_a_row("si-1", fold_run_id("si-1"))],
+        None,
+        (0.0, None),
+    )
     return stack, mocks
 
 
