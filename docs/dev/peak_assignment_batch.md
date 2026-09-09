@@ -126,9 +126,10 @@ per-sample fold-in + the read/chart wiring.
   backfill* clustering seed — not as the live identity** (see §8).
 - **Per-sample mass offset (μ).** Targeted matching fits a per-sample median-ppm offset
   (`fit_sample_mass_accuracy`,
-  [`match/lib/match_score_v2.py`](../../server/backend/src/mascope_backend/api/controllers/match/lib/match_score_v2.py)),
+  [`composition/mass_accuracy.py`](../../libraries/tools/src/mascope_tools/composition/mass_accuracy.py)),
   and it runs on the arrival path **immediately before** assignment, so μ is available at
-  fold-in with no extra work.
+  fold-in with no extra work. It is `None` rather than 0 for a sample with too few matched
+  ions to measure one, so a consumer has to say what it does about an uncorrected sample.
 - **The join is free.** `BatchPeakOccurrence.sample_peak_id` == `PeakAssignment.sample_peak_id`
   (`String(20)`, [`models.py:1134`](../../server/backend/src/mascope_backend/db/models.py));
   attaching a member's per-sample assignment is a 1:1 join, no re-computation.

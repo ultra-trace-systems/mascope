@@ -30,15 +30,18 @@ import pandas as pd
 #: all rather than a confident wrong one.
 MASS_ACCURACY_MIN_ANCHORS = 8
 
-#: Matched anchors below which no OFFSET is fitted either. Lower than the width's
-#: minimum because the two are different measurements of different difficulty: a
-#: median needs far less than a spread does, and a sample whose handful of
-#: anchors all sit a ppm to one side has measured an offset even though it has
-#: measured no width. Five rather than three because three admits a mis-matched
-#: anchor as the median - on a TOF sample matched in a 15 ppm window, three
-#: anchors at -10.5, -10.4 and -2.8 ppm are two mis-matches outvoting the one
-#: real line, and correcting by their median moves every candidate the wrong way.
-MASS_OFFSET_MIN_ANCHORS = 5
+#: The offset needs the same anchors the width does, and this says so rather
+#: than a second constant saying otherwise. It reads like the easier
+#: measurement - a median needs fewer points than a spread - and the gate
+#: measured the opposite: an anchor set too small to say how wide it is, is too
+#: small to say where its centre is. On a TOF set matched in a 15 ppm window,
+#: three samples of one acquisition put their five to seven anchors' median at
+#: -5.3, -6.9 and -8.6 ppm while each sample's own committed rows sat at -2.1 to
+#: -2.6; correcting by the anchors moved every candidate about 4 ppm the wrong
+#: way and widened the committed mass error from 2.03 to 2.33 ppm. What made
+#: those anchors useless is what the refused width would have reported: they
+#: scatter as wide as the window they were matched in.
+MASS_OFFSET_MIN_ANCHORS = MASS_ACCURACY_MIN_ANCHORS
 
 #: The floor on a fitted width, in ppm. A run whose anchors happen to agree to
 #: within a rounding does not thereby measure to that precision, and a sigma at
@@ -64,22 +67,23 @@ def fit_mass_accuracy(
     would set the width for every candidate the run scores.
 
     The two answers are reported separately, each ``None`` where it was not
-    measured, because they are measurable from different amounts of evidence and
-    a caller has to be able to tell an offset of zero from no offset at all.
-    This returned ``0.0`` for both cases, and the difference is the difference
-    between scoring a well-centred sample and scoring one a ppm out as though it
-    were well centred: a set of six anchors sitting at -1.2 ppm has measured its
-    offset, and reporting that as "zero" silently moves every candidate of that
-    sample by more than an Orbitrap's whole accuracy.
+    measured, because a caller has to be able to tell an offset of zero from no
+    offset at all. This returned ``0.0`` for both cases, so a sample the fit had
+    nothing to say about was indistinguishable from one it had measured to be
+    well centred, and every consumer of the pair - the score, the run's record
+    of what it scored at, a comparison against another engine - read the second
+    one.
 
     :param errors_ppm: The mass errors of the sample's matched anchors, in ppm.
         Non-finite values are ignored.
     :return: The offset, or ``None`` below :data:`MASS_OFFSET_MIN_ANCHORS`
         anchors; and the width, or ``None`` below
-        :data:`MASS_ACCURACY_MIN_ANCHORS`. Neither ``None`` is a small
-        measurement - it is no measurement, and the caller decides what stands
-        in (:func:`scoring_sigma_ppm` for the width; a zero offset for the
-        offset, which is what "uncorrected" means).
+        :data:`MASS_ACCURACY_MIN_ANCHORS`. The two minimums are equal, and the
+        answers are still reported separately because the caller does different
+        things with them. Neither ``None`` is a small measurement - it is no
+        measurement, and the caller decides what stands in
+        (:func:`scoring_sigma_ppm` for the width; a zero offset for the offset,
+        which is what "uncorrected" means).
     """
     me = pd.Series(errors_ppm, dtype=float)
     me = me[np.isfinite(me)]
