@@ -27,6 +27,12 @@ class PeakData:
     areas: list[float] | None = None
     heights: list[float] | None = None
     sparsity: list[float] | None = None
+    # Per-peak signal-to-noise, when the file carries one. What makes a peak's
+    # noise floor readable by anything working off this read rather than off a
+    # match frame - the assignment engine's untargeted stage, which judges a
+    # predicted isotopologue's absence against the noise. ``None`` for a file
+    # that stores none, which is an honest "no estimate" and never a zero.
+    signal_to_noise: list[float] | None = None
     warnings: list[str] = field(default_factory=list)
 
     @property
@@ -61,6 +67,18 @@ def _load_and_filter(
     return data
 
 
+def _peak_signal_to_noise(data: xr.Dataset) -> list[float] | None:
+    """The per-peak noise estimate, or None for a file that stores none.
+
+    Old files predate the variable, so its absence is a fact about the file and
+    not an error: every consumer treats a missing estimate as "not measured"
+    and judges the peak at the instrument's own width instead.
+    """
+    if "signal_to_noise" not in data:
+        return None
+    return data.signal_to_noise.values.tolist()
+
+
 def _aggregate_full_sample(
     data: xr.Dataset,
     filename: str,
@@ -87,6 +105,7 @@ def _aggregate_full_sample(
             else None
         ),
         sparsity=data.sparsity.values.tolist(),
+        signal_to_noise=_peak_signal_to_noise(data),
     )
 
 
@@ -139,6 +158,7 @@ def _aggregate_time_range(
             areas=[0.0] * data.mz.size if areas else None,
             heights=[0.0] * data.mz.size if heights else None,
             sparsity=data.sparsity.values.tolist(),
+            signal_to_noise=_peak_signal_to_noise(data),
             warnings=warnings,
         )
 
@@ -162,6 +182,7 @@ def _aggregate_time_range(
             else None
         ),
         sparsity=data.sparsity.values.tolist(),
+        signal_to_noise=_peak_signal_to_noise(data),
         warnings=warnings,
     )
 

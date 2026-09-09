@@ -202,12 +202,12 @@ branch's shape, not a commit hash that goes stale within a day.*
     85.38% / candidate 11.73% / below_assignability 2.89% against 84.08% / 12.41% / 3.51%
     under fit-tiering at 0.8/0.5, the closest pair in the sweep to the split it replaces,
     with the 6.93% of tiered rows that change tier moving in both directions (2,717 up,
-    1,710 down) rather than draining one band. Known and deliberately not solved: Stage A's
-    fit is `ion_score_v2` and Stage B's is `score_pattern` (v1, no per-peak SNR), so one
-    band means slightly different things to each — on the sweep, holding the upper band at
-    0.80 would cost Stage B 5.3% of its assigned rows and Stage A only 0.5%. That
-    heterogeneity **predates** this binding (it was equally true under fit-tiering), and
-    per-stage bands were not introduced. This does **not** supersede the end state: binding
+    1,710 down) rather than draining one band. The sweep ran while Stage A's fit was
+    `ion_score_v2` and Stage B's was `score_pattern` (v1, no per-peak SNR), so one band
+    meant slightly different things to each — on the sweep, holding the upper band at 0.80
+    would cost Stage B 5.3% of its assigned rows and Stage A only 0.5%. Since then Stage B
+    has been re-scored as ions through the same `ion_score_v2` chain, so the two stages are
+    on one scale and per-stage bands are moot. This does **not** supersede the end state: binding
     the tier to a calibrated P(correct) remains the documented destination, still gated on
     universal calibration coverage (untargeted + all instruments) and still deferred. Item
     4's bands are directional, not calibrated — see D7.

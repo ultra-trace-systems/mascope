@@ -24,6 +24,9 @@ import pandas as pd
 from fastapi import status
 from sqlalchemy import func, insert, or_, select, update
 
+from mascope_backend.api.controllers.match.lib.match_score_v2 import (
+    fit_sample_mass_accuracy,
+)
 from mascope_backend.api.controllers.samples.lib.samples_fetch import fetch_sample
 from mascope_backend.api.controllers.samples.lib.samples_peaks import extract_peaks
 from mascope_backend.api.controllers.target.lib.compute.target_ions_compute import (
@@ -79,8 +82,10 @@ from mascope_backend.api.new.peak_assignments.engine import (
     calibration_meta,
     drop_ions_claimed_elsewhere,
     invert_matches_to_peak_assignments,
+    pattern_scoring_for,
     score_ions_by_fit,
     untargeted_matches_to_peak_assignments,
+    untargeted_seeds,
     untargeted_targets,
 )
 from mascope_backend.api.new.peak_assignments.fold_view import (
@@ -105,6 +110,7 @@ from mascope_backend.api.new.peak_assignments.reagent_pass import (
     reagent_library_for,
 )
 from mascope_backend.api.new.peak_assignments.schemas import DEFAULT_PAGE_LIMIT
+from mascope_backend.api.new.peak_assignments.seeded_scoring import score_seeds
 from mascope_backend.db import (
     AssignmentVerification,
     BatchPeakOccurrence,
@@ -1314,8 +1320,16 @@ def load_sample_peaks(sample: Sample) -> pd.DataFrame:
     exactly the same read, or the members it re-measures would carry a
     different intensity quantity than an engine run's.
 
+    The per-peak signal-to-noise rides along when the file carries one, because
+    the untargeted stage judges a predicted isotopologue's absence against the
+    noise rather than against its abundance alone. It is the same estimate the
+    targeted match path reads, arriving by a different route: that one takes it
+    off the match frame `compute_match_isotopes` builds, and the untargeted
+    stage has no match frame - it works from this peak list.
+
     :param sample: Sample model object
-    :return: DataFrame with sample_peak_id, mz, and intensity columns
+    :return: DataFrame with sample_peak_id, mz, intensity, and (where the file
+        has them) signal_to_noise columns
     """
     peak_data = extract_peaks(sample.filename, sample.polarity, sample.t0, sample.t1)
     instrument_type = get_instrument_type(sample.filename)
@@ -1328,6 +1342,11 @@ def load_sample_peaks(sample: Sample) -> pd.DataFrame:
         }
     )
     peaks_df["intensity"] = peaks_df["intensity"].fillna(0.0)
+    if peak_data.signal_to_noise is not None:
+        # Left absent rather than filled: a missing column says "this file
+        # records no noise estimate", and a zero would say "measured, and
+        # noise-free", which is the one reading that must not happen.
+        peaks_df["signal_to_noise"] = peak_data.signal_to_noise
     return peaks_df
 
 
@@ -1736,6 +1755,49 @@ def _artifact_assignments(
     return rows, {row["sample_peak_id"] for row in rows}
 
 
+async def _seeded_fits(
+    sample,
+    match_params,
+    seeds: set[tuple[str, str]],
+) -> dict[tuple[str, str], float | None]:
+    """Measure the untargeted stage's readings the way Stage A measures one.
+
+    One ``compute_match_isotopes`` pass over the sample for the whole seed list,
+    the run's match-params gating, the ion-level v2 fit with the file's own
+    per-peak signal-to-noise - the chain in :mod:`seeded_scoring`, which the
+    batch ledger's propagation and the inspector's shortlist already measure
+    through. The finder scored these readings too, against the peak list, and
+    that score is what ranked them; this is what they are tiered on, and it is
+    the same quantity a Stage A row carries.
+
+    Shared with :func:`_search_sample`'s batch-fold twin through the same
+    helper, so the two paths cannot end up tiering the same reading differently.
+
+    :param sample: The sample being assigned.
+    :param match_params: The sample's resolved match parameters.
+    :param seeds: ``(formula, mechanism id)`` pairs, from ``untargeted_seeds``.
+    :return: Fit per seed; a seed whose ion the pass could not score is absent,
+        and its rows fall back to the finder's own number.
+    """
+    if not seeds:
+        return {}
+    ion_by_seed, fit_by_ion, _errors, _scored = await score_seeds(
+        sample, seeds, match_params
+    )
+    fits = {
+        seed: fit_by_ion.get(ion_id)
+        for seed, ion_id in ion_by_seed.items()
+        if fit_by_ion.get(ion_id) is not None
+    }
+    if len(fits) < len(seeds):
+        runtime.logger.info(
+            f"Seeded re-score of sample '{sample.sample_item_name}': "
+            f"{len(fits)} of {len(seeds)} untargeted readings measured as ions; "
+            "the rest keep the finder's own fit"
+        )
+    return fits
+
+
 async def _stage_a_assignments(
     sample,
     config: PeakAssignmentConfig,
@@ -1744,7 +1806,7 @@ async def _stage_a_assignments(
     mechanisms,
     peak_assignment_run_id: str,
     excluded_peak_ids: set[str] | None = None,
-) -> tuple[list[dict], dict | None]:
+) -> tuple[list[dict], dict | None, tuple[float, float | None]]:
     """Stage A: database-first assignment from the known composition set.
 
     The curated target library plus (when loaded) the reference mirror, matched
@@ -1766,12 +1828,19 @@ async def _stage_a_assignments(
         adducts, so removing its row afterwards would leave a boost behind that
         no surviving row accounts for. Whole target ions go, not single rows -
         see :func:`drop_ions_claimed_elsewhere` for why the difference matters.
-    :return: The assignment rows, and what a run records about the confidence
-        curve their P(correct) came from - None when Stage A never ran or the
-        instrument has no curve.
+    :return: The assignment rows; what a run records about the confidence curve
+        their P(correct) came from - None when Stage A never ran or the
+        instrument has no curve; and the sample's fitted mass accuracy
+        ``(mu, sigma)`` in ppm, measured on the library's own matched
+        isotopologues. That last one is the instrument's accuracy ON THIS
+        SAMPLE, and Stage B is scored at it: the untargeted stage has no
+        corroborated set of its own to fit a width from, and the curated
+        library is exactly such a set. ``sigma`` is None when there were too
+        few matched rows to fit one.
     """
     stage_a_assignments: list[dict] = []
     confidence_calibration: dict | None = None
+    mass_accuracy: tuple[float, float | None] = (0.0, None)
     target_isotopes_df = await _fetch_known_target_isotopes(
         sample, match_params.isotope_abundance_threshold, mechanism_ids
     )
@@ -1803,6 +1872,10 @@ async def _stage_a_assignments(
             # quality, not the targeted matcher's per-isotopologue term. Runs
             # after gating so tolerance/intensity cuts carry into the fit.
             match_isotope_df = score_ions_by_fit(match_isotope_df)
+            # Read off the frame the fit was computed on, so Stage B is judged
+            # at the width Stage A was judged at rather than at one refitted
+            # over a different set of rows.
+            mass_accuracy = fit_sample_mass_accuracy(match_isotope_df)
         instrument = get_instrument_type(sample.filename)
         # Load this instrument's confidence calibration from the D6 store (active DB row,
         # else the in-code provisional curve, else None -> uncalibrated). Passing it in keeps
@@ -1819,7 +1892,7 @@ async def _stage_a_assignments(
             instrument=instrument,
             calibration=calibration,
         )
-    return stage_a_assignments, confidence_calibration
+    return stage_a_assignments, confidence_calibration, mass_accuracy
 
 
 async def _run_sample_assignment(
@@ -1996,7 +2069,11 @@ async def _run_sample_assignment(
 
         # -- Stage A: database-first assignment from the known composition set:
         # the curated target library plus (when loaded) the reference mirror.
-        stage_a_assignments, confidence_calibration = await _stage_a_assignments(
+        (
+            stage_a_assignments,
+            confidence_calibration,
+            mass_accuracy,
+        ) = await _stage_a_assignments(
             sample,
             config,
             match_params,
@@ -2110,12 +2187,35 @@ async def _run_sample_assignment(
                 # them, so position - not float m/z equality - is what maps a
                 # result to the peak it came from.
                 search_peaks_df = peaks_df.reset_index(drop=True)
+                # The noise estimate rides along when the file has one: it is
+                # what decides whether a predicted line's absence is evidence.
+                search_columns = [
+                    column
+                    for column in ("mz", "intensity", "signal_to_noise")
+                    if column in search_peaks_df.columns
+                ]
+                scoring = pattern_scoring_for(match_params, mass_accuracy)
                 matches_df, _ = await asyncio.to_thread(
                     assign_compositions,
-                    search_peaks_df[["mz", "intensity"]],
+                    search_peaks_df[search_columns],
                     search_config,
                     heuristics_config,
                     targets=remainder_df["mz"].tolist(),
+                    scoring=scoring,
+                )
+                # ...and then every reading the finder committed to is measured
+                # again the way Stage A measures one: as an ion, through one
+                # match pass over the sample, gated by the run's match params.
+                # That second measurement is what the row is tiered on, so a
+                # Stage B "assigned" and a Stage A "assigned" mean one thing.
+                fit_by_seed = await _seeded_fits(
+                    sample,
+                    match_params,
+                    untargeted_seeds(
+                        matches_df,
+                        mechanism_id_by_notation,
+                        to_custom_element_format,
+                    ),
                 )
                 stage_b_assignments = untargeted_matches_to_peak_assignments(
                     matches_df,
@@ -2129,6 +2229,7 @@ async def _run_sample_assignment(
                     max_alternatives=config.max_alternatives,
                     minor_channels=resolved_profile.minor_channels,
                     excluded_peak_ids=assigned_peak_ids,
+                    fit_by_seed=fit_by_seed,
                 )
                 runtime.logger.info(
                     f"Stage B assigned {len(stage_b_assignments)} of "
@@ -2362,7 +2463,7 @@ async def _fold_sample_peaks_without_run(
         peaks_df, instrument_type, sample_item_id, run_id, reagent_peak_ids
     )
     claimed_peak_ids = reagent_peak_ids | artifact_peak_ids
-    stage_a, _ = await _stage_a_assignments(
+    stage_a, _, _ = await _stage_a_assignments(
         sample,
         config,
         match_params,

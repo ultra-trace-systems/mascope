@@ -15,6 +15,7 @@ import numpy as np
 import pandas as pd
 
 from mascope_backend.api.controllers.match.lib.match_score_v2 import (
+    PRED_SIGMA_PPM,
     fit_sample_mass_accuracy,
     ion_score_v2,
     sample_noise_floor,
@@ -40,6 +41,7 @@ from mascope_tools.composition.heuristic_filter import (
     element_counts,
     formula_plausibility,
 )
+from mascope_tools.composition.models import PatternScoring
 
 
 # Sentinel so a caller can pass calibration=None (explicitly uncalibrated) distinctly from
@@ -133,6 +135,42 @@ def untargeted_targets(
         "at_ceiling": bool(max_untargeted_peaks is None and len(eligible) > ceiling),
     }
     return targets, scope
+
+
+def pattern_scoring_for(
+    match_params,
+    mass_accuracy: tuple[float, float | None],
+) -> PatternScoring:
+    """How the untargeted stage scores this sample's isotope envelopes.
+
+    Everything the composition finder needs to judge a candidate as a
+    measurement of THIS sample rather than of a generic Orbitrap: the width its
+    mass errors actually have, the offset they sit at, the window a line may be
+    matched in, and how deep an envelope may be predicted.
+
+    The width comes from Stage A - the fitted spread of the curated library's
+    own matched isotopologues, which is the instrument's measured accuracy on
+    this sample - widened by ``PRED_SIGMA_PPM`` exactly as Stage A's own fit
+    widens it, so a Stage B row and a Stage A row are judged at one width.
+    Where Stage A found too few anchors to fit anything, the match tolerance
+    stands in: it is the instrument's own statement about its accuracy, and a
+    tolerance is about three sigma of one.
+
+    :param match_params: The sample's resolved match parameters.
+    :param mass_accuracy: ``(mu, sigma)`` in ppm from Stage A's matched rows;
+        sigma is None when there were too few to fit.
+    :return: The scoring parameters for this sample's search.
+    """
+    mu, sigma = mass_accuracy
+    tolerance = float(match_params.mz_tolerance)
+    if sigma is None:
+        sigma = tolerance / 3.0
+    return PatternScoring(
+        sigma_ppm=float(np.hypot(float(sigma), PRED_SIGMA_PPM)),
+        mu_ppm=float(mu),
+        mz_tolerance_ppm=tolerance,
+        abundance_floor=float(match_params.isotope_abundance_threshold),
+    )
 
 
 def tier_for_evidence(
@@ -943,6 +981,68 @@ def _untargeted_row_score(row) -> tuple[float, float | None, float | None]:
     return score, mz_error_ppm, abundance_error
 
 
+def _seed_of(
+    row, mechanism_id_by_notation: dict[str, str], format_formula
+) -> tuple | None:
+    """The ``(formula, mechanism id)`` a finder row commits to, or None.
+
+    The key both halves of the seeded re-score are indexed by, written once so
+    the list that is measured and the lookup that reads the result cannot drift:
+    the formula in the form it is STORED in (the formatter is what turns an
+    explicit-isotope string into the custom-element notation the target library
+    speaks), and the mechanism as an id rather than as a notation.
+    """
+    formula = row.get("formula")
+    if not isinstance(formula, str) or formula in (
+        UNTARGETED_NO_MATCH,
+        UNTARGETED_IONIZATION,
+    ):
+        return None
+    mechanism_id = mechanism_id_by_notation.get(
+        _str_or_none(row.get("ionization_mechanism"))
+    )
+    if not mechanism_id:
+        return None
+    return (format_formula(formula), mechanism_id)
+
+
+def untargeted_seeds(
+    matches_df: pd.DataFrame,
+    mechanism_id_by_notation: dict[str, str] | None = None,
+    formula_formatter=None,
+) -> set[tuple[str, str]]:
+    """The formula x mechanism list the finder's result commits to.
+
+    What the seeded re-score measures against the sample's own peaks, so that
+    the fit a Stage B row is tiered on is the fit a Stage A row would have
+    earned for the same ion: one ``compute_match_isotopes`` pass, the sample's
+    match-params gating, the ion-level v2 fit with the file's own per-peak
+    signal-to-noise. The finder's ranking is a different measurement - it works
+    off the peak list, scores the envelope it predicted for ranking, and its
+    job is to decide which reading of a peak wins.
+
+    Every committed row is seeded, not only the M0 rows: a satellite's ion is a
+    hypothesis about the peak it sits on, it can lose that peak to another
+    reading, and the loser is kept as an alternative whose fit a reader compares
+    against the winner's. Both have to be on one scale for that comparison.
+
+    :param matches_df: First element returned by ``assign_compositions``.
+    :param mechanism_id_by_notation: Maps the search's notations to mechanism
+        ids; a row whose notation is not in it cannot be seeded.
+    :param formula_formatter: Applied to formulas, as in the conversion.
+    :return: Distinct ``(formula, ionization_mechanism_id)`` pairs.
+    """
+    if matches_df.empty:
+        return set()
+    mechanism_id_by_notation = mechanism_id_by_notation or {}
+    format_formula = formula_formatter or (lambda formula: formula)
+    seeds = {
+        _seed_of(row, mechanism_id_by_notation, format_formula)
+        for _, row in matches_df.iterrows()
+    }
+    return {seed for seed in seeds if seed is not None}
+
+
 def _same_ion_family(row) -> list[dict]:
     """The readings of this row's own ion that the finder's policy displaced.
 
@@ -975,6 +1075,7 @@ def untargeted_matches_to_peak_assignments(
     max_alternatives: int = 5,
     minor_channels: frozenset[str] | None = None,
     excluded_peak_ids: set[str] | None = None,
+    fit_by_seed: dict[tuple[str, str], float | None] | None = None,
 ) -> list[dict]:
     """Map untargeted composition results onto peak assignments (Stage B).
 
@@ -983,15 +1084,21 @@ def untargeted_matches_to_peak_assignments(
     those rows into the persisted PeakAssignment shape. Rows with the '---'
     placeholder are skipped (their peaks stay unassigned).
 
-    Scoring uses the fit score. `assign_compositions` (via `match_isotopic_pattern`)
-    already scores each candidate's whole predicted isotope envelope against the
-    spectrum and carries it as ``isotopic_pattern_score``; Stage B uses that as the
-    match score. The untargeted path has no per-peak signal-to-noise, so this is the
-    isotope-pattern fit score (mascope_tools ``score_pattern``) -- the fit score's
-    documented degradation where SNR evidence is absent, not the crude single-peak
-    term the engine used before. When no envelope was scored (the column is
-    absent/NaN) it falls back to the legacy single-peak maths
-    ``score = (1 - min(1, |intensity_error|)) * max(0, 1 - |mz_error_ppm|/100)``.
+    Two measurements of one assignment, and they answer different questions. The
+    finder's ``isotopic_pattern_score`` decides which READING of a peak wins: it
+    is the v2 fit of a candidate's predicted envelope against the peak list,
+    computed on every candidate of every searched peak, and it is what ranks
+    them. What a committed row is TIERED on is ``fit_by_seed`` - the same ion
+    measured again through the full match path, one ``compute_match_isotopes``
+    pass over the sample with the run's match-params gating, which is how a
+    Stage A row is measured. Reading the tier off that is what puts the two
+    stages' evidence on one scale; the finder's own score stays in provenance,
+    where a reader can see the two disagree.
+
+    Without a seeded fit for a row's ion the finder's score stands, and the row
+    then says so by carrying the same number twice. When no envelope was scored
+    either (the column is absent/NaN) it falls back to the legacy single-peak
+    maths ``score = (1 - min(1, |intensity_error|)) * max(0, 1 - |mz_error_ppm|/100)``.
 
     Two results can land on the same observed peak - typically one composition's isotope
     child on another composition's M0 - and only one may own it. The contest is settled by
@@ -1021,6 +1128,11 @@ def untargeted_matches_to_peak_assignments(
         peaks that were enumerated: the finder scores an envelope against every peak it
         is given, so a satellite lands wherever it sits rather than only inside the
         searched set.
+    :param fit_by_seed: The seeded re-score's fit per ``(formula, mechanism id)``,
+        from :func:`untargeted_seeds` measured through ``score_seeds``. Optional:
+        a caller that cannot run a match pass (a unit test, a path with no
+        sample file) gets the finder's own score on every row instead, which is
+        the behaviour this had before the re-score existed.
     :param excluded_peak_ids: Peaks another pass already owns - the reagent and artifact
         pre-passes, and Stage A. Rows landing on them are dropped rather than written:
         the ledger holds one row per peak, and a stage that arrives second does not get
@@ -1088,12 +1200,15 @@ def untargeted_matches_to_peak_assignments(
         formula = str(row["formula"])
         score, mz_error_ppm, abundance_error = _untargeted_row_score(row)
         plausibility = round(float(formula_plausibility(formula)), 4)
+        seed = _seed_of(row, mechanism_id_by_notation, format_formula)
+        seeded_fit = (fit_by_seed or {}).get(seed) if seed is not None else None
         contenders_by_position.setdefault(position, []).append(
             {
                 "row": row,
                 "formula": formula,
                 "isotope_label": isotope_label,
-                "fit": _score_or_none(score) or 0.0,
+                "fit": _score_or_none(seeded_fit if seeded_fit is not None else score)
+                or 0.0,
                 "score": score,
                 "plausibility": plausibility,
                 "mz_error_ppm": mz_error_ppm,
@@ -1181,7 +1296,9 @@ def untargeted_matches_to_peak_assignments(
                     _str_or_none(loser["row"].get("ionization_mechanism"))
                 ),
                 "isotope_label": loser["isotope_label"],
-                "fit_score": _score_or_none(loser["score"]),
+                # The same measurement the winner's is, so a reader comparing
+                # the two is comparing like with like.
+                "fit_score": _score_or_none(loser["fit"]),
                 "mz_error_ppm": loser["mz_error_ppm"],
                 "plausibility": loser["plausibility"],
                 "source": SOURCE_UNTARGETED,
@@ -1209,7 +1326,7 @@ def untargeted_matches_to_peak_assignments(
                     _str_or_none(member.get("ionization_mechanism"))
                 ),
                 "isotope_label": isotope_label,
-                "fit_score": _score_or_none(winner["score"]),
+                "fit_score": _score_or_none(winner["fit"]),
                 "mz_error_ppm": winner["mz_error_ppm"],
                 "plausibility": round(
                     float(formula_plausibility(str(member.get("formula") or ""))), 4
@@ -1246,18 +1363,27 @@ def untargeted_matches_to_peak_assignments(
         # the one table no re-run can rebuild, so the number is captured now even though
         # nothing fits it yet.
         #
-        # Confidence and P(correct) stay database-arbitration concepts. Confidence needs
-        # the peak's full scored candidate set, which the untargeted search does not expose
-        # here (other_candidates carries formulas only, no per-candidate fit). P(correct)
-        # would mean applying the Stage A curve to a Stage B number: this stage's fit is
-        # score_pattern (v1 -- no per-peak SNR, no penalty for an absent isotopologue), a
-        # different scale from the ion_score_v2 the curve was fit on. Borrowing it across
-        # scales is the fabricated probability the calibration layer exists to refuse.
+        # Confidence and P(correct) stay database-arbitration concepts, but for
+        # one reason now rather than two. Confidence needs the peak's full scored
+        # candidate set, which the untargeted search does not expose here
+        # (other_candidates carries formulas only, no per-candidate fit). The
+        # scale objection to P(correct) is gone: the fit below is the seeded
+        # re-score, the same ion_score_v2 the Stage A curve was fitted on, so
+        # the curve would no longer be borrowed across scales. Whether a Stage B
+        # row should carry a probability is the confidence layer's call and not
+        # this conversion's, so nothing here starts asserting one.
         evidence = round(winner["fit"] * winner["plausibility"], 4)
         provenance = {
             "plausibility": winner["plausibility"],
             "evidence": evidence,
             "score_version": SCORE_VERSION,
+            # What the finder made of this reading's envelope against the peak
+            # list, which is what ranked it against the other readings of its
+            # peak. Kept beside the fit the row is tiered on because the two are
+            # different measurements of the same ion - different envelope depth,
+            # different gating, noise read from the peak list rather than from
+            # the match frame - and where they disagree, that is the finding.
+            "pattern_fit": _score_or_none(winner["score"]),
         }
         for key in ("neutral_mass", "unsaturation"):
             value = _float_or_none(row.get(key))
@@ -1279,14 +1405,14 @@ def untargeted_matches_to_peak_assignments(
             "isotope_label": isotope_label,
             "isotope_formula": _str_or_none(row.get("isotope_formula")),
             "source": SOURCE_UNTARGETED,
-            "fit_score": _score_or_none(winner["score"]),
+            "fit_score": _score_or_none(winner["fit"]),
             "mz_error_ppm": winner["mz_error_ppm"],
             "abundance_error": winner["abundance_error"],
             # The same evidence the contest above was settled on, so the tier and
-            # the arbitration agree. Note the stage heterogeneity this inherits:
-            # Stage B's fit is score_pattern (v1), Stage A's is ion_score_v2, so
-            # the two stages' evidence is not strictly on one scale - true under
-            # fit-tiering as well, and unchanged by this binding.
+            # the arbitration agree - and, since the fit is the seeded re-score,
+            # the same quantity a Stage A row is tiered on. The two stages were
+            # on different scales while this one read the finder's envelope
+            # score and that one read ion_score_v2; they are one scale now.
             "tier": tier_for_evidence(
                 evidence,
                 candidate_threshold=candidate_threshold,
