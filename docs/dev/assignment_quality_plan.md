@@ -1876,15 +1876,11 @@ minutes, which is what lets it be run on every change rather than once a stage.
 
 ### After step 2.1, the v2 fit for Stage B (2026-09-09)
 
-Measured on `step-2.1-v2-fit-stage-b-2026.09.09-a4c8fae`, all 43 samples
+Measured on `step-2.1-v2-fit-stage-b-2026.09.09-ddafa70`, all 43 samples
 re-assigned and compared against the same reference runs the stage-1 gate used.
-Every field of the table below is identical on the build before it, which
-carried the same scoring and wrote one provenance field less. One commit lands
-after it, bounding the envelope by the faintest POSITIVE intensity rather than
-by the minimum: no peak of the 48,894 rows these 43 runs wrote has an intensity
-of zero, so it cannot move a number here, and it stops a file that records no
-signal-to-noise from predicting every envelope to the floor. The engine version
-stays 0.4.0: a stage bumps once, at its own gate (2.7).
+Every field of the table below is identical on the two builds before it, which
+carried the same scoring and wrote less about it. The engine version stays
+0.4.0: a stage bumps once, at its own gate (2.7).
 
 Two things changed and they do different work. The finder now ranks candidates
 with the v2 fit at the sample's own mass width and on the file's own per-peak
@@ -1912,6 +1908,27 @@ assumed to be. What it says about the ledger is worth its own line: the median
 committed peak has a signal-to-noise of 6.4 (quartile 2.5, ninth decile 61.7),
 so on half the rows the detectability gate can only charge for a line predicted
 above about 45% of the parent.
+
+What each set was judged at, read back off the runs:
+
+| set | width from | anchors | sigma ppm | offset ppm |
+|---|---|---|---|---|
+| A | fitted | 13-15 | 0.53-0.64 | -0.15 to -0.03 |
+| B | fitted | 10-15 | 0.53-0.57 | -0.09 to 0.00 |
+| C | fitted on three, the class on two | 5-8 | 0.58-0.66 | -0.12 to 0.00 |
+| C2 | fitted | 11-12 | 0.66-0.79 | -1.57 to -1.48 |
+| D | the class | 1-2 | 0.58 | 0 |
+| E | the class | 5-7 | 3.04 | 0 |
+| F1 | fitted | 19-25 | 3.66-7.69 | +1.07 to +2.48 |
+| F2 | fitted | 20-26 | 1.61-4.11 | +0.05 to +2.36 |
+
+Three things in that table are new because nothing recorded them before. Set C
+is not scored alike across its own five samples - three fit a width and two fall
+back on seven anchors and five - so a C number pools two treatments. C2 carries
+a -1.5 ppm offset that is now subtracted before scoring rather than charged to
+every candidate. And F1's fitted width ranges from 3.7 to 7.7 ppm between
+samples of one batch, which is the spread its committed mass error shows and the
+first thing step 2.2 will have to explain.
 
 That does not leave those rows untiered - it leaves them tiered on the mass, at
 their own width. Of the 15,114 untargeted M0 rows on the five Orbitrap sets,
