@@ -88,6 +88,27 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
 
 ### Added
 
+- **A sample's peaks now carry their own noise estimate over the API.** The
+  `/samples/{id}/peaks` response and the SDK's `get_peaks` frame gained a
+  `signal_to_noise` column beside `mz`, `area` and `height`; it is null
+  throughout for a file that stores no estimate, which is an absent measurement
+  and not a peak measured to be noise-free. The engine already scores an
+  isotope line's absence against the peak's noise rather than against its
+  predicted abundance alone, and it read that estimate off an internal path no
+  API client could reach. An outside engine scoring the same spectrum - a
+  reference run, a re-analysis, a comparison - can now reach it too, and so
+  judge a faint line the way Mascope judges it.
+
+- **The measured mass accuracy of a sample is now part of the public
+  `mascope_tools` library** (`mascope_tools.composition.fit_mass_accuracy` and
+  the width a fit score is judged at, `scoring_sigma_ppm`). The fit answers how
+  well a mass has to agree on this sample - a median and a robust spread over
+  the sample's own matched ions, falling back to the instrument class where too
+  few matched - and every candidate's mass term is scored against it. It lived
+  inside the server, so anything else scoring the same spectrum had to
+  re-implement it, and a comparison between two engines then partly measured
+  the difference between their two fits. There is now one.
+
 - **The untargeted stage now searches every unexplained peak, not the 300 most
   intense.** The cap was there because the composition search cost grew with the
   number of peaks fed to it, and on a dense spectrum it left most of the sample
