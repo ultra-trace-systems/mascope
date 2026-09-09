@@ -108,6 +108,15 @@ UNTARGETED_IONIZATION = "()"
 #: elected, and nothing else on a row would ever say which happened.
 PATTERN_SCORING_KEY = "pattern_scoring"
 
+#: Key under which a run records the mass calibration it fitted from its own
+#: corroborated commits, and what that gating cost: the offset and width every
+#: committed row's ``mass_z`` is measured in, how many rows anchored them, and
+#: how many uncorroborated rows the distance capped. Separate from
+#: :data:`PATTERN_SCORING_KEY` because the two are measured over different rows
+#: at different points - that one is what Stage A had to score the search with,
+#: this one is what the finished ledger turned out to be able to measure.
+MASS_CALIBRATION_KEY = "mass_calibration"
+
 #: Key under which a run records how much of its spectrum the untargeted stage
 #: was actually offered. On the run's config beside the resolved profile, and for
 #: the same reason: "searched 300 of 2,577 peaks" and "searched all 2,577" are

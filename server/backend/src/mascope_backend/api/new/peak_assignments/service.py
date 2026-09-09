@@ -73,6 +73,7 @@ from mascope_backend.api.new.peak_assignments.config import (
     peak_assignment_on_ingest,
 )
 from mascope_backend.api.new.peak_assignments.engine import (
+    MASS_CALIBRATION_KEY,
     PATTERN_SCORING_KEY,
     REFERENCE_IDENTITIES_COL,
     SEARCH_SCOPE_KEY,
@@ -99,6 +100,7 @@ from mascope_backend.api.new.peak_assignments.fold_view import (
     member_detail,
     verification_target,
 )
+from mascope_backend.api.new.peak_assignments.mass_gate import apply_mass_gate
 from mascope_backend.api.new.peak_assignments.profiles import (
     RESOLVED_PROFILE_KEY,
     ResolvedProfile,
@@ -1401,6 +1403,7 @@ def _stored_run_config(
     resolved_profile: ResolvedProfile | None = None,
     search_scope: dict | None = None,
     pattern_scoring: dict | None = None,
+    mass_calibration: dict | None = None,
 ) -> dict:
     """The blob persisted on a run: the requested config plus server-side state.
 
@@ -1426,10 +1429,17 @@ def _stored_run_config(
     against, and whether that width was fitted on this sample or fell back to
     the instrument class. A ppm is not a ppm without it.
 
+    The mass calibration is the fifth, and the only one measured from the run's
+    own answers rather than from its inputs: the offset and width its
+    corroborated commits turned out to have, which is what every committed row's
+    ``mass_z`` is stated in and what its gate demoted on. A z without the
+    calibration behind it is a number with no units.
+
     :param config: The validated client-supplied run configuration.
     :param resolved_profile: The chemistry the run resolved to, when known.
     :param search_scope: What the untargeted stage was offered, once it is known.
     :param pattern_scoring: What it scored an envelope at, once it is known.
+    :param mass_calibration: What the finished ledger measured of itself.
     :return: A JSON-serializable dict for ``PeakAssignmentRun.config``.
     """
     stored = config.model_dump()
@@ -1440,6 +1450,8 @@ def _stored_run_config(
         stored[SEARCH_SCOPE_KEY] = search_scope
     if pattern_scoring is not None:
         stored[PATTERN_SCORING_KEY] = pattern_scoring
+    if mass_calibration is not None:
+        stored[MASS_CALIBRATION_KEY] = mass_calibration
     return stored
 
 
@@ -1449,6 +1461,7 @@ async def _record_resolved_profile(
     resolved_profile: ResolvedProfile,
     search_scope: dict | None = None,
     pattern_scoring: dict | None = None,
+    mass_calibration: dict | None = None,
 ) -> None:
     """Write the resolved chemistry onto a run that is about to use it.
 
@@ -1457,14 +1470,16 @@ async def _record_resolved_profile(
     created by that request - so the snapshot cannot be part of the insert.
 
     Called twice: once with the chemistry alone, before the stages, so a run that
-    fails still says what it would have searched; and once more with the search
-    scope, which only the remainder after Stage A can decide.
+    fails still says what it would have searched; and once more once the ledger
+    is built, with the search scope that only the remainder after Stage A can
+    decide and the mass calibration that only the finished commits can measure.
 
     :param peak_assignment_run_id: The run to stamp.
     :param config: The run's configuration, re-serialized with the snapshot.
     :param resolved_profile: The chemistry the run resolved to.
     :param search_scope: What the untargeted stage was offered, once known.
     :param pattern_scoring: What it scored an envelope at, once known.
+    :param mass_calibration: What the ledger measured of its own mass accuracy.
     """
     async with async_session() as session:
         await session.execute(
@@ -1472,7 +1487,11 @@ async def _record_resolved_profile(
             .where(PeakAssignmentRun.peak_assignment_run_id == peak_assignment_run_id)
             .values(
                 config=_stored_run_config(
-                    config, resolved_profile, search_scope, pattern_scoring
+                    config,
+                    resolved_profile,
+                    search_scope,
+                    pattern_scoring,
+                    mass_calibration,
                 )
             )
         )
@@ -2262,14 +2281,41 @@ async def _run_sample_assignment(
                     f"Stage B assigned {len(stage_b_assignments)} of "
                     f"{len(remainder_df)} remaining peaks via untargeted search"
                 )
-        if search_scope is not None:
-            await _record_resolved_profile(
-                run.peak_assignment_run_id,
-                config,
-                resolved_profile,
-                search_scope,
-                scoring_snapshot,
+        # -- The run's own mass calibration, and the gate on it. Runs on the
+        # committed rows of both stages together, because the corroboration it
+        # reads is a property of the whole ledger rather than of either stage:
+        # which reading kept an isotopologue, and which peak a curated identity
+        # claimed. Before the unassigned placeholders are built, which commit
+        # nothing and have nothing to measure.
+        mass_calibration = apply_mass_gate(
+            stage_a_assignments + stage_b_assignments,
+            stage_a_accuracy=mass_accuracy,
+        )
+        if mass_calibration["applied"]:
+            runtime.logger.info(
+                f"Sample '{sample.sample_item_name}' calibrates at "
+                f"{mass_calibration['mu_ppm']:+.3f} ppm, width "
+                f"{mass_calibration['sigma_ppm']:.3f} ppm over "
+                f"{mass_calibration['anchors']} corroborated commits; "
+                f"{mass_calibration['capped']} of "
+                f"{mass_calibration['committed'] - mass_calibration['corroborated']} "
+                "uncorroborated commits capped off calibration"
             )
+        else:
+            runtime.logger.info(
+                f"Sample '{sample.sample_item_name}' corroborated "
+                f"{mass_calibration['corroborated']} of "
+                f"{mass_calibration['committed']} commits, too few to measure a "
+                "mass calibration; no row is gated on one"
+            )
+        await _record_resolved_profile(
+            run.peak_assignment_run_id,
+            config,
+            resolved_profile,
+            search_scope,
+            scoring_snapshot,
+            mass_calibration,
+        )
         await send_progress_user_notification(notification, 0.8)
 
         # -- Persist the complete ledger: one row per observed peak
@@ -2445,6 +2491,14 @@ async def _fold_sample_peaks_without_run(
 
     A sample the engine would refuse a run for (a blank, an unverified
     calibration) is skipped with a log line and nothing is written.
+
+    The mass gate is not run here, and the two ledgers still agree on every
+    tier: it only ever demotes a commit the run has nothing but a mass fit for,
+    and every commit on this path is a Stage A one, which a curated identity
+    proposed. There is nothing it could act on. ``test_mass_gate`` pins that
+    reasoning rather than this comment asserting it, so a Stage A source that is
+    not curated - or an untargeted stage on this path - fails a test here
+    instead of quietly tiering two ways.
 
     :param sample_item_id: The sample to fold.
     :param defer_consensus_to: As for ``fold_sample_into_batch_peaks``: a
