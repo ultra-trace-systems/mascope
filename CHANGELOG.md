@@ -6,6 +6,30 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
 
 ### Changed
 
+- **An untargeted assignment is now judged the way a database assignment is,
+  and "assigned" means the same thing on both.** The untargeted search scored a
+  formula by averaging its errors over the isotope lines it found, so a formula
+  that predicted three lines and found one scored as well as one that predicted
+  one and found it - and a peak with nothing but its own line, which is 80-99%
+  of what the stage commits, could be called assigned on its mass alone. Every
+  formula the search commits to is now measured again as an ion against the
+  sample's own spectrum: a predicted line that is missing where the noise says
+  it should have been visible counts against the assignment, one below the
+  noise does not, and the mass is judged at the width the instrument actually
+  delivers rather than at a fixed five parts per million. The same measurement
+  now also decides which reading of a peak wins, so a formula whose lines
+  cannot be in the spectrum stops taking peaks from one whose lines are there.
+  Measured against a reference engine on 43 samples: the share of assigned-tier
+  rows the reference contradicts falls on every Orbitrap set (73% at the start
+  of this work, 41.5% after stage 1, 35.4% now on the sparse set; 57%, 24.3%
+  and 18.9% on the dense one), what the reference confirms is unchanged or
+  better, and confident and contradicted rows now score differently enough to
+  tell apart. Fewer rows are called assigned as a result - a third of them on
+  the dense set - and no row loses its formula, only the confidence attached to
+  it. A time-of-flight sample gains 300-700 committed analytes, because its
+  masses are no longer judged against an Orbitrap's precision. Re-assign a
+  sample to get the new reading; existing runs are unchanged.
+
 - **The peak assignment engine is version 0.4.0**, and results from it are not
   comparable with a 0.3.0 run of the same sample. The version is stamped on
   every run this server computes, so the two are told apart in the run selector

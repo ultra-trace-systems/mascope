@@ -19,7 +19,7 @@ step PRs land on the epic and are named here as they merge.
 | 1.5 - satellite claim and ringing artifacts | #2088 | measured: G8 met, 0 ownerless isotopologue rows on every set; B claims 969 more satellites and D 423, 88-97% of them confirmed by the reference, and D gains 61 analytes and 27 agreements; two review rounds fixed the envelope's anchor and then restored the requirement anchoring it took away; G6 missed, and the reference's parent ion is outside the searched grid for 78 of A's 79 (decision 11) |
 | 1.6 - cap and mass window | #2090 | measured: G5 met (35,496 unsearched peaks -> 0, of which 5,304 the reference calls Assigned and 8,928 it commits any analyte on) and G2 clears its stage-1 target on A, B, C and D for the first time (B 20.7 -> 95.2%); the mass window was already instrument-class-resolved by 1.1; the grid is enumerated once per band instead of once per peak, so A and C search 5-8x more peaks and finish faster, worst sample 36s; G1 rises on the sets that gained most and G6 with it, and the review found G6's rise has an envelope part beside the grid gap, now decision 11's rider with homes in 2.1 and 2.4 |
 | 1.7 - stage 1 gate, engine 0.4.0 | #2091 | measured: the 0.4.0 build reproduces the 1.6 ledger field for field, so stage 1's numbers are final; G1 met on A, B, C and D (73 -> 41.5, 57 -> 24.3, 99 -> 41.5, 68 -> 37.3%) and missed on C2 (55.2%); G2's same-formula bound met on the same four (39 -> 95.6, 12 -> 95.2, 18 -> 87.3, 17 -> 80.1%) and its same-ion bound on A and B only; G3 met but for B's 2.7% N >= 5, with no carbon-free formula from the untargeted stage on any of the 43 samples; G5 and G8 met everywhere; the mass-error target met on all five Orbitrap sets; G4a below 90% and G6 read, not gated; about half of what stage 1 does not recover carries an element the searched grid cannot build, which is step 2.5b's |
-| 2.1 - v2 fit for Stage B | - | in progress (handed over 2026-09-09) |
+| 2.1 - v2 fit for Stage B | #2092 | measured: the finder ranks with the v2 fit at the sample's own mass width and on the file's own per-peak signal-to-noise, and every committed reading is measured again as an ion, so the engine computes one fit (decision 12); G1 falls on every Orbitrap set (A 41.5 -> 35.4, B 24.3 -> 18.9, C 41.5 -> 34.7, C2 55.2 -> 40.1, D 37.3 -> 21.0) with G2 unchanged on A and B and up on C, C2 and D, G5 and G8 still zero and the mass error flat or better; the fit distributions of confirmed and contradicted rows separate for the first time (B -0.001 -> 0.129, D 0.020 -> 0.249) and the odd-electron share of assigned rows falls on seven of the eight sets; the TOF sets gain 293-675 committed analytes at their own width; the sibling task, a TOF-capable reference run from peaky, is not in this PR because publishing one re-bases every set |
 | 2.2 - self-calibrated mass gate | - | planned |
 | 2.3 - cross-channel corroboration and the reagent-N rule | - | planned |
 | 2.4 - mechanical tiers with reasons | - | planned |
@@ -479,6 +479,20 @@ The confidence layer. This is where "assigned" starts meaning something.
   scored with v1); the evidence records the base peak's signal-to-noise the
   detectability gate used, so the re-read can show the finder's fit was the
   SNR-aware one on every gate set rather than assume it.
+  Measured 2026-09-09 (section below): the fit distributions of confirmed and
+  contradicted rows separate on seven of the eight sets, from a gap of 0.010 on
+  A and -0.001 on B to 0.181 and 0.129; G1 falls on every Orbitrap set with G2
+  unchanged or better and G5, G8 and the mass error unmoved; the odd-electron
+  share of *assigned* untargeted rows falls on seven sets (D 22.2 -> 12.8%);
+  the TOF sets gain 293-675 committed analytes; 54 of the 72 readings of step
+  1.5's twelve flipped ions have moved off that election, 39 of them back to
+  the reading it displaced. The goldens in `tooling/score_eval` are untouched
+  because neither score's arithmetic changed. The G6 rows whose parent this
+  engine reads with the reference's own formula shrink only slightly (B 100 ->
+  83, D 32 -> 30): the rest are lines the envelope predicts and the intensity
+  gate refuses, which is step 2.4's neighbour rule. The sibling task is NOT
+  done: publishing a TOF-capable reference re-bases every set's comparison, so
+  it is its own change with its own before and after.
 - **Size.** M. Depends on stage 1. First in stage 2: once step 1.5 made the
   pattern context whole, the score became the weakest link, and every stage-2
   number is read off it.
@@ -891,16 +905,16 @@ C2 is held to C's.
 
 | metric | today A | today B | today C | after stage 1 | after stage 2 | after stage 3 |
 |---|---|---|---|---|---|---|
-| G1 "assigned" rows the reference does not confirm (stage 1 gate: A 41.5%, B 24.3%, C 41.5%, D 37.3% - met; C2 55.2% - missed) | 73% | 57% | 99% | <= 45% | <= 20% | <= 15% |
-| G2 reference Assigned peaks recovered: same formula / same ion (stage 1 gate: A 95.6/97.2% and B 95.2/96.1% - both bounds met; C 87.3/87.9% and D 80.1/82.3% - same formula met, same ion missed; C2 68.3% - missed, and 4.2 points of it are the nitrate ladder the pre-pass correctly claims) | 39% / - | 12% / - | 18% / - | >= 80% / >= 95% (A, C), >= 70% / >= 95% (B) | >= 85% / >= 95% | hold |
-| G3 committed formulas with N >= 5; carbon-free formulas (stage 1 gate: A 1.0% - met, B 2.7% - missed, 0.0% on every other set; every carbon-free formula left on any of the 43 samples is a Stage A curated row and the untargeted stage writes none, so the carbon half is met outright) | 13%; 59 | 15%; - | 17%; - | <= 1%; 0 off the allowlist | hold | hold |
+| G1 "assigned" rows the reference does not confirm (stage 1 gate: A 41.5%, B 24.3%, C 41.5%, D 37.3% - met; C2 55.2% - missed. After 2.1: A 35.4, B 18.9, C 34.7, C2 40.1, D 21.0 - met on all five, and B inside the stage-2 bound) | 73% | 57% | 99% | <= 45% | <= 20% | <= 15% |
+| G2 reference Assigned peaks recovered: same formula / same ion (stage 1 gate: A 95.6/97.2% and B 95.2/96.1% - both bounds met; C 87.3/87.9% and D 80.1/82.3% - same formula met, same ion missed; C2 68.3% - missed, and 4.2 points of it are the nitrate ladder the pre-pass correctly claims. After 2.1: A 95.6/97.2, B 95.2/96.1, C 87.7/88.2, C2 74.9/74.9, D 80.6/82.8) | 39% / - | 12% / - | 18% / - | >= 80% / >= 95% (A, C), >= 70% / >= 95% (B) | >= 85% / >= 95% | hold |
+| G3 committed formulas with N >= 5; carbon-free formulas (stage 1 gate: A 1.0% - met, B 2.7% - missed, 0.0% on every other set; every carbon-free formula left on any of the 43 samples is a Stage A curated row and the untargeted stage writes none, so the carbon half is met outright. After 2.1: A 1.2% and B 2.8%, still no carbon-free formula from the untargeted stage on any set) | 13%; 59 | 15%; - | 17%; - | <= 1%; 0 off the allowlist | hold | hold |
 | G4 reference reagent peaks labelled reagent or artifact (stage 1 gate: A 48 of 58, B 14 of 24, D 123 of 262, E 48 of 336, F1 50 of 333; on C, C2 and F2 the reference's reagent rows are a different claim, so the raw share does not measure this engine's pass) | 0 of 58 | 0 of 24 | 0 of 29 | >= 90% | 100% | hold |
 | G4a of those, the ones that **name an ion** (step 1.4's own target; stage 1 gate: A 82.8%, B 58.3%, D 84.4%, E 87.3%, F1 74.6% - missed, and A's and B's misses are second centroids and a reference label 5-7 ppm off, not a missing library entry) | 0 of 58 | 0 of 24 | 0 of 15 | >= 90% | 100% | hold |
 | G5 reference Assigned peaks never searched (stage 1 gate: 0 on every set, from 5,304 pooled over A-F2 on the reference's own Assigned tier - A 186, B 4,180, C 7, which reproduces the step-0 baselines beside them) | 190 | 4,181 | 8 | 0 | 0 | 0 |
-| G6 main peaks on reference isotopologues (stage 1 gate: 107 A, 460 B, 328 D, 57 C, 24 C2, 8 E, 57 F1, 33 F2, up from 79/54/75 because the peaks the cap hid are now searched - as a share of committed rows A is flat at 5.2%, B 3.4 -> 5.0%, D 8.8 -> 13.8%. Of the rows 1.6 added, the reference's parent ion is outside the searched grid for 20 of A's 28, 293 of B's 406 and 90 of D's 255 - that part is 2.5b's; the rest have the parent on the grid and are the envelope logic refusing or never predicting the line, which decision 11's rider gives to 2.1 and 2.4. After 1.5 the parent was outside the grid for 78 of A's 79 and 52 of D's 75, which is what decision 11 read) | 96 | - | - | read, not gated (decision 11: <= 10 after 2.5b) | <= 5 | hold |
+| G6 main peaks on reference isotopologues (stage 1 gate: 107 A, 460 B, 328 D, 57 C, 24 C2, 8 E, 57 F1, 33 F2, up from 79/54/75 because the peaks the cap hid are now searched - as a share of committed rows A is flat at 5.2%, B 3.4 -> 5.0%, D 8.8 -> 13.8%. Of the rows 1.6 added, the reference's parent ion is outside the searched grid for 20 of A's 28, 293 of B's 406 and 90 of D's 255 - that part is 2.5b's; the rest have the parent on the grid and are the envelope logic refusing or never predicting the line, which decision 11's rider gives to 2.1 and 2.4. After 1.5 the parent was outside the grid for 78 of A's 79 and 52 of D's 75, which is what decision 11 read. After 2.1: 103 A, 432 B, 314 D, 49 C, 18 C2, 7 E, 61 F1, 33 F2, and of the rows whose parent this engine reads with the reference's own formula 100 -> 83 on B and 32 -> 30 on D) | 96 | - | - | read, not gated (decision 11: <= 10 after 2.5b) | <= 5 | hold |
 | G7 uncorroborated commits beyond 3 sigma | not gated | not gated | not gated | - | 0 | 0 |
-| G8 untargeted isotopologue rows without an owner (step 1.5's coherence count; was 71 over the bromide Orbitrap set's six samples, 0 on every set after 1.5 and still 0 at the stage 1 gate, with six to eight times as many peaks searched) | 0 | 0 | 0 | 0 | 0 | 0 |
-| mass error of committed peaks, MAD (stage 1 gate: A 0.22, B 0.30, C 0.17, C2 0.31, D 0.31 ppm - met on all five Orbitrap sets) | 0.20 ppm | 0.20 ppm | 1.13 ppm | <= 0.35 ppm on an Orbitrap | hold | hold |
+| G8 untargeted isotopologue rows without an owner (step 1.5's coherence count; was 71 over the bromide Orbitrap set's six samples, 0 on every set after 1.5, at the stage 1 gate and after 2.1, with six to eight times as many peaks searched) | 0 | 0 | 0 | 0 | 0 | 0 |
+| mass error of committed peaks, MAD (stage 1 gate: A 0.22, B 0.30, C 0.17, C2 0.31, D 0.31 ppm - met on all five Orbitrap sets. After 2.1: 0.215, 0.298, 0.168, 0.25, 0.307 - met on all five) | 0.20 ppm | 0.20 ppm | 1.13 ppm | <= 0.35 ppm on an Orbitrap | hold | hold |
 | every committed row carries tier reasons | no | no | no | - | yes | yes |
 | corroboration from series or time series | none | none | none | - | - | reported per batch |
 
@@ -1851,6 +1865,189 @@ Wall clock per sample, from the run records rather than the gate's poll loop:
 Every sample of the gate is searched whole, and the slowest of the 43 takes 36
 seconds. The whole gate - 43 samples, four at a time - re-runs in about seven
 minutes, which is what lets it be run on every change rather than once a stage.
+
+### After step 2.1, the v2 fit for Stage B (2026-09-09)
+
+Measured on `step-2.1-v2-fit-stage-b-2026.09.09-188f7bc`, all 43 samples
+re-assigned and compared against the same reference runs the stage-1 gate used.
+The engine version stays 0.4.0: a stage bumps once, at its own gate (2.7).
+
+Two things changed and they do different work. The finder now ranks candidates
+with the v2 fit at the sample's own mass width, which decides *which reading of
+a peak wins*; and every reading it commits is measured again as an ion through
+the Stage A chain, which decides *what the row is worth*. The first moved few
+elections on the Orbitrap uronium and nitrate sets and most of them on the
+TOFs. The second moved almost every tier.
+
+| set | G1 | G2 same formula / same ion | G3 N>=5 | G6 | G8 | odd-electron: all / assigned | MAD |
+|---|---|---|---|---|---|---|---|
+| A uronium | 41.5 -> **35.4** | 95.6 -> 95.6 / 97.2 -> 97.2 | 1.0 -> 1.2 | 107 -> 103 | 0 | 7.9 -> 7.7 / 5.3 -> **3.3** | 0.22 -> 0.215 |
+| B uronium dense | 24.3 -> **18.9** | 95.2 -> 95.2 / 96.1 -> 96.1 | 2.7 -> 2.8 | 460 -> 432 | 0 | 12.3 -> 12.0 / 8.7 -> **5.5** | 0.30 -> 0.298 |
+| C nitrate | 41.5 -> **34.7** | 87.3 -> 87.7 / 87.9 -> 88.2 | 0.0 | 57 -> 49 | 0 | 15.8 -> 16.3 / 20.2 -> **17.3** | 0.17 -> 0.168 |
+| C2 nitrate broad | 55.2 -> **40.1** | 68.3 -> **74.9** / 68.3 -> **74.9** | 0.0 | 24 -> 18 | 0 | 22.4 -> 23.3 / 25.5 -> **23.0** | 0.31 -> **0.25** |
+| D bromide | 37.3 -> **21.0** | 80.1 -> 80.6 / 82.3 -> 82.8 | 0.0 | 328 -> 314 | 0 | 23.6 -> 23.3 / 22.2 -> **12.8** | 0.31 -> 0.307 |
+| E bromide TOF | - | - | 0.0 | 8 -> 7 | 0 | 34.0 -> 32.8 / 33.5 -> **30.4** | 2.03 |
+| F1 bromide TOF | - | - | 0.0 | 57 -> 61 | 0 | 25.7 -> 24.9 / 27.5 -> **19.7** | 0.96 |
+| F2 nitrate TOF | - | - | 0.0 | 33 -> 33 | 0 | 21.8 -> 21.5 / 29.7 -> 29.9 | 1.22 |
+
+G1 falls on every Orbitrap set, by 6 points on A and C and by 15-16 on C2 and
+D. B reaches the stage-2 target of 20% (18.9) and D is a point off it (21.0).
+G2 is unchanged on A and B, up on C and C2, and up half a point on D. G5 stays
+at zero and so does G8. The untargeted stage still writes no carbon-free
+formula on any of the 43 samples, so G3's carbon half stays met; its N >= 5
+half moves by a tenth of a point on A and B - 21 rows of 2,070 becoming 24 of
+2,062, and 243 of 9,148 becoming 252 of 9,077 - which is A crossing its 1%
+bound on three rows. The mass error is flat or better on
+every Orbitrap set.
+
+#### What "assigned" costs now
+
+The tier is read from the seeded re-score, so a row keeps its formula and loses
+its confidence when the fit says the envelope is incomplete.
+
+| set | assigned | candidate | below assignability |
+|---|---|---|---|
+| A | 1,774 -> 1,361 | 277 -> 384 | 19 -> 317 |
+| B | 8,098 -> 5,411 | 1,048 -> 2,571 | 2 -> 1,095 |
+| C | 846 -> 717 | 269 -> 262 | 0 -> 121 |
+| C2 | 516 -> 397 | 123 -> 142 | 6 -> 100 |
+| D | 2,229 -> 1,031 | 145 -> 829 | 4 -> 508 |
+| E | 534 -> 424 | 609 -> 452 | 90 -> 650 |
+| F1 | 4,207 -> 2,299 | 3,779 -> 2,160 | 266 -> 4,468 |
+| F2 | 3,695 -> 3,011 | 2,366 -> 2,103 | 112 -> 1,610 |
+
+A third of B's assigned rows and half of D's are gone, and what they had in
+common is the population step 1.7 measured: 80-99% of committed analytes stand
+on the monoisotopic line alone. Where the noise says a 13C line should have
+been visible and it is not, the fit now charges for it, and the row lands a
+band lower with the formula still on it.
+
+#### The fit distributions separate, which is the point
+
+Median fit of a committed M0 row, by what the reference makes of the same peak:
+
+| set | same formula | different formula | separation |
+|---|---|---|---|
+| A | 0.972 -> 0.917 | 0.962 -> 0.736 | 0.010 -> 0.181 |
+| B | 0.951 -> 0.854 | 0.952 -> 0.725 | -0.001 -> 0.129 |
+| C | 0.975 -> 0.955 | 0.902 -> 0.662 | 0.073 -> 0.293 |
+| C2 | 0.854 -> 0.941 | 0.966 -> 0.758 | -0.112 -> 0.183 |
+| D | 0.945 -> 0.817 | 0.925 -> 0.568 | 0.020 -> 0.249 |
+| E | 0.890 -> 0.731 | 0.718 -> 0.607 | 0.172 -> 0.124 |
+| F1 | 0.936 -> 0.947 | 0.892 -> 0.541 | 0.044 -> 0.406 |
+| F2 | 0.919 -> 0.912 | 0.881 -> 0.829 | 0.038 -> 0.083 |
+
+Before this step the two classes were the same number: on B a row the reference
+contradicts scored a thousandth *higher* than one it confirms, and on C2 a
+tenth higher. The fit was a measurement that did not measure the thing anyone
+reads it for. It separates on seven of the eight sets now, by 0.13 to 0.41,
+and the tier follows: on D, 91.4% of the rows the reference contradicts were
+'assigned' and 34.1% are.
+
+E is the exception, and it is the set with 28 reference-Assigned peaks to
+judge on.
+
+#### What the finder's ranking moved
+
+Step 1.5 recorded twelve ions whose election the whole-spectrum context flipped
+toward a candidate with fewer observable lines, 25 readings across A's and B's
+samples. Read across every sample of both sets that holds one of those peaks -
+72 readings - 39 are back to the reading step 1.5 displaced, 15 have moved to a
+third, and 18 still carry the 1.5 one.
+
+A's m/z 299.079 is the plan's own example, and it is back to C10H18O8S on all
+six samples, with the 34S line claimed on four of them. It is tiered
+`below_assignability` at a fit of 0.22-0.34: the reading whose predicted line
+the spectrum holds, said to be a weak one, because its 13C line should have
+been visible at this peak's signal-to-noise and is not, and because 0.9 ppm is
+three sigma on this instrument. Both terms agree, which is what the fit was
+supposed to buy.
+
+On the Orbitrap sets the elections barely move otherwise - 24 formulas on A, 93
+on D - because a 3 ppm search window on a spectrum accurate to 0.3 ppm rarely
+offers two candidates the mass cannot separate. On the TOFs it moves 132
+formulas on E, 2,189 on F2 and 5,307 on F1: there the window is ten sigma, the
+v1 score scaled its mass term by a fixed 5 ppm, and the fitted width is the
+first thing that has told those candidates apart.
+
+#### The TOF sets become assignable
+
+| set | committed M0 | isotopologue rows | reference: analytes / reagent ions |
+|---|---|---|---|
+| E | 1,233 -> 1,526 | 62 -> 213 | 119 / 336 |
+| F1 | 8,252 -> 8,927 | 343 -> 611 | 698 / 333 |
+| F2 | 6,173 -> 6,724 | 117 -> 194 | 755 / 10 |
+
+Set E is the verify this step wrote for itself: both engines committing more
+than the reagent ions. This engine now commits 1,526 analytes against 48
+reagent rows on E, up from 1,233, and the readings behind them were ranked at
+this TOF's own width rather than at the fixed 5 ppm v1 scaled every instrument
+by. The reference still commits
+119 analytes against 336 reagent ions, which is the sibling task's half of this
+step and is not in this PR: it is a change in peaky (its local scorer through
+`score_pattern_v2` with the sample's fitted sigma), and publishing new reference
+runs re-bases every set's comparison, so it belongs in its own change with its
+own before and after.
+
+The TOF numbers here are therefore this engine's own. Their mass error is the
+honest reading of it: E commits at 2.03 ppm MAD against the reference's 1.16
+over 119 rows, and F1's median error is +2.0 ppm - an uncorrected offset, which
+step 2.2's `mass_z` is what makes visible per row.
+
+#### What did not move, and where it goes
+
+**The G6 rows whose parent this engine reads with the reference's own formula**
+- decision 11's rider, the part of G6 that is not a grid gap - shrink but only
+just: B 101 -> 83, D 32 -> 30, A 6 -> 6. The deeper envelope reaches some of
+them; the rest are lines the envelope predicts and the intensity gate refuses,
+which is the neighbour rule step 2.4 owns.
+
+**The odd-electron share of all committed M0 rows** is flat (A 7.9 -> 7.7, B
+12.3 -> 12.0, D 23.6 -> 23.3). The share of the *assigned* ones is where it
+moved - D 22.2 -> 12.8, F1 27.5 -> 19.7, A 5.3 -> 3.3 - which is the honest
+reading of what this step changed: a radical still wins the peaks where its
+mass is the closest, and it stops being called confident.
+
+#### Two rounds, both about how far a mass error is allowed to be from zero
+
+The first build of this step regressed set D: G2 80.1 -> 76.8, the mass error
+0.31 -> 0.369 ppm and past its target, 252 peaks re-elected to formulas a
+median 1.2 ppm off. The cause was the fallback, not the fit. The mass width was
+Stage A's fitted spread where Stage A had eight matched rows to fit one, and
+D's curated library holds two targets per sample, so D fell back - to the match
+tolerance, 5 ppm, on a spectrum accurate to 0.3. At that width every candidate
+the 3 ppm window enumerated fits equally well and the election falls to the
+envelope alone. The instrument class now states its own accuracy beside the
+window it already stated (0.3 ppm for an Orbitrap, 3 for a TOF), and D's
+numbers came back: G1 21.0, G2 80.6, MAD 0.307.
+
+The second round was the requirement step 1.5 added, meeting the score that
+replaced the one it was written against. A reading missing the line its
+prediction leads with used to score zero, so it could never rank first and "the
+top candidate is not evidence" did mean "no reading of this peak is". The v2
+fit charges that absence instead of refusing on it, so a reading with an
+excellent mass and no envelope can rank above one whose envelope is all there -
+and the peak was then refused on the first without the second being looked at.
+It cost D 173 committed M0 rows and the satellites they owned. The peak now
+goes to the best-ranked reading whose required lines are present.
+
+#### Run time
+
+| set | median | worst |
+|---|---|---|
+| A uronium | 1.5 -> 2.4 s | 2.2 -> 2.6 s |
+| B uronium dense | 5.2 -> 10.3 s | 6.4 -> 10.8 s |
+| C nitrate | 1.0 -> 6.3 s | 1.7 -> 6.7 s |
+| C2 nitrate broad | 0.7 -> 1.1 s | 0.8 -> 1.2 s |
+| D bromide | 5.8 -> 7.3 s | 6.8 -> 9.0 s |
+| E bromide TOF | 13.4 -> 15.1 s | 13.4 -> 15.7 s |
+| F1 bromide TOF | 32.7 -> 40.2 s | 36.4 -> 43.9 s |
+| F2 nitrate TOF | 7.9 -> 12.5 s | 9.3 -> 14.0 s |
+
+Two passes now instead of one - the envelope reaches deeper on a bright peak,
+and every committed reading is measured again as an ion - and the slowest of
+the 43 samples takes 44 seconds. The whole gate still re-runs in about six
+minutes.
 
 ## Decisions (taken 2026-09-07)
 
