@@ -19,7 +19,7 @@ step PRs land on the epic and are named here as they merge.
 | 1.5 - satellite claim and ringing artifacts | #2088 | measured: G8 met, 0 ownerless isotopologue rows on every set; B claims 969 more satellites and D 423, 88-97% of them confirmed by the reference, and D gains 61 analytes and 27 agreements; two review rounds fixed the envelope's anchor and then restored the requirement anchoring it took away; G6 missed, and the reference's parent ion is outside the searched grid for 78 of A's 79 (decision 11) |
 | 1.6 - cap and mass window | #2090 | measured: G5 met (35,496 unsearched peaks -> 0, of which 5,304 the reference calls Assigned and 8,928 it commits any analyte on) and G2 clears its stage-1 target on A, B, C and D for the first time (B 20.7 -> 95.2%); the mass window was already instrument-class-resolved by 1.1; the grid is enumerated once per band instead of once per peak, so A and C search 5-8x more peaks and finish faster, worst sample 36s; G1 rises on the sets that gained most and G6 with it, and the review found G6's rise has an envelope part beside the grid gap, now decision 11's rider with homes in 2.1 and 2.4 |
 | 1.7 - stage 1 gate, engine 0.4.0 | #2091 | measured: the 0.4.0 build reproduces the 1.6 ledger field for field, so stage 1's numbers are final; G1 met on A, B, C and D (73 -> 41.5, 57 -> 24.3, 99 -> 41.5, 68 -> 37.3%) and missed on C2 (55.2%); G2's same-formula bound met on the same four (39 -> 95.6, 12 -> 95.2, 18 -> 87.3, 17 -> 80.1%) and its same-ion bound on A and B only; G3 met but for B's 2.7% N >= 5, with no carbon-free formula from the untargeted stage on any of the 43 samples; G5 and G8 met everywhere; the mass-error target met on all five Orbitrap sets; G4a below 90% and G6 read, not gated; about half of what stage 1 does not recover carries an element the searched grid cannot build, which is step 2.5b's |
-| 2.1 - v2 fit for Stage B | - | planned |
+| 2.1 - v2 fit for Stage B | - | in progress (handed over 2026-09-09) |
 | 2.2 - self-calibrated mass gate | - | planned |
 | 2.3 - cross-channel corroboration and the reagent-N rule | - | planned |
 | 2.4 - mechanical tiers with reasons | - | planned |
@@ -422,12 +422,19 @@ The confidence layer. This is where "assigned" starts meaning something.
   winners' `(formula, mechanism)` seeds are re-scored through
   `seeded_scoring.score_seeds` - one `compute_match_isotopes` pass per
   sample, the SNR-aware v2 fit with the same gating Stage A uses - and that
-  fit is what evidence and tier are read from. The finder's v1 score stays
-  in provenance for audit. The same fit also ranks the candidates inside the
+  fit is what evidence and tier are read from. Nothing carries the finder's
+  v1 number - not provenance, not the ledger, not a comparator column
+  (decision 12). The same fit also ranks the candidates inside the
   finder (`match_isotopic_pattern`, where `score_pattern` decides which
   reading of a peak wins before the same-ion election of decision 9):
   re-scoring the winner afterwards leaves a wrong election in place, and the
-  election is where the v1 score does its damage. The envelope predictor's
+  election is where the v1 score does its damage. The finder scores on the
+  real per-peak signal-to-noise, not on v2's no-SNR mode: peak detection
+  writes one per peak to the filestore and the targeted matcher's read
+  (`load_peaks`) already carries it as a coordinate, while the engine's own
+  read (`load_sample_peaks`) surfaces id, m/z and intensity only - the
+  column has to travel from that read into the frame the finder is handed,
+  beside the sample's fitted sigma. The envelope predictor's
   1% abundance cutoff (`ISOTOPE_ABUNDANCE_THRESHOLD`) goes with it: under the
   detectability gate a faint line is predicted and then judged against the
   noise rather than dropped before anyone looks. After step 1.6, 45 of the
@@ -466,7 +473,12 @@ The confidence layer. This is where "assigned" starts meaning something.
   1.5, one line per engine in `compare_runs.py`) falls on the uronium and
   bromide sets, where such a neutral is rarely chemistry; the G6 rows whose
   parent Mascope commits with the reference's own formula (100 on B, 32 on D
-  after 1.6) shrink, because their lines are now predicted and judged.
+  after 1.6) shrink, because their lines are now predicted and judged; no
+  row's provenance carries a v1 number, and every row's `score_version`
+  names the fit that produced it (today every Stage B row is stamped 2 and
+  scored with v1); the evidence records the base peak's signal-to-noise the
+  detectability gate used, so the re-read can show the finder's fit was the
+  SNR-aware one on every gate set rather than assume it.
 - **Size.** M. Depends on stage 1. First in stage 2: once step 1.5 made the
   pattern context whole, the score became the weakest link, and every stage-2
   number is read off it.
@@ -1972,6 +1984,34 @@ minutes, which is what lets it be run on every change rather than once a stage.
     on A after 2.5b is read on the grid part; the envelope part is read at the
     stage-2 gate, where 332 of B's 460 and 275 of D's 328 rows sit at assigned
     tier today.
+
+12. **One fit score, computed once, on the real signal-to-noise** (taken
+    2026-09-09 with step 2.1). The premise was always one way to score an
+    assignment: the fit-score reference names v2 the engine's scoring for
+    both stages, and its own section is titled why v2 replaced v1. Two exist
+    because v2 was wired in beside v1 under the "coexist, don't replace"
+    principle: Stage A adopted it; Stage B inherited the finder's v1, which
+    ranks candidates inside the library on a frame with no signal-to-noise;
+    the legacy Match tab kept its older per-isotopologue score behind a
+    switch whose default keeps it. What the split costs is measured above -
+    cause 2, one tier band meaning different things to each stage (the
+    comment in `config.py`), a TOF unassignable under a fixed 5 ppm,
+    P(correct) refused on Stage B rows because the curve was fitted on v2 -
+    and one thing it mislabels: every Stage B row is stamped `score_version`
+    2 while its fit is v1, contained only because calibration admits Stage A
+    rows until 3.3. So after 2.1 the engine computes one fit, v2, with the
+    real per-peak signal-to-noise from the filestore, in the finder's
+    election and in the re-score, and v1's number is carried nowhere - not
+    in provenance for audit, as this step first said. The feature is in
+    production nowhere, so there is no run to audit against, and a second
+    score on a released row would confuse more than it explains; the 0.4.0
+    runs in the store are the before. `score_pattern` itself stays in the
+    library while peaky pins it (the sibling task moves peaky to v2) and
+    while the goldens harness uses it as the comparator behind the AUC and
+    calibration numbers; the library is public, so its removal is a
+    deprecation after both, not a delete. The Match tab's switch is outside
+    this plan: flipping its default or retiring it with the tab is a product
+    call.
 
 ## Risks
 
