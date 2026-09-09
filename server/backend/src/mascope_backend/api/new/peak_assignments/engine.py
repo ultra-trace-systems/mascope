@@ -117,6 +117,14 @@ PATTERN_SCORING_KEY = "pattern_scoring"
 #: this one is what the finished ledger turned out to be able to measure.
 MASS_CALIBRATION_KEY = "mass_calibration"
 
+#: Key under which a run records what its own channels corroborated: the
+#: mechanisms it searched, which of them could be donating a reported nitrogen,
+#: how many committed neutrals a second channel confirmed, and what the reagent-N
+#: rule capped. Separate from :data:`MASS_CALIBRATION_KEY` because the evidence
+#: is of a different kind - that one is where a row sits on the mass axis, this
+#: one is how many independent chemistries saw the same neutral.
+CROSS_CHANNEL_KEY = "cross_channel"
+
 #: Key under which a run records how much of its spectrum the untargeted stage
 #: was actually offered. On the run's config beside the resolved profile, and for
 #: the same reason: "searched 300 of 2,577 peaks" and "searched all 2,577" are
