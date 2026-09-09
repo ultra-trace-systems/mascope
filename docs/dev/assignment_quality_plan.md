@@ -486,8 +486,11 @@ The confidence layer. This is where "assigned" starts meaning something.
   share of *assigned* untargeted rows falls on seven sets (D 22.2 -> 12.8%);
   the TOF sets gain 293-675 committed analytes; 54 of the 72 readings of step
   1.5's twelve flipped ions have moved off that election, 39 of them back to
-  the reading it displaced. The goldens in `tooling/score_eval` are untouched
-  because neither score's arithmetic changed. The G6 rows whose parent this
+  the reading it displaced. No row carries a second score, both stages stamp a
+  `score_version` that is now true of them, and every committed row records the
+  base peak's signal-to-noise its absent lines were judged against. The goldens
+  in `tooling/score_eval` are untouched because neither score's arithmetic
+  changed. The G6 rows whose parent this
   engine reads with the reference's own formula shrink only slightly (B 100 ->
   83, D 32 -> 30): the rest are lines the envelope predicts and the intensity
   gate refuses, which is step 2.4's neighbour rule. The sibling task is NOT
@@ -1873,11 +1876,19 @@ re-assigned and compared against the same reference runs the stage-1 gate used.
 The engine version stays 0.4.0: a stage bumps once, at its own gate (2.7).
 
 Two things changed and they do different work. The finder now ranks candidates
-with the v2 fit at the sample's own mass width, which decides *which reading of
-a peak wins*; and every reading it commits is measured again as an ion through
-the Stage A chain, which decides *what the row is worth*. The first moved few
-elections on the Orbitrap uronium and nitrate sets and most of them on the
-TOFs. The second moved almost every tier.
+with the v2 fit at the sample's own mass width and on the file's own per-peak
+signal-to-noise, which decides *which reading of a peak wins*; and every reading
+it commits is measured again as an ion through the Stage A chain, which decides
+*what the row is worth*. The first moved few elections on the Orbitrap uronium
+and nitrate sets and most of them on the TOFs. The second moved almost every
+tier.
+
+It is one fit either way (decision 12), so only one number reaches a row: a
+second score on it would name a version that no longer differs. What the row
+records beside the fit is the noise the finder's detectability gate judged its
+absent lines against - `provenance.base_snr` - because that is the difference
+between a fit scored against the noise and one scored against abundance alone,
+and nothing else on the row would say which happened.
 
 | set | G1 | G2 same formula / same ion | G3 N>=5 | G6 | G8 | odd-electron: all / assigned | MAD |
 |---|---|---|---|---|---|---|---|

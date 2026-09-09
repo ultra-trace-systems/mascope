@@ -184,12 +184,34 @@ class TestTheRowIsTieredOnTheSeededFit:
 
         assert assignment["fit_score"] == pytest.approx(0.55)
 
-    def test_the_finders_own_score_stays_in_provenance(self):
+    def test_no_second_score_reaches_the_row(self):
+        # Decision 12: the engine computes one fit. The finder elected this
+        # reading with it and the re-score measured the same one, so a second
+        # number on the row would name a version that no longer differs.
         [assignment] = _convert(
             [_row()], _peaks(("pA", 100.1, 5000.0)), {("C5H10O2", "mech-h"): 0.55}
         )
 
-        assert assignment["provenance"]["pattern_fit"] == pytest.approx(0.92)
+        assert "pattern_fit" not in assignment["provenance"]
+        assert assignment["provenance"]["score_version"] == 2
+
+    def test_the_noise_the_absent_lines_were_judged_against_is_recorded(self):
+        # The difference between a fit scored against the noise and one scored
+        # against abundance alone, which nothing else on the row would say.
+        [assignment] = _convert(
+            [_row(pattern_base_snr=412.7)],
+            _peaks(("pA", 100.1, 5000.0)),
+            {("C5H10O2", "mech-h"): 0.55},
+        )
+
+        assert assignment["provenance"]["base_snr"] == pytest.approx(412.7)
+
+    def test_a_peak_list_with_no_noise_estimate_claims_none(self):
+        [assignment] = _convert(
+            [_row()], _peaks(("pA", 100.1, 5000.0)), {("C5H10O2", "mech-h"): 0.55}
+        )
+
+        assert "base_snr" not in assignment["provenance"]
 
     def test_the_tier_follows_the_re_score_and_not_the_ranking(self):
         # The finder liked this reading; measured as an ion against the whole
@@ -210,7 +232,6 @@ class TestTheRowIsTieredOnTheSeededFit:
         [assignment] = _convert([_row()], _peaks(("pA", 100.1, 5000.0)))
 
         assert assignment["fit_score"] == pytest.approx(0.92)
-        assert assignment["provenance"]["pattern_fit"] == pytest.approx(0.92)
         assert assignment["tier"] == TIER_ASSIGNED
 
     def test_a_reading_the_pass_could_not_measure_keeps_its_own_number(self):
