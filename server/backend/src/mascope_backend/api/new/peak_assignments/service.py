@@ -2297,6 +2297,7 @@ async def _run_sample_assignment(
         mass_calibration = apply_mass_gate(
             stage_a_assignments + stage_b_assignments,
             stage_a_accuracy=mass_accuracy,
+            fallback_sigma_ppm=resolved_profile.fallback_sigma_ppm,
         )
         if mass_calibration["applied"]:
             runtime.logger.info(
