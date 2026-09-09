@@ -6,6 +6,23 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
 
 ### Changed
 
+- Peak assignment records what a sample's other channels say about each
+  committed reading, and caps the one reading nothing but a sort key decided.
+  A run groups its committed monoisotopic winners by neutral formula across
+  the ionization channels it searched; a neutral seen through two or more is
+  corroborated and says so in `provenance.cross_channel`, with the run's
+  channels and totals on `config.cross_channel`. Measured against a reference
+  engine over 43 samples, a corroborated reading agrees on the formula 98-100%
+  of the time where a lone one agrees 5-71%, inside intensity deciles as well
+  as pooled. Nothing is promoted on the flag yet. What it does demote is the
+  reagent-nitrogen ambiguity: an ammonium adduct of M and a protonated M+NH3
+  are the same ion formula, so no mass, envelope or plausibility separates
+  them, and such a row is now capped at `candidate` with the reason
+  `ambiguous_nitrogen` - keeping its formula - unless a nitrogen-free channel
+  or a second, different nitrogen-donating reagent observed the same neutral.
+  A 15N-labelled reagent is exempt, because its label is what makes the
+  analyte's own nitrogen count observable.
+
 - **A run now measures its own mass accuracy and says where each of its
   assignments sits in it.** A sample's assignments do not scatter around zero
   ppm; they scatter around the offset that acquisition sat at, with the spread
