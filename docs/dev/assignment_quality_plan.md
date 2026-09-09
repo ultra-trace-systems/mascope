@@ -2313,12 +2313,17 @@ not of the rule. The wide anchor window has the same effect on the width: on F1
 the anchors admitted at 15 ppm put the median at +2.67 ppm against +1.80 at
 5 ppm, and the fitted sigma at 2.2-7.7 ppm. Both are step 2.2's.
 
-**Every reference run above comes from one commit**, peaky at 5fa9b59 with the
-library pinned at fc25575da, because the first rounds of A, C, C2 and F2 predated
-the anchor rule and were re-run at the head. The re-run reproduces what it
-replaced: on A, 12 of 2,626 ledger rows differ, all of them a commentary line and
-two of them a series unit, where two equally-scoring series anchors tie and the
-tie falls the other way between processes; no formula, tier or score moves.
+**Every reference run above was scored by one scorer**, peaky's at 5fa9b59 with
+the library pinned at fc25575da: the first rounds of A, C, C2 and F2 predated the
+anchor rule and were re-run at the head. Each run now records the commit it was
+produced at, and the store shows three - 5fa9b59 and the two after it, which
+change what a run RECORDS about itself (its version string, its commit, where a
+batch publish looks for its manifest) and touch no file on the scoring path.
+The re-run reproduces what it replaced: on A, 12 of 2,626 ledger rows differ, all
+of them a commentary line and two of them a series unit, where two equally-scoring
+series anchors tie and the tie falls the other way between processes; no formula,
+tier or score moves. All 43 published runs read `0.7.0+assign0.5.0`,
+`score_version` 2, and a noise estimate actually measured on the sample.
 
 C's first round did move, and not for that reason. Its five ledgers came back
 with `ts_disposition` empty on every row: peaky's batch time-series step produced
