@@ -20,7 +20,7 @@ step PRs land on the epic and are named here as they merge.
 | 1.6 - cap and mass window | #2090 | measured: G5 met (35,496 unsearched peaks -> 0, of which 5,304 the reference calls Assigned and 8,928 it commits any analyte on) and G2 clears its stage-1 target on A, B, C and D for the first time (B 20.7 -> 95.2%); the mass window was already instrument-class-resolved by 1.1; the grid is enumerated once per band instead of once per peak, so A and C search 5-8x more peaks and finish faster, worst sample 36s; G1 rises on the sets that gained most and G6 with it, and the review found G6's rise has an envelope part beside the grid gap, now decision 11's rider with homes in 2.1 and 2.4 |
 | 1.7 - stage 1 gate, engine 0.4.0 | #2091 | measured: the 0.4.0 build reproduces the 1.6 ledger field for field, so stage 1's numbers are final; G1 met on A, B, C and D (73 -> 41.5, 57 -> 24.3, 99 -> 41.5, 68 -> 37.3%) and missed on C2 (55.2%); G2's same-formula bound met on the same four (39 -> 95.6, 12 -> 95.2, 18 -> 87.3, 17 -> 80.1%) and its same-ion bound on A and B only; G3 met but for B's 2.7% N >= 5, with no carbon-free formula from the untargeted stage on any of the 43 samples; G5 and G8 met everywhere; the mass-error target met on all five Orbitrap sets; G4a below 90% and G6 read, not gated; about half of what stage 1 does not recover carries an element the searched grid cannot build, which is step 2.5b's |
 | 2.1 - v2 fit for Stage B | #2092 | measured: the finder ranks with the v2 fit at the sample's own mass width and on the file's own per-peak signal-to-noise, and every committed reading is measured again as an ion, so the engine computes one fit (decision 12); G1 falls on every Orbitrap set (A 41.5 -> 35.4, B 24.3 -> 18.9, C 41.5 -> 34.7, C2 55.2 -> 40.1, D 37.3 -> 21.0) with G2 unchanged on A and B and up on C, C2 and D, G5 and G8 still zero and the mass error flat or better on the Orbitrap sets; the fit distributions of confirmed and contradicted rows separate for the first time (B -0.001 -> 0.129, D 0.020 -> 0.249) and the odd-electron share of assigned rows falls on seven of the eight sets; the TOF sets gain 293-675 committed analytes at their own width; the sibling task, a TOF-capable reference run from peaky, is not in this PR because publishing one re-bases every set |
-| 2.1b - TOF-capable reference: peaky's scorer through `score_pattern_v2` with the sample's fitted sigma | - | planned; the sibling task of 2.1, and the stage-2 gate's TOF metrics have no reference until it lands - peaky commits 119 analytes against 336 reagent ions on set E while it scores with v1, so E's and F's G1 and G2 cannot be read |
+| 2.1b - TOF-capable reference: peaky's scorer through `score_pattern_v2` with the sample's fitted sigma | - | in progress (handed over 2026-09-09, taken before 2.2 - decision 13); the sibling task of 2.1, and the stage-2 gate's TOF metrics have no reference until it lands - peaky commits 119 analytes against 336 reagent ions on set E while it scores with v1, so E's and F's G1 and G2 cannot be read, and since 2.1 every G1 and G2 reads a v2 engine against a v1 reference |
 | 2.2 - self-calibrated mass gate | - | planned |
 | 2.3 - cross-channel corroboration and the reagent-N rule | - | planned |
 | 2.4 - mechanical tiers with reasons | - | planned |
@@ -465,9 +465,9 @@ The confidence layer. This is where "assigned" starts meaning something.
   abundant configuration rather than the monoisotopic line, is step 1.5's
   own fix.)
 - **Sibling task.** A TOF-capable reference: peaky's local scorer scoring
-  through `score_pattern_v2` with the sample's fitted sigma (a small change
-  in peaky, beside the `PEAKY_MATCH_PPM` window it already gained), so the
-  TOF gate sets get a reference run worth comparing against.
+  through `score_pattern_v2` with the sample's fitted sigma, so the TOF gate
+  sets get a reference run worth comparing against. It is step 2.1b, with a
+  before and after of its own, and it goes before 2.2 (decision 13).
 - **Verify.** Fit distributions per verdict class separate; the goldens in
   `tooling/score_eval` are untouched; the config comment about stage
   heterogeneity is retired; on gate set E both engines commit more than the
@@ -504,6 +504,94 @@ The confidence layer. This is where "assigned" starts meaning something.
 - **Size.** M. Depends on stage 1. First in stage 2: once step 1.5 made the
   pattern context whole, the score became the weakest link, and every stage-2
   number is read off it.
+
+### 2.1b TOF-capable reference: peaky through the v2 fit
+
+- **What.** peaky's local scorer (`score_candidates_local` in its
+  `local_scoring.py`, the default path; the network scorer is the opt-in)
+  scores every candidate through `score_pattern_v2` with a `PatternScoring`
+  built for the sample the way the engine builds its own
+  (`pattern_scoring_for`): the width and offset from the sample's own mass
+  errors, the line-matching window the instrument class's (5 ppm Orbitrap,
+  15 ppm TOF, what a run snapshot's `mz_tolerance_ppm` records), the
+  abundance floor the engine's. Three inputs have to be sourced, and the
+  first is a Mascope change:
+  - *The fit.* `fit_sample_mass_accuracy`, `mass_accuracy_anchors` and
+    `MASS_ACCURACY_MIN_ANCHORS` live in the backend's match controller
+    (`match_score_v2.py`), and peaky depends on `mascope_tools` alone. They
+    move into the library beside `PatternScoring` and
+    `resolve_fallback_sigma_ppm`; the engine's `sample_mass_accuracy` imports
+    them from there and computes nothing differently (a test pins the same
+    mu, sigma and anchor count on the same frame). One implementation of the
+    fit for engine and reference: peaky's own pass-1 `calibrate` is the same
+    robust fit already - median, scaled MAD, a floor - so calling the
+    library's loses nothing. This half is its own PR on the epic and lands
+    first, because step 2.2 builds on the same function.
+  - *The anchors.* peaky's peaks frame already carries the sample's targeted
+    matches (its `estimate_offset` seeds an offset from them). The fit runs
+    over those at the start of the run; below the anchor minimum the width
+    is the instrument class's from the library's table, which is the
+    engine's rule. Whether peaky's later pass-1 self-calibration re-scores is
+    peaky's call, not this step's.
+  - *The signal-to-noise.* The peaks endpoint returns it per peak and the
+    SDK frame carries every field the endpoint sends, so the column is
+    already in peaky's fetch; the scorer keeps only m/z, height and id and
+    has to carry it beside them into the fit. Without it v2 runs in its
+    no-SNR mode, which charges an absent line by a fixed abundance rule
+    rather than by the noise, and the reference would then decide the faint
+    lines differently from the engine - the decisions step 2.1 turned on.
+    peaky caches each sample's peaks frame; a frame cached before the
+    endpoint carried the field lacks it, so the gate samples are re-fetched.
+    A file with no stored signal-to-noise scores in the no-SNR mode on both
+    sides, as the engine does today.
+  peaky's score thresholds - its categories at 0.8 and 0.4, its passes'
+  `tau_good` - were set on v1's scale; on v2's scale they are re-read, and
+  the section records the reference's own tier counts per set before and
+  after, so that a G2 move can be told from a threshold move. The
+  line-matching window override peaky gained for the TOF sets
+  (`PEAKY_MATCH_PPM`, on an unmerged branch) is subsumed: the window comes
+  from the class. `score_pattern` stays in the library for the goldens
+  harness (decision 12). peaky's repository is public, so its commits and
+  pull requests follow the same anonymisation rule as this one.
+- **Why.** The reference has scored with v1 all along - peaky imports the
+  library's `score_pattern` - and v1 scales its mass term by a fixed 5 ppm,
+  so on a TOF the reference fails as the engine did: it commits fewer
+  analytes than reagent ions on set E, and E's and F's G1 and G2 cannot be
+  read (baselines). Since step 2.1 the engine scores with v2 and the
+  reference still with v1, so every G1 and G2 read since then compares a v2
+  engine to a v1 reference; through stage 1 both scored with v1, which is
+  the condition the gate bounds were set under, and this step restores that
+  symmetry at v2. It goes before 2.2 (decision 13): 2.2 is the first step
+  whose main effect lands where a v1 reference cannot read - the TOF sets
+  and the mass width - its Verify has a reference clause, and the fit it
+  builds on is the function this step moves. The reference sharing the
+  engine's scorer does not make the gate circular: the gate has always
+  measured what the score does not decide - the candidate universe, the
+  election, the tiers and peaky's arbitration.
+- **Verify.** The engine does not change: the 2.1 runs of 2026-09-09 (build
+  ddafa70) are the engine side before and after, and no engine run is
+  launched while the reference is published and re-read - the publish of
+  all 43 gate samples and the comparison are this step's critical section on
+  the testbed, as a deploy is for an engine step. The previous reference's
+  ledgers are copied out first: the store keeps a bounded number of runs
+  per sample and engine, and the publish supersedes them. Then a "reference
+  re-based" section restates, for every set against the same engine runs,
+  the metrics the reference enters - G1, G2, G4, G5, G6 - beside the
+  post-2.1 numbers, with the reference's committed M0 count, its tier counts
+  and the share of its committed formulas that changed, per set; the
+  stage-2 bounds are then read against the re-based numbers, and whether
+  they still bind is the question the re-base answers. On set E both
+  engines commit more than the reagent ions (step 2.1's clause the
+  reference could not meet), and on E, F1 and F2 the reference's Assigned
+  rows sit at the instrument's own width, so G1 and G2 read there for the
+  first time. The goldens in `tooling/score_eval` are untouched, the
+  engine's tests pin the moved fit, and the section names the peaky commit
+  and the library commit the reference was scored with, as an engine step
+  names its build tag.
+- **Size.** S-M: a peaky change, one library PR, 43 publishes and a
+  re-based table. Depends on 2.1. The library PR lands before 2.2 starts;
+  the peaky half can run beside 2.2 after that, since their footprints are
+  then disjoint.
 
 ### 2.2 Self-calibrated mass gate
 
@@ -2302,6 +2390,23 @@ minutes.
     deprecation after both, not a delete. The Match tab's switch is outside
     this plan: flipping its default or retiring it with the tab is a product
     call.
+
+13. **The reference is re-based once, before the mass gate** (taken
+    2026-09-09 with step 2.1b). The gate compares the engine to peaky, and
+    peaky scores with the library's `score_pattern`: through stage 1 both
+    engines scored with v1, and since step 2.1 the engine scores with v2
+    while the reference does not, so a G1 or G2 read after 2.1 measures the
+    scorer difference as well as the assignments. Two orders were open: the
+    mass gate first, verified on intrinsic metrics where the reference
+    cannot read, then the reference and one re-base of every number since;
+    or the reference first, so that 2.2 to 2.5 are each measured against
+    the stick the stage-2 gate will use. The second costs one re-base of
+    the post-2.1 table against runs that are in the store today and touches
+    no engine code; the first costs a re-read of every step in between. The
+    reference sharing the engine's scorer is the stage-1 condition restored,
+    not a new circularity: what the gate measures is what the score does
+    not decide. The stage-2 bounds were set against the v1 reference and
+    are read again against the re-based numbers before 2.2 is measured.
 
 ## Risks
 
