@@ -175,27 +175,26 @@ def assign_compositions(
                     }
                 )
                 continue
-            main_candidate = candidates[0].copy()
-            main_candidate["mz"] = mz
-            main_candidate["formula"] = main_candidate.get("formula", "---")
-            main_candidate["other_candidates"] = _other_candidate_formulas(
-                comp_results, main_candidate["formula"]
+            # The best reading whose envelope holds the lines a reading cannot
+            # do without - the ion's own, and the one the prediction leads with
+            # (`heuristic_filter.match_isotopic_pattern` reports whether they
+            # are there). Ranking orders good readings and impossible ones
+            # alike, so the test is a filter and not a tie-break: committing the
+            # top candidate regardless is how a `+Br2-` phantom takes a peak
+            # with no envelope at all, and refusing the peak because the top
+            # candidate failed throws away the reading below it that did not.
+            has_envelope = any(
+                len(matched.get("masses", [])) > 0 for matched in all_matched_isotopes
             )
-
-            if all_matched_isotopes:
-                all_matched_isotopes = [
-                    m for m in all_matched_isotopes if len(m.get("masses", [])) > 0
-                ]
-            if all_matched_isotopes and not _pattern_is_evidence(candidates[0]):
-                # The best candidate's envelope was predicted, matched against
-                # the spectrum and came out missing a line the reading cannot do
-                # without - the ion's own, or the one the prediction leads with
-                # (see `heuristic_filter.match_isotopic_pattern`). Candidates are
-                # ranked by the fit, so no other reading of this peak does better
-                # either. Committing the top one anyway is how a `+Br2-` phantom
-                # takes a peak with no envelope at all: its monoisotopic line is
-                # the target, so the row can always be written, and only the
-                # score says it should not be.
+            chosen = next(
+                (
+                    index
+                    for index, candidate in enumerate(candidates)
+                    if _pattern_is_evidence(candidate)
+                ),
+                None,
+            )
+            if has_envelope and chosen is None:
                 results_per_peak.append(
                     {
                         "formula": "---",
@@ -206,9 +205,20 @@ def assign_compositions(
                     }
                 )
                 continue
-            if all_matched_isotopes:
+            chosen = 0 if chosen is None else chosen
+            main_candidate = candidates[chosen].copy()
+            main_candidate["mz"] = mz
+            main_candidate["formula"] = main_candidate.get("formula", "---")
+            main_candidate["other_candidates"] = _other_candidate_formulas(
+                comp_results, main_candidate["formula"]
+            )
+
+            if has_envelope:
+                # The chosen candidate's OWN envelope: the two lists are aligned
+                # index for index, and taking the first non-empty one instead
+                # stamped one composition's isotope pattern onto another's row.
                 isotopic_results, assigned_mzs = process_isotopes(
-                    main_candidate, all_matched_isotopes, assigned_mzs
+                    main_candidate, [all_matched_isotopes[chosen]], assigned_mzs
                 )
                 results_per_peak.extend(isotopic_results)
             else:

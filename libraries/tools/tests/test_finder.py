@@ -445,6 +445,69 @@ def test_a_monoisotopic_row_outranks_another_candidates_satellite(monkeypatch):
     }
 
 
+def test_the_best_reading_that_is_evidence_wins_the_peak(monkeypatch):
+    """A top-ranked candidate missing a required line does not take the peak
+    down with it.
+
+    Under the v1 score a reading whose brightest predicted line was absent
+    scored zero, so it could never be top-ranked and "the top candidate is not
+    evidence" did mean "no reading of this peak is". The v2 fit charges that
+    absence instead of refusing on it, so a reading with an excellent mass and
+    no envelope can rank above one whose envelope is all there - and the peak
+    belongs to the second.
+    """
+    from mascope_tools.composition import finder
+
+    monkeypatch.setattr(
+        finder,
+        "find_compositions",
+        lambda target_mz, config, grid=None: [{"formula": "C2H2"}, {"formula": "C3H4"}],
+    )
+    monkeypatch.setattr(
+        finder,
+        "apply_heuristic_rules",
+        lambda comp_results, heuristics_config=None: (
+            [dict(result, neutral_mass=26.0, ion="C2H3+") for result in comp_results],
+            {},
+        ),
+    )
+    monkeypatch.setattr(
+        finder,
+        "match_isotopic_pattern",
+        lambda candidates, peaks, scoring=None: (
+            [
+                dict(
+                    candidates[0],
+                    isotopic_pattern_score=0.62,
+                    **{PATTERN_REQUIRED_LINES: False},
+                ),
+                dict(
+                    candidates[1],
+                    isotopic_pattern_score=0.55,
+                    **{PATTERN_REQUIRED_LINES: True},
+                ),
+            ],
+            [
+                _pattern([100.0], ["M0"], [0.2]),
+                _pattern([100.0, 101.0], ["M0", "13C"], [0.1, 0.3]),
+            ],
+        ),
+    )
+    peaks = pd.DataFrame({"mz": [100.0, 101.0], "intensity": [1000.0, 30.0]})
+    config = CompositionSearchConfig(
+        ionizations="H+", element_count_ranges="C0-3 H0-4", mass_range_ppm=5.0
+    )
+
+    matches, _ = assign_compositions(peaks, config, targets=[100.0])
+
+    committed = matches[matches["formula"] != "---"]
+    assert set(committed["formula"]) == {"C3H4"}
+    # ...and it is committed with ITS OWN envelope, which is what claims the
+    # satellite: taking the first non-empty pattern in the list instead stamped
+    # one composition's isotopologues onto another's row.
+    assert sorted(committed["isotope_label"]) == ["13C", "M0"]
+
+
 def test_a_peak_whose_best_reading_has_no_envelope_is_left_alone(monkeypatch):
     """A candidate missing a line its prediction requires is not committed.
 
