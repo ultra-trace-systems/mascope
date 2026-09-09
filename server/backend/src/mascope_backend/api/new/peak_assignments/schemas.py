@@ -149,6 +149,14 @@ class PeakAssignmentRecord(BaseModel):
     #: Number of adducts corroborating the compound (provenance.corroboration),
     #: flattened for the ledger's corroboration marker.
     corroboration_adducts: int | None = None
+    #: How many of the run's ionization channels committed this row's neutral
+    #: (provenance.cross_channel.channels), flattened for the same marker. The
+    #: mechanical form of the field above and a superset of it: that one counts
+    #: the adducts a curated compound matched through and is therefore null on
+    #: every untargeted row, which is most of a ledger. Unlike that one, this
+    #: count is NOT folded into ``p_correct`` - it is evidence the run recorded,
+    #: not a score it applied.
+    corroboration_channels: int | None = None
     #: How far this row's mass error sits from the run's own fitted centre, in
     #: the run's own fitted widths (provenance.mass_z). Flattened because it is
     #: the one per-row number a reader scanning a whole ledger needs and cannot
