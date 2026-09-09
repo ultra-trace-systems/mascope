@@ -76,9 +76,19 @@ class TestTheFit:
         # A run whose anchors round to one number has not measured to zero ppm,
         # and a sigma of zero would make the mass likelihood a step function:
         # every error inside the rounding perfect, every one outside impossible.
+        # The floor is what stops that, so a zero floor must fail this test.
         _, sigma = fit_mass_accuracy([0.3] * 12)
 
+        assert sigma > 0
         assert sigma == MIN_FITTED_SIGMA_PPM
+
+    def test_the_floor_is_wide_enough_to_score_at(self):
+        # A width the mass term can divide by: at 0.05 ppm an Orbitrap's own
+        # 0.2 ppm error is four sigma, which is why the floor is a floor on the
+        # FIT and the score is judged at `scoring_sigma_ppm`, never at this.
+        _, sigma = fit_mass_accuracy([0.3] * 12)
+
+        assert scoring_sigma_ppm(sigma, 3.0) > PRED_SIGMA_PPM
 
     def test_an_unusable_error_is_not_an_anchor(self):
         # NaN reaches the fit from a row that matched nothing; counting it would
