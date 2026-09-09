@@ -53,7 +53,10 @@ unconditionally, not via the legacy `MASCOPE_MATCH_SCORE_VERSION` switch:
   RANKS the readings of a peak. What a committed row is TIERED on is the winner measured
   again as an ion, through the Stage A chain above (`service._seeded_fits` →
   `seeded_scoring.score_seeds`): one `compute_match_isotopes` pass per sample with the
-  run's gating. The finder's own score stays on the row under `provenance.pattern_fit`.
+  run's gating. Only that one number reaches the row: the two are the same fit on two
+  frames, so a second score on the row would name a version that no longer differs. What
+  the row does record beside it is `provenance.base_snr`, the noise the finder's
+  detectability gate judged its absent lines against.
 - **Tier bands (landed):** the confidence-tier bands no longer sit on the fit scale. They
   sit on **evidence** — fit × chemical plausibility, the product both stages already
   arbitrate a contested peak in — at `assigned_threshold = 0.75` /

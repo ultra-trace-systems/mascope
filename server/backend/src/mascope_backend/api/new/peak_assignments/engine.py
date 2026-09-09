@@ -36,6 +36,7 @@ from mascope_tools.composition.calibration import (
     calibration_for,
 )
 from mascope_tools.composition.heuristic_filter import (
+    PATTERN_BASE_SNR,
     SAME_ION_ALTERNATIVES,
     SCORE_VERSION,
     element_counts,
@@ -1090,21 +1091,21 @@ def untargeted_matches_to_peak_assignments(
     those rows into the persisted PeakAssignment shape. Rows with the '---'
     placeholder are skipped (their peaks stay unassigned).
 
-    Two measurements of one assignment, and they answer different questions. The
-    finder's ``isotopic_pattern_score`` decides which READING of a peak wins: it
-    is the v2 fit of a candidate's predicted envelope against the peak list,
-    computed on every candidate of every searched peak, and it is what ranks
-    them. What a committed row is TIERED on is ``fit_by_seed`` - the same ion
-    measured again through the full match path, one ``compute_match_isotopes``
-    pass over the sample with the run's match-params gating, which is how a
-    Stage A row is measured. Reading the tier off that is what puts the two
-    stages' evidence on one scale; the finder's own score stays in provenance,
-    where a reader can see the two disagree.
+    One fit, computed twice on two frames, and the row carries the second. The
+    finder's ``isotopic_pattern_score`` decides which READING of a peak wins:
+    the v2 fit of a candidate's predicted envelope against the peak list, on
+    every candidate of every searched peak. What a committed row is TIERED on is
+    ``fit_by_seed`` - the same ion, the same fit, measured again through the
+    full match path, one ``compute_match_isotopes`` pass over the sample with
+    the run's match-params gating, which is how a Stage A row is measured.
+    Reading the tier off that is what puts the two stages' evidence on one
+    scale. Only one number reaches the row (decision 12): a second score on it
+    would name a version that no longer differs.
 
-    Without a seeded fit for a row's ion the finder's score stands, and the row
-    then says so by carrying the same number twice. When no envelope was scored
-    either (the column is absent/NaN) it falls back to the legacy single-peak
-    maths ``score = (1 - min(1, |intensity_error|)) * max(0, 1 - |mz_error_ppm|/100)``.
+    Without a seeded fit for a row's ion the finder's own number stands. When no
+    envelope was scored either (the column is absent/NaN) it falls back to the
+    legacy single-peak maths
+    ``score = (1 - min(1, |intensity_error|)) * max(0, 1 - |mz_error_ppm|/100)``.
 
     Two results can land on the same observed peak - typically one composition's isotope
     child on another composition's M0 - and only one may own it. The contest is settled by
@@ -1382,15 +1383,18 @@ def untargeted_matches_to_peak_assignments(
         provenance = {
             "plausibility": winner["plausibility"],
             "evidence": evidence,
+            # True of this row rather than aspirational: the finder elected it
+            # with the v2 fit and the re-score below measured it with the same
+            # one, so there is no second number to name (decision 12).
             "score_version": SCORE_VERSION,
-            # What the finder made of this reading's envelope against the peak
-            # list, which is what ranked it against the other readings of its
-            # peak. Kept beside the fit the row is tiered on because the two are
-            # different measurements of the same ion - different envelope depth,
-            # different gating, noise read from the peak list rather than from
-            # the match frame - and where they disagree, that is the finding.
-            "pattern_fit": _score_or_none(winner["score"]),
         }
+        # What the finder's detectability gate judged this reading's absent
+        # lines against. Recorded because it is the difference between a fit
+        # scored against the noise and one scored against abundance alone, and
+        # nothing else on the row says which happened.
+        base_snr = _float_or_none(row.get(PATTERN_BASE_SNR))
+        if base_snr is not None:
+            provenance["base_snr"] = round(base_snr, 2)
         for key in ("neutral_mass", "unsaturation"):
             value = _float_or_none(row.get(key))
             if value is not None:
