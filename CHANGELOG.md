@@ -11,7 +11,11 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
   ppm; they scatter around the offset that acquisition sat at, with the spread
   that instrument achieved that day. Both are now fitted from the run's own
   corroborated assignments - the ones a curated identity proposed, or whose
-  isotope envelope the spectrum confirmed - and every assigned peak records
+  isotope envelope the spectrum confirmed, counting an isotope peak as
+  confirmation only when its own mass error tracks its parent's within the
+  instrument's precision, since on a crowded spectrum a peak that is nobody's
+  isotopologue lands inside the matching window by coincidence - and every
+  assigned peak records
   `mass_z`, its distance from that centre in the run's own widths. An
   assignment resting on the mass fit alone and sitting more than three of those
   widths out is capped at "candidate" (reason `off_calibration`) and more than
@@ -27,9 +31,11 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
   could not tell "this sample is centred" from "nothing was measured here" -
   opposite claims, differing by more than an Orbitrap's whole accuracy. The
   offset and the width are now reported separately, each absent where it was
-  not measured, and an offset needs fewer anchors than a width does: a sample
-  with five to seven matched ions is now scored at the offset those ions
-  measured instead of at a silent zero.
+  not measured, so a caller decides for itself what to do about a sample whose
+  accuracy is unknown instead of being handed a zero that looks like a
+  measurement. Both still need the same number of anchors: an offset looks like
+  the easier of the two to measure and is not, because an anchor set too small
+  to say how wide it is cannot say where its centre is either.
 
 - **An untargeted assignment is now judged the way a database assignment is,
   and "assigned" means the same thing on both.** The untargeted search scored a
