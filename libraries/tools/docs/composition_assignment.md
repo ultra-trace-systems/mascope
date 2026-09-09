@@ -78,6 +78,14 @@ may be matched in, how deep the envelope is predicted — is `PatternScoring`, p
 the caller; its defaults reproduce the fixed Orbitrap-shaped constants this pipeline
 applied to every sample before a caller could describe one.
 
+Filling its width in is `composition.mass_accuracy`: `fit_mass_accuracy` measures a
+sample's own mass errors (median and scaled MAD, refusing to state a width below
+`MASS_ACCURACY_MIN_ANCHORS` anchors), and `scoring_sigma_ppm` turns that - or the
+instrument class's `resolve_fallback_sigma_ppm` where nothing measured one - into the
+width a fit is judged at. It is here rather than in an engine because more than one
+engine scores these spectra: two implementations of the fit would make a comparison
+between them partly a comparison of how each measured its ruler.
+
 Two lines still have to be present for a reading to be evidence at all: the ion's own, and
 the one the prediction leads with. The fit *charges* an absent line rather than refusing on
 it, so that requirement is reported separately, as `pattern_has_required_lines` on each

@@ -17,10 +17,7 @@ import numpy as np
 import pandas as pd
 
 from mascope_backend.api.controllers.match.lib.match_score_v2 import (
-    PRED_SIGMA_PPM,
-    fit_sample_mass_accuracy,
     ion_score_v2,
-    mass_accuracy_anchors,
     sample_noise_floor,
 )
 from mascope_backend.api.new.peak_assignments.tiers import (
@@ -44,6 +41,11 @@ from mascope_tools.composition.heuristic_filter import (
     SCORE_VERSION,
     element_counts,
     formula_plausibility,
+)
+from mascope_tools.composition.mass_accuracy import (
+    fit_sample_mass_accuracy,
+    mass_accuracy_anchors,
+    scoring_sigma_ppm,
 )
 from mascope_tools.composition.models import PatternScoring
 
@@ -154,7 +156,7 @@ class SampleMassAccuracy:
     """What Stage A measured of a sample's own mass error, and from how much.
 
     ``sigma_ppm`` is None when fewer than
-    :data:`match_score_v2.MASS_ACCURACY_MIN_ANCHORS` known ions matched, which
+    :data:`mass_accuracy.MASS_ACCURACY_MIN_ANCHORS` known ions matched, which
     is not a small sample of a width but no measurement of one; ``anchors``
     says how close it came, so a run that fell back records why.
     """
@@ -191,10 +193,13 @@ def pattern_scoring_for(
     The width comes from Stage A - the fitted spread of the curated library's
     own matched isotopologues, which is the instrument's measured accuracy on
     this sample - widened by ``PRED_SIGMA_PPM`` exactly as Stage A's own fit
-    widens it, so a Stage B row and a Stage A row are judged at one width.
+    widens it, so a Stage B row and a Stage A row are judged at one width. Both
+    go through :func:`mass_accuracy.scoring_sigma_ppm`, the library's one
+    statement of what a fit score judges a mass error against, so an outside
+    engine scoring the same sample judges it at the same width.
 
     Where Stage A matched too few known ions to fit anything, the instrument
-    class's own accuracy stands in (``profiles.resolve_mass_accuracy_ppm``).
+    class's own accuracy stands in (``profiles.resolve_fallback_sigma_ppm``).
     That is a weak substitute for a measurement and the only honest one
     available: judging a bromide set whose curated library holds two targets at
     the 5 ppm match tolerance instead measures nothing, because on a spectrum
@@ -206,12 +211,11 @@ def pattern_scoring_for(
     :param instrument_accuracy_ppm: The class width to use when it measured none.
     :return: The scoring parameters for this sample's search.
     """
-    mu, sigma = mass_accuracy.mu_ppm, mass_accuracy.sigma_ppm
-    if sigma is None:
-        sigma = instrument_accuracy_ppm
     return PatternScoring(
-        sigma_ppm=float(np.hypot(float(sigma), PRED_SIGMA_PPM)),
-        mu_ppm=float(mu),
+        sigma_ppm=scoring_sigma_ppm(
+            mass_accuracy.sigma_ppm, float(instrument_accuracy_ppm)
+        ),
+        mu_ppm=float(mass_accuracy.mu_ppm),
         mz_tolerance_ppm=float(match_params.mz_tolerance),
         abundance_floor=float(match_params.isotope_abundance_threshold),
     )

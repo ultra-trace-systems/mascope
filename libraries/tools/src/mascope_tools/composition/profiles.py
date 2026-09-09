@@ -692,11 +692,16 @@ def resolve_fallback_sigma_ppm(instrument_type: str | None) -> float:
     """The mass-term width to score at when nothing has fitted the sample's own.
 
     What the fit score judges a mass error against where the run has fewer than
-    :data:`match_score_v2.MASS_ACCURACY_MIN_ANCHORS` known ions matched to fit a
+    :data:`mass_accuracy.MASS_ACCURACY_MIN_ANCHORS` known ions matched to fit a
     width from. Not the search window (:func:`resolve_mz_precision_ppm`), which
-    is a different statement about a different thing. A property of the instrument and not of the
-    chemistry, so no profile overrides it - a profile that wanted to would be
-    saying the source changes what the analyser can resolve.
+    is a different statement about a different thing. A property of the
+    instrument and not of the chemistry, so no profile overrides it - a profile
+    that wanted to would be saying the source changes what the analyser can
+    resolve.
+
+    Reached by :func:`mass_accuracy.scoring_sigma_ppm`, which is where a caller
+    should put it: the fallback and a fitted width are widened the same way
+    before either is scored against.
 
     :param instrument_type: ``"orbi"``, ``"tof"``, or None/unknown.
     :return: The width in ppm.
