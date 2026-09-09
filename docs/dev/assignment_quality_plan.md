@@ -22,7 +22,7 @@ step PRs land on the epic and are named here as they merge.
 | 2.1 - v2 fit for Stage B | #2092 | measured: the finder ranks with the v2 fit at the sample's own mass width and on the file's own per-peak signal-to-noise, and every committed reading is measured again as an ion, so the engine computes one fit (decision 12); G1 falls on every Orbitrap set (A 41.5 -> 35.4, B 24.3 -> 18.9, C 41.5 -> 34.7, C2 55.2 -> 40.1, D 37.3 -> 21.0) with G2 unchanged on A and B and up on C, C2 and D, G5 and G8 still zero and the mass error flat or better on the Orbitrap sets; the fit distributions of confirmed and contradicted rows separate for the first time (B -0.001 -> 0.129, D 0.020 -> 0.249) and the odd-electron share of assigned rows falls on seven of the eight sets; the TOF sets gain 293-675 committed analytes at their own width; the sibling task, a TOF-capable reference run from peaky, is not in this PR because publishing one re-bases every set |
 | 2.1b - TOF-capable reference: peaky's scorer through `score_pattern_v2` with the sample's fitted sigma | #2093 + peaky `epic/v2-fit-reference` | measured: all 43 reference runs re-published at the sample's own width, with the engine's runs untouched (same run id on 43 of 43 after the publish); the reference commits less on the Orbitrap sets and more on the TOF ones (B 7,614 -> 4,680 M0, F1 698 -> 1,034), its committed mass error improves on every Orbitrap set (B 0.290 -> 0.174 ppm) and its own fit finally separates its confirmed rows from its contradicted ones (A 0.089 -> 0.174, C 0.066 -> 0.181, C2 -0.051 -> +0.052, on hundreds of rows a side); the share of this engine's assigned rows the reference CONTRADICTS falls on every Orbitrap set (C 2.4 -> 0.3%, C2 4.3 -> 1.3%) while G1 rises because a conservative reference is silent more (A 35.4 -> 40.2, B 18.9 -> 44.2, D 21.0 -> 21.6); G2 formula 93.8 A, 92.8 B, 90.6 C, 77.7 C2, 80.4 D; G5 and G8 still zero; the peaks endpoint did not carry signal-to-noise and now does; two rounds of the gate caught the same defect in the shared fit, that it returns the offset and the width together and reports neither below its anchor minimum |
 | 2.2 - self-calibrated mass gate | #2094 | measured: every committed row records `mass_z` and every run records the calibration it was measured in, fitted over its own corroborated commits - 212 to 3,970 anchors a set where Stage A had 10 to 127. The gate itself is a guard, not a lever: it caps 49 rows over the 43 samples - 3 analyte commits, all on one TOF set and none of them a row the reference confirms, and 46 satellites the tracking rule reads as coincidences - and moves G1 on no set, because the failure it was written for was closed by 2.1 - the widest committed top-tier error on a straight Orbitrap axis is 1.02 ppm, and on A the rows the reference contradicts sit CLOSER to the calibration (0.088 ppm median) than the ones it confirms (0.149). No row the reference confirms was demoted on any set (G2 and its n identical everywhere) and no election changed (0 verdict shifts of 48,894 peaks), so G7 is 0 where the gate applied, which was all 43. The offset half of the 2.1b defect was tried and withdrawn on the measurement: fitting an offset from the five to seven anchors a width is refused for moved the TOF bromide set 4 ppm the wrong way (MAD 2.03 -> 2.33), so an anchor set too small to say how wide it is cannot say where its centre is. What the runs now report instead is a per-sample calibration reading, and it says the TOF sets carry 2.8-6.9 ppm widths and C2 a flat -1.1 ppm bias on files whose stored calibration is marked verified. The TOF sets were then recalibrated through the node and E re-baselined on both engines: its axis was out by 8-10 ppm and is now inside a ppm, which lifts the reference's G2 on E from 15.4/26.9 to 33.3/42.9% and the signal it explains from 0.5 to 26.2%, while the engine's top tier is the same SIZE on both axes (424 rows) and not the same rows - 147 of them sit on a peak that held it before, 7 keep their formula, tiers moved on 765 of the 1,343 M0 peaks both commit, and 70% of those peaks change formula - so mass is not what constrains a TOF commit, which is 2.4's. F1 and F2 did not move at all (their axes were already right, merely never fitted) and their runs stand; C2 cannot be fitted until its mode has more than two disagreeing calibrants |
-| 2.3 - cross-channel corroboration and the reagent-N rule | #2096 | measured: a run groups its committed monoisotopic winners by neutral across the channels it searched and records what that corroborates, reaching 5.4% to 59.4% of a set's commits where Stage A's curated-compound version reached 25 of A's 2,062 rows and none at all on six sets. It is the strongest separator the engine has: on the reference's own Assigned rows the engine agrees on the formula 98.7% of the time when the neutral has a second channel against 54.7% when it does not (A), 98.0 against 71.2 (B), 97.6 against 83.2 (D), 100 against 5.1 (F1), and it survives an intensity-decile control on all three sets big enough to run one - so it is not brightness in disguise. Nothing is promoted on it; the flag is what 2.4 weighs. The reagent-N rule is what its absence makes necessary: `+NH4+` on M and `+H+` on M+NH3 are the SAME ion formula, so mass, envelope, fit and the Seven Golden Rules all tie and the row sort picks the reading by comparing the two neutral formulas as strings - which predicts the committed answer on 91.8% of A's assigned-tier rows, 95.2% of B's and 99.0% of F2's. Such a row is capped at `candidate` with the reason `ambiguous_nitrogen` unless a nitrogen-free channel or a second, different nitrogen-donating reagent saw the same neutral: 380 analytes and 63 satellites on A, 942 and 57 on B, 1,293 and 9 on F2, none on the five other sets - C and C2 because their reagent is 15N-labelled and the label is what makes the count observable, D, E and F1 because they have no nitrogen-donating channel. G1 falls 40.2 -> 25.1 on A, 44.2 -> 40.1 on B and 99.2 -> 98.7 on F2 and is flat elsewhere; G2 and its denominator are identical on all eight sets and there are 0 verdict shifts and 0 formula shifts of 48,894 peaks, because the rule moves tiers and nothing else. The cap demotes 425 rows the reference confirms, and on every one of them the reference reached that formula through the same nitrogen-donating channel - two implementations of one convention rather than two measurements - while itself calling 63 of A's 79 and 319 of B's 344 `candidate`, so the engine ends up more conservative than the reference on 41 of the 2,615 rows it capped |
+| 2.3 - cross-channel corroboration and the reagent-N rule | #2096 | measured: a run groups its committed monoisotopic winners by neutral across the channels it searched and records what that corroborates, reaching 5.4% to 59.4% of a set's commits where Stage A's curated-compound version reached 25 of A's 2,062 rows and none at all on six sets; the ledger's corroboration marker now renders it, and the row carries the best tier any partner channel holds. It is the strongest separator the engine has: on the reference's own Assigned rows the engine agrees on the formula 98.7% of the time when the neutral has a second channel against 54.7% when it does not (A), 98.0 against 71.2 (B), 97.6 against 83.2 (D), 100 against 5.1 (F1), and it survives an intensity-decile control on both conditionings. Nothing is promoted on it; the flag is what 2.4 weighs. The reagent-N rule is what its absence makes necessary: `+NH4+` on M and `+H+` on M+NH3 are the SAME ion formula, so no mass, envelope or fit separates them and the finder does not try - since 1.3 `elect_same_ion_families` collapses them before ranking and elects a reading by a stated prior (closed-shell neutral first, then the mechanism carrying the most mass), keeping the displaced reading on the row as a `same_ion` alternative. That prior is not an observation, so a winner through a nitrogen-donating channel whose own family holds a reading through a channel donating none is capped at `candidate` with the reason `ambiguous_nitrogen` unless a nitrogen-free channel or a second, different nitrogen-donating reagent saw the same neutral: 359 analytes and 51 satellites on A, 921 and 55 on B, 1,225 and 9 on F2, none on the five other sets - C and C2 because their reagent is 15N-labelled, which both stops it donating nitrogen and stops the finder proposing the alternative at all, D, E and F1 because they have no nitrogen-donating channel. Whether such a prior deserves trusting is a question about the reagent and the gate answers it: the same arithmetic holds for bromide, and 246 of D's 277 lone bromide readings are confirmed (89%) against 79 of A's 409 lone nitrogen ones (19%), which is what scopes the rule to nitrogen. G1 falls 40.2 -> 25.4 on A, 44.2 -> 40.2 on B and 99.2 -> 98.8 on F2 and is flat elsewhere; G2 and its denominator are identical on all eight sets and there are 0 verdict shifts and 0 formula shifts of 48,894 peaks, because the rule moves tiers and nothing else. Two costs are recorded rather than claimed as wins: on F2 it takes 1,225 of 3,008 assigned rows on a set where the reference is silent, so nothing judges the exchange and 2.4 must weigh it against the mode's own prior; and it demotes 405 rows the reference confirms, though on every one of them the reference reached that formula through the same nitrogen-donating channel and itself calls 63 of A's 79 and 319 of B's 344 `candidate`, leaving the engine more conservative than the reference on 41 of the 2,505 rows it capped |
 | 2.4 - mechanical tiers with reasons | - | planned |
 | 2.5a - reference seed: peak-list adapter, lift peaky's lists and families (seed proposal phases 0-1) | - | planned |
 | 2.5b - Stage A window per source, radical switch, deactivate (seed proposal phase 3) | - | planned |
@@ -3132,16 +3132,16 @@ still the clearest node defect on the gate.
   on the v1 scale; the stage 1 gate therefore judges search metrics (G2-G6),
   not G1 alone.
 
-### After step 2.3, cross-channel corroboration and the reagent-N rule (2026-09-09)
+### After step 2.3, cross-channel corroboration and the reagent-N rule (2026-09-10)
 
-All 43 samples re-run on `step-2.3-cross-channel-corroboration-2026.09.09-764d3f4`;
-before-state `ledgers22r3` / `verify_out22r3`, after `ledgers23` / `verify_out23`.
+All 43 samples re-run on `step-2.3-cross-channel-corroboration-2026.09.10-c575c97`;
+before-state `ledgers22r3` / `verify_out22r3`, after `ledgers23b` / `verify_out23b`.
 
 **The corroboration half is the strongest separator the engine has, and it is
-free.** A run now groups its committed monoisotopic winners by neutral formula
-across the channels it searched, and a neutral seen through two or more of them
-is recorded as corroborated. The plan's verification for this step is agreement
-on the reference's own Assigned rows conditioned on that flag:
+free.** A run now groups its committed monoisotopic winners by neutral across the
+channels it searched, and a neutral seen through two or more of them is recorded
+as corroborated. The plan's verification for this step is agreement on the
+reference's own Assigned rows conditioned on that flag:
 
 | set | corroborated n | same_formula | lone n | same_formula |
 |---|---|---|---|---|
@@ -3163,82 +3163,126 @@ so nothing separates there rather than the flag being wrong.
 channels is also a neutral both engines find easy, so the comparison was redone
 inside intensity deciles, where a corroborated row is only ever compared with a
 lone row of the same size. The two populations stay as far apart as they are
-pooled: on A the corroborated share confirmed runs 60-85% in every decile against
-0-36% for the lone rows (decile 5: 83.0% against 0.0%), on B 38-75% against
-7-37%, on D 54-83% against 27-50%.
+pooled. On the conditioning of the table above - the reference's Assigned rows -
+A runs 96-100% against 0-88% by decile and D 92-100% against 67-97%; over every
+committed M0 row instead, with the reference's silence counted against the
+engine, A runs 60-85% against 0-36% (decile 5: 83.0% against 0.0%), B 38-75%
+against 7-37% and D 54-83% against 27-50%. The two conditionings answer different
+questions and the section states both rather than mixing them.
 
 **Coverage is what varies, not the signal.** The share of committed M0 rows whose
-neutral has a second channel: A 48.7%, B 59.4%, D 26.6%, C 13.5%, E 11.7%, C2
+neutral has a second channel: A 48.7%, B 59.4%, D 26.6%, C 13.5%, E 11.9%, C2
 8.5%, F2 7.9%, F1 5.4%. Where the modes are chemically distinct - protonation
 against two reagent adducts on the uronium sets - half the ledger is corroborated;
 on the TOF sets, where one channel dominates, it reaches a twentieth. Nothing here
 promotes a row on the flag; it is recorded for step 2.4's mechanical tiers to
-weigh, and the reach above is what 2.4 can expect from it.
+weigh, and the reach above is what 2.4 can expect from it. The row also records
+the best tier any partner channel holds, because that is most of what the flag is
+worth: on the Orbitrap sets a candidate-tier partner corroborates about as well as
+an assigned one (A 35 rows at 97.1%, B 110 at 95.5%, D 100 at 98.0%) and a
+below-assignability one less well (B 20 at 85%, D 40 at 92.5%), while on the TOF
+sets most partners sit below assignability (F1 9 of 12, E 4 of 14).
 
 Stage A's existing per-compound adduct corroboration reaches 25 of A's 2,062
 committed rows and 22 of B's 9,077, and none at all on the other six sets,
 because it is keyed on a curated compound id. This is the same evidence read off
-the ledger instead.
+the ledger instead, and it is now what the ledger's "supported by N channels"
+marker renders.
 
-**The reagent-N rule: what picks the nitrogen is a string comparison.** `+NH4+`
-on a neutral M and `+H+` on the neutral M+NH3 are the same ion formula - the same
-exact mass, the same isotope envelope, the same fit at every width - and the
-Seven Golden Rules score both 1.0. So `_evidence` ties, `|mz error|` ties, and the
-row sort in `invert_matches_to_peak_assignments` falls through to its last key,
-which compares the two neutral formulas AS STRINGS. Measured on the assigned-tier
-rows the rule applies to, that string order predicts the committed reading on
-91.8% of A's, 95.2% of B's and 99.0% of F2's. Where it does not, the alternative
-was not a formula the run's own grid could reach.
+#### The reagent-N rule: an election is a prior, not an observation
 
-Such a row is now capped at `candidate` with the reason `ambiguous_nitrogen`,
-keeping its formula, unless a channel donating no nitrogen or a second and
-different nitrogen-donating reagent observed the same neutral. The substitution is
-derived from the mechanisms themselves, so no reagent is named in the code.
+`+NH4+` on a neutral M and `+H+` on the neutral M+NH3 are the same ion formula -
+the same exact mass, the same isotope envelope, the same fit at every width - so
+nothing measured separates them. The engine does not pretend otherwise. Since
+step 1.3 the finder collapses the two into one hypothesis before anything is
+ranked (`heuristic_filter.elect_same_ion_families`) and elects a reading by a
+stated policy: a closed-shell neutral first, then the mechanism carrying the most
+mass. So the ammoniated reading of M beats the protonated reading of M+NH3, and
+the nitrate cluster beats the deprotonated nitrate ester, by decision 9's prior
+rather than by any measurement. The readings the election displaces stay on the
+row as `same_ion` alternatives, carrying the winner's own fit and mass error.
+
+That policy is defensible. What it is not is an observation: on a run where
+nothing else saw the neutral, the analyte's nitrogen count is the prior's answer
+and no part of the spectrum's. So a winner through a nitrogen-donating channel
+whose own family holds a reading through a channel that donates none is capped at
+`candidate` with the reason `ambiguous_nitrogen`, keeping its formula, unless a
+nitrogen-free channel or a second and different nitrogen-donating reagent
+observed the same neutral. The rule reads the family off the row rather than
+rebuilding a candidate from the element grid, so what it doubts is what this run
+actually proposed.
+
+**Whether a prior deserves trusting is a question about the reagent, and the gate
+answers it.** The same arithmetic holds for bromide - `+Br-` on M is `-H+` on
+M+HBr, and D's grid holds both - so the rule could as easily have been written
+over same-ion families in general. Measured, it should not be:
+
+| set | reagent | lone donor-channel rows at assigned | reference confirms |
+|---|---|---|---|
+| D | bromide | 277 | 246 (**89%**) |
+| A | uronium (ammonium and urea) | 409 | 79 (**19%**) |
+
+The bromide prior is borne out and the nitrogen prior is not, which is what
+scopes this rule to nitrogen.
 
 | set | committed M0 | ambiguous | analytes capped | satellites | G1 before | G1 after |
 |---|---|---|---|---|---|---|
-| A | 2,062 | 753 | 380 | 63 | 40.2 | **25.1** |
-| B | 9,077 | 2,498 | 942 | 57 | 44.2 | **40.1** |
+| A | 2,062 | 711 | 359 | 51 | 40.2 | **25.4** |
+| B | 9,077 | 2,407 | 921 | 55 | 44.2 | **40.2** |
 | C | 1,100 | 0 | 0 | 0 | 35.4 | 35.4 |
 | C2 | 639 | 0 | 0 | 0 | 41.8 | 41.8 |
 | D | 2,368 | 0 | 0 | 0 | 21.6 | 21.6 |
 | E | 1,552 | 0 | 0 | 0 | 97.9 | 97.9 |
 | F1 | 8,927 | 0 | 0 | 0 | 99.1 | 99.1 |
-| F2 | 6,724 | 2,274 | 1,293 | 9 | 99.2 | **98.7** |
+| F2 | 6,724 | 2,062 | 1,225 | 9 | 99.2 | **98.8** |
 
 **G2 and its denominator are identical on all eight sets**, and there were **0
 verdict shifts and 0 formula shifts across 48,894 joined peaks**: the rule moves
 tiers and nothing else. G1 falls because the rows leaving the assigned tier are
-mostly rows the reference does not confirm - on A, 301 of the 380 are, and the
-numerator goes 547/1,361 to 246/981.
+mostly ones the reference does not confirm - on A, 292 of the 359.
 
-**The 15N-labelled sets are untouched, and that is the point of labelling.** C and
-C2 run a `+^NO3-` reagent whose nitrogen is 0.997 Da from an analyte's own, so the
-deprotonated nitrate ester is a different ion at a different mass and the spectrum
-chooses between them. Reading the label as ordinary nitrogen would have capped 297
-of their readings, 93 of which the reference confirms, for an ambiguity the
-labelling exists to remove. D, E and F1 have no nitrogen-donating channel at all.
+**The 15N-labelled sets are untouched, twice over.** C and C2 run a `+[15N]O3-`
+reagent whose nitrogen is 0.997 Da from an analyte's own, so the deprotonated
+nitrate ester is a different ion at a different mass and the spectrum chooses
+between them. The channel therefore donates no nitrogen for this rule; and
+independently, the finder never proposes the labelled neutral, so those rows have
+no same-ion family to read - 0 of the 55 labelled-nitrate winners on one C sample
+carry one, against 51 of 118 on that sample's deprotonation channel. D, E and F1
+have no nitrogen-donating channel at all. Had the label been read as ordinary
+nitrogen the rule would have reached both sets; simulated that way it capped 297
+of their readings with 93 the reference confirms, which is the cost the labelling
+exists to avoid.
 
-**What the cap costs, and why it is still right.** It demotes 425 rows the
-reference confirms - 79 on A, 344 on B, 2 on F2. That looks like the rule
-removing right answers, and the check that settles it is which channel the
-reference reached those formulas through: on **all 425**, the same
-nitrogen-donating channel this engine used. The agreement is two implementations
-of one convention, not two measurements, which is what `same_ion_other_split`
-counts when they diverge - and the cap finds those: 21 of A's 62 splits, 76 of B's
-530 and 6 of F2's 9 are rows it demotes. And the reference already declines to call them assigned: 63 of A's 79 and
-319 of B's 344 sit at `candidate` in its own ledger. After this step the engine is
-more conservative than the reference on 41 rows of the 2,615 it capped, and agrees
-with it on the rest.
+**The cost on F2 is real and this step does not settle it.** There the rule takes
+1,225 of 3,008 assigned rows off the tier, on a set where the reference commits
+almost nothing, so no gate number judges the exchange: G1 moves 0.4 points and
+the reference confirms 2 of the 1,225. On a nitrate source the cluster is the
+expected product and the deprotonated nitrate ester the unlikely one, so the
+mode's own prior is stronger there than this rule allows for. Step 2.4 has to
+weigh the two; recorded here as an open cost rather than as a win.
+
+**What the cap costs elsewhere, and the check that settles it.** It demotes 405
+rows the reference confirms - 67 on A, 336 on B, 2 on F2. That looks like the
+rule removing right answers, and the check is which channel the reference reached
+those formulas through: on **all 405**, the same nitrogen-donating channel this
+engine used. The agreement is two implementations of one convention rather than
+two measurements - the reference applies the same preference, and re-reads a pure
+hydrocarbon through an N-carrying reagent as the protonated N-compound in its own
+`relabel_reagent_n_adducts` stage, which is exactly what A's example rows are
+(C10H18, C11H18 and C8H14 via the urea adduct). Where the two conventions diverge
+the verdict is `same_ion_other_split`, and the cap finds those: 21 of A's 62
+splits, 76 of B's 530 and 6 of F2's 9. The reference also already declines to call
+these rows assigned - 63 of A's 79 and 319 of B's 344 sit at `candidate` in its
+own ledger - so after this step the engine is more conservative than the reference
+on 41 rows of the 2,505 it capped, and agrees with it on the rest. That
+`relabel_reagent_n_adducts` exception is itself a candidate for step 2.4's
+plausibility demotes.
 
 **What this does not settle.** The neutral is still reported with the nitrogen
-where the sort key put it - the tier says the count is unverified, the formula
-does not. Making the reading itself honest needs the alternative carried as a
-first-class same-ion alternative on the row, which is step 2.4's candidate-density
-work; and the string tiebreak deciding a tie at all is worth removing whatever
-2.4 does, because it is not even stable - it compares decimal digits, so "C4H12N2"
-sorts before "C4H9N" while "C4H4" sorts before "C4H7N", and the nitrogen goes to
-the reagent or to the analyte depending on how many hydrogens the neutral has.
+where the election put it: the tier says the count is unverified, the formula does
+not. The alternative has been first-class on the row since step 1.3, so what 2.4
+adds is counting the same-ion family in candidate density - and the `alternative`
+this record names is a copy of a family member it could point at instead.
 
 ## Not in this plan
 

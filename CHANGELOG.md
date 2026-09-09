@@ -7,7 +7,7 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
 ### Changed
 
 - Peak assignment records what a sample's other channels say about each
-  committed reading, and caps the one reading nothing but a sort key decided.
+  committed reading, and caps the one reading that rests on a prior alone.
   A run groups its committed monoisotopic winners by neutral formula across
   the ionization channels it searched; a neutral seen through two or more is
   corroborated and says so in `provenance.cross_channel`, with the run's
@@ -16,21 +16,26 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
   of the time where a lone one agrees 5-71%, inside intensity deciles as well
   as pooled. Nothing is promoted on the flag yet. What it does demote is the
   reagent-nitrogen ambiguity: an ammonium adduct of M and a protonated M+NH3
-  are the same ion formula, so no mass, envelope or plausibility separates
-  them, and such a row is now capped at `candidate` with the reason
+  are the same ion formula, so no mass, envelope or fit separates them and the
+  finder does not try - it collapses the two before ranking and elects one by a
+  stated prior, keeping the other on the row as a `same_ion` alternative. A
+  winner through a nitrogen-donating channel whose family holds a reading
+  through a channel donating none is now capped at `candidate` with the reason
   `ambiguous_nitrogen` - keeping its formula - unless a nitrogen-free channel
   or a second, different nitrogen-donating reagent observed the same neutral.
   A 15N-labelled reagent is exempt, because its label is what makes the
   analyte's own nitrogen count observable.
 
-- The "Supported by N adducts" corroboration marker is on untargeted rows again,
+- The corroboration marker ("Supported by N channels") is on untargeted rows again,
   in both the assignment inspector and the ledger table. It reads a per-compound
   adduct count that only a curated identity produces, so it had gone blank on
   nearly every peak - 25 of 2,062 committed rows on one sample set, and none at
   all on six of eight. It now prefers the channel count the run measures over the
   whole ledger, which is the same evidence for every committed row and a superset
   of the curated count where both exist. Its tooltip no longer claims the count is
-  folded into P(correct) when it is not: only the curated one is.
+  folded into P(correct) when it is not: only the curated one is. The marker says
+  "channels" rather than "adducts", the count having stopped being adducts when
+  protonation entered it.
 
 - **A run now measures its own mass accuracy and says where each of its
   assignments sits in it.** A sample's assignments do not scatter around zero
