@@ -298,6 +298,10 @@ class SamplesResource(BaseResource):
                  - ``peak_id``: Peak identifier (may repeat across
                    rows for multi-matched peaks)
                  - ``mz``, ``area``, ``height``
+                 - ``signal_to_noise``: the peak's own noise estimate,
+                   ``NaN`` throughout for a file that stores none - an
+                   absent estimate, never a peak measured to be
+                   noise-free
                  - ``match_score_isotope``, ``match_score_ion``,
                    ``match_score_compound``
                  - ``relative_abundance``

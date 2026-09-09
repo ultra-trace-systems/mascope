@@ -355,6 +355,7 @@ async def get_sample_peaks(
                 "area": [] if areas else None,
                 "height": [] if heights else None,
                 "sparsity": [],
+                "signal_to_noise": [],
                 "match": [] if matches else None,
             },
         }
@@ -364,6 +365,11 @@ async def get_sample_peaks(
         "peak_id": peak_data.peak_ids,
         "mz": peak_data.mz_values,
         "sparsity": peak_data.sparsity,
+        # None for a file that stores no noise estimate, never a zero: an
+        # engine reading this endpoint scores an absent isotopologue against
+        # the noise where there is one and against abundance alone where there
+        # is not, and a zero would say "measured, and noise-free".
+        "signal_to_noise": peak_data.signal_to_noise,
     }
     if areas:
         response_data["area"] = peak_data.areas
