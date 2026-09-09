@@ -9,7 +9,7 @@ from .mass_accuracy import (
     scoring_sigma_ppm,
 )
 from .models import CompositionSearchConfig, HeuristicFilterConfig, PatternScoring
-from .profiles import resolve_fallback_sigma_ppm
+from .profiles import resolve_fallback_sigma_ppm, resolve_match_tolerance_ppm
 
 
 # `formula_plausibility` is exported because it is not an internal detail of the
@@ -57,5 +57,6 @@ __all__ = [
     "PatternScoring",
     "PRED_SIGMA_PPM",
     "resolve_fallback_sigma_ppm",
+    "resolve_match_tolerance_ppm",
     "scoring_sigma_ppm",
 ]
