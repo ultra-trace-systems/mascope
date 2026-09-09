@@ -21,7 +21,7 @@ step PRs land on the epic and are named here as they merge.
 | 1.7 - stage 1 gate, engine 0.4.0 | #2091 | measured: the 0.4.0 build reproduces the 1.6 ledger field for field, so stage 1's numbers are final; G1 met on A, B, C and D (73 -> 41.5, 57 -> 24.3, 99 -> 41.5, 68 -> 37.3%) and missed on C2 (55.2%); G2's same-formula bound met on the same four (39 -> 95.6, 12 -> 95.2, 18 -> 87.3, 17 -> 80.1%) and its same-ion bound on A and B only; G3 met but for B's 2.7% N >= 5, with no carbon-free formula from the untargeted stage on any of the 43 samples; G5 and G8 met everywhere; the mass-error target met on all five Orbitrap sets; G4a below 90% and G6 read, not gated; about half of what stage 1 does not recover carries an element the searched grid cannot build, which is step 2.5b's |
 | 2.1 - v2 fit for Stage B | #2092 | measured: the finder ranks with the v2 fit at the sample's own mass width and on the file's own per-peak signal-to-noise, and every committed reading is measured again as an ion, so the engine computes one fit (decision 12); G1 falls on every Orbitrap set (A 41.5 -> 35.4, B 24.3 -> 18.9, C 41.5 -> 34.7, C2 55.2 -> 40.1, D 37.3 -> 21.0) with G2 unchanged on A and B and up on C, C2 and D, G5 and G8 still zero and the mass error flat or better on the Orbitrap sets; the fit distributions of confirmed and contradicted rows separate for the first time (B -0.001 -> 0.129, D 0.020 -> 0.249) and the odd-electron share of assigned rows falls on seven of the eight sets; the TOF sets gain 293-675 committed analytes at their own width; the sibling task, a TOF-capable reference run from peaky, is not in this PR because publishing one re-bases every set |
 | 2.1b - TOF-capable reference: peaky's scorer through `score_pattern_v2` with the sample's fitted sigma | #2093 + peaky `epic/v2-fit-reference` | measured: all 43 reference runs re-published at the sample's own width, with the engine's runs untouched (same run id on 43 of 43 after the publish); the reference commits less on the Orbitrap sets and more on the TOF ones (B 7,614 -> 4,680 M0, F1 698 -> 1,034), its committed mass error improves on every Orbitrap set (B 0.290 -> 0.174 ppm) and its own fit finally separates its confirmed rows from its contradicted ones (A 0.089 -> 0.174, C 0.066 -> 0.181, C2 -0.051 -> +0.052, on hundreds of rows a side); the share of this engine's assigned rows the reference CONTRADICTS falls on every Orbitrap set (C 2.4 -> 0.3%, C2 4.3 -> 1.3%) while G1 rises because a conservative reference is silent more (A 35.4 -> 40.2, B 18.9 -> 44.2, D 21.0 -> 21.6); G2 formula 93.8 A, 92.8 B, 90.6 C, 77.7 C2, 80.4 D; G5 and G8 still zero; the peaks endpoint did not carry signal-to-noise and now does; two rounds of the gate caught the same defect in the shared fit, that it returns the offset and the width together and reports neither below its anchor minimum |
-| 2.2 - self-calibrated mass gate | - | planned |
+| 2.2 - self-calibrated mass gate | #2094 | measured: every committed row records `mass_z` and every run records the calibration it was measured in, fitted over its own corroborated commits - 212 to 3,970 anchors a set where Stage A had 10 to 127. The gate itself is a guard, not a lever: it caps 41 of the 14,600 top-tier rows over the 43 samples, and only C moves (G1 35.4 -> 33.7), because the failure it was written for was closed by 2.1 - the widest committed top-tier error on a straight Orbitrap axis is 1.02 ppm, and on A the rows the reference contradicts sit CLOSER to the calibration (0.088 ppm median) than the ones it confirms (0.149). No row the reference confirms was demoted on any set (G2 and its n identical everywhere) and no election changed (0 verdict shifts of 48,894 peaks), so G7 is 0 where the gate applied, which was all 43. The offset half of the 2.1b defect was tried and withdrawn on the measurement: fitting an offset from the five to seven anchors a width is refused for moved the TOF bromide set 4 ppm the wrong way (MAD 2.03 -> 2.33), so an anchor set too small to say how wide it is cannot say where its centre is. What the runs now report instead is a per-sample calibration reading, and it says the TOF sets carry 2.8-6.9 ppm widths and C2 a flat -1.1 ppm bias on files whose stored calibration is marked verified |
 | 2.3 - cross-channel corroboration and the reagent-N rule | - | planned |
 | 2.4 - mechanical tiers with reasons | - | planned |
 | 2.5a - reference seed: peak-list adapter, lift peaky's lists and families (seed proposal phases 0-1) | - | planned |
@@ -2519,6 +2519,168 @@ confirmed on rows where the reference commits nothing at all. Reading the
 contradiction share beside G1 - the middle column above - is what keeps steps
 2.2 to 2.6 measurable; whether the gate's own definition should change is the
 plan owner's call, not this step's.
+
+### After step 2.2, the self-calibrated mass gate (2026-09-09)
+
+Same protocol, on `step-2.2-self-calibrated-mass-gate-2026.09.09-c82f6d5`: all 43
+samples re-run, the reference untouched (43 of 43 still the 14:15-14:26Z runs at
+`0.7.0+assign0.5.0`), compared against the re-based reference this step's
+predecessor published. The before column is the "reference re-based" section
+above, so both sides of every number below are v2.
+
+**The step changes no election.** Across the eight sets and 48,894 joined peaks,
+not one verdict moved. What moved is tiers, on 41 rows.
+
+| set | G1 | G2 formula / ion | its n | engine assigned | capped |
+|---|---|---|---|---|---|
+| A | 40.2 -> 40.3 | 93.8 / 96.2, flat | 784 | 1361 -> 1358 | 4 |
+| B | 44.2 -> 44.2 | 92.8 / 94.8, flat | 1933 | 5411 -> 5410 | 1 |
+| C | **35.4 -> 33.7** | 90.6 / 90.6, flat | 445 | 717 -> 689 | 34 |
+| C2 | 41.8 -> 41.9 | 77.7, flat | 264 | 397 -> 396 | 1 |
+| D | 21.6 -> 21.6 | 80.4 / 82.1, flat | 800 | 1031 -> 1031 | 0 |
+| E | 99.8 -> 99.8 | 15.4 / 26.9, flat | 26 | 424 -> 424 | 0 |
+| F1 | 99.1 -> 99.1 | 13.0 / 14.6, flat | 123 | 2299 -> 2299 | 0 |
+| F2 | 99.2 -> 99.2 | 15.9, flat | 69 | 3011 -> 3010 | 1 |
+
+G2 and its denominator are identical on every set, which is the step's own bound
+met exactly rather than approximately: **no row the reference confirms was
+demoted anywhere**, so the "agreed rows kept above 95%" clause reads 100%. Seven
+of the 41 were capped from `candidate` to `below_assignability`, which is why the
+assigned-tier counts fall by 34 rather than 41. Committed mass error is unchanged
+on all eight sets.
+
+**G7 is 0, and the reading it needs stating.** A capped row is still a committed
+row, so "uncorroborated commits beyond 3 sigma" can only reach zero as "beyond 3
+sigma AT THE ASSIGNED TIER", which is what the gate enforces and what is measured
+here. Every one of the 43 samples fitted a calibration, so the metric is defined
+everywhere rather than vacuous on the sets that could not measure one.
+
+**The gate is a guard, not a lever, and the measurement says why.** Step 2.1 put
+the v2 fit at the sample's own width into the finder's ranking, so a candidate
+three sigma out stops winning its peak in the first place: the widest mass error
+on a committed top-tier row is 0.62 (C), 0.70 (A), 0.92 (D) and 1.02 ppm (B) on
+the four Orbitrap sets whose axis is straight, and 2.08 on C2, of which 1.1 ppm
+is the axis offset below rather than a fit error. Worse for the premise,
+mass error no longer separates right from wrong at all. Of the engine's
+assigned-tier rows, the median |ppm| the reference CONFIRMS against the median it
+CONTRADICTS:
+
+| set | confirmed | contradicted | reference silent |
+|---|---|---|---|
+| A | 0.149 (n=814) | 0.088 (n=17) | 0.146 (n=485) |
+| B | 0.163 (n=3019) | 0.225 (n=217) | 0.458 (n=1759) |
+| C | 0.155 (n=463) | 0.438 (n=2) | 0.187 (n=247) |
+| C2 | 1.146 (n=231) | 1.253 (n=5) | 1.097 (n=160) |
+| D | 0.195 (n=808) | 0.205 (n=65) | 0.324 (n=116) |
+
+On A the rows the reference contradicts sit *closer* to the calibration than the
+ones it confirms; on C2 and D the two are indistinguishable. The one real signal
+is B's silence - 0.458 against 0.163 - and B's own fitted width is wide enough
+(0.326 ppm, so 3 sigma is 0.98) that almost none of it is reachable. Simulated
+before any of this was written: anchoring B's fit on its curated rows alone
+(0.227 ppm) would cap 390 of its uncorroborated top-tier rows, 389 of which the
+reference does not confirm, for G1 44.2 -> 39.9 at no measured cost. It is not
+adoptable as a rule - the same anchors lose five confirmed rows for one on A, and
+D has too few curated rows to fit anything - but it says where B's silence lives,
+which is 2.3's and 2.4's business.
+
+**The offset half of 2.1b's defect was tried and withdrawn, on the gate.** The
+recorded defect was that `fit_mass_accuracy` returns the offset and the width
+together and reports `(0.0, None)` below its anchor minimum, so a caller cannot
+tell a centred sample from an unmeasured one. Reporting them separately is kept,
+and is what made the rest of this section visible. Giving the offset its own
+lower minimum is not: an offset looks like the easier measurement, and the gate
+measured the opposite.
+
+| set | Stage A anchors | their median | what the sample's own commits say |
+|---|---|---|---|
+| E | 5, 7, 7 | -8.55, -6.86, -5.29 | -2.06, -2.23, -2.64 (125-142 rows each) |
+| F1 | 19-25 | +1.07 to +2.48 | +1.24 to +2.30 (173-215 rows each) |
+| C | 5-8 | -0.12 to +0.01 | -0.09 to -0.22 (57-69 rows each) |
+
+Three samples of one TOF acquisition put their five to seven anchors' median 3.3
+ppm apart from each other and 4 ppm away from what each sample's own committed
+rows say. Correcting by them widened E's committed mass error from 2.03 to 2.33
+ppm, added 25 rows to its top tier and halved the share of them the reference
+confirms. What made those anchors useless is exactly what the refused width would
+have reported - they scatter as wide as the 15 ppm window they were matched in -
+so **an anchor set too small to say how wide it is cannot say where its centre
+is**, and the two minimums are now one. On C, where the anchors are consistent,
+the offset this withdraws was worth 0.1 ppm and changed no election.
+
+**What a run now records, and the gap it exposes.** Two fits, deliberately
+distinct: `pattern_scoring` is what Stage A could tell the finder before the
+search, `mass_calibration` is what the finished ledger turned out to be able to
+measure. They are not close.
+
+| set | searched at (ppm) | measured (ppm) | ratio | Stage A anchors | run anchors |
+|---|---|---|---|---|---|
+| A | 0.319 | 0.242 | 1.31 | 85 | 523 |
+| B | 0.228 | 0.326 | 0.70 | 77 | 3,970 |
+| C | 0.300 (class) | 0.136 | 2.21 | 31 | 322 |
+| C2 | 0.579 | 0.231 | 2.50 | 69 | 212 |
+| D | 0.300 (class) | 0.470 | 0.64 | 10 | 3,022 |
+| E | 3.000 (class) | 6.846 | 0.44 | 19 | 399 |
+| F1 | 5.085 | 4.874 | 1.04 | 127 | 1,168 |
+| F2 | 2.573 | 3.394 | 0.76 | 117 | 421 |
+
+The search is scored at a width up to 2.5 times too wide (C2, C) or a third too
+narrow (D, E), on 10 to 127 anchors where the run itself has 212 to 3,970. The
+instrument-class fallback is the worst of it: D and E both fall back, and the
+class number is 0.64 and 0.44 of what those samples actually achieve. Re-scoring
+the search at the run's own calibration is circular in one pass and is not this
+step's to do, but it is now a measured gap rather than a suspicion.
+
+### What this step actually found: the axis, not the assignment
+
+Every file behind these 43 samples carries a stored m/z calibration marked
+`verified`. This is what each sample's own committed rows say about that axis,
+and it is the reading that outlives the gate:
+
+| set | instrument | offset ppm | width ppm |
+|---|---|---|---|
+| A | Orbitrap | -0.02 to +0.03 | 0.18 - 0.27 |
+| B | Orbitrap | -0.22 to -0.17 | 0.22 - 0.33 |
+| C | Orbitrap | -0.22 to -0.09 | 0.13 - 0.16 |
+| **C2** | Orbitrap | **-1.14 to -1.11** | 0.18 - 0.29 |
+| D | Orbitrap | -0.18 to -0.08 | 0.36 - 0.55 |
+| **E** | TOF | -2.64 to -2.06 | **6.75 - 6.90** |
+| **F1** | TOF | +1.24 to +2.30 | **4.34 - 5.54** |
+| F2 | TOF | -0.12 to +2.00 | 2.75 - 3.76 |
+
+**A measurable offset across the mass range is a calibration fault, not an
+assignment problem.** C2 sits 1.1 ppm low on an Orbitrap, consistently, on all
+six samples; E sits 2 to 2.6 ppm low on all three. That is the m/z axis being
+wrong, and the place to fix it is the mass calibration node of the signal
+processing pipeline - the calibration these files already carry, and which
+already claims to be verified - not a correction applied downstream while the
+stored axis stays wrong. On the TOF sets the width says the same thing more
+loudly: 3 to 7 ppm of scatter is wider than the 10 ppm window the search runs in,
+so no assignment rule can discriminate a formula there, and G1 near 99% with G2
+near 15% on E, F1 and F2 has been measuring a calibration fault all along rather
+than an assignment one.
+
+This turns the engine's own `mu` correction into an open design question rather
+than a feature. The engine corrects by Stage A's fitted offset wherever it has
+the anchors for one - -1.53 ppm on C2, +2.18 on F1 - which papers over exactly
+the defect above: the sample scores as though its axis were right, and nothing
+downstream ever reports that the file needs recalibrating. The honest division of
+labour is that the assignment layer MEASURES the axis and says so, which it now
+does on every run, and the calibration node FIXES it. Withdrawing the correction
+would change results on five sets and is not this step's to take; the plan owner's
+call, and a candidate decision for 2.7.
+
+Two consequences for this plan, either way:
+
+- **The TOF sets and C2 should be re-calibrated before they are assigned again.**
+  That rewrites the sample files, so it invalidates both engines' runs on every
+  set it touches: E, F1, F2 and C2 would be re-baselined, reference included.
+  Until that happens their gate numbers measure the axis, not the engine, and
+  should not be read as either passing or failing an assignment target.
+- **A per-run calibration reading is now available to make that checkable.** Every
+  run records the offset and width its own corroborated commits show, with the
+  anchor count behind them, so "is this file calibrated well enough to assign?"
+  is answerable per sample from the store rather than by inspection.
 
 ## Decisions (taken 2026-09-07)
 
