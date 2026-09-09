@@ -322,7 +322,9 @@ async def _search_sample(
     # A batch search therefore judges a candidate a little more loosely than a
     # run of the same sample would, which is the honest state of it: the width
     # is a measurement, and this path has not made it.
-    scoring = pattern_scoring_for(match_params, (0.0, None))
+    scoring = pattern_scoring_for(
+        match_params, (0.0, None), resolved_profile.mass_accuracy_ppm
+    )
     search_columns = [
         column
         for column in ("mz", "intensity", "signal_to_noise")

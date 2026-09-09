@@ -140,6 +140,7 @@ def untargeted_targets(
 def pattern_scoring_for(
     match_params,
     mass_accuracy: tuple[float, float | None],
+    instrument_accuracy_ppm: float,
 ) -> PatternScoring:
     """How the untargeted stage scores this sample's isotope envelopes.
 
@@ -152,23 +153,28 @@ def pattern_scoring_for(
     own matched isotopologues, which is the instrument's measured accuracy on
     this sample - widened by ``PRED_SIGMA_PPM`` exactly as Stage A's own fit
     widens it, so a Stage B row and a Stage A row are judged at one width.
-    Where Stage A found too few anchors to fit anything, the match tolerance
-    stands in: it is the instrument's own statement about its accuracy, and a
-    tolerance is about three sigma of one.
+
+    Where Stage A matched too few known ions to fit anything, the instrument
+    class's own accuracy stands in (``profiles.resolve_mass_accuracy_ppm``).
+    That is a weak substitute for a measurement and the only honest one
+    available: judging a bromide set whose curated library holds two targets at
+    the 5 ppm match tolerance instead measures nothing, because on a spectrum
+    accurate to 0.3 ppm every candidate the search enumerated is then equally
+    good and the election falls to the envelope alone.
 
     :param match_params: The sample's resolved match parameters.
     :param mass_accuracy: ``(mu, sigma)`` in ppm from Stage A's matched rows;
         sigma is None when there were too few to fit.
+    :param instrument_accuracy_ppm: The class width to use when it is.
     :return: The scoring parameters for this sample's search.
     """
     mu, sigma = mass_accuracy
-    tolerance = float(match_params.mz_tolerance)
     if sigma is None:
-        sigma = tolerance / 3.0
+        sigma = instrument_accuracy_ppm
     return PatternScoring(
         sigma_ppm=float(np.hypot(float(sigma), PRED_SIGMA_PPM)),
         mu_ppm=float(mu),
-        mz_tolerance_ppm=tolerance,
+        mz_tolerance_ppm=float(match_params.mz_tolerance),
         abundance_floor=float(match_params.isotope_abundance_threshold),
     )
 
