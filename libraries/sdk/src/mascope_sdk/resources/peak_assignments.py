@@ -149,7 +149,8 @@ class PeakAssignmentsResource(BaseResource):
 
         Rows are the slim ledger projection: per-peak scalars plus the
         flattened provenance scalars (``evidence``, ``p_correct``,
-        ``p_correct_provisional``, ``corroboration_adducts``, ``mass_z``). The
+        ``p_correct_provisional``, ``corroboration_adducts``,
+        ``corroboration_channels``, ``mass_z``). The
         inspector-detail JSON (``alternatives``, ``provenance``) of a single
         assignment is served by :meth:`detail`.
 
@@ -219,6 +220,13 @@ class PeakAssignmentsResource(BaseResource):
                    measurement.
                  - ``p_correct``, ``p_correct_provisional``,
                    ``corroboration_adducts``
+                 - ``corroboration_channels``: how many of the run's ionization
+                   channels committed this row's neutral. Independent evidence
+                   for the formula rather than for the peak, and unlike
+                   ``corroboration_adducts`` it reaches untargeted rows too -
+                   that one counts the adducts a CURATED compound matched
+                   through. Not folded into ``p_correct``. The run's
+                   ``config.cross_channel`` holds the channels it searched.
                  - ``mass_z``: how far the row's mass error sits from the
                    centre the run fitted over its own corroborated
                    assignments, in the widths it fitted there. The run's

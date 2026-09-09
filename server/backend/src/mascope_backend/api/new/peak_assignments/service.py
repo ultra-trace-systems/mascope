@@ -2360,14 +2360,17 @@ async def _run_sample_assignment(
                     searched_mechanisms
                 )[1].items()
             },
-            element_ranges=resolved_profile.element_ranges,
         )
         runtime.logger.info(
             f"Sample '{sample.sample_item_name}' corroborates "
             f"{cross_channel['corroborated']} of {cross_channel['committed_m0']} "
             f"committed readings across {len(cross_channel['channels'])} channels; "
-            f"{cross_channel['capped']} capped for an unfixable nitrogen count "
-            f"({cross_channel['capped_satellites']} satellites with them)"
+            + (
+                f"{cross_channel['capped']} capped for an unfixable nitrogen count "
+                f"({cross_channel['capped_satellites']} satellites with them)"
+                if cross_channel["reagent_rule_applied"]
+                else "no channel of this mode donates nitrogen, so none is gated on it"
+            )
         )
         await _record_resolved_profile(
             run.peak_assignment_run_id,

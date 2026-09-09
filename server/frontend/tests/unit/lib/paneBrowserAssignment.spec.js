@@ -715,12 +715,12 @@ describe('PaneBrowserAssignment adduct corroboration', () => {
     const rows = rowsById(wrapper)
 
     expect(wrapper.vm.corrobTooltip(rows.get('a-c0'))).toBe(
-      'Supported by 3 adducts, via the M0 of this isotopologue family ' +
+      'Supported by 3 channels, via the M0 of this isotopologue family ' +
         "(folded into the M0's P(correct), not into this row's)"
     )
     // The M0's own tooltip is the one it always had.
     expect(wrapper.vm.corrobTooltip(rows.get('a'))).toBe(
-      'Supported by 3 adducts (already folded into P(correct))'
+      'Supported by 3 channels (already folded into P(correct))'
     )
   })
 
@@ -761,10 +761,10 @@ describe('PaneBrowserAssignment adduct corroboration', () => {
     const rows = rowsById(wrapper)
 
     expect(wrapper.vm.corrobTooltip(rows.get('a'))).toBe(
-      'Supported by 3 adducts (not included in the P(correct) beside it)'
+      'Supported by 3 channels (not included in the P(correct) beside it)'
     )
     expect(wrapper.vm.corrobTooltip(rows.get('a-c0'))).toBe(
-      'Supported by 3 adducts, via the M0 of this isotopologue family ' +
+      'Supported by 3 channels, via the M0 of this isotopologue family ' +
         '(not included in the P(correct) beside it)'
     )
   })
