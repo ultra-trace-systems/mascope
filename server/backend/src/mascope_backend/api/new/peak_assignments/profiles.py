@@ -39,6 +39,7 @@ from mascope_tools.composition.profiles import (
     get_chemistry_context,
     get_reagent_profile,
     resolve_element_ranges,
+    resolve_mass_accuracy_ppm,
     resolve_mz_precision_ppm,
 )
 from mascope_tools.composition.reagents import (
@@ -75,6 +76,11 @@ class ResolvedProfile:
     :param context: The chemistry context that goes with it.
     :param element_ranges: The neutral grid the untargeted stage enumerates.
     :param mz_precision_ppm: The untargeted stage's m/z window.
+    :param mass_accuracy_ppm: The width this instrument class measures a mass
+        to - the fit score's mass term where nothing has measured the sample's
+        own. An order of magnitude tighter than the window on an Orbitrap, and
+        a different statement: the window says where to look, this says how
+        well a hit has to agree.
     :param requested_profile: What the run config asked for (``"auto"`` or a
         name), kept so the snapshot records the question as well as the answer.
     :param requested_context: The same for the context.
@@ -91,6 +97,7 @@ class ResolvedProfile:
     context: ChemistryContext
     element_ranges: str
     mz_precision_ppm: float
+    mass_accuracy_ppm: float
     requested_profile: str
     requested_context: str
     element_ranges_source: str
@@ -173,6 +180,7 @@ class ResolvedProfile:
             "element_ranges_source": self.element_ranges_source,
             "mz_precision_ppm": self.mz_precision_ppm,
             "mz_precision_source": self.mz_precision_source,
+            "mass_accuracy_ppm": self.mass_accuracy_ppm,
             "ratio_windows": {
                 key: list(window)
                 for key, window in self.context.ratio_windows().items()
@@ -284,6 +292,7 @@ def resolve_profile(
         context=context,
         element_ranges=element_ranges,
         mz_precision_ppm=mz_precision_ppm,
+        mass_accuracy_ppm=resolve_mass_accuracy_ppm(instrument_type),
         requested_profile=requested_profile,
         requested_context=requested_context,
         element_ranges_source=element_ranges_source,
