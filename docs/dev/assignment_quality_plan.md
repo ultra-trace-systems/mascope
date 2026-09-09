@@ -20,7 +20,7 @@ step PRs land on the epic and are named here as they merge.
 | 1.6 - cap and mass window | #2090 | measured: G5 met (35,496 unsearched peaks -> 0, of which 5,304 the reference calls Assigned and 8,928 it commits any analyte on) and G2 clears its stage-1 target on A, B, C and D for the first time (B 20.7 -> 95.2%); the mass window was already instrument-class-resolved by 1.1; the grid is enumerated once per band instead of once per peak, so A and C search 5-8x more peaks and finish faster, worst sample 36s; G1 rises on the sets that gained most and G6 with it, and the review found G6's rise has an envelope part beside the grid gap, now decision 11's rider with homes in 2.1 and 2.4 |
 | 1.7 - stage 1 gate, engine 0.4.0 | #2091 | measured: the 0.4.0 build reproduces the 1.6 ledger field for field, so stage 1's numbers are final; G1 met on A, B, C and D (73 -> 41.5, 57 -> 24.3, 99 -> 41.5, 68 -> 37.3%) and missed on C2 (55.2%); G2's same-formula bound met on the same four (39 -> 95.6, 12 -> 95.2, 18 -> 87.3, 17 -> 80.1%) and its same-ion bound on A and B only; G3 met but for B's 2.7% N >= 5, with no carbon-free formula from the untargeted stage on any of the 43 samples; G5 and G8 met everywhere; the mass-error target met on all five Orbitrap sets; G4a below 90% and G6 read, not gated; about half of what stage 1 does not recover carries an element the searched grid cannot build, which is step 2.5b's |
 | 2.1 - v2 fit for Stage B | #2092 | measured: the finder ranks with the v2 fit at the sample's own mass width and on the file's own per-peak signal-to-noise, and every committed reading is measured again as an ion, so the engine computes one fit (decision 12); G1 falls on every Orbitrap set (A 41.5 -> 35.4, B 24.3 -> 18.9, C 41.5 -> 34.7, C2 55.2 -> 40.1, D 37.3 -> 21.0) with G2 unchanged on A and B and up on C, C2 and D, G5 and G8 still zero and the mass error flat or better on the Orbitrap sets; the fit distributions of confirmed and contradicted rows separate for the first time (B -0.001 -> 0.129, D 0.020 -> 0.249) and the odd-electron share of assigned rows falls on seven of the eight sets; the TOF sets gain 293-675 committed analytes at their own width; the sibling task, a TOF-capable reference run from peaky, is not in this PR because publishing one re-bases every set |
-| 2.1b - TOF-capable reference: peaky's scorer through `score_pattern_v2` with the sample's fitted sigma | #2093 (library half) | in progress (handed over 2026-09-09, taken before 2.2 - decision 13); the library half is #2093 - the mass-accuracy fit and the class matching window move into `mascope_tools`, and the peaks endpoint carries each peak's signal-to-noise, which it did not (the reference could not have scored SNR-aware without it); the sibling task of 2.1, and the stage-2 gate's TOF metrics have no reference until it lands - peaky commits 119 analytes against 336 reagent ions on set E while it scores with v1, so E's and F's G1 and G2 cannot be read, and since 2.1 every G1 and G2 reads a v2 engine against a v1 reference |
+| 2.1b - TOF-capable reference: peaky's scorer through `score_pattern_v2` with the sample's fitted sigma | #2093 + peaky `epic/v2-fit-reference` | measured: all 43 reference runs re-published at the sample's own width, with the engine's runs untouched (same run id on 43 of 43 after the publish); the reference commits less on the Orbitrap sets and more on the TOF ones (B 7,614 -> 4,680 M0, F1 698 -> 1,034), its committed mass error improves on every Orbitrap set (B 0.290 -> 0.174 ppm) and its own fit finally separates its confirmed rows from its contradicted ones (A 0.089 -> 0.173, C 0.066 -> 0.180, C2 -0.051 -> +0.053); the share of this engine's assigned rows the reference CONTRADICTS falls on every Orbitrap set (C 2.4 -> 0.3%, C2 4.3 -> 1.3%) while G1 rises because a conservative reference is silent more (A 35.4 -> 40.2, B 18.9 -> 44.2, D 21.0 -> 21.6); G2 formula 93.8 A, 92.8 B, 91.2 C, 77.7 C2, 80.4 D; G5 and G8 still zero; the peaks endpoint did not carry signal-to-noise and now does; two rounds of the gate caught the same defect in the shared fit, that it returns the offset and the width together and reports neither below its anchor minimum |
 | 2.2 - self-calibrated mass gate | - | planned |
 | 2.3 - cross-channel corroboration and the reagent-N rule | - | planned |
 | 2.4 - mechanical tiers with reasons | - | planned |
@@ -588,10 +588,21 @@ The confidence layer. This is where "assigned" starts meaning something.
   engines commit more than the reagent ions (step 2.1's clause the
   reference could not meet), and on E, F1 and F2 the reference's Assigned
   rows sit at the instrument's own width, so G1 and G2 read there for the
-  first time. The goldens in `tooling/score_eval` are untouched, the
-  engine's tests pin the moved fit, and the section names the peaky commit
-  and the library commit the reference was scored with, as an engine step
-  names its build tag.
+  first time. **Measured: half met.** The TOF reference is scored at its own
+  width and commits more (E 119 -> 139 analytes, F1 698 -> 1,034, F2 755 ->
+  827), but on E it still commits 139 against 336 reagent rows: what limits
+  it there is not the scorer but its candidate enumeration - pass 1 offers
+  two target peaks and one plausible formula on a 1,159-peak spectrum, and
+  nearly every commit comes from the certified list. G1 and G2 are therefore
+  readable on the TOF sets in the sense that both sides now score alike, and
+  still not decisive: the fit separates nothing there (E -0.023, F2 -0.049),
+  because at 1-4 ppm across three channels the mass does not settle which
+  reading is right. That is 2.3's corroboration and 2.4's density.
+  The goldens in `tooling/score_eval` are untouched, the engine's tests pin
+  the moved fit, and the section names the peaky commit and the library
+  commit the reference was scored with, as an engine step names its build
+  tag: peaky `epic/v2-fit-reference` at 5fa9b59, `mascope_tools` at
+  fc25575da (the library half's branch head, pinned in peaky's lockfile).
 - **Size.** S-M: a peaky change, one library PR, 43 publishes and a
   re-based table. Depends on 2.1. The library PR lands before 2.2 starts;
   the peaky half can run beside 2.2 after that, since their footprints are
@@ -2255,6 +2266,207 @@ Two passes now instead of one - the envelope reaches deeper on a bright peak,
 and every committed reading is measured again as an ion - and the slowest of
 the 43 samples takes 44 seconds. The whole gate still re-runs in about six
 minutes.
+
+### After step 2.1b, the reference re-based (2026-09-09)
+
+Two changes, one in each repository, and no engine change at all. The store says
+so rather than the text: all 43 mascope runs carry the same run id after the
+publish as before it, the same engine version and the same completion times of
+08:45-08:48Z, and every engine-side number in the comparison - committed M0,
+assigned-tier counts, mass-error MAD - is identical on both sides. What moved
+here is the stick.
+
+- **Mascope, #2093.** The mass-accuracy fit moves into `mascope_tools` as
+  `composition.mass_accuracy`, gaining `fit_mass_accuracy` for a caller whose
+  anchors are not a match frame and `scoring_sigma_ppm` for the width a score is
+  judged at. The instrument class gains the third of its three windows,
+  `INSTRUMENT_MATCH_TOLERANCE_PPM`, pinned by a backend test to the targeted
+  matcher's own class defaults. And the peaks endpoint carries each peak's
+  `signal_to_noise`.
+- **peaky, branch `epic/v2-fit-reference`.** `score_candidates_local` scores with
+  `score_pattern_v2` and a `PatternScoring` built per sample, the peaks frame
+  carries the noise estimate into the score, the envelope is anchored on the
+  ion's own line, and a published run's config records `score_version` and the
+  same `pattern_scoring` keys the engine stamps on its own - so a v1 reference
+  and a v2 one are told apart in the store rather than by date. The branch pins
+  the library by revision, because none of that API is on PyPI; its merge into
+  main is the coordination point with Mascope's release.
+
+**A premise of the hand-over was wrong, and it was load-bearing.** The peaks
+endpoint did not return `signal_to_noise`: `PeakData` has carried it since step
+2.1, but `get_sample_peaks` built its response from six keys and that was not one
+of them - the engine reads the estimate through `extract_peaks`, an internal
+path. A reference scoring without it would have judged every faint line by
+predicted abundance alone, which is the decision step 2.1 turned on. Checked
+against the deployed build before and after: all 43 gate samples now carry one.
+
+**A defect this gate caught, twice, in the same place.** The library's fit
+returns the offset and the width together, and below its anchor minimum it
+returns `(0.0, None)` - a zero offset that reads exactly like a measured one.
+The first round collapsed on C2: committed M0 429 -> 147, the reference's own
+Assigned tier 287 -> 69, G1 40.1 -> 97.7%, G2 74.9 -> 14.5%. C2's six anchors sit
+between -1.95 and -0.72 ppm; the source is 1.2 ppm low, scoring as if it were on
+calibration charged that to every candidate, and the rival whose own error
+cancelled the instrument's won the peak. A median and a robust spread are not the
+same measurement - the spread needs a distribution, the median needs fewer points
+- so the reference states the offset from the anchors even where the width falls
+back, and records the two sources separately.
+
+The second round showed what an anchor actually is. On a bromide TOF sample the
+three anchors were -10.5, -10.4 and -2.8 ppm: an anchor is a peak the server
+matched to a known species within the instrument's MATCHING window, 15 ppm on a
+TOF and five times its accuracy, so two mis-matches to the same wrong species
+carried the median. That run was scored at -10.4 ppm for a source the engine
+measures within 0.3 ppm of calibration, and its median committed fit fell to
+0.020 - the reference went on committing 47 peaks, because its passes commit on
+mass gates and channel evidence with the fit as one input among several, which is
+worth knowing when reading any of its numbers. The minimum is five anchors: two
+bad ones cannot carry a median of five.
+
+**The engine has the same trap and escapes it here by luck of the anchors.** It
+falls back to mu = 0 wherever Stage A matched fewer than eight known ions, which
+on this gate is D (1-2 anchors), C on two samples (5-8) and E (5-7). The
+committed mass errors say those three sources sit within 0.3 ppm of calibration,
+so nothing is charged; the one set with a real offset, C2, is also the one where
+Stage A had 11-12 anchors and fitted it. That is a property of these 43 samples,
+not of the rule. The wide anchor window has the same effect on the width: on F1
+the anchors admitted at 15 ppm put the median at +2.67 ppm against +1.80 at
+5 ppm, and the fitted sigma at 2.2-7.7 ppm. Both are step 2.2's.
+
+**What the reference is judged at.** Its anchors are the sample's own targeted
+matches; the width is fitted above eight of them and the instrument class's
+below, the offset above five and zero below.
+
+| set | anchors | width | sigma ppm | offset ppm | window ppm |
+|---|---|---|---|---|---|
+| A | 11-12 | fitted | 0.70-0.94 | -0.33 to 0.00 | 5 |
+| B | 5 on four samples, 8 on two | class / fitted | 0.58 / 0.65-0.68 | +0.17 to +0.23 | 5 |
+| C | 2 | class | 0.58 | none | 5 |
+| C2 | 6 | class | 0.58 | -1.18 to -1.23 | 5 |
+| D | 3 | class | 0.58 | none | 5 |
+| E | 1-3 | class | 3.04 | none | 15 |
+| F1 | 14-17 | fitted | 2.28-7.68 | +1.07 to +2.67 | 15 |
+| F2 | 17-21 | fitted | 1.26-1.60 | +0.11 to +0.88 | 15 |
+
+peaky counts an anchor only where it can mass the ion itself, so it sees base
+ions where the engine fits over every matched isotopologue row: 11-12 against
+13-15 on A, 5-8 against 10-15 on B, 2 against 5-8 on C, 6 against 11-12 on C2,
+3 against 1-2 on D, 1-3 against 5-7 on E, 14-17 against 19-25 on F1, 17-21
+against 20-26 on F2. The reference therefore falls back to the class more often
+than the engine does. Widening its anchors to matched isotopologues is the
+obvious follow-up, and step 2.2 will want the same question asked of the engine's.
+
+**The reference's own ledger.** Committed M0, its own tier split, the share of
+shared commits whose neutral formula changed, and its committed mass error.
+
+| set | committed M0 | its Assigned | its Candidate | formula changed | its MAD ppm |
+|---|---|---|---|---|---|
+| A | 1192 -> 1002 | 949 -> 784 | 243 -> 218 | 20 of 991 (2.0%) | 0.171 -> 0.150 |
+| B | 7614 -> 4680 | 5373 -> 1933 | 2241 -> 2747 | 527 of 4498 (11.7%) | 0.290 -> 0.174 |
+| C | 753 -> 681 | 527 -> 545 | 226 -> 136 | 4 of 670 (0.6%) | 0.137 -> 0.121 |
+| C2 | 429 -> 381 | 287 -> 264 | 142 -> 117 | 10 of 368 (2.7%) | 0.213 -> 0.167 |
+| D | 2108 -> 1554 | 1595 -> 800 | 513 -> 754 | 92 of 1299 (7.1%) | 0.260 -> 0.189 |
+| E | 119 -> 139 | 28 -> 26 | 91 -> 113 | 24 of 114 (21.1%) | 1.158 -> 1.124 |
+| F1 | 698 -> 1034 | 100 -> 123 | 598 -> 911 | 306 of 676 (45.3%) | 1.009 -> 0.995 |
+| F2 | 755 -> 827 | 46 -> 69 | 709 -> 758 | 219 of 748 (29.3%) | 0.919 -> 0.934 |
+
+The Orbitrap reference commits less and the TOF reference commits more, which is
+what a fit that charges a missing line and stops scaling mass by a fixed 5 ppm
+should do. What it drops is the thinly-evidenced end: on A, 8.5% of the peaks it
+stopped committing own an isotope line against 25.0% of the ones it kept (B:
+21.8% against 30.8%), and its committed mass error improves on every Orbitrap set
+- by 40% on B. On the TOF sets it commits half again as many analytes on F1 and
+its formulas change on a third to a half of the shared peaks, which is what a
+reference scored at 5 ppm on an instrument that measures to 2-8 was always going
+to do once it was scored at its own width.
+
+**Its tier bands were re-read and left alone.** They are bands on a number that
+now moves: v1 put a correct assignment near 0.95 whatever its envelope did, so
+`tau_good = 0.8` admitted almost every commit. On A and C the Assigned share of
+committed rows barely shifts (79.6 -> 78.2%, 70.0 -> 80.0%); on the dense set B
+it falls 70.6 -> 41.3%, because 61% of B's committed rows now score at or above
+0.8 where nearly all of them did before. That is the band starting to do work
+rather than a band in the wrong place, and B's Assigned tier still agrees with
+this engine on 92.8% of its peaks, so the numbers below are read with the bands
+where the stage-1 reference had them.
+
+**The re-based gate.**
+
+| set | G1 | G2 formula / ion | G2 n | G4 | G5 | G6 | G8 |
+|---|---|---|---|---|---|---|---|
+| A | 35.4 -> 40.2 | 95.6 -> 93.8 / 97.2 -> 96.2 | 949 -> 784 | 82.8 | 0 | 103 -> 74 | 0 |
+| B | 18.9 -> 44.2 | 95.2 -> 92.8 / 96.1 -> 94.8 | 5373 -> 1933 | 58.3 | 0 | 432 -> 295 | 0 |
+| C | 34.7 -> 35.4 | 87.7 -> 91.2 / 88.2 -> 92.1 | 527 -> 545 | 0.0 | 0 | 49 | 0 |
+| C2 | 40.1 -> 41.8 | 74.9 -> 77.7 / 74.9 -> 77.7 | 287 -> 264 | 0.0 | 0 | 18 | 0 |
+| D | 21.0 -> 21.6 | 80.6 -> 80.4 / 82.8 -> 82.1 | 1595 -> 800 | 21.4 -> 16.6 | 0 | 314 -> 149 | 0 |
+| E | 100.0 -> 99.8 | 10.7 -> 15.4 / 25.0 -> 26.9 | 28 -> 26 | 14.3 | 0 | 7 -> 6 | 0 |
+| F1 | 99.2 -> 99.1 | 17.0 -> 13.0 / 19.0 -> 14.6 | 100 -> 123 | 15.0 -> 15.5 | 0 | 61 -> 94 | 0 |
+| F2 | 99.2 -> 99.2 | 23.9 -> 15.9 / 23.9 -> 15.9 | 46 -> 69 | 0.0 | 0 | 33 -> 30 | 0 |
+
+**G1 rises and the disagreement falls, and those are two different facts.** G1
+counts every assigned-tier row the reference does not confirm, which after a
+re-base mixes the reference reading a peak differently with the reference not
+committing on it at all. Split:
+
+| set | contradicts this engine | does not commit |
+|---|---|---|
+| A | 1.8 -> 1.2 | 30.6 -> 35.6 |
+| B | 5.4 -> 4.0 | 11.1 -> 32.5 |
+| C | 2.4 -> 0.3 | 31.2 -> 34.4 |
+| C2 | 4.3 -> 1.3 | 35.5 -> 40.3 |
+| D | 8.2 -> 6.3 | 8.9 -> 11.3 |
+| E | 3.5 -> 4.2 | 95.8 -> 94.8 |
+| F1 | 6.3 -> 8.9 | 92.9 -> 90.1 |
+| F2 | 9.0 -> 10.1 | 90.0 -> 88.9 |
+
+On every Orbitrap set the share of this engine's assigned rows the reference
+CONTRADICTS falls - by a third on A, by seven-eighths on C, by two-thirds on C2,
+by a quarter on B and D - while the share it is silent on rises by as much or
+more. G1 reads worse because it counts silence as failure.
+
+**The reference's own score now separates its right answers from its wrong ones,**
+which is the same measurement step 2.1 made on the engine: the median fit of a
+row this engine confirms, less the median fit of one it contradicts.
+
+| set | before | after |
+|---|---|---|
+| A | 0.089 | 0.173 |
+| B | 0.041 | 0.034 |
+| C | 0.066 | 0.180 |
+| C2 | -0.051 | 0.053 |
+| D | 0.052 | 0.126 |
+| E | -0.022 | -0.023 |
+| F1 | -0.038 | 0.015 |
+| F2 | -0.018 | -0.049 |
+
+C2's separation was NEGATIVE before - the v1 reference scored its contradicted
+rows higher than its confirmed ones, which is a scorer telling you nothing - and
+three of the four Orbitrap sets roughly double. B is flat, and it is the set
+whose commitment fell hardest: what it dropped was the population the separation
+was measured over.
+
+**On the TOF sets the fit is necessary and not sufficient.** E, F1 and F2 show no
+separation before or after, and F2's 664 disagreements against 51 agreements are
+mostly a choice of channel: 117 peaks this engine reads through `+NO3-` the
+reference reads through `+CO3-`, 112 through `-H+`, and on 111 more both choose
+`+NO3-` and disagree about the neutral. At 1-4 ppm on three channels the mass
+does not decide, and neither engine has the corroboration to. That is step 2.3's
+cross-channel work and step 2.4's candidate density, not this step's.
+
+**What the re-base answers.** The stage-2 bounds still bind and are not close:
+G1 <= 20% is met by no set (A 40.2, B 44.2, C 35.4, C2 41.8, D 21.6), and G2's
+>= 85% formula bound is met on A, B and C but not C2 (77.7) or D (80.4), its
+>= 95% ion bound only on A (96.2). The re-base does not move the target; it makes
+the number honest, because until now every G1 and G2 since step 2.1 compared a v2
+engine against a v1 reference.
+
+One thing the re-base does change is how G1 should be read from here. A
+conservative reference is silent on a third of this engine's assigned rows on A,
+C and C2 and on a third of B's, so a G1 of 20% now requires the engine to be
+confirmed on rows where the reference commits nothing at all. Reading the
+contradiction share beside G1 - the middle column above - is what keeps steps
+2.2 to 2.6 measurable; whether the gate's own definition should change is the
+plan owner's call, not this step's.
 
 ## Decisions (taken 2026-09-07)
 
