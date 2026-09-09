@@ -38,9 +38,12 @@ assigned-tier rows that string comparison predicts the committed reading 92 to
 the reagent is therefore not a measurement; it is where "C4H4" happens to sort
 against "C4H7N".
 
-The same holds for every reagent whose moiety carries nitrogen - ``+NO3-`` on M
-is the same ion as ``-H+`` on M+HNO3 - so the substitution is derived from the
-mechanisms themselves rather than named here.
+The same holds for every reagent whose moiety carries an UNLABELLED nitrogen -
+``+NO3-`` on M is the same ion as ``-H+`` on M+HNO3 - so the substitution is
+derived from the mechanisms themselves rather than named here. A labelled
+reagent is the exception, and the reason anyone labels one: the 15N of a
+``+^NO3-`` reagent is 0.997 Da from an analyte's own nitrogen, so the two
+readings are two ions at two masses and the spectrum decides between them.
 
 What CAN fix the count is another channel. If the same neutral is also committed
 through a channel that donates no nitrogen, its composition is observed rather
@@ -62,7 +65,7 @@ from mascope_backend.api.new.peak_assignments.engine import (
 )
 from mascope_backend.api.new.peak_assignments.mass_gate import is_committed
 from mascope_backend.api.new.peak_assignments.tiers import TIER_CANDIDATE, TIER_RANK
-from mascope_tools.composition.exceptions import CompositionFinderException
+from mascope_tools.composition.custom_elements import CUSTOM_ELEMENTS
 from mascope_tools.composition.heuristic_filter import element_counts
 from mascope_tools.composition.utils import (
     parse_atom_count_ranges,
@@ -109,10 +112,21 @@ class ReagentSubstitution:
 
 
 def _moiety_counts(notation: str) -> tuple[dict[str, int], int, int] | None:
-    """A mechanism's moiety, its sign on the neutral, and the ion's charge."""
+    """A mechanism's moiety, its sign on the neutral, and the ion's charge.
+
+    A moiety carrying a LABELLED atom answers None, and that is the whole point
+    of labelling the reagent: the 15N in a ``+^NO3-`` reagent is 0.997 Da from
+    an analyte's own nitrogen, so the deprotonated nitrate ester is a different
+    ion at a different mass rather than the same one read differently. Two of
+    the gate's sets run that reagent, and treating its label as ordinary
+    nitrogen would have capped 297 of their readings - 93 of which the reference
+    confirms - for an ambiguity the labelling exists to remove.
+    """
     try:
         mechanism = parse_ionization(notation)
-    except (CompositionFinderException, Exception):  # noqa: BLE001 - fail closed
+    except Exception:  # noqa: BLE001 - a mechanism nobody can parse gates nothing
+        return None
+    if any(symbol in (mechanism.formula or "") for symbol in CUSTOM_ELEMENTS):
         return None
     counts = element_counts(mechanism.formula) if mechanism.formula else {}
     if counts is None:
