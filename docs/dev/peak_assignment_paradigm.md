@@ -82,10 +82,11 @@ is persistence, arbitration, and productization - not the science.
     mass pruning and DBE bounds).
   - `apply_heuristic_rules` applies valence / Senior / element-ratio /
     known-chemical-space filters.
-  - `predict_isotopes` + `score_pattern` do isotope-envelope scoring with the
+  - `predict_isotopes` + `score_pattern_v2` do isotope-envelope scoring with the
     **same maths** the targeted matcher uses. The consolidated **fit score**
-    (`score_pattern_v2`, detectability-gated + SNR- and resolution-aware) is the
-    scoring engine for both stages — see
+    (detectability-gated + SNR- and resolution-aware) is the scoring engine for
+    both stages, and `PatternScoring` is how a caller tells it what the sample
+    it is searching looks like — see
     [`fit_score.md`](../../libraries/tools/docs/fit_score.md).
   - `assign_compositions(peaks_df, config, heuristics)` already performs
     **whole-spectrum, one-row-per-peak assignment**: enumerate -> filter ->
@@ -169,9 +170,11 @@ isotope, the `sample_peak_id` it hit and the score, so Stage A is mostly *reuse
 the best-scoring owner) and write `PeakAssignment` rows with `source=database`.
 
 **Stage B - untargeted.** For peaks Stage A left unexplained, run
-`mascope_tools.assign_compositions` (or `find_compositions` + `score_pattern` for
-finer control) to enumerate candidates, filter by chemistry/context, score the
-isotope envelope, and pick an owner. Persist winners + `alternatives` + tier.
+`mascope_tools.assign_compositions` (or `find_compositions` +
+`match_isotopic_pattern` for finer control) to enumerate candidates, filter by
+chemistry/context, score the isotope envelope, and pick an owner. The winners
+are then measured again as ions through the Stage A chain, and it is that fit
+they are tiered on. Persist winners + `alternatives` + tier.
 
 **Global arbitration** (the genuinely new logic). Targeted matching never needed
 "who owns this peak" because targets were curated. Untargeted assignment produces
