@@ -206,12 +206,12 @@ def stubbed_engine(monkeypatch, folded_batch):
     by canned answers keyed on the sample being searched or measured."""
     samples = folded_batch["samples"]
     by_id = {sample_id: name for name, sample_id in samples.items()}
-    calls = {"search": [], "score": []}
+    calls = {"search": [], "score": [], "seeded_fits": []}
 
     def load_peaks(sample):
         return _frame(_PEAKS[by_id[sample.sample_item_id]])
 
-    def assign(peaks, config, heuristics=None, targets=None):
+    def assign(peaks, config, heuristics=None, targets=None, scoring=None):
         calls["search"].append(list(targets))
         return _canned_matches()
 
@@ -229,7 +229,14 @@ def stubbed_engine(monkeypatch, folded_batch):
         return ["H+"], {"H+": "mech-h"}
 
     async def match_params(sample_item_id):
-        return SimpleNamespace(isotope_abundance_threshold=0.01)
+        return SimpleNamespace(isotope_abundance_threshold=0.01, mz_tolerance=5)
+
+    async def seeded_fits(sample, params, seeds):
+        # The search's own re-score: the finder's reading measured again as an
+        # ion, which is what the rows are tiered on. Canned here for the same
+        # reason the finder is - these tests are about the pass, not the fit.
+        calls["seeded_fits"].append((by_id[sample.sample_item_id], set(seeds)))
+        return {seed: 0.88 for seed in seeds}
 
     async def seeded(sample, seeds, params):
         calls["score"].append((by_id[sample.sample_item_id], set(seeds)))
@@ -248,6 +255,7 @@ def stubbed_engine(monkeypatch, folded_batch):
     monkeypatch.setattr(batch_untargeted, "_untargeted_ionization_notations", notations)
     monkeypatch.setattr(batch_untargeted, "default_match_params", match_params)
     monkeypatch.setattr(batch_untargeted, "score_seeds", seeded)
+    monkeypatch.setattr(batch_untargeted, "_seeded_fits", seeded_fits)
     return calls
 
 
