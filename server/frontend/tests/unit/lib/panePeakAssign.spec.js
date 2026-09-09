@@ -328,7 +328,7 @@ describe('PanePeakAssign adduct corroboration', () => {
     // The qualifier is on the badge's face, not only in the tooltip: the count is
     // the same number the M0 shows, and unqualified it would read as this peak
     // having been seen through three adducts itself.
-    expect(badge(wrapper).text()).toContain('Supported by 3 adducts via M0')
+    expect(badge(wrapper).text()).toContain('Supported by 3 channels via M0')
   })
 
   // The engine folds the boost into the record carrying the corroboration - the
@@ -340,7 +340,7 @@ describe('PanePeakAssign adduct corroboration', () => {
     const wrapper = await mountPane()
 
     expect(wrapper.vm.corroborationTooltip).toBe(
-      'The M0 of this isotopologue family was seen via 3 adducts. ' +
+      'The M0 of this isotopologue family was seen through 3 channels. ' +
         "Independent corroborating evidence for the formula, folded into the M0's " +
         "P(correct) - not into this isotopologue's, which is calibrated on its own."
     )
@@ -353,7 +353,7 @@ describe('PanePeakAssign adduct corroboration', () => {
     familyRows = [{ ...M0, corroboration_adducts: 5 }, focusedAssignment]
     const wrapper = await mountPane()
 
-    expect(badge(wrapper).text()).toContain('Supported by 2 adducts')
+    expect(badge(wrapper).text()).toContain('Supported by 2 channels')
     expect(badge(wrapper).text()).not.toContain('via M0')
     expect(badge(wrapper).classes()).not.toContain('inherited')
   })
@@ -366,7 +366,7 @@ describe('PanePeakAssign adduct corroboration', () => {
     familyRows = [{ ...M0, provenance: { corroboration: { n_adducts: 4 } } }, ISOTOPOLOGUE]
     const wrapper = await mountPane()
 
-    expect(badge(wrapper).text()).toContain('Supported by 4 adducts via M0')
+    expect(badge(wrapper).text()).toContain('Supported by 4 channels via M0')
     expect(badge(wrapper).classes()).toContain('inherited')
   })
 
@@ -394,9 +394,9 @@ describe('PanePeakAssign adduct corroboration', () => {
     }
     const wrapper = await mountPane()
 
-    expect(badge(wrapper).text()).toContain('Supported by 2 adducts')
+    expect(badge(wrapper).text()).toContain('Supported by 2 channels')
     expect(badge(wrapper).classes()).not.toContain('inherited')
-    expect(wrapper.vm.corroborationTooltip).toContain('Seen via 2 adducts (+H+, +Na+)')
+    expect(wrapper.vm.corroborationTooltip).toContain('Seen through 2 channels (+H+, +Na+)')
   })
 
   // The count is flattened onto every ledger row, so the M0's own badge is there
@@ -405,10 +405,10 @@ describe('PanePeakAssign adduct corroboration', () => {
     focusedAssignment = { ...M0, corroboration_adducts: 2 }
     const wrapper = await mountPane()
 
-    expect(badge(wrapper).text()).toContain('Supported by 2 adducts')
+    expect(badge(wrapper).text()).toContain('Supported by 2 channels')
     expect(badge(wrapper).classes()).not.toContain('inherited')
     // No adduct names to give yet, so the tooltip promises none.
-    expect(wrapper.vm.corroborationTooltip).toContain('Seen via 2 adducts.')
+    expect(wrapper.vm.corroborationTooltip).toContain('Seen through 2 channels.')
   })
 
   // The ledger-measured channel count is what reaches an untargeted row: the
@@ -418,7 +418,7 @@ describe('PanePeakAssign adduct corroboration', () => {
     focusedAssignment = { ...M0, corroboration_adducts: null, corroboration_channels: 3 }
     const wrapper = await mountPane()
 
-    expect(badge(wrapper).text()).toContain('Supported by 3 adducts')
+    expect(badge(wrapper).text()).toContain('Supported by 3 channels')
     expect(badge(wrapper).classes()).not.toContain('inherited')
   })
 
@@ -430,7 +430,7 @@ describe('PanePeakAssign adduct corroboration', () => {
     detailRecord = { provenance: { cross_channel: { channels: ['+H+', '+NH4+'] } } }
     const wrapper = await mountPane()
 
-    expect(wrapper.vm.corroborationTooltip).toContain('Seen via 2 adducts (+H+, +NH4+)')
+    expect(wrapper.vm.corroborationTooltip).toContain('Seen through 2 channels (+H+, +NH4+)')
     expect(wrapper.vm.corroborationTooltip).toContain('not included in the P(correct)')
     expect(wrapper.vm.corroborationTooltip).not.toContain('already folded')
   })
@@ -442,7 +442,7 @@ describe('PanePeakAssign adduct corroboration', () => {
     focusedAssignment = { ...M0, corroboration_adducts: 2, corroboration_channels: 3 }
     const wrapper = await mountPane()
 
-    expect(badge(wrapper).text()).toContain('Supported by 3 adducts')
+    expect(badge(wrapper).text()).toContain('Supported by 3 channels')
   })
 
   // A satellite carries neither count, and inherits whichever its M0 has.
@@ -451,7 +451,7 @@ describe('PanePeakAssign adduct corroboration', () => {
     familyRows = [{ ...M0, corroboration_channels: 3 }, ISOTOPOLOGUE]
     const wrapper = await mountPane()
 
-    expect(badge(wrapper).text()).toContain('Supported by 3 adducts via M0')
+    expect(badge(wrapper).text()).toContain('Supported by 3 channels via M0')
     expect(badge(wrapper).classes()).toContain('inherited')
     expect(wrapper.vm.corroborationTooltip).toContain('not included in the P(correct)')
   })
