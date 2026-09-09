@@ -10,6 +10,7 @@ and what the conversion does with the answer.
 """
 
 import math
+from types import SimpleNamespace
 
 import pandas as pd
 import pytest
@@ -22,11 +23,13 @@ from mascope_backend.api.new.peak_assignments.engine import (
     untargeted_matches_to_peak_assignments,
     untargeted_seeds,
 )
-from types import SimpleNamespace
+from mascope_tools.composition.profiles import INSTRUMENT_MASS_ACCURACY_PPM
 
 
 CANDIDATE = 0.45
 ASSIGNED = 0.75
+ORBI_ACCURACY = INSTRUMENT_MASS_ACCURACY_PPM["orbi"]
+TOF_ACCURACY = INSTRUMENT_MASS_ACCURACY_PPM["tof"]
 MECHANISMS = {"+H+": "mech-h", "+NH4+": "mech-nh4"}
 
 
@@ -75,29 +78,44 @@ class TestPatternScoringForTheSample:
     """What the finder is told about the sample it is searching."""
 
     def test_the_width_is_the_one_stage_a_measured(self):
-        scoring = pattern_scoring_for(_orbi_params(), (-0.24, 0.30))
+        scoring = pattern_scoring_for(_orbi_params(), (-0.24, 0.30), ORBI_ACCURACY)
 
         assert scoring.sigma_ppm == pytest.approx(math.hypot(0.30, PRED_SIGMA_PPM))
         assert scoring.mu_ppm == pytest.approx(-0.24)
 
-    def test_the_match_tolerance_stands_in_when_nothing_fitted_a_width(self):
-        # Too few anchors to fit: the instrument's own tolerance is its
-        # statement about its accuracy, and a tolerance is about three sigma.
-        scoring = pattern_scoring_for(_orbi_params(), (0.0, None))
+    def test_the_instrument_class_stands_in_when_nothing_fitted_a_width(self):
+        # Too few known ions matched to fit anything. The class statement is a
+        # poor substitute and the only honest one: the 5 ppm match tolerance
+        # would be five times this instrument's real accuracy, and at that width
+        # every candidate the search enumerated fits equally well.
+        scoring = pattern_scoring_for(_orbi_params(), (0.0, None), ORBI_ACCURACY)
 
-        assert scoring.sigma_ppm == pytest.approx(math.hypot(5 / 3, PRED_SIGMA_PPM))
+        assert scoring.sigma_ppm == pytest.approx(
+            math.hypot(ORBI_ACCURACY, PRED_SIGMA_PPM)
+        )
 
     def test_a_tof_is_judged_at_a_tofs_width_and_window(self):
-        scoring = pattern_scoring_for(_orbi_params(tolerance=15, floor=1e-4), (0.0, None))
+        scoring = pattern_scoring_for(
+            _orbi_params(tolerance=15, floor=1e-4), (0.0, None), TOF_ACCURACY
+        )
 
-        assert scoring.sigma_ppm == pytest.approx(math.hypot(5.0, PRED_SIGMA_PPM))
+        assert scoring.sigma_ppm == pytest.approx(
+            math.hypot(TOF_ACCURACY, PRED_SIGMA_PPM)
+        )
         assert scoring.mz_tolerance_ppm == 15
         assert scoring.abundance_floor == 1e-4
+
+    def test_a_measured_width_beats_the_class_statement(self):
+        # However well or badly this sample measures, what it measured wins.
+        loose = pattern_scoring_for(_orbi_params(), (0.0, 1.4), ORBI_ACCURACY)
+
+        assert loose.sigma_ppm == pytest.approx(math.hypot(1.4, PRED_SIGMA_PPM))
 
     def test_the_envelope_floor_is_the_samples_own(self):
         # The same floor Stage A generates its isotopes at, so the two stages
         # predict a line to the same depth.
-        assert pattern_scoring_for(_orbi_params(), (0.0, 0.3)).abundance_floor == 1e-5
+        scoring = pattern_scoring_for(_orbi_params(), (0.0, 0.3), ORBI_ACCURACY)
+        assert scoring.abundance_floor == 1e-5
 
 
 class TestWhichReadingsAreMeasuredAgain:

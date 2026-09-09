@@ -2194,7 +2194,9 @@ async def _run_sample_assignment(
                     for column in ("mz", "intensity", "signal_to_noise")
                     if column in search_peaks_df.columns
                 ]
-                scoring = pattern_scoring_for(match_params, mass_accuracy)
+                scoring = pattern_scoring_for(
+                    match_params, mass_accuracy, resolved_profile.mass_accuracy_ppm
+                )
                 matches_df, _ = await asyncio.to_thread(
                     assign_compositions,
                     search_peaks_df[search_columns],
