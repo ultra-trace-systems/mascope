@@ -72,7 +72,11 @@ from mascope_backend.api.new.peak_assignments.config import (
     peak_assignment_ingest_max_peaks,
     peak_assignment_on_ingest,
 )
+from mascope_backend.api.new.peak_assignments.cross_channel import (
+    apply_cross_channel,
+)
 from mascope_backend.api.new.peak_assignments.engine import (
+    CROSS_CHANNEL_KEY,
     MASS_CALIBRATION_KEY,
     PATTERN_SCORING_KEY,
     REFERENCE_IDENTITIES_COL,
@@ -1411,6 +1415,7 @@ def _stored_run_config(
     search_scope: dict | None = None,
     pattern_scoring: dict | None = None,
     mass_calibration: dict | None = None,
+    cross_channel: dict | None = None,
 ) -> dict:
     """The blob persisted on a run: the requested config plus server-side state.
 
@@ -1447,6 +1452,7 @@ def _stored_run_config(
     :param search_scope: What the untargeted stage was offered, once it is known.
     :param pattern_scoring: What it scored an envelope at, once it is known.
     :param mass_calibration: What the finished ledger measured of itself.
+    :param cross_channel: What the sample's own channels corroborated.
     :return: A JSON-serializable dict for ``PeakAssignmentRun.config``.
     """
     stored = config.model_dump()
@@ -1459,6 +1465,8 @@ def _stored_run_config(
         stored[PATTERN_SCORING_KEY] = pattern_scoring
     if mass_calibration is not None:
         stored[MASS_CALIBRATION_KEY] = mass_calibration
+    if cross_channel is not None:
+        stored[CROSS_CHANNEL_KEY] = cross_channel
     return stored
 
 
@@ -1469,6 +1477,7 @@ async def _record_resolved_profile(
     search_scope: dict | None = None,
     pattern_scoring: dict | None = None,
     mass_calibration: dict | None = None,
+    cross_channel: dict | None = None,
 ) -> None:
     """Write the resolved chemistry onto a run that is about to use it.
 
@@ -1487,6 +1496,7 @@ async def _record_resolved_profile(
     :param search_scope: What the untargeted stage was offered, once known.
     :param pattern_scoring: What it scored an envelope at, once known.
     :param mass_calibration: What the ledger measured of its own mass accuracy.
+    :param cross_channel: What the sample's own channels corroborated.
     """
     async with async_session() as session:
         await session.execute(
@@ -1499,6 +1509,7 @@ async def _record_resolved_profile(
                     search_scope,
                     pattern_scoring,
                     mass_calibration,
+                    cross_channel,
                 )
             )
         )
@@ -2141,6 +2152,25 @@ async def _run_sample_assignment(
         stage_b_assignments: list[dict] = []
         search_scope: dict | None = None
         scoring_snapshot: dict | None = None
+        # The mode's own mechanisms decide whether there is anything to search
+        # at all; the opportunistic channels are an addition to a sample's
+        # chemistry, not a substitute for it. A mode that declares nothing is
+        # one nobody has configured, and searching it through a channel the
+        # source happens to show would assign a sample whose ionization is
+        # unknown. Resolved here rather than inside the untargeted branch
+        # because the cross-channel pass below reads the same set: which
+        # channels a neutral COULD have been seen through is what makes seeing
+        # it in one of them evidence or not.
+        searched_mechanisms = (
+            mechanisms
+            + [
+                mechanism
+                for mechanism in secondary_mechanisms
+                if mechanism.ionization_mechanism in resolved_profile.minor_channels
+            ]
+            if mechanisms
+            else []
+        )
         if config.run_untargeted:
             eligible_df = peaks_df[
                 ~peaks_df["sample_peak_id"].isin(assigned_peak_ids)
@@ -2166,19 +2196,8 @@ async def _run_sample_assignment(
                     )
                 )
 
-            # The mode's own mechanisms decide whether there is anything to
-            # search at all; the opportunistic channels are an addition to a
-            # sample's chemistry, not a substitute for it. A mode that declares
-            # nothing is one nobody has configured, and searching it through a
-            # channel the source happens to show would assign a sample whose
-            # ionization is unknown.
-            searched_mechanisms = mechanisms + [
-                mechanism
-                for mechanism in secondary_mechanisms
-                if mechanism.ionization_mechanism in resolved_profile.minor_channels
-            ]
             notations, mechanism_id_by_notation = _untargeted_ionization_notations(
-                searched_mechanisms if mechanisms else []
+                searched_mechanisms
             )
             if remainder_df.empty or not notations:
                 skip_reason = (
@@ -2316,6 +2335,27 @@ async def _run_sample_assignment(
                 f"{mass_calibration['committed']} commits, too few to measure a "
                 "mass calibration; no row is gated on one"
             )
+        # -- What the sample's other channels say about each committed neutral,
+        # and the nitrogen a reagent adduct can hide. After the mass gate
+        # because both only ever demote, so the order cannot change a tier -
+        # only which pass is recorded as having taken it.
+        cross_channel = apply_cross_channel(
+            stage_a_assignments + stage_b_assignments,
+            notation_by_id={
+                mechanism_id: notation
+                for notation, mechanism_id in _untargeted_ionization_notations(
+                    searched_mechanisms
+                )[1].items()
+            },
+            element_ranges=resolved_profile.element_ranges,
+        )
+        runtime.logger.info(
+            f"Sample '{sample.sample_item_name}' corroborates "
+            f"{cross_channel['corroborated']} of {cross_channel['committed_m0']} "
+            f"committed readings across {len(cross_channel['channels'])} channels; "
+            f"{cross_channel['capped']} capped for an unfixable nitrogen count "
+            f"({cross_channel['capped_satellites']} satellites with them)"
+        )
         await _record_resolved_profile(
             run.peak_assignment_run_id,
             config,
@@ -2323,6 +2363,7 @@ async def _run_sample_assignment(
             search_scope,
             scoring_snapshot,
             mass_calibration,
+            cross_channel,
         )
         await send_progress_user_notification(notification, 0.8)
 
