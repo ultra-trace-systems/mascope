@@ -17,6 +17,7 @@ import pytest
 
 from mascope_tools.composition.mass_accuracy import (
     MASS_ACCURACY_MIN_ANCHORS,
+    MASS_OFFSET_MIN_ANCHORS,
     MIN_FITTED_SIGMA_PPM,
     PRED_SIGMA_PPM,
     fit_mass_accuracy,
@@ -62,10 +63,9 @@ class TestTheFit:
     def test_too_few_anchors_measure_no_width(self):
         # Not a small measurement of a width: no measurement of one, which the
         # caller answers with its instrument class rather than with a guess.
-        mu, sigma = fit_mass_accuracy(ERRORS[: MASS_ACCURACY_MIN_ANCHORS - 1])
+        _, sigma = fit_mass_accuracy(ERRORS[: MASS_ACCURACY_MIN_ANCHORS - 1])
 
         assert sigma is None
-        assert mu == 0.0
 
     def test_the_minimum_anchors_are_enough(self):
         _, sigma = fit_mass_accuracy(ERRORS[:MASS_ACCURACY_MIN_ANCHORS])
@@ -90,6 +90,47 @@ class TestTheFit:
 
         assert scoring_sigma_ppm(sigma, 3.0) > PRED_SIGMA_PPM
 
+    def test_an_offset_is_measurable_from_fewer_anchors_than_a_width(self):
+        # The two are different measurements and the difficult one must not
+        # withhold the easy one. Between the minimums the fit answers the
+        # offset it measured and no width at all.
+        anchors = ERRORS[:MASS_OFFSET_MIN_ANCHORS]
+        assert MASS_OFFSET_MIN_ANCHORS < MASS_ACCURACY_MIN_ANCHORS
+
+        mu, sigma = fit_mass_accuracy(anchors)
+
+        assert mu == pytest.approx(float(np.median(anchors)))
+        assert sigma is None
+
+    def test_an_unmeasured_offset_is_not_a_zero_one(self):
+        # The whole point of the separation. Six anchors agreeing that this
+        # sample sits 1.2 ppm low HAVE measured its offset, and answering 0.0
+        # there tells the caller the sample is centred - the opposite claim, and
+        # one that moves every candidate it goes on to score by 1.2 ppm.
+        mu, sigma = fit_mass_accuracy([-1.2, -1.18, -1.25, -1.19, -1.22, -1.21])
+
+        assert mu == pytest.approx(-1.205)
+        assert sigma is None
+
+        # And below the offset minimum the answer is None, not zero: a caller
+        # correcting by zero must be able to tell that it is doing so because
+        # nothing was measured.
+        assert fit_mass_accuracy([-1.2, -1.18, -1.25, -1.19]) == (None, None)
+
+    def test_the_offset_minimum_leaves_a_pair_of_mis_matches_outvoted(self):
+        # Why the minimum is five and not three. A wide matching window admits
+        # mis-matches - on a TOF at 15 ppm, a line matched to the wrong peak
+        # sits 10 ppm out - and the median only resists them while they are a
+        # minority. At five anchors two of them are outvoted by the three real
+        # ones; at three they ARE the median, and the run then corrects every
+        # candidate by their error.
+        real, wrong = [-0.4, -0.3, -0.5], [-10.5, -10.4]
+
+        mu, _ = fit_mass_accuracy(real + wrong)
+        assert mu == pytest.approx(-0.5)
+
+        assert float(np.median(wrong + real[:1])) < -5.0
+
     def test_an_unusable_error_is_not_an_anchor(self):
         # NaN reaches the fit from a row that matched nothing; counting it would
         # both mis-state the anchor count and drag the median toward zero.
@@ -113,7 +154,7 @@ class TestTheAnchors:
         # Neither column present. The frame has not measured a mass error, which
         # is the same answer as one that measured too few, and not an error.
         assert mass_accuracy_anchors(pd.DataFrame()).empty
-        assert fit_sample_mass_accuracy(pd.DataFrame()) == (0.0, None)
+        assert fit_sample_mass_accuracy(pd.DataFrame()) == (None, None)
 
     def test_the_frame_fit_is_the_fit_over_its_anchors(self):
         # The anchor count a run reports and the anchors the fit used are one

@@ -2,6 +2,7 @@ from .finder import assign_compositions
 from .heuristic_filter import formula_plausibility
 from .mass_accuracy import (
     MASS_ACCURACY_MIN_ANCHORS,
+    MASS_OFFSET_MIN_ANCHORS,
     PRED_SIGMA_PPM,
     fit_mass_accuracy,
     fit_sample_mass_accuracy,
@@ -54,6 +55,7 @@ __all__ = [
     "HeuristicFilterConfig",
     "mass_accuracy_anchors",
     "MASS_ACCURACY_MIN_ANCHORS",
+    "MASS_OFFSET_MIN_ANCHORS",
     "PatternScoring",
     "PRED_SIGMA_PPM",
     "resolve_fallback_sigma_ppm",

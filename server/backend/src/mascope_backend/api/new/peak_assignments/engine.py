@@ -155,13 +155,19 @@ def untargeted_targets(
 class SampleMassAccuracy:
     """What Stage A measured of a sample's own mass error, and from how much.
 
-    ``sigma_ppm`` is None when fewer than
-    :data:`mass_accuracy.MASS_ACCURACY_MIN_ANCHORS` known ions matched, which
-    is not a small sample of a width but no measurement of one; ``anchors``
-    says how close it came, so a run that fell back records why.
+    Either number is None when it was not measured: ``sigma_ppm`` below
+    :data:`mass_accuracy.MASS_ACCURACY_MIN_ANCHORS` matched known ions and
+    ``mu_ppm`` below :data:`mass_accuracy.MASS_OFFSET_MIN_ANCHORS`. Neither is a
+    small measurement - it is no measurement, and ``anchors`` says how close it
+    came, so a run that fell back records why.
+
+    The offset is reported separately from the width because it is measurable
+    from fewer anchors, and because a sample sitting a ppm to one side with six
+    anchors HAS measured its offset. Reporting that as zero is not a smaller
+    claim than reporting it as -1.2; it is the opposite claim.
     """
 
-    mu_ppm: float = 0.0
+    mu_ppm: float | None = None
     sigma_ppm: float | None = None
     anchors: int = 0
 
@@ -215,7 +221,10 @@ def pattern_scoring_for(
         sigma_ppm=scoring_sigma_ppm(
             mass_accuracy.sigma_ppm, float(instrument_accuracy_ppm)
         ),
-        mu_ppm=float(mass_accuracy.mu_ppm),
+        # An offset nothing measured is scored as no offset - the same rule
+        # `ion_score_v2` applies to Stage A, so both stages of one sample are
+        # corrected by the same amount or by neither.
+        mu_ppm=float(mass_accuracy.mu_ppm or 0.0),
         mz_tolerance_ppm=float(match_params.mz_tolerance),
         abundance_floor=float(match_params.isotope_abundance_threshold),
     )
@@ -244,6 +253,10 @@ def pattern_scoring_snapshot(
         "sigma_source": (
             "fitted" if mass_accuracy.sigma_ppm is not None else "instrument_class"
         ),
+        # And the same question about the offset, which needs fewer anchors and
+        # is therefore answered separately: "none" means the run corrected by
+        # zero because it measured nothing, not because it measured zero.
+        "mu_source": "fitted" if mass_accuracy.mu_ppm is not None else "none",
         "fitted_anchors": int(mass_accuracy.anchors),
         "mz_tolerance_ppm": float(scoring.mz_tolerance_ppm),
         "abundance_floor": float(scoring.abundance_floor),
@@ -519,6 +532,8 @@ def score_ions_by_fit(match_isotope_df: pd.DataFrame) -> pd.DataFrame:
         gated_out = pd.to_numeric(df["match_score"], errors="coerce").fillna(0.0) == 0
         df.loc[gated_out, "sample_peak_intensity"] = 0.0
 
+    # mu is None where too few anchors matched to measure an offset; the scorer
+    # reads that as an uncorrected sample rather than a centred one.
     mu, sigma = fit_sample_mass_accuracy(df)
     noise = sample_noise_floor(df)
     fit_by_ion = df.groupby("target_ion_id", sort=False, dropna=False).apply(
