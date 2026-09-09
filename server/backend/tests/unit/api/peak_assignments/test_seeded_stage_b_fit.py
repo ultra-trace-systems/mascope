@@ -15,16 +15,17 @@ from types import SimpleNamespace
 import pandas as pd
 import pytest
 
-from mascope_backend.api.controllers.match.lib.match_score_v2 import PRED_SIGMA_PPM
 from mascope_backend.api.new.peak_assignments.engine import (
     TIER_ASSIGNED,
     TIER_CANDIDATE,
     SampleMassAccuracy,
     pattern_scoring_for,
     pattern_scoring_snapshot,
+    sample_mass_accuracy,
     untargeted_matches_to_peak_assignments,
     untargeted_seeds,
 )
+from mascope_tools.composition.mass_accuracy import PRED_SIGMA_PPM, fit_mass_accuracy
 from mascope_tools.composition.profiles import INSTRUMENT_FALLBACK_SIGMA_PPM
 
 
@@ -74,6 +75,43 @@ def _convert(rows, peaks, fit_by_seed=None):
         mechanism_id_by_notation=MECHANISMS,
         fit_by_seed=fit_by_seed,
     )
+
+
+class TestWhatStageAMeasured:
+    """The engine fits the sample's width with the library's fit."""
+
+    def test_the_offset_the_width_and_the_anchors_are_the_frames_own(self):
+        errors = [0.0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8]
+        frame = pd.DataFrame(
+            {
+                "match_mz_error": errors,
+                "sample_peak_intensity": [100.0] * len(errors),
+            }
+        )
+
+        measured = sample_mass_accuracy(frame)
+
+        assert (measured.mu_ppm, measured.sigma_ppm) == fit_mass_accuracy(errors)
+        assert measured.anchors == len(errors)
+
+    def test_a_row_the_gating_zeroed_is_not_an_anchor(self):
+        # Stage A's fit runs on the gated frame, where a rejected isotopologue
+        # carries a zero intensity. The anchor count a run records has to say
+        # the same, or it reports a confidence the width was not fitted from.
+        frame = pd.DataFrame(
+            {
+                "match_mz_error": [0.1, 0.2, 0.3],
+                "sample_peak_intensity": [100.0, 0.0, 100.0],
+            }
+        )
+
+        assert sample_mass_accuracy(frame).anchors == 2
+
+    def test_a_sample_with_no_matches_measured_nothing(self):
+        measured = sample_mass_accuracy(pd.DataFrame())
+
+        assert measured.sigma_ppm is None
+        assert measured.anchors == 0
 
 
 class TestPatternScoringForTheSample:

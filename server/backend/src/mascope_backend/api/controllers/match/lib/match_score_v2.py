@@ -36,11 +36,7 @@ import numpy as np
 import pandas as pd
 
 from mascope_tools.composition.heuristic_filter import calibrate_score, score_pattern_v2
-
-
-# Correct matches spread wider than the calibration-anchor precision (centroiding +
-# prediction error + analyte tail); added in quadrature to the fitted instrument sigma.
-PRED_SIGMA_PPM = 0.5
+from mascope_tools.composition.mass_accuracy import PRED_SIGMA_PPM
 
 
 def match_score_version() -> int:
@@ -56,41 +52,6 @@ def match_score_version() -> int:
         return int(os.environ.get("MASCOPE_MATCH_SCORE_VERSION", "1"))
     except (TypeError, ValueError):
         return 1  # malformed value -> the default
-
-
-#: Matched rows below which no width is fitted and the caller falls back.
-MASS_ACCURACY_MIN_ANCHORS = 8
-
-
-def mass_accuracy_anchors(match_isotope_df: pd.DataFrame) -> pd.Series:
-    """The matched mass errors a sample's accuracy is fitted from.
-
-    One definition of "anchor" for the fit and for anything that reports how
-    many it had: a row that paired to a peak with an intensity and a usable
-    mass error. A caller that counted them itself would drift from the fit.
-    """
-    empty = pd.Series(dtype=float)
-    me = pd.to_numeric(match_isotope_df.get("match_mz_error", empty), errors="coerce")
-    inten = pd.to_numeric(
-        match_isotope_df.get("sample_peak_intensity", empty), errors="coerce"
-    )
-    return me[(inten.fillna(0) > 0) & me.notna()]
-
-
-def fit_sample_mass_accuracy(
-    match_isotope_df: pd.DataFrame,
-) -> tuple[float, float | None]:
-    """Robust (mu, sigma) ppm of the matched isotopologues' mass error — the
-    instrument's measured mass accuracy (resolution-correct, Orbitrap vs TOF).
-    Returns sigma=None when there are too few matched anchors (caller falls back)
-    — including none at all: a frame that carries neither column has not measured
-    a mass error, which is the same answer as a frame that carries too few."""
-    me = mass_accuracy_anchors(match_isotope_df)
-    if len(me) < MASS_ACCURACY_MIN_ANCHORS:
-        return 0.0, None
-    mu = float(me.median())
-    sigma = max(float(1.4826 * (me - mu).abs().median()), 0.05)
-    return mu, sigma
 
 
 def sample_noise_floor(match_isotope_df: pd.DataFrame) -> float:
