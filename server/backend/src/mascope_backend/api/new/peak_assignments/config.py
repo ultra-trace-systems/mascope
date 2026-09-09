@@ -340,13 +340,14 @@ class PeakAssignmentConfig(BaseModel):
     # documented follow-up, and P(correct) is the eventual binding once calibration
     # coverage allows it (docs/dev/assignment_confidence.md).
     #
-    # One pair, both stages, knowingly: Stage A's fit is ion_score_v2 and Stage B's is
-    # score_pattern (v1), so a band means slightly different things to each - on the
-    # sweep, holding the upper band at 0.80 costs Stage B 5.3% of its assigned rows and
-    # Stage A only 0.5%. Per-stage bands would fit the data better and are deliberately
-    # not introduced: the heterogeneity predates this binding (it was there under
-    # fit-tiering too), and a second pair of knobs is more apparatus than a directional
-    # threshold is worth.
+    # One pair, both stages, and now on one scale. Both stages' fit is
+    # `ion_score_v2` over one `compute_match_isotopes` pass: Stage A's over the
+    # curated library's ions, Stage B's over the untargeted stage's winners
+    # measured again as ions (`service._seeded_fits`). The band means the same
+    # thing to each, which is what the sweep behind these numbers assumed and
+    # what the numbers themselves were fitted against - so per-stage bands, the
+    # apparatus this comment used to argue was not worth building, are not
+    # needed either.
     #
     # The upper band still parses under its old name: this model is built from the
     # assign request body, so a client pinned to the pre-rename field would

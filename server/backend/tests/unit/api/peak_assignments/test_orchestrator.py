@@ -214,6 +214,12 @@ def _patches(
                 {},
             ),
         ),
+        # The seeded re-score opens the sample file again; these tests declare
+        # their rows rather than measure them, so it stands down and every row
+        # keeps the finder's own fit. Its own wiring is tested separately.
+        "seeded": patch(
+            f"{_MOD}._seeded_fits", new_callable=AsyncMock, return_value={}
+        ),
         "claim": patch(f"{_MOD}.assignment_claim", _claim_stub()),
         "session": patch(f"{_MOD}.async_session", side_effect=recorder.session_factory),
         "progress": patch(
