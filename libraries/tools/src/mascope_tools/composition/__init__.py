@@ -1,6 +1,6 @@
 from .finder import assign_compositions
 from .heuristic_filter import formula_plausibility
-from .models import CompositionSearchConfig, HeuristicFilterConfig
+from .models import CompositionSearchConfig, HeuristicFilterConfig, PatternScoring
 
 
 # `formula_plausibility` is exported because it is not an internal detail of the
@@ -23,9 +23,14 @@ from .models import CompositionSearchConfig, HeuristicFilterConfig
 # reproducing a tier needs `str -> float`, not a frame and a log; bulk scoring
 # is a comprehension over the memoized `formula_plausibility`, which is exactly
 # what `chemical_plausibility` does inside.
+# `PatternScoring` is exported for the same reason as the two configs beside
+# it: a caller that runs a search describes its sample with all three, and the
+# scoring one is what makes the answer instrument-correct rather than
+# Orbitrap-shaped.
 __all__ = [
     "assign_compositions",
     "CompositionSearchConfig",
     "formula_plausibility",
     "HeuristicFilterConfig",
+    "PatternScoring",
 ]
