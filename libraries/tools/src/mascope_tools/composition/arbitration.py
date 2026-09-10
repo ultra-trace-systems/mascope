@@ -266,9 +266,7 @@ def density_of(
     )
     if anchor is None:
         return 1
-    return max(
-        1, sum(1 for c in arbitrated if abs(c.evidence - anchor) <= gap)
-    )
+    return max(1, sum(1 for c in arbitrated if abs(c.evidence - anchor) <= gap))
 
 
 # ---------------------------------------------------------------------------
