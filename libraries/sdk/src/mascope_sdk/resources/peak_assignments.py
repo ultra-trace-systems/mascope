@@ -228,9 +228,13 @@ class PeakAssignmentsResource(BaseResource):
                    through. Not folded into ``p_correct``. The run's
                    ``config.cross_channel`` holds the channels it searched.
                  - ``candidate_density``: how many formulas the peak's own
-                   evidence could not tell apart, 1 meaning the winner stood
-                   alone. Not recoverable from ``alternatives``, which the run
-                   caps at ``max_alternatives``.
+                   evidence could not tell apart from the one this row commits,
+                   1 meaning nothing ties it. Not recoverable from
+                   ``alternatives``, which the run caps at ``max_alternatives``.
+                   Null on a satellite and on an imported row - an external
+                   engine's own count, where it publishes one, stays in
+                   ``provenance.engine_provenance`` and is not read into this
+                   column, because it is a different measurement.
                  - ``mass_z``: how far the row's mass error sits from the
                    centre the run fitted over its own corroborated
                    assignments, in the widths it fitted there. The run's

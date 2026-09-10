@@ -28,6 +28,17 @@ What each one is, and what it is not:
   identity is an authored claim rather than a mass fit, so this is for what an
   untargeted search writes, and a caller that holds a curated row should not ask.
 
+  On the assignment gate that leaves it with nothing to name, and the reason is
+  worth stating rather than reading as a clean result: every resolved grid there
+  floors carbon at one, so no untargeted row can BE carbon-free, and every
+  carbon-free row committed on those 43 samples is curated - nitric and iodic
+  acid, sulfuric acid, ammonia, and trisulfane six times at assigned tier, which
+  is this module's own example of an implausible formula and which the rule
+  above declines to look at. What was measured is that nothing reaches the
+  signature, not that the allowlist is right. Whether a curated identity the
+  reference never confirms should be asked about after all is a real question
+  and an open one.
+
 A formula can carry more than one; :func:`implausible_signatures` returns them
 all and :func:`implausible_signature` the first, in the fixed order of
 :data:`SIGNATURES` so two callers agree on which one a row is named by.
@@ -46,10 +57,20 @@ Requiring the unsaturation to exceed what the heteroatoms can carry
 (``DBE > O + N``) narrows it to three rows on 43 samples, one of them still a
 confirmed aromatic.
 
-The reason there is nothing to catch is upstream: the finder's own H/C ratio
-window floors at 0.1, so a formula with no hydrogen never becomes a candidate in
-the first place. The rule this module would have added was already made where it
-belongs.
+What keeps a carbon cluster out of a run is the chemistry CONTEXT, and not this
+module or the heuristic filter's own ratio band. The filter GRADES a formula and
+rejects none on H/C - C60, C24 and C10H2 pass its rules at plausibility 1.0 -
+while ``ambient-air`` caps DBE/C at 0.75 and floors H/C at 0.7, and ``uronium``
+at 1.1 and 0.4. Those windows apply from ``config.CONTEXT_RATIO_MIN_CARBON``
+carbons up, which is exactly the population this signature misjudged: the C1 and
+C2 acids it took sit BELOW that floor, where the context deliberately says
+nothing, and above it the context has already refused what this would have
+caught.
+
+One thing that leaves open, stated rather than closed here: a run under context
+``none`` has no such window, so a cluster is committable there - and this
+signature would not have closed that gap either, since the threshold that
+catches the cluster takes the acids with it.
 """
 
 from __future__ import annotations
@@ -73,11 +94,19 @@ OXYGEN_LATTICE_RATIO = 1.3
 #: a small organic acid. Five, because four is malonic acid: on the assignment
 #: gate's 43 samples the oxygen-rich formulas the reference confirms are almost
 #: all malonic acid (O4), glycolic acid (O3), formic acid (O2) and oxalic acid
-#: (O4), and raising the floor above five spares nothing further while leaving
-#: real lattice fits above it. Measured rather than chosen: at O >= 4 the rule
-#: takes 260 committed rows of which the reference confirms 35, at O >= 5 it
-#: takes 212 and the confirmed rows fall to 3, and it stays at 3 all the way to
-#: O >= 9.
+#: (O4), and raising the floor above five spares nothing further. What is
+#: measured is what the floor SPARES: at O >= 4 the signature reaches 260
+#: committed rows of which the reference confirms 35, at O >= 5 it reaches 212
+#: and the confirmed rows fall to 3, and it stays at 3 all the way to O >= 9.
+#:
+#: What it TAKES is not measured to the same standard, and the difference
+#: matters. Of those 212 rows the reference contradicts 17, splits 3 and is
+#: SILENT on 189 - and 174 of the 212 are on the two TOF sets, where it is
+#: silent by construction. On the five Orbitrap sets the signature reaches 28
+#: rows: 3 confirmed, 3 contradicted, 2 split and 20 unjudged. So on the
+#: instruments the gate can judge it is three right and three wrong, not three
+#: against two hundred; a tiering weighing it should read it as a guard whose
+#: cost is known and whose benefit is mostly unmeasured.
 OXYGEN_LATTICE_MIN = 5
 
 #: The carbon-free neutrals a chemical-ionization source genuinely presents:
