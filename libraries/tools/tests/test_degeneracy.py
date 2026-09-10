@@ -15,6 +15,7 @@ import pytest
 from mascope_tools.composition.degeneracy import (
     RELAXED_ELEMENT_RANGES,
     SATURATION_DENSITY,
+    _plausible_rival,
     measure_degeneracy,
 )
 from mascope_tools.composition.models import CompositionSearchConfig
@@ -245,16 +246,137 @@ class TestTheCompetitorsNamed:
 
 
 class TestTheBoxTheMeasurementWasFittedOn:
-    @pytest.mark.parametrize(
-        "element", ["C", "H", "N", "O", "S", "F", "Cl", "Br", "Si"]
-    )
+    @pytest.mark.parametrize("element", ["H", "N", "O", "S", "F", "Cl", "Br", "Si"])
     def test_the_relaxed_box_admits_every_family_it_claims_to(self, element):
         # The point of the wider box is the families a run's own box leaves out,
         # so an edit that quietly dropped one would leave the measurement
         # answering the narrow question it exists to widen.
         assert f"{element}0-" in RELAXED_ELEMENT_RANGES
 
+    def test_carbon_is_floored_at_one(self):
+        # Every resolved Mascope grid floors carbon at one, so a carbon-free
+        # composition is not an answer this engine could have committed, and
+        # counting one as a rival to a committed reading inflates the density
+        # with hypotheses that were never available.
+        assert RELAXED_ELEMENT_RANGES.startswith("C1-")
+
     def test_oxygen_stays_capped(self):
         # An open oxygen range grids an O-monster mass fit onto every heavy
         # peak, and the count stops meaning anything.
         assert "O0-12 " in RELAXED_ELEMENT_RANGES + " "
+
+
+class TestTheCompetitorGate:
+    """peaky admits a competitor only when it carries at most a few heteroatom
+    TYPES. Mascope's heuristic rules cannot stand in: they grade rather than
+    gate, so a formula mixing four heteroatoms scores 1.0 and would be counted
+    as a rival."""
+
+    def test_a_formula_mixing_too_many_heteroatoms_is_not_a_rival(self):
+        assert not _plausible_rival({"formula": "C4H2BrClFNSi"})
+
+    @pytest.mark.parametrize(
+        "formula", ["C6H12O6", "C5H8N2O4", "C10H15NO4S", "C8H9BrO2", "C6H18OSi2"]
+    )
+    def test_the_species_a_source_presents_are(self, formula):
+        assert _plausible_rival({"formula": formula})
+
+    def test_the_gate_is_on_types_not_on_atoms(self):
+        # Three bromines is one heteroatom type; a real polybrominated species
+        # must not be gated out for being heavy in one element.
+        assert _plausible_rival({"formula": "C2H3Br3"})
+
+    @pytest.mark.parametrize("formula", ["O3^N", ""])
+    def test_an_unreadable_formula_is_not_gated_out(self, formula):
+        # Fails open like every other chemistry rule here.
+        assert _plausible_rival({"formula": formula})
+
+    def test_the_gate_reaches_the_count(self):
+        wide = measure_degeneracy(
+            [GLUCOSE_H],
+            config=config(
+                mass_range_ppm=300.0,
+                max_result_rows=200,
+                element_count_ranges="C1-8 H0-18 N0-3 O0-8 S0-1 F0-6 Cl0-2",
+            ),
+        )
+        assert wide[GLUCOSE_H].competitors
+        assert all(
+            _plausible_rival({"formula": name.split(" ")[0]})
+            for name in wide[GLUCOSE_H].competitors
+        )
+
+
+class TestWhenTheBoxWillNotFit:
+    """A density of 0 says the window was searched and held nothing. A box too
+    wide to enumerate over a peak's window is a different answer, and reporting
+    it as 0 says "nothing could be here" about a peak nothing looked at."""
+
+    @staticmethod
+    def refusing_to_band(monkeypatch):
+        """A walker that can build no grid, whatever it is asked for.
+
+        Searching one channel at a time makes a real overflow very hard to
+        reach - a band halves down to a dalton, and a dalton of any box holds
+        thousands of compositions rather than millions - so the branch is
+        pinned by injecting the failure rather than by finding a box that
+        still causes it. What it must never do is answer 0.
+        """
+        from mascope_tools.composition import degeneracy as module
+
+        monkeypatch.setattr(
+            module,
+            "grids_for_targets",
+            lambda targets, config, mechanisms, **kw: ((float(t), None) for t in targets),
+        )
+
+    def test_a_box_that_cannot_be_enumerated_is_not_a_density_of_zero(
+        self, monkeypatch
+    ):
+        self.refusing_to_band(monkeypatch)
+        readings = measure_degeneracy([GLUCOSE_H], config=config())
+        reading = readings[GLUCOSE_H]
+        assert reading.measured is False
+        assert reading.competitors == ()
+
+    def test_a_window_that_was_searched_and_held_nothing_is(self):
+        readings = measure_degeneracy([3.5], config=config())
+        assert readings[3.5].measured is True
+        assert readings[3.5].density == 0
+
+    def test_one_channel_that_cannot_be_enumerated_taints_the_count(
+        self, monkeypatch
+    ):
+        # Whatever the other channels found is a lower bound, not a count.
+        self.refusing_to_band(monkeypatch)
+        readings = measure_degeneracy(
+            [GLUCOSE_H], config=config(ionizations="+H+, +NH4+")
+        )
+        assert readings[GLUCOSE_H].measured is False
+
+    def test_a_channel_too_heavy_for_the_peak_is_not_a_gap(self, monkeypatch):
+        # A dibromide adduct weighs more than a peak at m/z 100, so that channel
+        # cannot explain it - which is an answer, not a hole. Reporting it as
+        # unmeasured would mark every light peak of a bromide run unanswered.
+        self.refusing_to_band(monkeypatch)
+        readings = measure_degeneracy([100.0], config=config(ionizations="+Br2-"))
+        assert readings[100.0].measured is True
+        assert readings[100.0].density == 0
+
+    def test_a_peak_s_answer_does_not_depend_on_who_it_was_asked_with(self):
+        # The banded walk sizes its bands from the whole list, and sized them
+        # once from every mechanism at once it would stop banding entirely after
+        # the first overflow - leaving every heavier peak of a long list with a
+        # different answer from the one it gets alone.
+        wide = config(
+            ionizations="+H+, +NH4+",
+            element_count_ranges="C1-20 H0-36 N0-3 O0-12 S0-1 F0-17",
+            mass_range_ppm=2.0,
+            max_result_rows=200,
+        )
+        crowd = sorted([120.05, 181.0707, 240.1, 300.15, 360.2, 420.25, 480.3])
+        together = measure_degeneracy(crowd, config=wide)
+        for mz in crowd:
+            alone = measure_degeneracy([mz], config=wide)
+            assert alone[mz].density == together[mz].density
+            assert alone[mz].measured == together[mz].measured
