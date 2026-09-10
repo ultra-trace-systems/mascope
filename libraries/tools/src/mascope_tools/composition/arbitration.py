@@ -183,10 +183,14 @@ def candidate_density(
     only as a third tie-break, its envelope filter can commit the second
     candidate, and arbitration orders by the product. Counted at the top
     instead, a density of 1 would say the ARBITRATION's best stands alone,
-    which is not a statement about the row it is stored on. Anchored, it says
-    how many formulas the evidence cannot separate from the committed one -
-    including any that beat it, since a rival the evidence ranks above the
-    commit is exactly what the count exists to surface.
+    which is not a statement about the row it is stored on.
+
+    Anchored, it counts every formula supported at least as well as the
+    committed one, less the gap: the tie around it, and everything ABOVE it
+    however far above. Not a symmetric window - a rival the evidence ranks
+    clearly higher than the commit is the strongest thing this count can have
+    to say, and a window centred on the commit would drop it once it got far
+    enough ahead and report 1, meaning "nothing competes".
 
     Computed in one pass rather than by arbitrating and counting the result.
     The finder asks this of every peak it searches, and on a dense spectrum
@@ -234,7 +238,7 @@ def candidate_density(
     anchor = best_evidence.get(str(around))
     if anchor is None:
         return 1
-    return max(1, sum(1 for evidence in evidences if abs(evidence - anchor) <= gap))
+    return max(1, sum(1 for evidence in evidences if evidence >= anchor - gap))
 
 
 def density_of(
@@ -266,7 +270,7 @@ def density_of(
     )
     if anchor is None:
         return 1
-    return max(1, sum(1 for c in arbitrated if abs(c.evidence - anchor) <= gap))
+    return max(1, sum(1 for c in arbitrated if c.evidence >= anchor - gap))
 
 
 # ---------------------------------------------------------------------------
