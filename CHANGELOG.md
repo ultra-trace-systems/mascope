@@ -7,13 +7,14 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
 ### Changed
 
 - Every committed peak assignment now records how many formulas its own
-  evidence could not tell apart. `provenance.candidate_density` is the size of
-  the tie at the top of the peak's arbitration - 1 when the winner stood alone,
-  more when the run ranked several equally - and it is flattened onto the
+  evidence could not tell apart from the one it commits.
+  `provenance.candidate_density` is 1 when nothing ties the committed formula
+  and more when the run ranked others its equal, and it is flattened onto the
   ledger row as `candidate_density`. It has to be recorded because it cannot be
   recovered afterwards: a row keeps at most `max_alternatives` of the
   competitors, so counting those counts the cap, and the finder's own shortlist
-  is the only place the rest ever existed. Nothing is demoted on it yet.
+  is the only place the rest ever existed. A satellite carries none - it was
+  predicted from its owner rather than searched. Nothing is demoted on it yet.
 
 - Two chemistry measurements are available in `mascope_tools` for the tiering
   to read. `composition.implausibility` names the formula shapes that are the
@@ -24,9 +25,14 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
   `composition.degeneracy` re-asks a peak's candidate count over a WIDER
   element box than the run enumerated, since "unique in the window" is a claim
   about the box: it counts the distinct plausible ions inside a calibrated mass
-  window, collapsing two readings of one ion into one candidate. That
-  measurement costs about 40 ms per peak over the wide box, so it is for one
-  peak at a time when somebody is looking at it, not for a whole run.
+  window, collapsing two readings of one ion into one candidate and gating out
+  the formulas that mix more heteroatom types than a source presents. It
+  searches one ionization channel at a time, because a band sized from every
+  channel at once can overflow the enumerator and leave a spectrum's heavier
+  peaks silently unsearched; a peak it still cannot answer for reports that
+  rather than a count of zero. About 27 s of band grids a spectrum plus 6 ms a
+  peak, so it is for one peak at a time when somebody is looking at it, not for
+  a whole run.
 
 - Peak assignment records what a sample's other channels say about each
   committed reading, and caps the one reading that rests on a prior alone.
