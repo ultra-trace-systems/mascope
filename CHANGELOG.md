@@ -17,10 +17,9 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
 
 - Two chemistry measurements are available in `mascope_tools` for the tiering
   to read. `composition.implausibility` names the formula shapes that are the
-  product of a mass search rather than of a source - a carbon cluster
-  (DBE per carbon at or above 1, which leaves aromatics and perfluorinated
-  chains alone), an oxygen lattice (more than 1.3 oxygens per carbon and at
-  least five of them, which leaves the small organic acids alone), and a
+  product of a mass search rather than of a source - an oxygen lattice (more
+  than 1.3 oxygens per carbon and at least five of them, the second condition
+  being what leaves malonic, glycolic, formic and oxalic acid alone) and a
   carbon-free formula off the short list of inorganics these sources make.
   `composition.degeneracy` re-asks a peak's candidate count over a WIDER
   element box than the run enumerated, since "unique in the window" is a claim
