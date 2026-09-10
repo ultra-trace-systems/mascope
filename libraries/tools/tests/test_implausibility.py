@@ -23,8 +23,9 @@ class TestTheCarbonClusterThatIsNotHere:
     """The signature the plan named and the measurement withdrew.
 
     ``DBE/C >= 1`` reduces to ``H <= 2 + N``, so it names hydrogen-poor
-    molecules rather than large skeletons - and the skeleton statement it was
-    meant to make is already made by the finder's H/C ratio window.
+    molecules rather than large skeletons. What keeps a cluster out of a run is
+    the chemistry CONTEXT's DBE/C and H/C windows - not this module, and not the
+    heuristic filter, which grades a formula rather than rejecting it.
     """
 
     @pytest.mark.parametrize(
@@ -41,13 +42,27 @@ class TestTheCarbonClusterThatIsNotHere:
         assert implausible_signatures(formula) == ()
 
     @pytest.mark.parametrize("formula", ["C60", "C10H2", "C24"])
-    def test_and_so_is_a_real_cluster_because_the_finder_never_proposes_one(
-        self, formula
-    ):
+    def test_and_so_is_a_real_cluster(self, formula):
         # Not an endorsement of the formula - a statement about where the rule
-        # lives. A composition with no hydrogen is outside the finder's H/C
-        # window and never becomes a candidate, so nothing here has to catch it.
+        # belongs. A context that names ambient chemistry refuses these on DBE/C
+        # and H/C; a run under context `none` commits them, and this signature
+        # would not have stopped that either, because the same threshold takes
+        # formic and oxalic acid with them.
         assert implausible_signatures(formula) == ()
+
+    def test_the_filter_itself_does_not_reject_them(self):
+        # The claim this module used to make, corrected: the heuristic rules
+        # keep a hydrogen-free composition at plausibility 1.0.
+        from mascope_tools.composition.heuristic_filter import formula_plausibility
+
+        assert formula_plausibility("C60") == 1.0
+        assert formula_plausibility("C10H2") == 1.0
+
+    def test_and_the_context_windows_are_what_do(self):
+        from mascope_tools.composition.profiles import AMBIENT_AIR
+
+        assert AMBIENT_AIR.dbe_to_c[1] < 1.0
+        assert AMBIENT_AIR.h_to_c[0] > 0.0
 
 
 class TestTheOxygenLattice:
