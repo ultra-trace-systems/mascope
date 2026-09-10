@@ -956,6 +956,16 @@ def invert_matches_to_peak_assignments(
                 # untargeted stage drops it from a child for the same reason
                 # (`finder.process_isotopes`), and the schema says a satellite
                 # carries none.
+                #
+                # `around` cannot change the number HERE and is passed anyway:
+                # the row sort above orders by `_evidence`, which is the same
+                # product the arbitration ranks on, so this stage's winner is
+                # always the arbitration's top and the anchored count is the top
+                # tie set by construction. It matters in the untargeted stage,
+                # where the finder ranks on the fit alone. Passing it keeps the
+                # count anchored on what the row commits if this selection ever
+                # stops agreeing - it is not pinned by a test, because no input
+                # can make the two disagree while that sort key stands.
                 **(
                     {
                         CANDIDATE_DENSITY: density_of(
