@@ -360,6 +360,17 @@ class PeakAssignmentsResource(BaseResource):
         alternative compositions considered for the peak and the full scoring
         provenance.
 
+        Every committed row's provenance carries ``tier_reasons``: why it holds
+        the tier it holds, as a list of ``{rule, detail, caps}``. ``caps`` marks
+        a reason that would take the top tier - a radical neutral, a peak whose
+        evidence left rivals standing with nothing else corroborating it, a
+        formula shaped like a mass fit, a peak a committed neighbour's envelope
+        already predicts, or a demote an earlier pass made. A row with no such
+        reason lists what it kept its tier ON instead. Rules only ever demote,
+        and the run's ``config.tiering`` records the rule set's version and the
+        thresholds it judged at - a tier is only comparable across two runs
+        together with those.
+
         On a hand-curated row (``source`` ``manual``) the provenance also
         carries a ``manual`` block recording who changed what: ``action``,
         ``user_id``, ``at``, and ``previous`` - the displaced winner, kept
