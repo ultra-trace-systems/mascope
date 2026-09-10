@@ -101,7 +101,12 @@ REASON_ENVELOPE_NEIGHBOUR = "envelope_neighbour"
 REASON_CANDIDATE_DENSITY = "candidate_density"
 
 #: Reasons a row KEEPS its tier, so that every committed row carries one.
-REASON_UNIQUE = "unique_in_the_searched_box"
+#: ``no_close_rival`` and not "unique": a density of 1 says the evidence
+#: SEPARATED the winner from the peak's other candidates, not that the run's
+#: element box held no other formula for the mass. Uniqueness over a box is what
+#: ``mascope_tools.composition.degeneracy`` measures, and it is a wider question
+#: than this pass asks.
+REASON_NO_CLOSE_RIVAL = "no_close_rival"
 REASON_CORROBORATED = "corroborated"
 REASON_INHERITED = "inherited_from_owner"
 
@@ -408,9 +413,9 @@ def standing_reasons(row: dict) -> list[dict]:
     if isinstance(density, int) and density < DENSITY_LIMIT:
         reasons.append(
             _reason(
-                REASON_UNIQUE,
-                "no other formula in the box this run searched explains the peak "
-                "as well",
+                REASON_NO_CLOSE_RIVAL,
+                "the evidence separates this formula from every other candidate "
+                "the run competed for the peak",
                 caps=False,
             )
         )
