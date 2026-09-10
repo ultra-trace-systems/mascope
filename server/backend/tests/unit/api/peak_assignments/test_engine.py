@@ -2038,3 +2038,91 @@ class TestReferenceStageAInversion:
         assert assignment["target_ion_id"] == "ion1"
         # ...and the reference name rides alongside.
         assert assignment["provenance"]["reference_identities"] == _REF_IDENTITIES
+
+
+class TestTheCandidateDensityOnAStageARow:
+    """Step 2.4: the count of formulas the peak's evidence could not separate
+    from the committed one belongs to the peak the ION was searched at.
+
+    Stage A writes one provenance blob per row of a winner's envelope, so
+    without this the satellites of every curated identity carried the count
+    their PARENT earned - 245 of them on the assignment gate, against the
+    schema's "null on a satellite"."""
+
+    @staticmethod
+    def _family() -> pd.DataFrame:
+        """One curated identity claiming its M0 and its M+1."""
+        return pd.DataFrame(
+            [
+                _isotope_row(
+                    target_isotope_id="iso-m0",
+                    target_ion_id="ion1",
+                    target_compound_id="cmp1",
+                    compound_formula="C6H12O6",
+                    ion_formula="C6H13O6+",
+                    mz=181.0707,
+                    relative_abundance=1.0,
+                    sample_peak_id="p1",
+                ),
+                _isotope_row(
+                    target_isotope_id="iso-m1",
+                    target_ion_id="ion1",
+                    target_compound_id="cmp1",
+                    compound_formula="C6H12O6",
+                    ion_formula="C6H13O6+",
+                    mz=182.0740,
+                    relative_abundance=0.066,
+                    sample_peak_id="p2",
+                ),
+            ]
+        )
+
+    def test_the_main_row_carries_it_and_the_satellite_does_not(self):
+        assignments = invert_matches_to_peak_assignments(
+            self._family(), "sample1", "run1", CANDIDATE, ASSIGNED
+        )
+        by_peak = {a["sample_peak_id"]: a for a in assignments}
+
+        assert by_peak["p1"]["role"] == ROLE_M0
+        assert by_peak["p1"]["provenance"]["candidate_density"] == 1
+
+        assert by_peak["p2"]["role"] == ROLE_ISO_CHILD
+        assert "candidate_density" not in by_peak["p2"]["provenance"]
+
+    def test_the_satellite_keeps_the_rest_of_its_provenance(self):
+        # Only the density is withheld: a satellite still records the evidence
+        # its tier was read off and the plausibility of the formula it carries.
+        assignments = invert_matches_to_peak_assignments(
+            self._family(), "sample1", "run1", CANDIDATE, ASSIGNED
+        )
+        satellite = next(a for a in assignments if a["sample_peak_id"] == "p2")
+        assert satellite["provenance"]["evidence"] is not None
+        assert satellite["provenance"]["plausibility"] == 1.0
+        assert satellite["provenance"]["n_candidates"] == 1
+
+    def test_the_count_is_around_the_formula_the_row_commits(self):
+        # Two curated identities on one peak, the second fitting better but
+        # implausible: the arbitration ranks the plausible one first and that is
+        # what the row commits, so the count is taken around it.
+        rows = self._family().to_dict("records")
+        rows.append(
+            _isotope_row(
+                target_isotope_id="iso-other",
+                target_ion_id="ion2",
+                target_compound_id="cmp2",
+                compound_formula="C6H17NO4",  # over-saturated: plausibility 0
+                ion_formula="C6H18NO4+",
+                mz=181.0707,
+                relative_abundance=1.0,
+                sample_peak_id="p1",
+                match_score=0.99,
+            )
+        )
+        assignments = invert_matches_to_peak_assignments(
+            pd.DataFrame(rows), "sample1", "run1", CANDIDATE, ASSIGNED
+        )
+        main = next(a for a in assignments if a["sample_peak_id"] == "p1")
+        assert main["assigned_formula"] == "C6H12O6"
+        # The rival has no evidence at all, so nothing ties the commit.
+        assert main["provenance"]["candidate_density"] == 1
+        assert main["provenance"]["n_candidates"] == 2
