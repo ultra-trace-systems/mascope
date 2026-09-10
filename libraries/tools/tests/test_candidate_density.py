@@ -200,3 +200,52 @@ class TestTheTwoRoutesAgree:
         assert candidate_density(candidates) == density_of(
             arbitrate_candidates(candidates)
         )
+
+
+class TestAnchoringOnTheCommittedFormula:
+    """The finder ranks by fit score and commits the best reading whose envelope
+    holds its required lines; the arbitration ranks by fit x plausibility. When
+    those disagree, a count taken at the top of the arbitration is a statement
+    about a formula the row does not carry."""
+
+    #: C6H17NO4 is over-saturated - plausibility 0 - so the arbitration ranks it
+    #: last however well it fits, while a fit-first ranking would put it first.
+    CONTESTED = [
+        {"formula": "C6H12O6", "fit_score": 0.90},
+        {"formula": "C5H8N2O4", "fit_score": 0.88},
+        {"formula": "C3H4O4", "fit_score": 0.10},
+    ]
+
+    def test_the_anchor_moves_the_count(self):
+        # C3H4O4 is far below the top pair, so around IT nothing ties.
+        assert candidate_density(self.CONTESTED) == 2
+        assert candidate_density(self.CONTESTED, around="C3H4O4") == 1
+
+    def test_a_committed_formula_in_the_tie_counts_the_tie(self):
+        assert candidate_density(self.CONTESTED, around="C6H12O6") == 2
+        assert candidate_density(self.CONTESTED, around="C5H8N2O4") == 2
+
+    def test_a_rival_the_evidence_ranks_ABOVE_the_commit_is_counted(self):
+        # The whole point: a formula the evidence prefers to the committed one
+        # is exactly what the count exists to surface, so the neighbourhood is
+        # symmetric rather than "candidates below the commit".
+        candidates = [
+            {"formula": "C6H12O6", "fit_score": 0.95},
+            {"formula": "C5H8N2O4", "fit_score": 0.92},
+        ]
+        assert candidate_density(candidates, around="C5H8N2O4") == 2
+
+    def test_a_formula_that_is_not_a_candidate_stands_alone(self):
+        assert candidate_density(self.CONTESTED, around="C9H12N2O2") == 1
+
+    def test_the_gap_is_still_the_peak_s_own(self):
+        # Anchoring moves what is counted, never how far apart two candidates
+        # have to be to count as separated - that stays a fraction of the peak's
+        # BEST evidence, so two rows of one peak use one scale.
+        assert candidate_density(self.CONTESTED, around="C3H4O4", tie_tol=1.0) == 3
+
+    def test_both_routes_agree_when_anchored(self):
+        for formula in ("C6H12O6", "C5H8N2O4", "C3H4O4", "C9H12N2O2"):
+            assert candidate_density(self.CONTESTED, around=formula) == density_of(
+                arbitrate_candidates(self.CONTESTED), around=formula
+            )

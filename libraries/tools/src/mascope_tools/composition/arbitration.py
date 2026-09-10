@@ -159,6 +159,7 @@ def arbitrate_candidates(
 def candidate_density(
     candidates: Iterable[Any],
     *,
+    around: str | None = None,
     tie_tol: float = DEFAULT_TIE_TOL,
 ) -> int:
     """How many distinct formulas a peak's own evidence cannot separate.
@@ -176,6 +177,17 @@ def candidate_density(
     different case and never reach here: the finder elects one of them before
     anything is ranked, so a family arrives as a single candidate.
 
+    ``around`` anchors the count on ONE formula - the one the caller committed -
+    and is what a caller that has committed something should pass. The two
+    rankings need not agree: the finder orders by fit score with plausibility
+    only as a third tie-break, its envelope filter can commit the second
+    candidate, and arbitration orders by the product. Counted at the top
+    instead, a density of 1 would say the ARBITRATION's best stands alone,
+    which is not a statement about the row it is stored on. Anchored, it says
+    how many formulas the evidence cannot separate from the committed one -
+    including any that beat it, since a rival the evidence ranks above the
+    commit is exactly what the count exists to surface.
+
     Computed in one pass rather than by arbitrating and counting the result.
     The finder asks this of every peak it searches, and on a dense spectrum
     building the full ranking per peak - a dataclass and a normalised confidence
@@ -185,11 +197,15 @@ def candidate_density(
 
     :param candidates: The peak's candidates, in any form
         :func:`arbitrate_candidates` accepts.
+    :param around: The formula to count around - the committed one. Omitted,
+        the count is taken at the top of the arbitration, which is what a
+        caller with nothing committed yet means. A formula not among the
+        candidates counts as itself alone.
     :param tie_tol: The gap that counts as unresolved, as passed to
         :func:`arbitrate_candidates`.
-    :return: The size of the tie set at the top of the arbitration, at least 1;
-        0 only when there were no candidates at all. When no candidate has any
-        evidence every one of them ties, so the density is the whole list -
+    :return: How many distinct formulas the evidence cannot separate, at least
+        1; 0 only when there were no candidates at all. When no candidate has
+        any evidence every one of them ties, so the density is the whole list -
         nothing was measured, and saying "unique" there would be a claim the
         measurement did not make.
     """
@@ -209,11 +225,21 @@ def candidate_density(
     if sum(evidences) <= 0:
         # Nothing was measured, so nothing was separated.
         return len(evidences)
+    # The gap is a property of the peak - a fraction of its best evidence -
+    # whichever candidate the count is anchored on, so moving the anchor never
+    # changes how far apart two candidates have to be to count as separated.
     gap = max(tie_tol * best, TIE_ABS_FLOOR)
-    return max(1, sum(1 for evidence in evidences if best - evidence <= gap))
+    if around is None:
+        return max(1, sum(1 for evidence in evidences if best - evidence <= gap))
+    anchor = best_evidence.get(str(around))
+    if anchor is None:
+        return 1
+    return max(1, sum(1 for evidence in evidences if abs(evidence - anchor) <= gap))
 
 
-def density_of(arbitrated: Sequence[ArbitratedCandidate]) -> int:
+def density_of(
+    arbitrated: Sequence[ArbitratedCandidate], *, around: str | None = None
+) -> int:
     """The same count, read off an arbitration a caller already has.
 
     Stage A arbitrates every peak to get its confidence and tie flag; asking
@@ -221,12 +247,28 @@ def density_of(arbitrated: Sequence[ArbitratedCandidate]) -> int:
     time for a number the first pass already knows.
 
     :param arbitrated: The output of :func:`arbitrate_candidates`.
-    :return: The size of the tie set at the top, at least 1; 0 for an empty
-        arbitration.
+    :param around: The committed formula, as in :func:`candidate_density`.
+        Omitted, the count is taken at the top of the arbitration.
+    :return: How many distinct formulas the evidence cannot separate, at least
+        1; 0 for an empty arbitration.
     """
     if not arbitrated:
         return 0
-    return max(1, sum(1 for candidate in arbitrated if candidate.is_tie))
+    if around is None:
+        return max(1, sum(1 for candidate in arbitrated if candidate.is_tie))
+    best = max(candidate.evidence for candidate in arbitrated)
+    if sum(candidate.evidence for candidate in arbitrated) <= 0:
+        return len(arbitrated)
+    gap = max(DEFAULT_TIE_TOL * best, TIE_ABS_FLOOR)
+    anchor = next(
+        (c.evidence for c in arbitrated if c.formula == str(around)),
+        None,
+    )
+    if anchor is None:
+        return 1
+    return max(
+        1, sum(1 for c in arbitrated if abs(c.evidence - anchor) <= gap)
+    )
 
 
 # ---------------------------------------------------------------------------
