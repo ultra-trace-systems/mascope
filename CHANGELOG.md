@@ -15,6 +15,20 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
   competitors, so counting those counts the cap, and the finder's own shortlist
   is the only place the rest ever existed. Nothing is demoted on it yet.
 
+- Two chemistry measurements are available in `mascope_tools` for the tiering
+  to read. `composition.implausibility` names the formula shapes that are the
+  product of a mass search rather than of a source - a carbon cluster
+  (DBE per carbon at or above 1, which leaves aromatics and perfluorinated
+  chains alone), an oxygen lattice (more than 1.3 oxygens per carbon and at
+  least five of them, which leaves the small organic acids alone), and a
+  carbon-free formula off the short list of inorganics these sources make.
+  `composition.degeneracy` re-asks a peak's candidate count over a WIDER
+  element box than the run enumerated, since "unique in the window" is a claim
+  about the box: it counts the distinct plausible ions inside a calibrated mass
+  window, collapsing two readings of one ion into one candidate. That
+  measurement costs about 40 ms per peak over the wide box, so it is for one
+  peak at a time when somebody is looking at it, not for a whole run.
+
 - Peak assignment records what a sample's other channels say about each
   committed reading, and caps the one reading that rests on a prior alone.
   A run groups its committed monoisotopic winners by neutral formula across
