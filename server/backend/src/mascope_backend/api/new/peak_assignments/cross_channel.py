@@ -73,6 +73,8 @@ own terms here rather than left to that.
 
 from __future__ import annotations
 
+from typing import Iterable
+
 from mascope_backend.api.new.peak_assignments.engine import (
     ROLE_ISO_CHILD,
     ROLE_M0,
@@ -193,8 +195,8 @@ def neutral_key(formula: str | None) -> str:
 
 def channels_by_neutral(
     assignments: list[dict], notation_by_id: dict[str, str]
-) -> dict[str, frozenset[str]]:
-    """Which channels each committed neutral was seen through in this sample.
+) -> dict[str, dict[str, str | None]]:
+    """Which channels each committed neutral was seen through, and how well.
 
     Monoisotopic rows only. A satellite is its parent's ion measured on a second
     line of the same envelope, not a second channel, so counting it would let
@@ -203,25 +205,65 @@ def channels_by_neutral(
     Keyed on the neutral's element counts rather than on its written formula: a
     curated row spells one explicit ("C1H4N2O1") where an untargeted row does
     not ("CH4N2O"), so the same neutral seen through Stage A and Stage B would
-    otherwise fail to group. No row on the gate changes today; the key is the
-    normalized one so that none can.
+    otherwise fail to group. It changes three rows on the gate - urea, seen
+    through the carbonate channel and through the curated rows on the bromide
+    TOF set, whose corroborated count is 184 where the written key gave 181.
+
+    The tier travels with the channel because this map is also the index the
+    partner lookup reads. Built in one pass over the ledger, it answers "what
+    else saw this neutral, and how confidently" with a dict read; asking the
+    ledger itself per row made the pass quadratic and doubled the run time on
+    the dense sets (one TOF set 236 -> 452 s over its six samples).
 
     :param assignments: Every row built for this sample.
     :param notation_by_id: The run's mechanisms, by the id the rows carry.
-    :return: The channel set of each committed neutral, by normalized formula.
+    :return: Per normalized neutral, the best tier committed on each channel
+        (None where a row carried a tier this module does not rank).
     """
-    seen: dict[str, set[str]] = {}
+    seen: dict[str, dict[str, str | None]] = {}
     for row in assignments:
         if not is_committed(row) or row.get("role") != ROLE_M0:
             continue
         notation = notation_by_id.get(str(row.get("ionization_mechanism_id")))
         if not notation:
             continue
-        seen.setdefault(neutral_key(row.get("assigned_formula")), set()).add(notation)
-    return {formula: frozenset(channels) for formula, channels in seen.items()}
+        by_channel = seen.setdefault(neutral_key(row.get("assigned_formula")), {})
+        tier = row.get("tier")
+        tier = tier if tier in TIER_RANK else None
+        if notation not in by_channel or _outranks(tier, by_channel[notation]):
+            by_channel[notation] = tier
+    return seen
 
 
-def fixes_nitrogen(channels: frozenset[str], donors: frozenset[str]) -> bool:
+def _outranks(tier: str | None, other: str | None) -> bool:
+    """Whether ``tier`` is the stronger of two tiers, unrankable counting last."""
+    if tier is None:
+        return False
+    return other is None or TIER_RANK[tier] > TIER_RANK[other]
+
+
+def partner_tier(channels: dict[str, str | None], own: str | None) -> str | None:
+    """The best tier any channel other than this row's committed the neutral at.
+
+    A partner's own confidence is most of what the corroboration flag is worth -
+    measured on the gate, an assigned partner and a candidate one corroborate
+    about equally on an Orbitrap while a below-assignability one is weaker, and
+    on the TOF sets most partners sit below assignability - so the row records it
+    and step 2.4 weighs it rather than counting rows.
+
+    :param channels: This neutral's channels and their best tiers.
+    :param own: The channel of the row being described, excluded whole: another
+        row of the same neutral through the same channel is the same evidence.
+    :return: The strongest partner tier, or None where there is no partner.
+    """
+    best: str | None = None
+    for channel, tier in channels.items():
+        if channel != own and _outranks(tier, best):
+            best = tier
+    return best
+
+
+def fixes_nitrogen(channels: Iterable[str], donors: frozenset[str]) -> bool:
     """Whether this neutral's own channels settle how many nitrogens it has.
 
     Either of the two ways named in the module docstring: a channel that donates
@@ -232,10 +274,9 @@ def fixes_nitrogen(channels: frozenset[str], donors: frozenset[str]) -> bool:
     :param donors: This run's nitrogen-donating channels.
     :return: Whether the count is fixed by observation.
     """
-    seen_donors = channels & donors
-    return (
-        bool(channels - seen_donors) or len(seen_donors) >= CHANNELS_FOR_CORROBORATION
-    )
+    seen = frozenset(channels)
+    seen_donors = seen & donors
+    return bool(seen - seen_donors) or len(seen_donors) >= CHANNELS_FOR_CORROBORATION
 
 
 def apply_cross_channel(
@@ -281,19 +322,15 @@ def apply_cross_channel(
         if not is_committed(row) or row.get("role") != ROLE_M0:
             continue
         summary["committed_m0"] += 1
-        seen = channels.get(neutral_key(row.get("assigned_formula")), frozenset())
+        seen = channels.get(neutral_key(row.get("assigned_formula")), {})
         corroborated = len(seen) >= CHANNELS_FOR_CORROBORATION
         summary["corroborated"] += corroborated
         record: dict = {
             "channels": sorted(seen),
             "corroborated": corroborated,
-            # The strongest tier any OTHER channel's reading of this neutral
-            # holds. A partner's own confidence is most of what the flag is
-            # worth - measured on the gate, an assigned partner and a candidate
-            # one corroborate about equally on an Orbitrap while a
-            # below-assignability one is weaker, and on the TOF sets most
-            # partners sit below - so 2.4 can weigh it rather than count rows.
-            "partner_tier": _partner_tier(row, assignments, notation_by_id),
+            "partner_tier": partner_tier(
+                seen, notation_by_id.get(str(row.get("ionization_mechanism_id")))
+            ),
         }
         if row.get("source") != SOURCE_DATABASE and not fixes_nitrogen(seen, donors):
             displaced = nitrogen_ambiguity(row, notation_by_id, donors)
@@ -323,26 +360,6 @@ def apply_cross_channel(
             summary["capped_satellites"] += 1
         row.setdefault("provenance", {})["cross_channel"] = record
     return summary
-
-
-def _partner_tier(
-    row: dict, assignments: list[dict], notation_by_id: dict[str, str]
-) -> str | None:
-    """The best tier another channel's reading of this row's neutral holds."""
-    key = neutral_key(row.get("assigned_formula"))
-    channel = notation_by_id.get(str(row.get("ionization_mechanism_id")))
-    best: str | None = None
-    for other in assignments:
-        if other is row or not is_committed(other) or other.get("role") != ROLE_M0:
-            continue
-        if neutral_key(other.get("assigned_formula")) != key:
-            continue
-        if notation_by_id.get(str(other.get("ionization_mechanism_id"))) == channel:
-            continue
-        tier = other.get("tier")
-        if tier in TIER_RANK and (best is None or TIER_RANK[tier] > TIER_RANK[best]):
-            best = tier
-    return best
 
 
 def _cap(row: dict, record: dict) -> bool:
