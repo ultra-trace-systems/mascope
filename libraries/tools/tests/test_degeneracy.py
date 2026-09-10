@@ -327,7 +327,9 @@ class TestWhenTheBoxWillNotFit:
         monkeypatch.setattr(
             module,
             "grids_for_targets",
-            lambda targets, config, mechanisms, **kw: ((float(t), None) for t in targets),
+            lambda targets, config, mechanisms, **kw: (
+                (float(t), None) for t in targets
+            ),
         )
 
     def test_a_box_that_cannot_be_enumerated_is_not_a_density_of_zero(
@@ -344,9 +346,7 @@ class TestWhenTheBoxWillNotFit:
         assert readings[3.5].measured is True
         assert readings[3.5].density == 0
 
-    def test_one_channel_that_cannot_be_enumerated_taints_the_count(
-        self, monkeypatch
-    ):
+    def test_one_channel_that_cannot_be_enumerated_taints_the_count(self, monkeypatch):
         # Whatever the other channels found is a lower bound, not a count.
         self.refusing_to_band(monkeypatch)
         readings = measure_degeneracy(
