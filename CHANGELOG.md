@@ -6,6 +6,29 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
 
 ### Changed
 
+- **Every committed peak assignment now says why it holds the tier it holds.**
+  `provenance.tier_reasons` is a list of `{rule, detail, caps}`: a row that was
+  demoted names what took it, and a row that was not names what it kept its tier
+  on. The evidence bands are unchanged and remain the floor - the new rules only
+  ever demote, so no row ends above what its evidence earned.
+
+  What can take the top tier, beyond the mass gate and the reagent-nitrogen rule
+  that already could: a committed neutral that is a RADICAL rather than a
+  molecule (measured against a reference engine over 43 samples, 0 of 1,794 such
+  rows are confirmed, corroborated or not - and the reference's own 629 are
+  never confirmed by this engine either); a peak whose evidence left other
+  formulas standing with no second channel to settle it; a formula shaped like a
+  mass fit rather than a molecule; and a peak that a committed neighbour's
+  isotope envelope already predicts a line for, tall enough to account for it.
+  A curated row is exempt from the radical rule, because what the rule doubts is
+  the finder electing a radical reading of an ion, and a curated row was matched
+  to an identity somebody authored.
+
+  The run records the rule set on `config.tiering` - its version, the thresholds
+  it judged at, and what each rule took - for the same reason it records the
+  tier bands: a tier is only comparable across two runs together with the rules
+  that produced it.
+
 - Every committed peak assignment now records how many formulas its own
   evidence could not tell apart from the one it commits.
   `provenance.candidate_density` is 1 when nothing ties the committed formula

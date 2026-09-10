@@ -129,6 +129,13 @@ MASS_CALIBRATION_KEY = "mass_calibration"
 #: one is how many independent chemistries saw the same neutral.
 CROSS_CHANNEL_KEY = "cross_channel"
 
+#: Key under which a run records the rule set that judged its commits: the
+#: version, the thresholds it demoted on, and what each rule took. On the run
+#: for the same reason the tier BANDS are - a tier is only comparable across
+#: two runs together with the rules that produced it, and these rules will
+#: change while old ledgers stay readable.
+TIERING_KEY = "tiering"
+
 #: Key under which a run records how much of its spectrum the untargeted stage
 #: was actually offered. On the run's config beside the resolved profile, and for
 #: the same reason: "searched 300 of 2,577 peaks" and "searched all 2,577" are

@@ -81,6 +81,7 @@ from mascope_backend.api.new.peak_assignments.engine import (
     PATTERN_SCORING_KEY,
     REFERENCE_IDENTITIES_COL,
     SEARCH_SCOPE_KEY,
+    TIERING_KEY,
     SampleMassAccuracy,
     build_unassigned_assignments,
     calibration_meta,
@@ -118,6 +119,7 @@ from mascope_backend.api.new.peak_assignments.reagent_pass import (
 )
 from mascope_backend.api.new.peak_assignments.schemas import DEFAULT_PAGE_LIMIT
 from mascope_backend.api.new.peak_assignments.seeded_scoring import score_seeds
+from mascope_backend.api.new.peak_assignments.tiering import apply_tiering
 from mascope_backend.db import (
     AssignmentVerification,
     BatchPeakOccurrence,
@@ -1437,6 +1439,7 @@ def _stored_run_config(
     pattern_scoring: dict | None = None,
     mass_calibration: dict | None = None,
     cross_channel: dict | None = None,
+    tiering: dict | None = None,
 ) -> dict:
     """The blob persisted on a run: the requested config plus server-side state.
 
@@ -1468,12 +1471,18 @@ def _stored_run_config(
     ``mass_z`` is stated in and what its gate demoted on. A z without the
     calibration behind it is a number with no units.
 
+    The tiering is the sixth, and it is on the run for the same reason the tier
+    BANDS are: a tier is only comparable across two runs together with the rules
+    that produced it. It records the rule set's version, the thresholds it
+    demoted on, and what each rule took.
+
     :param config: The validated client-supplied run configuration.
     :param resolved_profile: The chemistry the run resolved to, when known.
     :param search_scope: What the untargeted stage was offered, once it is known.
     :param pattern_scoring: What it scored an envelope at, once it is known.
     :param mass_calibration: What the finished ledger measured of itself.
     :param cross_channel: What the sample's own channels corroborated.
+    :param tiering: The rule set that judged the commits, and what it took.
     :return: A JSON-serializable dict for ``PeakAssignmentRun.config``.
     """
     stored = config.model_dump()
@@ -1488,6 +1497,8 @@ def _stored_run_config(
         stored[MASS_CALIBRATION_KEY] = mass_calibration
     if cross_channel is not None:
         stored[CROSS_CHANNEL_KEY] = cross_channel
+    if tiering is not None:
+        stored[TIERING_KEY] = tiering
     return stored
 
 
@@ -1499,6 +1510,7 @@ async def _record_resolved_profile(
     pattern_scoring: dict | None = None,
     mass_calibration: dict | None = None,
     cross_channel: dict | None = None,
+    tiering: dict | None = None,
 ) -> None:
     """Write the resolved chemistry onto a run that is about to use it.
 
@@ -1518,6 +1530,7 @@ async def _record_resolved_profile(
     :param pattern_scoring: What it scored an envelope at, once known.
     :param mass_calibration: What the ledger measured of its own mass accuracy.
     :param cross_channel: What the sample's own channels corroborated.
+    :param tiering: The rule set that judged the commits, and what it took.
     """
     async with async_session() as session:
         await session.execute(
@@ -1531,6 +1544,7 @@ async def _record_resolved_profile(
                     pattern_scoring,
                     mass_calibration,
                     cross_channel,
+                    tiering,
                 )
             )
         )
@@ -2173,6 +2187,13 @@ async def _run_sample_assignment(
         stage_b_assignments: list[dict] = []
         search_scope: dict | None = None
         scoring_snapshot: dict | None = None
+        # How this sample's envelopes are predicted and matched, resolved before
+        # the untargeted branch because the tiering pass reads it whether or not
+        # that branch ran: a run of Stage A alone still has committed rows whose
+        # peaks a neighbour's envelope may already predict.
+        scoring = pattern_scoring_for(
+            match_params, mass_accuracy, resolved_profile.fallback_sigma_ppm
+        )
         # The mode's own mechanisms decide whether there is anything to search
         # at all; the opportunistic channels are an addition to a sample's
         # chemistry, not a substitute for it. A mode that declares nothing is
@@ -2277,9 +2298,6 @@ async def _run_sample_assignment(
                     for column in ("mz", "intensity", "signal_to_noise")
                     if column in search_peaks_df.columns
                 ]
-                scoring = pattern_scoring_for(
-                    match_params, mass_accuracy, resolved_profile.fallback_sigma_ppm
-                )
                 scoring_snapshot = pattern_scoring_snapshot(scoring, mass_accuracy)
                 runtime.logger.info(
                     f"Untargeted stage for sample '{sample.sample_item_name}' scores "
@@ -2380,6 +2398,33 @@ async def _run_sample_assignment(
                 else "no channel of this mode donates nitrogen, so none is gated on it"
             )
         )
+        # -- Why every committed row holds the tier it holds, and the rows whose
+        # answer is that the top tier was not earned. Last, because two of its
+        # rules read what the passes above recorded and one reads the finished
+        # ledger's own envelopes; and demote-only, like both of them, so the
+        # order decides which pass is named and never which tier a row ends on.
+        tiering = apply_tiering(
+            stage_a_assignments + stage_b_assignments,
+            mz_tolerance_ppm=scoring.mz_tolerance_ppm,
+            abundance_floor=scoring.abundance_floor,
+        )
+        runtime.logger.info(
+            f"Sample '{sample.sample_item_name}' tiers "
+            f"{tiering['committed_m0']} committed readings on rule set "
+            f"{tiering['version']}: {tiering['capped']} capped "
+            f"({tiering['capped_satellites']} satellites with them)"
+            + (
+                ", "
+                + ", ".join(
+                    f"{count} {rule}"
+                    for rule, count in sorted(
+                        tiering["capped_by_rule"].items(), key=lambda kv: -kv[1]
+                    )
+                )
+                if tiering["capped_by_rule"]
+                else ""
+            )
+        )
         await _record_resolved_profile(
             run.peak_assignment_run_id,
             config,
@@ -2388,6 +2433,7 @@ async def _run_sample_assignment(
             scoring_snapshot,
             mass_calibration,
             cross_channel,
+            tiering,
         )
         await send_progress_user_notification(notification, 0.8)
 
