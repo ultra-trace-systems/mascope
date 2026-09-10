@@ -10,6 +10,7 @@ import polars as pl
 from pyteomics.mass import Composition
 
 from mascope_tools.composition import utils
+from mascope_tools.composition.arbitration import CANDIDATE_DENSITY, candidate_density
 from mascope_tools.composition.config import UNSATURATION_COEFFICIENTS
 from mascope_tools.composition.exceptions import (
     CompositionFinderWarning,
@@ -141,13 +142,13 @@ def assign_compositions(
     # Not one grid for the whole spectrum, though: a wide box over a TOF's
     # thousand-dalton range holds millions of compositions, so the targets are
     # walked in ascending mass bands and each band's grid is dropped when the
-    # next begins. See :func:`_grids_for_targets`.
+    # next begins. See :func:`grids_for_targets`.
     mechanisms = [
         utils.parse_ionization(name)
         for name in get_ionization_mech_string_list(config.ionizations)
     ]
 
-    for mz, grid in _grids_for_targets(mzs, config, mechanisms):
+    for mz, grid in grids_for_targets(mzs, config, mechanisms):
         if mz in assigned_mzs:
             continue
 
@@ -211,6 +212,21 @@ def assign_compositions(
             main_candidate["formula"] = main_candidate.get("formula", "---")
             main_candidate["other_candidates"] = _other_candidate_formulas(
                 comp_results, main_candidate["formula"]
+            )
+            # How many of this peak's hypotheses its own evidence could not
+            # separate. Measured here because here is the only place the
+            # competitors still exist: the row keeps at most a handful of them
+            # as `alternatives`, and a reader counting those is counting the
+            # cap. It costs nothing extra - the candidates are scored already,
+            # and the count is the tie the arbitration was going to report.
+            main_candidate[CANDIDATE_DENSITY] = candidate_density(
+                [
+                    {
+                        "formula": candidate.get("formula"),
+                        "fit_score": candidate.get("isotopic_pattern_score"),
+                    }
+                    for candidate in candidates
+                ]
             )
 
             if has_envelope:
@@ -405,7 +421,7 @@ def find_compositions(
 _MIN_BAND_DA = 1.0
 
 
-def _grids_for_targets(
+def grids_for_targets(
     target_mzs: np.ndarray,
     config: CompositionSearchConfig,
     mechanisms: Sequence[IonizationMechanism],
@@ -588,6 +604,11 @@ def process_isotopes(
             # same ambiguity once per isotopologue and invite an inspector to
             # resolve it in a place that cannot act on it.
             iso_result.pop(SAME_ION_ALTERNATIVES, None)
+            # And for the same reason, the density: it counts what competed for
+            # the peak the ION was elected on. A satellite was never searched -
+            # it was predicted from the winner and matched - so the parent's
+            # count is not a measurement of this line.
+            iso_result.pop(CANDIDATE_DENSITY, None)
             iso_result["mz"] = iso_mz
             iso_result["observed_mass"] = iso_mz
             iso_result["isotope_label"] = isotope_labels[idx]

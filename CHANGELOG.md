@@ -6,6 +6,15 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
 
 ### Changed
 
+- Every committed peak assignment now records how many formulas its own
+  evidence could not tell apart. `provenance.candidate_density` is the size of
+  the tie at the top of the peak's arbitration - 1 when the winner stood alone,
+  more when the run ranked several equally - and it is flattened onto the
+  ledger row as `candidate_density`. It has to be recorded because it cannot be
+  recovered afterwards: a row keeps at most `max_alternatives` of the
+  competitors, so counting those counts the cap, and the finder's own shortlist
+  is the only place the rest ever existed. Nothing is demoted on it yet.
+
 - Peak assignment records what a sample's other channels say about each
   committed reading, and caps the one reading that rests on a prior alone.
   A run groups its committed monoisotopic winners by neutral formula across
