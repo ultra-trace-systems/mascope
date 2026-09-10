@@ -28,7 +28,11 @@ from mascope_backend.api.new.peak_assignments.tiers import (
 )
 from mascope_backend.db.id import gen_id
 from mascope_backend.runtime import runtime
-from mascope_tools.composition.arbitration import arbitrate_candidates
+from mascope_tools.composition.arbitration import (
+    CANDIDATE_DENSITY,
+    arbitrate_candidates,
+    density_of,
+)
 from mascope_tools.composition.calibration import (
     Calibration,
     apply_calibration,
@@ -939,6 +943,12 @@ def invert_matches_to_peak_assignments(
                 # (duplicate arrivals of one formula collapse); 1 means the peak
                 # was uncontested and the 1.0 above was won by default.
                 "n_candidates": int(len(arbitrated)),
+                # ...and how many of them the evidence could not SEPARATE, which
+                # is the different question: a peak with nine candidates whose
+                # winner clears them all is not the same peak as one with three
+                # the evidence ranks equally. Read off the arbitration above
+                # rather than competed again.
+                CANDIDATE_DENSITY: density_of(arbitrated),
                 "plausibility": round(float(winner["_plaus"]), 4),
                 "evidence": evidence,
                 "is_tie": is_tie,
@@ -1497,6 +1507,14 @@ def untargeted_matches_to_peak_assignments(
         base_snr = _float_or_none(row.get(PATTERN_BASE_SNR))
         if base_snr is not None:
             provenance["base_snr"] = round(base_snr, 2)
+        # How many hypotheses this peak's own evidence could not separate, from
+        # the finder's full candidate list. Recorded rather than re-derived: the
+        # row keeps at most `max_alternatives` of the competitors, so a reader
+        # counting those counts the cap. Absent on a satellite, which was
+        # predicted from the winner rather than searched.
+        density = row.get(CANDIDATE_DENSITY)
+        if density is not None and not pd.isna(density):
+            provenance[CANDIDATE_DENSITY] = int(density)
         for key in ("neutral_mass", "unsaturation"):
             value = _float_or_none(row.get(key))
             if value is not None:

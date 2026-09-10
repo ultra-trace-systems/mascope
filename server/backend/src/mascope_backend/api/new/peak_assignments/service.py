@@ -141,6 +141,7 @@ from mascope_backend.socket.notifications import (
 from mascope_file.name import get_instrument_type
 from mascope_match import compute_match_isotopes
 from mascope_reference import iter_known_compositions, known_state_fingerprint
+from mascope_tools.composition.arbitration import CANDIDATE_DENSITY
 from mascope_tools.composition.calibration import (
     InsufficientCalibrationData,
     recalibrate,
@@ -325,6 +326,12 @@ def _provenance_scalars(
     number. A reader cannot derive it from one page of a paginated ledger, which
     is what makes it a column rather than inspector detail.
 
+    ``candidate_density`` is here because it is the other half of the ppm and
+    evidence columns: how many formulas this peak's own evidence could not tell
+    apart. A row can carry a strong fit and still be one of three the run could
+    not separate, and nothing else on the ledger says so - the stored
+    ``alternatives`` are capped, so counting those counts the cap.
+
     ``run_calibration`` is the run's ``confidence_calibration``: the curve a
     calibrated row's ``p_correct`` was read off, recorded once per run rather
     than in every row. Which curve applies to this row is
@@ -340,6 +347,7 @@ def _provenance_scalars(
         "p_correct_provisional": calibration.get("provisional"),
         "corroboration_adducts": corroboration.get("n_adducts"),
         "corroboration_channels": len(channels) if channels else None,
+        "candidate_density": provenance.get(CANDIDATE_DENSITY),
         "mass_z": provenance.get("mass_z"),
     }
 

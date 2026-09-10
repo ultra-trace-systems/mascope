@@ -549,8 +549,18 @@ _DBE_PLUS = ("C", "Si")
 _DBE_HALF_PLUS = ("N", "P")
 
 
-def _effective_counts(counts: dict[str, int]) -> tuple[float, float, float]:
-    """(carbon-equivalent, hydrogen-equivalent, DBE) for a formula's counts."""
+def effective_counts(counts: dict[str, int]) -> tuple[float, float, float]:
+    """(carbon-equivalent, hydrogen-equivalent, DBE) for a formula's counts.
+
+    Public because more than one rule reads a formula this way and they have
+    to agree: the context ratio windows, the closed-shell test and the
+    implausibility signatures all mean the same carbon by counting silicon
+    with it, and the same hydrogen by counting the halogens with it. A second
+    spelling of the convention would be a second thing to keep in step.
+
+    :param counts: Element counts, as :func:`element_counts` returns them.
+    :return: Carbon-equivalent count, hydrogen-equivalent count, and DBE.
+    """
     carbon = float(sum(counts.get(el, 0) for el in _CARBON_EQUIVALENT))
     hydrogen = float(sum(counts.get(el, 0) for el in _HYDROGEN_EQUIVALENT))
     dbe = 1.0 + carbon + sum(counts.get(el, 0) for el in _DBE_HALF_PLUS) / 2.0
@@ -568,7 +578,7 @@ def _context_ratios_ok(
     to two valence-level checks that catch the O- and N-stuffed one- and
     two-carbon formulas a narrow mass window still admits.
     """
-    carbon, hydrogen, dbe = _effective_counts(counts)
+    carbon, hydrogen, dbe = effective_counts(counts)
     n_o = counts.get("O", 0)
     n_n = counts.get("N", 0)
     if carbon >= CONTEXT_RATIO_MIN_CARBON:
@@ -774,7 +784,7 @@ def neutral_is_closed_shell(formula: str) -> bool:
     counts = element_counts(formula)
     if counts is None:
         return True
-    _, _, dbe = _effective_counts(counts)
+    _, _, dbe = effective_counts(counts)
     return float(dbe).is_integer()
 
 
