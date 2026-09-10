@@ -363,11 +363,36 @@ class TestWhenTheBoxWillNotFit:
         assert readings[100.0].measured is True
         assert readings[100.0].density == 0
 
-    def test_a_peak_s_answer_does_not_depend_on_who_it_was_asked_with(self):
-        # The banded walk sizes its bands from the whole list, and sized them
-        # once from every mechanism at once it would stop banding entirely after
-        # the first overflow - leaving every heavier peak of a long list with a
-        # different answer from the one it gets alone.
+    @staticmethod
+    def a_row_bound_the_union_overflows(monkeypatch, max_rows: int = 30_000):
+        """Shrink the enumerator's row bound so the defect is reachable.
+
+        The bound is two million rows, and a band halves down to a dalton, so
+        with the real bound the union of two channels only overflows on a
+        spectrum and a box wider than a test should build. Shrunk, a band over
+        the union of two channels' windows overflows where a band over ONE
+        channel's window still fits - which is exactly the geometry the fix is
+        about, at a size a test can hold.
+        """
+        from mascope_tools.composition import degeneracy as module
+
+        real = module.grids_for_targets
+        monkeypatch.setattr(
+            module,
+            "grids_for_targets",
+            lambda targets, config, mechanisms, **kw: real(
+                targets, config, mechanisms, max_rows=max_rows
+            ),
+        )
+
+    def test_a_peak_s_answer_does_not_depend_on_who_it_was_asked_with(
+        self, monkeypatch
+    ):
+        # The banded walk sizes its bands from the whole list. Sized once from
+        # every mechanism at once, the first overflow stops it banding for good,
+        # and every heavier peak of a long list then gets a different answer
+        # from the one it gets alone.
+        self.a_row_bound_the_union_overflows(monkeypatch)
         wide = config(
             ionizations="+H+, +NH4+",
             element_count_ranges="C1-20 H0-36 N0-3 O0-12 S0-1 F0-17",
@@ -380,3 +405,61 @@ class TestWhenTheBoxWillNotFit:
             alone = measure_degeneracy([mz], config=wide)
             assert alone[mz].density == together[mz].density
             assert alone[mz].measured == together[mz].measured
+
+    def test_the_bound_this_uses_is_one_the_union_really_overflows(self):
+        # The guard that makes the two tests above mean something. Under this
+        # row bound a band sized from BOTH channels gives up part-way through
+        # the list - which is the defect - while a band sized from either
+        # channel alone covers every target, which is the fix. Without this the
+        # tests pass on an implementation that never reaches the case.
+        from dataclasses import replace as replace_config
+
+        import numpy as np
+
+        from mascope_tools.composition import utils
+        from mascope_tools.composition.finder import (
+            get_ionization_mech_string_list,
+            grids_for_targets,
+        )
+
+        wide = config(
+            ionizations="+H+, +NH4+",
+            element_count_ranges="C1-20 H0-36 N0-3 O0-12 S0-1 F0-17",
+            mass_range_ppm=2.0,
+            max_result_rows=200,
+        )
+        crowd = np.array(
+            sorted([120.05, 181.0707, 240.1, 300.15, 360.2, 420.25, 480.3])
+        )
+        notations = get_ionization_mech_string_list(wide.ionizations)
+        both = [utils.parse_ionization(name) for name in notations]
+
+        union = [
+            grid for _mz, grid in grids_for_targets(crowd, wide, both, max_rows=30_000)
+        ]
+        assert any(grid is None for grid in union), "the union has to overflow"
+
+        for name in notations:
+            one = replace_config(wide, ionizations=name)
+            per_channel = [
+                grid
+                for _mz, grid in grids_for_targets(
+                    crowd, one, [utils.parse_ionization(name)], max_rows=30_000
+                )
+            ]
+            assert all(grid is not None for grid in per_channel)
+
+    def test_and_the_peaks_are_answered_rather_than_abandoned(self, monkeypatch):
+        # The half of the fix the equality above cannot see: under the same
+        # shrunk bound a band over ONE channel still fits, so the peaks get
+        # counts instead of the silent nothing the union walk left them.
+        self.a_row_bound_the_union_overflows(monkeypatch)
+        wide = config(
+            ionizations="+H+, +NH4+",
+            element_count_ranges="C1-20 H0-36 N0-3 O0-12 S0-1 F0-17",
+            mass_range_ppm=2.0,
+            max_result_rows=200,
+        )
+        readings = measure_degeneracy([300.15, 360.2, 420.25, 480.3], config=wide)
+        assert all(r.measured for r in readings.values())
+        assert any(r.density > 0 for r in readings.values())

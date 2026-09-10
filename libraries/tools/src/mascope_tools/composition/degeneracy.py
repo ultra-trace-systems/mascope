@@ -22,6 +22,14 @@ before anything is counted - the same collapse
 :func:`heuristic_filter.elect_same_ion_families` makes inside the run, for the
 same reason.
 
+**Every count depends on the window, the channels and the offset it was taken
+at**, so quote those with it: a density is a count over one box inside one
+instrument's accuracy on one sample, and a bare number is not reproducible. On
+forty committed peaks of a bromide-mode sample spanning 83 to 489 Da, through
+that run's own three channels, at three times its fitted width (1.25 ppm) and
+its fitted offset (-0.151 ppm): all forty measured, median 3, maximum 11, four
+saturated, six reported censored.
+
 **This is not a per-run measurement, and the numbers say so.** Searching one
 channel at a time over the relaxed box, a 100-500 Da spectrum costs about 27 s
 of band grids and about 6 ms per peak after that, so a sample with two thousand
