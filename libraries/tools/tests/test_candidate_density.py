@@ -217,9 +217,11 @@ class TestAnchoringOnTheCommittedFormula:
     ]
 
     def test_the_anchor_moves_the_count(self):
-        # C3H4O4 is far below the top pair, so around IT nothing ties.
+        # At the top, two formulas tie. Anchored on the one far below them,
+        # BOTH of those are things the evidence supports better - so the count
+        # goes up rather than down, which is the point of anchoring it.
         assert candidate_density(self.CONTESTED) == 2
-        assert candidate_density(self.CONTESTED, around="C3H4O4") == 1
+        assert candidate_density(self.CONTESTED, around="C3H4O4") == 3
 
     def test_a_committed_formula_in_the_tie_counts_the_tie(self):
         assert candidate_density(self.CONTESTED, around="C6H12O6") == 2
@@ -227,12 +229,32 @@ class TestAnchoringOnTheCommittedFormula:
 
     def test_a_rival_the_evidence_ranks_ABOVE_the_commit_is_counted(self):
         # The whole point: a formula the evidence prefers to the committed one
-        # is exactly what the count exists to surface, so the neighbourhood is
-        # symmetric rather than "candidates below the commit".
+        # is exactly what the count exists to surface.
         candidates = [
             {"formula": "C6H12O6", "fit_score": 0.95},
             {"formula": "C5H8N2O4", "fit_score": 0.92},
         ]
+        assert candidate_density(candidates, around="C5H8N2O4") == 2
+
+    def test_a_rival_that_OUTRANKS_the_commit_by_more_than_the_gap_still_counts(self):
+        # A window centred on the commit would drop this one - it is further
+        # above than the gap is wide - and report 1, which a tiering reads as
+        # "nothing competes" about a row the evidence ranks second.
+        candidates = [
+            {"formula": "C6H12O6", "fit_score": 0.95},
+            {"formula": "C5H8N2O4", "fit_score": 0.40},
+        ]
+        assert candidate_density(candidates, around="C5H8N2O4") == 2
+        # ...and the count around the better one is unaffected: nothing ties it.
+        assert candidate_density(candidates, around="C6H12O6") == 1
+
+    def test_a_rival_clearly_below_the_commit_does_not(self):
+        candidates = [
+            {"formula": "C6H12O6", "fit_score": 0.95},
+            {"formula": "C5H8N2O4", "fit_score": 0.40},
+            {"formula": "C3H4O4", "fit_score": 0.10},
+        ]
+        # Around the commit at 0.40, the 0.10 is far below and the 0.95 above.
         assert candidate_density(candidates, around="C5H8N2O4") == 2
 
     def test_a_formula_that_is_not_a_candidate_stands_alone(self):
@@ -241,8 +263,10 @@ class TestAnchoringOnTheCommittedFormula:
     def test_the_gap_is_still_the_peak_s_own(self):
         # Anchoring moves what is counted, never how far apart two candidates
         # have to be to count as separated - that stays a fraction of the peak's
-        # BEST evidence, so two rows of one peak use one scale.
-        assert candidate_density(self.CONTESTED, around="C3H4O4", tie_tol=1.0) == 3
+        # BEST evidence, so two rows of one peak use one scale. Widening it here
+        # can only pull MORE of what sits below the anchor into the count.
+        assert candidate_density(self.CONTESTED, around="C6H12O6") == 2
+        assert candidate_density(self.CONTESTED, around="C6H12O6", tie_tol=1.0) == 3
 
     def test_both_routes_agree_when_anchored(self):
         for formula in ("C6H12O6", "C5H8N2O4", "C3H4O4", "C9H12N2O2"):
