@@ -176,6 +176,13 @@ def candidate_density(
     different case and never reach here: the finder elects one of them before
     anything is ranked, so a family arrives as a single candidate.
 
+    Computed in one pass rather than by arbitrating and counting the result.
+    The finder asks this of every peak it searches, and on a dense spectrum
+    building the full ranking per peak - a dataclass and a normalised confidence
+    per candidate, sorted - costs about forty seconds a sample where the count
+    itself costs nothing. :func:`density_of` is the same number read off an
+    arbitration a caller already holds, and the two agree by test.
+
     :param candidates: The peak's candidates, in any form
         :func:`arbitrate_candidates` accepts.
     :param tie_tol: The gap that counts as unresolved, as passed to
@@ -186,7 +193,24 @@ def candidate_density(
         nothing was measured, and saying "unique" there would be a claim the
         measurement did not make.
     """
-    return density_of(arbitrate_candidates(candidates, tie_tol=tie_tol))
+    # One entry per DISTINCT formula, keeping its best evidence: the same
+    # collapse `arbitrate_candidates` makes, and for the same reason - one
+    # formula reaching a peak twice is one hypothesis, not two competitors.
+    best_evidence: dict[str, float] = {}
+    for candidate in candidates:
+        formula, fit = _as_formula_fit(candidate)
+        evidence = fit * formula_plausibility(formula)
+        if formula not in best_evidence or evidence > best_evidence[formula]:
+            best_evidence[formula] = evidence
+    if not best_evidence:
+        return 0
+    evidences = list(best_evidence.values())
+    best = max(evidences)
+    if sum(evidences) <= 0:
+        # Nothing was measured, so nothing was separated.
+        return len(evidences)
+    gap = max(tie_tol * best, TIE_ABS_FLOOR)
+    return max(1, sum(1 for evidence in evidences if best - evidence <= gap))
 
 
 def density_of(arbitrated: Sequence[ArbitratedCandidate]) -> int:
