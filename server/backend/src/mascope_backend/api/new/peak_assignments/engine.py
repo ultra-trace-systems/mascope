@@ -948,7 +948,23 @@ def invert_matches_to_peak_assignments(
                 # winner clears them all is not the same peak as one with three
                 # the evidence ranks equally. Read off the arbitration above
                 # rather than competed again.
-                CANDIDATE_DENSITY: density_of(arbitrated),
+                #
+                # On the MAIN row only. This loop writes one provenance blob for
+                # every row of a winner's envelope, and a satellite was never
+                # searched - it is a line predicted from the winner and matched,
+                # so the peak's candidate count is not a measurement of it. The
+                # untargeted stage drops it from a child for the same reason
+                # (`finder.process_isotopes`), and the schema says a satellite
+                # carries none.
+                **(
+                    {
+                        CANDIDATE_DENSITY: density_of(
+                            arbitrated, around=str(winner["_formula_key"])
+                        )
+                    }
+                    if is_main
+                    else {}
+                ),
                 "plausibility": round(float(winner["_plaus"]), 4),
                 "evidence": evidence,
                 "is_tie": is_tie,
