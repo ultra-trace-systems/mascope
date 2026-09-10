@@ -157,6 +157,14 @@ class PeakAssignmentRecord(BaseModel):
     #: count is NOT folded into ``p_correct`` - it is evidence the run recorded,
     #: not a score it applied.
     corroboration_channels: int | None = None
+    #: How many formulas this peak's own evidence could not tell apart
+    #: (provenance.candidate_density): 1 means the winner stood alone at the top
+    #: of the run's arbitration, and more is the size of the tie it won from.
+    #: Flattened because it cannot be recovered from the row's ``alternatives``,
+    #: which are capped at the run's ``max_alternatives`` - counting those
+    #: counts the cap. Null on a satellite, which was predicted from its owner
+    #: rather than searched, and on an imported row whose engine sent none.
+    candidate_density: int | None = None
     #: How far this row's mass error sits from the run's own fitted centre, in
     #: the run's own fitted widths (provenance.mass_z). Flattened because it is
     #: the one per-row number a reader scanning a whole ledger needs and cannot

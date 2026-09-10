@@ -3,6 +3,7 @@ from dataclasses import replace
 import pandas as pd
 import pytest
 
+from mascope_tools.composition.arbitration import CANDIDATE_DENSITY
 from mascope_tools.composition.exceptions import CompositionFinderException
 from mascope_tools.composition.finder import (
     _other_candidate_formulas,
@@ -557,3 +558,59 @@ def test_a_peak_whose_best_reading_has_no_envelope_is_left_alone(monkeypatch):
     assert list(matches["formula"]) == ["---"]
     # ...and the runner-up formulas stay visible for an inspector.
     assert matches.iloc[0]["other_candidates"] == "C2H2"
+
+
+class TestTheDensityOnACommittedRow:
+    """Step 2.4: the count of hypotheses the peak's evidence could not separate
+    travels on the row the search commits, because here is the only place the
+    competitors still exist."""
+
+    @staticmethod
+    def _search(peaks: pd.DataFrame) -> pd.DataFrame:
+        config = CompositionSearchConfig(
+            ionizations="+H+",
+            element_count_ranges="C0-10 H0-20 N0-2 O0-10",
+            mass_range_ppm=5.0,
+        )
+        matches, _log = assign_compositions(peaks, config)
+        return matches
+
+    def test_a_committed_row_carries_one(self):
+        peaks = pd.DataFrame({"mz": [PROTONATED_GLUCOSE_MZ], "intensity": [1000.0]})
+        committed = self._search(peaks)
+        row = committed[committed["formula"] != "---"].iloc[0]
+        assert row[CANDIDATE_DENSITY] >= 1
+
+    def test_a_peak_nothing_explains_carries_none(self):
+        peaks = pd.DataFrame({"mz": [9999.0], "intensity": [1000.0]})
+        matches = self._search(peaks)
+        assert matches["formula"].tolist() == ["---"]
+        assert CANDIDATE_DENSITY not in matches.columns or pd.isna(
+            matches.iloc[0].get(CANDIDATE_DENSITY)
+        )
+
+    def test_a_satellite_does_not_inherit_its_parent_s_count(self):
+        # A satellite was predicted from the winner and matched, never searched,
+        # so the parent's count is not a measurement of this line. Same reason
+        # the same-ion family is dropped from a child. The pattern reaching the
+        # real flow is anchored on the ion's own line, so index 0 is the row the
+        # search committed.
+        rows, _ = process_isotopes(
+            {
+                "neutral_mass": 236.7550,
+                "formula": "Br3",
+                CANDIDATE_DENSITY: 4,
+            },
+            [
+                _pattern(
+                    [236.7550, 238.7530, 240.7509],
+                    ["M0", "81Br", "81Br2"],
+                    [0.4, 0.4, 0.4],
+                )
+            ],
+            set(),
+        )
+        by_label = {row["isotope_label"]: row for row in rows}
+        assert by_label["M0"][CANDIDATE_DENSITY] == 4
+        assert CANDIDATE_DENSITY not in by_label["81Br"]
+        assert CANDIDATE_DENSITY not in by_label["81Br2"]

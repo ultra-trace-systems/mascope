@@ -138,6 +138,39 @@ class TestProvenanceScalars:
         )
 
 
+class TestTheCandidateDensityOnTheLedger:
+    """Step 2.4: how many formulas the peak's evidence could not tell apart.
+
+    A ledger column rather than inspector detail because it cannot be recovered
+    from what the row stores: `alternatives` is capped at the run's
+    `max_alternatives`, so a reader counting those counts the cap.
+    """
+
+    def test_the_count_reaches_the_ledger(self):
+        row = {**_UNTARGETED_ROW, "candidate_density": 3}
+        assert _provenance_scalars(row, None)["candidate_density"] == 3
+
+    def test_an_uncontested_peak_says_one(self):
+        # Not None: one is a measured answer - the winner stood alone at the top
+        # of the arbitration - and it is the answer the tiering acts on.
+        row = {**_UNTARGETED_ROW, "candidate_density": 1}
+        assert _provenance_scalars(row, None)["candidate_density"] == 1
+
+    def test_a_row_nothing_measured_has_no_count(self):
+        # A satellite, or a row imported from an engine that sends none.
+        # Absent rather than 0, so "not measured" stays distinguishable from
+        # "measured and found nothing", as every other scalar here is.
+        assert _provenance_scalars(_UNTARGETED_ROW, None)["candidate_density"] is None
+        assert _provenance_scalars(None, None)["candidate_density"] is None
+
+    def test_it_is_not_the_number_of_candidates(self):
+        # Stage A records both, and they answer different questions: how many
+        # the confidence was normalised across, and how many of those the
+        # evidence could not separate.
+        row = {**_DATABASE_ROW, "n_candidates": 9, "candidate_density": 2}
+        assert _provenance_scalars(row, _CURVE)["candidate_density"] == 2
+
+
 @pytest.mark.parametrize("provenance", _SHAPES.values(), ids=list(_SHAPES))
 def test_the_detail_fold_and_the_ledger_scalars_agree(provenance):
     """One row, two readers, one answer.
