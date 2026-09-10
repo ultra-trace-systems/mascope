@@ -226,7 +226,14 @@ def assign_compositions(
                         "fit_score": candidate.get("isotopic_pattern_score"),
                     }
                     for candidate in candidates
-                ]
+                ],
+                # Anchored on the formula this row COMMITS, not on whichever
+                # candidate the arbitration ranks first. The two orders differ -
+                # this loop ranks on the fit score and commits the best reading
+                # whose envelope holds its required lines, which need not be the
+                # top of a ranking by fit x plausibility - so a count taken at
+                # the top would be about a formula the row does not carry.
+                around=main_candidate["formula"],
             )
 
             if has_envelope:
