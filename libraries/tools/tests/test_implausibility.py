@@ -9,7 +9,6 @@ is what would be lost if a threshold moved.
 import pytest
 
 from mascope_tools.composition.implausibility import (
-    CARBON_CLUSTER,
     CARBON_FREE,
     CARBON_FREE_ALLOWLIST,
     OXYGEN_LATTICE,
@@ -20,32 +19,35 @@ from mascope_tools.composition.implausibility import (
 )
 
 
-class TestTheCarbonCluster:
-    @pytest.mark.parametrize("formula", ["C60", "C10H2", "C24", "C2"])
-    def test_a_bare_carbon_skeleton_is_named(self, formula):
-        assert CARBON_CLUSTER in implausible_signatures(formula)
+class TestTheCarbonClusterThatIsNotHere:
+    """The signature the plan named and the measurement withdrew.
+
+    ``DBE/C >= 1`` reduces to ``H <= 2 + N``, so it names hydrogen-poor
+    molecules rather than large skeletons - and the skeleton statement it was
+    meant to make is already made by the finder's H/C ratio window.
+    """
 
     @pytest.mark.parametrize(
         "formula",
         [
-            "C6H6",  # benzene, DBE/C 0.67
-            "C24H12",  # coronene, the most condensed aromatic a sample sees
-            "C10H8",  # naphthalene
-            "C6H12O6",  # glucose
+            "CH2O2",  # formic acid, DBE/C exactly 1
+            "C2H2O4",  # oxalic acid
+            "C2H2O3",  # glyoxylic acid
+            "C5H4N2O3",  # a nitrogen heterocycle the reference confirms
+            "C6H5N3",
         ],
     )
-    def test_an_aromatic_is_not_a_cluster(self, formula):
-        assert CARBON_CLUSTER not in implausible_signatures(formula)
+    def test_a_hydrogen_poor_small_molecule_is_left_alone(self, formula):
+        assert implausible_signatures(formula) == ()
 
-    def test_a_perfluorinated_chain_is_not_a_cluster(self):
-        # The DBE counts fluorine as hydrogen, so PFOA reads 1 DBE over 9
-        # carbons rather than 9.5. That convention is what makes a fluorine
-        # exemption unnecessary - and is the reason not to add one, because a
-        # genuinely cluster-like fluorinated formula should still be named.
-        assert implausible_signatures("C9HF17O2") == ()
-
-    def test_a_fluorinated_cluster_is_still_named(self):
-        assert CARBON_CLUSTER in implausible_signatures("C20F2")
+    @pytest.mark.parametrize("formula", ["C60", "C10H2", "C24"])
+    def test_and_so_is_a_real_cluster_because_the_finder_never_proposes_one(
+        self, formula
+    ):
+        # Not an endorsement of the formula - a statement about where the rule
+        # lives. A composition with no hydrogen is outside the finder's H/C
+        # window and never becomes a candidate, so nothing here has to catch it.
+        assert implausible_signatures(formula) == ()
 
 
 class TestTheOxygenLattice:
@@ -101,12 +103,14 @@ class TestFailingOpen:
 
 
 class TestNamingARowOnce:
-    def test_a_formula_can_carry_more_than_one(self):
-        # C2O8: no hydrogen, so DBE/C is 1.5, and eight oxygens on two carbons.
-        assert set(implausible_signatures("C2O8")) == {CARBON_CLUSTER, OXYGEN_LATTICE}
-
     def test_the_one_it_is_named_by_is_the_first_in_a_fixed_order(self):
-        assert implausible_signature("C2O8") == SIGNATURES[0] == CARBON_CLUSTER
+        # One formula cannot carry both of the two that are left - the first
+        # needs carbon and the second refuses it - so the order matters only for
+        # a signature added later, and pinning it now is what keeps two callers
+        # naming the same row the same thing when one is.
+        assert SIGNATURES == (OXYGEN_LATTICE, CARBON_FREE)
+        assert implausible_signature("C8H10O11") == OXYGEN_LATTICE
+        assert implausible_signature("HS3") == CARBON_FREE
 
     def test_nothing_to_name_is_none(self):
         assert implausible_signature("C6H12O6") is None
