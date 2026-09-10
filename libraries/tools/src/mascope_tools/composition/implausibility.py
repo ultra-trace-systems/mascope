@@ -16,14 +16,6 @@ tiering, and it can only cost a row its tier.
 
 What each one is, and what it is not:
 
-- ``carbon_cluster`` - DBE per carbon at or above 1. A carbon skeleton that
-  unsaturated is graphitic: C60 reads 1.02, C10H2 reads 1.00, while benzene
-  reads 0.67 and coronene 0.79, so aromatics are nowhere near it. The DBE is
-  :func:`heuristic_filter.effective_counts`', which counts the halogens as
-  hydrogen; that is what keeps a perfluorinated chain out (C9HF17O2 reads 0.11)
-  without a fluorine exemption, and it is the reason not to add one - a real
-  fluorinated cluster should still be named.
-
 - ``oxygen_lattice`` - more than 1.3 oxygens per carbon AND at least
   ``OXYGEN_LATTICE_MIN`` oxygens. The ratio alone is ordinary atmospheric
   chemistry: malonic acid is 1.33, glycolic 1.5, formic 2.0, and a rule keyed
@@ -39,6 +31,25 @@ What each one is, and what it is not:
 A formula can carry more than one; :func:`implausible_signatures` returns them
 all and :func:`implausible_signature` the first, in the fixed order of
 :data:`SIGNATURES` so two callers agree on which one a row is named by.
+
+The carbon cluster that is not here
+-----------------------------------
+
+A third signature was written and withdrawn on the measurement. "DBE per carbon
+at or above 1" reads like a statement about a graphitic skeleton - C60 is 1.02 -
+but the arithmetic says otherwise: with the DBE ``effective_counts`` computes,
+``DBE/C >= 1`` reduces to ``H <= 2 + N``, which is a statement about hydrogen
+count and not about size. On the assignment gate it took formic acid, oxalic
+acid, glyoxylic acid and a nitrogen heterocycle the reference confirms - 46 rows
+of which 8 were right - and no carbon cluster, because there were none to take.
+Requiring the unsaturation to exceed what the heteroatoms can carry
+(``DBE > O + N``) narrows it to three rows on 43 samples, one of them still a
+confirmed aromatic.
+
+The reason there is nothing to catch is upstream: the finder's own H/C ratio
+window floors at 0.1, so a formula with no hydrogen never becomes a candidate in
+the first place. The rule this module would have added was already made where it
+belongs.
 """
 
 from __future__ import annotations
@@ -49,15 +60,11 @@ from mascope_tools.composition.heuristic_filter import (
 )
 
 
-CARBON_CLUSTER = "carbon_cluster"
 OXYGEN_LATTICE = "oxygen_lattice"
 CARBON_FREE = "carbon_free"
 
 #: Every signature, in the order a formula carrying more than one is named by.
-SIGNATURES = (CARBON_CLUSTER, OXYGEN_LATTICE, CARBON_FREE)
-
-#: DBE per carbon-equivalent at or above which a skeleton is a carbon cluster.
-CARBON_CLUSTER_DBE_PER_CARBON = 1.0
+SIGNATURES = (OXYGEN_LATTICE, CARBON_FREE)
 
 #: Oxygens per carbon above which a formula is oxygen-rich for its backbone.
 OXYGEN_LATTICE_RATIO = 1.3
@@ -135,11 +142,9 @@ def implausible_signatures(formula: str | None) -> tuple[str, ...]:
     counts = element_counts(formula or "")
     if not counts:
         return ()
-    carbon, _hydrogen, dbe = effective_counts(counts)
+    carbon, _hydrogen, _dbe = effective_counts(counts)
     oxygen = counts.get("O", 0)
     found = []
-    if carbon and _ratio(dbe, carbon) >= CARBON_CLUSTER_DBE_PER_CARBON:
-        found.append(CARBON_CLUSTER)
     if (
         carbon
         and oxygen >= OXYGEN_LATTICE_MIN
