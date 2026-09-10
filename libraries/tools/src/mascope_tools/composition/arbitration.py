@@ -43,6 +43,10 @@ from mascope_tools.composition.heuristic_filter import formula_plausibility
 # 5-10% relative.
 DEFAULT_TIE_TOL = 0.10
 
+#: Column and key the finder records :func:`candidate_density` under, so the
+#: engine, the schemas and the tiering all name it the same thing.
+CANDIDATE_DENSITY = "candidate_density"
+
 # ...floored in absolute terms, because a relative gap stops meaning anything once the
 # evidence itself is noise: 0.0002 vs 0.0001 is a 100% relative gap between two
 # candidates that both have essentially no support, and declaring a resolved winner
@@ -150,6 +154,55 @@ def arbitrate_candidates(
             )
         )
     return out
+
+
+def candidate_density(
+    candidates: Iterable[Any],
+    *,
+    tie_tol: float = DEFAULT_TIE_TOL,
+) -> int:
+    """How many distinct formulas a peak's own evidence cannot separate.
+
+    The count the tie report already implies, named so a caller can read it
+    without re-deriving the gap: 1 means the winner stands alone at the top of
+    the arbitration, and anything above it is the number of hypotheses that
+    explain the peak equally well. It is the honest form of "unique formula" -
+    unique inside the element box that was enumerated, which is what
+    :func:`mascope_tools.composition.degeneracy.measure_degeneracy` widens.
+
+    Counted over DISTINCT formulas, because arbitration collapses a formula
+    that reached the peak twice; two adducts of one neutral are one hypothesis
+    arriving twice and were never competitors. Readings of the SAME ion are a
+    different case and never reach here: the finder elects one of them before
+    anything is ranked, so a family arrives as a single candidate.
+
+    :param candidates: The peak's candidates, in any form
+        :func:`arbitrate_candidates` accepts.
+    :param tie_tol: The gap that counts as unresolved, as passed to
+        :func:`arbitrate_candidates`.
+    :return: The size of the tie set at the top of the arbitration, at least 1;
+        0 only when there were no candidates at all. When no candidate has any
+        evidence every one of them ties, so the density is the whole list -
+        nothing was measured, and saying "unique" there would be a claim the
+        measurement did not make.
+    """
+    return density_of(arbitrate_candidates(candidates, tie_tol=tie_tol))
+
+
+def density_of(arbitrated: Sequence[ArbitratedCandidate]) -> int:
+    """The same count, read off an arbitration a caller already has.
+
+    Stage A arbitrates every peak to get its confidence and tie flag; asking
+    :func:`candidate_density` there would compete the same candidates a second
+    time for a number the first pass already knows.
+
+    :param arbitrated: The output of :func:`arbitrate_candidates`.
+    :return: The size of the tie set at the top, at least 1; 0 for an empty
+        arbitration.
+    """
+    if not arbitrated:
+        return 0
+    return max(1, sum(1 for candidate in arbitrated if candidate.is_tie))
 
 
 # ---------------------------------------------------------------------------
