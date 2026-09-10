@@ -11,6 +11,7 @@ from mascope_backend.api.new.peak_assignments.cross_channel import (
     fixes_nitrogen,
     neutral_key,
     nitrogen_donating_channels,
+    partner_tier,
 )
 
 
@@ -364,6 +365,44 @@ class TestTheRunsRecord:
         gate(rows)
         assert rows[0]["provenance"]["cross_channel"]["partner_tier"] is None
 
+    def test_a_second_row_on_the_same_channel_is_not_a_partner(self):
+        # The lookup excludes the row's whole channel, not just the row: two
+        # peaks read the same way through one chemistry are one observation.
+        rows = [
+            row("a", "C6H12O6", PROTON),
+            row("b", "C6H12O6", PROTON, tier="below_assignability"),
+        ]
+        gate(rows)
+        assert rows[0]["provenance"]["cross_channel"]["partner_tier"] is None
+
+    def test_the_index_keeps_the_best_tier_a_channel_reached(self):
+        # Two peaks on one partner channel: the flag is worth what the BEST of
+        # them is worth, and the index has to carry that rather than whichever
+        # row the ledger happened to end on.
+        rows = [
+            row("a", "C6H12O6", PROTON),
+            row("b", "C6H12O6", AMMONIUM, tier="below_assignability"),
+            row("c", "C6H12O6", AMMONIUM, tier="candidate"),
+        ]
+        gate(rows)
+        assert rows[0]["provenance"]["cross_channel"]["partner_tier"] == "candidate"
+
+    def test_the_index_is_built_once_not_scanned_per_row(self):
+        # A regression guard on the shape rather than the timing: the map has
+        # to answer the partner question on its own, because rescanning the
+        # ledger per row made the pass quadratic and doubled the run time on
+        # the dense sets.
+        rows = [
+            row("a", "C6H12O6", PROTON, tier="candidate"),
+            row("b", "C6H12O6", AMMONIUM),
+        ]
+        index = channels_by_neutral(rows, dict(POSITIVE))
+        assert index == {
+            neutral_key("C6H12O6"): {"+H+": "candidate", "+NH4+": "assigned"}
+        }
+        assert partner_tier(index[neutral_key("C6H12O6")], "+H+") == "assigned"
+        assert partner_tier(index[neutral_key("C6H12O6")], "+NH4+") == "candidate"
+
 
 class TestFixingTheCount:
     DONORS = frozenset({"+NH4+", "+(CH4N2O)H+"})
@@ -403,5 +442,5 @@ def test_channels_by_neutral_reads_only_committed_monoisotopic_rows():
         {**row("c", "C6H12O6", UREA), "assigned_formula": None},
     ]
     assert channels_by_neutral(rows, dict(POSITIVE)) == {
-        neutral_key("C6H12O6"): frozenset({"+H+"})
+        neutral_key("C6H12O6"): {"+H+": "assigned"}
     }
