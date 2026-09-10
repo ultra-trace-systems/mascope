@@ -11,7 +11,9 @@ import pytest
 from mascope_tools.composition.arbitration import (
     DEFAULT_TIE_TOL,
     TIE_ABS_FLOOR,
+    arbitrate_candidates,
     candidate_density,
+    density_of,
 )
 
 
@@ -142,3 +144,59 @@ class TestTheInputShapes:
     )
     def test_it_takes_what_the_arbitration_takes(self, candidates):
         assert candidate_density(candidates) == 2
+
+
+class TestTheTwoRoutesAgree:
+    """`candidate_density` counts in one pass; `density_of` reads the count off
+    an arbitration a caller already has. They are two implementations of one
+    number, so the only thing worth testing about them is that they agree."""
+
+    @pytest.mark.parametrize(
+        "fits",
+        [
+            [0.9],
+            [0.9, 0.88],
+            [0.9, 0.2],
+            [0.9, 0.89, 0.88, 0.1],
+            [0.0, 0.0],
+            [0.0],
+            [0.9, 0.9, 0.9],
+            [0.005, 0.004, 0.001],
+            [1.0, 0.9, 0.8, 0.7, 0.6, 0.5],
+        ],
+    )
+    def test_on_a_range_of_shapes(self, fits):
+        formulas = [
+            "C6H12O6",
+            "C5H8N2O4",
+            "C7H16O4",
+            "C3H4O4",
+            "C9H12N2O2",
+            "C4H8O2",
+        ]
+        candidates = [
+            {"formula": formulas[i % len(formulas)], "fit_score": fit}
+            for i, fit in enumerate(fits)
+        ]
+        assert candidate_density(candidates) == density_of(
+            arbitrate_candidates(candidates)
+        )
+
+    def test_including_a_formula_arriving_twice(self):
+        candidates = [
+            {"formula": "C6H12O6", "fit_score": 0.9},
+            {"formula": "C6H12O6", "fit_score": 0.4},
+            {"formula": "C5H8N2O4", "fit_score": 0.88},
+        ]
+        assert candidate_density(candidates) == density_of(
+            arbitrate_candidates(candidates)
+        )
+
+    def test_and_an_impossible_formula(self):
+        candidates = [
+            {"formula": "C6H12O6", "fit_score": 0.9},
+            {"formula": "C6H17NO4", "fit_score": 0.99},
+        ]
+        assert candidate_density(candidates) == density_of(
+            arbitrate_candidates(candidates)
+        )
