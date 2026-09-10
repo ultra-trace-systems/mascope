@@ -9,9 +9,11 @@ from mascope_backend.api.new.peak_assignments.tiering import (
     ENVELOPE_HEIGHT_TOLERANCE,
     REASON_AMBIGUOUS_NITROGEN,
     REASON_CANDIDATE_DENSITY,
+    REASON_CORROBORATED,
     REASON_ENVELOPE_NEIGHBOUR,
     REASON_INHERITED,
     REASON_MINOR_CHANNEL,
+    REASON_NO_CLOSE_RIVAL,
     REASON_NOT_MEASURED,
     REASON_ODD_ELECTRON,
     REASON_OFF_CALIBRATION,
@@ -438,3 +440,35 @@ class TestTheRunsRecord:
         summary = run(rows)
         assert summary["capped"] == 1
         assert sum(summary["capped_by_rule"].values()) == 2
+
+
+class TestWhatAStandingRowClaims:
+    def test_a_separated_winner_says_so_without_claiming_uniqueness(self):
+        # A density of 1 says the evidence separated the winner from the peak's
+        # other candidates. It does NOT say the run's element box held no other
+        # formula for the mass - that is a wider question, and one the ledger
+        # would be overstating if this reason answered it.
+        rows = [row("pa-1", density=1)]
+        run(rows)
+        assert REASON_NO_CLOSE_RIVAL in rules_on(rows, "pa-1")
+        detail = next(
+            r["detail"]
+            for r in rows[0]["provenance"]["tier_reasons"]
+            if r["rule"] == REASON_NO_CLOSE_RIVAL
+        )
+        assert "unique" not in detail.lower()
+
+    def test_a_corroborated_row_names_its_channels(self):
+        rows = [row("pa-1", channels=["+H+", "+NH4+", "-H+"])]
+        run(rows)
+        detail = next(
+            r["detail"]
+            for r in rows[0]["provenance"]["tier_reasons"]
+            if r["rule"] == REASON_CORROBORATED
+        )
+        assert "3" in detail
+
+    def test_a_standing_reason_never_caps(self):
+        rows = [row("pa-1", channels=["+H+", "+NH4+"])]
+        run(rows)
+        assert not any(r["caps"] for r in rows[0]["provenance"]["tier_reasons"])
