@@ -163,7 +163,11 @@ class PeakAssignmentRecord(BaseModel):
     #: Flattened because it cannot be recovered from the row's ``alternatives``,
     #: which are capped at the run's ``max_alternatives`` - counting those
     #: counts the cap. Null on a satellite, which was predicted from its owner
-    #: rather than searched, and on an imported row whose engine sent none.
+    #: rather than searched, and on an imported row: an external engine may
+    #: publish a count of its own inside ``provenance.engine_provenance``, and
+    #: this column deliberately does not read it - the number means what THIS
+    #: engine's arbitration measured, and peaky's is a different measurement
+    #: rendered as text.
     candidate_density: int | None = None
     #: How far this row's mass error sits from the run's own fitted centre, in
     #: the run's own fitted widths (provenance.mass_z). Flattened because it is
