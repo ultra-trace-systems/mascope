@@ -6,21 +6,22 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
 
 ### Added
 
-- **An About dialog, legal links on the sign-in screen, and third-party
-  attributions in both images.** The sidebar menu's footer opens About: the
-  web app's build and the server's side by side, copied in one click together
-  with the browser for a support request, with a warning when the two differ;
-  Ultra Trace Systems Oy and the Apache-2.0 licence, with the licence, NOTICE
-  and third-party attributions rendered in place; and links to the user docs,
-  the release notes, support, the security policy and the privacy notice. The
-  sign-in screen gains a footer with the copyright line and links to the
+- **An About tab, legal links on the sign-in screen, and third-party
+  attributions in both images.** The home menu gains an About tab: the
+  running build, copied in one click together with the browser for a support
+  request, with a warning if the server reports a different build than the
+  page was loaded from; Ultra Trace Systems Oy and the Apache-2.0 licence,
+  with the licence and the notices - NOTICE and both images' third-party
+  attributions, as one document - opened in place; and links to
+  ultratrace.eu, the user docs, the release notes, support, the security
+  policy and the privacy notice. The sign-in screen gains a footer with the copyright line and links to the
   privacy notice (https://ultratrace.eu/mascope/privacy), terms of service and
   support. All three are `[meta]` settings - `privacy_notice_url`,
   `terms_url` and `support_url` (docs/maintaining.md) - so a deployment
   someone else operates can point them at its own documents; an empty value
   hides a link, and terms stay hidden until they are published.
   `GET /api/version` now answers every signed-in user instead of admins only,
-  so the dialog can show the server's build to whoever opens it; it still
+  so the About tab can compare builds for whoever opens it; it still
   refuses anonymous callers. The frontend build writes the licence and notice
   files of every npm package in its bundle to
   `/legal/THIRD_PARTY_NOTICES.txt`, with NOTICE and LICENSE beside them, and

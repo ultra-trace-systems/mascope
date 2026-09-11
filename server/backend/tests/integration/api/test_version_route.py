@@ -1,8 +1,9 @@
 """Tests: the deployment version route ``GET /api/version``.
 
 The route exists so an operator or an audit can attribute a running deployment
-to an artifact, and so the web app's About dialog can show the server's build
-next to its own. Two properties are load-bearing: it must report the version the
+to an artifact, and so the web app's About tab can notice a server running a
+different build than the page was loaded from. Two properties are load-bearing:
+it must report the version the
 process was actually configured with - which means reading ``MASCOPE_VERSION``,
 not some other source - and it must answer every signed-in user while still
 refusing anonymous callers.
@@ -97,7 +98,7 @@ async def test_anonymous_callers_are_challenged(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_guest_reads_the_version(guest_client, monkeypatch):
-    """The lowest role gets it too: the About dialog is open to every user, and
+    """The lowest role gets it too: the About tab is open to every user, and
     a support request has to be able to name the build whoever files it."""
     monkeypatch.setattr(runtime, "_version", VERSION_SENTINEL, raising=False)
 

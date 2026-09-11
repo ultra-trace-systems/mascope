@@ -2,11 +2,12 @@ import { copyright } from 'virtual:mascope-legal'
 
 import { runtime } from '@/lib/runtime'
 
-// What the sign-in footer, the About dialog and the update banner say about the
+// What the sign-in footer, the About tab and the update banner say about the
 // product: who makes it, which build is running, and where its legal documents
 // and support live.
 
 export const COMPANY = 'Ultra Trace Systems Oy'
+export const COMPANY_URL = 'https://ultratrace.eu'
 export const REPOSITORY_URL = 'https://github.com/ultra-trace-systems/mascope'
 export const SECURITY_POLICY_URL = `${REPOSITORY_URL}/security/policy`
 const CHANGELOG_URL = `${REPOSITORY_URL}/blob/master/CHANGELOG.md`
@@ -64,6 +65,21 @@ export const supportLabel = (href) =>
   href?.startsWith('mailto:')
     ? decodeURIComponent(href.slice('mailto:'.length).split('?')[0])
     : href
+
+// --- Notices ---
+
+const SECTION_RULE = '='.repeat(79)
+
+/**
+ * One document from several notice files - NOTICE, then each image's
+ * third-party notices - each section kept in its own words and separated by a
+ * rule. Empty sections are left out.
+ */
+export const combineNotices = (sections) =>
+  sections
+    .filter((section) => section?.trim())
+    .map((section) => section.trimEnd())
+    .join(`\n\n${SECTION_RULE}\n\n`) + '\n'
 
 // --- Versions ---
 

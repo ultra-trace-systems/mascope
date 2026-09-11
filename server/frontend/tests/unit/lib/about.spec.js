@@ -4,7 +4,7 @@ import { describe, it, expect, vi, afterEach } from 'vitest'
 // screen, so what they must get right is falling back to the published defaults
 // for a runtime that predates the settings, honouring an operator who hides or
 // replaces one, and never rendering anything but a web or mail URL. The version
-// helpers decide whether the About dialog cries "mismatch", so a channel name
+// helpers decide whether the About tab cries "mismatch", so a channel name
 // such as `latest` must never count as one.
 
 vi.mock('@/lib/runtime', () => ({ runtime: { meta: {}, version: 'v0.0.0-runtime' } }))
@@ -12,6 +12,7 @@ vi.mock('@/lib/runtime', () => ({ runtime: { meta: {}, version: 'v0.0.0-runtime'
 import { runtime } from '@/lib/runtime'
 import {
   builtVersion,
+  combineNotices,
   copyrightNotice,
   isBuildVersion,
   legalLinks,
@@ -126,6 +127,16 @@ describe('about: versions', () => {
   it('reports both builds and the browser for a support request', () => {
     expect(versionReport({ web: 'v1.7.3', server: null, userAgent: 'TestBrowser/1.0' })).toBe(
       'Mascope web app: v1.7.3\nMascope server: unavailable\nBrowser: TestBrowser/1.0'
+    )
+  })
+})
+
+describe('about: notices', () => {
+  it('joins the sections in order, each in its own words, and skips empty ones', () => {
+    const rule = '='.repeat(79)
+
+    expect(combineNotices(['NOTICE\n\n', '', 'web list\n', null, 'server list'])).toBe(
+      `NOTICE\n\n${rule}\n\nweb list\n\n${rule}\n\nserver list\n`
     )
   })
 })

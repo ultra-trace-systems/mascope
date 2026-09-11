@@ -1064,7 +1064,7 @@ multi-hour transfer is never reaped.
 
 ### Legal and support links
 
-The sign-in screen and the About dialog (in the sidebar menu) link a privacy
+The sign-in screen and the About tab of the home menu link a privacy
 notice, terms of service and a support contact. The documents are published
 outside the product, so the links are settings in the env's config toml. The
 defaults are:
@@ -1084,10 +1084,10 @@ naming the setting, rather than ending up in a link. Like the other `[meta]`
 settings, a change takes a stack restart - the frontend container publishes the
 runtime config it was started with.
 
-The About dialog also shows the licence, NOTICE and the third-party
-attributions. Those need no setting: each image generates its own at build time
-(the npm packages in the web app's bundle, the Python distributions installed in
-the server image).
+The About tab also shows the licence and the notices - NOTICE together with
+the third-party attributions. Those need no setting: each image generates its
+own at build time (the npm packages in the web app's bundle, the Python
+distributions installed in the server image).
 
 ### Where a deployment's settings live
 

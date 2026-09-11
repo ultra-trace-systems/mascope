@@ -32,9 +32,9 @@ async def get_version_route(user=Depends(guest_user)):
     what it is looking at to a specific artifact without shell access to the
     host. That attribution is the point: a finding against an unknown build is
     not actionable, because a control that appears missing may simply predate
-    the image. The web app's About dialog reads it for the same reason: it
-    shows the server's build next to its own, for a support request, and flags
-    a mismatch between the two.
+    the image. The web app's About tab reads it for a narrower reason: to
+    notice a server running a different build than the page was loaded from -
+    a tab left open across an update, or one container not restarted.
 
     The reported string is ``MASCOPE_VERSION``, which compose also interpolates
     into the ``image:`` tag it pulls, so this always names the tag that was
@@ -44,7 +44,7 @@ async def get_version_route(user=Depends(guest_user)):
     ``unknown`` only where the variable is unset, i.e. a source checkout run
     outside compose.
 
-    Open to every signed-in user, because the About dialog is. Not a
+    Open to every signed-in user, because the About tab is. Not a
     confidentiality boundary: the frontend bundle already renders this same
     version on the login screen, so the value is not secret. It stays behind
     authentication so the API adds no new anonymous, machine-readable surface,
@@ -72,7 +72,7 @@ async def get_third_party_notices_route(user=Depends(guest_user)):
     and their licences - the notice clauses of MIT and BSD, Apache-2.0 section
     4(d) - ask for their copyright and licence text to travel with them. The
     image build writes that text out of the installed distributions themselves
-    (``tooling/third-party-notices.py``), and the About dialog renders it from
+    (``tooling/third-party-notices.py``), and the About tab renders it from
     here. The web app's npm attributions are baked into the frontend image and
     served as a static file instead: each image carries the notices for what it
     ships.

@@ -78,7 +78,7 @@ RUN uv export --frozen --no-emit-workspace --no-hashes -o /tmp/uv-lock-constrain
 # Attributions for every third-party distribution just installed, read out of
 # the environment itself so they cannot drift from what the image ships: the
 # notice clauses of MIT and BSD, and Apache-2.0 section 4(d), make that text a
-# condition of redistributing them. The About dialog shows it through
+# condition of redistributing them. The About tab shows it through
 # GET /api/version/third-party-notices, which reads it from $MASCOPE_PATH.
 # NOTICE and LICENSE are already under /app from the ADD above.
 RUN /opt/uv/tools/mascope/bin/python tooling/third-party-notices.py \

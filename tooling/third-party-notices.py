@@ -9,7 +9,7 @@
 # Apache-2.0 section 4(d) - make the copyright and licence text a condition of
 # redistributing them. A hand-maintained list would rot with every dependency
 # bump, so the image build runs this against the environment it has just
-# installed (server/backend/Dockerfile), and the About dialog shows the result
+# installed (server/backend/Dockerfile), and the About tab shows the result
 # (GET /api/version/third-party-notices). The web app's npm attributions come
 # from the modules actually in its bundle instead
 # (server/frontend/scripts/vite-plugin-legal.js): each image carries the notices
@@ -142,7 +142,7 @@ def collect(first_party: set[str], distributions: Iterable | None = None) -> lis
 
 
 def render(packages: list[dict]) -> str:
-    """The notices file for ``packages``, as the About dialog shows it."""
+    """The notices file for ``packages``, as the About tab shows it."""
     lines = [HEADER, f"{len(packages)} packages.", ""]
     for package in packages:
         lines += [RULE, f"{package['name']} {package['version']}"]

@@ -1,7 +1,7 @@
 """
 Tests for the legal and support links in `[meta]`.
 
-The web app renders them on the sign-in screen and in the About dialog, so two
+The web app renders them on the sign-in screen and in the About tab, so two
 properties matter. A deployment that says nothing links Ultra Trace's published
 privacy notice and support address - the documents live outside the repository,
 which is why these are settings at all. And whatever an operator writes ends up
