@@ -802,7 +802,11 @@ Corroboration that only a batch can give, on the batch ledger.
   admits Stage B rows now that their evidence is on the v2 scale; a review
   routine on the testbed verifies the top disagreements between the engines
   (`tier_disagrees`) so labels accumulate; the corroboration weights are
-  refit per profile.
+  refit per profile. The fitted axis gains a mass-dependent term once the
+  verdict anchors reach below m/z 100: after step 2.2 the residual was
+  measured to curve at the low-mass end on every instrument, on files the
+  calibration node marks verified (issue #2095), while the gate's single
+  width caps nothing there.
 - **Verify.** Before and after ECE from the recalibration route; the
   provisional gate behaves.
 - **Size.** M. Depends on 2.1 and the verification UI (shipped).
@@ -2949,6 +2953,29 @@ found") were measured on the mis-calibrated axis and stand as a record of it. F1
 F2 and every Orbitrap set are unaffected. C2's -1.1 ppm stands unfixed and is
 still the clearest node defect on the gate.
 
+**The residual curves at the low-mass end, and the gate does not cap there
+(measured 2026-09-11, after step 2.4d).** On the latest runs of the 43 samples
+the uncorroborated monoisotopic rows' mass error, read against the run's own
+fitted centre, is a function of m/z on every instrument. On A it is -2.3 ppm
+below m/z 60 (9 rows), -1.5 at 60-80 (46), -0.9 at 80-100 (58), -0.4 at
+100-150 and zero from 150 up, on a gate width of about 0.6 ppm; the
+corroborated anchors curve the same way where they reach, -1.3 ppm at 60-80 on
+six rows with almost no spread, and no Orbitrap set has an anchor below m/z 60.
+D reads +0.65 ppm at 80-100 (52 rows) against 0.0 to +0.2 above 100; F1 +5.0 at 60-80
+(28) and +3.7 at 80-100 (33) against +0.5 above 250; F2 +4.8 below 60 (11)
+against +0.1 above 250. That is the axis and not the formulas, because the
+anchors are corroborated readings and bend with the rest. The gate fits one
+centre and one width over anchors that sit above m/z 100, so a low-mass row
+beyond three widths is where that curvature puts it - and the gate caps none
+of them: over the 43 runs it capped 3 monoisotopic rows, all on F2 and all
+above m/z 200 (216, 323 and 401), because every low-mass row beyond three
+widths already sits below assigned on its own evidence. The gate's single
+width therefore stands for untargeted rows, as decision 3's addendum found for
+curated ones. What the measurement names is a calibration-shape defect on
+files the node marks verified, recorded on issue #2095; a mass-dependent term
+belongs in the fitted axis once anchors reach below m/z 100, which is step
+3.3's, not in the gate.
+
 ## Decisions (taken 2026-09-07)
 
 1. **Presets before rows.** Profiles ship as library presets resolved from
@@ -2999,7 +3026,9 @@ still the clearest node defect on the gate.
    a TOF run 4.7 ppm wide), which is neither low-mass nor small and which
    the low-mass argument does not cover; all four already sit below
    assignability. Whether the same shape over-caps untargeted rows at low
-   m/z is a calibration question, not this decision's.
+   m/z is a calibration question, not this decision's; measured the same
+   day for untargeted rows, it does not - the gate caps none below m/z 200
+   (step 2.2's section).
 4. **The cap.** Every peak by default, with the 5,000 ceiling as the hard
    bound; ingest-time runs are Stage A only, so the cost lands on explicit
    runs.
