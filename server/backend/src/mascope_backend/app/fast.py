@@ -125,8 +125,30 @@ def _docs_kwargs(mode: str) -> dict[str, str | None]:
     return {"docs_url": None, "redoc_url": None, "openapi_url": None}
 
 
-# Initialize FastAPI with the lifespan.
-fast = FastAPI(lifespan=lifespan, **_docs_kwargs(runtime.mode))
+#: Heads the OpenAPI document: the one dev mode serves, and the static copy a
+#: production deployment publishes with its docs (mascope_backend.openapi).
+_API_DESCRIPTION = """\
+The HTTP API behind the Mascope web app and the Python SDK. Paths are relative
+to the deployment's own address.
+
+Authenticate with the session cookie that `POST /api/auth/login` sets, as the
+web app does, or with an API token sent as `Authorization: Bearer <token>`, as
+the SDK does; tokens are generated in the web app's settings. Only the routes
+the SDK and the instrument agents call accept a token - any other route
+refuses one with 401, although this document lists both schemes on every route.
+"""
+
+# Initialize FastAPI with the lifespan. `version` stays the workspace's
+# placeholder on purpose: the published copy of the document is served
+# anonymously, while the running version is an admin-only read
+# (GET /api/version), so the document must not announce it.
+fast = FastAPI(
+    lifespan=lifespan,
+    title="Mascope API",
+    description=_API_DESCRIPTION,
+    version="0.0.0",
+    **_docs_kwargs(runtime.mode),
+)
 
 
 #: Methods a cross-site page could use to change state with the victim's

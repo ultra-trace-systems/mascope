@@ -144,7 +144,9 @@ and the checkout.
 
    The deployment serves the user documentation from the same host at
    `https://<host>/docs/` - it is bundled into the frontend image, so no extra
-   setup is needed.
+   setup is needed. The API's OpenAPI document comes with it, at
+   `https://<host>/docs/openapi.json`, for API clients and client generators;
+   the backend itself does not serve its schema in production.
 
 #### Update to a new release
 
