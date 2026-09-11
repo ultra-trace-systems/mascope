@@ -24,8 +24,10 @@ radical rather than a molecule. Measured on the gate, this is the sharpest rule
 the engine has and it needs no condition at all: of 1,794 assigned-tier rows
 whose neutral is odd-electron, across all eight sets, the reference engine
 confirms **none**. It is symmetric - the reference commits 629 such rows of its
-own, and on the 462 peaks where both engines commit one, they agree on the
-formula zero times. Decision 9 already prefers the closed-shell reading when two
+own - and wherever both engines commit an M0 on one peak, a radical on either
+side never matches: not on the 954 peaks where this engine's commit is
+odd-electron, not on the 462 where the reference's is, not on the 151 where both
+are. Decision 9 already prefers the closed-shell reading when two
 readings make one ion; this says the same thing about a reading with no rival:
 a radical is a tie-break, and a tie-break is not evidence.
 
@@ -45,6 +47,9 @@ it has.
 ``envelope_neighbour`` - decision 11's rider. An M0 committed on a peak that a
 committed neighbour's envelope predicts a line for, at a height that could
 account for the peak, is more likely to be that line than a compound of its own.
+The neighbour has to be a formula the run stands behind - candidate tier or
+above - because the line is predicted FROM its formula, and a reading the run
+itself calls below assignability is no ground for taking another row's tier.
 
 Rules the earlier passes already applied
 ----------------------------------------
@@ -241,7 +246,7 @@ def odd_electron_reason(row: dict) -> dict | None:
     elected from a grid, it was matched to an identity somebody authored. Real
     radical anions exist in these chemistries and are exactly what such a
     library holds: the dibromide and carbonate reagent ions, trisulfur. On the
-    gate the exemption spares 8 assigned rows, none of which the reference
+    gate the exemption spares 12 assigned rows, none of which the reference
     confirms, so it is taken on the principle rather than on the count.
 
     Fails open on a formula that cannot be parsed, like every other chemistry
@@ -262,7 +267,16 @@ def odd_electron_reason(row: dict) -> dict | None:
 
 
 def density_reason(row: dict) -> dict | None:
-    """The evidence left rivals standing, and nothing else saw the neutral."""
+    """The evidence left rivals standing, and nothing else saw the neutral.
+
+    The only escape is a second channel. A committed isotopologue envelope is
+    one of the corroboration flags the plan lists, and it is deliberately not
+    an escape here, on the measurement: of the 2,636 assigned rows this rule
+    takes on the assignment gate, 54 own a committed satellite, and the
+    reference confirms 6 of those and contradicts 13. An envelope is already
+    inside the fit that failed to separate the rivals, so it cannot break a tie
+    the fit left; a second channel is evidence from outside the peak.
+    """
     density = _provenance(row).get(CANDIDATE_DENSITY)
     if not isinstance(density, int) or density < DENSITY_LIMIT:
         return None
@@ -312,6 +326,15 @@ def envelope_neighbours(
     mzs = [float(row.get("sample_peak_mz") or 0.0) for row in ordered]
     found: dict[str, dict] = {}
     for owner in ordered:
+        # Only a reading the run stands behind predicts lines that can take
+        # another row's tier. The line's height comes from the owner's formula -
+        # its carbon count, its halogens - and a formula below assignability is
+        # one whose envelope the run itself does not believe. Measured on the
+        # gate before this condition, those owners took 52 of the rule's 218
+        # rows and were wrong on 4 of them, the rule's worst precision by owner
+        # tier (assigned owners: 1 of 76).
+        if owner.get("tier") not in (TIER_ASSIGNED, TIER_CANDIDATE):
+            continue
         ion = str(owner.get("ion_formula") or "")
         if len(ion) < 2 or ion[-1] not in "+-":
             continue
@@ -469,7 +492,11 @@ def apply_tiering(
     )
 
     capped_by_rule: dict[str, int] = {}
-    capped_ids: set[str] = set()
+    # Owners whose tier THIS pass took, and owners an earlier pass had already
+    # capped - kept apart so the run can say which of the two its satellites
+    # followed.
+    capped_here: set[str] = set()
+    capped_earlier: set[str] = set()
     capped = 0
 
     for row in m0:
@@ -499,10 +526,14 @@ def apply_tiering(
                     capped_by_rule.get(reason["rule"], 0) + 1
                 )
         _provenance(row)["tier_reasons"] = reasons
-        if any(reason["caps"] for reason in reasons):
-            capped_ids.add(str(row.get("peak_assignment_id")))
+        row_id = str(row.get("peak_assignment_id"))
+        if mine:
+            capped_here.add(row_id)
+        elif any(reason["caps"] for reason in reasons):
+            capped_earlier.add(row_id)
 
     capped_satellites = 0
+    capped_satellites_after_earlier_pass = 0
     for row in committed:
         if row.get("role") != ROLE_ISO_CHILD:
             continue
@@ -511,8 +542,15 @@ def apply_tiering(
             continue
         # A satellite is its owner's ion on a second line of one envelope, so
         # every question this pass asks was answered about the owner. It carries
-        # the answer rather than a copy of the reasoning.
-        owner_capped = owner_id in capped_ids
+        # the answer rather than a copy of the reasoning - and follows its owner
+        # down whichever pass took the owner's tier. That is uniform where the
+        # earlier passes were not: the mass gate and the reagent-N rule cap
+        # their own satellites, while the minor-channel cap touches M0 rows
+        # only (it cannot reach an owner WITH a satellite, since a committed
+        # isotopologue is its escape). On the assignment gate no satellite of
+        # an earlier-capped owner was left standing, so this adds no demote
+        # there; it is the rule stated once rather than three ways.
+        owner_capped = owner_id in capped_here or owner_id in capped_earlier
         _provenance(row)["tier_reasons"] = [
             _reason(
                 REASON_INHERITED,
@@ -521,13 +559,19 @@ def apply_tiering(
             )
         ]
         if owner_capped and _cap(row):
-            capped_satellites += 1
+            if owner_id in capped_here:
+                capped_satellites += 1
+            else:
+                capped_satellites_after_earlier_pass += 1
 
     return {
         "version": TIERING_RULES_VERSION,
         "committed_m0": len(m0),
         "capped": capped,
         "capped_satellites": capped_satellites,
+        # Satellites of an owner an EARLIER pass capped, which that pass left
+        # standing. Separate from the above, whose owners this pass capped.
+        "capped_satellites_after_earlier_pass": capped_satellites_after_earlier_pass,
         "capped_by_rule": capped_by_rule,
         "density_limit": DENSITY_LIMIT,
         "envelope_height_tolerance": ENVELOPE_HEIGHT_TOLERANCE,
