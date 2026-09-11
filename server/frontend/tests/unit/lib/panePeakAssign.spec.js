@@ -18,6 +18,7 @@ const verify = vi.fn(() => Promise.resolve(null))
 const curate = vi.fn(() => Promise.resolve(null))
 const loadAltScores = vi.fn(() => Promise.resolve([]))
 const loadEvidence = vi.fn(() => Promise.resolve(null))
+const loadDetail = vi.fn(() => Promise.resolve())
 
 let focusedPeak
 let focusedAssignment
@@ -27,6 +28,9 @@ let verdictRecord
 // one detail record the inspector fetches (for the focused assignment only).
 let familyRows
 let detailRecord
+// Detail fetched for a row other than the focused one: the M0 of a focused
+// isotopologue, whose tier reasons the card shows beneath the isotopologue's.
+let otherDetails
 // The focused sample's run record; `{ engine: 'batch' }` is a derived ledger.
 let runRecord
 // The on-demand measurement of the finder's formula-only shortlist: null until
@@ -65,10 +69,13 @@ function makeApp() {
         peak: {
           forPeak: () => focusedAssignment,
           // Keyed by id rather than answering every caller: the inspector loads
-          // detail for the focused assignment alone, so anything it reads off
-          // another family member has to come from that member's slim row.
+          // detail for the focused assignment, and for the M0 of an isotopologue
+          // whose tier reasons follow it, so anything else it reads off another
+          // family member has to come from that member's slim row.
           detailOf: (id) =>
-            id != null && id === focusedAssignment?.peak_assignment_id ? detailRecord : null,
+            id != null && id === focusedAssignment?.peak_assignment_id
+              ? detailRecord
+              : (otherDetails.get(id) ?? null),
           familyOf: () => familyRows ?? (focusedAssignment ? [focusedAssignment] : []),
           run: runRecord,
           // Stands in for the store's family resolution over whatever `ledger`
@@ -77,7 +84,7 @@ function makeApp() {
           // here is that the inspector asks for it and uses the answer.
           m0Of: (row) =>
             row?.role === 'iso_child' ? (ledger.get(row.owner_peak_assignment_id) ?? row) : row,
-          loadDetail: () => Promise.resolve(),
+          loadDetail,
           // The scores are keyed by assignment id like the detail is, and the
           // pane must not read another row's measurement onto this one.
           altScoresOf: (id) =>
@@ -187,6 +194,7 @@ beforeEach(() => {
   familyRows = null
   runRecord = null
   detailRecord = null
+  otherDetails = new Map()
   altScoreRecords = null
   scoringNow = false
   evidenceRecord = null
@@ -471,6 +479,225 @@ describe('PanePeakAssign adduct corroboration', () => {
     const wrapper = await mountPane()
 
     expect(badge(wrapper).exists()).toBe(false)
+  })
+})
+
+// Every row a run commits carries what the tiering pass decided about it. The
+// card names each rule and shows the server's sentence as written; what it adds
+// is the mark on a reason that holds the tier down, and, on an isotopologue -
+// which carries only "follows its M0" itself - the M0's own reasons.
+describe('PanePeakAssign tier reasons', () => {
+  const RADICAL = {
+    rule: 'odd_electron',
+    detail: 'C10H11 is an odd-electron neutral - a radical rather than a molecule',
+    caps: true
+  }
+  const RIVALS = {
+    rule: 'candidate_density',
+    detail: '3 formulas this peak could not separate',
+    caps: true
+  }
+  const SECOND_CHANNEL = {
+    rule: 'corroborated',
+    detail: 'the same neutral is committed through 2 of the run channels',
+    caps: false
+  }
+  const NO_RIVAL = {
+    rule: 'no_close_rival',
+    detail: 'the evidence separates this formula from every other candidate',
+    caps: false
+  }
+  const follows = (caps) => ({
+    rule: 'inherited_from_owner',
+    detail: 'an isotopologue of a reading judged on its own monoisotopic row',
+    caps
+  })
+
+  const M0 = {
+    peak_assignment_id: 'pa-1',
+    sample_item_id: 'si-1',
+    sample_peak_id: 'p-1',
+    sample_peak_mz: 200.12345,
+    sample_peak_intensity: 12345,
+    assigned_formula: 'C10H11',
+    tier: 'candidate',
+    role: 'M0',
+    fit_score: 0.9
+  }
+
+  const reasons = (wrapper) => wrapper.findAll('.tier-reasons .reason')
+  const rules = (wrapper) => reasons(wrapper).map((row) => row.find('.reason-rule').text())
+  const loadedIds = () => loadDetail.mock.calls.map(([row]) => row?.peak_assignment_id)
+
+  it('names each reason and shows the sentence the server wrote', async () => {
+    focusedAssignment = M0
+    detailRecord = { provenance: { tier_reasons: [RADICAL, RIVALS] } }
+    const wrapper = await mountPane()
+
+    expect(rules(wrapper)).toEqual(['radical neutral', 'rivals left standing'])
+    expect(reasons(wrapper)[0].find('.reason-detail').text()).toBe(RADICAL.detail)
+    expect(reasons(wrapper)[1].find('.reason-detail').text()).toBe(RIVALS.detail)
+  })
+
+  it('marks the reasons that hold the tier down, and only those', async () => {
+    focusedAssignment = M0
+    detailRecord = { provenance: { tier_reasons: [RADICAL, NO_RIVAL] } }
+    const wrapper = await mountPane()
+
+    expect(reasons(wrapper)[0].classes()).toContain('caps')
+    expect(reasons(wrapper)[1].classes()).not.toContain('caps')
+  })
+
+  it('lists what an assigned row kept its tier on, none of it capping', async () => {
+    focusedAssignment = { ...M0, assigned_formula: 'C10H12', tier: 'assigned' }
+    detailRecord = { provenance: { tier_reasons: [SECOND_CHANNEL, NO_RIVAL] } }
+    const wrapper = await mountPane({ recordTooltips: true })
+
+    expect(rules(wrapper)).toEqual(['second channel', 'no close rival'])
+    for (const row of reasons(wrapper)) {
+      expect(row.classes()).not.toContain('caps')
+      expect(row.attributes('data-tooltip')).toBe(
+        'Caps nothing: this row holds the tier its evidence earned'
+      )
+    }
+  })
+
+  // `caps` is what a rule would take, so what it did is read off the tier the
+  // row actually holds.
+  it('says a capping reason holds a candidate row there', async () => {
+    focusedAssignment = M0
+    detailRecord = { provenance: { tier_reasons: [RADICAL] } }
+    const wrapper = await mountPane({ recordTooltips: true })
+
+    expect(reasons(wrapper)[0].attributes('data-tooltip')).toBe(
+      'Holds this row at candidate - it cannot be assigned while this stands'
+    )
+  })
+
+  it('says a capping reason took nothing from a row its evidence put lower', async () => {
+    focusedAssignment = { ...M0, tier: 'below_assignability' }
+    detailRecord = { provenance: { tier_reasons: [RADICAL] } }
+    const wrapper = await mountPane({ recordTooltips: true })
+
+    expect(reasons(wrapper)[0].attributes('data-tooltip')).toBe(
+      'Would hold this row at candidate, but its evidence already puts it lower'
+    )
+  })
+
+  // A run from before the pass, an imported run, a row a person assigned: no
+  // rule judged them, and a heading over an empty list would say one had.
+  it('shows nothing on a row no tiering pass judged', async () => {
+    focusedAssignment = M0
+    detailRecord = { provenance: { plausibility: 0.8 } }
+    const wrapper = await mountPane()
+
+    expect(wrapper.find('.tier-reasons').exists()).toBe(false)
+  })
+
+  it('shows nothing before the detail arrives', async () => {
+    focusedAssignment = M0
+    const wrapper = await mountPane()
+
+    expect(wrapper.find('.tier-reasons').exists()).toBe(false)
+  })
+
+  // A derived row serves its anchor's consensus record as provenance, and its
+  // tier is a vote across the batch that no rule judged. Whatever that record
+  // carries is not a reason for THIS row's tier.
+  it('shows nothing on a row served from the batch ledger', async () => {
+    runRecord = { engine: 'batch' }
+    focusedAssignment = { ...M0, batch_peak_id: 'bp-1' }
+    detailRecord = { provenance: { tier_reasons: [RADICAL] } }
+    const wrapper = await mountPane()
+
+    expect(wrapper.find('.tier-reasons').exists()).toBe(false)
+  })
+
+  it('keeps a rule this build does not know, by its key', async () => {
+    focusedAssignment = M0
+    detailRecord = {
+      provenance: {
+        tier_reasons: [{ rule: 'series_anchor', detail: 'no series member', caps: true }]
+      }
+    }
+    const wrapper = await mountPane()
+
+    expect(rules(wrapper)).toEqual(['series anchor'])
+    expect(reasons(wrapper)[0].classes()).toContain('caps')
+  })
+
+  it("shows an isotopologue's M0 reasons beneath its own, marked as the M0's", async () => {
+    focusedAssignment = isotopologue(M0)
+    familyRows = [M0, focusedAssignment]
+    detailRecord = { provenance: { tier_reasons: [follows(true)] } }
+    otherDetails.set(M0.peak_assignment_id, { provenance: { tier_reasons: [RADICAL, RIVALS] } })
+    const wrapper = await mountPane({ recordTooltips: true })
+    const rows = reasons(wrapper)
+
+    expect(rows).toHaveLength(3)
+    expect(rows[0].find('.reason-rule').text()).toBe('follows its M0')
+    expect(rows[0].classes()).toContain('caps')
+    expect(rows[0].classes()).not.toContain('inherited')
+    for (const row of rows.slice(1)) {
+      expect(row.classes()).toContain('inherited')
+      expect(row.find('.reason-rule').text()).toContain('via M0')
+      expect(row.attributes('data-tooltip')).toBe(
+        'Holds the M0 at candidate - it cannot be assigned while this stands. ' +
+          'Recorded on the M0, which this isotopologue follows.'
+      )
+    }
+    expect(rows[1].find('.reason-detail').text()).toBe(RADICAL.detail)
+  })
+
+  it("fetches the M0's detail for an isotopologue that follows it", async () => {
+    focusedAssignment = isotopologue(M0)
+    familyRows = [M0, focusedAssignment]
+    detailRecord = { provenance: { tier_reasons: [follows(false)] } }
+    await mountPane()
+
+    expect(loadedIds()).toContain(M0.peak_assignment_id)
+  })
+
+  it('shows its own line alone until the M0 detail lands', async () => {
+    focusedAssignment = isotopologue(M0)
+    familyRows = [M0, focusedAssignment]
+    detailRecord = { provenance: { tier_reasons: [follows(true)] } }
+    const wrapper = await mountPane()
+
+    expect(rules(wrapper)).toEqual(['follows its M0'])
+  })
+
+  // The run recorded no owner for it, so there is no M0 whose answer it carries,
+  // and nothing to fetch.
+  it('fetches nothing more for an isotopologue with no owner recorded', async () => {
+    focusedAssignment = {
+      ...M0,
+      peak_assignment_id: 'pa-orphan',
+      role: 'iso_child',
+      owner_peak_assignment_id: null,
+      isotope_label: 'M+1'
+    }
+    detailRecord = {
+      provenance: {
+        tier_reasons: [
+          { rule: 'not_measured', detail: 'an isotopologue with no owner recorded', caps: false }
+        ]
+      }
+    }
+    const wrapper = await mountPane()
+
+    expect(rules(wrapper)).toEqual(['not measured'])
+    expect(new Set(loadedIds())).toEqual(new Set(['pa-orphan']))
+  })
+
+  it('fetches no M0 for an isotopologue whose run recorded no reasons', async () => {
+    focusedAssignment = isotopologue(M0)
+    familyRows = [M0, focusedAssignment]
+    detailRecord = { provenance: {} }
+    const wrapper = await mountPane()
+
+    expect(wrapper.find('.tier-reasons').exists()).toBe(false)
+    expect(loadedIds()).not.toContain(M0.peak_assignment_id)
   })
 })
 
