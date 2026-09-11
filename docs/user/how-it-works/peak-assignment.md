@@ -226,6 +226,10 @@ What caps a row at candidate:
   neutral with a different nitrogen count through a channel that donates no nitrogen,
   with no channel of the run to settle the count; and a commitment through a channel the
   ionization mode treats as secondary, with no isotopologue or second channel behind it.
+  The last applies to the formula search's own results only, and a curated identity is
+  exempt from the first two as well: the calibration check counts its curation as the
+  corroboration it asks for, and the nitrogen count is a question about the search's
+  choice.
 
 What a row that keeps its tier kept it on: **second channel** (the same neutral committed
 through two or more of the run's ionization channels), **no close rival** (the evidence
