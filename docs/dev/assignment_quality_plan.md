@@ -2976,7 +2976,12 @@ still the clearest node defect on the gate.
    corroboration that exempts a row from its cap, so the example above - a
    target matched 4 ppm off on a 0.2 ppm instrument - is not capped by the
    gate as built. Whether it should be is open, and it is the one part of
-   this decision the code does not do.
+   this decision the code does not do. To size it: on the latest runs of
+   the 43 gate samples, 26 curated rows sit beyond the gate's width of
+   three - on A 7 monoisotopic rows, the widest at 4.4; on F2 6
+   monoisotopic and 8 isotopologue rows, the widest at 7.1; on F1 one of
+   each; on C 2 and on C2 1 isotopologue row - and every one of them would
+   have been capped as an untargeted row.
 4. **The cap.** Every peak by default, with the 5,000 ceiling as the hard
    bound; ingest-time runs are Stage A only, so the cost lands on explicit
    runs.
