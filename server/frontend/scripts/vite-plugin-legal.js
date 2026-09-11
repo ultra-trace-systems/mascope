@@ -4,7 +4,7 @@
 //                                  is in the bundle
 //   legal/NOTICE.txt               the repository's NOTICE and LICENSE, so the
 //   legal/LICENSE.txt              frontend image carries them too
-//   virtual:mascope-legal          NOTICE's copyright line, for the About dialog
+//   virtual:mascope-legal          NOTICE's copyright line, for the About tab
 //                                  and the sign-in footer
 //   <meta name="mascope-version">  the version this bundle was built as
 //
@@ -20,7 +20,7 @@
 //
 // The version tag lets the update banner name the build it is offering (it
 // reads it from a freshly fetched index.html, see src/lib/update) and lets the
-// About dialog compare the web app's build with the server's.
+// About tab name the build and compare it with the server's.
 //
 // The app is air-gapped by design - nothing is fetched from a third party at
 // view time - so all of this is baked in rather than looked up. `vite dev`

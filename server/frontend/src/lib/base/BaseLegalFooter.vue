@@ -3,7 +3,7 @@ import { copyrightNotice, legalLinks, linkTarget } from '@/lib/about'
 
 // The sign-in screen's legal footer: who makes the software, and where its
 // privacy notice, terms and support are published. It sits here and not only
-// in the About dialog because someone deciding whether to sign in - or a
+// in the About tab because someone deciding whether to sign in - or a
 // reviewer with no account - has to be able to read them first. The links are
 // [meta] settings (docs/maintaining.md); one set to empty is not rendered.
 const links = legalLinks()

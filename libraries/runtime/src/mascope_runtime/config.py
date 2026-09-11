@@ -85,7 +85,7 @@ class MetaConfig(BaseModel):
     # `migrate_legacy_options()`.
     tus_max_upload_gb: int = Field(default=5, ge=1)
     # Legal and support links the web app shows on the sign-in screen and in
-    # its About dialog. Configuration rather than constants, because the
+    # its About tab. Configuration rather than constants, because the
     # documents are published outside this repository and a deployment someone
     # else operates has its own privacy notice and support desk. Only the web
     # app reads them, via `runtime.meta` (src/lib/about.js, which repeats these

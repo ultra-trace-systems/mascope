@@ -10,12 +10,7 @@ import TabPanels from 'primevue/tabpanels'
 import TabPanel from 'primevue/tabpanel'
 import ContextMenu from 'primevue/contextmenu'
 
-import {
-  DialogAbout,
-  DialogWorkspaceOp,
-  DialogWorkspaceMembership,
-  DialogDatasetOp
-} from '@/lib/dialogs'
+import { DialogWorkspaceOp, DialogWorkspaceMembership, DialogDatasetOp } from '@/lib/dialogs'
 import { BatchContextMenu, useBatchContextMenu, useBatchTableConfig } from '@/lib/panes'
 
 import { useSidebarMenu } from './state.js'
@@ -23,6 +18,7 @@ import WorkspacePane from './WorkspacePane.vue'
 import UserSettingsPane from './UserSettingsPane.vue'
 import NotificationPane from './NotificationPane.vue'
 import NotificationOverlay from './NotificationOverlay.vue'
+import AboutPane from './AboutPane.vue'
 
 import { useApp } from '@/stores'
 import { workspaceIcon } from '@/stores/data/modules/workspace'
@@ -34,7 +30,6 @@ const dialog = ref()
 const datasetDialog = ref()
 const workspaceContextMenu = ref()
 const workspaceMembersDialog = ref(false)
-const aboutDialog = ref(false)
 const datasetContextMenu = ref()
 const batchContextMenu = useBatchContextMenu()
 const batchTable = useBatchTableConfig()
@@ -238,6 +233,9 @@ watchEffect(() => {
           <Tab value="settings" v-tooltip.bottom="'Settings'">
             <span class="pi ph ph-gear-six" />
           </Tab>
+          <Tab value="about" v-tooltip.bottom="'About'">
+            <span class="pi ph ph-info" />
+          </Tab>
         </TabList>
       </template>
       <TabPanels>
@@ -250,18 +248,13 @@ watchEffect(() => {
         <TabPanel value="settings">
           <UserSettingsPane />
         </TabPanel>
+        <TabPanel value="about">
+          <AboutPane />
+        </TabPanel>
       </TabPanels>
       <template #footer>
         <div class="row">
           <span class="user-info">Logged in as {{ app.auth.user.username }}</span>
-          <Button
-            icon="pi ph ph-info"
-            label="About"
-            severity="secondary"
-            text
-            @click="aboutDialog = true"
-            style="margin-top: 1rem"
-          />
           <Button
             icon="pi pi-sign-out"
             label="Logout"
@@ -326,7 +319,6 @@ watchEffect(() => {
     :workspace="app.data.workspace.focused"
   />
   <BatchContextMenu />
-  <DialogAbout v-model:visible="aboutDialog" />
 </template>
 
 <style scoped>
