@@ -40,10 +40,11 @@ which is the only place it can be: the row stores at most
 The implausibility signatures - ``oxygen_lattice`` and ``carbon_free``; the
 carbon cluster was withdrawn on the measurement - are named formula shapes that
 are the product of a mass search rather than of a source
-(``mascope_tools.composition.implausibility``). They are
-guards rather than levers: on the gate they reach a few hundred rows in total,
-and the value of writing them is that a row demoted on one can say which shape
-it has.
+(``mascope_tools.composition.implausibility``). They are guards rather than
+levers: on the gate they reach a few hundred rows in total, and the value of
+writing them is that a row demoted on one can say which shape it has. A curated
+row is not asked, for the radical rule's reason: it was matched to an identity
+somebody authored, not arrived at by a mass search.
 
 ``envelope_neighbour`` - decision 11's rider. An M0 committed on a peak that a
 committed neighbour's envelope predicts a line for, at a height that could
@@ -94,7 +95,7 @@ from mascope_tools.composition.implausibility import implausible_signatures
 #: run, because a tier is only comparable across runs together with the rules
 #: that produced it - the same statement the tier BANDS carry, for the same
 #: reason.
-TIERING_RULES_VERSION = 1
+TIERING_RULES_VERSION = 2
 
 #: The row names a radical rather than a molecule.
 REASON_ODD_ELECTRON = "odd_electron"
@@ -405,7 +406,21 @@ def envelope_reason(row: dict, on_a_neighbours_line: dict[str, dict]) -> dict | 
 
 
 def implausibility_reasons(row: dict) -> list[dict]:
-    """The named shapes of a formula that fits a mass and not a chemistry."""
+    """The named shapes of a formula that fits a mass and not a chemistry.
+
+    A CURATED row is exempt, for the reason the radical rule gives: every
+    signature names what a mass search produces, and a curated row was matched
+    to an identity somebody authored rather than found by one. The library
+    leaves this check to its caller, because a signature is a function of the
+    formula alone and the source belongs to the row. Where the signatures reach
+    curated rows on the gate, the shape is the library's identity and not a
+    fit's: carbon-free on trisulfur and on the bromine of the dibromide reagent
+    ion, which took 7 assigned rows the reference confirms none of, and the
+    oxygen lattice on peroxyacetyl nitrate, a species these sources are built
+    to see.
+    """
+    if row.get("source") == SOURCE_DATABASE:
+        return []
     return [
         _reason(
             signature,
