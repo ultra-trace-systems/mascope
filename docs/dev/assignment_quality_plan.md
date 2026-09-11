@@ -2962,6 +2962,21 @@ still the clearest node defect on the gate.
    apply to curated targets too: a target matched 4 ppm off on a 0.2 ppm
    instrument is not "assigned", and a curated hit within calibration is
    corroborated by its curation.
+   *Addendum (2026-09-11, with step 2.4d, #2105).* As built, the demotes
+   split by what they doubt. The rules that judge the peak a row sits on
+   reach a curated row like any other, since neither checks the source:
+   candidate density (formulas the peak's evidence could not separate) and
+   the envelope neighbour (a line a committed neighbour predicts on the
+   peak). The rules that doubt what a mass search elected do not, because a
+   curated row was matched to an identity somebody authored rather than
+   elected by one: the radical rule (2.4b), the formula-shape signatures
+   (2.4d), the reagent-N rule (2.3), and the minor-channel cap, which only
+   the untargeted stage applies. The mass gate (2.2) records a curated row's
+   `mass_z` and fits the calibration over it, but counts the curation as the
+   corroboration that exempts a row from its cap, so the example above - a
+   target matched 4 ppm off on a 0.2 ppm instrument - is not capped by the
+   gate as built. Whether it should be is open, and it is the one part of
+   this decision the code does not do.
 4. **The cap.** Every peak by default, with the 5,000 ceiling as the hard
    bound; ingest-time runs are Stage A only, so the cost lands on explicit
    runs.
