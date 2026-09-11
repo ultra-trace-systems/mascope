@@ -24,7 +24,7 @@ step PRs land on the epic and are named here as they merge.
 | 2.2 - self-calibrated mass gate | #2094 | measured: every committed row records `mass_z` and every run records the calibration it was measured in, fitted over its own corroborated commits - 212 to 3,970 anchors a set where Stage A had 10 to 127. The gate itself is a guard, not a lever: it caps 49 rows over the 43 samples - 3 analyte commits, all on one TOF set and none of them a row the reference confirms, and 46 isotopologue rows the tracking rule reads as coincidences - and moves G1 on no set, because the failure it was written for was closed by 2.1 - the widest committed top-tier error on a straight Orbitrap axis is 1.02 ppm, and on A the rows the reference contradicts sit CLOSER to the calibration (0.088 ppm median) than the ones it confirms (0.149). No row the reference confirms was demoted on any set (G2 and its n identical everywhere) and no election changed (0 verdict shifts of 48,894 peaks), so G7 is 0 where the gate applied, which was all 43. The offset half of the 2.1b defect was tried and withdrawn on the measurement: fitting an offset from the five to seven anchors a width is refused for moved the TOF bromide set 4 ppm the wrong way (MAD 2.03 -> 2.33), so an anchor set too small to say how wide it is cannot say where its centre is. What the runs now report instead is a per-sample calibration reading, and it says the TOF sets carry 2.8-6.9 ppm widths and C2 a flat -1.1 ppm bias on files whose stored calibration is marked verified. The TOF sets were then recalibrated through the node and E re-baselined on both engines: its axis was out by 8-10 ppm and is now inside a ppm, which lifts the reference's G2 on E from 15.4/26.9 to 33.3/42.9% and the signal it explains from 0.5 to 26.2%, while the engine's top tier is the same SIZE on both axes (424 rows) and not the same rows - 147 of them sit on a peak that held it before, 7 keep their formula, tiers moved on 765 of the 1,343 M0 peaks both commit, and 70% of those peaks change formula - so mass is not what constrains a TOF commit, which is 2.4's. F1 and F2 did not move at all (their axes were already right, merely never fitted) and their runs stand; C2 cannot be fitted until its mode has more than two disagreeing calibrants |
 | 2.3 - cross-channel corroboration and the reagent-N rule | #2096 | measured: a run groups its committed monoisotopic winners by neutral across the channels it searched and records what that corroborates, reaching 5.4% to 59.4% of a set's commits where Stage A's curated-compound version reached 25 of A's 2,062 rows and none at all on six sets; the ledger's corroboration marker now renders it, and the row carries the best tier any partner channel holds. It is the strongest separator the engine has: on the reference's own Assigned rows the engine agrees on the formula 98.7% of the time when the neutral has a second channel against 54.7% when it does not (A), 98.0 against 71.2 (B), 97.6 against 83.2 (D), 100 against 5.1 (F1), and it survives an intensity-decile control on both conditionings. Nothing is promoted on it; the flag is what 2.4 weighs. The reagent-N rule is what its absence makes necessary: `+NH4+` on M and `+H+` on M+NH3 are the SAME ion formula, so no mass, envelope or fit separates them and the finder does not try - since 1.3 `elect_same_ion_families` collapses them before ranking and elects a reading by a stated prior (closed-shell neutral first, then the mechanism carrying the most mass), keeping the displaced reading on the row as a `same_ion` alternative. That prior is not an observation, so a winner through a nitrogen-donating channel whose own family holds a reading through a channel donating none is capped at `candidate` with the reason `ambiguous_nitrogen` unless a nitrogen-free channel or a second, different nitrogen-donating reagent saw the same neutral: 359 analytes and 51 isotopologues on A, 921 and 55 on B, 1,225 and 9 on F2, none on the five other sets - C and C2 because their reagent is 15N-labelled, which both stops it donating nitrogen and stops the finder proposing the alternative at all, D, E and F1 because they have no nitrogen-donating channel. Whether such a prior deserves trusting is a question about the reagent and the gate answers it: the same arithmetic holds for bromide, and 246 of D's 277 lone bromide readings are confirmed (89%) against 79 of A's 409 lone nitrogen ones (19%), which is what scopes the rule to nitrogen. G1 falls 40.2 -> 25.4 on A, 44.2 -> 40.2 on B and 99.2 -> 98.8 on F2 and is flat elsewhere; G2 and its denominator are identical on all eight sets and there are 0 verdict shifts and 0 formula shifts of 48,894 peaks, because the rule moves tiers and nothing else. Two costs are recorded rather than claimed as wins: on F2 it takes 1,225 of 3,008 assigned rows on a set where the reference is silent, so nothing judges the exchange and 2.4 must weigh it against the mode's own prior; and it demotes 405 rows the reference confirms, though on every one of them the reference reached that formula through the same nitrogen-donating channel and itself calls 57 of A's 67 and 313 of B's 336 `candidate`, leaving the engine more conservative than the reference on 33 of the 2,505 rows it capped |
 | 2.4 - mechanical tiers with reasons | #2099 (measurements), #2100 (tiering), #2101 (inspector), #2105 (curated rows) | **2.4a measured** on build `step-2.4-mechanical-tiers-2026.09.10-70438cb`: every committed row records `provenance.candidate_density`, the number of formulas the peak's evidence cannot separate from the one the row commits - anchored on the committed formula and not on the arbitration's top, which the finder need not have committed - counted one-sided, so a rival the evidence ranks ABOVE the commit is never reported as nothing tying it; the two anchorings differ on 444 of the 32,449 committed rows, every one of them upward, and on 23 rows at assigned tier - 22 on F1, 1 on F2 - of which one crosses from 1 to 2. Recording it changes nothing: 0 of 48,894 ledger rows differ from the 2.3 build on any other column and every gate number is identical. Measured, it is a sharp guard rather than a lever - 11 of A's 1,002 assigned rows sit at density >= 2 and 0 of those 11 are confirmed, against 75.4% at density 1 - because a continuous fit separates almost everything; the number of formulas the MASS admits is a different and wider quantity, and reaches 68 on the same set. **The plan's carbon-cluster demote is withdrawn.** `DBE/C >= 1` with the effective DBE reduces to `H <= 2 + N`, which names hydrogen-poor molecules rather than large skeletons: on the gate it took formic, oxalic and glyoxylic acid and a confirmed nitrogen heterocycle - 46 rows, 8 of them right - and no carbon cluster. What keeps a cluster out of a run is the chemistry context's DBE/C and H/C windows (ambient-air 0.75 and 0.7, uronium 1.1 and 0.4) and not the heuristic filter, which grades a formula and rejects none on H/C - C60 passes at plausibility 1.0 - and those windows apply only from three carbons up, which is where the signature misjudged; a run under context `none` has no such window and this would not have closed that gap either. The oxygen-lattice floor of five is measured on what it SPARES (at O >= 4 it reaches 260 rows and the reference confirms 35, at O >= 5 it reaches 212 and 3, flat to O >= 9); what it takes is 3 confirmed against 17 contradicted and 189 the reference does not judge, 174 of them on the TOF sets, so on the Orbitrap sets it is 3 right and 3 wrong. The carbon-free signature reaches nothing, because every resolved grid floors carbon at one and every carbon-free committed row on the gate is curated - and a curated row is not asked (#2105; as 2.4b first merged the pass did ask, and took 7 curated rows, none confirmed; re-measured on `step-2.4d-curated-implausibility-2026.09.11-2012665` the signature takes 0). The cross-family degeneracy measurement is not per-run: about 27 s of band grids a spectrum plus 6 ms a peak, against ten seconds for a whole sample's assignment **2.4b measured** on build `step-2.4b-tiering-2026.09.11-639e1df`: every committed monoisotopic row records `provenance.tier_reasons`, and none of the 32,449 carries zero - the 31 curated isotopologue rows with no owner that carried none on this build now say `not_measured`, which moves no tier; the rules only demote and move nothing but tiers - 0 formula, role or verdict shifts of 48,894 peaks, G2 and its denominator identical on all eight sets. The pass takes 3,778 assigned rows and the reference confirms 38 of them (1.0%): an odd-electron neutral, a rule the plan did not have and the gate found, 1,782 with none confirmed; candidate density 2,636 with 32; the oxygen lattice 212 with 3; the envelope neighbour 166 with 4; carbon-free none, because no curated row is asked the formula-shape questions (#2105, rule set version 2, measured on `step-2.4d-curated-implausibility-2026.09.11-2012665`: as first merged the pass took 7 curated carbon-free rows - trisulfur on C2, the dibromide ion's bromine on F1 - with none confirmed, and exempting them moves those rows and their 8 isotopologues back to assigned and nothing else). Read on the rows the reference commits an M0 on (decision 14), G1 meets the 20% bound on all five Orbitrap sets - A 3.1, B 12.3 (1.1 with the same-ion splits set aside), C 1.3, C2 0.4, D 1.4 - against 23.0, 36.9, 21.0, 24.6 and 8.4 unconditioned, a remainder that is 73-91% reference silence; the TOF sets are carried to 2.5 and 2.7. G6 at assigned tier falls 159 -> 71, of which 47 are the grid gap and 24 the envelope part, every one of them spared by the rule's height test or by the run holding no neighbour to predict it, so that Verify line as first written is missed; re-worded in 2.4c to the height-qualified form, which is the rule as measured, it is met. An isotopologue row follows an owner any pass capped; the earlier passes already cap their own, so that count is 0 on all 43 runs. **2.4c** puts the reasons in the peak inspector under *Why this tier* - the rule by name over the run's own sentence, a mark on each reason that holds the tier down, and on an isotopologue its M0's reasons beneath its own; a row no rule judged shows none. Display and documentation only: no run or gate number moves |
-| 2.5a - reference seed: list format, the lifted lists, `reference seed` (seed proposal phases 0-1) | - | in progress: schema 2 list files with radical status read from the formula, the `peaklist` adapter, `mascope reference seed`, the demo hook and an integrity test over every list; the lift is Kang 2021 split into 573 closed-shell and 257 RO2 formulas (opt-in), Keller 2008 less its ions and salts (50 of 59), peaky's pass-0 families as seven cited lists (45 of their 65 formulas, plus the D3-D6 siloxanes) and the example list, 1,008 formulas in all |
+| 2.5a - reference seed: list format, the lifted lists, `reference seed` (seed proposal phases 0-1) | #2111 (seed), #2112 (Stage A fix) | measured: schema 2 list files with radical status read from the formula, the `peaklist` adapter, `mascope reference seed`, the demo hook and an integrity test over every list; the lift is Kang 2021 split into 573 closed-shell and 257 RO2 formulas (opt-in), Keller 2008 less its ions and salts (50 of 59), peaky's pass-0 families as seven cited lists (45 of their 65 formulas, plus the D3-D6 siloxanes) and the example list, 1,008 formulas in all. The default seed (10 lists, 751 compounds) raises G2 same-formula on every set - A 93.8 -> 95.4, B 92.8 -> 93.5, C 91.7 -> 93.9, C2 77.7 -> 83.3 (now inside its bound), D 80.4 -> 84.0, E 33.3 -> 40.5, F1 13.0 -> 22.8, F2 15.9 -> 17.4 - and moves 211 peaks towards the reference's formula against 53 away, 23 of those with a seed row on the peak and 9 of the 23 one ion read two ways on B. The first seed round had lowered C and C2 (to 73.9 and 59.8) through two Stage A defects older than the seed, a labelled ion's M0 and isotopologues with no owner; #2112 fixes both and was measured alone (40 of 48,894 peaks moved, none away from the reference), and the insert overflow on merged TOF isotopologue names is fixed in #2111. On the TOF sets the seed's matches become most of Stage A's anchors and widen the fitted mass width 2-3x (F2 2.6 -> 6.5 ppm), which moves thousands of untargeted elections; that, D4/D5 and triethyl phosphate, and G6 wait for 2.5b's per-source window |
 | 2.5b - Stage A window per source, radical filter, deactivate (seed proposal phase 3) | - | planned |
 | 2.6 - frontend: profile, reasons, roles | - | planned |
 | 2.7 - stage 2 gate, engine 0.5.0 | - | planned |
@@ -719,7 +719,12 @@ its own status.
       them, although the Verify below names D4 and D5.
     - The example atmospheric list.
   - **No engine code changes**, so the step's store round measures the seed
-    alone.
+    alone. There is one exception and one precursor. The seed's first round
+    overflowed `peak_assignment.isotope_formula` on merged low-resolution
+    names, so that insert is fixed here. The same round found two Stage A
+    defects older than the seed: a labelled ion's M0, and isotopologues with
+    no owner. Those were fixed in #2112 and measured without the seed before
+    this step's round was re-run on top (*After step 2.5a*).
 - **2.5b What.** The Stage A known window (`iter_known_compositions`:
   C/H/N/O/S, C <= 40, 700 Da) becomes per source, bounded by the context's
   `known_window`, so a curated list brings I, F, Si, P, Cl and Br into Stage
@@ -3643,6 +3648,141 @@ artifacts - an FT side lobe - and never for an isotopologue; it is now
 `capped_isotopologues`, the name 2.4b gave its own counts. Runs written before
 that keep the old key and are not translated: nothing in Mascope reads the count
 back from a stored run, so a reader of stored run configs accepts either name.
+
+### After step 2.5a, the reference seed (2026-09-11)
+
+Step 2.5a ships the seed's lists and the tooling that loads them:
+- 11 schema 2 list files, holding 1,008 formulas
+- the `peaklist` adapter
+- `mascope reference seed`, and its counterpart inside the backend container
+- the demo hook
+
+A default seed loads 10 of the lists, 751 compounds; the RO2 list stays
+opt-in. The store round ran in four parts, because the first seed round found
+defects in Stage A that are older than the seed.
+
+**The control reproduces the 2.4d round exactly.** It was re-run without the
+seed on `step-2.5a-reference-seed-2026.09.11-bf7a33e`, and all 43 samples match
+2.4d's ledgers: 0 formula and 0 tier changes on every M0 in all eight sets, and
+0 owner changes over 48,894 peaks.
+
+**The first seed round found three Stage A defects that the seed only made
+visible.** They all showed with the seed loaded on the same build:
+
+- **An insert crash.** At low resolution one line merges many isotopologues,
+  and the generator names all of them in the row's `isotope_formula`. That
+  column holds 256 characters, while the target column it is copied from holds
+  4,096. Three of the six F1 samples failed on insert. #2111 fixes it with
+  `fit_isotope_formula`, which keeps whole names from the front.
+- **A labelled ion counted from the wrong line.** The M0 rule took the
+  isotopologue formula without a bracket as the monoisotopic line. A labelled
+  reagent's atom is bracketed too, so a 15N-nitrate ion's M0 was its unlabelled
+  remainder: 2% of the labelled line, one mass unit below it. The ion's own
+  line was written as its "M+1", on 115 rows on C and 93 on C2. The target
+  library already showed the defect without the seed, on 5 rows and 12.
+- **Isotopologues with no owner.** Stage A wrote an isotopologue whose ion had
+  not won its M0 peak, with a null owner, where the untargeted stage refuses
+  such a row. With the seed there were 534 of them across the gate, against 31
+  in the control. 214 of them were on F1, mostly the 81Br line of a bromide
+  adduct.
+
+#2112 fixes the labelled M0 and the ownerless rows together. It was measured on
+its own, with the seed removed from the store.
+
+**#2112 alone moves 40 of 48,894 peaks, and none of them away from an answer
+the reference confirms.** A, B, D and E are identical row for row.
+
+- On C, the five labelled main lines become M0 rows, and the reference
+  confirms all five. G2 same-formula goes 90.6 -> 91.7 and G1 21.0 -> 20.8.
+- On C2, twelve labelled reagent-cluster ions become M0 rows that the
+  reference does not judge (hydrogen carbonate and hydrogen bromide with
+  15N-nitrate). Hydrogen bromide is carbon-free, so C2's carbon-free count
+  goes 12 -> 18; the six new ones are that curated row, one per sample.
+- Ownerless database isotopologues go to 0 on every set (before: C 5, C2 20,
+  F1 6). The eight that had no owner at all are no longer written, and their
+  peaks are unassigned.
+- The remaining moves come through the mass fit. Stage A's matched lines are
+  the anchors a sample's mass width is fitted from, and Stage B is scored at
+  that width. So a change in which ions reach Stage A moves Stage B elections,
+  even where no Stage A row changes:
+  - One election on C2 moved, through a calibration that shifted by 0.05 ppm.
+  - 14 low-intensity elections moved on one F2 sample. F2's unlabelled nitrate
+    mode still has labelled reagent compounds in its target library. The old
+    rule dropped them by accident, because their unlabelled line is the
+    reagent peak. On that sample the 15N line of the nitric acid-nitrate
+    cluster is unclaimed, so one more genuine line joins the fit (25 -> 26
+    anchors, 1.64 -> 1.90 ppm).
+
+**The seed on top of #2112 raises G2 same-formula on every set.** This was
+measured on `step-2.5a-reference-seed-2026.09.11-77f3850` against #2112's round,
+and all 43 runs complete. The first seed round had lowered C and C2, to 73.9 and
+59.8; now C2 clears its stage-1 bound.
+
+| set | G2 same formula | G1 unconditioned | assigned M0 rows | seed rows among them |
+|---|---|---|---|---|
+| A | 93.8 -> 95.4 | 23.0 -> 23.9 | 967 -> 1,010 | 191 |
+| B | 92.8 -> 93.5 | 36.9 -> 38.3 | 4,229 -> 4,182 | 490 |
+| C | 91.7 -> 93.9 | 20.8 -> 19.9 | 590 -> 594 | 227 |
+| C2 | 77.7 -> 83.3 | 24.8 -> 22.8 | 306 -> 311 | 112 |
+| D | 80.4 -> 84.0 | 8.4 -> 8.0 | 869 -> 930 | 458 |
+| E | 33.3 -> 40.5 | 96.2 -> 94.7 | 239 -> 244 | 87 |
+| F1 | 13.0 -> 22.8 | 96.7 -> 95.0 | 522 -> 764 | 464 |
+| F2 | 15.9 -> 17.4 | 96.9 -> 98.0 | 642 -> 904 | 673 |
+
+**The seed takes few confirmed answers, and most of those it takes are one ion
+read two ways.** The owner changed on 10,959 peaks: 211 towards the reference's
+formula, and 53 away from a formula the reference confirms.
+
+- **23 of the 53 have a seed row on the peak.** Against them, 101 seed rows
+  moved a peak towards the reference's answer, and 80 assigned a peak that
+  nothing held before.
+- **9 of those 23 are on B**, where a seed formula carrying nitrogen, read
+  through `+H+`, is the same ion as the reference's ammonium adduct of the
+  nitrogen-free neutral. The formulas are DMF and NMP from Keller 2008 and
+  organic nitrates from Kang 2021. The untargeted stage elects the adduct
+  reading by step 1.3's same-ion policy, and the reagent-N rule records the
+  ambiguity. A curated row goes through neither, so it wins. Whether a curated
+  row should carry that ambiguity is carried to 2.5b.
+- **Of the other 14**, one is at assigned tier, three at candidate and ten
+  below assignability.
+- **The remaining 30 of the 53** have no seed row on the peak, and move through
+  the mass fit.
+- **Against the first seed round:** it had 185 steals, 139 of them on C and C2.
+  C and C2 now have 4.
+
+**On TOF the seed widens the fitted mass width.** With the seed loaded, most of
+a sample's Stage A anchors are the seed's lines: the median goes 7 -> 122 on E,
+21 -> 332 on F1 and 24 -> 391 on F2.
+
+- On the Orbitrap sets the 3 ppm gate keeps those matches accurate, and the
+  width barely moves: A 0.59 -> 0.60, B 0.55 -> 0.66, C 0.58 -> 0.54 ppm.
+- On the TOF sets the 10 ppm gate admits many coincidental matches, and the
+  width more than doubles: E 3.0 -> 8.2, F1 5.1 -> 8.2, F2 2.6 -> 6.5 ppm.
+- The wider width is what moves thousands of untargeted elections on F1 and F2
+  (2,882 and 1,712 formula changes). It also raises the committed mass error:
+  MAD E 2.12 -> 2.69, F1 0.96 -> 1.23, F2 1.22 -> 1.44 ppm.
+- The mass gate fits its width from the same lines, so on TOF it loosens with
+  them.
+- Fitting the width from the target library's lines, or only from lines that
+  won their peak, would keep a reference mirror out of it. That is carried to
+  2.5b, which gives each source its own window.
+
+**Verify.**
+- **The integrity test** holds every shipped list.
+- **The owner-change report** is above.
+- **G3.** N >= 5 falls on A (1.2 -> 0.8, now inside its bound) and on B
+  (2.8 -> 2.6). Carbon-free formulas rise where the seed's inorganics match:
+  nitrous, nitric and pernitric acid, HO2, ammonia and sulfuric acid, all of
+  them curated rows.
+- **Radicals.** HO2 is the one radical the seed commits, as decision 15
+  intended: 12 M0 rows at assigned tier across C2, D, E, F1 and F2.
+- **Carried to 2.5b:** the D4/D5 siloxane peaks, triethyl phosphate, and G6.
+  - Silicon, phosphorus, fluorine and iodine are outside Stage A's known window
+    until 2.5b. So the siloxane, organophosphate, insecticide, PFCA and iodine
+    lists match nothing yet.
+  - G6 at assigned tier on A goes 8 -> 13. The new rows are two Kang formulas
+    on the 30Si lines of the D3 and D5 siloxanes, peaks where the untargeted
+    stage had already put the same formulas.
 
 ## Not in this plan
 
