@@ -1530,6 +1530,20 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
 
 ### Fixed
 
+- A backend test selection that interleaves the unit and integration
+  directories - `pytest tests/unit/a tests/integration/b tests/unit/c` - no
+  longer runs the later tests' application code against the other category's
+  database. Each category's conftest points the global session maker at its
+  own test database from a session-scoped fixture, which pytest sets up only
+  once, so after the integration tests had installed theirs the returning
+  unit tests queried the integration database while their fixtures wrote to
+  the unit one: the rematch summary's batch-name lookup test failed that way
+  after the peak-assignment suites and passed alone. The reverse order broke
+  the upload suite, whose agent-token tests could not mint a token for users
+  that existed only in the integration database. The binding is now
+  re-applied before every test. Running the whole tree was never affected,
+  since it visits each category once.
+
 - **Orbitrap peak detection no longer splits a peak in two when the lock mass
   engages part-way through a file.** The averaged centroids behind peak
   detection are built by pooling every scan's centroid labels and binning them

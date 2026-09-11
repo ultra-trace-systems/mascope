@@ -82,3 +82,23 @@ def patch_db(async_session_factory):
 
     # Restore the original session maker
     db_module.ASYNC_SESSION_MAKER = original_session_maker
+
+
+@pytest.fixture(autouse=True)
+def bind_db(async_session_factory, monkeypatch):
+    """Point application database access at the integration database for each test.
+
+    `patch_db` installs the factory once, when the first integration test runs,
+    and the unit conftest installs its own factory into the same global in the
+    same way. In a selection that interleaves the categories -
+    `pytest tests/integration/a tests/unit/b tests/integration/c` - the later
+    integration tests would otherwise run their application code against the
+    unit database while their fixtures write to the integration one. Rebinding
+    per test makes the category a test belongs to decide, whatever ran before it.
+
+    :param async_session_factory: The test session factory
+    :type async_session_factory: async_sessionmaker
+    :param monkeypatch: Restores the previous binding after the test
+    :type monkeypatch: pytest.MonkeyPatch
+    """
+    monkeypatch.setattr(db_module, "ASYNC_SESSION_MAKER", async_session_factory)
