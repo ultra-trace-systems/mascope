@@ -1,0 +1,28 @@
+{
+  "schema_version": 2,
+  "id": "cyclic-siloxanes",
+  "label": "Cyclic volatile methylsiloxanes, D3 to D6",
+  "data_version": "2026.09",
+  "license": "CC-BY-4.0",
+  "references": [
+    {
+      "citation": "S. Genualdi, T. Harner, Y. Cheng, et al., Global distribution of linear and cyclic volatile methyl siloxanes in air. Environmental Science & Technology 45 (2011) 3349-3354.",
+      "doi": "10.1021/es200301j"
+    },
+    {
+      "citation": "A. Schlosser, R. Volkmer-Engert, Volatile polydimethylcyclosiloxanes in the ambient laboratory air identified as source of extreme background signals in nanoelectrospray mass spectrometry. Journal of Mass Spectrometry 38 (2003) 523-525.",
+      "doi": "10.1002/jms.465"
+    }
+  ],
+  "polarity": "positive",
+  "always_active": true,
+  "provenance": {
+    "compiled_from": "The cyclic volatile methylsiloxanes: observed in ambient and indoor air, and a classic background of mass spectrometry inlets. Formulas checked against PubChem."
+  },
+  "species": [
+    {"formula": "C6H18O3Si3", "name": "Hexamethylcyclotrisiloxane (D3)", "reference": "10.1021/es200301j"},
+    {"formula": "C8H24O4Si4", "name": "Octamethylcyclotetrasiloxane (D4)", "reference": "10.1021/es200301j"},
+    {"formula": "C10H30O5Si5", "name": "Decamethylcyclopentasiloxane (D5)", "reference": "10.1021/es200301j"},
+    {"formula": "C12H36O6Si6", "name": "Dodecamethylcyclohexasiloxane (D6)", "reference": "10.1021/es200301j"}
+  ]
+}

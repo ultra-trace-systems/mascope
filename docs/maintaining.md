@@ -932,10 +932,26 @@ read records, so a dump the adapter cannot parse leaves the existing mirror
 serving rather than emptying it. Re-running the same source is how you update
 it; prior versions stay on disk until pruned.
 
+Mascope also ships a small curated seed of atmospheric lists: a monoterpene HOM
+list, mass spectrometry background contaminants, and families of species no
+formula grid reaches. Nothing loads them on its own. Every active reference
+formula is one that Stage A of peak assignment matches peaks against, so loading
+them is a choice. To load the lists that load by default:
+
+```sh
+docker compose exec backend python -m mascope_backend.db.scripts.reference_seed
+```
+
+- `--list` shows what ships and which lists are opt-in.
+- Name a list to load it, e.g. `... reference_seed monoterpene-ro2-kang2021`.
+- Each list becomes its own source.
+- Running it again loads only the lists whose version changed. After an upgrade,
+  that is how a revised list reaches the database.
+
 ### Reference licence gating
 
 Every mirrored record carries a licence **tag** - a short exact string, not a
-licence document. The eight registered adapters carry six distinct tags between
+licence document. The nine registered adapters carry six distinct tags between
 them, and a hand-authored list can also set the tag per row, in which case the
 row's own tag wins over the adapter's:
 
@@ -943,7 +959,7 @@ row's own tag wins over the adapter's:
 |---|---|---|
 | `CC-BY-4.0` | `chebi`, `lipidmaps` | attribution required |
 | `CC0` | `coconut` | |
-| `custom` | `custom` | every hand-authored row with no `license` column of its own |
+| `custom` | `custom`, `peaklist` | every hand-authored row with no `license` column of its own, and every row of a schema 1 list file |
 | `hmdb-attribution` | `hmdb` | free with attribution; verify commercial terms first |
 | `open` | `norman` | |
 | `public-domain` | `comptox`, `pubchem` | |

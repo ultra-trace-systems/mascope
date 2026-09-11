@@ -21,7 +21,10 @@ from sqlalchemy.pool import NullPool
 from mascope_cli.runtime import runtime
 from mascope_reference import available_sources, get_adapter, ingest
 from mascope_reference.ingest import DEFAULT_BATCH_SIZE, EmptyIngest
+from mascope_reference.peaklist import admitted_species
 from mascope_reference.schema import reference_compound, reference_source
+from mascope_reference.seed import catalogue, select_lists
+from mascope_reference.seed import seed as seed_lists
 
 
 reference_app = typer.Typer()
@@ -278,6 +281,127 @@ def activate(
     runtime.logger.success(
         f"Activated '{source}' version '{version}' ({record_count:,} records)."
     )
+
+
+def _print_catalogue(lists) -> None:
+    """Show the shipped reference lists: what each is and whether it loads by
+    default. Reads the package, never the database."""
+    table = Table(title="Reference lists shipped with Mascope")
+    table.add_column("List")
+    table.add_column("Version")
+    table.add_column("Licence")
+    table.add_column("Species", justify="right")
+    table.add_column("Loads by default")
+    table.add_column("Label")
+    for peak_list in lists:
+        table.add_row(
+            Text(peak_list.id),
+            Text(peak_list.data_version or ""),
+            Text(peak_list.license or ""),
+            f"{sum(1 for _ in admitted_species(peak_list)):,}",
+            "yes" if peak_list.load_by_default else "no",
+            Text(peak_list.label or ""),
+        )
+    console.print(table)
+
+
+@reference_app.command()
+def seed(
+    names: Annotated[
+        Optional[list[str]],
+        typer.Argument(
+            help=(
+                "Ids of the lists to load (see --list). Default: every list "
+                "that loads by default."
+            ),
+        ),
+    ] = None,
+    include_optional: Annotated[
+        bool,
+        typer.Option(
+            "--all",
+            help=(
+                "Also load the lists that do not load by default: the radical "
+                "lists, whose species compete with closed-shell molecules for "
+                "the same peaks."
+            ),
+        ),
+    ] = False,
+    show: Annotated[
+        bool,
+        typer.Option(
+            "--list", help="Show the shipped lists and exit, without the database."
+        ),
+    ] = False,
+    prune: Annotated[
+        bool,
+        typer.Option(
+            "--prune",
+            help="Delete a list's earlier loads once its new version is in.",
+        ),
+    ] = False,
+    yes: Annotated[
+        bool,
+        typer.Option(
+            "--yes",
+            "-y",
+            help="Do not ask for confirmation (for non-interactive use).",
+        ),
+    ] = False,
+) -> None:
+    """Load the reference lists Mascope ships, each as its own source.
+
+    Each list becomes the active version of a source named by its id, through
+    the same ingest `sync` runs. A list whose version is already active is left
+    alone, so seeding twice changes nothing.
+    """
+    lists = catalogue()
+    if show:
+        _print_catalogue(lists)
+        return
+    try:
+        chosen = select_lists(lists, names, include_optional=include_optional)
+    except KeyError as error:
+        runtime.logger.error(error.args[0])
+        raise typer.Exit(1) from None
+
+    # Loading activates each list's source, replacing an earlier version of it,
+    # and --prune deletes what it replaces - gated like `sync`, before any
+    # database work.
+    if not yes:
+        ids = ", ".join(peak_list.id for peak_list in chosen)
+        consequence = (
+            "and DELETE their earlier loads"
+            if prune
+            else "replacing any earlier version of each"
+        )
+        typer.confirm(
+            f"This will load {len(chosen)} reference list(s) ({ids}) as active "
+            f"sources, {consequence}. Continue?",
+            abort=True,
+        )
+
+    engine = _sync_engine()
+    try:
+        outcomes = seed_lists(
+            engine, names=[peak_list.id for peak_list in chosen], prune=prune
+        )
+    finally:
+        engine.dispose()
+    for outcome in outcomes:
+        if not outcome.loaded:
+            runtime.logger.info(
+                f"'{outcome.list_id}' version '{outcome.version}' is already "
+                "active - nothing to load."
+            )
+            continue
+        held = (
+            f"; {outcome.held_back:,} radicals held back" if outcome.held_back else ""
+        )
+        runtime.logger.success(
+            f"Loaded '{outcome.list_id}' version '{outcome.version}' "
+            f"({outcome.ingested:,} records{held})."
+        )
 
 
 def _record_licenses(conn, source_ids: list[int]) -> dict[int, list[str]]:
