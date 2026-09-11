@@ -23,7 +23,8 @@
   "load_by_default": false,
   "provenance": {
     "extracted_from": "Appendix A of the thesis: the odd-electron entries of its peak lists, detected as [M+NO3]-.",
-    "caveat": "Every species here is a radical. A radical competes with the closed-shell molecule for the same peak, so this list loads only when asked for; the closed-shell species are in monoterpene-hom-kang2021."
+    "caveat": "Every species here is a radical. A radical competes with the closed-shell molecule for the same peak, so this list loads only when asked for; the closed-shell species are in monoterpene-hom-kang2021.",
+    "license_statement": "The thesis is published open access under the Creative Commons Attribution 4.0 International licence (CC BY 4.0), as its imprint states and its repository record gives it: JuSER, Forschungszentrum Jülich, https://juser.fz-juelich.de/record/905049 (handle http://hdl.handle.net/2128/30658). The formulas are taken from its Appendix A peak lists and attributed to it."
   },
   "species": [
     {"formula": "C10H13O6", "conditions": ["NOx"], "evidence": "formula"},

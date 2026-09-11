@@ -21,7 +21,8 @@
   ],
   "provenance": {
     "extracted_from": "Appendix A of the thesis: the peak lists of alpha-pinene OH oxidation under pure, +CO, +isoprene and +NOx conditions, whose 'Molecule' column is the neutral detected as [M+NO3]-.",
-    "caveat": "Alpha-pinene and limonene are isomeric C10H16 with overlapping OH-oxidation HOM, so this is a monoterpene-HOM proxy rather than a limonene-specific list. Radical status is read from each formula; the odd-electron species are in monoterpene-ro2-kang2021."
+    "caveat": "Alpha-pinene and limonene are isomeric C10H16 with overlapping OH-oxidation HOM, so this is a monoterpene-HOM proxy rather than a limonene-specific list. Radical status is read from each formula; the odd-electron species are in monoterpene-ro2-kang2021.",
+    "license_statement": "The thesis is published open access under the Creative Commons Attribution 4.0 International licence (CC BY 4.0), as its imprint states and its repository record gives it: JuSER, Forschungszentrum Jülich, https://juser.fz-juelich.de/record/905049 (handle http://hdl.handle.net/2128/30658). The formulas are taken from its Appendix A peak lists and attributed to it."
   },
   "species": [
     {"formula": "C10H10O4", "conditions": ["NOx"], "evidence": "formula"},
