@@ -15,6 +15,7 @@ def test_registry_lists_expected_sources():
         "coconut",
         "norman",
         "custom",
+        "peaklist",
     }
 
 

@@ -22,16 +22,30 @@ from mascope_reference.normalize import (
     finalize,
     monoisotopic_mass,
 )
+from mascope_reference.peaklist import (
+    PeakList,
+    PeakListError,
+    list_problems,
+    read_peak_list,
+)
 from mascope_reference.query import (
     annotate_formulas,
     by_formula,
     by_mass_window,
 )
 from mascope_reference.record import ReferenceRecord
+from mascope_reference.seed import SeedOutcome, catalogue, seed
 from mascope_reference.sources import available_sources, get_adapter
 
 
 __all__ = [
+    "PeakList",
+    "PeakListError",
+    "list_problems",
+    "read_peak_list",
+    "SeedOutcome",
+    "catalogue",
+    "seed",
     "ReferenceRecord",
     "canonical_formula",
     "monoisotopic_mass",
