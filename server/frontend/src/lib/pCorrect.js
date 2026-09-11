@@ -16,7 +16,7 @@ export const P_CORRECT_TOOLTIP = 'Calibrated probability the assignment is corre
  * calibrated perfectly well.
  */
 export const UNCALIBRATED_REASONS = Object.freeze({
-  // First because a demoted satellite is both: curation strips the satellites of
+  // First because a demoted isotopologue is both: curation strips the isotopologues of
   // a formula their M0 no longer holds and leaves source = 'manual' on them, so
   // a row can be a person's doing and hold no formula at all. "Assigned by
   // hand" on a row the tier chip beside it labels Unassigned is the ledger's

@@ -198,9 +198,9 @@ def channels_by_neutral(
 ) -> dict[str, dict[str, str | None]]:
     """Which channels each committed neutral was seen through, and how well.
 
-    Monoisotopic rows only. A satellite is its parent's ion measured on a second
-    line of the same envelope, not a second channel, so counting it would let
-    one observation corroborate itself.
+    Monoisotopic rows only. An isotopologue is its parent's ion measured on a
+    second line of the same envelope, not a second channel, so counting it would
+    let one observation corroborate itself.
 
     Keyed on the neutral's element counts rather than on its written formula: a
     curated row spells one explicit ("C1H4N2O1") where an untargeted row does
@@ -309,7 +309,10 @@ def apply_cross_channel(
         "corroborated": 0,
         "ambiguous_nitrogen": 0,
         "capped": 0,
-        "capped_satellites": 0,
+        # Stored as `capped_satellites` on runs written by earlier builds. Only
+        # this summary's own log line reads the count back, so a stored run is
+        # never translated; a reader of old run configs has to accept both.
+        "capped_isotopologues": 0,
         # Whether the REAGENT-N RULE had anything to gate. The corroboration half
         # above runs on every sample and is recorded whatever this says, so the
         # two are named apart: a bromide run records hundreds of corroborated
@@ -345,9 +348,9 @@ def apply_cross_channel(
                     capped_owners.add(str(row["peak_assignment_id"]))
         row.setdefault("provenance", {})["cross_channel"] = record
 
-    # A satellite is its parent's ion on a second line of one envelope, so it
+    # An isotopologue is its parent's ion on a second line of one envelope, so it
     # carries the parent's neutral and the parent's doubt. Counted apart because
-    # a rule's reach over analytes and its reach over their satellites are
+    # a rule's reach over analytes and its reach over their isotopologues are
     # different numbers and reporting the sum as one hides which it moved.
     for row in assignments:
         if not is_committed(row) or row.get("role") != ROLE_ISO_CHILD:
@@ -357,7 +360,7 @@ def apply_cross_channel(
             continue
         record = {"inherited_from": owner_id}
         if _cap(row, record):
-            summary["capped_satellites"] += 1
+            summary["capped_isotopologues"] += 1
         row.setdefault("provenance", {})["cross_channel"] = record
     return summary
 

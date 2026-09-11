@@ -822,8 +822,8 @@ DEFAULT_ANCHOR_PPM = DEFAULT_CHANNEL_MATCH_PPM
 #: reagent ion in its own right. The same floor the channel probes use, for the
 #: same reason: a reagent ion is one of the brightest things in the spectrum, so
 #: a trace at the noise floor sitting on a reagent mass is a coincidence rather
-#: than the ion. Satellites are exempt - their evidence is the parent's envelope,
-#: which is a stronger statement than a height threshold.
+#: than the ion. Isotopologues are exempt - their evidence is the parent's
+#: envelope, which is a stronger statement than a height threshold.
 DEFAULT_REAGENT_MIN_RELATIVE_INTENSITY = DEFAULT_CHANNEL_MIN_RELATIVE_INTENSITY
 
 #: Intensity an ANCHOR must reach, relative to the base peak - an order of
@@ -838,11 +838,11 @@ DEFAULT_REAGENT_MIN_RELATIVE_INTENSITY = DEFAULT_CHANNEL_MIN_RELATIVE_INTENSITY
 #: definition one of the loudest things a source makes.
 DEFAULT_ANCHOR_MIN_RELATIVE_INTENSITY = 1e-3
 
-#: Predicted satellites below this share of their parent are not looked for,
+#: Predicted isotopologues below this share of their parent are not looked for,
 #: and the abundance the envelope itself is predicted down to.
 #:
 #: Set by the 18O line, which is where a floor that looks generous stops being
-#: one: a two-oxygen ion's 18O satellite is 0.401% of its parent and a
+#: one: a two-oxygen ion's 18O isotopologue is 0.401% of its parent and a
 #: one-oxygen ion's is 0.200%, so a 0.4% floor sits exactly on top of the first
 #: and below the second. On the gate that mattered - the urea dimer's 18O line
 #: is the 19th brightest peak of a set A sample at 7e4 counts, and once the
@@ -852,15 +852,15 @@ DEFAULT_ANCHOR_MIN_RELATIVE_INTENSITY = 1e-3
 #: What protects an analyte is the excess gate below, not this floor: a peak
 #: taller than the envelope predicts is left alone whatever its predicted share.
 #: So the floor is set low enough to SEE the lines a reagent ion really makes.
-#: At a 2e7-count base peak a 0.1% satellite is still 2e4 counts.
-DEFAULT_SATELLITE_MIN_RELATIVE = 1e-3
+#: At a 2e7-count base peak a 0.1% isotopologue is still 2e4 counts.
+DEFAULT_ISOTOPOLOGUE_MIN_RELATIVE = 1e-3
 
-#: How far above its predicted height a satellite may be observed and still be
-#: claimed. A reagent ion is bright, so its satellites are large in absolute
+#: How far above its predicted height an isotopologue may be observed and still
+#: be claimed. A reagent ion is bright, so its isotopologues are large in absolute
 #: terms and worth claiming - but a peak several times TALLER than the envelope
 #: predicts has an analyte co-eluting on top of it, and claiming that peak would
 #: bury the analyte. Above this ratio the peak is left for the stages.
-DEFAULT_SATELLITE_MAX_EXCESS = 3.0
+DEFAULT_ISOTOPOLOGUE_MAX_EXCESS = 3.0
 
 
 @dataclass(frozen=True)
@@ -876,9 +876,9 @@ class ReagentHit:
         a reader sees what the spectrum did rather than what the pass assumed.
     :param isotope_label: Which isotopologue of the cluster this peak is;
         ``None`` on the cluster's own monoisotopic peak.
-    :param parent_index: The peak the satellite belongs to; ``None`` on a
+    :param parent_index: The peak the isotopologue belongs to; ``None`` on a
         monoisotopic hit.
-    :param predicted_relative: The satellite's predicted height relative to the
+    :param predicted_relative: The isotopologue's predicted height relative to the
         monoisotopic peak, recorded so a claim can be read back.
     """
 
@@ -892,7 +892,7 @@ class ReagentHit:
     predicted_relative: float | None = None
 
     @property
-    def is_satellite(self) -> bool:
+    def is_isotopologue(self) -> bool:
         """Whether this peak is an isotopologue of a claimed cluster."""
         return self.parent_index is not None
 
@@ -994,7 +994,7 @@ def calibrate_on_anchors(
     return ReagentCalibration(offset, claim_ppm + spread, tuple(anchors))
 
 
-def _satellite_hits(
+def _isotopologue_hits(
     cluster: ReagentCluster,
     parent: ReagentHit,
     mz_array: np.ndarray,
@@ -1009,10 +1009,10 @@ def _satellite_hits(
     """The isotopologue peaks of one claimed cluster.
 
     The envelope is predicted from the cluster's own known ion formula, so the
-    heavy-halogen, 13C, 15N and 34S satellites all come out of one code path
+    heavy-halogen, 13C, 15N and 34S isotopologues all come out of one code path
     rather than a hand-written table of isotopologue combinations. It is then
-    shifted onto the parent's OWN observed mass, so each satellite is looked for
-    at the instrument's precision around where this ion actually sits rather
+    shifted onto the parent's OWN observed mass, so each isotopologue is looked
+    for at the instrument's precision around where this ion actually sits rather
     than where its formula says it should.
     """
     # Predicted down to the floor this pass will actually look for, not to the
@@ -1074,8 +1074,8 @@ def match_reagent_clusters(
     purity: float | None = None,
     min_relative_intensity: float = DEFAULT_REAGENT_MIN_RELATIVE_INTENSITY,
     anchor_min_relative_intensity: float = DEFAULT_ANCHOR_MIN_RELATIVE_INTENSITY,
-    satellite_min_relative: float = DEFAULT_SATELLITE_MIN_RELATIVE,
-    satellite_max_excess: float = DEFAULT_SATELLITE_MAX_EXCESS,
+    isotopologue_min_relative: float = DEFAULT_ISOTOPOLOGUE_MIN_RELATIVE,
+    isotopologue_max_excess: float = DEFAULT_ISOTOPOLOGUE_MAX_EXCESS,
 ) -> tuple[list[ReagentHit], ReagentCalibration]:
     """Which peaks of this spectrum the reagent library accounts for.
 
@@ -1093,12 +1093,12 @@ def match_reagent_clusters(
     it, is.
 
     A peak is claimed at most once, and the precedence is deliberate: every
-    monoisotopic claim is made before any satellite claim, so a peak sitting on
-    a library ion's own mass is read as that ion rather than as some other
+    monoisotopic claim is made before any isotopologue claim, so a peak sitting
+    on a library ion's own mass is read as that ion rather than as some other
     cluster's isotopologue. Within each round the library is walked in mass
     order, so the outcome does not depend on the table's order. A cluster whose
-    monoisotopic peak is absent claims no satellites at all: the evidence for a
-    satellite is the parent it is a satellite of.
+    monoisotopic peak is absent claims no isotopologues at all: the evidence for an
+    isotopologue is the parent it is an isotopologue of.
 
     :param library: The reagent ions, from :func:`reagent_library`.
     :param mz: The spectrum's m/z values.
@@ -1113,10 +1113,10 @@ def match_reagent_clusters(
     :param anchor_min_relative_intensity: The higher floor an anchor must clear,
         since an anchor moves every other mass in the pass rather than only
         claiming its own peak.
-    :param satellite_min_relative: Predicted-height floor for a satellite.
-    :param satellite_max_excess: How far above prediction a satellite may be
+    :param isotopologue_min_relative: Predicted-height floor for an isotopologue.
+    :param isotopologue_max_excess: How far above prediction an isotopologue may be
         observed and still be claimed.
-    :return: The hits, monoisotopic before their satellites, and the correction
+    :return: The hits, monoisotopic before their isotopologues, and the correction
         the anchors gave.
     """
     mz_array = np.asarray(mz, dtype=float)
@@ -1166,7 +1166,7 @@ def match_reagent_clusters(
     for parent in parents:
         hits.append(parent)
         hits.extend(
-            _satellite_hits(
+            _isotopologue_hits(
                 parent.cluster,
                 parent,
                 mz_array,
@@ -1174,8 +1174,8 @@ def match_reagent_clusters(
                 taken,
                 ppm=claim_ppm,
                 purity=purity,
-                min_relative=satellite_min_relative,
-                max_excess=satellite_max_excess,
+                min_relative=isotopologue_min_relative,
+                max_excess=isotopologue_max_excess,
             )
         )
     return hits, calibration

@@ -162,8 +162,8 @@ class PeakAssignmentRecord(BaseModel):
     #: of the run's arbitration, and more is the size of the tie it won from.
     #: Flattened because it cannot be recovered from the row's ``alternatives``,
     #: which are capped at the run's ``max_alternatives`` - counting those
-    #: counts the cap. Null on a satellite, which was predicted from its owner
-    #: rather than searched, and on an imported row: an external engine may
+    #: counts the cap. Null on an isotopologue, which was predicted from its
+    #: owner rather than searched, and on an imported row: an external engine may
     #: publish a count of its own inside ``provenance.engine_provenance``, and
     #: this column deliberately does not read it - the number means what THIS
     #: engine's arbitration measured, and peaky's is a different measurement
@@ -1066,7 +1066,7 @@ class SetAssignmentBody(BaseModel):
         description=(
             "Which isotopologue of the ion this peak is: 'M0' (or omitted) for "
             "the main one, otherwise 'M+1', 'M+2' ... A row labelled anything "
-            "but M0 is committed as an `iso_child`, so a satellite is never "
+            "but M0 is committed as an `iso_child`, so an isotopologue is never "
             "recorded as a compound's main peak."
         ),
     )
@@ -1089,25 +1089,25 @@ CurateAssignmentBody = Annotated[
 class AssignmentCurationResponse(BaseModel):
     """The rows a manual override rewrote.
 
-    `data[0]` is the curated row. After it come the satellite rows the same
+    `data[0]` is the curated row. After it come the isotopologue rows the same
     edit moved, in two groups and always in this order:
 
-    1. The isotopologue satellites the override **demoted**: the family of the
+    1. The isotopologues the override **demoted**: the family of the
        formula it replaced, stripped to `unassigned` rather than left claiming
        a compound their M0 no longer carries. Empty when the edit commits the
        formula and mechanism the row already held, since then the family still
        stands for exactly what it stood for.
-    2. The satellites it **restored**: the family of the compound now being
+    2. The isotopologues it **restored**: the family of the compound now being
        committed, put back from the archive an earlier override of this row
        left behind. This is what makes promoting the displaced winner back a
-       real undo rather than one that revives the M0 and leaves its satellites
+       real undo rather than one that revives the M0 and leaves its isotopologues
        unassigned and ownerless.
 
-    A demoted satellite that someone has curated by hand since is deliberately
+    A demoted isotopologue that someone has curated by hand since is deliberately
     not restored, and so is not in `data` either - their judgement is newer
     than the undo. How many were left alone that way is in `message`.
     `message` counts a second group apart from those, and it means the
-    opposite: satellites the undo could not put back at all - the row gone from
+    opposite: isotopologues the undo could not put back at all - the row gone from
     this run, or the state archived for it unusable - which are missing from
     `data` not out of restraint towards a row somebody else now owns but
     because the restore did not reach them. The curated row's

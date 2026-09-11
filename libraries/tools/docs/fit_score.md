@@ -133,7 +133,7 @@ is measured against, and the one $p_i$ is normalised to. The targeted path order
 pattern by descending predicted abundance, so its anchor is the most abundant
 isotopologue, which for a bromine- or chlorine-rich ion is not the monoisotopic one; the
 composition finder anchors on the monoisotopic line, the peak its candidates were
-enumerated for, and then $p_i > 1$ for a brighter satellite. Every term below is
+enumerated for, and then $p_i > 1$ for a brighter isotopologue. Every term below is
 anchor-relative, so both orderings are correct as long as the caller is consistent):
 
 | symbol | meaning |

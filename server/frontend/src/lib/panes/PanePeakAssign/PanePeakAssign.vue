@@ -257,7 +257,7 @@ const scoreByFormula = computed(() => {
 //
 // And null for the undo entry, deliberately, however well it measures. That
 // row's control is the undo, and the undo is what a measurement cannot make
-// possible: the satellites this override cleared are restored by compound AND
+// possible: the isotopologues this override cleared are restored by compound AND
 // adduct, and the archive recorded no adduct for them, so an adduct found now
 // will never match the one they were archived under. Committing it would put
 // the formula back on the M0 alone and leave its family unassigned - under a
@@ -487,7 +487,7 @@ const altTooltip = (alt, index) => {
 // Commit a runner-up as this peak's assignment. The row is edited in place and
 // marked as human-made; the winner it replaces becomes the first close
 // alternative, so the same control undoes the change - and the undo puts the
-// replaced compound's isotopologue satellites back with it, since they were
+// replaced compound's isotopologues back with it, since they were
 // unassigned only because the compound they belonged to was.
 //
 // Deliberately about THIS row, not the family M0 a verdict is redirected to: an
@@ -663,7 +663,7 @@ const SCORING_HINT = 'Measuring this formula against the peak. One moment.'
 // then the undo is refused by the same 422.
 //
 // Re-search is worth naming, but not as if it were the undo: it writes a NEW
-// assignment, and the satellites this override unassigned are put back by
+// assignment, and the isotopologues this override unassigned are put back by
 // compound AND adduct, so they stay unassigned.
 const NO_ADDUCT_UNDO_HINT =
   'Cannot be undone here. The assignment this replaced named no adduct, and one is ' +
@@ -799,7 +799,7 @@ const previousRestorable = computed(() => {
 })
 
 // Two different things wear source 'manual'. A person assigning a peak is one;
-// the other is a satellite the server unassigned because its M0 was reassigned
+// the other is an isotopologue the server unassigned because its M0 was reassigned
 // under it, which is marked 'manual' so the ledger's source filter shows the
 // whole footprint of an override. That row was stripped, not chosen, so the
 // override note would read as a claim nobody made.
@@ -807,14 +807,18 @@ const previousRestorable = computed(() => {
 // The recorded action decides it once the detail lands. Until then the row's
 // own formula does: curating a peak always puts a formula on it, so a manual
 // row with none was demoted.
+// The action the server records on a row it demoted. Rows demoted by earlier
+// builds carry 'demote_satellite' - a name retired because "satellite" means a
+// signal artifact here - and still have to read as demoted.
+const DEMOTE_ACTIONS = new Set(['demote_isotopologue', 'demote_satellite'])
 const manualDemoted = computed(() => {
   const action = manualOverride.value?.action
-  if (action) return action === 'demote_satellite'
+  if (action) return DEMOTE_ACTIONS.has(action)
   return !focusedAssignment.value?.assigned_formula
 })
 
-// The compound this peak was a satellite of, which is the compound to put back
-// on the M0's own peak to restore it. A satellite carries its M0's formula
+// The compound this peak was an isotopologue of, which is the compound to put
+// back on the M0's own peak to restore it. An isotopologue carries its M0's formula
 // verbatim, so the two keys agree on anything the engine wrote; the fallback is
 // for an imported run that recorded only one of them.
 const demotedOwnerFormula = computed(
@@ -822,14 +826,14 @@ const demotedOwnerFormula = computed(
     manualOverride.value?.previous_owner_formula ?? manualOverride.value?.previous_formula ?? null
 )
 
-// How many satellites undoing THIS override would put back. They were the same
+// How many isotopologues undoing THIS override would put back. They were the same
 // compound as their M0 seen through a heavy atom, so committing the replaced
 // compound again restores them along with it - the part of "use this to undo" a
 // person would otherwise be surprised by.
 //
 // Counted against the compound the undo would commit, not over the whole
 // archive, because a row curated twice carries the first override's demotions
-// forward: those satellites come back with the compound they were taken under,
+// forward: those isotopologues come back with the compound they were taken under,
 // which is no longer the one the first alternative holds. Matched on the same
 // key the server restores by (formula + mechanism), so an entry this cannot
 // account for is left out of the promise rather than added to it.
@@ -1173,7 +1177,7 @@ const demotedCount = computed(() => {
             }}<template v-if="previousRestorable"
               >, which is now the first close alternative - "use this" on it to undo<template
                 v-if="demotedCount"
-                >, which also puts back the {{ demotedCount }} isotopologue satellite{{
+                >, which also puts back the {{ demotedCount }} isotopologue{{
                   demotedCount === 1 ? '' : 's'
                 }}
                 unassigned with it, except any of them assigned by hand since</template
@@ -1181,7 +1185,7 @@ const demotedCount = computed(() => {
             ><template v-else
               >, which named no adduct itself and so cannot be put back by hand<template
                 v-if="demotedCount"
-                >, and the {{ demotedCount }} isotopologue satellite{{
+                >, and the {{ demotedCount }} isotopologue{{
                   demotedCount === 1 ? '' : 's'
                 }}
                 unassigned with it {{ demotedCount === 1 ? 'stays' : 'stay' }} unassigned</template

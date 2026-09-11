@@ -271,7 +271,7 @@ Port peaky's `build_library(reagent)` (pure) into
 hydrates, oxides, acid adducts, `[Rₙ+H]+`/`[Rₙ+NH₄]+` for positive reagents —
 with exact masses. Before Stage A, match the library against the peak list
 (tight ppm window) and write the hits as `role='reagent'` rows, **locked**:
-excluded from Stage A/B candidate peaks, their isotopologue satellites claimed
+excluded from Stage A/B candidate peaks, their isotopologues claimed
 (intensity-gated) as reagent children.
 
 This activates the reserved role, removes the brightest non-analyte peaks from
@@ -279,7 +279,7 @@ arbitration (fewer false analyte winners, faster Stage B), gives the ledger an
 honest account of the reagent system, and produces the input for detection
 (§5). Peaky's arbitration insight carries over as a rule: **the reagent
 element's complexity prior is never waived by its own isotope evidence** — in a
-Br⁻ spectrum, a ⁸¹Br satellite proves bromine in the *ion*, not in the neutral.
+Br⁻ spectrum, a ⁸¹Br isotopologue proves bromine in the *ion*, not in the neutral.
 
 ### 4.4 Stage A known set and reference-list gating
 

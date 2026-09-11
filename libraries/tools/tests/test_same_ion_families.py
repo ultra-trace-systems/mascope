@@ -228,9 +228,9 @@ class TestTheFinderCommitsTheElectedReading:
         assert displaced["ionization_mechanism"] == "+H+"
         assert displaced["ion"] == m0["ion"]
 
-    def test_the_satellites_do_not_restate_it(self):
+    def test_the_isotopologues_do_not_restate_it(self):
         # The family is a statement about how the ion was read; the M0 row is
-        # where that reading is committed and the satellites are owned by it.
+        # where that reading is committed and the isotopologues are owned by it.
         matches = self._search("+H+,+NH4+")
         children = matches[matches["isotope_label"] != "M0"]
 
