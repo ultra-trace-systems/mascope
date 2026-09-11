@@ -217,7 +217,9 @@ What caps a row at candidate:
   run stands behind, at *candidate* or above.
 - **oxygen lattice** and **carbon-free formula** — shapes a mass search produces rather
   than a source: more than 1.3 oxygens per carbon with at least five oxygens, or no carbon
-  at all without being one of the small inorganics these sources make.
+  at all without being one of the small inorganics these sources make. A curated identity
+  is exempt here too, for the same reason: both shapes describe what a search arrives at,
+  and a curated row was not arrived at by one.
 - **off calibration**, **ambiguous nitrogen** and **minor channel only** — caps the run
   applied earlier, restated here so every reason is in one place: a mass error far from
   the run's own fitted calibration with nothing corroborating it; an ion that reads as a
