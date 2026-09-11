@@ -417,6 +417,32 @@ def _str_or_none(value) -> str | None:
     return str(value)
 
 
+#: Width of ``peak_assignment.isotope_formula``.
+ISOTOPE_FORMULA_LENGTH = 256
+
+
+def fit_isotope_formula(value) -> str | None:
+    """An isotopologue formula that fits its column, or None.
+
+    At a low resolution one peak merges many isotopologues, and the isotope
+    generator names every one of them, separated by ``/``. For a large ion that
+    carries bromine or nitrogen the names run past the column, and a single row
+    too long fails the insert of the whole run. The column is a label the
+    inspector renders, not a record of every contributor, so whole names are
+    kept from the front and the rest are dropped.
+    """
+    text = _str_or_none(value)
+    if text is None or len(text) <= ISOTOPE_FORMULA_LENGTH:
+        return text
+    kept = ""
+    for name in text.split("/"):
+        joined = f"{kept}/{name}" if kept else name
+        if len(joined) > ISOTOPE_FORMULA_LENGTH:
+            break
+        kept = joined
+    return kept or text[:ISOTOPE_FORMULA_LENGTH]
+
+
 def _isotope_offset_label(iso_mz: float, main_mz: float | None) -> str | None:
     """Label an isotopologue by its nominal mass offset from the ion's M0, the
     monoisotopic isotopologue: ``M+1``, ``M+2`` ... and, for an element whose
@@ -977,7 +1003,9 @@ def invert_matches_to_peak_assignments(
                 winner.get("ionization_mechanism_id")
             ),
             "isotope_label": isotope_label,
-            "isotope_formula": _str_or_none(winner.get("target_isotope_formula")),
+            "isotope_formula": fit_isotope_formula(
+                winner.get("target_isotope_formula")
+            ),
             "source": SOURCE_DATABASE,
             "fit_score": _score_or_none(winner["match_score"]),
             "mz_error_ppm": _float_or_none(winner["match_mz_error"]),
@@ -1642,7 +1670,7 @@ def untargeted_matches_to_peak_assignments(
             "ion_formula": _str_or_none(row.get("ion")),
             "ionization_mechanism_id": mechanism_id_by_notation.get(notation),
             "isotope_label": isotope_label,
-            "isotope_formula": _str_or_none(row.get("isotope_formula")),
+            "isotope_formula": fit_isotope_formula(row.get("isotope_formula")),
             "source": SOURCE_UNTARGETED,
             "fit_score": _score_or_none(winner["fit"]),
             "mz_error_ppm": winner["mz_error_ppm"],

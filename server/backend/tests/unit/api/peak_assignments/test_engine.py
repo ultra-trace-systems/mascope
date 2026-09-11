@@ -13,6 +13,7 @@ import pandas as pd
 import pytest
 
 from mascope_backend.api.new.peak_assignments.engine import (
+    ISOTOPE_FORMULA_LENGTH,
     ROLE_ISO_CHILD,
     ROLE_M0,
     ROLE_UNASSIGNED,
@@ -24,6 +25,7 @@ from mascope_backend.api.new.peak_assignments.engine import (
     TIER_UNASSIGNED,
     build_unassigned_assignments,
     evidence_for,
+    fit_isotope_formula,
     invert_matches_to_peak_assignments,
     labelled_isotopes,
     monoisotopic_row,
@@ -117,6 +119,71 @@ class TestTierForEvidence:
         # whole run wrong. Passing them positionally must now be impossible.
         with pytest.raises(TypeError):
             tier_for_evidence(0.85, CANDIDATE, ASSIGNED)
+
+
+class TestIsotopeFormulaWidth:
+    """A merged line's isotopologue names must fit the column they land in: one
+    row too long fails the insert of the whole run."""
+
+    # The M+3 line of a nitrogen-bearing bromide adduct at TOF resolution, named
+    # in full the way the isotope generator writes it - the row that failed a
+    # run's insert once a reference list brought such formulas into Stage A.
+    MERGED = (
+        "[81Br][15N]C10H17O8-/[15N][18O]C10H17BrO7-/[13C][81Br]C9H17NO8-/"
+        "[81Br][17O]C10H17NO7-/[13C]2[15N]C8H17BrO8-/[2H][81Br]C10H16NO8-/"
+        "[13C][18O]C9H17BrNO7-/[17O][18O]C10H17BrNO6-/[13C]3C7H17BrNO8-/"
+        "[2H][18O]C10H16BrNO7-/[13C]2[17O]C8H17BrNO7-/[13C]2[2H]C8H16BrNO8-"
+    )
+
+    def test_a_formula_that_fits_passes_through(self):
+        assert fit_isotope_formula("[81Br]Br2-") == "[81Br]Br2-"
+        assert fit_isotope_formula(None) is None
+        assert fit_isotope_formula(float("nan")) is None
+
+    def test_a_merged_line_keeps_whole_names_from_the_front(self):
+        assert len(self.MERGED) > ISOTOPE_FORMULA_LENGTH
+        fitted = fit_isotope_formula(self.MERGED)
+        assert len(fitted) <= ISOTOPE_FORMULA_LENGTH
+        names = self.MERGED.split("/")
+        kept = fitted.split("/")
+        assert kept == names[: len(kept)]
+        # And no further name would have fitted.
+        assert len(fitted) + 1 + len(names[len(kept)]) > ISOTOPE_FORMULA_LENGTH
+
+    def test_a_single_name_longer_than_the_column_is_cut(self):
+        name = "[13C]" * 60 + "C10H17BrNO8-"
+        assert fit_isotope_formula(name) == name[:ISOTOPE_FORMULA_LENGTH]
+
+    def test_a_stage_a_row_fits_its_column(self):
+        mono = _isotope_row(
+            target_isotope_id="iso-mono",
+            target_ion_id="ion1",
+            target_compound_id="cmp1",
+            compound_formula="C10H17NO8",
+            ion_formula="C10H17BrNO8-",
+            mz=357.9985,
+            relative_abundance=1.0,
+            sample_peak_id="p1",
+        )
+        merged = {
+            **_isotope_row(
+                target_isotope_id="iso-m3",
+                target_ion_id="ion1",
+                target_compound_id="cmp1",
+                compound_formula="C10H17NO8",
+                ion_formula="C10H17BrNO8-",
+                mz=361.0019,
+                relative_abundance=0.02,
+                sample_peak_id="p2",
+            ),
+            "target_isotope_formula": self.MERGED,
+        }
+        assignments = invert_matches_to_peak_assignments(
+            pd.DataFrame([mono, merged]), "sample1", "run1", CANDIDATE, ASSIGNED
+        )
+        by_peak = {a["sample_peak_id"]: a for a in assignments}
+        assert by_peak["p2"]["role"] == ROLE_ISO_CHILD
+        assert by_peak["p2"]["isotope_formula"] == fit_isotope_formula(self.MERGED)
 
 
 class TestEvidenceFor:
