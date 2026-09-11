@@ -137,6 +137,15 @@ jobs:
         # The same step the image runs; catches a broken help snippet here.
         run: uv run --only-group docs python tooling/docs/build_help_content.py
 
+      - name: Render the OpenAPI document
+        # The same render the image runs (its openapi-build stage), so a route
+        # or model that breaks schema generation fails here, not in the image
+        # build. --package installs just the backend and what it imports, as
+        # that stage does; the config layers are read from MASCOPE_PATH.
+        env:
+          MASCOPE_PATH: ${{ github.workspace }}
+        run: uv run --frozen --no-dev --package mascope_backend python -m mascope_backend openapi --output site/openapi.json
+
   frontend-unit:
     name: Frontend unit tests
     runs-on: ubuntu-latest
