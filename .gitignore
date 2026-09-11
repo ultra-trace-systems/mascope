@@ -26,3 +26,7 @@ tofdaq
 
 # MkDocs build output
 /site/
+
+# Python third-party attributions (tooling/third-party-notices.py); the backend
+# image generates its own at build time
+/THIRD_PARTY_NOTICES.txt

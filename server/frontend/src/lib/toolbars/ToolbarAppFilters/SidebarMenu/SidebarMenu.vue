@@ -18,6 +18,7 @@ import WorkspacePane from './WorkspacePane.vue'
 import UserSettingsPane from './UserSettingsPane.vue'
 import NotificationPane from './NotificationPane.vue'
 import NotificationOverlay from './NotificationOverlay.vue'
+import AboutPane from './AboutPane.vue'
 
 import { useApp } from '@/stores'
 import { workspaceIcon } from '@/stores/data/modules/workspace'
@@ -232,6 +233,9 @@ watchEffect(() => {
           <Tab value="settings" v-tooltip.bottom="'Settings'">
             <span class="pi ph ph-gear-six" />
           </Tab>
+          <Tab value="about" v-tooltip.bottom="'About'">
+            <span class="pi ph ph-info" />
+          </Tab>
         </TabList>
       </template>
       <TabPanels>
@@ -243,6 +247,9 @@ watchEffect(() => {
         </TabPanel>
         <TabPanel value="settings">
           <UserSettingsPane />
+        </TabPanel>
+        <TabPanel value="about">
+          <AboutPane />
         </TabPanel>
       </TabPanels>
       <template #footer>

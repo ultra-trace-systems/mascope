@@ -16,7 +16,7 @@ import typing
 from pathlib import Path
 from typing import Literal, Optional
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, ValidationInfo, field_validator
 
 
 if typing.TYPE_CHECKING:
@@ -84,6 +84,40 @@ class MetaConfig(BaseModel):
     # upload. A value still under [backend] is promoted by
     # `migrate_legacy_options()`.
     tus_max_upload_gb: int = Field(default=5, ge=1)
+    # Legal and support links the web app shows on the sign-in screen and in
+    # its About tab. Configuration rather than constants, because the
+    # documents are published outside this repository and a deployment someone
+    # else operates has its own privacy notice and support desk. Only the web
+    # app reads them, via `runtime.meta` (src/lib/about.js, which repeats these
+    # defaults for a runtime published by an older CLI). An empty string hides
+    # the link; no terms of service are published yet, hence no default.
+    privacy_notice_url: str = "https://ultratrace.eu/mascope/privacy"
+    terms_url: str = ""
+    support_url: str = "mailto:support@ultratrace.eu"
+
+    @field_validator("privacy_notice_url", "terms_url", "support_url")
+    @classmethod
+    def _link_scheme(cls, value: str, info: ValidationInfo) -> str:
+        """
+        Refuse anything but a web URL (or, for support, a mail address).
+
+        The value lands in an ``href`` on the sign-in screen, where a
+        ``javascript:`` URL would run in the app's own origin, and a bare
+        ``example.org/privacy`` would quietly resolve against the app instead
+        of leaving it. Failing at load names the setting instead.
+        """
+        value = value.strip()
+        if not value:
+            return value
+        schemes = ["https://", "http://"]
+        if info.field_name == "support_url":
+            schemes.append("mailto:")
+        if not value.lower().startswith(tuple(schemes)):
+            raise ValueError(
+                f"{info.field_name} must start with {', '.join(schemes)} "
+                f"or be empty to hide the link, not {value!r}"
+            )
+        return value
 
 
 class DatabaseConfig(BaseModel):

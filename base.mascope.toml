@@ -48,6 +48,16 @@ peak_assignment_ingest_ledger = "batch"
 # sides read it, both at start, so changing it takes a stack restart. A value
 # still under [backend] keeps working and is promoted with a warning.
 # tus_max_upload_gb = 5
+# Legal and support links, shown on the sign-in screen and in the home menu's
+# About tab. The defaults are Ultra Trace's published privacy notice and
+# support address; a deployment operated by someone else should point them at
+# its own (docs/maintaining.md). An empty string hides a link, and no terms of
+# service are linked until one is set. privacy_notice_url and terms_url take an
+# http(s) URL, support_url an http(s) or mailto: one. Read by the web app at
+# start, so a change takes a stack restart.
+# privacy_notice_url = "https://ultratrace.eu/mascope/privacy"
+# terms_url = ""
+# support_url = "mailto:support@ultratrace.eu"
 
 [cli]
 color = "blue"
