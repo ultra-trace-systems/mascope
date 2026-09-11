@@ -25,6 +25,8 @@ from mascope_backend.api.new.peak_assignments.engine import (
     build_unassigned_assignments,
     evidence_for,
     invert_matches_to_peak_assignments,
+    labelled_isotopes,
+    monoisotopic_row,
     plausibility_for,
     score_ions_by_fit,
     tier_for_evidence,
@@ -999,9 +1001,11 @@ class TestInvertMatches:
             == by_peak["p1"]["peak_assignment_id"]
         )
 
-    def test_child_owner_stays_none_when_ions_m0_lost_its_peak(self):
-        # ion1's M0 loses peak p1 to ion2, but ion1's M+1 still wins p2:
-        # the child cannot be attributed to an M0 assignment of its own ion.
+    def test_an_isotopologue_whose_ion_lost_its_m0_peak_is_not_written(self):
+        # ion1's M0 loses peak p1 to ion2, but ion1's M+1 still wins p2. The
+        # M+1 has no M0 assignment of its own ion to belong to, so it is left
+        # out and p2 goes to the untargeted stage - which leaves out an
+        # isotopologue of its own whose ion committed no monoisotopic peak.
         match_df = pd.DataFrame(
             [
                 _isotope_row(
@@ -1043,14 +1047,46 @@ class TestInvertMatches:
         assignments = invert_matches_to_peak_assignments(
             match_df, "sample1", "run1", CANDIDATE, ASSIGNED
         )
-        by_peak = {a["sample_peak_id"]: a for a in assignments}
 
-        assert by_peak["p1"]["target_ion_id"] == "ion2"
-        child = by_peak["p2"]
-        assert child["target_ion_id"] == "ion1"
-        assert child["role"] == ROLE_ISO_CHILD
-        assert child["owner_peak_assignment_id"] is None
-        assert child["tier"] == TIER_CANDIDATE
+        assert [(a["sample_peak_id"], a["target_ion_id"]) for a in assignments] == [
+            ("p1", "ion2")
+        ]
+
+    def test_an_isotopologue_whose_m0_found_no_peak_is_not_written(self):
+        # The M0 went unmatched, so the ion won no monoisotopic peak for its
+        # M+1 to belong to.
+        match_df = pd.DataFrame(
+            [
+                _isotope_row(
+                    target_isotope_id="iso1",
+                    target_ion_id="ion1",
+                    target_compound_id="cmp1",
+                    compound_formula="C6H12O6",
+                    ion_formula="C6H13O6+",
+                    mz=181.0707,
+                    relative_abundance=1.0,
+                    sample_peak_id="",
+                    sample_peak_intensity=0.0,
+                ),
+                _isotope_row(
+                    target_isotope_id="iso2",
+                    target_ion_id="ion1",
+                    target_compound_id="cmp1",
+                    compound_formula="C6H12O6",
+                    ion_formula="C6H13O6+",
+                    mz=182.0741,
+                    relative_abundance=0.065,
+                    sample_peak_id="p2",
+                ),
+            ]
+        )
+
+        assert (
+            invert_matches_to_peak_assignments(
+                match_df, "sample1", "run1", CANDIDATE, ASSIGNED
+            )
+            == []
+        )
 
     def test_unmatched_isotopes_are_ignored(self):
         match_df = pd.DataFrame(
@@ -2038,6 +2074,120 @@ class TestReferenceStageAInversion:
         assert assignment["target_ion_id"] == "ion1"
         # ...and the reference name rides alongside.
         assert assignment["provenance"]["reference_identities"] == _REF_IDENTITIES
+
+
+class TestALabelledIonCountsFromItsLabel:
+    """A labelled reagent's atom is written in brackets like any substituted
+    isotope, so the brackets alone cannot find a labelled ion's M0. The ion is
+    measured by its labelled line; the formula without a bracket is the
+    reagent's unlabelled remainder one mass unit below, a line of a few
+    percent. Read as the M0, it put the labelled line at "M+1" and, where the
+    remainder found no peak of its own, left the ion's main line an
+    isotopologue of nothing."""
+
+    ION = "C9H16O7^N-"
+
+    def _row(self, isotope_id, isotope_formula, mz, abundance, peak_id) -> dict:
+        return {
+            **_isotope_row(
+                target_isotope_id=isotope_id,
+                target_ion_id="ion1",
+                target_compound_id="cmp1",
+                compound_formula="C9H16O4",
+                ion_formula=self.ION,
+                mz=mz,
+                relative_abundance=abundance,
+                sample_peak_id=peak_id,
+                sample_peak_intensity=1000.0 if peak_id else 0.0,
+                ionization="+[15N]O3-",
+            ),
+            "target_isotope_formula": isotope_formula,
+        }
+
+    def _family(self, *, remainder_peak: str) -> pd.DataFrame:
+        return pd.DataFrame(
+            [
+                self._row("iso-14n", "C9H16NO7-", 250.0932, 0.0204, remainder_peak),
+                self._row("iso-15n", "[15N]C9H16O7-", 251.0903, 1.0, "p1"),
+                self._row("iso-13c", "[13C][15N]C8H16O7-", 252.0936, 0.0997, "p2"),
+            ]
+        )
+
+    def test_the_labelled_line_is_the_m0(self):
+        assignments = invert_matches_to_peak_assignments(
+            self._family(remainder_peak="p0"), "sample1", "run1", CANDIDATE, ASSIGNED
+        )
+        by_peak = {a["sample_peak_id"]: a for a in assignments}
+
+        main = by_peak["p1"]
+        assert (main["role"], main["isotope_label"]) == (ROLE_M0, "M0")
+        assert main["isotope_formula"] == "[15N]C9H16O7-"
+        for peak, label in (("p0", "M-1"), ("p2", "M+1")):
+            assert by_peak[peak]["role"] == ROLE_ISO_CHILD
+            assert by_peak[peak]["isotope_label"] == label
+            assert (
+                by_peak[peak]["owner_peak_assignment_id"] == main["peak_assignment_id"]
+            )
+
+    def test_a_remainder_with_no_peak_leaves_the_ion_whole(self):
+        # The remainder is 2% of the labelled line, so on most ions it finds no
+        # peak. Read as the M0, it made the ion's main line an isotopologue
+        # whose M0 won nothing, which is a row the engine does not write.
+        assignments = invert_matches_to_peak_assignments(
+            self._family(remainder_peak=""), "sample1", "run1", CANDIDATE, ASSIGNED
+        )
+        by_peak = {a["sample_peak_id"]: a for a in assignments}
+
+        assert set(by_peak) == {"p1", "p2"}
+        assert by_peak["p1"]["role"] == ROLE_M0
+        assert (
+            by_peak["p2"]["owner_peak_assignment_id"]
+            == by_peak["p1"]["peak_assignment_id"]
+        )
+
+    def test_the_labels_are_read_off_the_ion_formula(self):
+        assert labelled_isotopes(self.ION) == {"[15N]": 1}
+        assert labelled_isotopes("C5H8O8^N2-") == {"[15N]": 2}
+        assert labelled_isotopes("C6H13O6+") == {}
+        assert labelled_isotopes(None) == {}
+
+    def test_every_labelled_atom_is_at_its_label(self):
+        # Two labelled atoms: the line with one of them unlabelled is the M-1.
+        ion = "C5H8O8^N2-"
+        rows = pd.DataFrame(
+            [
+                {"mz": 250.0, "target_isotope_formula": "C5H8N2O8-"},
+                {"mz": 251.0, "target_isotope_formula": "[15N]C5H8NO8-"},
+                {"mz": 252.0, "target_isotope_formula": "[15N]2C5H8O8-"},
+            ]
+        ).assign(target_ion_formula=ion)
+
+        assert monoisotopic_row(rows)["target_isotope_formula"] == "[15N]2C5H8O8-"
+
+    def test_a_merged_low_resolution_line_is_the_m0_when_it_holds_it(self):
+        # At a low resolution the labelled line and the remainder's 13C line,
+        # 6 mDa apart, are one line, and the generator names both.
+        rows = pd.DataFrame(
+            [
+                {"mz": 250.0932, "target_isotope_formula": "C9H16NO7-"},
+                {
+                    "mz": 251.0930,
+                    "target_isotope_formula": "[15N]C9H16O7-/[13C]C8H16NO7-",
+                },
+            ]
+        ).assign(target_ion_formula=self.ION)
+
+        assert monoisotopic_row(rows)["mz"] == 251.0930
+
+    def test_without_the_ion_formula_the_line_without_a_bracket_stands(self):
+        rows = pd.DataFrame(
+            [
+                {"mz": 238.7537, "target_isotope_formula": "[81Br]Br2-"},
+                {"mz": 236.7558, "target_isotope_formula": "Br3-"},
+            ]
+        )
+
+        assert monoisotopic_row(rows)["target_isotope_formula"] == "Br3-"
 
 
 class TestTheCandidateDensityOnAStageARow:
