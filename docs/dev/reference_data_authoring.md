@@ -263,6 +263,15 @@ belongs to the whole list, and its species are neutral formulas:
 - **`"load_by_default": false` makes a list opt-in.** The monoterpene RO2
   radicals are opt-in, because a radical competes with the closed-shell molecule
   for the same peak.
+- **`provenance` says where the list came from:** what it was extracted or
+  compiled from, its caveats, and, for a list taken from one work, the licence
+  statement its `license` tag rests on. Like the references, it stays in the
+  file.
+- **`applies_to_contexts` and `always_active` are read, but nothing acts on them
+  yet.** They say which chemistry contexts a list belongs to, and whether it
+  should match in every context; the cyclic siloxanes, for example, are a
+  background of every inlet. Until a source row carries tags, Stage A matches
+  every loaded list in every context.
 
 `libraries/reference/tests/test_seed_lists.py` holds every shipped list to these
 checks, so a list that breaks one fails CI instead of loading.
