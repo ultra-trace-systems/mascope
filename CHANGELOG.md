@@ -20,9 +20,10 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
   formulas standing with no second channel to settle it; a formula shaped like a
   mass fit rather than a molecule; and a peak that a committed neighbour's
   isotope envelope already predicts a line for, tall enough to account for it.
-  A curated row is exempt from the radical rule, because what the rule doubts is
-  the finder electing a radical reading of an ion, and a curated row was matched
-  to an identity somebody authored.
+  A curated row is exempt from the radical rule and from the formula-shape rules,
+  because what they doubt is a mass search - the finder electing a radical
+  reading of an ion, or a grid arriving at a shape no source makes - and a
+  curated row was matched to an identity somebody authored.
 
   The run records the rule set on `config.tiering` - its version, the thresholds
   it judged at, and what each rule took - for the same reason it records the

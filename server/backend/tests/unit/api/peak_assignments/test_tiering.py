@@ -202,9 +202,35 @@ class TestTheImplausibleFormula:
         assert tier_of(rows, "pa-1") == "assigned"
 
     def test_a_carbon_free_formula_off_the_list_loses_it(self):
-        rows = [row("pa-1", "HS3", ion="S3-")]
+        # Closed-shell, so the radical rule has no opinion and the cap is this
+        # signature's alone.
+        rows = [row("pa-1", "H2S3", ion="HS3-")]
         run(rows)
         assert tier_of(rows, "pa-1") == "candidate"
+        assert "carbon_free" in rules_on(rows, "pa-1")
+        assert REASON_ODD_ELECTRON not in rules_on(rows, "pa-1")
+
+    def test_a_curated_carbon_free_row_keeps_its_tier(self):
+        # Trisulfur, as a curated library holds it. Every signature names what
+        # a mass search produces, and a curated row was matched to an authored
+        # identity - the radical rule's exemption, for the same reason.
+        rows = [row("pa-1", "HS3", ion="S3-", source="database")]
+        run(rows)
+        assert tier_of(rows, "pa-1") == "assigned"
+        assert rules_on(rows, "pa-1") == {REASON_NO_CLOSE_RIVAL}
+
+    def test_a_curated_oxygen_lattice_keeps_its_tier(self):
+        # Peroxyacetyl nitrate has the lattice's shape and is a species these
+        # sources are built to see. The same formula found by the untargeted
+        # search is still capped.
+        curated = [row("pa-1", "C2H3NO5", ion="C2H2NO5-", source="database")]
+        found = [row("pa-2", "C2H3NO5", ion="C2H2NO5-")]
+        run(curated)
+        run(found)
+        assert tier_of(curated, "pa-1") == "assigned"
+        assert "oxygen_lattice" not in rules_on(curated, "pa-1")
+        assert tier_of(found, "pa-2") == "candidate"
+        assert "oxygen_lattice" in rules_on(found, "pa-2")
 
 
 class TestTheNeighboursEnvelope:
