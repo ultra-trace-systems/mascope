@@ -9,3 +9,12 @@
  * with the ledger store (stores/data/modules/batchPeak/ledger.js).
  */
 export const MAX_SELECTED_BATCH_PEAKS = 300
+
+/**
+ * What the batch chart calls a batch peak: its consensus formula, or its m/z
+ * when the ledger has no formula for it. The chart's legend and the filter chip
+ * for the ledger's selection both read it, so the two name a species alike.
+ */
+export function batchPeakLabel(record) {
+  return record.consensus_formula || `m/z ${Number(record.mz).toFixed(4)}`
+}
