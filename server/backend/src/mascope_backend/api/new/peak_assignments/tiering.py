@@ -37,9 +37,10 @@ the finder over the full candidate list (``arbitration.candidate_density``),
 which is the only place it can be: the row stores at most
 ``max_alternatives`` of the competitors, so counting those counts the cap.
 
-The implausibility signatures - ``carbon_cluster``, ``oxygen_lattice``,
-``carbon_free`` - are named formula shapes that are the product of a mass search
-rather than of a source (``mascope_tools.composition.implausibility``). They are
+The implausibility signatures - ``oxygen_lattice`` and ``carbon_free``; the
+carbon cluster was withdrawn on the measurement - are named formula shapes that
+are the product of a mass search rather than of a source
+(``mascope_tools.composition.implausibility``). They are
 guards rather than levers: on the gate they reach a few hundred rows in total,
 and the value of writing them is that a row demoted on one can say which shape
 it has.
