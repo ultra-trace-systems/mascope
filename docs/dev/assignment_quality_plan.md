@@ -3268,6 +3268,9 @@ belongs in the fitted axis once anchors reach below m/z 100, which is step
     - **Two copies.** The lifted lists exist in Mascope and in peaky, and
       both copies carry the integrity test until step 2.7 settles what peaky
       reads. Publishing the reference library is a release change.
+    - **Owner.** It was recorded with the step, from the review's answers to
+      the step's format note. Merging step 2.5a makes it the plan owner's
+      decision, as merging #2105 did decision 3's addendum.
 
 ## Risks
 
@@ -3711,7 +3714,9 @@ the reference confirms.** A, B, D and E are identical row for row.
     rule dropped them by accident, because their unlabelled line is the
     reagent peak. On that sample the 15N line of the nitric acid-nitrate
     cluster is unclaimed, so one more genuine line joins the fit (25 -> 26
-    anchors, 1.64 -> 1.90 ppm).
+    anchors, 1.64 -> 1.90 ppm). None of those compounds is committed on the
+    gate in either round. They are the workspace library's to clean before
+    2.5b gives each source its own window.
 
 **The seed on top of #2112 raises G2 same-formula on every set.** This was
 measured on `step-2.5a-reference-seed-2026.09.11-77f3850` against #2112's round,
@@ -3761,11 +3766,14 @@ a sample's Stage A anchors are the seed's lines: the median goes 7 -> 122 on E,
 - The wider width is what moves thousands of untargeted elections on F1 and F2
   (2,882 and 1,712 formula changes). It also raises the committed mass error:
   MAD E 2.12 -> 2.69, F1 0.96 -> 1.23, F2 1.22 -> 1.44 ppm.
-- The mass gate fits its width from the same lines, so on TOF it loosens with
-  them.
-- Fitting the width from the target library's lines, or only from lines that
-  won their peak, would keep a reference mirror out of it. That is carried to
-  2.5b, which gives each source its own window.
+- The mass gate's width widens too, by another route. The gate fits its width
+  over the run's corroborated monoisotopic commits, and a curated row counts as
+  corroborated, so the seed's own rows anchor it: by median E 3.0 -> 8.2, F1
+  5.2 -> 8.2, F2 2.6 -> 6.7 ppm.
+- Two changes would keep a reference mirror out of both widths: fitting Stage
+  B's width from the target library's lines, or only from lines that won their
+  peak, and not counting a mirror's curation as the gate's corroboration. That
+  is carried to 2.5b, which gives each source its own window.
 
 **Verify.**
 - **The integrity test** holds every shipped list.
@@ -3780,9 +3788,18 @@ a sample's Stage A anchors are the seed's lines: the median goes 7 -> 122 on E,
   - Silicon, phosphorus, fluorine and iodine are outside Stage A's known window
     until 2.5b. So the siloxane, organophosphate, insecticide, PFCA and iodine
     lists match nothing yet.
-  - G6 at assigned tier on A goes 8 -> 13. The new rows are two Kang formulas
-    on the 30Si lines of the D3 and D5 siloxanes, peaks where the untargeted
-    stage had already put the same formulas.
+  - G6 at assigned tier rises on A (8 -> 13), F1 (0 -> 4), C2 (1 -> 4) and B
+    (46 -> 48), and falls by one or two on C, D and E. Eleven of the new rows
+    are the seed's:
+    - on A, one Kang formula, C12H20O13, on the 30Si line of D5 in all six
+      samples, where the untargeted stage had already put the same formula;
+    - on B, one more of the same formula;
+    - on F1, three organic nitrates on lines the reference reads as 13C
+      isotopologues of sulfur-bearing parents;
+    - on F2, one row on a 37Cl line.
+
+    The other seven are untargeted rows that reached assigned tier in the new
+    round, five of them on the lines of silicon-bearing parents.
 
 ## Not in this plan
 
