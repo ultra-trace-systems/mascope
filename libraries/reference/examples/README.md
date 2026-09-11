@@ -46,15 +46,25 @@ docker compose exec backend python -m mascope_backend.db.scripts.reference_sync 
 Formulas are canonicalized to Hill order and their monoisotopic masses computed
 on ingest; you do not supply a mass column.
 
+The same list also ships with Mascope as `atmospheric-organics`, one of the lists
+`mascope reference seed` loads, in
+`libraries/reference/src/mascope_reference/lists/atmospheric-organics.json`.
+There its citations carry DOIs. The CSV stays as the worked example of the
+`custom` adapter, and a test keeps the two copies in step.
+
 ## Provenance
 
 Compounds and their roles as atmospheric tracers are drawn from the standard
-literature, e.g. Kawamura and Ikushima (1993) for the aliphatic dicarboxylic
-acid series, Yu et al. (1999) and Claeys et al. (2009) for alpha-pinene
-oxidation products, Szmigielski et al. (2007) for MBTCA, Claeys et al. (2004),
-Wang et al. (2005) and Paulot et al. (2009) for isoprene SOA tracers, Simoneit
-et al. (1999) for biomass-burning tracers, and Saltzman et al. (1983) for
-methanesulfonic acid. The per-row `reference` column carries an author-year
+literature:
+- Kawamura and Ikushima (1993) for the aliphatic dicarboxylic acid series.
+- Yu et al. (1999), Claeys et al. (2007, 2009) and Yasmeen et al. (2010) for
+  alpha-pinene oxidation products.
+- Szmigielski et al. (2007) for MBTCA.
+- Claeys et al. (2004), Edney et al. (2005), Wang et al. (2005) and Paulot et
+  al. (2009) for isoprene SOA tracers.
+- Simoneit et al. (1999) and Clemente et al. (2024) for biomass-burning tracers.
+- Kitanovski et al. (2012) for nitrocatechol.
+- Saltzman et al. (1983) for methanesulfonic acid. The per-row `reference` column carries an author-year
 label where a standard primary reference exists; it is provenance, not an
 exhaustive citation. Molecular formulas are the verifiable data - each was
 parsed and mass-checked on authoring.

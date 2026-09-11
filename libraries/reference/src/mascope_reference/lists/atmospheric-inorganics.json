@@ -1,0 +1,41 @@
+{
+  "schema_version": 2,
+  "id": "atmospheric-inorganics",
+  "label": "Atmospheric inorganics measured by CIMS: HO2, nitric, nitrous and peroxynitric acid, ammonia",
+  "data_version": "2026.09",
+  "license": "CC-BY-4.0",
+  "references": [
+    {
+      "citation": "J. Sanchez, D. J. Tanner, D. Chen, L. G. Huey, N. L. Ng, A new technique for the direct detection of HO2 radicals using bromide chemical ionization mass spectrometry (Br-CIMS): initial characterization. Atmospheric Measurement Techniques 9 (2016) 3851-3861.",
+      "doi": "10.5194/amt-9-3851-2016"
+    },
+    {
+      "citation": "L. G. Huey, Measurement of trace atmospheric species by chemical ionization mass spectrometry: speciation of reactive nitrogen and future directions. Mass Spectrometry Reviews 26 (2007) 166-184.",
+      "doi": "10.1002/mas.20118"
+    },
+    {
+      "citation": "D. Perner, U. Platt, Detection of nitrous acid in the atmosphere by differential optical absorption. Geophysical Research Letters 6 (1979) 917-920.",
+      "doi": "10.1029/GL006i012p00917"
+    },
+    {
+      "citation": "D. L. Slusher, S. J. Pitteri, B. J. Haman, D. J. Tanner, L. G. Huey, A chemical ionization technique for measurement of pernitric acid in the upper troposphere and the polar boundary layer. Geophysical Research Letters 28 (2001) 3875-3878.",
+      "doi": "10.1029/2001GL013443"
+    },
+    {
+      "citation": "J. B. Nowak, J. A. Neuman, K. Kozai, et al., A chemical ionization mass spectrometry technique for airborne measurements of ammonia. Journal of Geophysical Research: Atmospheres 112 (2007).",
+      "doi": "10.1029/2006JD007589"
+    }
+  ],
+  "polarity": "both",
+  "allow_radicals": true,
+  "provenance": {
+    "compiled_from": "The reference engine's known-species families, keeping the species a verified paper reports observed in ambient or indoor air, in a chamber study, or as a mass-spectrometry background; each species cites that paper. Formulas checked against PubChem."
+  },
+  "species": [
+    {"formula": "HO2", "name": "Hydroperoxyl radical", "reference": "10.5194/amt-9-3851-2016", "note": "Detected as [HO2+Br]- by bromide CIMS"},
+    {"formula": "HNO3", "name": "Nitric acid", "reference": "10.1002/mas.20118"},
+    {"formula": "HNO2", "name": "Nitrous acid", "reference": "10.1029/GL006i012p00917"},
+    {"formula": "HNO4", "name": "Peroxynitric acid", "reference": "10.1029/2001GL013443"},
+    {"formula": "H3N", "name": "Ammonia", "reference": "10.1029/2006JD007589"}
+  ]
+}

@@ -1,0 +1,38 @@
+{
+  "schema_version": 2,
+  "id": "reactive-iodine",
+  "label": "Reactive iodine species",
+  "data_version": "2026.09",
+  "license": "CC-BY-4.0",
+  "references": [
+    {
+      "citation": "Y. J. Tham, X.-C. He, Q. Li, et al., Direct field evidence of autocatalytic iodine release from atmospheric aerosol. Proceedings of the National Academy of Sciences 118 (2021) e2009951118.",
+      "doi": "10.1073/pnas.2009951118"
+    },
+    {
+      "citation": "M. Sipilä, N. Sarnela, T. Jokinen, et al., Molecular-scale evidence of aerosol particle formation via sequential addition of HIO3. Nature 537 (2016) 532-534.",
+      "doi": "10.1038/nature19314"
+    },
+    {
+      "citation": "X.-C. He, Y. J. Tham, L. Dada, et al., Role of iodine oxoacids in atmospheric aerosol nucleation. Science 371 (2021) 589-595.",
+      "doi": "10.1126/science.abe0298"
+    },
+    {
+      "citation": "B. J. Allan, J. M. C. Plane, G. McFiggans, Observations of OIO in the remote marine boundary layer. Geophysical Research Letters 28 (2001) 1945-1948.",
+      "doi": "10.1029/2000GL012468"
+    }
+  ],
+  "polarity": "negative",
+  "allow_radicals": true,
+  "provenance": {
+    "compiled_from": "The reference engine's known-species families, keeping the species a verified paper reports observed in ambient or indoor air, in a chamber study, or as a mass-spectrometry background; each species cites that paper. Formulas checked against PubChem."
+  },
+  "species": [
+    {"formula": "HOI", "name": "Hypoiodous acid", "reference": "10.1073/pnas.2009951118"},
+    {"formula": "HIO2", "name": "Iodous acid", "reference": "10.1126/science.abe0298", "note": "Measured by CIMS in a chamber study"},
+    {"formula": "HIO3", "name": "Iodic acid", "reference": "10.1038/nature19314"},
+    {"formula": "IO2", "name": "Iodine dioxide (OIO)", "reference": "10.1029/2000GL012468", "note": "Observed by DOAS"},
+    {"formula": "ICl", "name": "Iodine monochloride", "reference": "10.1073/pnas.2009951118"},
+    {"formula": "IBr", "name": "Iodine monobromide", "reference": "10.1073/pnas.2009951118"}
+  ]
+}

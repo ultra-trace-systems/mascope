@@ -200,3 +200,79 @@ InChIKey where available).
 
 See [public_database_integration.md](public_database_integration.md) §2 for the
 public sources and where to obtain their dumps.
+
+---
+
+## 6. The lists that ship with Mascope
+
+Mascope carries a small curated seed of atmospheric CIMS lists: a monoterpene
+HOM list, mass spectrometry background contaminants, and families of species no
+formula grid reaches, such as reactive iodine, perfluorocarboxylic acids,
+siloxanes and organophosphates. They live in
+`libraries/reference/src/mascope_reference/lists/`, one list per file, and
+nothing loads them unasked:
+
+```sh
+mascope reference seed --list                      # what ships, and what loads by default
+mascope reference seed                             # load the default lists
+mascope reference seed monoterpene-ro2-kang2021    # load an opt-in list by its id
+```
+
+In a deployment, run `python -m mascope_backend.db.scripts.reference_seed`
+inside the backend container instead (see [maintaining.md](../maintaining.md)).
+Each list becomes its own source, named by its id and versioned by its
+`data_version`, and seeding again loads only the lists whose version changed.
+
+The lists are curated in a JSON format (schema 2). A list's header says what
+belongs to the whole list, and its species are neutral formulas:
+
+```json
+{
+  "schema_version": 2,
+  "id": "monoterpene-hom-kang2021",
+  "label": "Monoterpene OH-oxidation HOM, closed-shell (alpha-pinene proxy)",
+  "data_version": "2026.09",
+  "license": "CC-BY-4.0",
+  "references": [{"citation": "S. Kang, ... 2021.", "isbn": "978-3-95806-596-3"}],
+  "polarity": "negative",
+  "native_detection": "[M+NO3]-",
+  "applies_to_contexts": ["monoterpene_ox", "biogenic_soa"],
+  "species": [
+    {"formula": "C10H16O7", "conditions": ["pure", "NOx"], "evidence": "formula"}
+  ]
+}
+```
+
+- **The header.**
+  - `id` is the source name: lower-case words joined by hyphens, and the file's
+    name as well.
+  - `license` is one of the licence tags the Stage A gate knows.
+  - Every entry in `references` carries a DOI or an ISBN.
+- **A species** may add a `name`, its own `reference`, an `evidence` grade
+  (`standard`, `ms2` or `formula`), `conditions` and a `note`.
+  - Its own `reference` is a DOI, for a list compiled from several papers.
+  - Only the name and that DOI reach the database. Everything else stays in the
+    file, because the identities Stage A matches are copied into the provenance
+    of every row they match.
+- **Radical status is read from the formula.** A neutral with a half-integer
+  DBE has an unpaired electron.
+  - Only a list that says `"allow_radicals": true` may hold one. In any other
+    list such a formula is held back at ingest.
+  - A `"radical"` field on a species is allowed only as a claim, and the checks
+    hold it to the formula.
+- **`"load_by_default": false` makes a list opt-in.** The monoterpene RO2
+  radicals are opt-in, because a radical competes with the closed-shell molecule
+  for the same peak.
+
+`libraries/reference/tests/test_seed_lists.py` holds every shipped list to these
+checks, so a list that breaks one fails CI instead of loading.
+
+The same `peaklist` adapter reads a list file of your own, and schema 1 files
+too, which is the format peaky's lists use:
+
+```sh
+mascope reference sync peaklist my_list.json --name my-list --version 2026-09
+```
+
+A schema 1 list names no licence, so its rows carry `custom`, and its radicals
+are held back.
