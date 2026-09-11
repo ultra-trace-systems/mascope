@@ -4,6 +4,7 @@ import { api } from '@/api'
 import { getApiErrorMessage } from '@/api/utils'
 import { beautifySnakeCase } from '@/lib/utils'
 import { useApp } from '@/stores'
+import { batchPeakLabel } from '@/lib/batchChart'
 import { MAX_SELECTED_BATCH_PEAKS } from '@/stores/data/modules/batchPeak/ledger'
 import { glasbey } from '../colors.js'
 
@@ -299,8 +300,7 @@ export const useChartAssignmentsData = defineStore('chart.batch.assignments', ()
       }
 
       const mz = Number(record.mz).toFixed(4)
-      const label = record.consensus_formula ? record.consensus_formula : `m/z ${mz}`
-      const traceName = `${label} · ${mz}`
+      const traceName = `${batchPeakLabel(record)} · ${mz}`
 
       return {
         name: traceName,
