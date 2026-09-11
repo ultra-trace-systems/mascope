@@ -27,17 +27,20 @@ What each one is, and what it is not:
   actually make (:data:`CARBON_FREE_ALLOWLIST`). Deliberately narrow: a curated
   identity is an authored claim rather than a mass fit, so this is for what an
   untargeted search writes, and a caller that holds a curated row should not ask.
+  That holds for every signature here and not only this one - each names what a
+  mass search produces - and the tiering applies it to all of them.
 
   On the assignment gate that leaves it with nothing to name, and the reason is
   worth stating rather than reading as a clean result: every resolved grid there
   floors carbon at one, so no untargeted row can BE carbon-free, and every
   carbon-free row committed on those 43 samples is curated - nitric and iodic
-  acid, sulfuric acid, ammonia, and trisulfane six times at assigned tier, which
-  is this module's own example of an implausible formula and which the rule
-  above declines to look at. What was measured is that nothing reaches the
-  signature, not that the allowlist is right. Whether a curated identity the
-  reference never confirms should be asked about after all is a real question
-  and an open one.
+  acid, sulfuric acid, ammonia, the bromine of the dibromide reagent ion, and
+  trisulfur (written HS3) six times at assigned tier. Asked of those rows anyway,
+  the signature took seven, and the reference confirms none of them - it commits
+  nothing on the trisulfur peaks and reads the dibromide one as its reagent - so
+  what the exemption spares is unmeasured rather than wrong, and it is taken on
+  the principle. What was measured is that nothing untargeted reaches the
+  signature, not that the allowlist is right.
 
 A formula can carry more than one; :func:`implausible_signatures` returns them
 all and :func:`implausible_signature` the first, in the fixed order of
@@ -113,6 +116,13 @@ OXYGEN_LATTICE_MIN = 5
 #: the reagent acids and halides themselves, their dimers and their common
 #: oxidation products. Anything else with no carbon at all, arrived at by an
 #: untargeted mass search, is a coincidence of the grid rather than a species.
+#:
+#: The bromine atom is not here, although the dibromide reagent ion reaches a
+#: committed row as one. That row is a curated target's, which no signature
+#: judges; an untargeted grid cannot write it, since every grid floors carbon at
+#: one; and a bare halogen atom is a radical the tiering's odd-electron rule
+#: caps on its own. What it shows is a reagent ion matched as an analyte, which
+#: is the curated library's question and not this list's.
 CARBON_FREE_ALLOWLIST = frozenset(
     {
         "H2O",
