@@ -248,7 +248,7 @@ class TestTheNeighboursEnvelope:
         run(rows)
         assert REASON_ENVELOPE_NEIGHBOUR not in rules_on(rows, "pa-1")
 
-    def test_a_reading_is_never_its_own_satellite(self, monkeypatch):
+    def test_a_reading_is_never_its_own_isotope_line(self, monkeypatch):
         # Nothing in the rule makes that true - it holds because every isotope
         # substitution adds mass, so a predicted line cannot land back on the
         # peak it came from. That is a property of the predictor, so this pins
@@ -274,7 +274,7 @@ class TestTheNeighboursEnvelope:
         run(rows)
         assert tier_of(rows, "pa-1") == "assigned"
 
-    def test_two_rows_on_one_peak_are_not_each_other_s_satellite(self, monkeypatch):
+    def test_two_rows_on_one_peak_are_not_each_other_s_isotope_line(self, monkeypatch):
         # And the same guard, keyed on the peak: an imported ledger may commit
         # two readings of one peak, and the second is that peak read differently
         # rather than the first one's isotope line.
@@ -381,18 +381,18 @@ class TestOnlyEverDown:
         assert REASON_ODD_ELECTRON in rules_on(rows, "pa-1")
 
 
-class TestTheSatellites:
-    def test_a_satellite_follows_its_owner_down(self):
+class TestTheIsotopologueRows:
+    def test_an_isotopologue_row_follows_its_owner_down(self):
         rows = [
             row("pa-owner", RADICAL),
             row("pa-kid", RADICAL, role="iso_child", owner="pa-owner"),
         ]
         summary = run(rows)
         assert tier_of(rows, "pa-kid") == "candidate"
-        assert summary["capped_satellites"] == 1
+        assert summary["capped_isotopologues"] == 1
         assert summary["capped"] == 1
 
-    def test_a_satellite_of_a_standing_owner_stands(self):
+    def test_an_isotopologue_of_a_standing_owner_stands(self):
         rows = [
             row("pa-owner"),
             row("pa-kid", role="iso_child", owner="pa-owner"),
@@ -400,7 +400,7 @@ class TestTheSatellites:
         run(rows)
         assert tier_of(rows, "pa-kid") == "assigned"
 
-    def test_a_satellite_carries_the_owner_s_answer_and_not_a_copy_of_it(self):
+    def test_an_isotopologue_row_carries_the_owner_s_answer_not_a_copy(self):
         rows = [
             row("pa-owner", RADICAL),
             row("pa-kid", RADICAL, role="iso_child", owner="pa-owner"),
@@ -408,13 +408,13 @@ class TestTheSatellites:
         run(rows)
         assert rules_on(rows, "pa-kid") == {REASON_INHERITED}
 
-    def test_satellites_are_counted_apart_from_the_analytes(self):
+    def test_isotopologue_rows_are_counted_apart_from_the_analytes(self):
         rows = [
             row("pa-owner", RADICAL),
             row("pa-kid", RADICAL, role="iso_child", owner="pa-owner"),
         ]
         summary = run(rows)
-        assert (summary["capped"], summary["capped_satellites"]) == (1, 1)
+        assert (summary["capped"], summary["capped_isotopologues"]) == (1, 1)
 
 
 class TestTheRunsRecord:
@@ -501,10 +501,11 @@ class TestAnOwnerTheRunDoesNotStandBehind:
         assert REASON_ENVELOPE_NEIGHBOUR in rules_on(rows, "pa-child")
 
 
-class TestASatelliteOfARowAnEarlierPassCapped:
-    """A satellite follows its owner down whichever pass took the owner's tier.
-    The mass gate and the reagent-N rule already cap their own satellites; the
-    minor-channel cap touches M0 rows only. This pass states the rule once."""
+class TestAnIsotopologueOfARowAnEarlierPassCapped:
+    """An isotopologue row follows its owner down whichever pass took the
+    owner's tier. The mass gate and the reagent-N rule already cap the
+    isotopologues of the rows they cap; the minor-channel cap touches M0 rows
+    only. This pass states the rule once."""
 
     @staticmethod
     def family() -> list[dict]:
@@ -525,23 +526,23 @@ class TestASatelliteOfARowAnEarlierPassCapped:
 
     def test_it_is_counted_apart_from_the_ones_this_pass_capped(self):
         # The owner's tier was an earlier pass's to take, so neither the owner
-        # nor its satellite is this pass's own cap - the run says which is which.
+        # nor its isotopologue is this pass's own cap - the run says which is which.
         summary = run(self.family())
         assert summary["capped"] == 0
-        assert summary["capped_satellites"] == 0
-        assert summary["capped_satellites_after_earlier_pass"] == 1
+        assert summary["capped_isotopologues"] == 0
+        assert summary["capped_isotopologues_after_earlier_pass"] == 1
 
-    def test_a_satellite_already_capped_by_that_pass_is_not_counted_again(self):
+    def test_an_isotopologue_already_capped_by_that_pass_is_not_counted_again(self):
         rows = self.family()
         rows[1]["tier"] = "candidate"
         summary = run(rows)
-        assert summary["capped_satellites_after_earlier_pass"] == 0
+        assert summary["capped_isotopologues_after_earlier_pass"] == 0
 
-    def test_a_satellite_of_this_pass_s_own_cap_is_counted_there(self):
+    def test_an_isotopologue_of_this_pass_s_own_cap_is_counted_there(self):
         rows = [
             row("pa-owner", RADICAL),
             row("pa-kid", RADICAL, role="iso_child", owner="pa-owner"),
         ]
         summary = run(rows)
-        assert summary["capped_satellites"] == 1
-        assert summary["capped_satellites_after_earlier_pass"] == 0
+        assert summary["capped_isotopologues"] == 1
+        assert summary["capped_isotopologues_after_earlier_pass"] == 0

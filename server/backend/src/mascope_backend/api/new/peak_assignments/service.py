@@ -2412,7 +2412,7 @@ async def _run_sample_assignment(
             f"Sample '{sample.sample_item_name}' tiers "
             f"{tiering['committed_m0']} committed readings on rule set "
             f"{tiering['version']}: {tiering['capped']} capped "
-            f"({tiering['capped_satellites']} satellites with them)"
+            f"({tiering['capped_isotopologues']} isotopologue rows with them)"
             + (
                 ", "
                 + ", ".join(
