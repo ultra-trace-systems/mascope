@@ -29,6 +29,14 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
   tier bands: a tier is only comparable across two runs together with the rules
   that produced it.
 
+- **The peak inspector shows why an assignment holds its tier.** Under *Why
+  this tier* it lists each reason the run recorded - the rule by name, the
+  run's own sentence about the row beneath it, and a mark on every reason that
+  holds the tier down. An isotopologue follows its M0, so the M0's reasons are
+  shown beneath its own. A row no rule judged - an imported run, a run from
+  before the reasons existed, a row assigned by hand or served from the batch
+  ledger - shows no list.
+
 - Every committed peak assignment now records how many formulas its own
   evidence could not tell apart from the one it commits.
   `provenance.candidate_density` is 1 when nothing ties the committed formula

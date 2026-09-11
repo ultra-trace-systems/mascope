@@ -15,6 +15,7 @@ import {
   P_CORRECT_TOOLTIP,
   uncalibratedReason
 } from '@/lib/pCorrect'
+import { reasonIcon, reasonTooltip, tierReasonsOf } from '@/lib/tierReasons'
 import { EVIDENCE_LEVELS, VERDICT_META } from '@/lib/verification'
 import { useBatchPeakCuration } from './stores/batchPeakCuration.js'
 
@@ -577,6 +578,47 @@ const plausibility = computed(
   () => provenance.value?.plausibility ?? measured.value?.plausibility ?? null
 )
 
+// --- Why this tier ------------------------------------------------------------
+// Every row a run commits carries what the tiering pass decided about it
+// (`provenance.tier_reasons`): what took its top tier, or what it kept its tier
+// on. The server writes each reason's sentence and the card shows it as
+// written, with the rule named beside it. A row with none was judged by no such
+// pass - a run from before it, an imported run, a row assigned by hand - and
+// shows nothing rather than a placeholder.
+//
+// A derived row's provenance is its anchor's consensus record, and its tier is
+// a vote across the batch that no rule judged, so it has nothing to show here -
+// the same reason its chip carries no evidence percentage.
+const tierReasons = computed(() => (derivedRun.value ? [] : tierReasonsOf(provenance.value)))
+
+// An isotopologue carries one reason of its own, that it follows its M0: every
+// question the pass asks was asked of the M0's row, and an isotopologue goes
+// down with it. That answer is what a reader opening the isotopologue wants, so
+// the M0's reasons are shown beneath, marked as the M0's. The M0 is the owner
+// the reason is about, resolved by id, and its detail is fetched like the
+// focused row's own - the store caches it, so stepping around a family fetches
+// it once.
+const reasonsOwner = computed(() => {
+  const own = focusedAssignment.value
+  const owner = verifyTarget.value
+  if (!own || !owner || owner.peak_assignment_id === own.peak_assignment_id) return null
+  return tierReasons.value.some((reason) => reason.rule === 'inherited_from_owner') ? owner : null
+})
+watch(
+  reasonsOwner,
+  (owner) => {
+    // Failures already toast via the http layer; the card keeps its own line.
+    if (owner) app.data.peakAssignment.peak.loadDetail(owner).catch(() => {})
+  },
+  { immediate: true }
+)
+const ownerReasons = computed(() => {
+  const owner = reasonsOwner.value
+  if (!owner) return []
+  const detail = app.data.peakAssignment.peak.detailOf(owner.peak_assignment_id)
+  return tierReasonsOf(detail?.provenance ?? owner.provenance)
+})
+
 // A candidate can only be committed when it names both halves of an
 // assignment: the formula and the adduct it was found under. The server
 // refuses the rest with a 422, for the reason a set_assignment call has always
@@ -997,6 +1039,47 @@ const demotedCount = computed(() => {
       >
         <span class="pi ph ph-link-simple" />
         {{ corroborationLabel }}
+      </div>
+      <!-- Why the row holds its tier, in the run's own words. The rule is named
+           first so the list can be scanned; the sentence under it is the
+           server's. A reason that holds the tier down wears the down arrow, and
+           the tier chip above is what says where the row ended up. -->
+      <div
+        v-if="tierReasons.length"
+        class="tier-reasons"
+        v-help.right="{
+          title: 'Why this tier',
+          helpKey: 'assignment-tiers',
+          doc: app.ui.help.docUrl('how-it-works/peak-assignment/#why-a-row-holds-its-tier')
+        }"
+      >
+        <div class="alts-label">Why this tier</div>
+        <ul class="reasons">
+          <li
+            v-for="(reason, i) in tierReasons"
+            :key="`own-${i}`"
+            :class="['reason', { caps: reason.caps }]"
+            v-tooltip.left="reasonTooltip(reason, focusedAssignment.tier)"
+          >
+            <span :class="['pi', 'ph', reasonIcon(reason), 'reason-icon']" />
+            <span class="reason-body">
+              <span class="reason-rule">{{ reason.label }}</span>
+              <span class="reason-detail">{{ reason.detail }}</span>
+            </span>
+          </li>
+          <li
+            v-for="(reason, i) in ownerReasons"
+            :key="`m0-${i}`"
+            :class="['reason', 'inherited', { caps: reason.caps }]"
+            v-tooltip.left="reasonTooltip(reason, reasonsOwner.tier, { viaM0: true })"
+          >
+            <span :class="['pi', 'ph', reasonIcon(reason), 'reason-icon']" />
+            <span class="reason-body">
+              <span class="reason-rule">{{ reason.label }}<span class="via"> via M0</span></span>
+              <span class="reason-detail">{{ reason.detail }}</span>
+            </span>
+          </li>
+        </ul>
       </div>
       <!-- For a lone M0 as much as for a full pattern: this table is where the
            focused peak's m/z is read, and it should be read in the same place
@@ -1610,6 +1693,61 @@ const demotedCount = computed(() => {
    here" idiom the uncalibrated states use, and cost contrast the pill needs. */
 .corroboration.inherited {
   border-style: dashed;
+}
+/* Why this tier: one line per reason, the rule over the server's sentence. */
+.tier-reasons {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+.reasons {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+}
+.reason {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.4rem;
+  font-size: 0.8rem;
+  line-height: 1.35;
+  cursor: default;
+}
+.reason-icon {
+  margin-top: 0.15rem;
+  font-size: 0.8rem;
+  opacity: 0.55;
+}
+/* The one mark that says a reason holds the tier down, in the colour the
+   candidate chip wears. */
+.reason.caps .reason-icon {
+  color: var(--state-warning);
+  opacity: 1;
+}
+.reason-body {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+.reason-rule {
+  font-weight: 600;
+}
+.reason-detail {
+  opacity: 0.75;
+  overflow-wrap: anywhere;
+}
+/* Read off the M0 rather than recorded on this peak: dashed, as the pane marks
+   every piece of evidence it borrows from another row. */
+.reason.inherited {
+  padding-left: 0.5rem;
+  border-left: 1px dashed var(--p-content-border-color, #e3e6ec);
+}
+.reason .via {
+  font-weight: 400;
+  opacity: 0.6;
 }
 .ev .v.uncal {
   opacity: 0.55;
