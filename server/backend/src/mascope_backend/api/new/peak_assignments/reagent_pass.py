@@ -84,7 +84,7 @@ def reagent_library_for(profile_name: str) -> tuple[ReagentCluster, ...]:
 def _provenance(hit: ReagentHit) -> dict:
     """What a reagent row records about why it was claimed.
 
-    The parent of a satellite is named here rather than through
+    The parent of an isotopologue is named here rather than through
     ``owner_peak_assignment_id``: that link models one thing in this ledger - an
     isotopologue naming the M0 analyte it belongs to - and the import path
     enforces it, so a reagent row must not name an owner. The relationship is
@@ -97,8 +97,8 @@ def _provenance(hit: ReagentHit) -> dict:
             "mz": round(hit.cluster.mz, 5),
         }
     }
-    if hit.is_satellite and hit.predicted_relative is not None:
-        # The satellite's share of its cluster's monoisotopic peak, so a reader
+    if hit.is_isotopologue and hit.predicted_relative is not None:
+        # The isotopologue's share of its cluster's monoisotopic peak, so a reader
         # can check the claim against the peak's own height. Which cluster it
         # belongs to is already in `ion` above, and which line of that cluster
         # is in the row's `isotope_label`.
@@ -169,7 +169,7 @@ def claim_reagent_peaks(
         instrument's precision against a mass the sample's anchor ions have
         corrected, not in a window wide enough to swallow a neighbour.
     :param purity: The labelled reagent's isotopic purity, so a labelled
-        reagent's satellites are predicted with the label's own abundance.
+        reagent's isotopologues are predicted with the label's own abundance.
     :return: One hit per claimed peak, and what the anchors said; the
         calibration is ``None`` when there was nothing to match.
     """

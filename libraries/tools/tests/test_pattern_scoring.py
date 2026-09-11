@@ -210,7 +210,7 @@ class TestTheSamplesOwnMassWidth:
         sulfur = _lines(self.SULFUR, 1)
         observed_mz = sulfur["M0"][0]  # the sulfur reading is the one on mass
         # The peak stands alone, which is the population this matters for: with
-        # no satellite to separate the two readings, the mass is all there is.
+        # no isotopologue to separate the two readings, the mass is all there is.
         peaks = pl.DataFrame(
             {
                 "mz": [observed_mz],

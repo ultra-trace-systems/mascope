@@ -262,7 +262,7 @@ async def score_row_alternatives(
         # M0 by construction: the shortlist proposes a composition for this
         # peak's own mass, and only the ion's monoisotopic peak was allowed to
         # pair with it above. Said out loud because `set_assignment` reads it
-        # to decide whether the committed row is a compound or a satellite.
+        # to decide whether the committed row is a compound or an isotopologue.
         entry["isotope_label"] = "M0"
         entry["adducts_matched"] = len(candidates)
         data.append(entry)

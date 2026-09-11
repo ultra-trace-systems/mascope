@@ -62,7 +62,7 @@ OFF_CALIBRATION_Z = 3.0
 #: nobody should act on rather than one to look at again.
 BELOW_ASSIGNABILITY_Z = 6.0
 
-#: How many of the instrument class's precision a satellite's mass error may
+#: How many of the instrument class's precision an isotopologue's mass error may
 #: sit from its parent's and still be read as the same ion. Three, because the
 #: quantity being tested is a DIFFERENCE of two measurements and this is a three
 #: sigma test on it: the difference is about as wide as the class's precision on
@@ -95,8 +95,8 @@ CORROBORATED_CURATED = "curated"
 #: isotopologue of the same reading whose own mass error TRACKS its parent's, so
 #: the spectrum agrees with the formula in more than one place.
 #:
-#: The tracking test is what makes this mean anything on a crowded spectrum. A
-#: satellite is paired within the instrument class's matching window - 15 ppm on
+#: The tracking test is what makes this mean anything on a crowded spectrum. An
+#: isotopologue is paired within the instrument class's matching window - 15 ppm on
 #: a TOF - so on a dense TOF spectrum a peak that is nobody's isotopologue lands
 #: inside that window by coincidence, and counting it as agreement lets the
 #: coincidence corroborate the reading it was matched to. Measured on the gate:
@@ -200,7 +200,7 @@ def is_committed(row: dict) -> bool:
 
 
 def tracking_tolerance_ppm(precision_ppm: float) -> float:
-    """How far a satellite's mass error may sit from its parent's.
+    """How far an isotopologue's mass error may sit from its parent's.
 
     :param precision_ppm: The instrument class's precision.
     :return: The bar, :data:`TRACKING_SIGMAS` of it.
@@ -221,7 +221,7 @@ def tracks_its_parent(
     that ion's isotopologue - it is another peak the matching window happened to
     reach. A row missing either error cannot be shown to track and does not.
 
-    :param child_error_ppm: The satellite's own mass error.
+    :param child_error_ppm: The isotopologue's own mass error.
     :param parent_error_ppm: Its owner's.
     :param tolerance_ppm: The bar, from :func:`tracking_tolerance_ppm`.
     :return: Whether the pair may be read as one envelope.
@@ -315,10 +315,10 @@ def fit_run_mass_accuracy(
     being judged, so the distribution would widen to accommodate whatever sits
     in its tail and the gate would be unable to find anything by construction.
 
-    Monoisotopic rows only. A satellite is the same ion measured on a weaker
+    Monoisotopic rows only. An isotopologue is the same ion measured on a weaker
     peak, so it is the wider row wherever it is real - 0.35 ppm against 0.12 for
     the M0 rows it belongs to on the sparse Orbitrap set - and where it is not
-    real it is a coincidence of the matching window. Letting satellites anchor
+    real it is a coincidence of the matching window. Letting isotopologues anchor
     made the recorded calibration theirs on every TOF set: on the bromide TOF
     set they and the M0 rows they "confirmed" were two thirds of the anchors and
     put the run at +0.4 to +1.6 ppm and 4.4 to 4.6 ppm wide, while the run's own
@@ -364,8 +364,8 @@ def apply_mass_gate(
         its gating needs to see both. It is also half of the width the search
         scored at, which is the floor on the width this gate judges in.
     :param fallback_sigma_ppm: The instrument class's width, which is both the
-        other half of that floor and the precision a satellite has to track its
-        parent within (``profiles.resolve_fallback_sigma_ppm``).
+        other half of that floor and the precision an isotopologue has to track
+        its parent within (``profiles.resolve_fallback_sigma_ppm``).
     :return: A JSON-serializable summary for the run's config.
     """
     # The width the untargeted search actually scored a mass error at, rebuilt

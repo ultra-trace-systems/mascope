@@ -231,7 +231,7 @@ class PeakAssignmentsResource(BaseResource):
                    evidence could not tell apart from the one this row commits,
                    1 meaning nothing ties it. Not recoverable from
                    ``alternatives``, which the run caps at ``max_alternatives``.
-                   Null on a satellite and on an imported row - an external
+                   Null on an isotopologue and on an imported row - an external
                    engine's own count, where it publishes one, stays in
                    ``provenance.engine_provenance`` and is not read into this
                    column, because it is a different measurement.
@@ -375,9 +375,9 @@ class PeakAssignmentsResource(BaseResource):
         carries a ``manual`` block recording who changed what: ``action``,
         ``user_id``, ``at``, and ``previous`` - the displaced winner, kept
         verbatim so an override can be audited and undone. When the override
-        stripped the previous compound's isotopologue satellites, they are
-        archived under ``manual.demoted`` (one entry per satellite) so
-        committing that compound back restores them. Those stripped satellites
+        stripped the previous compound's isotopologues, they are
+        archived under ``manual.demoted`` (one entry per isotopologue) so
+        committing that compound back restores them. Those stripped isotopologues
         are themselves ``source`` ``manual`` rows, but ``unassigned`` and
         carrying no formula - a manual row is not necessarily an assigned one.
 

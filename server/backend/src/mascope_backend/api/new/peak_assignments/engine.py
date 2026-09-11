@@ -621,7 +621,7 @@ def _alternative_dict(
 
     The isotopologue label is recorded the same way the winner's is. A runner-up
     is a target *isotope* that also landed on this peak, and it is just as free
-    as the winner to be one of its ion's satellites rather than the main one -
+    as the winner to be one of its ion's isotopologues rather than the main one -
     so without the label, promoting such a candidate by hand would enter a
     compound's M+1 into the ledger as the compound's main peak.
     """
@@ -957,11 +957,11 @@ def invert_matches_to_peak_assignments(
                 # rather than competed again.
                 #
                 # On the MAIN row only. This loop writes one provenance blob for
-                # every row of a winner's envelope, and a satellite was never
+                # every row of a winner's envelope, and an isotopologue was never
                 # searched - it is a line predicted from the winner and matched,
                 # so the peak's candidate count is not a measurement of it. The
                 # untargeted stage drops it from a child for the same reason
-                # (`finder.process_isotopes`), and the schema says a satellite
+                # (`finder.process_isotopes`), and the schema says an isotopologue
                 # carries none.
                 #
                 # `around` cannot change the number HERE and is passed anyway:
@@ -1173,8 +1173,8 @@ def untargeted_seeds(
     off the peak list, scores the envelope it predicted for ranking, and its
     job is to decide which reading of a peak wins.
 
-    Every committed row is seeded, not only the M0 rows: a satellite's ion is a
-    hypothesis about the peak it sits on, it can lose that peak to another
+    Every committed row is seeded, not only the M0 rows: an isotopologue's ion
+    is a hypothesis about the peak it sits on, it can lose that peak to another
     reading, and the loser is kept as an alternative whose fit a reader compares
     against the winner's. Both have to be on one scale for that comparison.
 
@@ -1202,7 +1202,7 @@ def _same_ion_family(row) -> list[dict]:
     runners-up that scored lower - they are the winner's evidence read as a
     different split between the analyte and the mechanism, and the spectrum
     cannot say which split is right. The finder writes them on the M0 row only;
-    a satellite is owned by that row.
+    an isotopologue is owned by that row.
 
     :param row: One row of the finder's result frame.
     :return: The displaced readings, empty when the row carries none (the
@@ -1266,9 +1266,9 @@ def untargeted_matches_to_peak_assignments(
     That policy is not re-run here, and this function's own contest does not re-rank
     it.
 
-    A satellite is written by the monoisotopic row that claims it and names that row as
-    its owner from the start. It is never linked to a parent afterwards, and when the
-    ion's M0 wins no peak of its own the satellite is not written at all: an
+    An isotopologue row is written by the monoisotopic row that claims it and names
+    that row as its owner from the start. It is never linked to a parent afterwards,
+    and when the ion's M0 wins no peak of its own it is not written at all: an
     isotopologue row that belongs to nothing states that a peak is part of an envelope
     whose ion the ledger never commits, which is not a verdict a reader can act on. Its
     peak stays unassigned instead, which is what it is.
@@ -1278,8 +1278,8 @@ def untargeted_matches_to_peak_assignments(
         position (see :func:`_resolve_peak_positions`), with ``sample_peak_id`` / ``mz``
         / ``intensity`` columns. This is the sample's whole peak list, not only the
         peaks that were enumerated: the finder scores an envelope against every peak it
-        is given, so a satellite lands wherever it sits rather than only inside the
-        searched set.
+        is given, so an isotopologue lands wherever it sits rather than only inside
+        the searched set.
     :param fit_by_seed: The seeded re-score's fit per ``(formula, mechanism id)``,
         from :func:`untargeted_seeds` measured through ``score_seeds``. Optional:
         a caller that cannot run a match pass (a unit test, a path with no
@@ -1289,7 +1289,7 @@ def untargeted_matches_to_peak_assignments(
         pre-passes, and Stage A. Rows landing on them are dropped rather than written:
         the ledger holds one row per peak, and a stage that arrives second does not get
         to restate a peak somebody else has already accounted for. Dropping the M0 this
-        way takes its satellites with it, by the rule above.
+        way takes its isotopologues with it, by the rule above.
     :param mechanism_id_by_notation: Maps the ionization notation used in the
         search back to IonizationMechanism ids.
     :param formula_formatter: Optional callable applied to formulas (e.g.
@@ -1391,7 +1391,7 @@ def untargeted_matches_to_peak_assignments(
     # own it. Two passes rather than one: an ion's M0 is not necessarily the
     # first of its rows to appear - for a bromine- or chlorine-rich envelope the
     # finder reports the most abundant isotopologue first, and the monoisotopic
-    # line can sit at a lower m/z than a satellite already seen - so which
+    # line can sit at a lower m/z than an isotopologue already seen - so which
     # children have an owner is only known once every peak has been settled.
     ordered: list[tuple[dict, tuple | None]] = []
     m0_assignment_by_group: dict[tuple, str] = {}
@@ -1543,7 +1543,7 @@ def untargeted_matches_to_peak_assignments(
         # How many hypotheses this peak's own evidence could not separate, from
         # the finder's full candidate list. Recorded rather than re-derived: the
         # row keeps at most `max_alternatives` of the competitors, so a reader
-        # counting those counts the cap. Absent on a satellite, which was
+        # counting those counts the cap. Absent on an isotopologue, which was
         # predicted from the winner rather than searched.
         density = row.get(CANDIDATE_DENSITY)
         if density is not None and not pd.isna(density):
@@ -1633,7 +1633,7 @@ def _apply_minor_channel_policy(
     beyond the mass fit agrees:
 
     - its isotope envelope was confirmed, meaning the search paired the peak
-      with at least one satellite of the formula it proposes; or
+      with at least one isotopologue of the formula it proposes; or
     - the same neutral won a peak on one of the mode's own channels in this
       sample, which is cross-channel corroboration in its simplest form.
 

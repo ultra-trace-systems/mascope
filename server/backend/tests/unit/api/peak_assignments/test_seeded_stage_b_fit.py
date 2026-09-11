@@ -225,8 +225,8 @@ class TestWhichReadingsAreMeasuredAgain:
 
         assert seeds == {("C5H10O2", "mech-h"), ("C5H10O2", "mech-nh4")}
 
-    def test_a_satellite_is_seeded_like_its_parent(self):
-        # A satellite's ion is a hypothesis about the peak it sits on, and it
+    def test_an_isotopologue_is_seeded_like_its_parent(self):
+        # An isotopologue's ion is a hypothesis about the peak it sits on, and it
         # can lose that peak to another reading whose fit a reader then compares
         # against it. Both have to be on one scale for the comparison to mean
         # anything.

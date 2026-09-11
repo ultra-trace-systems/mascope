@@ -44,9 +44,9 @@ function monoisotopicOf(children) {
  *
  * The composition search scores a whole ION against the spectrum and reports one
  * row per candidate compound, but the peak in hand may be any isotope of that
- * ion - a heavy-isotope satellite lands in the results just as readily as the
+ * ion - a heavy-isotope isotopologue lands in the results just as readily as the
  * main peak does. Committing every hit as an M0 would therefore enter a
- * compound's satellite into the ledger as the compound's main peak, which
+ * compound's isotopologue into the ledger as the compound's main peak, which
  * everything that folds an isotopologue family onto its M0 (the tier histogram,
  * the batch consensus, a verification verdict) would then believe.
  *

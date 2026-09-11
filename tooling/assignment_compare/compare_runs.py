@@ -453,7 +453,7 @@ def summarize(j: pd.DataFrame, engine_a: str, engine_b: str) -> dict:
             .to_dict(),
         },
         # Step 1.5's coherence count. The untargeted figure is the gate's: the
-        # stage that claims satellites must not leave a child behind. A row
+        # stage that claims isotopologues must not leave a child behind. A row
         # of the same shape from Stage A - two curated targets sharing a peak,
         # the loser's children staying - is reported inside the total.
         "ownerless_iso_child": {

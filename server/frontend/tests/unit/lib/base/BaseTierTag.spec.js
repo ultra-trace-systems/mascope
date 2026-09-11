@@ -85,7 +85,7 @@ describe('BaseTierTag manual mark', () => {
   })
 })
 
-// Curating a peak also strips the isotopologue satellites of the formula its M0
+// Curating a peak also strips the isotopologues of the formula its M0
 // no longer holds, and the backend leaves source = 'manual' on each stripped row
 // so the ledger's source filter shows the whole footprint of one override. Those
 // rows are a person's doing without anyone having chosen a formula for them -

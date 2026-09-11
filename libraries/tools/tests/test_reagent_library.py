@@ -15,7 +15,7 @@ import pytest
 from mascope_tools.composition.heuristic_filter import predict_isotopes
 from mascope_tools.composition.reagents import (
     DEFAULT_ANCHOR_PPM,
-    DEFAULT_SATELLITE_MIN_RELATIVE,
+    DEFAULT_ISOTOPOLOGUE_MIN_RELATIVE,
     KIND_BACKGROUND,
     KIND_OXIDE,
     ReagentCluster,
@@ -159,7 +159,7 @@ class TestWhatTheLibraryRefusesToClaim:
 def _spectrum(*ions: tuple[str, int, float]) -> tuple[np.ndarray, np.ndarray]:
     """A spectrum holding each ion's full predicted envelope at a given height.
 
-    Predicted down to the pass's own satellite floor rather than the scoring
+    Predicted down to the pass's own isotopologue floor rather than the scoring
     default, so the faint lines a real spectrum carries - the 18O among them -
     are present to be claimed or left.
     """
@@ -167,7 +167,7 @@ def _spectrum(*ions: tuple[str, int, float]) -> tuple[np.ndarray, np.ndarray]:
     intensity: list[float] = []
     for formula, charge, height in ions:
         predicted_mz, predicted_intensity, _ = predict_isotopes(
-            formula, charge, None, DEFAULT_SATELLITE_MIN_RELATIVE
+            formula, charge, None, DEFAULT_ISOTOPOLOGUE_MIN_RELATIVE
         )
         base = max(predicted_intensity)
         for one_mz, one_intensity in zip(predicted_mz, predicted_intensity):
@@ -179,13 +179,13 @@ def _spectrum(*ions: tuple[str, int, float]) -> tuple[np.ndarray, np.ndarray]:
 
 class TestClaimingPeaks:
     def test_it_claims_a_cluster_and_its_isotopologues(self):
-        """The heavy-halogen satellites come out of the predicted envelope, so
+        """The heavy-halogen isotopologues come out of the predicted envelope, so
         no table of isotopologue combinations has to be maintained."""
         mz, intensity = _spectrum(("Br", -1, 1e6), ("Br2", -1, 3e5))
         hits, _ = claim(reagent_library("BR"), mz, intensity)
 
         assert len(hits) == len(mz)
-        assert {hit.isotope_label for hit in hits if hit.is_satellite} == {
+        assert {hit.isotope_label for hit in hits if hit.is_isotopologue} == {
             "81Br",
             "81Br2",
         }
@@ -223,9 +223,9 @@ class TestClaimingPeaks:
         intensity = np.array([10.0, 1e6, 20.0])
         hits, _ = claim(reagent_library("NO3"), mz, intensity)
 
-        assert [hit.index for hit in hits if not hit.is_satellite] == [1]
+        assert [hit.index for hit in hits if not hit.is_isotopologue] == [1]
 
-    def test_a_satellite_with_an_analyte_on_top_is_left(self):
+    def test_an_isotopologue_with_an_analyte_on_top_is_left(self):
         """A peak far taller than the envelope predicts has something else in
         it, and claiming it would bury that."""
         mz, intensity = _spectrum(("Br", -1, 1e6))
@@ -236,8 +236,8 @@ class TestClaimingPeaks:
         assert [hit.index for hit in claimed] == [0]
         assert len(claim(reagent_library("BR"), mz, intensity)[0]) == 2
 
-    def test_a_satellite_needs_the_parent_it_is_a_satellite_of(self):
-        """The evidence for a satellite is the cluster it belongs to, so an
+    def test_an_isotopologue_needs_the_parent_it_is_an_isotopologue_of(self):
+        """The evidence for an isotopologue is the cluster it belongs to, so an
         envelope whose monoisotopic peak is absent claims nothing."""
         predicted_mz, predicted_intensity, _ = predict_isotopes("Br", -1)
         heavy = int(np.argmax(predicted_mz))
@@ -348,7 +348,7 @@ class TestTheAnchoredWindow:
 class TestTheLabelledEnvelope:
     """A 98% 15N reagent predicts its 14N impurity one mass unit BELOW the ion,
     at 2% of it. Reading the envelope by mass therefore makes the impurity the
-    reference - and then the ion is a 'satellite' of it at 49x, every relative
+    reference - and then the ion is read as an isotopologue of it at 49x, every relative
     is 50x too large for the intensity gate to bite, and the real 14N line is
     skipped as if it were the monoisotopic one.
     """
@@ -359,9 +359,9 @@ class TestTheLabelledEnvelope:
         predicted_mz, _, labels = predict_isotopes("O3^N", -1, 0.98)
         assert labels[int(np.argmin(predicted_mz))] == "14N"
 
-    def test_the_ion_is_not_a_satellite_of_its_own_impurity(self):
+    def test_the_ion_is_not_an_isotopologue_of_its_own_impurity(self):
         """The failure this guards: a peak beside the base peak claimed as an
-        'M0' satellite, which on the gate was a ringing line of the base peak.
+        'M0' isotope line, which on the gate was a ringing line of the base peak.
         """
         core = _by_label("NO3_15N")["[^NO3]-"]
         mz = np.array([core.mz, core.mz * (1 + 14.5e-6)])
@@ -371,7 +371,7 @@ class TestTheLabelledEnvelope:
         assert [h.isotope_label for h in hits] == [None]
         assert not any(h.isotope_label == "M0" for h in hits)
 
-    def test_the_impurity_line_is_claimed_as_a_satellite(self):
+    def test_the_impurity_line_is_claimed_as_an_isotopologue(self):
         """It is the reagent's own 14N, 2% of the ion, and the brightest
         unclaimed peak of the ladder region until it is claimed."""
         predicted_mz, predicted_intensity, labels = predict_isotopes("O3^N", -1, 0.98)
@@ -381,9 +381,9 @@ class TestTheLabelledEnvelope:
         intensity = np.array([2.0e4, 1.0e6])
         hits, _ = claim(reagent_library("NO3_15N"), mz, intensity, purity=0.98)
 
-        satellites = [h for h in hits if h.is_satellite]
-        assert [h.isotope_label for h in satellites] == ["14N"]
-        assert satellites[0].predicted_relative == pytest.approx(0.02, abs=0.005)
+        isotopologues = [h for h in hits if h.is_isotopologue]
+        assert [h.isotope_label for h in isotopologues] == ["14N"]
+        assert isotopologues[0].predicted_relative == pytest.approx(0.02, abs=0.005)
 
 
 class TestTheEnvelopeReachesTheFloorItSearches:
@@ -401,7 +401,7 @@ class TestTheEnvelopeReachesTheFloorItSearches:
 
     def test_the_pass_predicts_down_to_its_own_floor(self):
         _, intensity, labels = predict_isotopes(
-            "C2H9N4O2", 1, None, DEFAULT_SATELLITE_MIN_RELATIVE
+            "C2H9N4O2", 1, None, DEFAULT_ISOTOPOLOGUE_MIN_RELATIVE
         )
         share = dict(zip(labels, intensity))
 
@@ -427,7 +427,7 @@ class TestTheEnvelopeReachesTheFloorItSearches:
         """
         mz, intensity = _spectrum(("CH5N2O", 1, 2e7))
         old_floor, _ = claim(
-            reagent_library("UR"), mz, intensity, satellite_min_relative=4e-3
+            reagent_library("UR"), mz, intensity, isotopologue_min_relative=4e-3
         )
         now, _ = claim(reagent_library("UR"), mz, intensity)
 

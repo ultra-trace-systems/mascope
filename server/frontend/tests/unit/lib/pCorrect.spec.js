@@ -11,7 +11,7 @@ import {
 const row = (extra = {}) => ({ assigned_formula: 'C6H12O6', source: 'database', ...extra })
 
 describe('uncalibratedReason', () => {
-  // A demoted satellite is 'manual' and formula-less at once; the missing
+  // A demoted isotopologue is 'manual' and formula-less at once; the missing
   // formula is the reason, or the row calls itself hand-assigned while its tier
   // chip reads Unassigned.
   it('puts a missing formula before the source', () => {
