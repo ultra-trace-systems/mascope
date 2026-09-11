@@ -472,3 +472,76 @@ class TestWhatAStandingRowClaims:
         rows = [row("pa-1", channels=["+H+", "+NH4+"])]
         run(rows)
         assert not any(r["caps"] for r in rows[0]["provenance"]["tier_reasons"])
+
+
+class TestAnOwnerTheRunDoesNotStandBehind:
+    """The envelope rule predicts the line FROM the neighbour's formula, so the
+    neighbour has to be a reading the run is prepared to show."""
+
+    @staticmethod
+    def pair(owner_tier: str) -> list[dict]:
+        # C6H13O6+ predicts its 13C line 6.6% up at 182.0740; the second row
+        # sits there, small enough for the line to account for it.
+        return [
+            row("pa-owner", PLAIN, tier=owner_tier, mz=181.0707, intensity=1000.0),
+            row("pa-child", PLAIN, mz=182.07404, intensity=40.0),
+        ]
+
+    def test_a_neighbour_below_assignability_takes_nothing(self):
+        rows = self.pair("below_assignability")
+        run(rows)
+        assert tier_of(rows, "pa-child") == "assigned"
+        assert REASON_ENVELOPE_NEIGHBOUR not in rules_on(rows, "pa-child")
+
+    @pytest.mark.parametrize("owner_tier", ["candidate", "assigned"])
+    def test_a_neighbour_the_run_shows_still_does(self, owner_tier):
+        rows = self.pair(owner_tier)
+        run(rows)
+        assert tier_of(rows, "pa-child") == "candidate"
+        assert REASON_ENVELOPE_NEIGHBOUR in rules_on(rows, "pa-child")
+
+
+class TestASatelliteOfARowAnEarlierPassCapped:
+    """A satellite follows its owner down whichever pass took the owner's tier.
+    The mass gate and the reagent-N rule already cap their own satellites; the
+    minor-channel cap touches M0 rows only. This pass states the rule once."""
+
+    @staticmethod
+    def family() -> list[dict]:
+        return [
+            row(
+                "pa-owner",
+                tier="candidate",
+                provenance={"mass_gate": {"capped": True}},
+            ),
+            row("pa-kid", role="iso_child", owner="pa-owner"),
+        ]
+
+    def test_it_follows_the_owner_down(self):
+        rows = self.family()
+        run(rows)
+        assert tier_of(rows, "pa-kid") == "candidate"
+        assert rules_on(rows, "pa-kid") == {REASON_INHERITED}
+
+    def test_it_is_counted_apart_from_the_ones_this_pass_capped(self):
+        # The owner's tier was an earlier pass's to take, so neither the owner
+        # nor its satellite is this pass's own cap - the run says which is which.
+        summary = run(self.family())
+        assert summary["capped"] == 0
+        assert summary["capped_satellites"] == 0
+        assert summary["capped_satellites_after_earlier_pass"] == 1
+
+    def test_a_satellite_already_capped_by_that_pass_is_not_counted_again(self):
+        rows = self.family()
+        rows[1]["tier"] = "candidate"
+        summary = run(rows)
+        assert summary["capped_satellites_after_earlier_pass"] == 0
+
+    def test_a_satellite_of_this_pass_s_own_cap_is_counted_there(self):
+        rows = [
+            row("pa-owner", RADICAL),
+            row("pa-kid", RADICAL, role="iso_child", owner="pa-owner"),
+        ]
+        summary = run(rows)
+        assert summary["capped_satellites"] == 1
+        assert summary["capped_satellites_after_earlier_pass"] == 0
