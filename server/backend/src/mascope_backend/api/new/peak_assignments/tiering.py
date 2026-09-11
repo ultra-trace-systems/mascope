@@ -539,6 +539,18 @@ def apply_tiering(
             continue
         owner_id = str(row.get("owner_peak_assignment_id") or "")
         if not owner_id:
+            # Committed with no owner recorded, so there is no owner's answer to
+            # carry. It says that rather than nothing, and keeps the tier its
+            # evidence earned.
+            _provenance(row)["tier_reasons"] = [
+                _reason(
+                    REASON_NOT_MEASURED,
+                    "an isotopologue with no owner recorded on the run, so no "
+                    "monoisotopic row's judgement reaches it - it holds the tier "
+                    "its evidence earned and nothing more is claimed",
+                    caps=False,
+                )
+            ]
             continue
         # An isotopologue row is its owner's ion on another line of its envelope, so
         # every question this pass asks was answered about the owner. It carries
