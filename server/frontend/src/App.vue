@@ -10,7 +10,7 @@ import { useToast } from 'primevue/usetoast'
 import { api } from '@/api'
 import { runtime } from '@/lib/runtime.js'
 import { beautifySnakeCase } from '@/lib/utils'
-import { BaseBrandLogo } from '@/lib/base'
+import { BaseBrandLogo, BaseLegalFooter } from '@/lib/base'
 import BaseUpdateBanner from '@/lib/base/BaseUpdateBanner.vue'
 import { useApp } from '@/stores'
 import { useLocation } from '@/lib/location'
@@ -102,6 +102,7 @@ app.ui.notification.on('*', (notification) => {
       <div style="margin-top: 2rem" />
       <PaneOwnerSignup v-if="app.auth.requiresOwner" />
       <PaneLogin v-else />
+      <BaseLegalFooter />
     </Panel>
   </div>
 

@@ -10,7 +10,12 @@ import TabPanels from 'primevue/tabpanels'
 import TabPanel from 'primevue/tabpanel'
 import ContextMenu from 'primevue/contextmenu'
 
-import { DialogWorkspaceOp, DialogWorkspaceMembership, DialogDatasetOp } from '@/lib/dialogs'
+import {
+  DialogAbout,
+  DialogWorkspaceOp,
+  DialogWorkspaceMembership,
+  DialogDatasetOp
+} from '@/lib/dialogs'
 import { BatchContextMenu, useBatchContextMenu, useBatchTableConfig } from '@/lib/panes'
 
 import { useSidebarMenu } from './state.js'
@@ -29,6 +34,7 @@ const dialog = ref()
 const datasetDialog = ref()
 const workspaceContextMenu = ref()
 const workspaceMembersDialog = ref(false)
+const aboutDialog = ref(false)
 const datasetContextMenu = ref()
 const batchContextMenu = useBatchContextMenu()
 const batchTable = useBatchTableConfig()
@@ -249,6 +255,14 @@ watchEffect(() => {
         <div class="row">
           <span class="user-info">Logged in as {{ app.auth.user.username }}</span>
           <Button
+            icon="pi ph ph-info"
+            label="About"
+            severity="secondary"
+            text
+            @click="aboutDialog = true"
+            style="margin-top: 1rem"
+          />
+          <Button
             icon="pi pi-sign-out"
             label="Logout"
             @click="app.auth.logout"
@@ -312,6 +326,7 @@ watchEffect(() => {
     :workspace="app.data.workspace.focused"
   />
   <BatchContextMenu />
+  <DialogAbout v-model:visible="aboutDialog" />
 </template>
 
 <style scoped>

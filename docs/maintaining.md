@@ -1062,6 +1062,33 @@ finished it are deleted once they have gone 24 hours without progress, checked
 whenever a new upload is admitted. Only untouched entries are swept, so a slow
 multi-hour transfer is never reaped.
 
+### Legal and support links
+
+The sign-in screen and the About dialog (in the sidebar menu) link a privacy
+notice, terms of service and a support contact. The documents are published
+outside the product, so the links are settings in the env's config toml. The
+defaults are:
+
+```toml
+[meta]
+privacy_notice_url = "https://ultratrace.eu/mascope/privacy"
+terms_url = ""                                 # empty: no link is shown
+support_url = "mailto:support@ultratrace.eu"
+```
+
+A deployment operated by someone other than Ultra Trace should point these at
+its own privacy notice and support desk. An empty string hides a link. The
+privacy notice and terms take an `http(s)://` URL and the support contact an
+`http(s)://` or `mailto:` one; anything else is refused when the config loads,
+naming the setting, rather than ending up in a link. Like the other `[meta]`
+settings, a change takes a stack restart - the frontend container publishes the
+runtime config it was started with.
+
+The About dialog also shows the licence, NOTICE and the third-party
+attributions. Those need no setting: each image generates its own at build time
+(the npm packages in the web app's bundle, the Python distributions installed in
+the server image).
+
 ### Where a deployment's settings live
 
 | Path | What |

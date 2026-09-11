@@ -75,6 +75,15 @@ RUN uv export --frozen --no-emit-workspace --no-hashes -o /tmp/uv-lock-constrain
     && uv tool install . --constraints /tmp/uv-lock-constraints.txt \
     && rm /tmp/uv-lock-constraints.txt
 
+# Attributions for every third-party distribution just installed, read out of
+# the environment itself so they cannot drift from what the image ships: the
+# notice clauses of MIT and BSD, and Apache-2.0 section 4(d), make that text a
+# condition of redistributing them. The About dialog shows it through
+# GET /api/version/third-party-notices, which reads it from $MASCOPE_PATH.
+# NOTICE and LICENSE are already under /app from the ADD above.
+RUN /opt/uv/tools/mascope/bin/python tooling/third-party-notices.py \
+    -o "$MASCOPE_PATH/THIRD_PARTY_NOTICES.txt"
+
 # Run as a non-root user so files written to the bind mounts (filestore
 # uploads, pre-migration dumps in /backups, log files in the env dir) land on
 # the host owned by the deploy user instead of root. UID/GID default to 1000
