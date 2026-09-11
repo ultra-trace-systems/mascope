@@ -208,6 +208,19 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
 
 ### Fixed
 
+- **A labelled ion is now read from its labelled line, and Stage A no longer
+  writes an isotopologue whose ion won no main peak.** A labelled reagent's atom
+  is written in brackets like any substituted isotope, so for a 15N-nitrate ion
+  the engine took the one line without a bracket for the ion's monoisotopic
+  line: the reagent's unlabelled remainder, 2% of the labelled line and one mass
+  unit below it. The ion's own line was then its "M+1", and where the remainder
+  found no peak, that line was an isotopologue of an M0 that won nothing and was
+  written with no owner. A labelled ion's monoisotopic line is now the one whose
+  brackets name exactly its labels. And an isotopologue whose ion did not win
+  its monoisotopic peak is left out, the rule the untargeted stage already kept
+  for its own rows: such a row said a peak belongs to an envelope whose ion the
+  ledger never commits, and the peak now goes to the untargeted stage instead.
+
 - **An isotope pattern is now anchored on the ion's own line, so a bright peak
   is no longer lost to a faint neighbour two mass units above it.** The matcher
   normalised a predicted envelope to the predictor's first line and matched that
