@@ -179,7 +179,7 @@ promoting it back is the undo. `source` becomes `"manual"` (a third value in the
 `AssignmentSource` literal, so overrides are filterable and survive an import), `BaseTierTag` marks it
 on every surface, and `provenance.manual` records the user, the time, the action and the whole previous
 winner. **Two marks, not one**, because `source: "manual"` covers both halves of an override — the row a
-person chose a formula for and the satellites the same act stripped. The chip renders the **hand**
+person chose a formula for and the isotopologues the same act stripped. The chip renders the **hand**
 (`ph-hand-pointing`, `data-testid="manual-mark"`) only for the first, and an **eraser**
 (`ph-eraser`, `data-testid="demoted-mark"`) for a manual row sitting at the `unassigned` tier, which is
 the second: nobody chose that row's formula, and it has none to show. It tells the two apart by the tier
@@ -197,27 +197,28 @@ candidate being committed rather than edited, so none of it is inherited: it was
 an arbitration that is no longer the row's. Two of the nine are then re-established for the *new* winner
 out of its own record — `evidence` recomputed from the committed fit and plausibility,
 `reference_identities` taken from the committed candidate — and the rest simply go. And
-**isotopologue satellites of the replaced formula are demoted** to `unassigned` (their own
-previous winner kept in their `alternatives`), since a satellite is the same compound as its M0 and
-that compound is no longer what the M0 carries. Satellites are stripped only when the *committed*
+**isotopologues of the replaced formula are demoted** to `unassigned` (their own
+previous winner kept in their `alternatives`), since an isotopologue is the same compound as its M0
+and that compound is no longer what the M0 carries. Isotopologues are stripped only when the *committed*
 (formula, mechanism) pair differs from the one the row held — a family belongs to a compound, and a
 compound is a formula under an adduct.
 
-**The undo is a real undo.** Each stripped satellite's previous state is archived on the M0's
+**The undo is a real undo.** Each stripped isotopologue's previous state is archived on the M0's
 `provenance.manual.demoted`, keyed by the (formula, mechanism) it belonged to, and committing that
 compound back onto the M0 **restores them onto their own rows**. Without it, promoting the previous
 winner back would return the M0 to its formula and leave the family behind as orphaned `unassigned`
-peaks that only a full re-run could re-attach. A restore deliberately skips any satellite a person has
-curated since the demotion (matched on `action == "demote_satellite"` plus the override's own
+peaks that only a full re-run could re-attach. A restore deliberately skips any isotopologue a person has
+curated since the demotion (matched on `action == "demote_isotopologue"`, or the retired
+`"demote_satellite"` that rows demoted by earlier builds carry, plus the override's own
 timestamp). It reports **three** outcomes, on the curated row's `provenance.manual` and in the
 response `message`: `restored` (ids put back), `restore_skipped` (ids left alone because a hand has
 claimed that row since — restraint, not failure) and `restore_failed` (ids the undo could not put back
 at all: the row is gone from this run or belongs to another, or the state archived for it will not go
 into the columns). The last two are kept apart deliberately — reporting a failure as a skip would tell
-a person their satellite was spared on purpose when in truth the undo never reached it, and silence
-would report an undo while a satellite stayed demoted with nothing anywhere saying why. The two kinds
+a person their isotopologue was spared on purpose when in truth the undo never reached it, and silence
+would report an undo while an isotopologue stayed demoted with nothing anywhere saying why. The two kinds
 of failure part company in the *archive* rather than in the report: an entry naming a row that is gone
-or is not this run's is **consumed**, since nothing later turns it back into a restorable satellite and
+or is not this run's is **consumed**, since nothing later turns it back into a restorable isotopologue and
 keeping it would hold one of the archive's slots to offer an undo that can only fail again; an entry
 whose row is still standing and only whose archived state is unusable is **kept**, because that archive
 is the one copy of a live row's previous state a curator can act on from the M0. The archive is capped
@@ -348,7 +349,7 @@ which persist nothing:
 | `GET` | `/sample/{sample_item_id}/runs` | `{ data: PeakAssignmentRun[] }` | Newest first. |
 | `GET` | `/sample/{sample_item_id}/verifications` | `{ data: AssignmentVerification[] }` | Append-only verdict history, newest first. |
 | `POST` | `/sample/{sample_item_id}/verify` | `201` | Record confirm / reject / unsure. Requires `editor` + flag. |
-| `PATCH` | `/sample/{sample_item_id}/assignment/{peak_assignment_id}` | `{ data: PeakAssignmentDetail[] }` | Manual curation. Body is one of two actions: `promote_alternative` (`alternative_index`, optional `expected_formula` guard → 409 on a mismatch) or `set_assignment` (`assigned_formula` + `ionization_mechanism_id`, both required, plus the search's own `ion_formula` / `isotope_label` / `isotope_formula` / `fit_score` / `mz_error_ppm`). `data[0]` is the curated row, **followed by every satellite row the edit moved** — the isotopologue satellites it demoted, then the ones it restored — as full detail records, so a client can refresh what it holds without a second read. Requires `editor` + flag. |
+| `PATCH` | `/sample/{sample_item_id}/assignment/{peak_assignment_id}` | `{ data: PeakAssignmentDetail[] }` | Manual curation. Body is one of two actions: `promote_alternative` (`alternative_index`, optional `expected_formula` guard → 409 on a mismatch) or `set_assignment` (`assigned_formula` + `ionization_mechanism_id`, both required, plus the search's own `ion_formula` / `isotope_label` / `isotope_formula` / `fit_score` / `mz_error_ppm`). `data[0]` is the curated row, **followed by every isotopologue row the edit moved** — the isotopologues it demoted, then the ones it restored — as full detail records, so a client can refresh what it holds without a second read. Requires `editor` + flag. |
 | `POST` | `/calibration/{instrument}/recalibrate` | `{ recalibrated, ... }` | Refit the confidence calibration from labels. Superuser + flag. |
 | `POST` | `/sample/{sample_item_id}/assign` | `202 { message, process_id }` | Body `{ config?: PeakAssignmentConfig }`. Requires `editor` + flag. |
 | `POST` | `/sample/{sample_item_id}/runs/import` | `{ data: [ImportState] }` | Publish an externally computed run, assembled over one or more chunks. `data[0]` carries `peak_assignment_run_id`, `rows`, `max_rows_per_request`, `run_status`. Requires `editor` + flag. |
@@ -383,24 +384,25 @@ alternatives (JSON list) · provenance (JSON)    — detail endpoint only (~74% 
 > round trip. What made the row is under `provenance.manual` (detail endpoint only):
 >
 > ```
-> action           promote_alternative | set_assignment | demote_satellite
+> action           promote_alternative | set_assignment | demote_isotopologue
 > scored_by        run_alternative | composition_search   (where the row's numbers came from)
 > user_id · at     who curated it, and when
 > previous_formula · previous     the displaced winner, verbatim, in the `alternatives` shape —
 >                                 including previous.engine_judgement, where the calibrated fields
 >                                 (p_correct, calibrated, calibration, corroboration, confidence,
 >                                 n_candidates, is_tie, evidence, reference_identities) are archived
-> demoted          the isotopologue satellites this override stripped, each with enough state to be
+> demoted          the isotopologues this override stripped, each with enough state to be
 >                  put back; capped at 32 entries (MAX_DEMOTED_ARCHIVE)
 > restored                        what a restoring edit put back,
-> restore_skipped                 what it left to a later hand (that satellite has been curated since),
+> restore_skipped                 what it left to a later hand (that isotopologue has been curated since),
 > restore_failed                  and what it could not put back at all: the row is gone from this run
 >                                 or belongs to another, or its archived state cannot be committed
 >                                 (all three audit only — see "The undo is a real undo" under
 >                                 Current state)
 > ```
 >
-> A demoted satellite gets its own thinner block: `action: "demote_satellite"`, `reason:
+> A demoted isotopologue gets its own thinner block: `action: "demote_isotopologue"` (rows demoted
+> by earlier builds carry `"demote_satellite"`, and both read as a demotion), `reason:
 > "owner_overridden"`, and `previous_owner_formula` beside its own `previous`. A curated row still
 > carries `p_correct` / `p_correct_provisional` / `corroboration_adducts` as flattened record fields,
 > but all three read **null** on it. They are not columns — `PeakAssignment` in

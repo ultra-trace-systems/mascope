@@ -318,8 +318,8 @@ def test_only_the_monoisotopic_row_is_labelled_m0():
     pattern - one row, and not necessarily the base peak.
 
     The base peak carries its own configuration's label, so a bromine-rich ion
-    is assigned on the lightest peak of its cluster with the tallest as a
-    satellite. Labelling index 0 `M0` unconditionally would put the label on
+    is assigned on the lightest peak of its cluster with the tallest as an
+    isotopologue. Labelling index 0 `M0` unconditionally would put the label on
     two rows at once, since the monoisotopic row already carries it.
     """
     rows = _rows_of(_BROMINE_PATTERN)
@@ -329,7 +329,7 @@ def test_only_the_monoisotopic_row_is_labelled_m0():
     assert sorted(labels) == ["81Br", "81Br2", "81Br3", "M0"]
     by_label = {row["isotope_label"]: row["mz"] for row in rows}
     assert by_label["M0"] == pytest.approx(236.7550)
-    # The base peak is a satellite here, labelled by its own substitution.
+    # The base peak is an isotopologue here, labelled by its own substitution.
     assert by_label["81Br"] == pytest.approx(238.7530)
 
 
@@ -363,12 +363,12 @@ def _pattern(masses, labels, errors):
     }
 
 
-def test_a_monoisotopic_row_outranks_another_candidates_satellite(monkeypatch):
+def test_a_monoisotopic_row_outranks_another_candidates_isotopologue(monkeypatch):
     """One peak, two candidates: the row that IS somebody's monoisotopic line
-    survives, even when the other candidate's satellite fits the mass better.
+    survives, even when the other candidate's isotopologue fits the mass better.
 
     A candidate is a whole envelope. Drop its monoisotopic row here and the
-    satellites it left behind belong to nothing. Mass error alone cannot see
+    isotopologues it left behind belong to nothing. Mass error alone cannot see
     that, because it compares two rows without asking what each row's loss
     costs the rest of its envelope.
 
@@ -437,7 +437,7 @@ def test_a_monoisotopic_row_outranks_another_candidates_satellite(monkeypatch):
     assert len(at_shared) == 1
     assert at_shared.iloc[0]["isotope_label"] == "M0"
     # ...and the losing candidate keeps its own monoisotopic row, so neither
-    # envelope is left with satellites that own nothing.
+    # envelope is left with isotopologues that belong to nothing.
     assert set(matches[matches["formula"] == "F100"]["mz"]) == {100.0}
     assert set(matches[matches["formula"] == "F105"]["mz"]) == {
         shared_mz,
@@ -504,7 +504,7 @@ def test_the_best_reading_that_is_evidence_wins_the_peak(monkeypatch):
     committed = matches[matches["formula"] != "---"]
     assert set(committed["formula"]) == {"C3H4"}
     # ...and it is committed with ITS OWN envelope, which is what claims the
-    # satellite: taking the first non-empty pattern in the list instead stamped
+    # isotopologue: taking the first non-empty pattern in the list instead stamped
     # one composition's isotopologues onto another's row.
     assert sorted(committed["isotope_label"]) == ["13C", "M0"]
 
@@ -589,8 +589,8 @@ class TestTheDensityOnACommittedRow:
             matches.iloc[0].get(CANDIDATE_DENSITY)
         )
 
-    def test_a_satellite_does_not_inherit_its_parent_s_count(self):
-        # A satellite was predicted from the winner and matched, never searched,
+    def test_an_isotopologue_does_not_inherit_its_parent_s_count(self):
+        # An isotopologue was predicted from the winner and matched, never searched,
         # so the parent's count is not a measurement of this line. Same reason
         # the same-ion family is dropped from a child. The pattern reaching the
         # real flow is anchored on the ion's own line, so index 0 is the row the

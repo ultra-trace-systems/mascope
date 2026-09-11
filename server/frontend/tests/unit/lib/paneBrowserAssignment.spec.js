@@ -936,7 +936,7 @@ describe('PaneBrowserAssignment uncalibrated P(correct)', () => {
     { id: 'hand', source: 'manual', formula: 'C10H12' },
     { id: 'untargeted', source: 'untargeted', formula: 'C6H6' },
     { id: 'engine', source: 'database', formula: 'C2H6' },
-    // A satellite that curation stripped when its M0 was reassigned: a person's
+    // An isotopologue that curation stripped when its M0 was reassigned: a person's
     // edit is what unassigned it, so the backend leaves source 'manual' on it,
     // and it holds no formula at all.
     { id: 'stripped', source: 'manual', formula: null, tier: 'unassigned', role: 'unassigned' }

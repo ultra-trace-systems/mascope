@@ -30,7 +30,7 @@ from mascope_backend.api.new.peak_assignments.tiers import (
 
 
 #: The instrument class's precision the gate is exercised at here: the
-#: Orbitrap's, so a satellite tracks its parent within 0.3 ppm and the width
+#: Orbitrap's, so an isotopologue tracks its parent within 0.3 ppm and the width
 #: the search scored at - the floor on the gate's own width - is hypot(0.3, 0.5).
 PRECISION = 0.3
 
@@ -304,13 +304,13 @@ class TestTheStageAOnlyLedger:
         )
 
 
-class TestWhenASatelliteIsEvidence:
+class TestWhenAnIsotopologueIsEvidence:
     """A child corroborates its parent only if it measures the same axis.
 
     The rule these pin was written against a measurement: on the three TOF
     sets the child-minus-parent mass error is 4.6 to 6.5 ppm wide with 37-46%
     of children inside 3 ppm of their parent, against 0.28-0.45 ppm and 98-99%
-    on the Orbitrap sets. A satellite is paired inside the class's matching
+    on the Orbitrap sets. An isotopologue is paired inside the class's matching
     window - 15 ppm on a TOF - so on a crowded spectrum a peak that is nobody's
     isotopologue lands there by coincidence, and without this rule the
     coincidence corroborates the reading it was matched to and then anchors the
@@ -390,10 +390,10 @@ class TestWhenASatelliteIsEvidence:
 class TestWhatAnchorsTheCalibration:
     """Monoisotopic rows only, and why the width has a floor."""
 
-    def test_a_satellite_does_not_anchor_the_fit(self):
+    def test_an_isotopologue_does_not_anchor_the_fit(self):
         # It is the same ion on a weaker peak, so it is the wider row wherever
         # it is real - and where it is not real it is the coincidence above.
-        # Measured: letting satellites anchor put the bromide TOF set at 4.4-4.6
+        # Measured: letting isotopologues anchor put the bromide TOF set at 4.4-4.6
         # ppm wide when its own uncorroborated M0 rows sit at 2.7-2.9.
         anchors = _anchors(12, spread=0.1)
         children = [

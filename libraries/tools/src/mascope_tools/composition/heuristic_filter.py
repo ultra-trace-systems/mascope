@@ -1145,7 +1145,7 @@ def match_isotopic_pattern(
         observed_snr = np.full(predicted_mzs.size, np.nan)
 
         # Relative to the ion's own line, which anchor_on_monoisotopic put at
-        # index 0. A satellite's predicted share may therefore exceed 1 - a
+        # index 0. An isotopologue's predicted share may therefore exceed 1 - a
         # dibromide's 79Br81Br line is 1.95 times its monoisotopic one - which
         # is what an abundance relative to the ion means.
         predicted_rel = predicted_intensities / predicted_intensities[0]
@@ -1189,7 +1189,7 @@ def match_isotopic_pattern(
                 observed_intensity_error[0] = 0.0
                 continue  # move to next isotope
 
-            # Require the ion's own line established before any satellite. A
+            # Require the ion's own line established before any isotopologue. A
             # candidate whose monoisotopic line the spectrum does not hold
             # matches nothing and scores zero, which is the point: that line is
             # the peak the candidate was enumerated for.
@@ -1383,7 +1383,7 @@ def predict_isotopes(
 
         A caller that CLAIMS peaks wants a lower one, because for it an omitted
         line is not a rounding error but a peak left in the residual for
-        something else to explain. The reagent pre-pass passes its own satellite
+        something else to explain. The reagent pre-pass passes its own isotopologue
         floor: the 18O line of a two-oxygen ion is 0.40% of the parent, under
         the 1% default, and on the gate that line was bright enough (7e4 counts,
         19th peak of the sample) for the untargeted stage to fit an analyte to
@@ -1619,17 +1619,17 @@ def score_pattern_v2(
     abundant predicted isotopologue, which for a polyhalogenated ion is not the
     monoisotopic one; the composition finder anchors on the monoisotopic line, which is
     the peak its candidates were enumerated for, and then `predicted_rel` runs above 1
-    for a brighter satellite. Every term below is anchor-relative, so both are correct
-    as long as the caller is consistent - the observed intensities, the abundances and
-    the SNR at index 0 must all describe the one line): a matched
+    for a brighter isotopologue. Every term below is anchor-relative, so both are
+    correct as long as the caller is consistent - the observed intensities, the
+    abundances and the SNR at index 0 must all describe the one line): a matched
     peak contributes a Gaussian mass likelihood (its width the fitted instrument sigma in
     quadrature with an SNR-dependent centroiding term, `MASS_SNR_K/SNR`) times an
     intensity likelihood whose tolerance is set by the peak's own SNR; an ABSENT peak
     contributes `miss_penalty` iff it should have been detectable
     (`predicted_rel[i]*SNR_base >= k_detect`), else it is excluded (below noise, not
     evidence). Aggregation is a predicted-abundance-weighted geometric mean. Returns
-    0 if the base peak is absent. Satellite peaks must be excluded by the
-    caller. Pair with `calibrate_score` to get P(correct).
+    0 if the base peak is absent. Satellite peaks (FT side lobes, not
+    isotopologues) must be excluded by the caller. Pair with `calibrate_score` to get P(correct).
 
     **SNR is optional.** Every SNR term above is a *concession granted on evidence that a
     peak is noisy* — it only ever WIDENS a tolerance. `observed_snr=None`, or a per-row

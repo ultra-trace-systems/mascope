@@ -262,7 +262,7 @@ export const usePeakAssignment = defineStore('app.data.peakAssignment', () => {
   // a different row's list would commit whatever happened to sit there.
   //
   // Reloads the run rather than patching the row from the response: an override
-  // also demotes the satellites of the formula it replaced, and the ledger, the
+  // also demotes the isotopologues of the formula it replaced, and the ledger, the
   // spectrum colouring and the tier histogram all read the one list. The reload
   // clears the detail cache with it (see the watch above), so the inspector
   // re-fetches the alternatives the override rewrote.

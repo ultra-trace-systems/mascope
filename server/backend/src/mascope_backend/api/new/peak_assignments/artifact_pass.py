@@ -76,7 +76,7 @@ def claim_artifact_peaks(
         say what made the spectrum has no basis for saying a peak is an artifact
         of how it was made.
     :param claimed_peak_ids: Peaks the reagent pre-pass already owns. A reagent
-        cluster's weakest satellite can sit in the ringing skirt of a brighter
+        cluster's weakest isotopologue can sit in the ringing skirt of a brighter
         line and be flagged here too - on the bromide gate set one peak per
         sample is both - and two rows for one peak is not a ledger. The reagent
         claim wins because it is the more specific statement: it names the ion

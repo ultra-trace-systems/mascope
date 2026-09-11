@@ -261,15 +261,15 @@ class TestInvertMatches:
         assert winner["ionization_mechanism_id"] == "mech-h"
         assert alternative["ionization_mechanism_id"] == "mech-na"
         # Both candidates are their ion's most abundant isotope, so the runner-up
-        # is labelled the main peak it is; the satellite case is the test below.
+        # is labelled the main peak it is; the isotopologue case is the test below.
         assert alternative["isotope_label"] == "M0"
 
-    def test_runner_up_satellite_keeps_its_own_isotope_label(self):
-        """A runner-up is as free as a winner to be one of its ion's satellites.
+    def test_runner_up_isotopologue_keeps_its_own_isotope_label(self):
+        """A runner-up is as free as a winner to be one of its ion's isotopologues.
 
         ion2's M+1 contests the peak ion1's M0 wins. The label is computed per
         candidate off ion2's own M0 m/z, not copied from the winner: without it
-        there is nothing on the alternative to say it is a satellite, and
+        there is nothing on the alternative to say it is an isotopologue, and
         promoting it by hand would enter C7H11NO3's M+1 into the ledger as
         C7H11NO3 itself - one compound owning a peak a mass unit off its own,
         and an isotopologue family headed by its own child.
@@ -1430,7 +1430,7 @@ class TestUntargetedMatches:
         that ionization maps to - the runner-up a person can actually promote.
         Its isotope label rides along for the same reason a Stage A runner-up's
         does: promoting a 13C child as though it were an M0 would enter a
-        compound's satellite into the ledger as the compound.
+        compound's isotopologue into the ledger as the compound.
         """
         matches_df = pd.DataFrame(
             [
@@ -1710,11 +1710,11 @@ class TestUntargetedMatches:
         assert assignments == []
 
 
-class TestASatelliteBelongsToAnM0:
-    """A satellite row is written by the monoisotopic row that claims it.
+class TestAnIsotopologueBelongsToAnM0:
+    """An isotopologue row is written by the monoisotopic row that claims it.
 
-    The ledger's owner link is what says a peak is part of an envelope, so a
-    satellite with nobody to point at states a claim about an ion the ledger
+    The ledger's owner link is what says a peak is part of an envelope, so an
+    isotopologue with nobody to point at states a claim about an ion the ledger
     never commits. It is not written; its peak stays unassigned, which is what
     it is.
     """
@@ -1755,7 +1755,7 @@ class TestASatelliteBelongsToAnM0:
             }
         )
 
-    def test_a_satellite_whose_ion_won_no_peak_is_not_written(self):
+    def test_an_isotopologue_whose_ion_won_no_peak_is_not_written(self):
         # The finder reported the 13C line but not the M0 it belongs to - the
         # monoisotopic line failed the envelope's intensity test, or another
         # candidate took its peak. Before, the child was written with a null
@@ -1771,7 +1771,7 @@ class TestASatelliteBelongsToAnM0:
         )
         assert assignments == []
 
-    def test_the_satellite_is_written_when_its_m0_is(self):
+    def test_the_isotopologue_is_written_when_its_m0_is(self):
         assignments = untargeted_matches_to_peak_assignments(
             self._pair(m0_mz=100.1, child_mz=101.1033),
             self._peaks(),
@@ -1787,10 +1787,10 @@ class TestASatelliteBelongsToAnM0:
             == by_peak["pA"]["peak_assignment_id"]
         )
 
-    def test_an_m0_reported_after_its_satellite_still_owns_it(self):
+    def test_an_m0_reported_after_its_isotopologue_still_owns_it(self):
         # For a bromine- or chlorine-rich envelope the finder reports the most
         # abundant isotopologue first, and the monoisotopic line can sit at a
-        # lower m/z than a satellite already seen. Ownership is therefore
+        # lower m/z than an isotopologue already seen. Ownership is therefore
         # settled in a second pass, not as the rows arrive.
         rows = self._pair(m0_mz=100.1, child_mz=101.1033)
         assignments = untargeted_matches_to_peak_assignments(
@@ -1822,9 +1822,9 @@ class TestASatelliteBelongsToAnM0:
         )
         assert [a["sample_peak_id"] for a in assignments] == ["pA"]
 
-    def test_excluding_the_m0_takes_its_satellites_with_it(self):
+    def test_excluding_the_m0_takes_its_isotopologues_with_it(self):
         # Stage A owns the monoisotopic peak, so that ion's envelope is Stage
-        # A's to write. A Stage B satellite left behind would claim the peak
+        # A's to write. A Stage B isotopologue left behind would claim the peak
         # for an ion this stage never committed.
         assignments = untargeted_matches_to_peak_assignments(
             self._pair(m0_mz=100.1, child_mz=101.1033),
@@ -2045,9 +2045,9 @@ class TestTheCandidateDensityOnAStageARow:
     from the committed one belongs to the peak the ION was searched at.
 
     Stage A writes one provenance blob per row of a winner's envelope, so
-    without this the satellites of every curated identity carried the count
+    without this the isotopologues of every curated identity carried the count
     their PARENT earned - 245 of them on the assignment gate, against the
-    schema's "null on a satellite"."""
+    schema's "null on an isotopologue"."""
 
     @staticmethod
     def _family() -> pd.DataFrame:
@@ -2077,7 +2077,7 @@ class TestTheCandidateDensityOnAStageARow:
             ]
         )
 
-    def test_the_main_row_carries_it_and_the_satellite_does_not(self):
+    def test_the_main_row_carries_it_and_the_isotopologue_does_not(self):
         assignments = invert_matches_to_peak_assignments(
             self._family(), "sample1", "run1", CANDIDATE, ASSIGNED
         )
@@ -2089,16 +2089,16 @@ class TestTheCandidateDensityOnAStageARow:
         assert by_peak["p2"]["role"] == ROLE_ISO_CHILD
         assert "candidate_density" not in by_peak["p2"]["provenance"]
 
-    def test_the_satellite_keeps_the_rest_of_its_provenance(self):
-        # Only the density is withheld: a satellite still records the evidence
+    def test_the_isotopologue_keeps_the_rest_of_its_provenance(self):
+        # Only the density is withheld: an isotopologue still records the evidence
         # its tier was read off and the plausibility of the formula it carries.
         assignments = invert_matches_to_peak_assignments(
             self._family(), "sample1", "run1", CANDIDATE, ASSIGNED
         )
-        satellite = next(a for a in assignments if a["sample_peak_id"] == "p2")
-        assert satellite["provenance"]["evidence"] is not None
-        assert satellite["provenance"]["plausibility"] == 1.0
-        assert satellite["provenance"]["n_candidates"] == 1
+        isotopologue = next(a for a in assignments if a["sample_peak_id"] == "p2")
+        assert isotopologue["provenance"]["evidence"] is not None
+        assert isotopologue["provenance"]["plausibility"] == 1.0
+        assert isotopologue["provenance"]["n_candidates"] == 1
 
     def test_the_count_is_around_the_formula_the_row_commits(self):
         # Two curated identities on one peak, the second fitting better but

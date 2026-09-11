@@ -154,7 +154,7 @@ def test_the_envelope_is_anchored_on_the_ions_own_line():
 
     assert data["labels"][0] == "M0"
     assert data["masses"][0] == pytest.approx(lines["M0"][0], abs=1e-4)
-    # ...and the satellite's predicted share is stated relative to the ion,
+    # ...and the isotopologue's predicted share is stated relative to the ion,
     # which for this envelope is larger than one.
     assert data["predicted_intensities"][1] == pytest.approx(
         lines["81Br"][1] / lines["M0"][1], rel=1e-6
@@ -220,7 +220,7 @@ def test_a_candidate_whose_brightest_line_is_absent_is_not_evidence():
 
     ranked, isotope_data = match_isotopic_pattern(DIBROMIDE_CANDIDATES, peaks)
 
-    # The ion's own line is matched, and so is a satellite...
+    # The ion's own line is matched, and so is an isotopologue...
     assert isotope_data[0]["masses"][0] > 0
     assert np.count_nonzero(isotope_data[0]["masses"]) == 2
     # ...but not the one the prediction leads with, so the reading is not

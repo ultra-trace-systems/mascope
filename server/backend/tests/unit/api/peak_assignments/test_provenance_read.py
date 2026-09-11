@@ -157,7 +157,7 @@ class TestTheCandidateDensityOnTheLedger:
         assert _provenance_scalars(row, None)["candidate_density"] == 1
 
     def test_a_row_nothing_measured_has_no_count(self):
-        # A satellite, or a row imported from an engine that sends none.
+        # An isotopologue, or a row imported from an engine that sends none.
         # Absent rather than 0, so "not measured" stays distinguishable from
         # "measured and found nothing", as every other scalar here is.
         assert _provenance_scalars(_UNTARGETED_ROW, None)["candidate_density"] is None

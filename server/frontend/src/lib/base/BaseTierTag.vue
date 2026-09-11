@@ -92,7 +92,7 @@ const isManual = computed(() => props.source === 'manual')
 
 // But 'manual' covers two different acts, and only one of them is a choice
 // about this row. When a person reassigns a peak, the backend also strips the
-// isotopologue satellites of the formula the M0 no longer holds
+// isotopologues of the formula the M0 no longer holds
 // (curation.py's _demote) and leaves source = 'manual' on each of them, so the
 // ledger's source filter shows the whole footprint of one override. That
 // produces UNASSIGNED rows a person's edit is responsible for without anyone

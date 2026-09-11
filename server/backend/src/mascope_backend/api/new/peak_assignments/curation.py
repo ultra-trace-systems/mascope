@@ -36,7 +36,7 @@ Three rules keep an edited row honest beside the engine's own:
 - **Nothing is thrown away.** The previous winner moves to the head of
   ``alternatives`` and is repeated verbatim in ``provenance.manual.previous``,
   so an override can be read back, audited, and undone by hand. The
-  isotopologue satellites an override strips are archived next to it in
+  isotopologue rows an override strips are archived next to it in
   ``provenance.manual.demoted``, and committing their compound back onto the
   row puts them back on their own rows. That is what makes promoting the
   previous winner a real undo rather than half of one: without it the M0 would
@@ -128,19 +128,26 @@ _ENGINE_JUDGEMENT_KEYS = (
 SCORED_BY_ALTERNATIVE = "run_alternative"
 SCORED_BY_SEARCH = "composition_search"
 
-#: How many demoted satellites one row's archive keeps for restoring. An
+#: How many demoted isotopologues one row's archive keeps for restoring. An
 #: isotopologue family is a handful of peaks, so this is far above any real
 #: one; the bound exists because the archive lives in a JSON column on the
 #: highest-volume table and an imported run can point any number of rows at a
-#: single owner. A satellite past the bound simply stays demoted - its own row
+#: single owner. An isotopologue past the bound simply stays demoted - its own row
 #: still records what it was, so nothing is lost, but putting it back is a
 #: re-run rather than a click.
 MAX_DEMOTED_ARCHIVE = 32
 
-#: The action `_demote` writes on a satellite it strips. A restore only touches
-#: a row that still reads exactly like this, so the value is compared, not just
-#: written - see :func:`_restore_demoted`.
-ACTION_DEMOTE_SATELLITE = "demote_satellite"
+#: The action `_demote` writes on an isotopologue row it strips. A restore only
+#: touches a row whose action still records a demotion (:data:`DEMOTE_ACTIONS`),
+#: so the value is compared, not just written - see :func:`_restore_demoted`.
+ACTION_DEMOTE_ISOTOPOLOGUE = "demote_isotopologue"
+
+#: Every action value that records a demotion. Rows demoted by earlier builds
+#: carry ``demote_satellite``, a name retired because "satellite" is this
+#: codebase's word for a signal artifact (an FT side lobe), never for an
+#: isotopologue. A restore compared against the current name alone would read
+#: each of those rows as curated by hand since and leave it demoted.
+DEMOTE_ACTIONS = frozenset({ACTION_DEMOTE_ISOTOPOLOGUE, "demote_satellite"})
 
 
 def _clean(mapping: dict) -> dict:
@@ -466,10 +473,10 @@ def _validated_candidate(candidate: dict, where: dict) -> dict:
 
 
 def _role_for(isotope_label: str | None) -> str:
-    """M0 unless the candidate says this peak is one of the ion's satellites.
+    """M0 unless the candidate says this peak is one of the ion's isotopologues.
 
-    A candidate labelled 'M+1' is a claim about a satellite, and committing it
-    as an M0 would enter the compound's *satellite* into the ledger as the
+    A candidate labelled 'M+1' is a claim about an isotopologue, and committing
+    it as an M0 would enter the compound's *isotopologue* into the ledger as the
     compound's main peak - which every consumer that folds a family onto its M0
     would then believe.
     """
@@ -504,15 +511,15 @@ def _manual_provenance(
     a calibrated one.
 
     :param at: When the edit happened. Passed in rather than read here so the
-        row and the satellites it strips carry the same instant - the archive's
+        row and the isotopologues it strips carry the same instant - the archive's
         skip rule matches on that timestamp, and one act deserves one time.
-    :param demoted: Archive of the isotopologue satellites this row has
+    :param demoted: Archive of the isotopologues this row has
         stripped and can put back, newest first. Carried across curations that
         strip nothing: an override that demotes nobody must not drop the record
         of one that did, or the compound's family would become unrestorable
         just because the row was edited twice.
-    :param restored: Ids of the satellites this edit put back,
-    :param restore_skipped: ids of the archived satellites it deliberately left
+    :param restored: Ids of the isotopologues this edit put back,
+    :param restore_skipped: ids of the archived isotopologues it deliberately left
         alone because a person had curated them since, and
     :param restore_failed: ids it could not put back at all - the row is gone
         from this run, or the state archived for it cannot be committed. Kept
@@ -564,11 +571,11 @@ def _demote(
     owner_mechanism_id: str | None,
     at: str,
 ) -> dict:
-    """Strip an isotopologue satellite of a formula that is no longer its M0's.
+    """Strip an isotopologue row of a formula that is no longer its M0's.
 
-    A satellite is not an independent finding - it is the same compound seen
-    through one heavy atom - so once a person has rejected the formula it was a
-    satellite of, there is nothing left for it to claim. It is demoted rather
+    An isotopologue is not an independent finding - it is the same compound seen
+    through one heavy atom - so once a person has rejected the formula it was an
+    isotopologue of, there is nothing left for it to claim. It is demoted rather
     than deleted (the ledger holds one row per detected peak, always) and
     rather than left standing (its owner now carries a different compound, so
     the family would show two).
@@ -577,9 +584,9 @@ def _demote(
     ledger's source filter has to show the whole footprint of an override, not
     only the row that gained a formula.
 
-    :param owner_formula: The formula the satellite belonged to, and
+    :param owner_formula: The formula the isotopologue belonged to, and
     :param owner_mechanism_id: the adduct it belonged to under. The two
-        together key the archive: a satellite is stripped because a compound
+        together key the archive: an isotopologue is stripped because a compound
         was replaced, so it is that compound coming back that puts it back.
     :param at: The instant of the override, shared with the owner's own record
         so a restore can tell an untouched demotion from a later hand edit.
@@ -612,7 +619,7 @@ def _demote(
         {
             "manual": _clean(
                 {
-                    "action": ACTION_DEMOTE_SATELLITE,
+                    "action": ACTION_DEMOTE_ISOTOPOLOGUE,
                     "reason": "owner_overridden",
                     "user_id": user_id,
                     "at": at,
@@ -643,9 +650,9 @@ def _demote(
     return entry
 
 
-#: The sources a restored satellite may claim. A row that is owned by an M0 is
+#: The sources a restored isotopologue may claim. A row that is owned by an M0 is
 #: always engine output - curating a row detaches it from its family, so a
-#: 'manual' row is never anyone's satellite to demote - and the archive is JSON
+#: 'manual' row is never anyone's isotopologue to demote - and the archive is JSON
 #: an imported run could have written anything into. Anything else comes back
 #: sourceless rather than mislabelled.
 _ENGINE_SOURCES = (SOURCE_DATABASE, SOURCE_UNTARGETED)
@@ -658,7 +665,7 @@ async def _restore(
     owner_id: str,
     bands: tuple[float, float],
 ) -> bool:
-    """Put one demoted satellite back as its archive recorded it.
+    """Put one demoted isotopologue back as its archive recorded it.
 
     The row comes back as what it was, engine source and all, and its manual
     block goes with the rest of the demotion's provenance: after a restore the
@@ -672,7 +679,7 @@ async def _restore(
     on its way into typed columns.
 
     - The **role** is ``iso_child`` unconditionally. The row is being given an
-      owner, and being owned is what makes a row a satellite.
+      owner, and being owned is what makes a row an isotopologue row.
     - The **tier** comes back as the archive recorded it, since a restore is an
       undo and not a re-judgement - but only when it is a tier the vocabulary
       knows. Anything else is recomputed from the fit under the run's own
@@ -763,23 +770,23 @@ async def _restore_demoted(
     mechanism_id: str | None,
     bands: tuple[float, float],
 ) -> tuple[list[PeakAssignment], list[str], list[str], list[dict]]:
-    """Put back the satellites an earlier override of this row stripped.
+    """Put back the isotopologues an earlier override of this row stripped.
 
     Fires when the compound now being committed is the one an archive entry was
     taken under - the row is being put back to the compound whose family was
     stripped, so the family goes back with it. That is what the inspector's
     "use this to undo" promises, and without this the undo would restore the M0
-    and leave its satellites unassigned and ownerless.
+    and leave its isotopologues unassigned and ownerless.
 
     The ids are on the owner's own provenance, so each restore is a primary-key
     read - no JSON-path query over the table.
 
-    **A satellite someone has curated by hand since the demotion is skipped,
+    **An isotopologue someone has curated by hand since the demotion is skipped,
     never overwritten.** The person's judgement is newer than the undo, and a
     restore that silently replaced their assignment with the engine's older one
     would destroy a deliberate act to reverse an accidental one. The tell is
-    the row's own provenance: a demotion writes ``manual.action ==
-    'demote_satellite'`` with the override's timestamp, so a row whose manual
+    the row's own provenance: a demotion writes a ``manual.action`` from
+    :data:`DEMOTE_ACTIONS` with the override's timestamp, so a row whose manual
     block says anything else, or carries a different instant, has been written
     by someone after the demotion. Such an entry is reported and dropped from
     the archive rather than kept for a later attempt - the row belongs to
@@ -788,9 +795,9 @@ async def _restore_demoted(
     **An entry that cannot be put back at all is reported too**, under its own
     heading rather than as a skip: a skip is a deliberate act of restraint
     towards a row somebody else now owns, and reporting a failure as one would
-    tell a person their satellite was left alone on purpose when in truth the
+    tell a person their isotopologue was left alone on purpose when in truth the
     undo could not reach it. Silence is the worse option either way - the
-    response would say an undo happened while a satellite stayed demoted with
+    response would say an undo happened while an isotopologue stayed demoted with
     nothing anywhere saying why.
 
     :param owner: The row being curated, which holds the archive.
@@ -810,7 +817,7 @@ async def _restore_demoted(
     for entry in archive:
         # The only two drops that go unreported, because there is nothing to
         # report: an entry that is not an object, or one that names no row,
-        # points at no satellite at all. Every drop below names a real row and
+        # points at no isotopologue at all. Every drop below names a real row and
         # says so.
         if not isinstance(entry, dict):
             continue
@@ -835,7 +842,7 @@ async def _restore_demoted(
             or child.peak_assignment_run_id != owner.peak_assignment_run_id
         ):
             # Reported, and the entry is CONSUMED rather than kept. Nothing that
-            # happens later turns this into a restorable satellite: a deleted
+            # happens later turns this into a restorable isotopologue: a deleted
             # row does not come back under the same id, and an id belonging to
             # another run never becomes this one's. Keeping the entry would hold
             # one of the archive's 32 slots to offer an undo that can only ever
@@ -846,7 +853,7 @@ async def _restore_demoted(
         manual = (child.provenance or {}).get("manual")
         manual = manual if isinstance(manual, dict) else {}
         # Still the demotion this archive recorded, and nothing since.
-        untouched = manual.get("action") == ACTION_DEMOTE_SATELLITE and manual.get(
+        untouched = manual.get("action") in DEMOTE_ACTIONS and manual.get(
             "at"
         ) == entry.get("at")
         if not untouched:
@@ -858,7 +865,7 @@ async def _restore_demoted(
             # The archived state cannot go in the columns - a formula longer
             # than its column, a fit score outside it, the shapes an imported
             # run's provenance can carry. Reported like a gone row, but the
-            # entry is KEPT: the satellite is still here and still demoted, and
+            # entry is KEPT: the isotopologue is still here and still demoted, and
             # a re-import that republishes this run's provenance with the entry
             # repaired would make it restorable again. Dropping it would throw
             # away the archive of a row that is still standing, which is the one
@@ -938,11 +945,11 @@ async def curate_assignment(
     to, plus the bookkeeping that says a person changed it.
 
     An edit reaches beyond the row in both directions, and both are the same
-    rule - a satellite belongs to its M0's compound: the isotopologue family of
+    rule - an isotopologue belongs to its M0's compound: the isotopologue family of
     a compound being replaced is demoted and archived, and the family of a
     compound being committed *back* is restored from that archive, so promoting
     the previous winner really undoes the override instead of leaving its
-    satellites behind. A satellite a person has curated in the meantime is left
+    isotopologues behind. An isotopologue curated by hand in the meantime is left
     exactly as they left it and reported as skipped, never overwritten, and one
     the undo cannot reach at all - its row deleted since, or its archived state
     unusable - is reported as such rather than passed over in silence.
@@ -952,7 +959,7 @@ async def curate_assignment(
     :param body: A validated ``PromoteAlternativeBody`` or ``SetAssignmentBody``.
     :param user_id: The curating user, recorded in provenance.
     :return: Status envelope; ``data[0]`` is the curated row, followed by the
-        satellite rows the edit displaced and the ones it restored.
+        isotopologue rows the edit displaced and the ones it restored.
     :raises NotFoundException: The assignment is not this sample's.
     :raises ApiException: 409 when the run is not completed (something else is
         still writing it) or the promoted candidate moved; 422 when the request
@@ -1058,7 +1065,7 @@ async def curate_assignment(
         previous_formula = assignment.assigned_formula
         previous_mechanism_id = assignment.ionization_mechanism_id
         # Read before this edit overwrites the row's provenance: it carries the
-        # archive of the satellites an EARLIER override of this row stripped,
+        # archive of the isotopologues an EARLIER override of this row stripped,
         # which is the only record of how to put them back. Type-checked on the
         # way out because provenance is JSON an import may have written.
         previous_manual = (assignment.provenance or {}).get("manual")
@@ -1068,8 +1075,8 @@ async def curate_assignment(
             else None
         )
         archived = archived if isinstance(archived, list) else []
-        # Satellites are read before the winner changes; after it, nothing on
-        # the row says which compound they were satellites of. They are only
+        # Isotopologues are read before the winner changes; after it, nothing on
+        # the row says which compound they were isotopologues of. They are only
         # DEMOTED when the compound actually changes: committing the formula the
         # row already carries (a different candidate entry for the same
         # composition, or one adduct's row re-confirmed) leaves the family
@@ -1096,15 +1103,15 @@ async def curate_assignment(
         plausibility = plausibility_for(assigned)
         fit_score = chosen.get("fit_score")
         assigned_band, candidate_band = _run_bands(run)
-        # The compound is what a satellite is a satellite OF, and a compound is
-        # a formula under an adduct - so the family survives only when both are
-        # the ones it was built for.
+        # The compound is what an isotopologue is an isotopologue OF, and a
+        # compound is a formula under an adduct - so the family survives only
+        # when both are the ones it was built for.
         same_compound = (
             assigned == previous_formula and mechanism_id == previous_mechanism_id
         )
         displaced = [] if same_compound else family
 
-        # One act, one instant: the owner's record and the satellites it moves
+        # One act, one instant: the owner's record and the isotopologues it moves
         # carry the same timestamp, which is what a later restore matches on to
         # tell an untouched demotion from a row someone has curated since.
         at = dt.now(timezone.utc).isoformat()
@@ -1215,21 +1222,21 @@ async def curate_assignment(
         await session.commit()
 
     displaced_note = (
-        f" {len(displaced)} isotopologue satellite"
+        f" {len(displaced)} isotopologue"
         f"{'s' if len(displaced) != 1 else ''} of "
         f"'{previous_formula}' demoted to unassigned."
         if displaced
         else ""
     )
     restored_note = (
-        f" {len(restored)} isotopologue satellite"
+        f" {len(restored)} isotopologue"
         f"{'s' if len(restored) != 1 else ''} of "
         f"'{assigned}' restored."
         if restored
         else ""
     )
     skipped_note = (
-        f" {len(restore_skipped)} demoted satellite"
+        f" {len(restore_skipped)} demoted isotopologue"
         f"{'s' if len(restore_skipped) != 1 else ''} left as "
         f"{'they are' if len(restore_skipped) != 1 else 'it is'}, curated by "
         "hand since."
@@ -1237,10 +1244,10 @@ async def curate_assignment(
         else ""
     )
     # Said out loud rather than left to the provenance blob: without it the
-    # message would report an undo while a satellite stayed demoted, and the
+    # message would report an undo while an isotopologue stayed demoted, and the
     # person clicking has no other way to learn that.
     failed_note = (
-        f" {len(restore_failed)} demoted satellite"
+        f" {len(restore_failed)} demoted isotopologue"
         f"{'s' if len(restore_failed) != 1 else ''} could not be put back: "
         f"{'their rows are' if len(restore_failed) != 1 else 'the row is'} gone "
         "from this run, or the archived state cannot be committed."

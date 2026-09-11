@@ -150,7 +150,7 @@ class TestWhatCorroboratesANeutral:
         rows = [row("a", "C6H12O6", PROTON), row("b", "C6H12O6", PROTON)]
         assert gate(rows)["corroborated"] == 0
 
-    def test_a_satellite_is_not_a_second_channel(self):
+    def test_an_isotopologue_is_not_a_second_channel(self):
         # Its parent's ion on a second line of one envelope. Counting it would
         # let a reading corroborate itself.
         rows = [
@@ -159,7 +159,7 @@ class TestWhatCorroboratesANeutral:
         ]
         assert gate(rows)["corroborated"] == 0
 
-    def test_an_orphan_satellite_brings_no_channel_with_it(self):
+    def test_an_orphan_isotopologue_brings_no_channel_with_it(self):
         # Where the M0-only rule bites: an isotopologue whose own monoisotopic
         # row was never committed. Step 2.2 measured what those are on a
         # crowded spectrum - a peak the matching window reached, paired to an
@@ -289,8 +289,8 @@ class TestTheReagentNRule:
         assert rows[0]["tier"] == "assigned"
 
 
-class TestWhatHappensToTheSatellites:
-    def test_a_capped_reading_takes_its_own_satellites_with_it(self):
+class TestWhatHappensToTheIsotopologues:
+    def test_a_capped_reading_takes_its_own_isotopologues_with_it(self):
         # The child carries the parent's neutral, so it carries the parent's
         # doubt; a run that demoted the M0 and left its isotopologue at assigned
         # would be reporting two confidences for one reading.
@@ -300,12 +300,12 @@ class TestWhatHappensToTheSatellites:
         ]
         summary = gate(rows)
         assert summary["capped"] == 1
-        assert summary["capped_satellites"] == 1
+        assert summary["capped_isotopologues"] == 1
         assert rows[1]["tier"] == "candidate"
         assert rows[1]["provenance"]["cross_channel"]["inherited_from"] == "a"
 
     def test_they_are_counted_apart_from_the_analytes(self):
-        # A rule's reach over analytes and its reach over their satellites are
+        # A rule's reach over analytes and its reach over their isotopologues are
         # different numbers, and reporting the sum as one hides which it moved.
         rows = [
             ammoniated("a", "C6H12O6", "C6H15NO6"),
@@ -313,9 +313,9 @@ class TestWhatHappensToTheSatellites:
             row("c", "C6H12O6", AMMONIUM, role="iso_child", owner="a"),
         ]
         summary = gate(rows)
-        assert (summary["capped"], summary["capped_satellites"]) == (1, 2)
+        assert (summary["capped"], summary["capped_isotopologues"]) == (1, 2)
 
-    def test_a_satellite_of_an_untouched_parent_is_untouched(self):
+    def test_an_isotopologue_of_an_untouched_parent_is_untouched(self):
         rows = [
             row("a", "C6H12O6", PROTON),
             row("b", "C6H12O6", PROTON, role="iso_child", owner="a"),

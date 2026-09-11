@@ -9,8 +9,8 @@ import {
 
 // Assigning a re-search hit to a peak has to say WHICH isotopologue of the
 // candidate's ion that peak is. The search scores whole ions, so a heavy-isotope
-// satellite is a perfectly ordinary hit - and committing one as an 'M0' would
-// record a compound's satellite as the compound's main peak, which the tier
+// isotopologue is a perfectly ordinary hit - and committing one as an 'M0' would
+// record a compound's isotopologue as the compound's main peak, which the tier
 // histogram, the batch consensus and a family-scoped verdict would all believe.
 
 /** A candidate's predicted isotope pattern: M0, M+1, M+2 by decreasing abundance. */
@@ -33,7 +33,7 @@ describe('isotopeOfHit', () => {
     })
   })
 
-  it('labels a satellite by its nominal offset from M0', () => {
+  it('labels an isotopologue by its nominal offset from M0', () => {
     expect(isotopeOfHit(hit(181.0668)).label).toBe('M+1')
     expect(isotopeOfHit(hit(182.0692)).label).toBe('M+2')
   })
@@ -79,7 +79,7 @@ describe('isotopeOfHit', () => {
   })
 
   // A hit with a pattern but no searched m/z means the main isotopologue: there
-  // is nothing to place, and guessing a satellite would be worse than saying M0.
+  // is nothing to place, and guessing an isotopologue would be worse than saying M0.
   it('reads a hit with no searched m/z as the main isotopologue', () => {
     expect(isotopeOfHit({ children: PATTERN })).toEqual({
       label: 'M0',
@@ -125,7 +125,7 @@ describe('curationBodyForHit', () => {
     expect(curationBodyForHit(HIT)).not.toHaveProperty('plausibility')
   })
 
-  it('carries the isotopologue label through, so a satellite stays a satellite', () => {
+  it('carries the isotopologue label through, so an isotopologue stays one', () => {
     const body = curationBodyForHit({ ...HIT, cheminfo: { target_isotope_mz: 181.0668 } })
 
     expect(body.isotope_label).toBe('M+1')
