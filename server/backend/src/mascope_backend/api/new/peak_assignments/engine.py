@@ -39,6 +39,7 @@ from mascope_tools.composition.calibration import (
     apply_corroboration,
     calibration_for,
 )
+from mascope_tools.composition.custom_elements import CUSTOM_ELEMENTS
 from mascope_tools.composition.heuristic_filter import (
     PATTERN_BASE_SNR,
     SAME_ION_ALTERNATIVES,
@@ -52,6 +53,7 @@ from mascope_tools.composition.mass_accuracy import (
     scoring_sigma_ppm,
 )
 from mascope_tools.composition.models import PatternScoring
+from mascope_tools.composition.utils import parse_formula_tokens
 
 
 # Sentinel so a caller can pass calibration=None (explicitly uncalibrated) distinctly from
@@ -427,35 +429,86 @@ def _isotope_offset_label(iso_mz: float, main_mz: float | None) -> str | None:
     return f"M+{offset}" if offset > 0 else f"M{offset}"
 
 
-def is_monoisotopic_formula(formula) -> bool:
+def labelled_isotopes(ion_formula) -> dict[str, int]:
+    """The isotopes an ion carries by design, spelled the way its isotopologue
+    formulas spell them: a labelled reagent's ``^N`` is ``{"[15N]": 1}``,
+    ``^N2`` is ``{"[15N]": 2}``, and an ion without a label carries none.
+
+    :param ion_formula: The ion's formula (``C9H16O7^N-``).
+    """
+    labels: dict[str, int] = {}
+    if not isinstance(ion_formula, str):
+        return labels
+    for symbol, count in parse_formula_tokens(ion_formula).items():
+        element = CUSTOM_ELEMENTS.get(symbol)
+        if element is not None:
+            token = f"[{element.labelled_massnumber}{element.base_element}]"
+            labels[token] = labels.get(token, 0) + count
+    return labels
+
+
+def _substituted_isotopes(isotopologue_formula: str) -> dict[str, int]:
+    """The isotopes an isotopologue formula names in brackets, with counts."""
+    return {
+        symbol: count
+        for symbol, count in parse_formula_tokens(isotopologue_formula).items()
+        if symbol.startswith("[")
+    }
+
+
+def is_monoisotopic_formula(formula, labels: dict[str, int] | None = None) -> bool:
     """Whether an isotopologue formula names the ion's monoisotopic isotopologue.
 
     The generator writes a substituted isotope in brackets (``C5[13C]H13O6+``,
     ``[81Br]Br2-``) and the monoisotopic isotopologue - every element at its
-    most abundant isotope - without (``C6H13O6+``, ``Br3-``).
+    most abundant isotope - without (``C6H13O6+``, ``Br3-``). A labelled
+    reagent's atom is written in brackets too, because its isotope is the one
+    the label put there, so the monoisotopic isotopologue of a labelled ion
+    names exactly its labels and nothing else: ``[15N]C9H16O7-`` for
+    ``C9H16O7^N-``. The formula without a bracket is then the reagent's
+    unlabelled remainder, one mass unit below the line the ion is measured by.
+
+    At a low resolution one line holds several isotopologues, their names
+    joined by "/"; it is the monoisotopic line when any of them is.
+
+    :param formula: An isotopologue formula.
+    :param labels: The ion's labelled isotopes (:func:`labelled_isotopes`);
+        none for an ion without a label.
     """
-    return isinstance(formula, str) and bool(formula) and "[" not in formula
+    if not isinstance(formula, str) or not formula:
+        return False
+    expected = labels or {}
+    return any(_substituted_isotopes(name) == expected for name in formula.split("/"))
 
 
 def monoisotopic_row(ion_rows: pd.DataFrame) -> pd.Series:
     """The row of an ion's monoisotopic isotopologue: the M0 every role and
     offset label counts from, the way an isotope table counts - which for a
     bromine- or chlorine-rich ion is the lightest peak of the cluster, not the
-    tallest. The lightest row stands in when no formula carries the isotope
-    marker that tells the two apart, and is the same row wherever an element's
-    most abundant isotope is also its lightest.
+    tallest, and for a labelled ion is the labelled line, not the unlabelled
+    remainder below it. The lightest row stands in when no formula carries the
+    isotope marker that tells them apart, and is the same row wherever an
+    element's most abundant isotope is also its lightest.
 
     Positionally off a sort rather than ``.loc[idxmin()]``: a frame that has
     been through a gate and a scorer can carry a duplicated index, and that
     lookup would then hand back a frame where every caller expects one row.
 
     :param ion_rows: One ion's rows of an isotope frame (``mz``, and
-        ``target_isotope_formula`` where the frame has it).
+        ``target_isotope_formula`` and ``target_ion_formula`` where the frame
+        has them).
     """
     ordered = ion_rows.sort_values("mz")
     if "target_isotope_formula" in ordered.columns:
+        labels = (
+            labelled_isotopes(ordered["target_ion_formula"].iloc[0])
+            if "target_ion_formula" in ordered.columns
+            else {}
+        )
         mono = ordered[
-            ordered["target_isotope_formula"].map(is_monoisotopic_formula).astype(bool)
+            ordered["target_isotope_formula"]
+            .map(lambda formula: is_monoisotopic_formula(formula, labels))
+            .astype(bool)
         ]
         if not mono.empty:
             return mono.iloc[0]
@@ -478,9 +531,9 @@ def drop_ions_claimed_elsewhere(
     function exists for. An ion is inverted as a family - one M0 and its
     isotopologue children, the children naming the M0 as their owner - so
     removing only the row that landed on the claimed peak leaves the children
-    behind with nothing to belong to: they invert as ``iso_child`` rows with a
-    null owner, one of them relabelled M0, and the ledger carries an
-    isotopologue family whose ion is not in it.
+    behind with nothing to belong to: the lightest of them is read as the
+    ion's M0, and the ledger carries an isotopologue family whose ion is not
+    in it.
 
     So the whole ion goes when its monoisotopic peak is claimed: an ion whose M0
     is the reagent has the reagent's isotopologues, not its own. Any straggler
@@ -714,9 +767,13 @@ def invert_matches_to_peak_assignments(
 
     Roles: the winner is 'M0' when it is its ion's monoisotopic isotopologue -
     the M0 an isotope table counts from, the lightest peak of a bromine-rich
-    cluster rather than the tallest - otherwise 'iso_child' pointing at the
-    assignment that holds the ion's M0 peak (when that peak was also won by the
-    same ion).
+    cluster rather than the tallest, the labelled line of a labelled ion rather
+    than the unlabelled remainder below it - otherwise 'iso_child' pointing at
+    the assignment that holds the ion's M0 peak. An isotopologue is written
+    only beside that assignment. One whose ion did not win its M0 peak here
+    would say its peak is part of an envelope whose ion the ledger never
+    commits, so it is left out and the peak goes to the untargeted stage - the
+    rule that stage keeps for its own rows.
 
     :param match_isotope_df: Output of compute_match_isotopes enriched with
         target metadata columns (target_compound_id, target_compound_formula,
@@ -778,7 +835,8 @@ def invert_matches_to_peak_assignments(
     # table counts from - used for role attribution and isotope labelling. For a
     # bromine- or chlorine-rich ion that is the lightest peak of the cluster, not
     # the most intense one. Computed over the full target set so an ion whose M0
-    # went unmatched still labels its children correctly.
+    # went unmatched still labels its isotopologues correctly where they are
+    # listed as a peak's alternatives.
     references = [
         monoisotopic_row(group)
         for _, group in match_isotope_df.groupby("target_ion_id", sort=False)
@@ -1006,19 +1064,37 @@ def invert_matches_to_peak_assignments(
         }
         assignments.append(assignment)
 
-        if is_main and ion_id is not None:
+        if not is_main:
+            child_assignments.append((assignment, ion_id))
+        elif ion_id is not None:
             m0_assignment_by_ion[ion_id] = assignment["peak_assignment_id"]
             compound_id = _str_or_none(winner.get("target_compound_id"))
             notation = _str_or_none(winner.get("ionization_mechanism"))
             if compound_id and notation:
                 m0_corroboration.append((assignment, compound_id, notation))
-        else:
-            child_assignments.append((assignment, ion_id))
 
-    # Attribute isotope children to their ion's M0 assignment. Stays None
-    # when the ion's M0 peak was not won by the same ion in this run.
+    # Attribute each isotopologue to its ion's M0 assignment, and leave out the
+    # ones whose ion did not win its M0 peak in this run: their peaks go to the
+    # untargeted stage. Settled after the loop, because an ion's M0 peak may be
+    # decided after its isotopologue's.
+    orphaned: set[str] = set()
     for assignment, ion_id in child_assignments:
-        assignment["owner_peak_assignment_id"] = m0_assignment_by_ion.get(ion_id)
+        owner = m0_assignment_by_ion.get(ion_id)
+        if owner is None:
+            orphaned.add(assignment["peak_assignment_id"])
+        else:
+            assignment["owner_peak_assignment_id"] = owner
+    if orphaned:
+        assignments = [
+            assignment
+            for assignment in assignments
+            if assignment["peak_assignment_id"] not in orphaned
+        ]
+        runtime.logger.info(
+            f"Stage A: {len(orphaned)} isotopologue rows whose ion did not win its "
+            f"monoisotopic peak were not written; their peaks go to the untargeted "
+            f"stage."
+        )
 
     # P3 corroboration: fold co-occurring adducts of the same compound into p_correct.
     if calibration is not None:
