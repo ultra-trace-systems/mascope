@@ -100,6 +100,17 @@ class TestEveryCommittedRowSaysWhy:
         assert rules_on(rows, "pa-1") == {REASON_NOT_MEASURED}
         assert tier_of(rows, "pa-1") == "assigned"
 
+    def test_an_isotopologue_with_no_owner_still_carries_a_reason(self):
+        # Curated isotopologue rows can be committed with no owner recorded.
+        # There is no owner's answer to carry, so the row says so - and keeps
+        # the tier its evidence earned, since an absence takes nothing.
+        rows = [row("pa-kid", RADICAL, role="iso_child", source="curated")]
+        summary = run(rows)
+        assert rules_on(rows, "pa-kid") == {REASON_NOT_MEASURED}
+        assert tier_of(rows, "pa-kid") == "assigned"
+        assert summary["capped_isotopologues"] == 0
+        assert summary["capped_isotopologues_after_earlier_pass"] == 0
+
     def test_an_uncommitted_row_is_left_alone(self):
         rows = [
             {"peak_assignment_id": "pa-1", "role": "unassigned", "tier": "unassigned"}
