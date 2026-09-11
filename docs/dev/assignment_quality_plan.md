@@ -23,7 +23,7 @@ step PRs land on the epic and are named here as they merge.
 | 2.1b - TOF-capable reference: peaky's scorer through `score_pattern_v2` with the sample's fitted sigma | #2093 + peaky `epic/v2-fit-reference` | measured: all 43 reference runs re-published at the sample's own width, with the engine's runs untouched (same run id on 43 of 43 after the publish); the reference commits less on the Orbitrap sets and more on the TOF ones (B 7,614 -> 4,680 M0, F1 698 -> 1,034), its committed mass error improves on every Orbitrap set (B 0.290 -> 0.174 ppm) and its own fit finally separates its confirmed rows from its contradicted ones (A 0.089 -> 0.174, C 0.066 -> 0.181, C2 -0.051 -> +0.052, on hundreds of rows a side); the share of this engine's assigned rows the reference CONTRADICTS falls on every Orbitrap set (C 2.4 -> 0.3%, C2 4.3 -> 1.3%) while G1 rises because a conservative reference is silent more (A 35.4 -> 40.2, B 18.9 -> 44.2, D 21.0 -> 21.6); G2 formula 93.8 A, 92.8 B, 90.6 C, 77.7 C2, 80.4 D; G5 and G8 still zero; the peaks endpoint did not carry signal-to-noise and now does; two rounds of the gate caught the same defect in the shared fit, that it returns the offset and the width together and reports neither below its anchor minimum |
 | 2.2 - self-calibrated mass gate | #2094 | measured: every committed row records `mass_z` and every run records the calibration it was measured in, fitted over its own corroborated commits - 212 to 3,970 anchors a set where Stage A had 10 to 127. The gate itself is a guard, not a lever: it caps 49 rows over the 43 samples - 3 analyte commits, all on one TOF set and none of them a row the reference confirms, and 46 satellites the tracking rule reads as coincidences - and moves G1 on no set, because the failure it was written for was closed by 2.1 - the widest committed top-tier error on a straight Orbitrap axis is 1.02 ppm, and on A the rows the reference contradicts sit CLOSER to the calibration (0.088 ppm median) than the ones it confirms (0.149). No row the reference confirms was demoted on any set (G2 and its n identical everywhere) and no election changed (0 verdict shifts of 48,894 peaks), so G7 is 0 where the gate applied, which was all 43. The offset half of the 2.1b defect was tried and withdrawn on the measurement: fitting an offset from the five to seven anchors a width is refused for moved the TOF bromide set 4 ppm the wrong way (MAD 2.03 -> 2.33), so an anchor set too small to say how wide it is cannot say where its centre is. What the runs now report instead is a per-sample calibration reading, and it says the TOF sets carry 2.8-6.9 ppm widths and C2 a flat -1.1 ppm bias on files whose stored calibration is marked verified. The TOF sets were then recalibrated through the node and E re-baselined on both engines: its axis was out by 8-10 ppm and is now inside a ppm, which lifts the reference's G2 on E from 15.4/26.9 to 33.3/42.9% and the signal it explains from 0.5 to 26.2%, while the engine's top tier is the same SIZE on both axes (424 rows) and not the same rows - 147 of them sit on a peak that held it before, 7 keep their formula, tiers moved on 765 of the 1,343 M0 peaks both commit, and 70% of those peaks change formula - so mass is not what constrains a TOF commit, which is 2.4's. F1 and F2 did not move at all (their axes were already right, merely never fitted) and their runs stand; C2 cannot be fitted until its mode has more than two disagreeing calibrants |
 | 2.3 - cross-channel corroboration and the reagent-N rule | #2096 | measured: a run groups its committed monoisotopic winners by neutral across the channels it searched and records what that corroborates, reaching 5.4% to 59.4% of a set's commits where Stage A's curated-compound version reached 25 of A's 2,062 rows and none at all on six sets; the ledger's corroboration marker now renders it, and the row carries the best tier any partner channel holds. It is the strongest separator the engine has: on the reference's own Assigned rows the engine agrees on the formula 98.7% of the time when the neutral has a second channel against 54.7% when it does not (A), 98.0 against 71.2 (B), 97.6 against 83.2 (D), 100 against 5.1 (F1), and it survives an intensity-decile control on both conditionings. Nothing is promoted on it; the flag is what 2.4 weighs. The reagent-N rule is what its absence makes necessary: `+NH4+` on M and `+H+` on M+NH3 are the SAME ion formula, so no mass, envelope or fit separates them and the finder does not try - since 1.3 `elect_same_ion_families` collapses them before ranking and elects a reading by a stated prior (closed-shell neutral first, then the mechanism carrying the most mass), keeping the displaced reading on the row as a `same_ion` alternative. That prior is not an observation, so a winner through a nitrogen-donating channel whose own family holds a reading through a channel donating none is capped at `candidate` with the reason `ambiguous_nitrogen` unless a nitrogen-free channel or a second, different nitrogen-donating reagent saw the same neutral: 359 analytes and 51 satellites on A, 921 and 55 on B, 1,225 and 9 on F2, none on the five other sets - C and C2 because their reagent is 15N-labelled, which both stops it donating nitrogen and stops the finder proposing the alternative at all, D, E and F1 because they have no nitrogen-donating channel. Whether such a prior deserves trusting is a question about the reagent and the gate answers it: the same arithmetic holds for bromide, and 246 of D's 277 lone bromide readings are confirmed (89%) against 79 of A's 409 lone nitrogen ones (19%), which is what scopes the rule to nitrogen. G1 falls 40.2 -> 25.4 on A, 44.2 -> 40.2 on B and 99.2 -> 98.8 on F2 and is flat elsewhere; G2 and its denominator are identical on all eight sets and there are 0 verdict shifts and 0 formula shifts of 48,894 peaks, because the rule moves tiers and nothing else. Two costs are recorded rather than claimed as wins: on F2 it takes 1,225 of 3,008 assigned rows on a set where the reference is silent, so nothing judges the exchange and 2.4 must weigh it against the mode's own prior; and it demotes 405 rows the reference confirms, though on every one of them the reference reached that formula through the same nitrogen-donating channel and itself calls 57 of A's 67 and 313 of B's 336 `candidate`, leaving the engine more conservative than the reference on 33 of the 2,505 rows it capped |
-| 2.4 - mechanical tiers with reasons | #2099 (measurements), #2100 (tiering) | in progress. **2.4a measured** on build `step-2.4-mechanical-tiers-2026.09.10-70438cb`: every committed row records `provenance.candidate_density`, the number of formulas the peak's evidence cannot separate from the one the row commits - anchored on the committed formula and not on the arbitration's top, which the finder need not have committed - counted one-sided, so a rival the evidence ranks ABOVE the commit is never reported as nothing tying it; the two anchorings differ on 444 of the 32,449 committed rows, every one of them upward, and on 1 row at assigned tier. Recording it changes nothing: 0 of 48,894 ledger rows differ from the 2.3 build on any other column and every gate number is identical. Measured, it is a sharp guard rather than a lever - 11 of A's 1,002 assigned rows sit at density >= 2 and 0 of those 11 are confirmed, against 75.4% at density 1 - because a continuous fit separates almost everything; the number of formulas the MASS admits is a different and wider quantity, and reaches 68 on the same set. **The plan's carbon-cluster demote is withdrawn.** `DBE/C >= 1` with the effective DBE reduces to `H <= 2 + N`, which names hydrogen-poor molecules rather than large skeletons: on the gate it took formic, oxalic and glyoxylic acid and a confirmed nitrogen heterocycle - 46 rows, 8 of them right - and no carbon cluster. What keeps a cluster out of a run is the chemistry context's DBE/C and H/C windows (ambient-air 0.75 and 0.7, uronium 1.1 and 0.4) and not the heuristic filter, which grades a formula and rejects none on H/C - C60 passes at plausibility 1.0 - and those windows apply only from three carbons up, which is where the signature misjudged; a run under context `none` has no such window and this would not have closed that gap either. The oxygen-lattice floor of five is measured on what it SPARES (at O >= 4 it reaches 260 rows and the reference confirms 35, at O >= 5 it reaches 212 and 3, flat to O >= 9); what it takes is 3 confirmed against 17 contradicted and 189 the reference does not judge, 174 of them on the TOF sets, so on the Orbitrap sets it is 3 right and 3 wrong. The carbon-free signature reaches nothing, because every resolved grid floors carbon at one and every carbon-free committed row on the gate is curated - which the rule declines to look at. The cross-family degeneracy measurement is not per-run: about 27 s of band grids a spectrum plus 6 ms a peak, against ten seconds for a whole sample's assignment |
+| 2.4 - mechanical tiers with reasons | #2099 (measurements), #2100 (tiering) | in progress. **2.4a measured** on build `step-2.4-mechanical-tiers-2026.09.10-70438cb`: every committed row records `provenance.candidate_density`, the number of formulas the peak's evidence cannot separate from the one the row commits - anchored on the committed formula and not on the arbitration's top, which the finder need not have committed - counted one-sided, so a rival the evidence ranks ABOVE the commit is never reported as nothing tying it; the two anchorings differ on 444 of the 32,449 committed rows, every one of them upward, and on 23 rows at assigned tier - 22 on F1, 1 on F2 - of which one crosses from 1 to 2. Recording it changes nothing: 0 of 48,894 ledger rows differ from the 2.3 build on any other column and every gate number is identical. Measured, it is a sharp guard rather than a lever - 11 of A's 1,002 assigned rows sit at density >= 2 and 0 of those 11 are confirmed, against 75.4% at density 1 - because a continuous fit separates almost everything; the number of formulas the MASS admits is a different and wider quantity, and reaches 68 on the same set. **The plan's carbon-cluster demote is withdrawn.** `DBE/C >= 1` with the effective DBE reduces to `H <= 2 + N`, which names hydrogen-poor molecules rather than large skeletons: on the gate it took formic, oxalic and glyoxylic acid and a confirmed nitrogen heterocycle - 46 rows, 8 of them right - and no carbon cluster. What keeps a cluster out of a run is the chemistry context's DBE/C and H/C windows (ambient-air 0.75 and 0.7, uronium 1.1 and 0.4) and not the heuristic filter, which grades a formula and rejects none on H/C - C60 passes at plausibility 1.0 - and those windows apply only from three carbons up, which is where the signature misjudged; a run under context `none` has no such window and this would not have closed that gap either. The oxygen-lattice floor of five is measured on what it SPARES (at O >= 4 it reaches 260 rows and the reference confirms 35, at O >= 5 it reaches 212 and 3, flat to O >= 9); what it takes is 3 confirmed against 17 contradicted and 189 the reference does not judge, 174 of them on the TOF sets, so on the Orbitrap sets it is 3 right and 3 wrong. The carbon-free signature reaches nothing, because every resolved grid floors carbon at one and every carbon-free committed row on the gate is curated - which the rule declines to look at. The cross-family degeneracy measurement is not per-run: about 27 s of band grids a spectrum plus 6 ms a peak, against ten seconds for a whole sample's assignment **2.4b measured** on build `step-2.4b-tiering-2026.09.11-639e1df`: every committed row records `provenance.tier_reasons`, and none of the 32,449 carries zero; the rules only demote and move nothing but tiers - 0 formula, role or verdict shifts of 48,894 peaks, G2 and its denominator identical on all eight sets. The pass takes 3,785 assigned rows and the reference confirms 38 of them (1.0%): an odd-electron neutral, a rule the plan did not have and the gate found, 1,782 with none confirmed; candidate density 2,636 with 32; the oxygen lattice 212 with 3; the envelope neighbour 166 with 4; carbon-free 7 with none. Read on the rows the reference commits an M0 on (decision 14), G1 meets the 20% bound on all five Orbitrap sets - A 3.1, B 12.3 (1.1 with the same-ion splits set aside), C 1.3, C2 0.4, D 1.4 - against 23.0, 36.9, 21.0, 23.1 and 8.4 unconditioned, a remainder that is 73-90% reference silence; the TOF sets are carried to 2.5 and 2.7. G6 at assigned tier falls 159 -> 71, of which 47 are the grid gap and 24 the envelope part, every one of them spared by the rule's height test or by the run holding no neighbour to predict it, so that Verify line is missed. An isotopologue row follows an owner any pass capped; the earlier passes already cap their own, so that count is 0 on all 43 runs |
 | 2.5a - reference seed: peak-list adapter, lift peaky's lists and families (seed proposal phases 0-1) | - | planned |
 | 2.5b - Stage A window per source, radical switch, deactivate (seed proposal phase 3) | - | planned |
 | 2.6 - frontend: profile, reasons, roles | - | planned |
@@ -663,10 +663,13 @@ The confidence layer. This is where "assigned" starts meaning something.
   `provenance.tier_reasons`, and the run records the rule version.
 - **Why.** Cause 2: the tier must degrade with evidence, and it must be able
   to say why.
-- **Verify.** Gate metric G1 to 20% or below on both instruments; every
-  committed row has at least one reason; the decoy harness
-  (`tooling/score_eval`) confirms the demotes do not lower contested top-1;
-  no G6 row of the envelope part (decision 11's rider) at assigned tier.
+- **Verify.** Gate metric G1 to 20% or below on the Orbitrap sets, read over
+  the assigned rows the reference commits an M0 on, with the same-ion splits
+  shown beside it and the unconditioned G1 reported with it (decision 14);
+  the TOF sets are carried to 2.5 and the 2.7 gate. Every committed row has
+  at least one reason; the decoy harness (`tooling/score_eval`) confirms the
+  demotes do not lower contested top-1; no G6 row of the envelope part
+  (decision 11's rider) at assigned tier.
 - **Size.** L (three PRs: the pure measurements in `mascope_tools`, the
   backend tiering, the reasons in the inspector). Depends on 2.1-2.3.
 
@@ -1040,13 +1043,13 @@ C2 is held to C's.
 
 | metric | today A | today B | today C | after stage 1 | after stage 2 | after stage 3 |
 |---|---|---|---|---|---|---|
-| G1 "assigned" rows the reference does not confirm (stage 1 gate: A 41.5%, B 24.3%, C 41.5%, D 37.3% - met; C2 55.2% - missed. After 2.1: A 35.4, B 18.9, C 34.7, C2 40.1, D 21.0 - met on all five, and B inside the stage-2 bound) | 73% | 57% | 99% | <= 45% | <= 20% | <= 15% |
+| G1 "assigned" rows the reference does not confirm (stage 1 gate: A 41.5%, B 24.3%, C 41.5%, D 37.3% - met; C2 55.2% - missed. After 2.1: A 35.4, B 18.9, C 34.7, C2 40.1, D 21.0 - met on all five, and B inside the stage-2 bound. After 2.4, read on the rows the reference commits an M0 on (decision 14): A 3.1, B 12.3, C 1.3, C2 0.4, D 1.4 - met on all five - against A 23.0, B 36.9, C 21.0, C2 23.1, D 8.4 unconditioned) | 73% | 57% | 99% | <= 45% | <= 20% | <= 15% |
 | G2 reference Assigned peaks recovered: same formula / same ion (stage 1 gate: A 95.6/97.2% and B 95.2/96.1% - both bounds met; C 87.3/87.9% and D 80.1/82.3% - same formula met, same ion missed; C2 68.3% - missed, and 4.2 points of it are the nitrate ladder the pre-pass correctly claims. After 2.1: A 95.6/97.2, B 95.2/96.1, C 87.7/88.2, C2 74.9/74.9, D 80.6/82.8) | 39% / - | 12% / - | 18% / - | >= 80% / >= 95% (A, C), >= 70% / >= 95% (B) | >= 85% / >= 95% | hold |
 | G3 committed formulas with N >= 5; carbon-free formulas (stage 1 gate: A 1.0% - met, B 2.7% - missed, 0.0% on every other set; every carbon-free formula left on any of the 43 samples is a Stage A curated row and the untargeted stage writes none, so the carbon half is met outright. After 2.1: A 1.2% and B 2.8%, still no carbon-free formula from the untargeted stage on any set) | 13%; 59 | 15%; - | 17%; - | <= 1%; 0 off the allowlist | hold | hold |
 | G4 reference reagent peaks labelled reagent or artifact (stage 1 gate: A 48 of 58, B 14 of 24, D 123 of 262, E 48 of 336, F1 50 of 333; on C, C2 and F2 the reference's reagent rows are a different claim, so the raw share does not measure this engine's pass) | 0 of 58 | 0 of 24 | 0 of 29 | >= 90% | 100% | hold |
 | G4a of those, the ones that **name an ion** (step 1.4's own target; stage 1 gate: A 82.8%, B 58.3%, D 84.4%, E 87.3%, F1 74.6% - missed, and A's and B's misses are second centroids and a reference label 5-7 ppm off, not a missing library entry) | 0 of 58 | 0 of 24 | 0 of 15 | >= 90% | 100% | hold |
 | G5 reference Assigned peaks never searched (stage 1 gate: 0 on every set, from 5,304 pooled over A-F2 on the reference's own Assigned tier - A 186, B 4,180, C 7, which reproduces the step-0 baselines beside them) | 190 | 4,181 | 8 | 0 | 0 | 0 |
-| G6 main peaks on reference isotopologues (stage 1 gate: 107 A, 460 B, 328 D, 57 C, 24 C2, 8 E, 57 F1, 33 F2, up from 79/54/75 because the peaks the cap hid are now searched - as a share of committed rows A is flat at 5.2%, B 3.4 -> 5.0%, D 8.8 -> 13.8%. Of the rows 1.6 added, the reference's parent ion is outside the searched grid for 20 of A's 28, 293 of B's 406 and 90 of D's 255 - that part is 2.5b's; the rest have the parent on the grid and are the envelope logic refusing or never predicting the line, which decision 11's rider gives to 2.1 and 2.4. After 1.5 the parent was outside the grid for 78 of A's 79 and 52 of D's 75, which is what decision 11 read. After 2.1: 103 A, 432 B, 314 D, 49 C, 18 C2, 7 E, 61 F1, 33 F2, and of the rows whose parent this engine reads with the reference's own formula 100 -> 83 on B and 32 -> 30 on D) | 96 | - | - | read, not gated (decision 11: <= 10 after 2.5b) | <= 5 | hold |
+| G6 main peaks on reference isotopologues (stage 1 gate: 107 A, 460 B, 328 D, 57 C, 24 C2, 8 E, 57 F1, 33 F2, up from 79/54/75 because the peaks the cap hid are now searched - as a share of committed rows A is flat at 5.2%, B 3.4 -> 5.0%, D 8.8 -> 13.8%. Of the rows 1.6 added, the reference's parent ion is outside the searched grid for 20 of A's 28, 293 of B's 406 and 90 of D's 255 - that part is 2.5b's; the rest have the parent on the grid and are the envelope logic refusing or never predicting the line, which decision 11's rider gives to 2.1 and 2.4. After 1.5 the parent was outside the grid for 78 of A's 79 and 52 of D's 75, which is what decision 11 read. After 2.1: 103 A, 432 B, 314 D, 49 C, 18 C2, 7 E, 61 F1, 33 F2, and of the rows whose parent this engine reads with the reference's own formula 100 -> 83 on B and 32 -> 30 on D. At assigned tier: 159 over the eight sets before step 2.4's tiering and 71 after, 47 of them the grid gap - silicon and phosphorus parents - and 24 the envelope part its height test spares) | 96 | - | - | read, not gated (decision 11: <= 10 after 2.5b) | <= 5 | hold |
 | G7 uncorroborated commits beyond 3 sigma | not gated | not gated | not gated | - | 0 | 0 |
 | G8 untargeted isotopologue rows without an owner (step 1.5's coherence count; was 71 over the bromide Orbitrap set's six samples, 0 on every set after 1.5, at the stage 1 gate and after 2.1, with six to eight times as many peaks searched) | 0 | 0 | 0 | 0 | 0 | 0 |
 | mass error of committed peaks, MAD (stage 1 gate: A 0.22, B 0.30, C 0.17, C2 0.31, D 0.31 ppm - met on all five Orbitrap sets. After 2.1: 0.215, 0.298, 0.168, 0.25, 0.307 - met on all five) | 0.20 ppm | 0.20 ppm | 1.13 ppm | <= 0.35 ppm on an Orbitrap | hold | hold |
@@ -3117,6 +3120,26 @@ still the clearest node defect on the gate.
     not decide. The stage-2 bounds were set against the v1 reference and
     are read again against the re-based numbers before 2.2 is measured.
 
+14. **Step 2.4 is judged on G1 over the rows the reference commits on**
+    (taken 2026-09-11 with step 2.4b). G1 counts every assigned-tier row the
+    reference does not confirm, and once the tiering's two large rules have
+    run, most of what is left on the Orbitrap sets is rows the reference
+    commits nothing on at all: 73-97% of the unconfirmed assigned rows on
+    each set, on B 1,150 of 1,581, with 342 more the same ion split into a
+    different neutral and adduct and 33 contradictions (measured on the 2.4a
+    ledgers before this decision). Nothing this engine can read separates
+    those silent rows from the ones the reference confirms, so a demote rule
+    can close the unconditioned bound only by taking rows the reference
+    confirms - which is the trade the demote-only design exists to refuse.
+    Step 2.4 is therefore judged on G1 over the assigned rows where the
+    reference commits an M0, with the same-ion splits shown beside it rather
+    than counted as wrong, since step 2.3 established that they are one ion
+    under two conventions; the 20% bound holds on that conditioning for the
+    Orbitrap sets (A, B, C, C2, D). The TOF sets (E, F1, F2) are carried to
+    step 2.5, which gives them a reference that commits there, and to the
+    stage-2 gate at 2.7. The unconditioned G1 is still reported beside the
+    conditioned one, so a step that raises it stays visible.
+
 ## Risks
 
 - **Runtime without the cap.** Bounded by the profile grid; measured per
@@ -3296,6 +3319,152 @@ where the election put it: the tier says the count is unverified, the formula do
 not. The alternative has been first-class on the row since step 1.3, so what 2.4
 adds is counting the same-ion family in candidate density - and the `alternative`
 this record names is a copy of a family member it could point at instead.
+
+### After step 2.4, mechanical tiers with reasons (2026-09-11)
+
+Every committed row now carries `provenance.tier_reasons` - why it holds the tier
+it holds, as a list of `{rule, detail, caps}` - and the rows whose answer is that
+the top tier was not earned lose it. The evidence bands are untouched and remain
+the floor: every rule only demotes, so no row ends above what its evidence
+bought, and the run records the rule set's version, its thresholds and what each
+rule took on `config.tiering`, for the same reason it records the bands. The
+mass gate's, the reagent-N rule's and the minor-channel caps are restated in the
+same vocabulary rather than re-applied, so a reader asking why a row is a
+candidate does not have to know which pass to ask. Measured on all 43 samples at
+`step-2.4b-tiering-2026.09.11-639e1df` against the merged 2.4a build
+(`70438cb`), whose ledgers are the before.
+
+**All 32,449 committed monoisotopic rows carry at least one reason, and none
+carries zero.** A row that was capped names what took it; a row that stands names
+what it stood on - a second channel, or no formula its own evidence could not
+separate from the one it commits; a row nothing this pass reads was measured for
+says that instead of pretending to a finding.
+
+**The pass moves tiers and nothing else.** Of 48,894 joined peaks, 0 changed
+formula, role or verdict; every tier move is `assigned` to `candidate`, none is
+upward; and G2 and its denominator are identical on all eight sets, same-formula
+and same-ion alike. The decoy harness cannot read a difference, since the pass
+touches no library code and the harness scores the ranking, which it does not
+move.
+
+| set | assigned before -> after | rows taken (confirmed) | G1 | G1 where the reference commits (n) | of which same-ion splits |
+|---|---|---|---|---|---|
+| A | 1,002 -> 967 | 35 (2) | 25.4 -> 23.0 | 4.1 -> **3.1** (769) | 24 |
+| B | 4,490 -> 4,229 | 261 (15) | 40.2 -> 36.9 | 14.7 -> **12.3** (3,041) | 342 |
+| C | 717 -> 585 | 132 (1) | 35.4 -> 21.0 | 1.5 -> **1.3** (468) | 5 |
+| C2 | 397 -> 299 | 98 (1) | 41.8 -> 23.1 | 2.5 -> **0.4** (231) | 0 |
+| D | 1,031 -> 869 | 162 (12) | 21.6 -> 8.4 | 11.7 -> **1.4** (807) | 0 |
+| E | 424 -> 239 | 185 (0) | 97.9 -> 96.2 | 70.0 -> 60.9 (23) | 4 |
+| F1 | 2,299 -> 521 | 1,778 (4) | 99.1 -> 96.7 | 90.8 -> 67.3 (52) | 0 |
+| F2 | 1,783 -> 649 | 1,134 (3) | 98.8 -> 97.1 | 89.4 -> 79.1 (91) | 0 |
+
+**Read on decision 14's conditioning, the step meets its bound on all five
+Orbitrap sets**: over the assigned rows the reference commits an M0 on, G1 is
+3.1% on A, 12.3% on B, 1.3% on C, 0.4% on C2 and 1.4% on D, and on B 342 of the
+373 rows it counts are the same ion split into another neutral and adduct - 1.1%
+with the splits set aside. Unconditioned, D is inside 20% (8.4) and the others
+are not: A 23.0, C 21.0, C2 23.1, B 36.9. What that remainder is was measured
+before the decision and holds on this build: 73-90% of the unconfirmed assigned
+rows on each Orbitrap set sit on peaks the reference commits nothing on at all
+(B 1,139 of 1,561, with the 342 splits, 31 contradictions and 46 peaks it reads
+as an isotopologue beside them), so what is left is a disagreement about whether
+to commit, which no rule here can see - the rules that would close it on paper
+are the ones that take confirmed rows. The TOF sets fall 1.7-2.4 points on the
+unconditioned reading, and the reference commits on too few of their rows (23-91)
+for the conditioned one to judge them; decision 14 carries them to 2.5 and 2.7.
+
+**What each rule took**, over the 3,785 rows that were at assigned tier before
+the pass and below it after. The reference confirms 38 of them, 1.0%; a row two
+rules name is counted under both:
+
+| rule | rows taken | the reference confirms |
+|---|---|---|
+| candidate density | 2,636 | 32 (1.2%) |
+| odd-electron neutral | 1,782 | **0** |
+| oxygen lattice | 212 | 3 (1.4%) |
+| envelope neighbour | 166 | 4 (2.4%) |
+| carbon-free off the allowlist | 7 | 0 |
+
+**The largest rule is not in the plan, and the gate is what found it.** A
+committed neutral that breaks the nitrogen rule names a radical rather than a
+molecule. Of the 1,794 assigned-tier rows whose neutral is odd-electron, across
+all eight sets, the reference confirms none, and the relation holds in both
+directions: on the 954 peaks both engines commit where this engine's formula is
+odd-electron, the 462 where the reference's is and the 151 where both are, the two
+agree on the formula zero times. No corroboration rescues one, so the rule has no
+corroboration escape. Decision 9 already elects the closed-shell reading when two
+readings make one ion; this says the same of a reading with no rival, that a
+tie-break is not evidence. A curated row is exempt, because what the rule doubts
+is the finder's election and a curated row was matched to an identity somebody
+authored - radical anions such as dibromide, carbonate and trisulfur are exactly
+what such a library holds. The exemption spares 12 assigned rows, none of which
+the reference confirms either, so it is taken on the principle rather than on
+the count.
+
+**Candidate density escapes only on a second channel.** The isotopologue flag is
+among the corroboration the pass reads, and it is not an escape: of the 2,636
+rows the density rule takes, 54 own a committed isotopologue row, and the
+reference confirms 6 of those and contradicts 13. A confirmed envelope says the
+ion's formula has the right shape, which every rival in the tie shares closely
+enough to be in it. The density counts distinct ions: the finder collapses a
+same-ion family into one hypothesis before it scores (step 1.3), and its members
+share one envelope exactly, so counting them would make every family a tie. Step
+2.3's suggestion to count them is declined for that reason; the nitrogen they
+disagree about is what the reagent-N rule already caps.
+
+**Decision 11's rider needed a height test, and an owner the run stands behind.**
+Taken on the 13C spacing alone it flags 342 of B's rows on the 2.3 ledgers and
+the reference confirms 203 of them - a dense spectrum puts some committed peak
+one spacing above another most of the time. Requiring the predicted line to
+account for the peak outright, no more than twice its predicted height, is what
+makes it a rule. The envelope has to be predicted in the pass rather than read
+off the ledger, because a predicted line landing on a peak another reading had
+claimed never became an isotopologue row. The line's height comes from the
+neighbour's formula, so a neighbour below assignability - a formula the run
+itself does not believe - no longer predicts one: on the 2.4a ledgers those
+owners took 52 of the rule's 218 rows and were wrong on 4, and on this build the
+rule takes exactly those 52 fewer, with 4 confirmed where it had 8.
+
+**The rider's own Verify line is missed, and most of what is left is the grid
+gap.** Before the pass 159 assigned rows sat on a peak the reference reads as an
+isotopologue (G6 at assigned tier); the pass takes 88 of them and leaves 71 - A 8,
+B 46, C 9, C2 1, D 4, E 2, F2 1. 47 of the 71 are decision 11's other part: the
+reference's parent carries silicon (39), phosphorus (7) or phosphorus and chlorine
+(1), which no set's grid builds, so no committed neighbour exists to predict the
+line, and they are 2.5b's. The envelope part is the other 24, and the rule's own
+test, run over them offline with each run's tolerance and floor, finds none it
+should have taken: on 16 (15 of them on B) the peak is more than twice the height
+the reference's parent predicts for that line - two to seven times on 14, 36 and
+305 times on the other two - so it holds more than the line and the height test
+spares it on purpose; on 7 this engine commits another reading on the parent's
+peak, so the envelope does not exist in the run; on 1 the line falls outside the
+matcher's window. Meeting the line would mean dropping the height test that makes
+the rule pay, or predicting from readings the run did not commit.
+
+**An isotopologue row follows its owner down whichever pass capped the owner.**
+The run counts the two cases apart: 159 isotopologue rows went with an owner
+this pass capped (A 4, B 8, C 25, C2 8, D 52, E 10, F1 43, F2 9), and 0 on any
+of the 43 runs with an owner an earlier pass capped - the mass gate and the
+reagent-N rule cap the isotopologues of the rows they cap themselves, and the
+minor-channel cap cannot reach an owner that has one. So it is the rule stated
+once rather than a new demote. It does not answer the question step 2.2 left
+open, which is the opposite case: an isotopologue the tracking rule reads as a
+coincidence while its owner stands, as 40 of that step's 46 did. This pass reads
+owners and not the lines' own mass, so it neither confirms those caps nor
+reverses them, and that question stays open.
+
+**Two costs are recorded rather than claimed as wins.** On F1 the pass takes 1,778
+of 2,299 assigned rows and on F2 1,134 of 1,783, sets where the reference is
+nearly silent, so no gate number judges the exchange - the same shape of cost
+step 2.3 recorded on F2. That step asked 2.4 to weigh the reagent-N rule's F2
+cost against the nitrate mode's own prior; this pass does not, since weighing
+it needs a reference that commits on F2, and decision 14 carries it to 2.5 with
+the rest of the TOF sets. Nor does it demote the reference's
+`relabel_reagent_n_adducts` readings, which step 2.3 offered as a plausibility
+demote: decision 14 shows those splits beside G1 as a convention rather than
+counting them as wrong, and a demote would be deciding the convention. The pass
+itself costs about 0.15 s on the largest sample, against ten to forty seconds
+for the assignment it judges.
 
 ## Not in this plan
 
