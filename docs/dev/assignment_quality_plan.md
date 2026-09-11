@@ -3494,6 +3494,14 @@ rather than an empty one, and neither does a row served from the batch ledger,
 whose tier is a vote across samples that no rule judged. It is display and
 documentation only: no run, ledger or gate number changes.
 
+One name is left as it was. Step 2.3's run record still counts the isotopologue
+rows its reagent-N rule capped as `config.cross_channel.capped_satellites`, a
+word this codebase keeps for signal artifacts - an FT side lobe - and never for
+an isotopologue; 2.4b named its own counts `capped_isotopologues` for that
+reason. That key is already written on every run since 2.3, so renaming it
+means its readers accepting the old name as well, and it is a separate change
+rather than part of this step.
+
 ## Not in this plan
 
 peaky's residual explainer, ladder gap-fill, labelled-reagent rescue and
