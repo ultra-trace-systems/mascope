@@ -201,6 +201,14 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
 
 ### Added
 
+- **The batch peaks selected in the ledger now show as a filter chip.** In
+  Assignments mode the topbar's chips gained one for the Batch peaks ledger's
+  selection - the species the batch chart plots - named by formula (or m/z) as
+  the chart's legend names them, or counted when there are several, with the
+  names in its tooltip. Removing the chip, or clearing all filters, deselects
+  them. A selection kept while the browser shows targets gets no chip and is
+  left alone, since nothing on screen plots it there.
+
 - **A sample's peaks now carry their own noise estimate over the API.** The
   `/samples/{id}/peaks` response and the SDK's `get_peaks` frame gained a
   `signal_to_noise` column beside `mz`, `area` and `height`; it is null
