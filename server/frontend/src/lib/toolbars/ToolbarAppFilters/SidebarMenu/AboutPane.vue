@@ -189,8 +189,9 @@ const openDocument = async (key) => {
     <section aria-labelledby="about-legal-heading">
       <h3 id="about-legal-heading">Legal</h3>
       <p>
-        {{ copyrightNotice }}. Mascope is open-source software licensed under the Apache License
-        2.0; its source is published at
+        {{ copyrightNotice }}.<br />
+        Mascope is open-source software licensed under the Apache License 2.0; its source is
+        published at
         <a :href="REPOSITORY_URL" target="_blank" rel="noopener noreferrer"
           >github.com/ultra-trace-systems/mascope</a
         >.
