@@ -280,7 +280,7 @@ def test_status_names_every_licence_tag_when_ungated(mirror, monkeypatch):
     assert "Reference licence tags" in flat
     assert "CC-BY-4.0 chebi, lipidmaps matched" in flat
     assert "CC0 coconut matched" in flat
-    assert "custom custom matched" in flat
+    assert "custom custom, peaklist matched" in flat
     assert "hmdb-attribution hmdb matched" in flat
     assert "open norman matched" in flat
     assert "public-domain comptox, pubchem matched" in flat
@@ -298,7 +298,7 @@ def test_status_names_the_tags_a_gate_leaves_out(mirror, gate):
     assert "public-domain comptox, pubchem matched" in flat
     assert "open norman NOT matched" in flat
     assert "hmdb-attribution hmdb NOT matched" in flat
-    assert "custom custom NOT matched" in flat
+    assert "custom custom, peaklist NOT matched" in flat
 
 
 # The copy-paste allowlist example, in every place that carries one. Written as
