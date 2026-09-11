@@ -134,7 +134,7 @@ _EARLIER_RULES = frozenset(
 )
 
 #: How much taller than a neighbour's predicted line a peak may be and still
-#: be read as that line. A predicted satellite and the peak it lands on rarely
+#: be read as that line. A predicted isotope line and the peak it lands on rarely
 #: agree closely - the matcher's own intensity tolerance is 40% - so the test is
 #: deliberately one that only fires when the line could account for the peak
 #: OUTRIGHT, not when it merely contributes to it.
@@ -159,7 +159,7 @@ def corroborating_channels(row: dict) -> int:
     """How many of the run's channels committed this row's neutral.
 
     Read off what the cross-channel pass recorded rather than recomputed, so
-    the two cannot disagree about the same ledger. A satellite carries an
+    the two cannot disagree about the same ledger. An isotopologue row carries an
     inherited block with no channels of its own and answers 0; it is judged
     through its owner instead.
 
@@ -272,7 +272,7 @@ def density_reason(row: dict) -> dict | None:
     The only escape is a second channel. A committed isotopologue envelope is
     one of the corroboration flags the plan lists, and it is deliberately not
     an escape here, on the measurement: of the 2,636 assigned rows this rule
-    takes on the assignment gate, 54 own a committed satellite, and the
+    takes on the assignment gate, 54 own a committed isotopologue row, and the
     reference confirms 6 of those and contradicts 13. An envelope is already
     inside the fit that failed to separate the rivals, so it cannot break a tie
     the fit left; a second channel is evidence from outside the peak.
@@ -311,8 +311,8 @@ def envelope_neighbours(
 
     Height is what makes the rule a rule rather than a mass coincidence. A
     spectrum is dense enough that some committed peak sits one 13C spacing above
-    another most of the time; what distinguishes a satellite from a compound is
-    that the satellite is no taller than the line predicts. Without that test the
+    another most of the time; what distinguishes an isotope line from a compound is
+    that the line is no taller than its prediction. Without that test the
     rule takes as many rows the reference confirms as rows it does not.
 
     :param m0_rows: The run's committed monoisotopic rows.
@@ -363,7 +363,7 @@ def envelope_neighbours(
             low = bisect.bisect_left(mzs, line_mz - window)
             high = bisect.bisect_right(mzs, line_mz + window)
             for candidate in ordered[low:high]:
-                # A reading is never its own satellite. Nothing in THIS module
+                # A reading is never its own isotope line. Nothing in THIS module
                 # makes that true: it holds because every substitution the
                 # predictor returns adds mass, so a line cannot land back on the
                 # peak it was predicted from - a fact of `predict_isotopes` two
@@ -493,7 +493,7 @@ def apply_tiering(
 
     capped_by_rule: dict[str, int] = {}
     # Owners whose tier THIS pass took, and owners an earlier pass had already
-    # capped - kept apart so the run can say which of the two its satellites
+    # capped - kept apart so the run can say which of the two its isotopologue rows
     # followed.
     capped_here: set[str] = set()
     capped_earlier: set[str] = set()
@@ -532,22 +532,22 @@ def apply_tiering(
         elif any(reason["caps"] for reason in reasons):
             capped_earlier.add(row_id)
 
-    capped_satellites = 0
-    capped_satellites_after_earlier_pass = 0
+    capped_isotopologues = 0
+    capped_isotopologues_after_earlier_pass = 0
     for row in committed:
         if row.get("role") != ROLE_ISO_CHILD:
             continue
         owner_id = str(row.get("owner_peak_assignment_id") or "")
         if not owner_id:
             continue
-        # A satellite is its owner's ion on a second line of one envelope, so
+        # An isotopologue row is its owner's ion on another line of its envelope, so
         # every question this pass asks was answered about the owner. It carries
         # the answer rather than a copy of the reasoning - and follows its owner
         # down whichever pass took the owner's tier. That is uniform where the
         # earlier passes were not: the mass gate and the reagent-N rule cap
-        # their own satellites, while the minor-channel cap touches M0 rows
-        # only (it cannot reach an owner WITH a satellite, since a committed
-        # isotopologue is its escape). On the assignment gate no satellite of
+        # their own isotopologue rows, while the minor-channel cap touches M0 rows
+        # only (it cannot reach an owner WITH an isotopologue, since a committed
+        # isotopologue is its escape). On the assignment gate no isotopologue of
         # an earlier-capped owner was left standing, so this adds no demote
         # there; it is the rule stated once rather than three ways.
         owner_capped = owner_id in capped_here or owner_id in capped_earlier
@@ -560,18 +560,18 @@ def apply_tiering(
         ]
         if owner_capped and _cap(row):
             if owner_id in capped_here:
-                capped_satellites += 1
+                capped_isotopologues += 1
             else:
-                capped_satellites_after_earlier_pass += 1
+                capped_isotopologues_after_earlier_pass += 1
 
     return {
         "version": TIERING_RULES_VERSION,
         "committed_m0": len(m0),
         "capped": capped,
-        "capped_satellites": capped_satellites,
-        # Satellites of an owner an EARLIER pass capped, which that pass left
+        "capped_isotopologues": capped_isotopologues,
+        # Isotopologue rows of an owner an EARLIER pass capped, which that pass left
         # standing. Separate from the above, whose owners this pass capped.
-        "capped_satellites_after_earlier_pass": capped_satellites_after_earlier_pass,
+        "capped_isotopologues_after_earlier_pass": capped_isotopologues_after_earlier_pass,
         "capped_by_rule": capped_by_rule,
         "density_limit": DENSITY_LIMIT,
         "envelope_height_tolerance": ENVELOPE_HEIGHT_TOLERANCE,
