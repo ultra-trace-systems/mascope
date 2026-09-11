@@ -416,7 +416,7 @@ async def _apply_search_rows(
             if member.role in CLAIMED_ROLE_CODES:
                 # A pre-pass owns this peak. It is not a representative, so the
                 # search did not enumerate it - but an envelope scored against
-                # the whole spectrum can still land a satellite on it, and that
+                # the whole spectrum can still land an isotopologue row on it, and that
                 # row must not overwrite the claim.
                 continue
             anchor = anchors[member.batch_peak_id]

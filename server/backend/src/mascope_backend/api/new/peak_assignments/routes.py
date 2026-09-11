@@ -384,24 +384,24 @@ async def curate_assignment_route(
     and its calibration metadata) do not survive the edit: they are this
     server's judgement about the arbitration that produced the previous winner.
 
-    **Isotopologue satellites follow their M0's compound, in both
-    directions.** The satellites of the formula being replaced are demoted to
+    **Isotopologue rows follow their M0's compound, in both
+    directions.** The isotopologues of the formula being replaced are demoted to
     `unassigned`, keeping their own previous winner in their `alternatives`:
     they were the same compound seen through one heavy atom, and that compound
     is no longer what their M0 carries. The reverse of that is the undo -
     committing a compound this row was overridden away from **restores the
-    satellites that earlier override stripped**, so promoting the displaced
+    isotopologues that earlier override stripped**, so promoting the displaced
     winner back really puts the family back instead of reviving the M0 alone
-    and leaving its satellites unassigned and ownerless. Neither happens when
+    and leaving its isotopologues unassigned and ownerless. Neither happens when
     the edit commits the formula and mechanism the row already held: the family
     still stands for what it stood for, so it is left alone.
 
-    **A satellite a person has curated by hand since it was demoted is never
+    **An isotopologue a person has curated by hand since it was demoted is never
     overwritten** by such a restore - their judgement is the newer one, and a
     restore that replaced it with the engine's older row would destroy a
     deliberate act to reverse an accidental one. Those rows stay exactly as
     they were left, and `message` says how many were skipped for that reason.
-    `message` reports a second and opposite group beside them: satellites the
+    `message` reports a second and opposite group beside them: isotopologues the
     undo could not put back at all - their row gone from this run, or the state
     archived for them not committable - which is a restore that failed rather
     than one withheld on purpose, so the two counts must not be read as the
@@ -438,8 +438,8 @@ async def curate_assignment_route(
     :param body: The curation action and its payload.
     :param user: The current authenticated user. Requires workspace editor role.
     :param membership: Workspace membership with editor role on the sample.
-    :return: The curated row first, then the satellite rows the override
-        demoted, then the ones it restored. Satellites left alone because
+    :return: The curated row first, then the isotopologue rows the override
+        demoted, then the ones it restored. Isotopologues left alone because
         someone had curated them by hand are counted in `message` but not
         returned, and so are the ones the restore could not reach at all -
         absent from `data` for the opposite reason, since nothing about them

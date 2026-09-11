@@ -3,7 +3,7 @@ import { createPinia, setActivePinia } from 'pinia'
 
 // The manual-curation write on the assignment store: it commits a different
 // composition for one peak and then reloads the run, because an override also
-// rewrites rows the caller never named (the satellites of the formula it
+// rewrites rows the caller never named (the isotopologues of the formula it
 // replaced) and every surface reads the one list.
 //
 // The rule this file exists to pin is the one that differs from its neighbour:
@@ -46,7 +46,7 @@ vi.mock('@/stores/auth', () => ({ useAuth: () => ({ user: {}, onLogin: vi.fn() }
 
 let SAMPLE_ID = 'si-1'
 
-// An M0 and its satellite, as the engine writes them. The satellite carries the
+// An M0 and its isotopologue, as the engine writes them. The isotopologue carries the
 // M0's formula verbatim; only the peak differs.
 const M0 = {
   peak_assignment_id: 'pa-m0',
@@ -71,7 +71,7 @@ const CHILD = {
 }
 
 // What the run looks like after the override landed: the M0 carries the
-// promoted formula and is marked manual, and its satellite has been demoted.
+// promoted formula and is marked manual, and its isotopologue has been demoted.
 const CURATED = {
   ...M0,
   assigned_formula: 'C7H16O5',
@@ -124,7 +124,7 @@ describe('peakAssignment curate()', () => {
 
   // The one rule that differs from a verdict's. `verify()` rewrites the target
   // to the family M0 on the caller's behalf; an override must not, or a "use
-  // this" on a satellite's third alternative would commit the M0's third.
+  // this" on an isotopologue's third alternative would commit the M0's third.
   it('writes against the row it was given, not the family M0', async () => {
     const store = usePeakAssignment()
     servePage([CURATED, DEMOTED])
@@ -144,7 +144,7 @@ describe('peakAssignment curate()', () => {
 
     expect(row.assigned_formula).toBe('C7H16O5')
     expect(row.source).toBe('manual')
-    // The satellite the override displaced comes back demoted, which is why the
+    // The isotopologue the override displaced comes back demoted, which is why the
     // action reloads instead of patching the one row it named.
     expect(store.forPeak('p2').tier).toBe('unassigned')
   })

@@ -380,7 +380,7 @@ const derivedRun = computed(() => app.data.peakAssignment.peak.run?.engine === '
 // new peak's ledger row, and `set_assignment` commits the composition it is
 // given without ever comparing it to the peak's m/z. Unguarded, one click there
 // records a formula hundreds of daltons off on the newly focused peak, tiered
-// from the other peak's fit score, and demotes the satellites of the formula
+// from the other peak's fit score, and demotes the isotopologues of the formula
 // that peak really had - silently, with a success toast.
 //
 // Compared against the target row's own peak, not against the focused peak:

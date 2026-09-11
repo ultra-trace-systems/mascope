@@ -78,10 +78,10 @@ class TestWhenThePassRuns:
 
     def test_a_peak_the_reagent_pass_owns_is_not_claimed_again(self):
         # The ledger holds one row per peak, and these two passes can both want
-        # the same one: a reagent cluster's weakest satellite sitting in the
+        # the same one: a reagent cluster's weakest isotopologue sitting in the
         # ringing skirt of a brighter line. Found on the bromide gate set, where
         # a run died on the ledger's own uniqueness constraint - one peak per
-        # sample was both the 81Br satellite of a bromide cluster and a sidelobe
+        # sample was both the 81Br isotopologue of a bromide cluster and a sidelobe
         # of the peak beside it.
         peaks = _ringing_spectrum()
         claimed_first = set(claim_artifact_peaks(peaks, "orbi")["sample_peak_id"])

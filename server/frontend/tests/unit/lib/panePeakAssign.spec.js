@@ -453,7 +453,7 @@ describe('PanePeakAssign adduct corroboration', () => {
     expect(badge(wrapper).text()).toContain('Supported by 3 channels')
   })
 
-  // A satellite carries neither count, and inherits whichever its M0 has.
+  // An isotopologue carries neither count, and inherits whichever its M0 has.
   it('inherits the family channel count onto a focused isotopologue', async () => {
     focusedAssignment = ISOTOPOLOGUE
     familyRows = [{ ...M0, corroboration_channels: 3 }, ISOTOPOLOGUE]
@@ -1027,8 +1027,8 @@ describe('PanePeakAssign manual curation', () => {
 
   /**
    * The manual block of a row curated away from C6H12O6, archiving one demoted
-   * satellite per entry in `demoted` - keyed, as the server keys the restore,
-   * on the compound the satellite was taken under.
+   * isotopologue per entry in `demoted` - keyed, as the server keys the restore,
+   * on the compound the isotopologue was taken under.
    */
   function override(demoted = []) {
     return {
@@ -1060,8 +1060,8 @@ describe('PanePeakAssign manual curation', () => {
     const wrapper = await mountPane()
 
     const note = wrapper.find('.manual-note').text()
-    expect(note).toContain('puts back the 2 isotopologue satellites unassigned with it')
-    // The restore skips a satellite someone has curated since, so the note must
+    expect(note).toContain('puts back the 2 isotopologues unassigned with it')
+    // The restore skips an isotopologue someone has curated since, so the note must
     // not promise all of them come back.
     expect(note).toContain('except any of them assigned by hand since')
   })
@@ -1078,19 +1078,19 @@ describe('PanePeakAssign manual curation', () => {
     expect(wrapper.find('.manual-note').text()).not.toContain('isotopologue')
   })
 
-  it('counts one restored satellite in the singular', async () => {
+  it('counts one restored isotopologue in the singular', async () => {
     focusedAssignment = { ...focusedAssignment, source: 'manual' }
     detailRecord = { ...focusedAssignment, provenance: override([{}]) }
     const wrapper = await mountPane()
 
-    expect(wrapper.find('.manual-note').text()).toContain('the 1 isotopologue satellite ')
+    expect(wrapper.find('.manual-note').text()).toContain('the 1 isotopologue ')
   })
 
   // Curating one row twice carries the first override's archive forward, so the
-  // archive can hold satellites taken under a compound the undo would not
+  // archive can hold isotopologues taken under a compound the undo would not
   // commit. Those come back with THEIR compound, not with this one - counting
   // them here would promise peaks the click does not touch.
-  it('counts only the satellites the first alternative would bring back', async () => {
+  it('counts only the isotopologues the first alternative would bring back', async () => {
     focusedAssignment = { ...focusedAssignment, source: 'manual' }
     detailRecord = {
       ...focusedAssignment,
@@ -1102,7 +1102,7 @@ describe('PanePeakAssign manual curation', () => {
     }
     const wrapper = await mountPane()
 
-    expect(wrapper.find('.manual-note').text()).toContain('the 1 isotopologue satellite ')
+    expect(wrapper.find('.manual-note').text()).toContain('the 1 isotopologue ')
   })
 
   // `source` rides on the slim ledger row while provenance waits on the detail
@@ -1123,13 +1123,13 @@ describe('PanePeakAssign manual curation', () => {
   })
 })
 
-// The backend marks a stripped satellite 'manual' too, so the ledger's source
+// The backend marks a stripped isotopologue 'manual' too, so the ledger's source
 // filter shows the whole footprint of an override rather than only the row that
 // gained a formula. Such a row had nothing assigned to it: it was cleared
 // because its M0 was reassigned under it. Read as an override it claimed a
 // person had picked this peak's (absent) formula "in place of" the compound it
 // had actually belonged to, which inverts the relationship.
-describe('PanePeakAssign a satellite stripped by an override', () => {
+describe('PanePeakAssign an isotopologue stripped by an override', () => {
   const DEMOTED = {
     ...assignment({ formula: null }),
     peak_assignment_id: 'pa-c1',
@@ -1139,7 +1139,7 @@ describe('PanePeakAssign a satellite stripped by an override', () => {
   }
   const PROVENANCE = {
     manual: {
-      action: 'demote_satellite',
+      action: 'demote_isotopologue',
       reason: 'owner_overridden',
       previous_formula: 'C6H12O6',
       previous_owner_formula: 'C6H12O6'
@@ -1168,16 +1168,31 @@ describe('PanePeakAssign a satellite stripped by an override', () => {
     expect(note).toContain('Assigning C6H12O6 there again restores this row')
   })
 
-  // A satellite carries its M0's formula verbatim, so the engine writes both
+  // An isotopologue carries its M0's formula verbatim, so the engine writes both
   // keys with the same value; an imported run may carry only one of them.
   it('falls back to the formula the row itself held', async () => {
     detailRecord = {
       ...DEMOTED,
-      provenance: { manual: { action: 'demote_satellite', previous_formula: 'C6H12O6' } }
+      provenance: { manual: { action: 'demote_isotopologue', previous_formula: 'C6H12O6' } }
     }
     const wrapper = await mountPane()
 
     expect(wrapper.find('.manual-note').text()).toContain('isotopologue of C6H12O6')
+  })
+
+  // Rows demoted by earlier builds carry the action's retired name, and are no
+  // less demoted for it: read as an override, the note would claim a person
+  // picked this row's (absent) formula in place of its compound.
+  it('reads the retired demote_satellite action as a demotion', async () => {
+    detailRecord = {
+      ...DEMOTED,
+      provenance: { manual: { ...PROVENANCE.manual, action: 'demote_satellite' } }
+    }
+    const wrapper = await mountPane()
+    const note = wrapper.find('.manual-note').text()
+
+    expect(note).toContain('Unassigned by hand')
+    expect(note).not.toContain('in place of')
   })
 
   // `source` is on the slim row and the action is not, so the note has to pick
@@ -1238,7 +1253,7 @@ describe('PanePeakAssign manual note marks', () => {
     }
     detailRecord = {
       ...focusedAssignment,
-      provenance: { manual: { action: 'demote_satellite', previous_owner_formula: 'C6H12O6' } }
+      provenance: { manual: { action: 'demote_isotopologue', previous_owner_formula: 'C6H12O6' } }
     }
     const wrapper = await mountPane()
 
@@ -1255,7 +1270,7 @@ describe('PanePeakAssign manual note marks', () => {
 // undo entry - is refused by the same 422 that refuses any adductless
 // candidate. So the undo is not merely inconvenient here, it does not exist:
 // re-searching assigns the formula under a real adduct, which is a new
-// assignment, and the satellites this override unassigned are restored by
+// assignment, and the isotopologues this override unassigned are restored by
 // compound AND mechanism, so they stay unassigned.
 describe('PanePeakAssign an override whose previous winner named no adduct', () => {
   // `_previous_winner` drops the keys it has no value for, so an adductless
@@ -1350,7 +1365,7 @@ describe('PanePeakAssign an override whose previous winner named no adduct', () 
 
     expect(note).toContain('in place of C6H12O6')
     expect(note).toContain('cannot be put back by hand')
-    expect(note).toContain('the 1 isotopologue satellite unassigned with it stays unassigned')
+    expect(note).toContain('the 1 isotopologue unassigned with it stays unassigned')
     expect(note).not.toContain('on it to undo')
   })
 
@@ -1365,7 +1380,7 @@ describe('PanePeakAssign an override whose previous winner named no adduct', () 
     const note = wrapper.find('.manual-note').text()
 
     expect(note).toContain('on it to undo')
-    expect(note).toContain('puts back the 1 isotopologue satellite')
+    expect(note).toContain('puts back the 1 isotopologue ')
     expect(note).not.toContain('cannot be put back')
   })
 
@@ -1374,7 +1389,7 @@ describe('PanePeakAssign an override whose previous winner named no adduct', () 
   // refusal on the common case, so the wording stays the ordinary one.
   // The measurement can find an adduct for the displaced winner as readily as
   // for any other formula, and letting it enable the control would be the card
-  // contradicting its own note: the satellites this override cleared are put
+  // contradicting its own note: the isotopologues this override cleared are put
   // back by compound AND adduct, and were archived with none, so an adduct
   // found now can never match. The undo stays refused, and stays explained.
   it('will not let a measurement turn the undo entry into a working control', async () => {

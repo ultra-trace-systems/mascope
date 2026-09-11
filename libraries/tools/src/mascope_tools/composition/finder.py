@@ -267,7 +267,7 @@ def assign_compositions(
     # One row per peak, so two candidates that both explain it are cut down to
     # one here. Which one survives decides more than which formula is reported:
     # a candidate is a whole envelope, and dropping its monoisotopic row leaves
-    # the satellites it named belonging to nothing. So a row that IS somebody's
+    # the isotopologues it named belonging to nothing. So a row that IS somebody's
     # monoisotopic line outranks another candidate's isotopologue for the same
     # peak, and only then does mass error decide.
     #
@@ -275,7 +275,7 @@ def assign_compositions(
     # it emits it and skips an m/z already claimed, so on real input the
     # collision this settles does not arise; it is here because nothing in the
     # loop's structure PROMISES that, and the cost of being wrong is an
-    # envelope's satellites outliving it. mz_error_ppm is signed, so rank on
+    # envelope's isotopologues outliving it. mz_error_ppm is signed, so rank on
     # its magnitude: the row kept has to be the closest match, not the one
     # furthest BELOW its prediction.
     sort_by = [c for c in ["mz"] if c in matches.columns]
@@ -606,13 +606,13 @@ def process_isotopes(
                 continue
             iso_result = main_candidate.copy()
             # The same-ion family is a statement about how the ION was read, and
-            # the M0 row is where that reading is committed; a satellite is
+            # the M0 row is where that reading is committed; an isotopologue is
             # owned by it. Restating the family on every child would store the
             # same ambiguity once per isotopologue and invite an inspector to
             # resolve it in a place that cannot act on it.
             iso_result.pop(SAME_ION_ALTERNATIVES, None)
             # And for the same reason, the density: it counts what competed for
-            # the peak the ION was elected on. A satellite was never searched -
+            # the peak the ION was elected on. An isotopologue was never searched -
             # it was predicted from the winner and matched - so the parent's
             # count is not a measurement of this line.
             iso_result.pop(CANDIDATE_DENSITY, None)

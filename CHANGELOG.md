@@ -6,6 +6,26 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
 
 ### Changed
 
+- **"Satellite" means a signal artifact in the assignment layer, never an
+  isotopologue.** Peak detection uses the word for the FT side lobes it flags
+  around an intense peak, and the assignment engine, manual curation, the peak
+  inspector, the SDK's docstrings and the developer docs had drifted into
+  calling isotopologue rows satellites as well. They now say isotopologue, and
+  the inspector's undo note counts "isotopologues" rather than "isotopologue
+  satellites". Two recorded values change with the word. A run's
+  `config.cross_channel` counts the isotopologue rows the reagent-N rule capped
+  as `capped_isotopologues`, beside step 2.4's tiering counts of the same name;
+  runs written before this carry that count as `capped_satellites`, and nothing
+  in Mascope reads it back from a stored run, so a script reading stored run
+  configs should accept either name. A row stripped by a manual override now
+  records `provenance.manual.action` as `demote_isotopologue`; rows demoted
+  earlier carry `demote_satellite`, and both the restore and the inspector read
+  either as a demotion, so undoing an older override still puts its
+  isotopologues back. In `mascope_tools.composition.reagents`,
+  `ReagentHit.is_satellite`, `DEFAULT_SATELLITE_MIN_RELATIVE`,
+  `DEFAULT_SATELLITE_MAX_EXCESS` and the claim's `satellite_min_relative` /
+  `satellite_max_excess` parameters take their `isotopologue` names.
+
 - **Every committed peak assignment now says why it holds the tier it holds.**
   `provenance.tier_reasons` is a list of `{rule, detail, caps}`: a row that was
   demoted names what took it, and a row that was not names what it kept its tier
@@ -45,7 +65,7 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
   ledger row as `candidate_density`. It has to be recorded because it cannot be
   recovered afterwards: a row keeps at most `max_alternatives` of the
   competitors, so counting those counts the cap, and the finder's own shortlist
-  is the only place the rest ever existed. A satellite carries none - it was
+  is the only place the rest ever existed. An isotopologue carries none - it was
   predicted from its owner rather than searched. Nothing is demoted on it yet.
 
 - Two chemistry measurements are available in `mascope_tools` for the tiering
@@ -160,7 +180,7 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
   search: the element ranges and mass window now come from the ionization
   mode's chemistry rather than from one unbounded default, the source's own
   reagent clusters and ringing artifacts are labelled before any formula is
-  proposed, a committed formula claims its own heavy-isotope satellites, two
+  proposed, a committed formula claims its own heavy-isotope isotopologues, two
   candidates that describe the same ion are decided by policy instead of by
   enumeration order, and every unexplained peak is searched rather than the 300
   brightest. Measured against a reference engine on 43 samples from four
@@ -253,21 +273,21 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
   Both log it. Setting the cap explicitly still works, for a caller that wants a
   run cut short.
 
-- **An isotope envelope is now scored against the whole spectrum, and a
-  satellite belongs to the peak that owns it.** The untargeted stage used to
+- **An isotope envelope is now scored against the whole spectrum, and an
+  isotopologue belongs to the peak that owns it.** The untargeted stage used to
   hand the composition finder only the peaks it was about to search, and that
   set was capped at the 300 most intense unexplained peaks - so an ion's
   predicted isotope pattern was checked against at most 300 peaks, a fraction
-  of a dense spectrum, and a satellite outside that set simply was not found.
+  of a dense spectrum, and an isotopologue outside that set simply was not found.
   The peak it sits on was then searched on its own account and got a
   composition of its own, which is how an engine ends up committing an analyte
   on a peak that is another ion's isotopologue. The whole peak list is now the
-  pattern context while the same remainder is what gets searched, so a
-  satellite is found wherever it sits - below the stage's intensity threshold,
+  pattern context while the same remainder is what gets searched, so an
+  isotopologue is found wherever it sits - below the stage's intensity threshold,
   past its cap, or on a peak an earlier pass already owns - at no extra search
   cost, because the cost scales with what is enumerated rather than with what
   is looked at. Isotopologue rows are also written by the monoisotopic row that
-  claims them and name it from the start: a satellite whose ion commits no
+  claims them and name it from the start: an isotopologue whose ion commits no
   monoisotopic peak is not written at all, and its peak stays unassigned rather
   than becoming a row that says a peak belongs to an envelope the ledger never
   committed. Step 1.5 of `docs/dev/assignment_quality_plan.md`.
@@ -296,7 +316,7 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
   analyte: such a row counts toward no cross-sample formula vote and no
   confidence tier, so a bright source background stops reading as either an
   unexplained residual or - the worse failure - a phantom analyte that an
-  untargeted search happily fits a neutral to. Isotopologue satellites of a
+  untargeted search happily fits a neutral to. Isotopologues of a
   claimed ion are claimed too, predicted from the ion's own envelope and gated
   on intensity, so a peak with an analyte co-eluting on top of it is left
   alone. What a claim is matched against is the sample's own reagent ions
@@ -374,7 +394,7 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
   candidates tie on the pattern score - and a tie is ordinary, since every
   candidate whose envelope matched nothing scores the same. Where they
   disagreed, the committed row took a runner-up's matched masses, intensities
-  and errors: its satellites, its mass error and its fit all belonged to a
+  and errors: its isotopologues, its mass error and its fit all belonged to a
   different formula. Both lists now come from one computed order.
 
 - **A labelled reagent's own atom no longer breaks the untargeted search.**
@@ -844,7 +864,7 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
   commits it with one.
 
   The row is edited in place and marked as assigned by hand, with a hand icon
-  beside its tier wherever the row appears. A satellite that the override
+  beside its tier wherever the row appears. An isotopologue that the override
   unassigned gets a mark of its own rather than the hand: it is the consequence
   of a decision taken on another peak, not a formula anyone chose. The ledger's
   source filter lists both, so the whole footprint of one override reads off in
@@ -855,14 +875,14 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
   was replaced is *not* carried over - that number was the engine's reading of
   a different formula, and stating it beside a hand-picked one would be a
   probability nothing calibrated. It is kept on the record with the assignment
-  it describes. Isotopologue satellites of the replaced formula become
-  unassigned: a satellite is the same compound seen through one heavy atom, so
+  it describes. Isotopologues of the replaced formula become
+  unassigned: an isotopologue is the same compound seen through one heavy atom, so
   leaving them would let one family show two compounds. They go only when the
   compound really changes - the formula and the adduct together, so
   re-committing the composition a row already carries leaves its family exactly
   where it stood - and putting the original assignment back restores them along
   with it, which is what makes the undo a whole one rather than half of one.
-  The exception is a satellite someone has assigned by hand in the meantime:
+  The exception is an isotopologue someone has assigned by hand in the meantime:
   that judgment is the newer one, so the restore reports it and leaves it as it
   stands.
 

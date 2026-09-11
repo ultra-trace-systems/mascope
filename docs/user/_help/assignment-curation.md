@@ -21,12 +21,12 @@ Its calibrated **P(correct)** is dropped rather than carried over: that number
 was fitted to score the engine's own arbitration, and nothing has calibrated
 the formula you chose.
 
-Isotopologue satellites follow their compound. Assigning a different formula or
-adduct unassigns the satellites of the one it replaced &mdash; they were the
-same compound seen through a heavy atom, so nothing is left for them to claim
+Isotopologues follow their compound. Assigning a different formula or adduct
+unassigns the isotopologues of the one it replaced &mdash; they were the same
+compound seen through a heavy atom, so nothing is left for them to claim
 &mdash; and putting the original assignment back restores them, except any
-satellite that has itself been assigned by hand in the meantime, which is left
-as it stands.
+isotopologue that has itself been assigned by hand in the meantime, which is
+left as it stands.
 
 A hand assignment lives in the run you made it in &mdash; **re-assigning the
 sample recomputes the ledger from the data and supersedes it** &mdash; so

@@ -107,14 +107,14 @@ class TestTheReagentRow:
         assert len({row["peak_assignment_id"] for row in rows}) == len(rows)
 
 
-class TestTheSatelliteRows:
-    def test_a_satellite_names_its_isotopologue_and_its_predicted_share(self):
-        satellites = [row for row in _rows() if row["isotope_label"]]
+class TestTheIsotopologueRows:
+    def test_an_isotopologue_names_its_label_and_its_predicted_share(self):
+        isotopologues = [row for row in _rows() if row["isotope_label"]]
 
-        assert [row["isotope_label"] for row in satellites] == ["81Br"]
-        assert satellites[0]["provenance"]["reagent"]["predicted_relative"] > 0.9
+        assert [row["isotope_label"] for row in isotopologues] == ["81Br"]
+        assert isotopologues[0]["provenance"]["reagent"]["predicted_relative"] > 0.9
 
-    def test_a_satellite_carries_the_reagent_role_too(self):
+    def test_an_isotopologue_carries_the_reagent_role_too(self):
         """The peak is the source's chemistry as much as its parent is, and G4
         counts it: the reference engine labels these reagent as well."""
         assert {row["role"] for row in _rows()} == {ROLE_REAGENT}

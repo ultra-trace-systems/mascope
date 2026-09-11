@@ -2277,7 +2277,7 @@ async def _run_sample_assignment(
                 heuristics_config = resolved_profile.heuristics_config()
                 # The whole spectrum is the context, the remainder is what is
                 # enumerated. An isotope envelope is scored against every peak
-                # the frame holds, so a satellite is found wherever it sits -
+                # the frame holds, so an isotopologue is found wherever it sits -
                 # below the stage's intensity threshold, past its cap, or on a
                 # peak another pass already owns - instead of only inside the
                 # searched set. That is what lets an ion's envelope claim its
@@ -2393,7 +2393,7 @@ async def _run_sample_assignment(
             f"committed readings across {len(cross_channel['channels'])} channels; "
             + (
                 f"{cross_channel['capped']} capped for an unfixable nitrogen count "
-                f"({cross_channel['capped_satellites']} satellites with them)"
+                f"({cross_channel['capped_isotopologues']} isotopologues with them)"
                 if cross_channel["reagent_rule_applied"]
                 else "no channel of this mode donates nitrogen, so none is gated on it"
             )
