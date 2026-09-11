@@ -118,7 +118,6 @@ server/backend/tests/
 │   │   └── test_peak_detection.py     # Peak detection pipeline
 │   ├── workflows/                 # Business process workflow tests
 │   │   ├── conftest.py            # Workflow execution fixtures
-│   │   ├── workflow_utils.py      # Workflow-specific test helpers
 │   │   ├── test_sample_processing.py   # Sample creation and analysis workflow
 │   │   └── test_dataset_lifecycle.py # Complete dataset/batch/sample lifecycle
 │   ├── regression/                # Tests for previously fixed bugs

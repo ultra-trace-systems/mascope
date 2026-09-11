@@ -498,7 +498,6 @@ jobs:
 
       - name: Run tests
         env:
-          SKIP_CALIBRATION_FITTING_TEST: 1
           # Test database connection — matches the postgres service container above.
           # TEST_DB_HOST/PORT/USER mirror DatabaseConfig defaults (localhost:5432/mascope_user).
           TEST_DB_HOST: localhost

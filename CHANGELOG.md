@@ -1530,6 +1530,16 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
 
 ### Fixed
 
+- The backend suite's Orbitrap calibration-fit test runs on every machine and
+  in CI, and checks a result. It fitted whatever Orbitrap samples the
+  machine's own runtime database held instead of using the suite's ephemeral
+  database, so it failed with a schema error on any checkout newer than that
+  database, passed without checking anything where the database held no
+  Orbitrap samples, and CI skipped it. It now writes a synthetic Orbitrap file
+  to a temporary filestore and seeds its calibration collection in the
+  integration database: the fit has to recover the offset the calibrants were
+  planted at, and leave out the one calibrant planted off it.
+
 - A backend test selection that interleaves the unit and integration
   directories - `pytest tests/unit/a tests/integration/b tests/unit/c` - no
   longer runs the later tests' application code against the other category's
