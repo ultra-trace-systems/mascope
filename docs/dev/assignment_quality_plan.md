@@ -2975,13 +2975,23 @@ still the clearest node defect on the gate.
    `mass_z` and fits the calibration over it, but counts the curation as the
    corroboration that exempts a row from its cap, so the example above - a
    target matched 4 ppm off on a 0.2 ppm instrument - is not capped by the
-   gate as built. Whether it should be is open, and it is the one part of
-   this decision the code does not do. To size it: on the latest runs of
-   the 43 gate samples, 26 curated rows sit beyond the gate's width of
-   three - on A 7 monoisotopic rows, the widest at 4.4; on F2 6
-   monoisotopic and 8 isotopologue rows, the widest at 7.1; on F1 one of
-   each; on C 2 and on C2 1 isotopologue row - and every one of them would
-   have been capped as an untargeted row.
+   gate as built. On the latest runs of the 43 gate samples, 26 curated
+   rows sit beyond the gate's width of three - on A 7 monoisotopic rows,
+   the widest at 4.4; on F2 6 monoisotopic and 8 isotopologue rows, the
+   widest at 7.1; on F1 one of each; on C 2 and on C2 1 isotopologue row -
+   and every one of them would have been capped as an untargeted row.
+   *Taken 2026-09-11: the gate keeps counting curation as corroboration,
+   and the 4 ppm example above is superseded.* The monoisotopic rows among
+   the 26 sit at the low-mass edge, the same ion off the same way in every
+   sample while the run's centre sits near zero - C3H6O [M+H]+ at m/z 59
+   about -2.3 ppm on all six A samples, NO2- at m/z 46 +10 to +12 ppm on
+   four F2 samples - and mass accuracy is often poorer at low m/z. The gate
+   fits one offset and one width for the whole range, so capping them would
+   punish the calibration's shape rather than a wrong identity. Applied to
+   curated rows it would move only three rows, isotopologues at assigned
+   whose owners sit on calibration. Whether the same shape over-caps
+   untargeted rows at low m/z is a calibration question, not this
+   decision's.
 4. **The cap.** Every peak by default, with the 5,000 ceiling as the hard
    bound; ingest-time runs are Stage A only, so the cost lands on explicit
    runs.
