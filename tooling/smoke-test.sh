@@ -55,6 +55,14 @@ echo "[smoke] bundled docs are served at /docs/..."
   echo "[smoke] FAIL: /docs/help-content.json is missing (in-app help popovers)" >&2
   exit 1
 }
+# Captured, not piped into grep -q: the document is large enough that grep
+# exiting at its first match would cut curl off mid-write, and pipefail would
+# report that as a failure.
+openapi=$("${CURL[@]}" "$BASE_URL/docs/openapi.json" || true)
+[[ "$openapi" == *'"openapi": "3.'* ]] || {
+  echo "[smoke] FAIL: /docs/openapi.json does not serve the API's OpenAPI document" >&2
+  exit 1
+}
 
 echo "[smoke] login as $EMAIL..."
 jar=$(mktemp)
