@@ -208,6 +208,9 @@ libraries/
 - **Database patching**: `patch_db` fixture with `autouse=True` redirects `ASYNC_SESSION_MAKER`
   - Affects both `async_session()` (controllers/services) and `get_async_session()` (FastAPI DI)
   - Ensures all application code operates on the isolated test database for the duration of the session
+  - `bind_db` re-points it at the test's own category before every test, so a selection that
+    interleaves unit and integration directories cannot leave one category's code on the other's
+    database
 - **Event loop requirements**: asyncpg socket transports are bound to the event loop they were
   created in and cannot be transferred. `asyncio_default_fixture_loop_scope = session` and
   `asyncio_default_test_loop_scope = session` in `pytest.ini` ensure all fixtures and tests
@@ -253,6 +256,9 @@ libraries/
 - **Automatic database patching**: The `patch_db` fixture with `autouse=True` replaces
   `db_module.ASYNC_SESSION_MAKER` for the duration of the session, redirecting all application
   database access to the test database without requiring any changes to test functions.
+  Both categories write the same global, and a session-scoped fixture is set up only once, so the
+  function-scoped `bind_db` re-points it at the running test's category before every test:
+  `pytest tests/unit/a tests/integration/b tests/unit/c` keeps `c` on the unit database.
 
 ### Authentication testing infrastructure
 
