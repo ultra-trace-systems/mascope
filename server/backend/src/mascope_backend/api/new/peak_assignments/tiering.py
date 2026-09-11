@@ -314,7 +314,8 @@ def envelope_neighbours(
     spectrum is dense enough that some committed peak sits one 13C spacing above
     another most of the time; what distinguishes an isotope line from a compound is
     that the line is no taller than its prediction. Without that test the
-    rule takes as many rows the reference confirms as rows it does not.
+    rule takes more rows the reference confirms than rows it does not: on the
+    step 2.3 ledgers it flags 342 of set B's rows and 203 are confirmed.
 
     :param m0_rows: The run's committed monoisotopic rows.
     :param mz_tolerance_ppm: The matcher's own window, so a line this claims

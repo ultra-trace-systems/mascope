@@ -674,7 +674,8 @@ The confidence layer. This is where "assigned" starts meaning something.
   the peak no more than twice that line's predicted height, and the G6 rows
   the height test spares reported beside it. Re-worded in 2.4c: the line was
   written before the height test existed, and read without one the rider
-  takes as many rows the reference confirms as rows it does not.
+  flags 342 of B's rows on the 2.3 ledgers, 203 of which the reference
+  confirms - more rows it confirms than rows it does not.
 - **Size.** L (three PRs: the pure measurements in `mascope_tools`, the
   backend tiering, the reasons in the inspector). Depends on 2.1-2.3.
 
