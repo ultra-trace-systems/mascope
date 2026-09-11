@@ -375,19 +375,17 @@ def _seed_credentials() -> None:
 
 
 def _seed_reference_demo() -> None:
-    """Seed the small illustrative reference-compound set into the demo DB.
+    """Seed the reference lists Mascope ships into the demo DB.
 
-    Makes the peak-assignment identity annotation visible out of the box. Best
-    effort: a failure here only warns, since the demo is fully usable without
-    reference data.
+    Makes the peak-assignment identity annotation visible out of the box and
+    exercises the shipped lists on every start. Best effort: a failure here only
+    warns, since the demo is fully usable without reference data.
     """
-    import asyncio
-
-    runtime.logger.info("Seeding demo reference compounds...")
+    runtime.logger.info("Seeding the shipped reference lists...")
     try:
         from mascope_backend.db.scripts.seed_reference_demo import seed_reference_demo
 
-        asyncio.run(seed_reference_demo())
+        seed_reference_demo()
     except Exception as e:  # noqa: BLE001 - reference seed is optional for the demo
         runtime.logger.warning(f"Skipped demo reference seed: {e}")
 
