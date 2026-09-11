@@ -669,7 +669,12 @@ The confidence layer. This is where "assigned" starts meaning something.
   the TOF sets are carried to 2.5 and the 2.7 gate. Every committed row has
   at least one reason; the decoy harness (`tooling/score_eval`) confirms the
   demotes do not lower contested top-1; no G6 row of the envelope part
-  (decision 11's rider) at assigned tier.
+  (decision 11's rider) at assigned tier on a line that a neighbour the run
+  commits at candidate or above predicts within the matcher's window, with
+  the peak no more than twice that line's predicted height, and the G6 rows
+  the height test spares reported beside it. Re-worded in 2.4c: the line was
+  written before the height test existed, and read without one the rider
+  takes as many rows the reference confirms as rows it does not.
 - **Size.** L (three PRs: the pure measurements in `mascope_tools`, the
   backend tiering, the reasons in the inspector). Depends on 2.1-2.3.
 
@@ -722,8 +727,9 @@ its own status.
 
 - **What.** `PeakAssignConfigForm.vue` gains the profile and context
   selectors (auto by default, resolved name shown); the run provenance chip
-  shows the profile; the inspector shows `tier_reasons`, `mass_z` and the
-  same-ion alternatives; the ledger renders `reagent` and `artifact` roles
+  shows the profile; the inspector shows `mass_z` and the same-ion
+  alternatives beside the tier reasons 2.4c put there; the ledger renders
+  `reagent` and `artifact` roles
   with their own chips and excludes them from the analyte counts.
 - **Verify.** Vitest on the form and the inspector rows.
 - **Size.** M. Depends on 1.1, 1.4, 2.4.
@@ -3430,8 +3436,8 @@ itself does not believe - no longer predicts one: on the 2.4a ledgers those
 owners took 52 of the rule's 218 rows and were wrong on 4, and on this build the
 rule takes exactly those 52 fewer, with 4 confirmed where it had 8.
 
-**The rider's own Verify line is missed, and most of what is left is the grid
-gap.** Before the pass 159 assigned rows sat on a peak the reference reads as an
+**The rider's Verify line, as first written, is missed, and most of what is
+left is the grid gap.** Before the pass 159 assigned rows sat on a peak the reference reads as an
 isotopologue (G6 at assigned tier); the pass takes 88 of them and leaves 71 - A 8,
 B 46, C 9, C2 1, D 4, E 2, F2 1. 47 of the 71 are decision 11's other part: the
 reference's parent carries silicon (39), phosphorus (7) or phosphorus and chlorine
@@ -3444,7 +3450,10 @@ the reference's parent predicts for that line - two to seven times on 14, 36 and
 spares it on purpose; on 7 this engine commits another reading on the parent's
 peak, so the envelope does not exist in the run; on 1 the line falls outside the
 matcher's window. Meeting the line would mean dropping the height test that makes
-the rule pay, or predicting from readings the run did not commit.
+the rule pay, or predicting from readings the run did not commit. Step 2.4c
+re-worded it to the height-qualified form, which is the rule as measured: none
+of the 24 is a row it should have taken, so that form is met, and the 24 are
+reported beside G6 rather than gated.
 
 **An isotopologue row follows its owner down whichever pass capped the owner.**
 The run counts the two cases apart: 159 isotopologue rows went with an owner
@@ -3470,6 +3479,20 @@ demote: decision 14 shows those splits beside G1 as a convention rather than
 counting them as wrong, and a demote would be deciding the convention. The pass
 itself costs about 0.15 s on the largest sample, against ten to forty seconds
 for the assignment it judges.
+
+**Step 2.4c puts the reasons in front of the reader.** The peak inspector lists
+every reason the focused row carries under *Why this tier*: the rule by name,
+the run's own sentence beneath it, and a mark on each reason that holds the tier
+down. That mark's hover text is read off the tier the row actually holds, because
+`caps` records what a rule would take: one that fires on a row its evidence
+already banded lower took nothing, and says so. An isotopologue carries only
+`inherited_from_owner`, so the card fetches its owner's detail and shows the
+owner's reasons beneath, marked as borrowed, in the grammar the corroboration
+badge already uses. A row no pass judged - a run from before it, an imported
+run, a row assigned by hand, whose provenance curation rebuilds - shows no list
+rather than an empty one, and neither does a row served from the batch ledger,
+whose tier is a vote across samples that no rule judged. It is display and
+documentation only: no run, ledger or gate number changes.
 
 ## Not in this plan
 
