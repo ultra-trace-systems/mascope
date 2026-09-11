@@ -13,6 +13,7 @@ from mascope_reference.adapters.custom import CustomAdapter
 from mascope_reference.adapters.hmdb import HmdbAdapter
 from mascope_reference.adapters.lipidmaps import LipidMapsAdapter
 from mascope_reference.adapters.norman import NormanAdapter
+from mascope_reference.adapters.peaklist import PeakListAdapter
 from mascope_reference.adapters.pubchem import PubChemAdapter
 
 
@@ -25,5 +26,6 @@ __all__ = [
     "HmdbAdapter",
     "LipidMapsAdapter",
     "NormanAdapter",
+    "PeakListAdapter",
     "PubChemAdapter",
 ]
