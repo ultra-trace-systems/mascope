@@ -192,6 +192,52 @@ confidence, since that is how the field communicates identification certainty.
 > instrument; tying a tier to a calibrated probability of being correct is still where this
 > is heading, and still waits on calibration coverage across instruments.
 
+### Why a row holds its tier
+
+The evidence sets the highest tier a row can reach. A second pass then asks each committed
+row the questions the evidence cannot answer, and it can only lower a tier, never raise
+one. The peak inspector lists its answers under **Why this tier**: every committed row
+carries at least one, naming either what capped it at *candidate* or what it kept its tier
+on. The sentence under each is the run's own, about that row.
+
+What caps a row at candidate:
+
+- **radical neutral** — the committed neutral breaks the even-valence rule, the first of
+  the SENIOR rules among [Kind & Fiehn 2007][kf07]'s checks: its ring-and-double-bond count
+  is a half-integer, so it has an unpaired electron and names a radical rather than a
+  molecule. Radicals are real chemistry, but a formula search chooses a radical reading of
+  an ion rather than measuring it against a closed-shell one. A curated identity is exempt,
+  because it was matched to a compound somebody authored rather than chosen by the search.
+- **rivals left standing** — the peak's own evidence could not separate the committed
+  formula from at least one other, and no second ionization channel of the run committed
+  the same neutral.
+- **a neighbour's isotope line** — a committed neighbouring compound's isotope pattern
+  predicts a line on this peak, and the peak is no more than twice as tall as that line,
+  so the line could account for all of it. The neighbour must itself be a reading the
+  run stands behind, at *candidate* or above.
+- **oxygen lattice** and **carbon-free formula** — shapes a mass search produces rather
+  than a source: more than 1.3 oxygens per carbon with at least five oxygens, or no carbon
+  at all without being one of the small inorganics these sources make.
+- **off calibration**, **ambiguous nitrogen** and **minor channel only** — caps the run
+  applied earlier, restated here so every reason is in one place: a mass error far from
+  the run's own fitted calibration with nothing corroborating it; an ion that reads as a
+  neutral with a different nitrogen count through a channel that donates no nitrogen,
+  with no channel of the run to settle the count; and a commitment through a channel the
+  ionization mode treats as secondary, with no isotopologue or second channel behind it.
+
+What a row that keeps its tier kept it on: **second channel** (the same neutral committed
+through two or more of the run's ionization channels), **no close rival** (the evidence
+separated the formula from every other candidate the run competed for the peak), or **not
+measured** (nothing the pass reads was recorded for the row, which is a statement of
+absence rather than a finding). An isotopologue **follows its M0**: it is the M0's ion
+seen at another isotope, so it takes the M0's answer and loses the top tier with it, and
+the inspector shows the M0's reasons beneath its own.
+
+A reason can name a rule that lowered nothing: a row its evidence already put below
+*candidate* keeps that tier, and the rule still says what it found. The run records the
+rule set's version and thresholds with its configuration, because a tier can only be
+compared between two runs together with the rules that produced it.
+
 ## Assigning a peak yourself
 
 --8<-- "_help/assignment-curation.md"
