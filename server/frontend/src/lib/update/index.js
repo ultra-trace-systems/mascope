@@ -50,8 +50,19 @@ const currentModuleScripts = () =>
 /** True when two sorted scripts lists differ. */
 export const scriptsChanged = (a, b) => a.length !== b.length || a.some((s, i) => s !== b[i])
 
+/**
+ * The build an index.html names in its mascope-version tag (written at build
+ * time by scripts/vite-plugin-legal.js), or null when it names none.
+ */
+export const extractVersion = (html) => {
+  const tag = html.match(/<meta\b[^>]*\bname=["']mascope-version["'][^>]*>/i)?.[0]
+  return tag?.match(/\bcontent=["']([^"']*)["']/i)?.[1] || null
+}
+
 export const useUpdate = defineStore('app.update', () => {
   const available = ref(false)
+  // The version the new build names, so the banner can say what it offers.
+  const version = ref(null)
   const booted = currentModuleScripts()
   let timer = null
 
@@ -64,11 +75,15 @@ export const useUpdate = defineStore('app.update', () => {
         headers: { 'Cache-Control': 'no-cache' }
       })
       if (!response.ok) return false
-      const fetched = extractModuleScripts(await response.text())
+      const html = await response.text()
+      const fetched = extractModuleScripts(html)
       // An empty parse means we could not read the entry bundles; ignore rather
       // than false-alarm.
       if (fetched.length > 0 && scriptsChanged(booted, fetched)) {
-        logger.log('a new build is available', { data: { booted, fetched } })
+        version.value = extractVersion(html)
+        logger.log('a new build is available', {
+          data: { booted, fetched, version: version.value }
+        })
         available.value = true
       }
     } catch (error) {
@@ -101,5 +116,5 @@ export const useUpdate = defineStore('app.update', () => {
     window.location.reload()
   }
 
-  return { available, check, start, reload }
+  return { available, version, check, start, reload }
 })

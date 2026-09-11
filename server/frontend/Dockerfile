@@ -7,13 +7,17 @@ FROM node:22-alpine AS frontend-build
 
 ARG MASCOPE_RUNTIME
 
-WORKDIR /app
+# Mirror the repository layout: the legal plugin (scripts/vite-plugin-legal.js)
+# bakes the repo-root NOTICE and LICENSE into the bundle, next to the
+# third-party notices it generates, and looks for them two levels up.
+WORKDIR /src/server/frontend
 
 # Bake the runtime name in before the copy so a build-context .env.production
 # (a developer's local override) still wins, matching the previous behaviour.
 RUN echo "MASCOPE_RUNTIME='${MASCOPE_RUNTIME}'" >> .env.production
 
 # build frontend
+COPY NOTICE LICENSE /src/
 COPY server/frontend/ ./
 RUN npm install
 RUN npm run build
@@ -55,7 +59,7 @@ WORKDIR /app
 ENV MASCOPE_PATH=/app
 
 # copy build outputs
-COPY --from=frontend-build /app/dist /app/frontend/
+COPY --from=frontend-build /src/server/frontend/dist /app/frontend/
 
 # the rendered docs site, served by nginx at /docs/
 COPY --from=docs-build /docs-src/site /app/docs/

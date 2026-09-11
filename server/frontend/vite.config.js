@@ -2,6 +2,8 @@ import { fileURLToPath, URL } from 'node:url'
 import { defineConfig } from 'vite'
 import vue from '@vitejs/plugin-vue'
 
+import legal from './scripts/vite-plugin-legal.js'
+
 // Where a locally running `mkdocs serve` answers (repo root: `npm run docs`,
 // or `uv run mkdocs serve`). Because mkdocs.yml sets site_url with a /docs/
 // path, mkdocs serve already serves under /docs/ - no path rewrite needed.
@@ -23,7 +25,8 @@ const docsProxyFallback = (proxy) =>
   })
 
 export default defineConfig({
-  plugins: [vue()],
+  // legal: third-party notices, NOTICE/LICENSE and the build's version tag
+  plugins: [vue(), legal({ repoRoot: fileURLToPath(new URL('../..', import.meta.url)) })],
   resolve: {
     alias: {
       // This alias configuration helps in resolving paths relative to the src directory.

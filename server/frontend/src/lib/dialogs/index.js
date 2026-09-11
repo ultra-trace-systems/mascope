@@ -1,3 +1,4 @@
+export { default as DialogAbout } from './DialogAbout.vue'
 export { default as DialogBatchOp } from './DialogBatchOp'
 export * from './dialogBatchDelete.js'
 export { DialogBatchImport } from './DialogBatchImport'
