@@ -1,0 +1,54 @@
+{
+  "schema_version": 2,
+  "id": "organophosphorus-insecticides",
+  "label": "Organophosphorus insecticides observed in air",
+  "data_version": "2026.09",
+  "license": "CC-BY-4.0",
+  "references": [
+    {
+      "citation": "P. Udomkun, T. Boonupara, S. Sumitsawan, et al., Airborne pesticides - deep diving into sampling and analysis. Toxics 11 (2023) 883.",
+      "doi": "10.3390/toxics11110883"
+    },
+    {
+      "citation": "A. López, V. Yusà, M. Millet, C. Coscollà, Retrospective screening of pesticide metabolites in ambient air using liquid chromatography coupled to high-resolution mass spectrometry. Talanta 150 (2016) 27-36.",
+      "doi": "10.1016/j.talanta.2015.11.068"
+    },
+    {
+      "citation": "J. M. Zabik, J. N. Seiber, Atmospheric transport of organophosphate pesticides from California's Central Valley to the Sierra Nevada Mountains. Journal of Environmental Quality 22 (1993) 80-90.",
+      "doi": "10.2134/jeq1993.00472425002200010011x"
+    },
+    {
+      "citation": "K. M. S. Sundaram, Residue levels of fenitrothion and aminocarb in the air samples collected from experimental spray blocks in New Brunswick in 1982. Journal of Environmental Science and Health, Part B 19 (1984) 409-426.",
+      "doi": "10.1080/03601238409372440"
+    },
+    {
+      "citation": "L. M. White, W. R. Ernst, G. Julien, et al., Ambient air concentrations of pesticides used in potato cultivation in Prince Edward Island, Canada. Pest Management Science 62 (2006) 126-136.",
+      "doi": "10.1002/ps.1130"
+    },
+    {
+      "citation": "K. Solano Díaz, C. Ruepert, M. M. Ramírez Quesada, et al., Evaluation of passive air sampling for monitoring current-use pesticide pollution near large-scale banana plantations in Costa Rica. Environmental Science & Technology 60 (2026) 3384-3393.",
+      "doi": "10.1021/acs.est.5c11224"
+    },
+    {
+      "citation": "J. G. Zaller, M. Kruse-Plaß, U. Schlechtriemen, et al., Pesticides in ambient air, influenced by surrounding land use and weather, pose a potential threat to biodiversity and humans. Science of the Total Environment 838 (2022) 156012.",
+      "doi": "10.1016/j.scitotenv.2022.156012"
+    }
+  ],
+  "polarity": "positive",
+  "provenance": {
+    "compiled_from": "The reference engine's known-species families, keeping the species a verified paper reports observed in ambient or indoor air, in a chamber study, or as a mass-spectrometry background; each species cites that paper. Formulas checked against PubChem."
+  },
+  "species": [
+    {"formula": "C10H19O6PS2", "name": "Malathion", "reference": "10.3390/toxics11110883"},
+    {"formula": "C10H19O7PS", "name": "Malaoxon", "reference": "10.1016/j.talanta.2015.11.068"},
+    {"formula": "C5H12NO3PS2", "name": "Dimethoate", "reference": "10.3390/toxics11110883"},
+    {"formula": "C9H21O2PS3", "name": "Terbufos", "reference": "10.1021/acs.est.5c11224"},
+    {"formula": "C12H21N2O3PS", "name": "Diazinon", "reference": "10.3390/toxics11110883"},
+    {"formula": "C10H14NO5PS", "name": "Parathion", "reference": "10.2134/jeq1993.00472425002200010011x"},
+    {"formula": "C8H10NO5PS", "name": "Methyl parathion", "reference": "10.3390/toxics11110883"},
+    {"formula": "C9H12NO5PS", "name": "Fenitrothion", "reference": "10.1080/03601238409372440"},
+    {"formula": "C10H12N3O3PS2", "name": "Azinphos-methyl", "reference": "10.1002/ps.1130"},
+    {"formula": "C9H11Cl3NO3PS", "name": "Chlorpyrifos", "reference": "10.3390/toxics11110883"},
+    {"formula": "C7H7Cl3NO3PS", "name": "Chlorpyrifos-methyl", "reference": "10.1016/j.scitotenv.2022.156012"}
+  ]
+}

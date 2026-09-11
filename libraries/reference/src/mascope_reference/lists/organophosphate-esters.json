@@ -1,0 +1,43 @@
+{
+  "schema_version": 2,
+  "id": "organophosphate-esters",
+  "label": "Organophosphate flame retardants and plasticizers",
+  "data_version": "2026.09",
+  "license": "CC-BY-4.0",
+  "references": [
+    {
+      "citation": "U.-J. Kim, Y. Wang, W. Li, K. Kannan, Occurrence of and human exposure to organophosphate flame retardants/plasticizers in indoor air and dust from various microenvironments in the United States. Environment International 125 (2019) 342-349.",
+      "doi": "10.1016/j.envint.2019.01.065"
+    },
+    {
+      "citation": "A. Marklund, B. Andersson, P. Haglund, Organophosphorus flame retardants and plasticizers in air from various indoor environments. Journal of Environmental Monitoring 7 (2005) 814.",
+      "doi": "10.1039/b505587c"
+    },
+    {
+      "citation": "P. C. Hartmann, D. Bürgi, W. Giger, Organophosphate flame retardants and plasticizers in indoor air. Chemosphere 57 (2004) 781-787.",
+      "doi": "10.1016/j.chemosphere.2004.08.051"
+    },
+    {
+      "citation": "I. van der Veen, J. de Boer, Phosphorus flame retardants: properties, production, environmental occurrence, toxicity and analysis. Chemosphere 88 (2012) 1119-1153.",
+      "doi": "10.1016/j.chemosphere.2012.03.067"
+    },
+    {
+      "citation": "L. Liu, A. P. Gillet, C. Akiki, et al., Mapping the distribution of contaminants identified by non-targeted screening of passively sampled urban air. Chemosphere 389 (2025) 144702.",
+      "doi": "10.1016/j.chemosphere.2025.144702"
+    }
+  ],
+  "polarity": "positive",
+  "provenance": {
+    "compiled_from": "The reference engine's known-species families, keeping the species a verified paper reports observed in ambient or indoor air, in a chamber study, or as a mass-spectrometry background; each species cites that paper. Formulas checked against PubChem."
+  },
+  "species": [
+    {"formula": "C6H15O4P", "name": "Triethyl phosphate", "reference": "10.1016/j.envint.2019.01.065"},
+    {"formula": "C9H21O4P", "name": "Tripropyl phosphate", "reference": "10.1016/j.envint.2019.01.065"},
+    {"formula": "C12H27O4P", "name": "Tributyl phosphate", "reference": "10.1039/b505587c"},
+    {"formula": "C18H15O4P", "name": "Triphenyl phosphate", "reference": "10.1016/j.chemosphere.2004.08.051"},
+    {"formula": "C18H15OP", "name": "Triphenylphosphine oxide", "reference": "10.1016/j.chemosphere.2025.144702"},
+    {"formula": "C18H39O7P", "name": "Tris(2-butoxyethyl) phosphate", "reference": "10.1016/j.envint.2019.01.065"},
+    {"formula": "C24H51O4P", "name": "Tris(2-ethylhexyl) phosphate", "reference": "10.1016/j.chemosphere.2004.08.051"},
+    {"formula": "C21H21O4P", "name": "Tricresyl phosphate", "reference": "10.1016/j.chemosphere.2012.03.067"}
+  ]
+}

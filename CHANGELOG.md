@@ -243,6 +243,33 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
 
 ### Added
 
+- **Mascope now ships curated atmospheric CIMS reference lists, and
+  `mascope reference seed` loads them.** The lists:
+  - a monoterpene HOM list (Kang 2021), split into its closed-shell molecules
+    and an opt-in list of its RO and RO2 radicals
+  - mass spectrometry background contaminants (Keller et al. 2008)
+  - atmospheric inorganics, reactive iodine, nitrated phenols,
+    perfluorocarboxylic acids, cyclic siloxanes, organophosphate esters and
+    organophosphorus insecticides
+  - the atmospheric organics example list
+
+  Every list cites its sources with a DOI or an ISBN, and so does each species
+  whose paper names it.
+
+  Nothing loads the lists unasked except the local demo, which now loads them in
+  place of its sixteen hand-picked compounds. On a server, run
+  `python -m mascope_backend.db.scripts.reference_seed` inside the backend
+  container. In a checkout, run `mascope reference seed`; `--list` shows what
+  ships. Each list becomes its own versioned source, and seeding again loads
+  only the lists whose version changed.
+
+  The lists are JSON files in a documented format
+  (`docs/dev/reference_data_authoring.md`), and a new `peaklist` adapter reads
+  a list of your own in the same format. Radical status is read from each
+  formula, and only a list that allows radicals may hold one. The example
+  list's "diaterpenylic acid" row, whose formula was 2-hydroxyterpenylic acid's,
+  now names 2-hydroxyterpenylic acid.
+
 - **The batch peaks selected in the ledger now show as a filter chip.** In
   Assignments mode the topbar's chips gained one for the Batch peaks ledger's
   selection - the species the batch chart plots - named by formula (or m/z) as
