@@ -24,8 +24,8 @@ step PRs land on the epic and are named here as they merge.
 | 2.2 - self-calibrated mass gate | #2094 | measured: every committed row records `mass_z` and every run records the calibration it was measured in, fitted over its own corroborated commits - 212 to 3,970 anchors a set where Stage A had 10 to 127. The gate itself is a guard, not a lever: it caps 49 rows over the 43 samples - 3 analyte commits, all on one TOF set and none of them a row the reference confirms, and 46 isotopologue rows the tracking rule reads as coincidences - and moves G1 on no set, because the failure it was written for was closed by 2.1 - the widest committed top-tier error on a straight Orbitrap axis is 1.02 ppm, and on A the rows the reference contradicts sit CLOSER to the calibration (0.088 ppm median) than the ones it confirms (0.149). No row the reference confirms was demoted on any set (G2 and its n identical everywhere) and no election changed (0 verdict shifts of 48,894 peaks), so G7 is 0 where the gate applied, which was all 43. The offset half of the 2.1b defect was tried and withdrawn on the measurement: fitting an offset from the five to seven anchors a width is refused for moved the TOF bromide set 4 ppm the wrong way (MAD 2.03 -> 2.33), so an anchor set too small to say how wide it is cannot say where its centre is. What the runs now report instead is a per-sample calibration reading, and it says the TOF sets carry 2.8-6.9 ppm widths and C2 a flat -1.1 ppm bias on files whose stored calibration is marked verified. The TOF sets were then recalibrated through the node and E re-baselined on both engines: its axis was out by 8-10 ppm and is now inside a ppm, which lifts the reference's G2 on E from 15.4/26.9 to 33.3/42.9% and the signal it explains from 0.5 to 26.2%, while the engine's top tier is the same SIZE on both axes (424 rows) and not the same rows - 147 of them sit on a peak that held it before, 7 keep their formula, tiers moved on 765 of the 1,343 M0 peaks both commit, and 70% of those peaks change formula - so mass is not what constrains a TOF commit, which is 2.4's. F1 and F2 did not move at all (their axes were already right, merely never fitted) and their runs stand; C2 cannot be fitted until its mode has more than two disagreeing calibrants |
 | 2.3 - cross-channel corroboration and the reagent-N rule | #2096 | measured: a run groups its committed monoisotopic winners by neutral across the channels it searched and records what that corroborates, reaching 5.4% to 59.4% of a set's commits where Stage A's curated-compound version reached 25 of A's 2,062 rows and none at all on six sets; the ledger's corroboration marker now renders it, and the row carries the best tier any partner channel holds. It is the strongest separator the engine has: on the reference's own Assigned rows the engine agrees on the formula 98.7% of the time when the neutral has a second channel against 54.7% when it does not (A), 98.0 against 71.2 (B), 97.6 against 83.2 (D), 100 against 5.1 (F1), and it survives an intensity-decile control on both conditionings. Nothing is promoted on it; the flag is what 2.4 weighs. The reagent-N rule is what its absence makes necessary: `+NH4+` on M and `+H+` on M+NH3 are the SAME ion formula, so no mass, envelope or fit separates them and the finder does not try - since 1.3 `elect_same_ion_families` collapses them before ranking and elects a reading by a stated prior (closed-shell neutral first, then the mechanism carrying the most mass), keeping the displaced reading on the row as a `same_ion` alternative. That prior is not an observation, so a winner through a nitrogen-donating channel whose own family holds a reading through a channel donating none is capped at `candidate` with the reason `ambiguous_nitrogen` unless a nitrogen-free channel or a second, different nitrogen-donating reagent saw the same neutral: 359 analytes and 51 isotopologues on A, 921 and 55 on B, 1,225 and 9 on F2, none on the five other sets - C and C2 because their reagent is 15N-labelled, which both stops it donating nitrogen and stops the finder proposing the alternative at all, D, E and F1 because they have no nitrogen-donating channel. Whether such a prior deserves trusting is a question about the reagent and the gate answers it: the same arithmetic holds for bromide, and 246 of D's 277 lone bromide readings are confirmed (89%) against 79 of A's 409 lone nitrogen ones (19%), which is what scopes the rule to nitrogen. G1 falls 40.2 -> 25.4 on A, 44.2 -> 40.2 on B and 99.2 -> 98.8 on F2 and is flat elsewhere; G2 and its denominator are identical on all eight sets and there are 0 verdict shifts and 0 formula shifts of 48,894 peaks, because the rule moves tiers and nothing else. Two costs are recorded rather than claimed as wins: on F2 it takes 1,225 of 3,008 assigned rows on a set where the reference is silent, so nothing judges the exchange and 2.4 must weigh it against the mode's own prior; and it demotes 405 rows the reference confirms, though on every one of them the reference reached that formula through the same nitrogen-donating channel and itself calls 57 of A's 67 and 313 of B's 336 `candidate`, leaving the engine more conservative than the reference on 33 of the 2,505 rows it capped |
 | 2.4 - mechanical tiers with reasons | #2099 (measurements), #2100 (tiering), #2101 (inspector), #2105 (curated rows) | **2.4a measured** on build `step-2.4-mechanical-tiers-2026.09.10-70438cb`: every committed row records `provenance.candidate_density`, the number of formulas the peak's evidence cannot separate from the one the row commits - anchored on the committed formula and not on the arbitration's top, which the finder need not have committed - counted one-sided, so a rival the evidence ranks ABOVE the commit is never reported as nothing tying it; the two anchorings differ on 444 of the 32,449 committed rows, every one of them upward, and on 23 rows at assigned tier - 22 on F1, 1 on F2 - of which one crosses from 1 to 2. Recording it changes nothing: 0 of 48,894 ledger rows differ from the 2.3 build on any other column and every gate number is identical. Measured, it is a sharp guard rather than a lever - 11 of A's 1,002 assigned rows sit at density >= 2 and 0 of those 11 are confirmed, against 75.4% at density 1 - because a continuous fit separates almost everything; the number of formulas the MASS admits is a different and wider quantity, and reaches 68 on the same set. **The plan's carbon-cluster demote is withdrawn.** `DBE/C >= 1` with the effective DBE reduces to `H <= 2 + N`, which names hydrogen-poor molecules rather than large skeletons: on the gate it took formic, oxalic and glyoxylic acid and a confirmed nitrogen heterocycle - 46 rows, 8 of them right - and no carbon cluster. What keeps a cluster out of a run is the chemistry context's DBE/C and H/C windows (ambient-air 0.75 and 0.7, uronium 1.1 and 0.4) and not the heuristic filter, which grades a formula and rejects none on H/C - C60 passes at plausibility 1.0 - and those windows apply only from three carbons up, which is where the signature misjudged; a run under context `none` has no such window and this would not have closed that gap either. The oxygen-lattice floor of five is measured on what it SPARES (at O >= 4 it reaches 260 rows and the reference confirms 35, at O >= 5 it reaches 212 and 3, flat to O >= 9); what it takes is 3 confirmed against 17 contradicted and 189 the reference does not judge, 174 of them on the TOF sets, so on the Orbitrap sets it is 3 right and 3 wrong. The carbon-free signature reaches nothing, because every resolved grid floors carbon at one and every carbon-free committed row on the gate is curated - and a curated row is not asked (#2105; as 2.4b first merged the pass did ask, and took 7 curated rows, none confirmed; re-measured on `step-2.4d-curated-implausibility-2026.09.11-2012665` the signature takes 0). The cross-family degeneracy measurement is not per-run: about 27 s of band grids a spectrum plus 6 ms a peak, against ten seconds for a whole sample's assignment **2.4b measured** on build `step-2.4b-tiering-2026.09.11-639e1df`: every committed monoisotopic row records `provenance.tier_reasons`, and none of the 32,449 carries zero - the 31 curated isotopologue rows with no owner that carried none on this build now say `not_measured`, which moves no tier; the rules only demote and move nothing but tiers - 0 formula, role or verdict shifts of 48,894 peaks, G2 and its denominator identical on all eight sets. The pass takes 3,778 assigned rows and the reference confirms 38 of them (1.0%): an odd-electron neutral, a rule the plan did not have and the gate found, 1,782 with none confirmed; candidate density 2,636 with 32; the oxygen lattice 212 with 3; the envelope neighbour 166 with 4; carbon-free none, because no curated row is asked the formula-shape questions (#2105, rule set version 2, measured on `step-2.4d-curated-implausibility-2026.09.11-2012665`: as first merged the pass took 7 curated carbon-free rows - trisulfur on C2, the dibromide ion's bromine on F1 - with none confirmed, and exempting them moves those rows and their 8 isotopologues back to assigned and nothing else). Read on the rows the reference commits an M0 on (decision 14), G1 meets the 20% bound on all five Orbitrap sets - A 3.1, B 12.3 (1.1 with the same-ion splits set aside), C 1.3, C2 0.4, D 1.4 - against 23.0, 36.9, 21.0, 24.6 and 8.4 unconditioned, a remainder that is 73-91% reference silence; the TOF sets are carried to 2.5 and 2.7. G6 at assigned tier falls 159 -> 71, of which 47 are the grid gap and 24 the envelope part, every one of them spared by the rule's height test or by the run holding no neighbour to predict it, so that Verify line as first written is missed; re-worded in 2.4c to the height-qualified form, which is the rule as measured, it is met. An isotopologue row follows an owner any pass capped; the earlier passes already cap their own, so that count is 0 on all 43 runs. **2.4c** puts the reasons in the peak inspector under *Why this tier* - the rule by name over the run's own sentence, a mark on each reason that holds the tier down, and on an isotopologue its M0's reasons beneath its own; a row no rule judged shows none. Display and documentation only: no run or gate number moves |
-| 2.5a - reference seed: peak-list adapter, lift peaky's lists and families (seed proposal phases 0-1) | - | planned |
-| 2.5b - Stage A window per source, radical switch, deactivate (seed proposal phase 3) | - | planned |
+| 2.5a - reference seed: list format, the lifted lists, `reference seed` (seed proposal phases 0-1) | - | in progress: schema 2 list files with radical status read from the formula, the `peaklist` adapter, `mascope reference seed`, the demo hook and an integrity test over every list; the lift is Kang 2021 split into 573 closed-shell and 257 RO2 formulas (opt-in), Keller 2008 less its ions and salts (50 of 59), peaky's pass-0 families as seven cited lists (45 of their 65 formulas, plus the D3-D6 siloxanes) and the example list, 1,008 formulas in all |
+| 2.5b - Stage A window per source, radical filter, deactivate (seed proposal phase 3) | - | planned |
 | 2.6 - frontend: profile, reasons, roles | - | planned |
 | 2.7 - stage 2 gate, engine 0.5.0 | - | planned |
 | 3.1 - series detection on the batch ledger | - | planned |
@@ -686,23 +686,47 @@ runs beside the engine work: its phases 0, 1 and 3 sit on the assignment
 path, its literature sweep (phase 2) continues through stages 2 and 3 with
 its own status.
 
-- **2.5a What.** The `peaklist` adapter in `mascope_reference`, so peaky's
-  peak-list JSON becomes the single authoring format (neutral formula,
-  radical flag, detection ion, context tags, references, provenance); a
-  `mascope reference seed` command, the demo hook and an integrity test over
-  every list file. Then the lift: peaky's Keller 2008 contaminant list and
-  Kang 2022 HOM list, the seven families hard-coded in peaky's pass-0
-  directors (Br-CIMS inorganics, reactive iodine, nitroaromatics, PFCAs,
-  silanediols and siloxanes, organophosphate and thiophosphate esters,
-  ammonia) and the example atmospheric list - about 1,000 rows with no new
-  literature work. Detection ion and context tags travel in `xrefs` now and
-  become `reference_source.tags` activation per the profiles design.
+- **2.5a What.** Reference lists as self-describing JSON files, in the format
+  peaky's lists introduced, versioned as schema 2. That is the format of the
+  lists Mascope ships; the `custom` CSV adapter stays the path for a user's
+  own list (decision 15).
+  - **The header** carries what belongs to the whole list: its id, which
+    names the source, a version, a licence, references with a DOI or ISBN
+    each, the detection ion and context tags. Those stay in the file. Stage A
+    copies every identity it matches, `xrefs` included, into the provenance
+    of the row and its alternatives, so a list's constants there would be
+    written onto every matched peak and read by nothing. Context tags wait for
+    `reference_source.tags`.
+  - **Radical status is read from the formula** - a half-integer DBE, the
+    nitrogen rule - never from a flag. A list may hold radicals only when it
+    says `allow_radicals`. peaky's flag was set from odd hydrogen and is wrong
+    on every nitrogen-bearing row of its HOM list.
+  - **The tooling:** a `peaklist` adapter in `mascope_reference`,
+    `mascope reference seed` with its deployment counterpart inside the
+    backend container, the demo hook, and an integrity test over every list
+    file. peaky's copy of the lists carries the test too, until step 2.7
+    settles what peaky reads.
+  - **The lift:**
+    - Kang 2021's 830 HOM formulas, as a closed-shell list (573) and an RO2
+      list (257) that no seed loads unasked.
+    - Keller 2008's contaminants, less the ions and salts it lists as
+      neutrals (50 of 59).
+    - The seven families hard-coded in peaky's pass-0 directors, each species
+      with a literature citation. That keeps 45 of their 65 formulas: 16 have
+      no paper reporting them observed, and four are unnamed. None of the
+      provenance the directors' code comments carry comes with them.
+    - The cyclic siloxanes D3 to D6, with a citation. No day-one list held
+      them, although the Verify below names D4 and D5.
+    - The example atmospheric list.
+  - **No engine code changes**, so the step's store round measures the seed
+    alone.
 - **2.5b What.** The Stage A known window (`iter_known_compositions`:
   C/H/N/O/S, C <= 40, 700 Da) becomes per source, bounded by the context's
   `known_window`, so a curated list brings I, F, Si, P, Cl and Br into Stage
-  A while a PubChem mirror stays bounded; a radical switch on the known set,
-  default off; a `reference deactivate` command. Verify ion generation
-  handles Si and P.
+  A while a PubChem mirror stays bounded. It also adds a radical filter on
+  the known set, off by default; the per-list allowance moves from the list
+  file onto the source row with the window. And a `reference deactivate`
+  command. Verify ion generation handles Si and P.
 - **Why.** The siloxane and phosphate peaks are the brightest wrong answers
   in every sample, and the families peaky hard-codes are exactly the ones no
   formula grid reaches: known-formula matching is the only way they get
@@ -722,7 +746,7 @@ its own status.
   proposal's four decisions (sweep order nitrate, bromide, urea and
   ammonium; opt-in production loading; radicals and clusters off by
   default; widen the window together with the seed) are taken there and
-  assumed here.
+  assumed here, and decision 15 records the list format.
 
 ### 2.6 Frontend: profile, reasons, roles
 
@@ -3213,6 +3237,32 @@ belongs in the fitted axis once anchors reach below m/z 100, which is step
     step 2.5, which gives them a reference that commits there, and to the
     stage-2 gate at 2.7. The unconditioned G1 is still reported beside the
     conditioned one, so a step that raises it stays visible.
+15. **The seed's lists are schema 2 files, and a radical is read from its
+    formula** (taken 2026-09-11 with step 2.5a).
+    - **The format.** peaky's peak-list JSON is the format of the lists
+      Mascope ships, versioned as schema 2. Every list must carry a licence
+      and a citable reference. The `custom` CSV stays the path for a user's
+      own list.
+    - **Radicals.** Radical status is a property of the formula, not an
+      authored flag. peaky's own lists set theirs from odd hydrogen, which
+      misfiles all 121 nitrogen-bearing rows of the HOM list.
+      - Only a list that says `allow_radicals` may hold a radical. So
+        decision 7's "radicals as separate lists" is the HOM list's 257 RO2
+        formulas as their own list, off by default.
+      - The Stage A filter on radicals stays with 2.5b, where the allowance
+        moves onto the source row. After the lift, the one radical a default
+        seed puts within Stage A's reach is HO2, which bromide CIMS measures
+        and its list wants. No public mirror is loaded on the testbed for the
+        filter to guard. Keeping the engine unchanged also keeps 2.5a's store
+        round a measurement of the seed alone.
+    - **Where list facts live.** List-level facts stay in the list file, not
+      in each compound's `xrefs`, which Stage A copies into every matched
+      row's provenance.
+    - **Ions and salts** a source lists as neutrals are left out, not
+      recorded with a charge that Stage A would refuse anyway.
+    - **Two copies.** The lifted lists exist in Mascope and in peaky, and
+      both copies carry the integrity test until step 2.7 settles what peaky
+      reads. Publishing the reference library is a release change.
 
 ## Risks
 
