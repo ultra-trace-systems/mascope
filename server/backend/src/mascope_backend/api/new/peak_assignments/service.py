@@ -1918,13 +1918,15 @@ async def _stage_a_assignments(
         see :func:`drop_ions_claimed_elsewhere` for why the difference matters.
     :return: The assignment rows; what a run records about the confidence curve
         their P(correct) came from - None when Stage A never ran or the
-        instrument has no curve; and what the library's own matched
+        instrument has no curve; and what the target library's own matched
         isotopologues say about this sample's mass error. That last one is the
         instrument's accuracy ON THIS SAMPLE, and Stage B is scored at it: the
         untargeted stage has no corroborated set of its own to fit a width
-        from, and the curated library is exactly such a set. Its ``sigma_ppm``
-        is None when too few rows matched to fit one, and its ``anchors`` says
-        how few.
+        from, and the target library is exactly such a set. The reference
+        mirror is not, so its lines are left out of the fit even though they
+        compete for peaks in the same frame (:func:`target_library_rows`). Its
+        ``sigma_ppm`` is None when too few of the library's lines matched to
+        fit one, and its ``anchors`` says how few.
     """
     stage_a_assignments: list[dict] = []
     confidence_calibration: dict | None = None
@@ -2611,13 +2613,18 @@ async def _fold_sample_peaks_without_run(
     A sample the engine would refuse a run for (a blank, an unverified
     calibration) is skipped with a log line and nothing is written.
 
-    The mass gate is not run here, and the two ledgers still agree on every
-    tier: it only ever demotes a commit the run has nothing but a mass fit for,
-    and every commit on this path is a Stage A one, which a curated identity
-    proposed. There is nothing it could act on. ``test_mass_gate`` pins that
-    reasoning rather than this comment asserting it, so a Stage A source that is
-    not curated - or an untargeted stage on this path - fails a test here
-    instead of quietly tiering two ways.
+    The mass gate runs here as it does in a run, over the commits this path
+    has. Every commit here is a Stage A one, but not every Stage A commit is
+    curated. A target library row is never capped. A reference mirror's row is
+    judged like a search result unless an isotopologue tracks it
+    (``mass_gate.CORROBORATED_CURATED``). Without the gate here, such a row
+    would hold a tier on this ledger that the gate takes from it in a run. The
+    two calibrations are fitted over different commits, since a run also has
+    the untargeted stage's. So a row near the cap can still fall on either side
+    of it on the two paths, and where this path measures no calibration the
+    gate stands down, as it does in a run with too few anchors.
+    ``test_fold_without_run`` pins that the gate runs here, and
+    ``test_mass_gate`` pins which Stage A rows it may act on.
 
     :param sample_item_id: The sample to fold.
     :param defer_consensus_to: As for ``fold_sample_into_batch_peaks``: a
@@ -2667,7 +2674,7 @@ async def _fold_sample_peaks_without_run(
         peaks_df, instrument_type, sample_item_id, run_id, reagent_peak_ids
     )
     claimed_peak_ids = reagent_peak_ids | artifact_peak_ids
-    stage_a, _, _ = await _stage_a_assignments(
+    stage_a, _, mass_accuracy = await _stage_a_assignments(
         sample,
         config,
         match_params,
@@ -2675,6 +2682,14 @@ async def _fold_sample_peaks_without_run(
         mechanisms,
         run_id,
         excluded_peak_ids=claimed_peak_ids,
+    )
+    # The run's gate over this path's commits, so that a reference mirror's
+    # row off calibration is capped here as a run would cap it. Nothing records
+    # the summary: there is no run to put it on.
+    apply_mass_gate(
+        stage_a,
+        stage_a_accuracy=mass_accuracy,
+        fallback_sigma_ppm=resolved_profile.fallback_sigma_ppm,
     )
     assigned = claimed_peak_ids | {row["sample_peak_id"] for row in stage_a}
     unassigned = build_unassigned_assignments(

@@ -155,7 +155,7 @@ async def test_folds_stage_a_and_the_placeholders_without_persisting():
     rows = kwargs["rows"]
     assert [row.sample_peak_id for row in rows] == ["p1", "p2"]
     assert rows[0].assigned_formula == "C6H12O6"
-    assert rows[0].provenance == {"p_correct": 0.9}
+    assert rows[0].provenance["p_correct"] == 0.9
     # The unexplained peak is a placeholder, as it is in a run's ledger.
     assert rows[1].role == "unassigned" and rows[1].assigned_formula is None
     assert rows[1].sample_peak_intensity == 300.0
@@ -167,6 +167,48 @@ async def test_folds_stage_a_and_the_placeholders_without_persisting():
     stage_a.assert_awaited_once()
     assert stage_a.call_args.args[1].run_untargeted is False
     assert stage_a.call_args.args[5] == fold_run_id("si-1")
+
+
+@pytest.mark.asyncio
+async def test_the_fold_gates_its_stage_a_rows_as_a_run_does():
+    """A reference mirror's row off calibration is capped on this ledger too.
+
+    Every commit here is a Stage A one, but a mirror's row is not curated: the
+    gate caps it in a run unless an isotopologue tracks it. A fold that skipped
+    the gate would hold that row at a tier the run takes from it, while the
+    target library's row at the same error keeps its tier on both.
+    """
+    from mascope_backend.api.new.peak_assignments.service import (
+        fold_sample_peaks_without_run,
+    )
+
+    run_id = fold_run_id("si-1")
+
+    def stage_a_row(row_id, ppm, compound):
+        return _stage_a_row("si-1", run_id) | {
+            "peak_assignment_id": row_id,
+            "sample_peak_id": f"peak-{row_id}",
+            "mz_error_ppm": ppm,
+            "target_compound_id": compound,
+        }
+
+    rows = [
+        stage_a_row(f"anchor-{i}", 0.1 if i % 2 else -0.1, f"compound-{i}")
+        for i in range(12)
+    ] + [
+        stage_a_row("library", 5.0, "compound-library"),
+        stage_a_row("seed", 5.0, None),
+    ]
+
+    stack, mocks = _patched()
+    mocks["stage_a"].return_value = (rows, None, SampleMassAccuracy(0.0, 0.1, 12))
+    with stack:
+        assert await fold_sample_peaks_without_run("si-1") == "batch-1"
+
+    folded = {row.sample_peak_id: row for row in mocks["fold"].call_args.kwargs["rows"]}
+    assert folded["peak-library"].tier == "assigned"
+    assert folded["peak-seed"].tier == "below_assignability"
+    assert folded["peak-seed"].assigned_formula == "C6H12O6"
 
 
 @pytest.mark.asyncio
