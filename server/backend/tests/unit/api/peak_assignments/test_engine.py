@@ -1329,6 +1329,36 @@ class TestScoreIonsByFit:
         fit = out.groupby("target_ion_id")["match_score"].first()
         assert fit["full"] > fit["miss"]
 
+    def test_a_reference_mirror_does_not_set_the_width_stage_a_scores_at(self):
+        # The mirror's lines are paired in the same frame as the target
+        # library's, and on a TOF most of them are lines the window reached by
+        # chance. Fitted into the width, twenty of them scattered across +-9 ppm
+        # would let a mirror ion 3 ppm off an axis the library measures at 0.15
+        # ppm fit as well as a real one. It must score the same with them in the
+        # frame as without them.
+        identities = [{"name": "a seed compound", "source": "test"}]
+
+        def line(ion, mz_err, reference=None):
+            row = self._iso(ion, 1.0, mz_err, 1000.0, 0.9, snr=50.0, peak_id=ion)
+            row["reference_identities"] = reference
+            return row
+
+        library = [line(f"lib{i}", 0.1 if i % 2 else -0.1) for i in range(10)]
+        chance = [
+            line(f"chance{i}", -9.0 + i * 18.0 / 19, identities) for i in range(20)
+        ]
+        probe = [line("probe", 3.0, identities)]
+
+        def fit_of(rows):
+            out = score_ions_by_fit(pd.DataFrame(rows))
+            return out.groupby("target_ion_id")["match_score"].first()
+
+        alone = fit_of(library + probe)
+        crowded = fit_of(library + chance + probe)
+
+        assert crowded["probe"] == pytest.approx(alone["probe"])
+        assert crowded["probe"] < crowded["lib0"]
+
 
 class TestUntargetedMatches:
     def _matches_df(self) -> pd.DataFrame:

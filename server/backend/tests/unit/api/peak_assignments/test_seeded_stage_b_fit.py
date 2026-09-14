@@ -107,6 +107,29 @@ class TestWhatStageAMeasured:
 
         assert sample_mass_accuracy(frame).anchors == 2
 
+    def test_a_reference_mirror_line_is_not_an_anchor(self):
+        # A mirror is matched against every sample, so on a TOF most of its
+        # pairings are lines the window reached by chance. With the default seed
+        # loaded they were over 90% of the anchors on the gate's TOF sets, and
+        # the width came out as the window's. The target library's lines are the
+        # measurement, and the count a run records is theirs.
+        library = [0.0, 0.1, -0.1, 0.2, -0.2, 0.1, -0.1, 0.05, -0.05]
+        mirror = [-9.0, -7.5, -6.0, -4.5, -3.0, 3.0, 4.5, 6.0, 7.5, 9.0, -8.0, 8.0]
+        identities = [{"name": "a seed compound", "source": "test"}]
+        frame = pd.DataFrame(
+            {
+                "match_mz_error": library + mirror,
+                "sample_peak_intensity": [100.0] * (len(library) + len(mirror)),
+                "reference_identities": [None] * len(library)
+                + [identities] * len(mirror),
+            }
+        )
+
+        measured = sample_mass_accuracy(frame)
+
+        assert (measured.mu_ppm, measured.sigma_ppm) == fit_mass_accuracy(library)
+        assert measured.anchors == len(library)
+
     def test_a_sample_with_no_matches_measured_nothing(self):
         measured = sample_mass_accuracy(pd.DataFrame())
 
