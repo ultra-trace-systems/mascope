@@ -4021,7 +4021,8 @@ round before the seed in brackets:
   It rests on slightly fewer anchors: E 51, F1 72 and F2 31, against 52, 77
   and 38 before the seed.
 - The gate caps rows on TOF again: E 0 -> 3 and F2 0 -> 7, against 2 and 9
-  before the seed.
+  before the seed. Where its width narrows with the search width it caps more
+  (B 12 -> 20, D 3 -> 5), and on C, where the width widens, one fewer (6 -> 5).
 
 **Every peak it moves goes back to its pre-seed owner.** The owner changed on
 3,883 of 48,894 peaks:
@@ -4071,11 +4072,25 @@ round before the seed in brackets:
 the narrower width already holds the other 26 below the cap.**
 - Every one is still a mirror row on the same peak, and none is at assigned
   tier.
-- The gate caps four to candidate: an isotopologue on B, two on D, and
-  C10H13O5- on F2, 12.2 ppm off.
+- The gate caps four to candidate: an isotopologue on B, two on D, and the
+  M0 of C10H14O5 on F2 (C10H13O5-, 12.2 ppm off).
 - Of the other 26, 23 are below assignability on their own evidence (E 1,
   F2 22) and 3 are at candidate (F2), where the cap would leave them.
 - Across the whole gate, the gate caps no other mirror row.
+
+**Still open: the seeded re-score's fallback.** `score_seeds` measures a list
+of formulas against a sample's peaks. It serves four readers:
+- the readings Stage B commits;
+- the batch ledger's identities on the samples holding them;
+- the inspector's alternatives;
+- a derived row's evidence.
+
+It fits its width over its own seeded frame and passes no class width. A frame
+too small to fit one is still scored at `score_pattern_v2`'s generic 2 ppm, the
+defect #2113 closed for Stage A. A run's frame usually holds hundreds of lines.
+The inspector's alternatives and a derived row's evidence measure a handful of
+formulas, which is where the generic width is reached. Changing it is its own
+measurement.
 
 ## Not in this plan
 
