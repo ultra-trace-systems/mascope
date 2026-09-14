@@ -22,6 +22,14 @@ export const copyText = async (text, container = document.body) => {
       // Refused (permissions, an unfocused document): try the legacy path.
     }
   }
+  // Copying from the field means focusing it and replacing the page's selection.
+  // Put both back afterwards, or a keyboard user who pressed a copy button is
+  // left on <body> with no idea where they were.
+  const focused = document.activeElement
+  const selection = document.getSelection()
+  const ranges = Array.from({ length: selection?.rangeCount ?? 0 }, (_, i) =>
+    selection.getRangeAt(i)
+  )
   const field = document.createElement('textarea')
   field.value = text
   field.setAttribute('readonly', '')
@@ -29,11 +37,17 @@ export const copyText = async (text, container = document.body) => {
   Object.assign(field.style, { position: 'fixed', top: '0', left: '0', opacity: '0' })
   container.appendChild(field)
   try {
+    field.focus({ preventScroll: true })
     field.select()
     return document.execCommand('copy')
   } catch {
     return false
   } finally {
     field.remove()
+    if (selection) {
+      selection.removeAllRanges()
+      ranges.forEach((range) => selection.addRange(range))
+    }
+    focused?.focus?.({ preventScroll: true })
   }
 }

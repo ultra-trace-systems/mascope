@@ -1,4 +1,3 @@
-import os
 from pathlib import Path
 
 from fastapi import APIRouter, Depends
@@ -18,8 +17,12 @@ THIRD_PARTY_NOTICES = "THIRD_PARTY_NOTICES.txt"
 
 
 def third_party_notices_path() -> Path:
-    """Where the image build leaves this backend's third-party notices."""
-    return Path(os.environ.get("MASCOPE_PATH", ".")) / THIRD_PARTY_NOTICES
+    """Where the image build leaves this backend's third-party notices.
+
+    The runtime home (``MASCOPE_PATH``): ``/app`` in the image, and in a
+    worktree the shared home rather than the checkout.
+    """
+    return Path(runtime.path(THIRD_PARTY_NOTICES))
 
 
 @version_router.get("")
@@ -79,7 +82,9 @@ async def get_third_party_notices_route(user=Depends(guest_user)):
 
     A source checkout has no such file unless someone generated one, which is
     answered with 404 rather than an empty document that would read as "no
-    third-party code".
+    third-party code". The response does not name the path it looked at - any
+    signed-in user can ask, and the host's layout is none of their business -
+    so the server log does.
 
     :param user: The currently authenticated user.
     :type user: User
@@ -88,10 +93,15 @@ async def get_third_party_notices_route(user=Depends(guest_user)):
     """
     path = third_party_notices_path()
     if not path.is_file():
+        runtime.logger.info(
+            f"No third-party notices at {path}; generate them there with "
+            f"tooling/third-party-notices.py -o {path}"
+        )
         raise ApiException(
             "Third-party notices are generated when the server image is built, "
             "and this server has none.",
-            f"{path} does not exist; generate it with tooling/third-party-notices.py",
+            f"No {THIRD_PARTY_NOTICES} in the server's runtime home (MASCOPE_PATH); "
+            "generate it there with tooling/third-party-notices.py",
             404,
         )
     return FileResponse(path, media_type="text/plain; charset=utf-8")

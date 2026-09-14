@@ -47,6 +47,15 @@ RUN mkdocs build --strict && \
     # /docs/help-content.json for the in-app help popovers
     python build_help_content.py
 
+# Attributions for what the site ships that is not ours: the theme, scripts and
+# styles the docs packages copy into it, read out of the environment that just
+# built it, and the KaTeX, mermaid and font files vendored under
+# docs/user/assets, by the licence files kept beside them. Served beside the
+# web app's own notices at /legal/, where the About tab reads them.
+COPY tooling/third-party-notices.py tooling/check-licenses.py ./tooling/
+RUN python tooling/third-party-notices.py --for docs --vendored docs/user/assets \
+    -o DOCS_THIRD_PARTY_NOTICES.txt
+
 # RUNTIME
 FROM nginx:1.27-alpine
 
@@ -63,6 +72,7 @@ COPY --from=frontend-build /src/server/frontend/dist /app/frontend/
 
 # the rendered docs site, served by nginx at /docs/
 COPY --from=docs-build /docs-src/site /app/docs/
+COPY --from=docs-build /docs-src/DOCS_THIRD_PARTY_NOTICES.txt /app/frontend/legal/
 
 # stage both nginx configs; the entrypoint picks one based on MASCOPE_TLS
 COPY server/frontend/nginx.conf /etc/nginx/mascope/nginx.conf

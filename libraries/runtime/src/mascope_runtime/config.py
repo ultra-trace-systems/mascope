@@ -15,6 +15,7 @@ import tomllib
 import typing
 from pathlib import Path
 from typing import Literal, Optional
+from urllib.parse import urlsplit
 
 from pydantic import BaseModel, Field, ValidationInfo, field_validator
 
@@ -32,6 +33,36 @@ if typing.TYPE_CHECKING:
 type LogLevel = Literal[
     "trace", "debug", "info", "success", "warning", "error", "critical"
 ]
+
+# A `%` that does not start an escape: fine for a browser's URL parser, fatal
+# for decoding the address back out of a mailto: link.
+_STRAY_PERCENT = re.compile(r"%(?![0-9A-Fa-f]{2})")
+
+
+def _link_problem(url: str) -> str | None:
+    """
+    Why ``url``, already known to carry an allowed scheme, is no usable link.
+
+    The web app parses the value with the browser's URL parser and hides a link
+    it cannot read, so anything that parser would refuse - no host, a broken
+    port or IPv6 literal - has to be refused at load instead, where the setting
+    can be named. Whitespace and stray ``%`` signs are refused too: a browser
+    would repair some of them, but they are typos, not what anyone meant.
+
+    :return: A short reason, or ``None`` when the link is usable.
+    """
+    if re.search(r"[\s\x00-\x1f\x7f]", url):
+        return "it contains whitespace or a control character"
+    if _STRAY_PERCENT.search(url):
+        return "a % that is not followed by two hex digits"
+    if url.lower().startswith("mailto:"):
+        return None if url[len("mailto:") :].split("?")[0] else "no address"
+    try:
+        parts = urlsplit(url)
+        parts.port  # raises on a port that is not a number in range
+    except ValueError as error:
+        return str(error)
+    return None if parts.hostname else "no host"
 
 
 class MetaConfig(BaseModel):
@@ -104,7 +135,9 @@ class MetaConfig(BaseModel):
         The value lands in an ``href`` on the sign-in screen, where a
         ``javascript:`` URL would run in the app's own origin, and a bare
         ``example.org/privacy`` would quietly resolve against the app instead
-        of leaving it. Failing at load names the setting instead.
+        of leaving it. A value with the right scheme that the browser still
+        cannot parse, such as ``https://`` alone, would silently hide the link.
+        Failing at load names the setting instead.
         """
         value = value.strip()
         if not value:
@@ -116,6 +149,11 @@ class MetaConfig(BaseModel):
             raise ValueError(
                 f"{info.field_name} must start with {', '.join(schemes)} "
                 f"or be empty to hide the link, not {value!r}"
+            )
+        problem = _link_problem(value)
+        if problem:
+            raise ValueError(
+                f"{info.field_name} is not a usable link ({problem}): {value!r}"
             )
         return value
 

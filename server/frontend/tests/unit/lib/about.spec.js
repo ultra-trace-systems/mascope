@@ -82,7 +82,15 @@ describe('about: legal links', () => {
 
   it('shows a mail link as its address', () => {
     expect(supportLabel('mailto:help@example.org?subject=Mascope')).toBe('help@example.org')
+    expect(supportLabel('mailto:help%40example.org')).toBe('help@example.org')
     expect(supportLabel('https://help.example.org/')).toBe('https://help.example.org/')
+  })
+
+  it('shows an address it cannot decode as written instead of throwing', () => {
+    // Passes the config validator and new URL() alike, but not decodeURIComponent.
+    const href = safeHref('mailto:help%zz@example.org', ['mailto:'])
+
+    expect(supportLabel(href)).toBe('help%zz@example.org')
   })
 })
 
@@ -103,7 +111,8 @@ describe('about: versions', () => {
   it('tells a build from a channel or nothing', () => {
     expect(isBuildVersion('v1.7.3')).toBe(true)
     expect(isBuildVersion('2026.09.01-abc1234')).toBe(true)
-    for (const channel of ['latest', 'unknown', '', ' ', null, undefined]) {
+    // `unknown-version` is what the runtime reports for a checkout git cannot describe.
+    for (const channel of ['latest', 'unknown', 'unknown-version', '', ' ', null, undefined]) {
       expect(isBuildVersion(channel), String(channel)).toBe(false)
     }
   })
@@ -113,13 +122,19 @@ describe('about: versions', () => {
     expect(versionsDiffer('v1.7.3', 'v1.7.3')).toBe(false)
     // A deployment tracking `latest` reports the channel; it cannot be compared.
     expect(versionsDiffer('v1.7.3', 'latest')).toBe(false)
+    expect(versionsDiffer('unknown-version', 'v1.7.3')).toBe(false)
     expect(versionsDiffer('v1.7.3', null)).toBe(false)
   })
 
   it('links a tagged release to its release page and anything else to the changelog', () => {
     expect(releaseNotesUrl('v1.7.3')).toBe(`${RELEASES}/v1.7.3`)
     expect(releaseNotesUrl('v1.8.0-rc.1')).toBe(`${RELEASES}/v1.8.0-rc.1`)
+    expect(releaseNotesUrl('v2.0.0-beta2')).toBe(`${RELEASES}/v2.0.0-beta2`)
     expect(releaseNotesUrl('2026.09.01-abc1234')).toBe(CHANGELOG)
+    // The tag every merge to master gets is a build id, as the runtime's
+    // RELEASE_TAG_PATTERN has it, and has no release page.
+    expect(releaseNotesUrl('v2026.09.01-9b9e54d')).toBe(CHANGELOG)
+    expect(releaseNotesUrl('v1.7.3+build.5')).toBe(CHANGELOG)
     expect(releaseNotesUrl('latest')).toBe(CHANGELOG)
     expect(releaseNotesUrl(null)).toBe(CHANGELOG)
   })

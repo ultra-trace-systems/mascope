@@ -72,9 +72,51 @@ def test_anything_else_is_refused_naming_the_setting(field, url):
         MetaConfig(**{field: url})
 
 
+@pytest.mark.parametrize("field", LINKS)
+@pytest.mark.parametrize(
+    "url",
+    [
+        "https://",
+        "https:///privacy",
+        "https://exa mple.org/privacy",
+        "https://example.org/privacy\tnotice",
+        "http://[bad/privacy",
+        "https://example.org:port/privacy",
+        "https://example.org/100%/privacy",
+    ],
+)
+def test_a_link_the_browser_could_not_use_is_refused(field, url):
+    """The right scheme is not enough: the web app hides a link its URL parser
+    rejects, so without this the link would vanish with nothing saying why."""
+    with pytest.raises(ValidationError, match=f"{field} is not a usable link"):
+        MetaConfig(**{field: url})
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "https://example.org/privacy%20notice",
+        "http://intranet.local:8080/privacy?lang=fi#data",
+        "https://[2001:db8::1]/privacy",
+    ],
+)
+def test_escaped_ported_and_ipv6_links_are_accepted(url):
+    assert MetaConfig(privacy_notice_url=url).privacy_notice_url == url
+
+
+@pytest.mark.parametrize(
+    "url", ["mailto:", "mailto:?subject=Help", "mailto:help%zz@example.org"]
+)
+def test_a_mail_link_needs_a_decodable_address(url):
+    with pytest.raises(ValidationError, match="support_url is not a usable link"):
+        MetaConfig(support_url=url)
+
+
 def test_support_may_be_a_mail_address():
     meta = MetaConfig(support_url="mailto:help@example.org")
     assert meta.support_url == "mailto:help@example.org"
+    with_subject = "mailto:help@example.org?subject=Mascope%20support"
+    assert MetaConfig(support_url=with_subject).support_url == with_subject
 
 
 @pytest.mark.parametrize("field", ["privacy_notice_url", "terms_url"])

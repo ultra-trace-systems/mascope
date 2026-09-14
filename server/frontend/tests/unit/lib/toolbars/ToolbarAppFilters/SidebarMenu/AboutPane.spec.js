@@ -39,7 +39,9 @@ const STUBS = {
 const FILES = {
   '/legal/NOTICE.txt': 'Mascope\nCopyright 2021-2026 Ultra Trace Systems Oy\n',
   '/legal/LICENSE.txt': 'Apache License\nVersion 2.0\n',
-  '/legal/THIRD_PARTY_NOTICES.txt': 'Mascope web app - third-party notices\n\nvue 3.5.42\n'
+  '/legal/THIRD_PARTY_NOTICES.txt': 'Mascope web app - third-party notices\n\nvue 3.5.42\n',
+  '/legal/DOCS_THIRD_PARTY_NOTICES.txt':
+    'Mascope user documentation - third-party notices\n\nmkdocs-material 9.7.0\n'
 }
 const SERVER_NOTICES = 'Mascope server - third-party notices\n\nnumpy 2.5.2\n'
 
@@ -185,7 +187,7 @@ describe('AboutPane: copying the version details', () => {
 })
 
 describe('AboutPane: documents', () => {
-  it('shows NOTICE and both third-party lists as one document, in that order', async () => {
+  it('shows NOTICE and the web app, docs and server lists as one document, in order', async () => {
     serve()
     serveFiles()
     const { wrapper } = await mountPane()
@@ -193,14 +195,33 @@ describe('AboutPane: documents', () => {
     await click(wrapper, 'Notices')
 
     const text = wrapper.get('[aria-label="Notices"] pre').text()
-    const order = ['Copyright 2021-2026', 'vue 3.5.42', 'numpy 2.5.2'].map((s) => text.indexOf(s))
-    expect(order.every((at) => at >= 0)).toBe(true)
-    expect(order).toEqual([...order].sort((a, b) => a - b))
+    const order = ['Copyright 2021-2026', 'vue 3.5.42', 'mkdocs-material 9.7.0', 'numpy 2.5.2']
+    const at = order.map((s) => text.indexOf(s))
+    expect(at.every((index) => index >= 0)).toBe(true)
+    expect(at).toEqual([...at].sort((a, b) => a - b))
+  })
+
+  it('reads the server list so a refusal still arrives as a parsed error body', async () => {
+    // As text, a 403's detail.code - the password gate, MFA enrolment - would be
+    // buried in a string the response interceptor cannot read.
+    serve()
+    serveFiles()
+    const { wrapper } = await mountPane()
+
+    await click(wrapper, 'Notices')
+
+    const [, options] = api.http.get.mock.calls.find(
+      ([url]) => url === '/version/third-party-notices'
+    )
+    expect(options).toEqual(expect.objectContaining({ errors: 'inline' }))
+    expect(options).not.toHaveProperty('responseType')
   })
 
   it('explains a missing list instead of hiding the rest', async () => {
     serve({ notices: Object.assign(new Error('Not Found'), { response: { status: 404 } }) })
-    serveFiles()
+    const withoutDocs = { ...FILES }
+    delete withoutDocs['/legal/DOCS_THIRD_PARTY_NOTICES.txt']
+    serveFiles(withoutDocs)
     const { wrapper } = await mountPane()
 
     await click(wrapper, 'Notices')
@@ -208,7 +229,26 @@ describe('AboutPane: documents', () => {
     const text = wrapper.get('pre').text()
     expect(text).toContain('Copyright 2021-2026')
     expect(text).toContain('vue 3.5.42')
-    expect(text).toContain('generated when its image is built')
+    expect(text).toContain('this server has none')
+    expect(text).toContain(
+      'Mascope user documentation - third-party notices\n\n' +
+        'Not available: they are generated when the web app image is built.'
+    )
+  })
+
+  it('does not call a list that failed to load one that does not exist', async () => {
+    serve({ notices: Object.assign(new Error('Server Error'), { response: { status: 500 } }) })
+    serveFiles()
+    const { wrapper } = await mountPane()
+
+    await click(wrapper, 'Notices')
+
+    const text = wrapper.get('pre').text()
+    expect(text).toContain('vue 3.5.42')
+    expect(text).not.toContain('this server has none')
+    expect(text).toContain(
+      'Mascope server - third-party notices\n\nNot available: they could not be loaded.'
+    )
   })
 
   it('opens the licence without a full-screen button', async () => {

@@ -61,10 +61,17 @@ export const legalLinks = () => {
 export const linkTarget = (href) => (href?.startsWith('mailto:') ? undefined : '_blank')
 
 /** How to show a support link: the address for mail, the URL otherwise. */
-export const supportLabel = (href) =>
-  href?.startsWith('mailto:')
-    ? decodeURIComponent(href.slice('mailto:'.length).split('?')[0])
-    : href
+export const supportLabel = (href) => {
+  if (!href?.startsWith('mailto:')) return href
+  const address = href.slice('mailto:'.length).split('?')[0]
+  try {
+    return decodeURIComponent(address)
+  } catch {
+    // A stray `%` is valid enough for a URL but not for decoding; show it as
+    // written rather than take the whole tab down over a label.
+    return address
+  }
+}
 
 // --- Notices ---
 
@@ -83,8 +90,10 @@ export const combineNotices = (sections) =>
 
 // --- Versions ---
 
-// Version strings that name a channel, or nothing, rather than a build.
-const NOT_A_BUILD = new Set(['latest', 'unknown'])
+// Version strings that name a channel, or nothing, rather than a build:
+// `latest`, the backend's `unknown` for an unset MASCOPE_VERSION, and the
+// runtime's `unknown-version` for a checkout git could not describe.
+const NOT_A_BUILD = new Set(['latest', 'unknown', 'unknown-version'])
 
 /** True when `version` names a specific build. */
 export const isBuildVersion = (version) =>
@@ -109,7 +118,11 @@ export const builtVersion = () =>
 export const versionsDiffer = (web, server) =>
   isBuildVersion(web) && isBuildVersion(server) && web.trim() !== server.trim()
 
-const RELEASE_TAG = /^v\d+\.\d+\.\d+([-+.][0-9A-Za-z.-]+)?$/
+// A release tag, exactly as RELEASE_TAG_PATTERN in
+// libraries/runtime/src/mascope_runtime/main.py defines one - keep the two in
+// step. Only alpha/beta/rc suffixes: the `v{date}-{sha7}` tag every merge to
+// master gets must not pass for a release, which has a release page.
+const RELEASE_TAG = /^v\d+\.\d+\.\d+(-(alpha|beta|rc)\.?\d+)?$/
 
 /** Where to read what changed in `version`: its release page if tagged, else the changelog. */
 export const releaseNotesUrl = (version) =>
