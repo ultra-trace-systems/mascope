@@ -208,3 +208,16 @@ def _list_file(tmp_path, **header) -> Path:
 )
 def test_a_list_file_is_scoped_as_its_header_says(tmp_path, header, expected):
     assert scope_of(PeakListAdapter(), _list_file(tmp_path, **header)) == expected
+
+
+def test_a_polarity_flag_sets_the_polarity_or_clears_it():
+    # A hand-authored list names no polarity, so the flag is how it records one;
+    # 'both' writes the row's NULL.
+    csv_list = SourceScope(UNBOUNDED)
+    assert csv_list.overridden(polarity="positive").polarity == "positive"
+    assert csv_list.overridden(polarity="NEGATIVE").polarity == "negative"
+    listed = SourceScope(UNBOUNDED, polarity="negative")
+    assert listed.overridden(polarity="both").polarity is None
+    assert listed.overridden(elements="C,H,O").polarity == "negative"
+    with pytest.raises(ValueError, match="polarity"):
+        csv_list.overridden(polarity="neutral")

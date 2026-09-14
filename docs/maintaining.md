@@ -938,8 +938,8 @@ databases have their own adapters, and each load is versioned.
 Each load also records the window its formulas may be matched in, whether its
 radicals may be, and its polarity. A public database loads at C, H, N, O and S
 with at most 40 carbons and 700 Da, and a hand-authored list loads unbounded;
-`--elements`, `--max-carbon`, `--max-mass` and `--allow-radicals` set them
-otherwise ([reference_data_authoring.md](dev/reference_data_authoring.md)).
+`--elements`, `--max-carbon`, `--max-mass`, `--allow-radicals` and `--polarity`
+set them otherwise ([reference_data_authoring.md](dev/reference_data_authoring.md)).
 
 A load replaces the active version of that source only once it has successfully
 read records, so a dump the adapter cannot parse leaves the existing mirror
