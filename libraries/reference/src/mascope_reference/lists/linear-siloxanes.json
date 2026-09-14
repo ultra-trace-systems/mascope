@@ -1,0 +1,22 @@
+{
+  "schema_version": 2,
+  "id": "linear-siloxanes",
+  "label": "Linear volatile methylsiloxanes, L3 to L5",
+  "data_version": "2026.09",
+  "license": "CC-BY-4.0",
+  "references": [
+    {
+      "citation": "S. Genualdi, T. Harner, Y. Cheng, et al., Global distribution of linear and cyclic volatile methyl siloxanes in air. Environmental Science & Technology 45 (2011) 3349-3354.",
+      "doi": "10.1021/es200301j"
+    }
+  ],
+  "polarity": "positive",
+  "provenance": {
+    "compiled_from": "The linear volatile methylsiloxanes measured in air at twenty sites worldwide, beside the cyclic ones in cyclic-siloxanes. Formulas checked against PubChem."
+  },
+  "species": [
+    {"formula": "C8H24O2Si3", "name": "Octamethyltrisiloxane (L3)"},
+    {"formula": "C10H30O3Si4", "name": "Decamethyltetrasiloxane (L4)"},
+    {"formula": "C12H36O4Si5", "name": "Dodecamethylpentasiloxane (L5)"}
+  ]
+}

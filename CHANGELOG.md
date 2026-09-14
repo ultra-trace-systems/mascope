@@ -637,8 +637,10 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
     measured in the other.
   - A formula carries the identities of the sources that admit it and no others,
     and a run records the ceiling as `known_window` in its resolved profile.
-  - Run `reference_seed` after upgrading, so the lists already loaded record their
-    own windows, radical allowances and polarities.
+  - **New lists:** isoprene's gas-phase oxidation products (Wennberg et al. 2018,
+    27 formulas) and the linear siloxanes L3 to L5; the cyclic siloxane list gains D7
+    and D8. Run `reference_seed` after upgrading, so the lists already loaded record
+    their own windows, radical allowances and polarities, and the new lists load.
 
 - **The batch peaks selected in the ledger now show as a filter chip.** In
   Assignments mode the topbar's chips gained one for the Batch peaks ledger's
