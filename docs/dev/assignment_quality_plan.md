@@ -3572,6 +3572,40 @@ belongs in the fitted axis once anchors reach below m/z 100, which is step
     - **Two PRs** for 2.5b: the schema and the CLI first, without a round;
       the engine, the list and the round second.
 
+    *Addendum (taken 2026-09-14 with the engine PR's round).* Two questions
+    the round raised, decided by the plan owner:
+    - **The monoterpene HOM list matches both polarities.** Its header says
+      negative, the polarity its source measured in, and the gate took it
+      off the uronium sets: 114 rows on A and 419 on B, of which the
+      reference had confirmed 17 and 120; the untargeted stage kept 116 of
+      those and the round's cost was 20 rows moving away. Ammonium and urea
+      CIMS detect HOMs as adducts, which is why the reference commits them
+      there, so that list alone is recorded as `both`, with the reason in
+      its provenance; the seed's refresh writes it without a version bump.
+      The other negative-mode lists - acids, nitroaromatics, iodine species,
+      isoprene's products - stay as they are.
+    - **IBr2- on the bromide sets is read at the gate.** The reactive-iodine
+      list's IBr commits through `+Br-` on 8 peaks the reference reads as
+      reagent (D 1, E 3, F1 4), a G4 cost; whether the list keeps IBr on
+      those sets or the reagent pre-pass learns IBr2- is decided at 2.7 with
+      the numbers in hand.
+
+18. **The reference is a reference, not ground truth, and the assigned tier
+    is reserved for near-certainty** (taken 2026-09-14 by the plan owner,
+    with the 2.5b round). peaky is itself under development and is known to
+    be wrong at times, so a row the reference confirms is evidence, not
+    proof, and a row it contradicts is not thereby wrong. The goal is that
+    the assignments are as accurate as possible and that no tier overstates
+    what the evidence supports: a row is `assigned` only where the engine
+    is quite certain of it, and under any uncertainty it says `candidate`.
+    So a step that moves rows from assigned to candidate for a stated
+    reason is not a regression, and a step that raises the assigned count
+    is not better for it unless what the rows say holds up. The 2.5b round
+    is read that way: the siloxanes resolve on every peak the reference
+    commits them on, and most sit at candidate or below assignability by
+    the evidence's own tier, with no rule capping them - which is what the
+    tiers are for.
+
 ## Risks
 
 - **Runtime without the cap.** Bounded by the profile grid; measured per
