@@ -15,7 +15,7 @@ runtime. The document comes out the same wherever it is rendered, and nothing
 of the machine rendering it - its runtime state, env overrides or secrets - can
 reach a file that every deployment serves anonymously.
 
-    uv run mascope-backend openapi --output openapi.json
+    uv run mascope-backend openapi --output site/openapi.json
 """
 
 import json
@@ -24,6 +24,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import warnings
 from pathlib import Path
 
 
@@ -37,10 +38,16 @@ _PROD_STATE = {
 #: is left out on purpose: the document describes a default deployment.
 _CONFIG_LAYERS = ("base.mascope.toml", "prod.mascope.toml")
 
-#: Caller variables kept from the child. MASCOPE_ENV and MASCOPE_COOKIE_SCOPED
-#: would rename the session cookie the document declares, and a DSN would have
-#: the render report to a live error tracker.
-_SCRUBBED_ENV = ("MASCOPE_ENV", "MASCOPE_COOKIE_SCOPED", "MASCOPE_SENTRY_DSN")
+#: Caller variables kept from the child: every Mascope setting, so none of the
+#: caller's runtime can shape the document - MASCOPE_ENV and
+#: MASCOPE_COOKIE_SCOPED would rename the session cookie it declares, and a
+#: MASCOPE_SENTRY_DSN would have the render report to a live error tracker.
+_SCRUBBED_PREFIX = "MASCOPE_"
+
+#: Interpreter settings kept from the child as well: PYTHONOPTIMIZE=2 strips
+#: docstrings, which the operations take their descriptions from and which a
+#: dependency (pyteomics) needs to import at all.
+_SCRUBBED_ENV = ("PYTHONOPTIMIZE",)
 
 #: What every secret read answers in the child. At least 32 bytes, so the JWT
 #: key-length check (api/new/auth/config.py) stays quiet.
@@ -59,9 +66,13 @@ def render(output: Path, config_home: Path) -> dict:
     :param config_home: Runtime home holding the config layers to render with,
         normally ``MASCOPE_PATH``.
     :return: The rendered document.
-    :raises OpenApiRenderError: If a config layer is missing, or the app fails
-        to import (the message then carries the child's output).
+    :raises OpenApiRenderError: If ``output`` is a directory, a config layer is
+        missing, the app fails to import (the message then carries the child's
+        output), or the document cannot be written.
     """
+    # Refused up front rather than once the render has taken its seconds.
+    if output.is_dir():
+        raise OpenApiRenderError(f"{output} is a directory, not a file to write to")
     with tempfile.TemporaryDirectory(prefix="mascope-openapi-") as tmp:
         home = Path(tmp)
         for name in _CONFIG_LAYERS:
@@ -74,7 +85,11 @@ def render(output: Path, config_home: Path) -> dict:
             json.dumps(_PROD_STATE), encoding="utf-8"
         )
 
-        env = {k: v for k, v in os.environ.items() if k not in _SCRUBBED_ENV}
+        env = {
+            k: v
+            for k, v in os.environ.items()
+            if not k.startswith(_SCRUBBED_PREFIX) and k not in _SCRUBBED_ENV
+        }
         # PYTHONUTF8: the runtime's terminal log carries glyphs the Windows
         # default code page cannot encode once stdout is a pipe.
         env.update(MASCOPE_PATH=str(home), PYTHONUTF8="1")
@@ -90,9 +105,15 @@ def render(output: Path, config_home: Path) -> dict:
             raise OpenApiRenderError(
                 "rendering the OpenAPI document failed:\n" + child.stdout + child.stderr
             )
+        document = rendered.read_bytes()
+    # Written out rather than copied, so a stream such as /dev/stdout works as
+    # the output as well as a file.
+    try:
         output.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copyfile(rendered, output)
-    return json.loads(output.read_text(encoding="utf-8"))
+        output.write_bytes(document)
+    except OSError as e:
+        raise OpenApiRenderError(f"cannot write {output}: {e}") from e
+    return json.loads(document)
 
 
 def _placeholder_secret(self, envvar: str, path: str, all_lines: bool = False) -> str:
@@ -125,8 +146,14 @@ def _render_here(output: Path) -> None:
             f"the runtime is in {runtime.mode} mode, so the document would not "
             "describe a production deployment - render it with render()"
         )
+    # Warnings fail the render: FastAPI reports a duplicate operation ID, and
+    # pydantic a default it cannot serialize, only as a UserWarning, and either
+    # would otherwise ship a degraded document from a green build.
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", UserWarning)
+        schema = fast.openapi()
     # newline: byte-identical on every OS, rather than CRLF on Windows.
-    document = json.dumps(fast.openapi(), indent=2) + "\n"
+    document = json.dumps(schema, indent=2) + "\n"
     output.write_text(document, encoding="utf-8", newline="\n")
 
 

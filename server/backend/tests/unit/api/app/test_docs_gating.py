@@ -1,7 +1,9 @@
 """Tests: the interactive API docs / OpenAPI schema are dev-only.
 
-Disabling ``/docs``, ``/redoc`` and ``/openapi.json`` outside dev removes
-needless recon value once the backend can be reached directly.
+A deployment publishes a static copy of the document with its user docs
+(``/docs/openapi.json``), so ``/docs``, ``/redoc`` and ``/openapi.json`` stay off
+the backend outside dev: they would only add a second, live copy of the schema
+and an interactive console to a backend reached directly.
 """
 
 from mascope_backend.app.fast import _docs_kwargs

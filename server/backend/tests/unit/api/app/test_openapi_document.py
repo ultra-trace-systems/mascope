@@ -15,8 +15,13 @@ from mascope_backend.main import backend_app
 from mascope_backend.openapi import OpenApiRenderError, render
 
 
-#: The value of a secret the caller's environment points at.
-_CALLER_SECRET = "caller-secret-that-must-not-reach-the-document"
+#: The variables naming every secret file the backend reads while it imports.
+_SECRET_FILE_VARIABLES = (
+    "JWT_SECRET_KEY_FILE",
+    "MFA_ENCRYPTION_KEY_FILE",
+    "POSTGRES_PASSWORD_FILE",
+    "SERVER_OWNER_SECRET_KEY_FILE",
+)
 
 
 @pytest.fixture(scope="module")
@@ -24,18 +29,22 @@ def rendered(tmp_path_factory):
     """
     Render once through the CLI, from a dev-shaped caller environment.
 
-    Per-env cookie names, a secret and a release version are all set, so any of
-    them leaking into the document fails a test below.
+    Per-env cookie names and a release version are set, so either reaching the
+    document fails a test below, and PYTHONOPTIMIZE=2, which would strip the
+    docstrings the app needs to import. Every secret points at a file that does
+    not exist, so the render succeeds only by reading none - as an image build,
+    which has no secrets, must - and not because the machine running the tests
+    happens to hold them.
     """
     tmp = tmp_path_factory.mktemp("openapi")
-    secret = tmp / "jwt_secret_key.txt"
-    secret.write_text(_CALLER_SECRET + "\n", encoding="utf-8")
     output = tmp / "openapi.json"
     with pytest.MonkeyPatch.context() as mp:
         mp.setenv("MASCOPE_ENV", "wt-caller")
         mp.setenv("MASCOPE_COOKIE_SCOPED", "1")
-        mp.setenv("JWT_SECRET_KEY_FILE", str(secret))
         mp.setenv("MASCOPE_VERSION", "v9.9.9")
+        mp.setenv("PYTHONOPTIMIZE", "2")
+        for variable in _SECRET_FILE_VARIABLES:
+            mp.setenv(variable, str(tmp / "absent" / variable.lower()))
         result = CliRunner().invoke(backend_app, ["openapi", "--output", str(output)])
     assert result.exit_code == 0, result.output
     text = output.read_text(encoding="utf-8")
@@ -65,12 +74,58 @@ def test_every_path_is_under_the_proxied_api(rendered):
 
 
 def test_nothing_of_the_rendering_machine_reaches_the_document(rendered):
-    _, text = rendered
-    assert _CALLER_SECRET not in text
+    document, text = rendered
     assert "wt-caller" not in text
     assert "v9.9.9" not in text
+    # Operations take their descriptions from docstrings, so they are all there.
+    assert document["paths"]["/api/workspaces"]["get"]["description"]
+
+
+def test_errors_are_declared_in_the_shape_the_app_answers_them(rendered):
+    """Every handler answers {"error", "detail"}; FastAPI's own 422 schema
+    describes a validation body the app never sends."""
+    document, text = rendered
+    body = document["components"]["schemas"]["ApiErrorBody"]
+    assert set(body["properties"]) == {"error", "detail"}
+    responses = document["paths"]["/api/workspaces"]["get"]["responses"]
+    for status in ("4XX", "5XX"):
+        schema = responses[status]["content"]["application/json"]["schema"]
+        assert schema == {"$ref": "#/components/schemas/ApiErrorBody"}
+    assert "422" not in responses
+    assert "HTTPValidationError" not in text
+
+
+def test_token_scheme_is_a_bearer_token_with_its_service_header(rendered):
+    """Not the OAuth2 password flow fastapi-users declares, whose tokenUrl names
+    no route: a token is generated in the web app, and the backend refuses one
+    sent without the service it was generated for."""
+    document, text = rendered
+    schemes = document["components"]["securitySchemes"]
+    assert schemes["APIToken"]["type"] == "http"
+    assert schemes["APIToken"]["scheme"] == "bearer"
+    assert schemes["ServiceName"]["in"] == "header"
+    assert schemes["ServiceName"]["name"] == "X-Service-Name"
+    assert "OAuth2PasswordBearer" not in text
+
+
+def test_token_is_declared_only_where_the_backend_accepts_one(rendered):
+    """Listing workspaces is marked token_access, for the SDK; the signed-in
+    user's own account answers to the session cookie alone."""
+    document, _ = rendered
+    paths = document["paths"]
+    assert paths["/api/workspaces"]["get"]["security"] == [
+        {"APIKeyCookie": []},
+        {"APIToken": [], "ServiceName": []},
+    ]
+    assert paths["/api/users/me"]["get"]["security"] == [{"APIKeyCookie": []}]
 
 
 def test_refuses_a_home_without_the_config_layers(tmp_path):
     with pytest.raises(OpenApiRenderError, match="base.mascope.toml"):
         render(tmp_path / "openapi.json", config_home=tmp_path)
+
+
+def test_refuses_a_directory_as_the_output_before_rendering(tmp_path):
+    """Refused up front: the config layers are not even looked for."""
+    with pytest.raises(OpenApiRenderError, match="is a directory"):
+        render(tmp_path, config_home=tmp_path)
