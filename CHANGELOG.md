@@ -621,7 +621,24 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
     a source active without deleting it; on a server, run
     `python -m mascope_backend.db.scripts.reference_deactivate` inside the backend
     container.
-  - Peak assignment does not read the three fields yet.
+  - Peak assignment reads all three (see the next entry).
+
+- **Peak assignment matches each reference source inside its own window, and
+  brings in the families no formula grid reaches.** Stage A used to match every
+  loaded reference formula inside one window (C, H, N, O and S, at most 40 carbons
+  and 700 Da), so the siloxane, organophosphate, perfluorinated acid and iodine lists
+  matched nothing.
+  - **Each source's own window,** under a ceiling the sample's chemistry context
+    sets. Every shipped context opens Si, P, F, Cl, Br and I at 40 carbons and
+    700 Da, and the identity context `none` sets none. A database mirror stays at
+    its own window.
+  - **Radicals** only from a source that allows them.
+  - **Polarity:** a source detected in one polarity is not matched against a sample
+    measured in the other.
+  - A formula carries the identities of the sources that admit it and no others,
+    and a run records the ceiling as `known_window` in its resolved profile.
+  - Run `reference_seed` after upgrading, so the lists already loaded record their
+    own windows, radical allowances and polarities.
 
 - **The batch peaks selected in the ledger now show as a filter chip.** In
   Assignments mode the topbar's chips gained one for the Batch peaks ledger's

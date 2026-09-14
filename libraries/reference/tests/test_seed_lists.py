@@ -2,9 +2,10 @@
 
 Every shipped list has to pass the format's checks - a licence the gate knows,
 a citable reference, neutral formulas, radicals only where a list allows them.
-The Stage A radical filter is step 2.5b's, so until it lands what keeps
-radicals out of assignment is this: a default seed may put exactly the radicals
-somebody chose within Stage A's reach, and that is pinned below by name.
+Stage A matches a radical only from a source whose row allows radicals, and a
+list's row allows them only where the list does, so the radicals a default seed
+lets through are pinned below by name. So is the ceiling every shipped context
+sets: every formula a default seed loads falls inside it.
 """
 
 import csv
@@ -15,18 +16,13 @@ import pytest
 from sqlalchemy import func, select, update
 
 from mascope_reference.adapters.peaklist import list_scope
-from mascope_reference.known import (
-    DEFAULT_ELEMENTS,
-    DEFAULT_MAX_CARBON,
-    DEFAULT_MAX_MASS,
-    _within_bound,
-)
 from mascope_reference.normalize import canonical_formula, monoisotopic_mass
 from mascope_reference.peaklist import admitted_species, is_odd_electron, list_problems
 from mascope_reference.schema import reference_compound, reference_source
 from mascope_reference.scope import MIRROR_WINDOW, UNBOUNDED, SourceScope
 from mascope_reference.seed import catalogue, lists_directory, seed, select_lists
 from mascope_reference.sources import available_sources, get_adapter
+from mascope_tools.composition.profiles import KNOWN_WINDOW_CEILING
 
 
 SHIPPED = catalogue()
@@ -51,30 +47,37 @@ def test_list_ids_are_unique():
     assert len(BY_ID) == len(SHIPPED)
 
 
-def _in_stage_a_window(formula: str) -> bool:
-    canonical = canonical_formula(formula)
-    return canonical is not None and _within_bound(
-        canonical,
-        monoisotopic_mass(canonical),
-        elements=DEFAULT_ELEMENTS,
-        max_carbon=DEFAULT_MAX_CARBON,
-        max_mass=DEFAULT_MAX_MASS,
-    )
-
-
-def test_a_default_seed_puts_only_the_chosen_radicals_within_stage_a():
-    # Stage A matches every active formula inside its window, radicals included,
-    # and a curated row is exempt from the tiering's odd-electron rule. Until the
-    # window's own radical filter lands, the lists decide: the monoterpene RO2
-    # radicals are opt-in, and the one radical a default seed brings into reach
-    # is the hydroperoxyl radical, a primary analyte of bromide CIMS.
-    in_reach = {
+def test_a_default_seed_lets_through_only_the_radicals_its_lists_allow():
+    # A curated row is exempt from the tiering's odd-electron rule, so the radical
+    # filter is what decides: the monoterpene RO2 radicals are opt-in, and a
+    # default seed matches the hydroperoxyl radical, a primary analyte of bromide
+    # CIMS, and iodine dioxide, which its list names as a radical.
+    matched = {
         species.formula
         for peak_list in select_lists(SHIPPED)
+        if list_scope(peak_list).allow_radicals
         for species in admitted_species(peak_list)
-        if is_odd_electron(species.formula) and _in_stage_a_window(species.formula)
+        if is_odd_electron(species.formula)
     }
-    assert in_reach == {"HO2"}
+    assert matched == {"HO2", "IO2"}
+
+
+@pytest.mark.parametrize("peak_list", SHIPPED, ids=lambda peak_list: peak_list.id)
+def test_every_formula_a_shipped_list_holds_is_inside_the_context_ceiling(peak_list):
+    # A list loads unbounded, so the ceiling is its only bound in a shipped
+    # context: a formula outside it would be carried by the list and never matched.
+    outside = [
+        species.formula
+        for species in peak_list.species
+        if not KNOWN_WINDOW_CEILING.admits(
+            canonical_formula(species.formula),
+            monoisotopic_mass(canonical_formula(species.formula)),
+        )
+    ]
+    # The nylon 6,6 cyclic tetramer is over both caps (C48, 905 Da); the list
+    # keeps it for the identity context, which sets no ceiling.
+    expected = ["C48H88N8O8"] if peak_list.id == "contaminants-keller2008" else []
+    assert outside == expected
 
 
 def test_the_radical_list_is_opt_in():

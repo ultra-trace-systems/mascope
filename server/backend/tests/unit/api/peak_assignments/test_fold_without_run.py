@@ -325,6 +325,46 @@ class TestTheFoldClaimsInTheRunsWindow:
         assert mocks["stage_a"].call_args.kwargs["fallback_sigma_ppm"] == 0.3
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "context, ceiling", [("ambient-air", "shipped"), ("none", None)]
+    )
+    async def test_stage_a_is_told_the_ceiling_the_fold_resolved(
+        self, context, ceiling
+    ):
+        """The fold matches the reference under the context it resolved, as a
+        run does, so the two ledgers hold the same known set."""
+        from dataclasses import replace
+
+        from mascope_backend.api.new.peak_assignments import service
+        from mascope_backend.api.new.peak_assignments.service import (
+            fold_sample_peaks_without_run,
+        )
+        from mascope_tools.composition.profiles import (
+            KNOWN_WINDOW_CEILING,
+            get_chemistry_context,
+        )
+
+        real = service.resolve_profile
+
+        def resolved_under_the_context(config, **kwargs):
+            return replace(
+                real(config, **kwargs), context=get_chemistry_context(context)
+            )
+
+        stack, mocks = _patched()
+        with stack:
+            stack.enter_context(
+                patch(f"{_SVC}.get_instrument_type", return_value="orbi")
+            )
+            stack.enter_context(
+                patch(f"{_SVC}.resolve_profile", side_effect=resolved_under_the_context)
+            )
+            await fold_sample_peaks_without_run("si-1")
+
+        expected = KNOWN_WINDOW_CEILING if ceiling == "shipped" else None
+        assert mocks["stage_a"].call_args.kwargs["known_window"] == expected
+
+    @pytest.mark.asyncio
     async def test_a_filename_that_names_no_instrument_does_not_fail_the_fold(self):
         """The parse raises for a sample that keeps no data file and whose name
         does not say. Standing down is this path's contract, so the fold reads
