@@ -2,8 +2,9 @@
 
 Every deployment serves the document anonymously, so what it must not carry
 matters as much as what it must: it has to describe a default production
-deployment whatever runtime renders it, and nothing of the rendering machine -
-its env, its secrets, its version - may end up in it.
+deployment whatever runtime renders it, name the version it was rendered for,
+and carry nothing of the rendering machine - its env, its secrets, the version
+its environment happens to carry.
 """
 
 import json
@@ -12,8 +13,11 @@ import pytest
 from typer.testing import CliRunner
 
 from mascope_backend.main import backend_app
-from mascope_backend.openapi import OpenApiRenderError, render
+from mascope_backend.openapi import OpenApiRenderError, _child_environment, render
 
+
+#: The version the fixture renders the document for.
+_RENDERED_VERSION = "v2.3.4"
 
 #: The variables naming every secret file the backend reads while it imports.
 _SECRET_FILE_VARIABLES = (
@@ -27,14 +31,15 @@ _SECRET_FILE_VARIABLES = (
 @pytest.fixture(scope="module")
 def rendered(tmp_path_factory):
     """
-    Render once through the CLI, from a dev-shaped caller environment.
+    Render once through the CLI, for _RENDERED_VERSION, from a dev-shaped caller
+    environment.
 
-    Per-env cookie names and a release version are set, so either reaching the
-    document fails a test below, and PYTHONOPTIMIZE=2, which would strip the
-    docstrings the app needs to import. Every secret points at a file that does
-    not exist, so the render succeeds only by reading none - as an image build,
-    which has no secrets, must - and not because the machine running the tests
-    happens to hold them.
+    Per-env cookie names and a different version are set in the environment, so
+    either reaching the document fails a test below, and PYTHONOPTIMIZE=2, which
+    would strip the docstrings the app needs to import. Every secret points at a
+    file that does not exist, so the render succeeds only by reading none - as
+    an image build, which has no secrets, must - and not because the machine
+    running the tests happens to hold them.
     """
     tmp = tmp_path_factory.mktemp("openapi")
     output = tmp / "openapi.json"
@@ -45,7 +50,10 @@ def rendered(tmp_path_factory):
         mp.setenv("PYTHONOPTIMIZE", "2")
         for variable in _SECRET_FILE_VARIABLES:
             mp.setenv(variable, str(tmp / "absent" / variable.lower()))
-        result = CliRunner().invoke(backend_app, ["openapi", "--output", str(output)])
+        result = CliRunner().invoke(
+            backend_app,
+            ["openapi", "--version", _RENDERED_VERSION, "--output", str(output)],
+        )
     assert result.exit_code == 0, result.output
     text = output.read_text(encoding="utf-8")
     return json.loads(text), text
@@ -55,6 +63,12 @@ def test_document_is_openapi_3_titled_for_mascope(rendered):
     document, _ = rendered
     assert document["openapi"].startswith("3.")
     assert document["info"]["title"] == "Mascope API"
+
+
+def test_document_names_the_version_it_was_rendered_for(rendered):
+    """The one passed with --version, not the caller's MASCOPE_VERSION."""
+    document, _ = rendered
+    assert document["info"]["version"] == _RENDERED_VERSION
 
 
 def test_session_cookie_carries_its_prod_name(rendered):
@@ -118,6 +132,23 @@ def test_token_is_declared_only_where_the_backend_accepts_one(rendered):
         {"APIToken": [], "ServiceName": []},
     ]
     assert paths["/api/users/me"]["get"]["security"] == [{"APIKeyCookie": []}]
+
+
+def test_child_takes_the_version_only_from_the_caller_argument(tmp_path, monkeypatch):
+    """Without --version the child gets no MASCOPE_VERSION at all, so the app
+    names its placeholder rather than the rendering machine's version."""
+    monkeypatch.setenv("MASCOPE_VERSION", "v9.9.9")
+    monkeypatch.setenv("MASCOPE_ENV", "wt-caller")
+
+    unversioned = _child_environment(tmp_path, None)
+    versioned = _child_environment(tmp_path, _RENDERED_VERSION)
+
+    assert "MASCOPE_VERSION" not in unversioned
+    assert versioned["MASCOPE_VERSION"] == _RENDERED_VERSION
+    assert sorted(k for k in versioned if k.startswith("MASCOPE_")) == [
+        "MASCOPE_PATH",
+        "MASCOPE_VERSION",
+    ]
 
 
 def test_refuses_a_home_without_the_config_layers(tmp_path):

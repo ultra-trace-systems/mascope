@@ -206,6 +206,8 @@ services:
       dockerfile: server/frontend/Dockerfile
       args:
         - MASCOPE_RUNTIME
+        # Named as the published OpenAPI document's info.version.
+        - MASCOPE_VERSION
     depends_on:
       backend:
         condition: service_healthy

@@ -41,7 +41,7 @@ as well. Each Mascope server describes that API in an
 <a href="../openapi.json"><code>openapi.json</code></a>: import it into an API
 client such as Postman or Insomnia, or generate a client library from it. Each
 server serves the copy built with it, so the document matches the version that
-server runs.
+server runs and names that version in its `info.version`.
 
 - Paths are relative to your server's address: `/api/workspaces` is
   `https://your-instance.mascope.app/api/workspaces`.

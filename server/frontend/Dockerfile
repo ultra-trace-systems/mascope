@@ -62,7 +62,8 @@ RUN python tooling/third-party-notices.py --for docs --vendored docs/user/assets
 # deployment publishes this static copy instead: rendered from the same sources
 # and locked dependencies as the backend image, in a throwaway prod runtime with
 # placeholder secrets (server/backend/src/mascope_backend/openapi.py), so it is
-# the same for every build of a commit and carries nothing of the build.
+# the same for every build of a commit and version and carries nothing of the
+# build beyond the version it names.
 FROM python:3.12-slim-bookworm AS openapi-build
 
 # Same uv version as CI (.github/workflows/tests.yaml), on the image's own
@@ -85,9 +86,14 @@ RUN uv sync --frozen --no-dev --package mascope_backend --no-install-workspace
 COPY base.mascope.toml prod.mascope.toml ./
 COPY libraries ./libraries
 COPY server/backend ./server/backend
-RUN uv sync --frozen --no-dev --package mascope_backend && \
-    MASCOPE_PATH=/src uv run --no-sync python -m mascope_backend openapi \
-        --output /openapi.json
+RUN uv sync --frozen --no-dev --package mascope_backend
+
+# The version this image is built for (compose passes MASCOPE_VERSION), which
+# the document names as its info.version. Declared here rather than at the top
+# of the stage, so a new version reruns the render but not the installs above.
+ARG MASCOPE_VERSION
+RUN MASCOPE_PATH=/src uv run --no-sync python -m mascope_backend openapi \
+        --version "${MASCOPE_VERSION}" --output /openapi.json
 
 # RUNTIME
 FROM nginx:1.27-alpine

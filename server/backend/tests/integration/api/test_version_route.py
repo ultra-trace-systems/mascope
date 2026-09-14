@@ -8,11 +8,11 @@ process was actually configured with - which means reading ``MASCOPE_VERSION``,
 not some other source - and it must answer every signed-in user while still
 refusing anonymous callers.
 
-Authentication is there to keep the API from growing an anonymous,
-machine-readable surface rather than as a secrecy boundary (the frontend renders
-the same version on the login screen), so these tests assert the status codes
-and that an anonymous body carries no version, not that the version is
-unobtainable system-wide.
+Authentication is least privilege for an operational endpoint rather than a
+secrecy boundary (the frontend renders the same version on the login screen,
+and the published OpenAPI document names the version its image was built for),
+so these tests assert the status codes and that an anonymous body carries no
+version, not that the version is unobtainable system-wide.
 
 ``GET /api/version/third-party-notices`` serves the attributions the backend
 image build generates for the Python packages it ships.

@@ -11,9 +11,11 @@ What the app declares depends on the runtime it is imported in - outside prod
 the session cookie is named per env - and importing it reads secrets. So
 :func:`render` imports the app in a child process, against a throwaway runtime
 home set up the way the backend image's is, rather than in the caller's own
-runtime. The document comes out the same wherever it is rendered, and nothing
-of the machine rendering it - its runtime state, env overrides or secrets - can
-reach a file that every deployment serves anonymously.
+runtime. The document comes out the same wherever it is rendered for a given
+version, and nothing of the machine rendering it - its runtime state, env
+overrides or secrets - can reach a file that every deployment serves
+anonymously. The version it names is the caller's to pass: the frontend image
+build passes the one it builds.
 
     uv run mascope-backend openapi --output site/openapi.json
 """
@@ -58,13 +60,42 @@ class OpenApiRenderError(RuntimeError):
     """Raised when the OpenAPI document cannot be rendered."""
 
 
-def render(output: Path, config_home: Path) -> dict:
+def _child_environment(home: Path, version: str | None) -> dict[str, str]:
+    """
+    The environment the child renders in.
+
+    The caller's own, less every Mascope setting and ``PYTHONOPTIMIZE``, pointed
+    at the throwaway ``home``. ``MASCOPE_VERSION``, which the app names as the
+    document's ``info.version``, comes only from ``version``: which release a
+    document describes is for the caller to say, not whatever version the
+    rendering machine's environment happens to carry.
+
+    :param home: The throwaway runtime home.
+    :param version: The version the document describes, if one was given.
+    :return: The child's environment.
+    """
+    env = {
+        k: v
+        for k, v in os.environ.items()
+        if not k.startswith(_SCRUBBED_PREFIX) and k not in _SCRUBBED_ENV
+    }
+    # PYTHONUTF8: the runtime's terminal log carries glyphs the Windows
+    # default code page cannot encode once stdout is a pipe.
+    env.update(MASCOPE_PATH=str(home), PYTHONUTF8="1")
+    if version:
+        env["MASCOPE_VERSION"] = version
+    return env
+
+
+def render(output: Path, config_home: Path, version: str | None = None) -> dict:
     """
     Render the OpenAPI document of a default production deployment.
 
     :param output: File to write the document to, as JSON.
     :param config_home: Runtime home holding the config layers to render with,
         normally ``MASCOPE_PATH``.
+    :param version: The Mascope version the document describes, named as its
+        ``info.version``; without one it carries the app's placeholder.
     :return: The rendered document.
     :raises OpenApiRenderError: If ``output`` is a directory, a config layer is
         missing, the app fails to import (the message then carries the child's
@@ -85,18 +116,10 @@ def render(output: Path, config_home: Path) -> dict:
             json.dumps(_PROD_STATE), encoding="utf-8"
         )
 
-        env = {
-            k: v
-            for k, v in os.environ.items()
-            if not k.startswith(_SCRUBBED_PREFIX) and k not in _SCRUBBED_ENV
-        }
-        # PYTHONUTF8: the runtime's terminal log carries glyphs the Windows
-        # default code page cannot encode once stdout is a pipe.
-        env.update(MASCOPE_PATH=str(home), PYTHONUTF8="1")
         rendered = home / "openapi.json"
         child = subprocess.run(
             [sys.executable, "-m", "mascope_backend.openapi", str(rendered)],
-            env=env,
+            env=_child_environment(home, version),
             capture_output=True,
             encoding="utf-8",
             errors="replace",
