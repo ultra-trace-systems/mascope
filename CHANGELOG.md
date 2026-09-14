@@ -302,8 +302,9 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
     radical allowance and polarity. Sources loaded before this release are
     migrated to the atmospheric window.
   - **Setting them:** `reference sync` takes `--elements`, `--max-carbon`,
-    `--max-mass` and `--allow-radicals`. `reference sources` names the window
-    each adapter writes, and `reference status` what each load recorded.
+    `--max-mass`, `--allow-radicals` and `--polarity`. `reference sources` names
+    the window each adapter writes, and `reference status` what each load
+    recorded.
   - **Seeding:** `reference seed` also brings the row of a list that is already
     loaded up to date with the list, so running it once after upgrading records
     each shipped list's own values.
