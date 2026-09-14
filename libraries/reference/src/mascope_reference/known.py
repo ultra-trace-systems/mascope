@@ -21,6 +21,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from mascope_reference.query import _STABLE_ORDER, active_join
 from mascope_reference.schema import reference_compound, reference_source
+from mascope_reference.scope import MIRROR_ELEMENTS, MIRROR_MAX_CARBON, MIRROR_MAX_MASS
 from mascope_tools.composition.utils import parse_composition
 
 
@@ -42,11 +43,11 @@ _KNOWN_COLUMNS = (
 )
 
 
-# Default bound: the atmospheric-organics window. Elements a monoterpene-SOA /
-# HOM study cares about, a generous carbon cap, and a mass ceiling above dimers.
-DEFAULT_ELEMENTS = frozenset({"C", "H", "N", "O", "S"})
-DEFAULT_MAX_CARBON = 40
-DEFAULT_MAX_MASS = 700.0
+# Default bound: the atmospheric-organics window, which a database mirror's
+# source row also records when it is loaded.
+DEFAULT_ELEMENTS = MIRROR_ELEMENTS
+DEFAULT_MAX_CARBON = MIRROR_MAX_CARBON
+DEFAULT_MAX_MASS = MIRROR_MAX_MASS
 # Cap identities kept per formula so provenance JSON stays bounded even when a
 # formula is shared by thousands of compounds in a large mirror.
 DEFAULT_MAX_IDENTITIES = 25

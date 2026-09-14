@@ -1,9 +1,14 @@
-"""`mascope reference seed`: the shipped lists, loaded through the real ingest.
+"""`mascope reference seed` and `deactivate`, through the real ingest.
 
 Seeding activates sources, so it is gated behind the same confirmation as
 `sync`, reached before any database work. `--list` never touches the database,
-and an unknown list id is refused before the prompt is shown.
+and an unknown list id is refused before the prompt is shown. A seed also brings
+an active list's row up to date with the window, allowance and polarity the list
+names. `deactivate` takes a seeded list out, and `activate` brings
+the same load back.
 """
+
+import json
 
 import pytest
 from sqlalchemy import create_engine, text
@@ -23,7 +28,10 @@ CREATE TABLE reference_source (
     license TEXT,
     record_count INTEGER,
     is_active BOOLEAN,
-    ingested_at TEXT
+    ingested_at TEXT,
+    known_window JSON,
+    allow_radicals BOOLEAN,
+    polarity TEXT
 )
 """
 
@@ -115,3 +123,64 @@ def test_seeding_loads_the_default_lists_and_not_the_opt_in_ones(mirror):
     result = runner.invoke(reference_app, ["seed", "monoterpene-ro2-kang2021", "--yes"])
     assert result.exit_code == 0, result.output
     assert _active(mirror) == active | {"monoterpene-ro2-kang2021"}
+
+
+def _row(engine, name: str):
+    with engine.connect() as conn:
+        return conn.execute(
+            text(
+                "SELECT version, is_active, known_window, allow_radicals, polarity "
+                "FROM reference_source WHERE name = :name"
+            ),
+            {"name": name},
+        ).one()
+
+
+def test_a_seed_brings_an_active_lists_row_up_to_date(mirror):
+    assert runner.invoke(reference_app, ["seed", "--yes"]).exit_code == 0
+    # The row as the migration leaves it: the mirror window, no radicals.
+    with mirror.begin() as conn:
+        conn.execute(
+            text(
+                "UPDATE reference_source SET known_window = :window, "
+                "allow_radicals = 0, polarity = NULL "
+                "WHERE name = 'atmospheric-inorganics'"
+            ),
+            {
+                "window": '{"elements": ["C", "H", "N", "O", "S"], '
+                '"max_carbon": 40, "max_mass": 700.0}'
+            },
+        )
+
+    result = runner.invoke(reference_app, ["seed", "--yes"])
+
+    # The report is the logger's, written from its own thread, so the row is what
+    # is asserted.
+    assert result.exit_code == 0, result.output
+    row = _row(mirror, "atmospheric-inorganics")
+    assert json.loads(row.known_window) == {
+        "elements": None,
+        "max_carbon": None,
+        "max_mass": None,
+    }
+    assert row.allow_radicals == 1
+
+
+def test_a_deactivated_list_comes_back_with_activate(mirror):
+    runner.invoke(reference_app, ["seed", "cyclic-siloxanes", "--yes"])
+    version = _row(mirror, "cyclic-siloxanes").version
+
+    result = runner.invoke(reference_app, ["deactivate", "cyclic-siloxanes", "--yes"])
+    assert result.exit_code == 0, result.output
+    assert "cyclic-siloxanes" not in _active(mirror)
+
+    result = runner.invoke(
+        reference_app, ["activate", "cyclic-siloxanes", "--version", version, "--yes"]
+    )
+    assert result.exit_code == 0, result.output
+    assert "cyclic-siloxanes" in _active(mirror)
+
+
+def test_deactivating_a_source_with_nothing_active_fails(mirror):
+    result = runner.invoke(reference_app, ["deactivate", "cyclic-siloxanes", "--yes"])
+    assert result.exit_code == 1
