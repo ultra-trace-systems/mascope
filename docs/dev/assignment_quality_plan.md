@@ -28,6 +28,8 @@ step PRs land on the epic and are named here as they merge.
 | 2.5b - Stage A window per source, radical filter, deactivate (seed proposal phase 3) | - | planned |
 | 2.6 - frontend: profile, reasons, roles | - | planned |
 | 2.7 - stage 2 gate, engine 0.5.0 | - | planned |
+| 2.2b - mass-dependent centre for the mass gate | - | planned: after the TOF width fix, before 2.7 |
+| 2.7a - reference refresh: peaky's branch rebased on main 0.8.0, re-pinned, the 43 runs re-published | - | planned: the reference stays at `cc07ce1` until then; the gate is read against both |
 | 3.1 - series detection on the batch ledger | - | planned |
 | 3.2 - time-series coherence | - | planned |
 | 3.3 - calibration from verdicts, per profile | - | planned |
@@ -625,6 +627,43 @@ The confidence layer. This is where "assigned" starts meaning something.
   agreed rows kept above 95%.
 - **Size.** S-M. Depends on 2.1.
 
+### 2.2b Mass-dependent centre for the mass gate
+
+- **What.** `fit_run_mass_accuracy` fits the run's anchors to
+  `ppm = a + b * 1000 / mz` beside the constant model, and `MassCalibration
+  .z_of` reads a row's distance from the centre at the row's own m/z. The
+  trend is accepted only on the rules peaky's `masscal.fit_mass_trend`
+  settled on (peaky #30): the slope beyond three standard errors, the
+  trimmed residual RMS at most 0.8 of the constant model's, `|b|` at most
+  0.5 mDa (a larger constant term is a broken calibration, not a residual
+  to model), at least five anchors in each half of the fitted range so a
+  single far anchor cannot lever the line, and the centre clamped to the
+  anchors' m/z coverage so a backbone at 150-480 never extrapolates onto an
+  m/z 61 it never saw. A flat run keeps the constant model exactly, and the
+  run records which model it judged at. The width stays one number,
+  floored below about m/z 120 by an absolute 0.03 mDa.
+- **Why.** Step 2.2 measured the low-mass residual as calibration shape on
+  every instrument (issue #2095), and decision 3's addendum kept curated
+  rows exempt from the cap because ten of the fourteen off-calibration
+  monoisotopic rows were one ion at the low-mass edge, off the same way in
+  every sample. Step 3.3 defers the mass-dependent term to verdict anchors
+  below m/z 100. peaky measured the same shape on a labelled-ammonium file
+  - the backbone at -0.76 ppm for m/z 80-120, -0.29 at 120-160, -0.18
+  above, and every bright ion below m/z 80 at -2 ppm, which is -0.12 mDa,
+  rejected at z = 6 by the constant centre - and built the centre from the
+  run's own anchors, which the gate has in hundreds. The verdicts are not
+  needed for it. With the centre fair at low mass, the curation exemption
+  is revisited on evidence: decision 3's addenda were taken on a gate whose
+  centre punished the calibration's shape.
+- **Verify.** On the 43 samples: which runs accept a trend and its `b` in
+  mDa; the `mass_z` of the 26 curated rows decision 3's addendum itemised,
+  and of the low-mass untargeted rows, before and after; the gate caps
+  nothing below m/z 200 that it did not cap before unless the row is off
+  the trend too. G1 conditioned stays inside its bound on the Orbitrap
+  sets.
+- **Size.** S-M. After the TOF width fix, which changes the anchors the
+  gate fits over; before 2.7. Independent of 2.5b.
+
 ### 2.3 Cross-channel corroboration and the reagent-N rule
 
 - **What.** Within a sample, committed winners are grouped by neutral across
@@ -731,7 +770,15 @@ its own status.
   A while a PubChem mirror stays bounded. It also adds a radical filter on
   the known set, off by default; the per-list allowance moves from the list
   file onto the source row with the window. And a `reference deactivate`
-  command. Verify ion generation handles Si and P.
+  command. Verify ion generation handles Si and P. It also lifts the one
+  list peaky added after 2.5a's lift: `isoprene-oxidation-wennberg2018`,
+  27 closed-shell products of isoprene's OH, NO3 and HO2 chemistry
+  (Wennberg et al., Chemical Reviews 118 (2018) 3337-3390, DOI
+  10.1021/acs.chemrev.7b00439; peaky #30). Mascope's reader parses peaky's
+  schema-1 file as it is, and the format check names the six header gaps
+  the lift closes: the schema, the hyphenated id, the licence, the
+  reference's citation and key names, and the `n_species` and `system`
+  keys the format does not carry.
 - **Why.** The siloxane and phosphate peaks are the brightest wrong answers
   in every sample, and the families peaky hard-codes are exactly the ones no
   formula grid reaches: known-formula matching is the only way they get
@@ -785,12 +832,46 @@ its own status.
   develop and released to master, in this order: the library version on
   master differs from PyPI's and the publish workflow ships it (check its
   run, not the tag); peaky's merge PR into main replaces the git source with
-  the released lower bound, re-locks, bumps peaky's version and corrects its
-  package version string, and peaky's CI then installs from PyPI, which is
+  the released lower bound, re-locks, bumps peaky's version (its package
+  version string derives from `pyproject` since peaky #39, so nothing is
+  corrected by hand), and peaky's CI then installs from PyPI, which is
   the test that main still works with master; peaky releases; and only then
   is `score_pattern` deprecated in the library (decision 12), once the
   goldens harness has moved as well. The stage-2 epic's review into develop
   does not move the branch: the coupling is to the release.
+- **The reference is refreshed once, before the gate (2.7a).** Since the
+  reference was pinned at `cc07ce1` (2.1b), peaky's main took 22 PRs and
+  release 0.8.0 (tagged 2026-09-13 at `c7e0fe7`, 154 commits past the
+  reference branch's base), none of them on the reference branch, and
+  four of them change what peaky commits on a single sample:
+  - the pass height gate went from an absolute 100 cps to the sample's
+    own noise edge (peaky #33), and the 100 cps gate is why the reference
+    commits 28, 100 and 46 Assigned peaks on the TOF sets;
+  - the reference lists now activate on single-sample runs (peaky #32; at
+    `cc07ce1` only the batch path activated them, so no reference run so
+    far had the list rescue), and peaky's copies of the lists now read
+    radical status from parity and carry the same Keller split as ours;
+  - the tier gate judges a row against a mass-dependent centre (peaky
+    #30; step 2.2b takes the same rules);
+  - a labelled reagent's unlabelled impurity line reaches the local scorer
+    at the profile's purity (peaky #30), and pass 0 gained positive-mode
+    cyclosiloxane and indoor-sulfur families.
+  A rebased reference therefore does not reproduce today's table. The
+  reference stays frozen at `cc07ce1` through the TOF width fix, 2.5b and
+  2.6, so each step's round is read against the round before it, and is
+  refreshed once as step 2.7a: the reference branch rebased on main 0.8.0
+  (the overlap is `cli.py`, `io_mascope.py`, `assign.py`, `provenance.py`,
+  `local_scoring.py` and the lockfile), `mascope-tools` re-pinned from
+  `fc25575da` - on no branch since the 2.1b rebase, only under
+  `refs/pull/2093/head` - to the epic's head,
+  `tool.hatch.metadata.allow-direct-references` set so the branch's CI
+  installs at all (peaky #32's note), all 43 runs re-published with
+  peaky's commit recorded, and the 2.7 table read against both references:
+  the frozen one for continuity with stages 1 and 2, the refreshed one as
+  the number that carries forward. The TOF sets, which decision 14 carried
+  to 2.7 for a reference that commits there, get that reference here.
+  Fixes to peaky land on main; the reference branch holds only the twelve
+  commits that need the unreleased library (decision 16).
 
 ## Stage 3 - use the batch (engine 0.6.0)
 
@@ -810,7 +891,11 @@ Corroboration that only a batch can give, on the batch ledger.
 - **Where.** `batch_untargeted.py`'s propagation and consensus recompute; a
   route and compute-bar entry beside "Search untargeted".
 - **Verify.** FDR on the decoys per batch; series-derived rows agree with
-  peaky's `residual:series` rows where both exist.
+  peaky's `residual:series` rows where both exist. peaky's merged ledger
+  now carries `alternatives` (every losing reading, best first) and
+  `stage` (`cover` or `residual`; peaky #43, #44), and `peaky
+  publish-batch` maps fixed columns, so the comparison reads them from
+  peaky's run folder rather than from the import.
 - **Size.** L. Depends on stage 2.
 
 ### 3.2 Time-series coherence
@@ -820,6 +905,24 @@ Corroboration that only a batch can give, on the batch ledger.
   anti-correlation demotes to candidate with a reason. A channel holding a
   constant ratio to a bright parent across the batch is a sidelobe and
   becomes `artifact`.
+  - **Persistence is admission, not evidence** (peaky #34). A peak
+    present in more of the batch's spectra than the batch's own split of
+    the occurrence distribution is searched however faint, and an M0
+    admitted by persistence alone is capped at candidate until an
+    isotopologue, a channel or a series corroborates it: persistence
+    proves the ion is real, and at a few counts nothing constrains which
+    formula it got.
+  - **Predicted diagnostic satellites in the batch fold** (peaky #45). The
+    15N, 18O, 34S, 29Si, 30Si, 37Cl and 81Br lines of every committed M0
+    sit below the picker's edge in most files and stand only where a plume
+    lifts them; the fold predicts them at the parent's trace centre and
+    stamps a line only where the height ratio holds in the same sample
+    and across the track, since a true satellite passes in nearly every
+    judged sample and an independent compound in few.
+  - **The consensus rule, stated against peaky's.** peaky's merge is a
+    two-stage file-count vote - which ion, then which label - with a
+    curated exemption (peaky #43); Mascope's fold weights by intensity.
+    The two are compared on one batch before either is called right.
 - **Verify.** On the two 400-600-sample testbed batches; compare with
   peaky's pass-7 skips.
 - **Size.** M. Depends on 2.3 and 2.4.
@@ -854,7 +957,11 @@ Corroboration that only a batch can give, on the batch ledger.
   .reagent_profile_id`, the settings surface, and the fingerprint-based
   `resolve_ionization_modes_by_peaks` from the setup-simplification
   proposal. Last because it changes who can edit chemistry, not what the
-  engine concludes.
+  engine concludes. The library also ports the two profiles peaky added
+  after the 1.1 port: EasyIC, the charge-transfer source (`[M]+.`,
+  `[M-H]+`, `[M+H]+` secondary; peaky #27), and 15N-ammonium
+  (`[M+^NH4]+` with a declustering `[M+H]+`, purity 0.98, no
+  opportunistic channels on a labelled run; peaky #30).
 - **Size.** L. Decision D5.
 
 ## Metrics and targets
@@ -3267,10 +3374,34 @@ belongs in the fitted axis once anchors reach below m/z 100, which is step
       recorded with a charge that Stage A would refuse anyway.
     - **Two copies.** The lifted lists exist in Mascope and in peaky, and
       both copies carry the integrity test until step 2.7 settles what peaky
-      reads. Publishing the reference library is a release change.
+      reads. Publishing the reference library is a release change. *Since
+      peaky 0.8.0 (#32) the two copies agree on content: peaky reads radical
+      status from parity, its HOM flags say 573 and 257, and its Keller list
+      holds the same 50. What 2.7 settles is which copy peaky reads.*
     - **Owner.** It was recorded with the step, from the review's answers to
       the step's format note. Merging step 2.5a makes it the plan owner's
       decision, as merging #2105 did decision 3's addendum.
+16. **The reference is frozen at `cc07ce1` until step 2.7a refreshes it
+    from peaky's main, and peaky fixes land on main** (taken 2026-09-14).
+    peaky's main moved 154 commits past the reference branch's base between
+    2026-09-10 and 09-13 (#27-#48, release 0.8.0), all on main: the reflist
+    parity fix (#32) was retargeted from the reference branch to main
+    because main had the bug and the branch's CI dies at install. Four of
+    those change what peaky commits on a sample - the noise-edge height
+    gate, list activation on single samples, the mass-dependent centre, the
+    labelled reagent's impurity line - so a rebased reference does not
+    reproduce today's table. Refreshing it mid-stage would make every
+    step's delta unreadable against the round before it; never refreshing
+    it would judge the TOF sets against a reference decision 14 already
+    called inadequate. So: frozen through the TOF width fix, 2.5b and 2.6;
+    refreshed once before the gate (2.7a); the gate table read against
+    both. Step 2.7's branch rule is restated: fixes land on main, the
+    reference branch carries only the twelve commits that need the
+    unreleased library, and it is rebased on main at 2.7a and at the
+    release. peaky's isoprene list is lifted in 2.5b, its mass-dependent
+    centre becomes step 2.2b, its persistence admission, predicted
+    satellites and vote rule are named in 3.2, and its two new profiles in
+    3.5.
 
 ## Risks
 
