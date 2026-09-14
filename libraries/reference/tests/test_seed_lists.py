@@ -232,6 +232,11 @@ def test_seeding_writes_each_lists_scope_on_its_row(sync_engine):
     assert scopes["perfluorocarboxylic-acids"].polarity == "negative"
     # Keller's contaminants are seen in both polarities, which a row records as none.
     assert scopes["contaminants-keller2008"].polarity is None
+    # So are the monoterpene HOMs: the thesis measured them in negative mode, and
+    # ammonium and urea CIMS detect them as adducts in positive mode.
+    assert scopes["monoterpene-hom-kang2021"].polarity is None
+    # Their RO2 radicals stay negative, and so do the acids and iodine species.
+    assert BY_ID["monoterpene-ro2-kang2021"].polarity == "negative"
 
 
 def test_an_active_lists_row_is_brought_up_to_date_without_a_reload(sync_engine):
