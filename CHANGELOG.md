@@ -239,6 +239,9 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
     corroborated the way a search result is, by an isotopologue that tracks it.
     Without one, a row off calibration is capped, on the run-less ingest fold as
     well as in a run.
+  - **Fallback width.** A sample whose target library matches too few lines to
+    fit a width is now scored in Stage A at the instrument class's width, as the
+    untargeted stage already was, instead of at a generic 2 ppm.
 
 - **An isotope pattern is now anchored on the ion's own line, so a bright peak
   is no longer lost to a faint neighbour two mass units above it.** The matcher
