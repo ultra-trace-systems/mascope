@@ -1,6 +1,7 @@
 import { watch } from 'vue'
 import { defineStore } from 'pinia'
 
+import { copyText } from '@/lib/clipboard'
 import { makeLogger } from '@/lib/logging'
 import { useApp } from '@/stores'
 import { useAuth } from '@/stores/auth'
@@ -269,19 +270,20 @@ export const useLocation = defineStore('app.location', () => {
   const copyShareLink = async () => {
     const url = shareUrl()
     const { ui } = useApp()
-    try {
-      await navigator.clipboard.writeText(url)
+    if (await copyText(url)) {
       ui.notification.push({
         type: 'shared_link',
         status: 'success',
         message: 'Link to this view copied to clipboard'
       })
-    } catch (error) {
-      logger.warn('clipboard write failed', { data: { error: String(error) } })
+    } else {
+      // The address bar does not carry the location, so the link is shown for
+      // copying by hand.
+      logger.warn('clipboard write failed')
       ui.notification.push({
         type: 'shared_link',
         status: 'warning',
-        message: 'Could not copy the link automatically'
+        message: `Could not copy the link to this view. Copy it from here:\n${url}`
       })
     }
     return url
