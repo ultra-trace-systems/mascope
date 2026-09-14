@@ -44,6 +44,7 @@ def _row(
     source="untargeted",
     formula="C6H12O6",
     owner=None,
+    compound=None,
 ):
     return {
         "peak_assignment_id": row_id,
@@ -53,18 +54,25 @@ def _row(
         "mz_error_ppm": ppm,
         "tier": tier,
         "owner_peak_assignment_id": owner,
+        "target_compound_id": compound,
         "provenance": {},
     }
+
+
+def _library(row_id, **fields):
+    """A Stage A row the target library won, which keeps its compound id."""
+    return _row(row_id, source="database", compound=f"compound-{row_id}", **fields)
+
+
+def _mirror(row_id, **fields):
+    """A Stage A row a reference mirror won, which persists with no compound id."""
+    return _row(row_id, source="database", **fields)
 
 
 def _anchors(count, *, ppm=0.0, spread=0.1, start=0):
     """`count` corroborated commits scattered evenly about `ppm`."""
     return [
-        _row(
-            f"anchor-{start + i}",
-            ppm=ppm + (spread if i % 2 else -spread),
-            source="database",
-        )
+        _library(f"anchor-{start + i}", ppm=ppm + (spread if i % 2 else -spread))
         for i in range(count)
     ]
 
@@ -73,10 +81,32 @@ class TestWhatCorroboratesACommit:
     """Which rows the run has more than a mass fit for."""
 
     def test_a_curated_row_is_corroborated_by_its_library(self):
-        rows = [_row("a", source="database")]
+        rows = [_library("a")]
 
         assert corroboration_of(rows, precision_ppm=PRECISION) == {
             "a": CORROBORATED_CURATED
+        }
+
+    def test_a_reference_mirror_row_is_not_corroborated_by_its_list(self):
+        # A mirror is a prior matched against every sample, not a library
+        # somebody assembled for this data. On a TOF most of its pairings are
+        # lines the match window reached by chance, so its curation says nothing
+        # about whether this peak is that compound.
+        rows = [_mirror("seed")]
+
+        assert corroboration_of(rows, precision_ppm=PRECISION) == {"seed": None}
+
+    def test_a_reference_mirror_row_an_isotopologue_tracks_is_corroborated(self):
+        # The same second place in the spectrum that corroborates a search
+        # result corroborates a mirror's reading.
+        rows = [
+            _mirror("seed", ppm=0.4),
+            _mirror("seed-child", ppm=0.5, role="iso_child", owner="seed"),
+        ]
+
+        assert corroboration_of(rows, precision_ppm=PRECISION) == {
+            "seed": CORROBORATED_ISOTOPOLOGUE,
+            "seed-child": CORROBORATED_ISOTOPOLOGUE,
         }
 
     def test_an_envelope_corroborates_both_of_its_rows(self):
@@ -138,6 +168,24 @@ class TestTheRunsOwnCalibration:
 
         assert with_wild.sigma_ppm == pytest.approx(without.sigma_ppm)
         assert with_wild.anchors == without.anchors == 12
+
+    def test_a_reference_mirror_row_does_not_anchor_the_calibration(self):
+        # Counted as curated, a loaded seed's chance lines anchored this fit and
+        # widened it: on the gate's three TOF sets from 3.0, 4.3 and 2.1 ppm to
+        # 7.0, 7.3 and 6.7.
+        anchors = _anchors(12)
+        chance = [_mirror(f"seed-{i}", ppm=-6.0 + i * 12.0 / 11) for i in range(12)]
+
+        with_chance = fit_run_mass_accuracy(
+            anchors + chance,
+            corroboration_of(anchors + chance, precision_ppm=PRECISION),
+        )
+        without = fit_run_mass_accuracy(
+            anchors, corroboration_of(anchors, precision_ppm=PRECISION)
+        )
+
+        assert with_chance.sigma_ppm == pytest.approx(without.sigma_ppm)
+        assert with_chance.anchors == without.anchors == 12
 
     def test_too_few_corroborated_commits_measure_nothing(self):
         rows = _anchors(3)
@@ -227,6 +275,31 @@ class TestTheGate:
         }
         assert summary["capped"] == 0
 
+    def test_a_reference_mirror_row_off_calibration_is_capped(self):
+        # The same error on the target library's row and on a mirror's: the
+        # library's curation is evidence the mass error does not overrule, and
+        # the mirror's is not.
+        rows = _anchors(12, spread=0.1) + [
+            _library("library", ppm=5.0),
+            _mirror("seed", ppm=5.0),
+        ]
+
+        summary = apply_mass_gate(rows, fallback_sigma_ppm=PRECISION)
+
+        library, seed = rows[-2], rows[-1]
+        assert library["tier"] == TIER_ASSIGNED
+        assert library["provenance"]["mass_gate"] == {
+            "corroborated_by": CORROBORATED_CURATED
+        }
+        assert seed["tier"] == TIER_BELOW_ASSIGNABILITY
+        assert seed["provenance"]["mass_gate"] == {
+            "corroborated_by": None,
+            "capped": TIER_BELOW_ASSIGNABILITY,
+            "reason": REASON_OFF_CALIBRATION,
+        }
+        assert summary["capped"] == 1
+        assert summary["below_assignability"] == 1
+
     def test_it_only_ever_demotes(self):
         # A row the bands already put below the cap keeps the tier they gave it,
         # and the gate says nothing about it: it did not decide that tier and
@@ -278,19 +351,20 @@ class TestTheGate:
 
 
 class TestTheStageAOnlyLedger:
-    """Why the run-less ingest fold needs no gate to agree with a run.
+    """What the gate may act on in a ledger that holds only Stage A.
 
     ``_fold_sample_peaks_without_run`` runs Stage A and the two pre-passes and
-    does not call the gate. That is only safe while every commit such a ledger
-    can hold is one a curated identity proposed, which is what this pins: add an
-    uncorroborated Stage A source, or the untargeted stage to that path, and
-    this fails rather than the two ledgers quietly tiering two ways.
+    then the gate, over its Stage A rows (``test_fold_without_run`` pins the
+    call). Every commit on that path is a Stage A one, and these pin which of
+    them the gate may lower: none that the target library won, and a reference
+    mirror's that sits off calibration. Without the gate on that path, a
+    mirror's row would hold a tier there that a run takes from it.
     """
 
-    def test_a_stage_a_ledger_has_nothing_the_gate_could_demote(self):
+    def test_the_target_library_s_rows_are_never_capped(self):
         rows = [
-            _row("a", ppm=9.0, source="database"),
-            _row("b", ppm=-9.0, source="database"),
+            _library("a", ppm=9.0),
+            _library("b", ppm=-9.0),
             *_anchors(10, start=10),
             _row("reagent", role="reagent", source="reagent", formula=None, ppm=8.0),
         ]
@@ -302,6 +376,19 @@ class TestTheStageAOnlyLedger:
         assert all(
             row["tier"] == TIER_ASSIGNED for row in rows if row["assigned_formula"]
         )
+
+    def test_a_reference_mirror_s_row_off_calibration_is_capped(self):
+        rows = [
+            _mirror("seed", ppm=2.5),
+            *_anchors(10, start=10),
+            _row("reagent", role="reagent", source="reagent", formula=None, ppm=8.0),
+        ]
+
+        summary = apply_mass_gate(rows, fallback_sigma_ppm=PRECISION)
+
+        assert summary["applied"] is True
+        assert rows[0]["tier"] == TIER_CANDIDATE
+        assert summary["capped"] == 1
 
 
 class TestWhenAnIsotopologueIsEvidence:

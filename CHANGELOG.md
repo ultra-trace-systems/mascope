@@ -530,6 +530,24 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
   for its own rows: such a row said a peak belongs to an envelope whose ion the
   ledger never commits, and the peak now goes to the untargeted stage instead.
 
+- **A loaded reference database no longer widens the mass width a TOF sample is
+  scored and gated at.** Stage A matches a reference list's formulas in the
+  same frame as the workspace's target library. On a TOF most of those pairings
+  are lines the wide match window reaches by chance.
+  - **Scoring width.** It was fitted over every line Stage A matched. With the
+    shipped seed loaded, over 90% of those lines were the seed's, and the width
+    both stages score at more than doubled on every TOF test set (one went from
+    2.6 to 6.5 ppm). A candidate several ppm off then scored like a correct one,
+    and thousands of untargeted elections moved.
+  - **Mass gate.** It counted every Stage A row as corroborated by its curation.
+    The seed's chance lines therefore widened the gate's own calibration and
+    were exempt from its cap.
+  - **Now.** The width is fitted over the target library's lines alone, and only
+    the target library's rows count as curated. A reference list's row is
+    corroborated the way a search result is, by an isotopologue that tracks it.
+    Without one, a row off calibration is capped, on the run-less ingest fold as
+    well as in a run.
+
 - **An isotope pattern is now anchored on the ion's own line, so a bright peak
   is no longer lost to a faint neighbour two mass units above it.** The matcher
   normalised a predicted envelope to the predictor's first line and matched that

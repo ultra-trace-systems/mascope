@@ -10,7 +10,9 @@ instrument class's width stands in
 
 This lives in the library rather than in an engine because two engines fit it:
 Mascope's assignment engine, off the isotopologue rows its targeted stage
-matched, and an outside engine off whatever anchors it has. Two implementations
+matched for the target library (a reference mirror's lines in the same frame
+measure the match window on a TOF, so the engine leaves them out), and an
+outside engine off whatever anchors it has. Two implementations
 of one measurement would be two answers to "how well does this have to agree",
 and a comparison between the engines would then measure the difference between
 their fits as much as between their assignments.
@@ -102,6 +104,8 @@ def mass_accuracy_anchors(match_isotope_df: pd.DataFrame) -> pd.Series:
     One definition of "anchor" for the fit and for anything that reports how
     many it had: a row that paired to a peak with an intensity and a usable
     mass error. A caller that counted them itself would drift from the fit.
+    Which rows the frame holds is the caller's choice: the assignment engine
+    hands this its target library's rows and not a reference mirror's.
 
     :param match_isotope_df: A match frame carrying ``match_mz_error`` and
         ``sample_peak_intensity``. A frame missing either column has matched
