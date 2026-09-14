@@ -8,13 +8,16 @@ row has a position in that distribution. ``mass_z`` is that position, and this
 is where it is put on the row.
 
 The gate on top of it is deliberately narrow. A row the run corroborated is
-never demoted: an isotope envelope that was confirmed, or a curated identity
-that was matched, is evidence the mass error does not overrule. An
-UNCORROBORATED row - one that rests on the mass fit alone - beyond
-:data:`OFF_CALIBRATION_Z` is capped at ``candidate``, and beyond
-:data:`BELOW_ASSIGNABILITY_Z` at ``below_assignability``. The formula stays on
-the row either way: what the run is withdrawing is its confidence, not its
-reading.
+never demoted: an isotope envelope that was confirmed, or a compound of the
+workspace's own target library that was matched, is evidence the mass error
+does not overrule. A reference mirror's identity is not that evidence. A
+mirror is a prior matched against every sample rather than a library somebody
+assembled for this data, so its row is judged like a search result unless an
+isotopologue confirms it. An UNCORROBORATED row - one that rests on the mass
+fit alone - beyond :data:`OFF_CALIBRATION_Z` is capped at ``candidate``, and
+beyond :data:`BELOW_ASSIGNABILITY_Z` at ``below_assignability``. The formula
+stays on the row either way: what the run is withdrawing is its confidence,
+not its reading.
 
 What this is worth, measured rather than assumed: on the 43-sample gate it caps
 49 rows of about 14,600 at the top tier, demotes none that the reference
@@ -37,8 +40,8 @@ import numpy as np
 from mascope_backend.api.new.peak_assignments.engine import (
     ROLE_ISO_CHILD,
     ROLE_M0,
-    SOURCE_DATABASE,
     SampleMassAccuracy,
+    is_target_library_row,
 )
 from mascope_backend.api.new.peak_assignments.tiers import (
     TIER_BELOW_ASSIGNABILITY,
@@ -87,8 +90,19 @@ TRACKING_SIGMAS = 3.0
 #: ``tier_reasons`` will collect.
 REASON_OFF_CALIBRATION = "off_calibration"
 
-#: A curated identity: the row won its peak against the known composition set,
-#: so a library entry - not this run's own search - proposed the formula.
+#: A curated identity: the row won its peak for a compound of the workspace's
+#: own target library, so a library somebody assembled for this data - not this
+#: run's own search - proposed the formula.
+#:
+#: A reference mirror's row does not qualify, although Stage A matches it in the
+#: same frame. A mirror is a prior matched against every sample, so on a TOF most
+#: of its pairings are lines the match window happened to reach. Counted as
+#: corroborated, those lines anchored the calibration and widened it: on the
+#: gate's three TOF sets with the default seed loaded, this fit's own width went
+#: from 3.0, 4.3 and 2.1 ppm to 7.0, 7.3 and 6.7. A chance line well off
+#: calibration also escaped the cap that exists for exactly such a line. A
+#: mirror's row is corroborated the way a search result is, by an isotopologue
+#: that tracks it.
 CORROBORATED_CURATED = "curated"
 
 #: A confirmed envelope: the ion committed a monoisotopic peak AND at least one
@@ -244,16 +258,19 @@ def corroboration_of(
     Three answers, and the difference between the first two and the third is
     what the gate acts on:
 
-    - :data:`CORROBORATED_CURATED` - Stage A matched it to the known
-      composition set, so the formula was proposed by a library rather than by
-      this run's own search over the mass.
+    - :data:`CORROBORATED_CURATED` - Stage A matched it to a compound of the
+      workspace's target library (:func:`engine.is_target_library_row`), so the
+      formula was proposed by a library assembled for this data rather than by
+      this run's own search over the mass. A reference mirror's Stage A row is
+      not curated in this sense and is asked the next question like any other.
     - :data:`CORROBORATED_ISOTOPOLOGUE` - the reading committed a monoisotopic
       peak and at least one isotopologue of the same ion WHOSE MASS ERROR
       TRACKS ITS PARENT'S, so the spectrum agrees in a second place rather than
       in a place the matching window happened to reach. Both rows of such a
       pair are corroborated by it; a child that does not track corroborates
       nothing, including itself.
-    - ``None`` - the row rests on the mass fit alone.
+    - ``None`` - the row rests on the mass fit alone. A reference mirror's row
+      that no isotopologue tracks is one of these.
 
     :param assignments: Every row built for this sample, in any order.
     :param precision_ppm: The instrument class's precision. The bar a child's
@@ -287,7 +304,7 @@ def corroboration_of(
         if not is_committed(row):
             continue
         row_id = str(row["peak_assignment_id"])
-        if row.get("source") == SOURCE_DATABASE:
+        if is_target_library_row(row):
             corroboration[row_id] = CORROBORATED_CURATED
         elif row_id in tracking_children or row_id in confirmed_owners:
             corroboration[row_id] = CORROBORATED_ISOTOPOLOGUE
@@ -304,11 +321,13 @@ def fit_run_mass_accuracy(
 
     The same robust fit the rest of the engine measures a sample with
     (``fit_mass_accuracy``: median and scaled MAD), over a different and much
-    larger set of anchors. Stage A's fit is over the curated library's matched
+    larger set of anchors. Stage A's fit is over the target library's matched
     isotopologues, which on a sample whose library holds two targets is nothing;
     this is over everything the run committed and had a second reason for, which
     on the same sample is hundreds of rows. That is what makes the calibration
-    the run's own rather than the library's.
+    the run's own rather than the library's. A reference mirror's monoisotopic
+    row anchors it only when an isotopologue tracks it, because its curation is
+    not a second reason (:data:`CORROBORATED_CURATED`).
 
     Only corroborated rows anchor it, and that is the point rather than a
     limitation: fitting over every commit would measure the spread of the rows
@@ -399,7 +418,9 @@ def apply_mass_gate(
     if stage_a_accuracy is not None:
         # What Stage A had to score the untargeted search with, beside what the
         # run went on to be able to measure for itself. On the gate sets these
-        # differ by an order of magnitude in anchor count.
+        # differ by an order of magnitude in anchor count. The Stage A count is
+        # the target library's matched lines alone, whether or not a reference
+        # mirror is loaded (`engine.target_library_rows`).
         summary["stage_a_anchors"] = int(stage_a_accuracy.anchors)
 
     for row in assignments:

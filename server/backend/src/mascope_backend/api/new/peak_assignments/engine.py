@@ -186,10 +186,15 @@ class SampleMassAccuracy:
     """What Stage A measured of a sample's own mass error, and from how much.
 
     Either number is None when it was not measured: ``sigma_ppm`` below
-    :data:`mass_accuracy.MASS_ACCURACY_MIN_ANCHORS` matched known ions and
-    ``mu_ppm`` below :data:`mass_accuracy.MASS_OFFSET_MIN_ANCHORS`. Neither is a
-    small measurement - it is no measurement, and ``anchors`` says how close it
-    came, so a run that fell back records why.
+    :data:`mass_accuracy.MASS_ACCURACY_MIN_ANCHORS` matched lines of the target
+    library and ``mu_ppm`` below :data:`mass_accuracy.MASS_OFFSET_MIN_ANCHORS`.
+    Neither is a small measurement - it is no measurement, and ``anchors`` says
+    how close it came, so a run that fell back records why.
+
+    ``anchors`` counts the target library's matched lines and nothing else. A
+    loaded reference mirror's lines are in the same Stage A frame and are never
+    among them (:func:`target_library_rows`), so the count is the same whether
+    or not a mirror is loaded.
 
     The offset is reported separately from the width because it is measurable
     from fewer anchors, and because a sample sitting a ppm to one side with six
@@ -202,15 +207,84 @@ class SampleMassAccuracy:
     anchors: int = 0
 
 
+def reference_mirror_mask(match_isotope_df: pd.DataFrame) -> pd.Series:
+    """Which rows of a Stage A match frame the reference mirror contributed.
+
+    Told apart by what only a mirror row carries, a non-empty
+    ``reference_identities`` list; the target library's rows carry none.
+
+    :param match_isotope_df: A Stage A match frame.
+    :return: A boolean mask on the frame's index, all False for a frame with no
+        reference column.
+    """
+    if REFERENCE_IDENTITIES_COL not in match_isotope_df.columns:
+        return pd.Series(False, index=match_isotope_df.index, dtype=bool)
+    return (
+        match_isotope_df[REFERENCE_IDENTITIES_COL]
+        .apply(lambda value: isinstance(value, list) and bool(value))
+        .astype(bool)
+    )
+
+
+def target_library_rows(match_isotope_df: pd.DataFrame) -> pd.DataFrame:
+    """The rows of a Stage A match frame that the target library contributed.
+
+    These are what a sample's mass accuracy is fitted from. A loaded reference
+    mirror sits in the same frame, and its lines do not measure the instrument.
+    A mirror is matched against every sample, so most of its pairings are lines
+    the match window happened to reach rather than compounds the sample holds.
+    An Orbitrap's window is too narrow for that to show. A TOF's is wide enough
+    for such pairings to scatter across all of it, and then they set the width.
+    Measured on the gate's three TOF sets with the default seed loaded, the
+    mirror's lines were over 90% of the anchors, and the fitted width went from
+    3.0, 5.1 and 2.6 ppm to 8.2, 8.2 and 6.5. Fitting over only the lines that
+    won their peak still gave 7.9, 7.5 and 6.9, because a chance line seldom
+    has a rival for its peak.
+
+    The target library's own lines do not move when a mirror is loaded beside
+    them, because the matcher pairs each ion on its own. A sample whose library
+    matches too few of them to fit a width falls back to the instrument class's,
+    as it does with no mirror loaded.
+
+    :param match_isotope_df: A Stage A match frame.
+    :return: The frame without the reference mirror's rows.
+    """
+    return match_isotope_df[~reference_mirror_mask(match_isotope_df)]
+
+
+def is_target_library_row(assignment: dict) -> bool:
+    """Whether a ledger row was committed for a compound of the target library.
+
+    The inversion keeps a target winner's ``target_compound_id`` and writes a
+    reference mirror's winner without one, with its identities in provenance
+    instead. On a ledger row the compound id is therefore what tells the two
+    Stage A sources apart.
+
+    :param assignment: A ledger row as the engine builds it.
+    :return: True for a Stage A row of the target library, False for a
+        reference mirror's row and for every row another pass wrote.
+    """
+    return assignment.get("source") == SOURCE_DATABASE and bool(
+        assignment.get("target_compound_id")
+    )
+
+
 def sample_mass_accuracy(match_isotope_df) -> SampleMassAccuracy:
     """Fit a sample's mass accuracy off the frame its Stage A fit was scored on.
 
+    The fit runs over the target library's rows alone
+    (:func:`target_library_rows`). Stage A scores its own ions at this width
+    (:func:`score_ions_by_fit`) and the untargeted stage is scored at it, so
+    both stages leave a reference mirror's lines out of it.
+
     :param match_isotope_df: The gated, fit-scored Stage A match frame.
-    :return: The fitted offset and width, and the anchor count behind them.
+    :return: The fitted offset and width, and how many of the target library's
+        matched lines they were fitted from.
     """
-    mu, sigma = fit_sample_mass_accuracy(match_isotope_df)
+    anchors = target_library_rows(match_isotope_df)
+    mu, sigma = fit_sample_mass_accuracy(anchors)
     return SampleMassAccuracy(
-        mu_ppm=mu, sigma_ppm=sigma, anchors=len(mass_accuracy_anchors(match_isotope_df))
+        mu_ppm=mu, sigma_ppm=sigma, anchors=len(mass_accuracy_anchors(anchors))
     )
 
 
@@ -226,10 +300,12 @@ def pattern_scoring_for(
     mass errors actually have, the offset they sit at, the window a line may be
     matched in, and how deep an envelope may be predicted.
 
-    The width comes from Stage A - the fitted spread of the curated library's
-    own matched isotopologues, which is the instrument's measured accuracy on
-    this sample - widened by ``PRED_SIGMA_PPM`` exactly as Stage A's own fit
-    widens it, so a Stage B row and a Stage A row are judged at one width. Both
+    The width comes from Stage A: the fitted spread of the target library's own
+    matched isotopologues, which is the instrument's measured accuracy on this
+    sample. A reference mirror's lines are not part of that fit
+    (:func:`target_library_rows`), because on a TOF they measure the match
+    window. The width is widened by ``PRED_SIGMA_PPM`` exactly as Stage A's own
+    fit widens it, so a Stage B row and a Stage A row are judged at one width. Both
     go through :func:`mass_accuracy.scoring_sigma_ppm`, the library's one
     statement of what a fit score judges a mass error against, so an outside
     engine scoring the same sample judges it at the same width.
@@ -287,6 +363,8 @@ def pattern_scoring_snapshot(
         # is therefore answered separately: "none" means the run corrected by
         # zero because it measured nothing, not because it measured zero.
         "mu_source": "fitted" if mass_accuracy.mu_ppm is not None else "none",
+        # The target library's matched lines the width was fitted over; a
+        # reference mirror's are never counted, whether or not one is loaded.
         "fitted_anchors": int(mass_accuracy.anchors),
         "mz_tolerance_ppm": float(scoring.mz_tolerance_ppm),
         "abundance_floor": float(scoring.abundance_floor),
@@ -596,7 +674,10 @@ def score_ions_by_fit(match_isotope_df: pd.DataFrame) -> pd.DataFrame:
     fit quality: the whole predicted isotope envelope scored against the spectrum
     (mass, intensity, SNR-detectability), computed exactly as the aggregate match
     path does (`ion_score_v2` per ``target_ion_id`` with the sample's fitted mass
-    accuracy). Every isotopologue of an ion carries that ion's fit, so the
+    accuracy). That accuracy is fitted over the target library's lines only
+    (:func:`sample_mass_accuracy`), so every ion in the frame, a reference
+    mirror's included, is scored at a width the mirror's own chance lines did
+    not widen. Every isotopologue of an ion carries that ion's fit, so the
     single-owner arbitration in `invert_matches_to_peak_assignments` awards a
     contested peak to the better-corroborated assignment, not the one with the
     best single-peak mass hit.
@@ -639,12 +720,16 @@ def score_ions_by_fit(match_isotope_df: pd.DataFrame) -> pd.DataFrame:
         gated_out = pd.to_numeric(df["match_score"], errors="coerce").fillna(0.0) == 0
         df.loc[gated_out, "sample_peak_intensity"] = 0.0
 
-    # mu is None where too few anchors matched to measure an offset; the scorer
-    # reads that as an uncorrected sample rather than a centred one.
-    mu, sigma = fit_sample_mass_accuracy(df)
+    # The one measurement the untargeted stage is scored at too, read off this
+    # same gated frame. mu is None where too few anchors matched to measure an
+    # offset; the scorer reads that as an uncorrected sample rather than a
+    # centred one.
+    accuracy = sample_mass_accuracy(df)
     noise = sample_noise_floor(df)
     fit_by_ion = df.groupby("target_ion_id", sort=False, dropna=False).apply(
-        lambda g: ion_score_v2(g, sigma_ppm=sigma, mu=mu, noise=noise),
+        lambda g: ion_score_v2(
+            g, sigma_ppm=accuracy.sigma_ppm, mu=accuracy.mu_ppm, noise=noise
+        ),
         include_groups=False,
     )
     # Return the GATED frame (not a fresh copy of the input): the zeroed intensities
@@ -847,11 +932,7 @@ def invert_matches_to_peak_assignments(
     # identity rides alongside).
     reference_identities_by_formula: dict[str, list] = {}
     if REFERENCE_IDENTITIES_COL in match_isotope_df.columns:
-        reference_rows = match_isotope_df[
-            match_isotope_df[REFERENCE_IDENTITIES_COL].apply(
-                lambda value: isinstance(value, list) and bool(value)
-            )
-        ]
+        reference_rows = match_isotope_df[reference_mirror_mask(match_isotope_df)]
         for formula, group in reference_rows.groupby("target_compound_formula"):
             reference_identities_by_formula[str(formula)] = group.iloc[0][
                 REFERENCE_IDENTITIES_COL

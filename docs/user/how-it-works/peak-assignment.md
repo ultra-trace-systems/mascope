@@ -226,10 +226,14 @@ What caps a row at candidate:
   neutral with a different nitrogen count through a channel that donates no nitrogen,
   with no channel of the run to settle the count; and a commitment through a channel the
   ionization mode treats as secondary, with no isotopologue or second channel behind it.
-  The last applies to the formula search's own results only, and a curated identity is
-  exempt from the first two as well: the calibration check counts its curation as the
-  corroboration it asks for, and the nitrogen count is a question about the search's
-  choice.
+  The last applies to the formula search's own results only. A curated identity is
+  exempt from the nitrogen count, which is a question about the search's choice. Only a
+  compound of your own target library is exempt from the calibration check, which counts
+  that curation as the corroboration it asks for. A formula from a loaded reference list
+  is a prior matched against every sample rather than a list assembled for your data, so
+  the check treats it like a search result unless one of its isotopologues tracks its mass
+  error. Those reference matches also play no part in measuring the sample's own mass
+  accuracy.
 
 What a row that keeps its tier kept it on: **second channel** (the same neutral committed
 through two or more of the run's ionization channels), **no close rival** (the evidence
