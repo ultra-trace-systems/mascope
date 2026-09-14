@@ -11,6 +11,13 @@ which the radical lists do: a radical competes with the closed-shell molecule
 for the same peak, so it is something to ask for. Seeding a deployment is opt-in
 as a whole - a command an operator runs - and only the local demo does it
 unasked.
+
+A list's source row records how its compounds may be matched: unbounded, with
+the radical allowance and the polarity its header names
+(:func:`mascope_reference.adapters.peaklist.list_scope`). A list whose version
+is already active is not loaded again, but its row is brought up to date with
+what the list says, so a deployment whose rows predate those fields, or whose
+list changed them without a new version, only has to run the seed.
 """
 
 from collections.abc import Callable, Sequence
@@ -18,13 +25,14 @@ from dataclasses import dataclass
 from importlib.resources import files
 from pathlib import Path
 
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.engine import Engine
 
-from mascope_reference.adapters.peaklist import PeakListAdapter
+from mascope_reference.adapters.peaklist import PeakListAdapter, list_scope
 from mascope_reference.ingest import DEFAULT_BATCH_SIZE, ingest
 from mascope_reference.peaklist import PeakList, admitted_species, read_peak_list
 from mascope_reference.schema import reference_source
+from mascope_reference.scope import SourceScope
 
 
 #: Where the shipped lists live inside the package.
@@ -42,6 +50,9 @@ class SeedOutcome:
     ingested: int = 0
     #: Radicals a list without ``allow_radicals`` kept out of the load.
     held_back: int = 0
+    #: Whether an already-active version's row said something other than the
+    #: list about how its compounds may be matched, and was brought up to date.
+    refreshed: bool = False
 
 
 def lists_directory() -> Path:
@@ -103,10 +114,11 @@ def seed(
 ) -> list[SeedOutcome]:
     """Load lists, each as the active version of its own source.
 
-    A list whose version is already the active one is left alone, so seeding
-    twice changes nothing - which is what lets the demo seed on every start. A
-    newer version replaces the older one the way a re-sync does, and ``prune``
-    then deletes the load it replaced.
+    A list whose version is already the active one is not loaded again, so
+    seeding twice changes nothing - which is what lets the demo seed on every
+    start. Its row's window, radical allowance and polarity are brought up to
+    date with the list's all the same. A newer version replaces the older one
+    the way a re-sync does, and ``prune`` then deletes the load it replaced.
 
     :param engine: Synchronous engine for the target database.
     :param names: List ids to load; None for every list that loads by default.
@@ -126,9 +138,16 @@ def seed(
     for peak_list in chosen:
         version = peak_list.data_version or "unversioned"
         held_back = len(peak_list.species) - sum(1 for _ in admitted_species(peak_list))
+        scope = list_scope(peak_list)
         if _active_version(engine, peak_list.id) == version:
             outcomes.append(
-                SeedOutcome(peak_list.id, version, loaded=False, held_back=held_back)
+                SeedOutcome(
+                    peak_list.id,
+                    version,
+                    loaded=False,
+                    held_back=held_back,
+                    refreshed=_refresh_scope(engine, peak_list.id, scope),
+                )
             )
             continue
         result = ingest(
@@ -140,6 +159,7 @@ def seed(
             batch_size=batch_size,
             prune=prune,
             progress=progress,
+            scope=scope,
         )
         outcomes.append(
             SeedOutcome(
@@ -151,6 +171,45 @@ def seed(
             )
         )
     return outcomes
+
+
+def _refresh_scope(engine: Engine, source_name: str, scope: SourceScope) -> bool:
+    """Write a list's scope on its active row, where the row says otherwise.
+
+    :param engine: Synchronous engine for the target database.
+    :param source_name: The list's id, its source's name.
+    :param scope: What the list says.
+    :return: Whether the row changed.
+    """
+    with engine.begin() as conn:
+        rows = conn.execute(
+            select(
+                reference_source.c.reference_source_id,
+                reference_source.c.known_window,
+                reference_source.c.allow_radicals,
+                reference_source.c.polarity,
+            )
+            .where(reference_source.c.name == source_name)
+            .where(reference_source.c.is_active.is_(True))
+        ).all()
+        stale = [
+            row.reference_source_id for row in rows if _scope_or_none(row) != scope
+        ]
+        if stale:
+            conn.execute(
+                update(reference_source)
+                .where(reference_source.c.reference_source_id.in_(stale))
+                .values(**scope.row_values())
+            )
+    return bool(stale)
+
+
+def _scope_or_none(row) -> SourceScope | None:
+    """The scope a row records, or None where it records none a scope can read."""
+    try:
+        return SourceScope.from_row(row)
+    except (TypeError, ValueError):
+        return None
 
 
 def _active_version(engine: Engine, source_name: str) -> str | None:

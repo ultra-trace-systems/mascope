@@ -600,6 +600,28 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
   list's "diaterpenylic acid" row, whose formula was 2-hydroxyterpenylic acid's,
   now names 2-hydroxyterpenylic acid.
 
+- **A reference source now records how its compounds may be matched, and
+  `mascope reference deactivate` takes a source out.**
+  - **What a load records:** a window (the elements a formula may carry, and its
+    largest carbon count and mass), whether its radicals may be matched, and the
+    polarity its compounds are detected in.
+  - **Defaults:** a public database loads at the atmospheric window, C, H, N, O
+    and S with at most 40 carbons and 700 Da. A hand-authored CSV, a list file and
+    the shipped lists load unbounded, and a list file's header names its own
+    radical allowance and polarity. Sources loaded before this release are
+    migrated to the atmospheric window.
+  - **Setting them:** `reference sync` takes `--elements`, `--max-carbon`,
+    `--max-mass` and `--allow-radicals`. `reference sources` names the window
+    each adapter writes, and `reference status` what each load recorded.
+  - **Seeding:** `reference seed` also brings the row of a list that is already
+    loaded up to date with the list, so running it once after upgrading records
+    each shipped list's own values.
+  - **Deactivating:** `mascope reference deactivate <source>` leaves no version of
+    a source active without deleting it; on a server, run
+    `python -m mascope_backend.db.scripts.reference_deactivate` inside the backend
+    container.
+  - Peak assignment does not read the three fields yet.
+
 - **The batch peaks selected in the ledger now show as a filter chip.** In
   Assignments mode the topbar's chips gained one for the Batch peaks ledger's
   selection - the species the batch chart plots - named by formula (or m/z) as

@@ -2207,6 +2207,10 @@ class ReferenceSource(Base):
     rows over time (versioned loads for reproducibility); ``is_active`` marks the
     one that queries read, and re-ingesting a source flips the previous load
     inactive.
+
+    It also records how the source's compounds may be matched, written when the
+    source is loaded (``mascope_reference.scope``): a database mirror at the
+    atmospheric window, a list someone authored unbounded.
     """
 
     __tablename__ = "reference_source"
@@ -2220,6 +2224,23 @@ class ReferenceSource(Base):
     record_count: Mapped[int] = mapped_column(Integer, default=0)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, index=True)
     ingested_at: Mapped[dt] = mapped_column(TIMESTAMP(timezone=True))
+    # The formulas the source may contribute: an object of elements, max_carbon
+    # and max_mass, where a null field is unbounded on that axis. A row that
+    # names none is bounded at the atmospheric window a database mirror loads
+    # at; only a load that says so writes an unbounded one.
+    known_window: Mapped[dict] = mapped_column(
+        JSON,
+        server_default=text(
+            """'{"elements": ["C", "H", "N", "O", "S"], "max_carbon": 40, "max_mass": 700.0}'"""
+        ),
+    )
+    # Whether the source's odd-electron formulas may be matched.
+    allow_radicals: Mapped[bool] = mapped_column(
+        Boolean, default=False, server_default=text("false")
+    )
+    # The polarity the compounds are detected in: positive or negative, NULL for
+    # both.
+    polarity: Mapped[Optional[str]] = mapped_column(String(8))
 
     # Relationships
     reference_compound = relationship(

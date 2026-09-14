@@ -16,13 +16,33 @@ sample and read by nothing.
 
 A radical is held back unless the list says ``allow_radicals``, which a
 schema 1 list cannot say.
+
+A list is its own bound, so its source row is written unbounded, with the
+allowance and the polarity its header names (:func:`list_scope`).
 """
 
 from collections.abc import Iterator
 from pathlib import Path
 
-from mascope_reference.peaklist import admitted_species, read_peak_list
+from mascope_reference.peaklist import PeakList, admitted_species, read_peak_list
 from mascope_reference.record import ReferenceRecord
+from mascope_reference.scope import POLARITIES, UNBOUNDED, SourceScope
+
+
+def list_scope(peak_list: PeakList) -> SourceScope:
+    """The scope a list's source row records: unbounded, as its header says.
+
+    A list that says it was measured in both polarities, or says nothing, is
+    recorded as both.
+
+    :param peak_list: The list, read.
+    :return: The scope.
+    """
+    return SourceScope(
+        known_window=UNBOUNDED,
+        allow_radicals=peak_list.allow_radicals,
+        polarity=peak_list.polarity if peak_list.polarity in POLARITIES else None,
+    )
 
 
 class PeakListAdapter:
@@ -31,12 +51,17 @@ class PeakListAdapter:
     name = "peaklist"
     #: For a list that names no licence of its own, which only schema 1 can do.
     license = "custom"
+    known_window = UNBOUNDED
 
     def __init__(self, license: str | None = None) -> None:
         """:param license: The licence of the source row an ingest records;
         :func:`mascope_reference.seed.seed` passes the list's own."""
         if license is not None:
             self.license = license
+
+    def scope(self, path: Path) -> SourceScope:
+        """What a load of this list file writes on its source row."""
+        return list_scope(read_peak_list(path))
 
     def parse(self, path: Path) -> Iterator[ReferenceRecord]:
         peak_list = read_peak_list(path)

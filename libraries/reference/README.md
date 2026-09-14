@@ -24,7 +24,13 @@ for the design.
   reference and assigned formulas compare identically.
 - **Versioned ingest** ([`ingest.py`](src/mascope_reference/ingest.py)) - each
   load records a `reference_source` row and bulk-inserts `reference_compound`
-  rows; the new load becomes the active version of its source.
+  rows; the new load becomes the active version of its source, and `deactivate`
+  takes a source's active load out.
+- **Source scope** ([`scope.py`](src/mascope_reference/scope.py)) - what a
+  source row records about how its compounds may be matched: a window of
+  elements, carbon count and mass, a radical allowance and a polarity. A public
+  database loads at the atmospheric window and a list someone authored loads
+  unbounded.
 - **Indexed query** ([`query.py`](src/mascope_reference/query.py)) -
   `by_formula`, `by_mass_window`, and batched `annotate_formulas`, over the
   active version of each source.
