@@ -8,7 +8,8 @@ sequenced by ``docs/dev/assignment_quality_plan.md`` (step 1.1):
   mechanism notations that identify it, and the secondary channels the source
   also produces;
 - a :class:`ChemistryContext` answers "what was sampled?" - heteroatom caps and
-  Van Krevelen ratio windows for the matrix.
+  Van Krevelen ratio windows for the matrix, and the ceiling on the formulas a
+  reference source may bring into Stage A's known set.
 
 They stay separate because Br- CIMS on ambient air and Br- CIMS in a chamber
 share every reagent fact and differ only in matrix priors; flattening the two
@@ -37,6 +38,8 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass, field
 from typing import Mapping
+
+from mascope_tools.composition.known_window import KnownWindow
 
 
 #: Ratio-window keys. ``C`` is the carbon-equivalent count (C + Si: silicon is a
@@ -161,6 +164,20 @@ class ReagentProfile:
     aliases: tuple[str, ...] = ()
 
 
+#: The ceiling every shipped context sets on a reference source's window. It
+#: opens silicon, phosphorus, fluorine, chlorine, bromine and iodine beside C, H,
+#: N, O and S: the siloxanes, organophosphates, perfluorinated acids and reactive
+#: iodine the shipped lists hold are families no formula grid reaches, so known
+#: matching is the only way they are assigned. The carbon and mass caps are the
+#: atmospheric window's, and they hold every shipped list: D6 is 444 Da, the
+#: longest perfluorinated acid 614.
+KNOWN_WINDOW_CEILING = KnownWindow(
+    elements=frozenset({"C", "H", "N", "O", "S", "Si", "P", "F", "Cl", "Br", "I"}),
+    max_carbon=40,
+    max_mass=700.0,
+)
+
+
 @dataclass(frozen=True)
 class ChemistryContext:
     """The matrix prior: what the sample was drawn from.
@@ -184,6 +201,10 @@ class ChemistryContext:
         neutral (``{"Br": 5}``): below it the formula is almost always a
         reagent-cluster alias. Graded rather than gated, so it is read by the
         plausibility layer of stage 2, not by this step's filter.
+    :param known_window: The ceiling on every reference source's window in
+        Stage A: a source contributes a formula only inside both its own window
+        and this one. None sets no ceiling, so each source is bounded by its own
+        row alone.
     """
 
     name: str
@@ -195,6 +216,7 @@ class ChemistryContext:
     n_to_c: tuple[float, float] | None = None
     dbe_to_c: tuple[float, float] | None = None
     min_carbon_for: Mapping[str, int] = field(default_factory=dict)
+    known_window: KnownWindow | None = KNOWN_WINDOW_CEILING
 
     def ratio_windows(self) -> dict[str, tuple[float, float]]:
         """The context's ratio windows keyed for the heuristic filter.
@@ -362,6 +384,11 @@ NO_CONTEXT = ChemistryContext(
         "No matrix prior: the reagent grid stands as it is and only the "
         "universal structural rules apply. The identity context."
     ),
+    # No ceiling either, as the identity it is for the ratio windows: the ESI
+    # profiles and the identity profile default to this context, and the
+    # siloxane list's second citation reports those siloxanes as nanoESI
+    # background.
+    known_window=None,
 )
 
 CHEMISTRY_CONTEXTS: dict[str, ChemistryContext] = {

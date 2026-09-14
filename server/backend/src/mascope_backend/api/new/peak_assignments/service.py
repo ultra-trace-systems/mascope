@@ -143,6 +143,7 @@ from mascope_backend.socket.notifications import (
 from mascope_file.name import get_instrument_type
 from mascope_match import compute_match_isotopes
 from mascope_reference import iter_known_compositions, known_state_fingerprint
+from mascope_reference.scope import SAMPLE_POLARITIES
 from mascope_tools.composition.arbitration import CANDIDATE_DENSITY
 from mascope_tools.composition.calibration import (
     InsufficientCalibrationData,
@@ -150,6 +151,7 @@ from mascope_tools.composition.calibration import (
 )
 from mascope_tools.composition.finder import assign_compositions
 from mascope_tools.composition.heuristic_filter import SCORE_VERSION
+from mascope_tools.composition.known_window import KnownWindow
 from mascope_tools.composition.reagents import secondary_channels
 
 
@@ -1226,14 +1228,17 @@ async def _fetch_reference_known_isotopes(
     sample: Sample,
     isotope_abundance_threshold: float,
     mechanisms: list[SimpleNamespace],
+    *,
+    known_window: KnownWindow | None,
 ) -> pd.DataFrame:
     """Reference-database contribution to the Stage A known set.
 
-    Pulls the active reference compounds (bounded to the atmospheric window by
-    :func:`iter_known_compositions`), then expands them into matchable isotope
-    rows off the event loop. Returns an empty frame when there is no reference
-    data or the sample has no matching ionization mechanisms - so the seam is a
-    no-op until a reference database is loaded.
+    Pulls the active reference compounds each source admits - its own window
+    under the context's ceiling, its radical allowance, and its polarity against
+    the sample's (:func:`iter_known_compositions`) - then expands them into
+    matchable isotope rows off the event loop. Returns an empty frame when there
+    is no reference data or the sample has no matching ionization mechanisms -
+    so the seam is a no-op until a reference database is loaded.
 
     The expansion is cached across runs (see the cache note above); the lock
     makes concurrent runs with the same key wait for one build instead of
@@ -1244,6 +1249,8 @@ async def _fetch_reference_known_isotopes(
         reference isotope to participate.
     :param mechanisms: The sample's polarity-matching mechanisms, resolved
         once per run by :func:`fetch_sample_mechanisms`.
+    :param known_window: The resolved chemistry context's ceiling on every
+        source's window, or None where the context sets none.
     :return: DataFrame in the known-isotope shape, or empty.
     """
     if not mechanisms:
@@ -1257,6 +1264,7 @@ async def _fetch_reference_known_isotopes(
         return pd.DataFrame()
 
     licenses = reference_license_gate()
+    polarity = SAMPLE_POLARITIES.get(sample.polarity)
     resolution_type = "LOW" if get_instrument_type(sample.filename) == "tof" else "HIGH"
     cache_key = (
         fingerprint,
@@ -1264,6 +1272,8 @@ async def _fetch_reference_known_isotopes(
         tuple(sorted(m.ionization_mechanism_id for m in mechanisms)),
         resolution_type,
         isotope_abundance_threshold,
+        known_window,
+        polarity,
     )
 
     async with _reference_isotope_cache_lock:
@@ -1281,6 +1291,8 @@ async def _fetch_reference_known_isotopes(
             known = await iter_known_compositions(
                 session,
                 licenses=None if licenses is None else set(licenses),
+                ceiling=known_window,
+                polarity=polarity,
             )
         if not known:
             reference_isotopes_df = pd.DataFrame()
@@ -1896,6 +1908,7 @@ async def _stage_a_assignments(
     excluded_peak_ids: set[str] | None = None,
     *,
     fallback_sigma_ppm: float,
+    known_window: KnownWindow | None,
 ) -> tuple[list[dict], dict | None, SampleMassAccuracy]:
     """Stage A: database-first assignment from the known composition set.
 
@@ -1922,6 +1935,8 @@ async def _stage_a_assignments(
         Stage A scores at it when the target library matched too few lines to
         fit a width, as the untargeted stage does, so neither stage falls back
         to a width the other does not use (:func:`score_ions_by_fit`).
+    :param known_window: The resolved chemistry context's ceiling on every
+        reference source's window, or None where the context sets none.
     :return: The assignment rows; what a run records about the confidence curve
         their P(correct) came from - None when Stage A never ran or the
         instrument has no curve; and what the target library's own matched
@@ -1941,7 +1956,10 @@ async def _stage_a_assignments(
         sample, match_params.isotope_abundance_threshold, mechanism_ids
     )
     reference_isotopes_df = await _fetch_reference_known_isotopes(
-        sample, match_params.isotope_abundance_threshold, mechanisms
+        sample,
+        match_params.isotope_abundance_threshold,
+        mechanisms,
+        known_window=known_window,
     )
     known_isotopes_df = _combine_known_isotopes(
         target_isotopes_df, reference_isotopes_df
@@ -2180,6 +2198,7 @@ async def _run_sample_assignment(
             run.peak_assignment_run_id,
             excluded_peak_ids=claimed_peak_ids,
             fallback_sigma_ppm=resolved_profile.fallback_sigma_ppm,
+            known_window=resolved_profile.context.known_window,
         )
         runtime.logger.info(
             f"Stage A assigned {len(stage_a_assignments)} of {len(peaks_df)} "
@@ -2692,6 +2711,7 @@ async def _fold_sample_peaks_without_run(
         run_id,
         excluded_peak_ids=claimed_peak_ids,
         fallback_sigma_ppm=resolved_profile.fallback_sigma_ppm,
+        known_window=resolved_profile.context.known_window,
     )
     # The run's gate over this path's commits, so that a reference mirror's
     # row off calibration is capped here as a run would cap it. Nothing records

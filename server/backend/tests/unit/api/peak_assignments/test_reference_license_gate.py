@@ -54,7 +54,9 @@ def _mechanism(mech_id="m-deprot", notation="-H-", polarity="-"):
 
 
 def _orbi_sample():
-    return SimpleNamespace(sample_item_name="Sample One", filename="orbi-sample.raw")
+    return SimpleNamespace(
+        sample_item_name="Sample One", filename="orbi-sample.raw", polarity="-"
+    )
 
 
 def _session_ctx():
@@ -152,7 +154,9 @@ class TestGateAtTheCallSite:
         deployment must reach the query with exactly that."""
         known, _ = self._patches([None])
 
-        await _fetch_reference_known_isotopes(_orbi_sample(), 0.0, [_mechanism()])
+        await _fetch_reference_known_isotopes(
+            _orbi_sample(), 0.0, [_mechanism()], known_window=None
+        )
 
         assert known.await_args.kwargs["licenses"] is None
 
@@ -160,7 +164,9 @@ class TestGateAtTheCallSite:
     async def test_a_gate_is_passed_as_a_licence_set(self):
         known, _ = self._patches([["CC0", "public-domain"]])
 
-        await _fetch_reference_known_isotopes(_orbi_sample(), 0.0, [_mechanism()])
+        await _fetch_reference_known_isotopes(
+            _orbi_sample(), 0.0, [_mechanism()], known_window=None
+        )
 
         assert known.await_args.kwargs["licenses"] == {"CC0", "public-domain"}
 
@@ -170,8 +176,12 @@ class TestGateAtTheCallSite:
         hand the run compounds the deployment just said it may not match."""
         known, build = self._patches([None, ["public-domain"]])
 
-        await _fetch_reference_known_isotopes(_orbi_sample(), 0.0, [_mechanism()])
-        await _fetch_reference_known_isotopes(_orbi_sample(), 0.0, [_mechanism()])
+        await _fetch_reference_known_isotopes(
+            _orbi_sample(), 0.0, [_mechanism()], known_window=None
+        )
+        await _fetch_reference_known_isotopes(
+            _orbi_sample(), 0.0, [_mechanism()], known_window=None
+        )
 
         assert build.call_count == 2
         assert known.await_count == 2
@@ -181,8 +191,12 @@ class TestGateAtTheCallSite:
         """The gate belongs in the key, but it must not defeat the key."""
         known, build = self._patches([["public-domain"]] * 2)
 
-        await _fetch_reference_known_isotopes(_orbi_sample(), 0.0, [_mechanism()])
-        await _fetch_reference_known_isotopes(_orbi_sample(), 0.0, [_mechanism()])
+        await _fetch_reference_known_isotopes(
+            _orbi_sample(), 0.0, [_mechanism()], known_window=None
+        )
+        await _fetch_reference_known_isotopes(
+            _orbi_sample(), 0.0, [_mechanism()], known_window=None
+        )
 
         build.assert_called_once()
         known.assert_awaited_once()

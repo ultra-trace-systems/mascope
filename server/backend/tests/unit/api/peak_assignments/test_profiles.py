@@ -188,6 +188,17 @@ class TestSnapshot:
         assert snapshot["mz_precision_ppm"] == 10.0
         assert snapshot["ratio_windows"]["O/C"] == [0.0, 1.5]
 
+    def test_it_records_the_ceiling_stage_a_matched_the_reference_under(self):
+        shipped = resolve_profile(
+            PeakAssignmentConfig(), BROMIDE, instrument_type="tof", polarity="-"
+        ).snapshot()
+        assert shipped["known_window"] == presets.KNOWN_WINDOW_CEILING.to_json()
+        identity = resolve_profile(
+            PeakAssignmentConfig(profile="none"), BROMIDE, instrument_type="tof"
+        ).snapshot()
+        assert identity["context"] == "none"
+        assert identity["known_window"] is None
+
     def test_it_is_json_serializable(self):
         import json
 
