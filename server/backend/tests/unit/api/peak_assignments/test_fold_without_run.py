@@ -307,6 +307,24 @@ class TestTheFoldClaimsInTheRunsWindow:
         assert seen["instrument_type"] == "orbi"
 
     @pytest.mark.asyncio
+    async def test_stage_a_is_told_the_class_width_the_fold_resolved(self):
+        """Where the target library fits no width, Stage A stands in the class's.
+
+        That is the width a run stands in, so a fold and a run on the same thin
+        sample score its Stage A rows alike.
+        """
+        from mascope_backend.api.new.peak_assignments.service import (
+            fold_sample_peaks_without_run,
+        )
+
+        stack, mocks = _patched()
+        with stack:
+            self._resolve_spy(stack, lambda _filename: "orbi")
+            await fold_sample_peaks_without_run("si-1")
+
+        assert mocks["stage_a"].call_args.kwargs["fallback_sigma_ppm"] == 0.3
+
+    @pytest.mark.asyncio
     async def test_a_filename_that_names_no_instrument_does_not_fail_the_fold(self):
         """The parse raises for a sample that keeps no data file and whose name
         does not say. Standing down is this path's contract, so the fold reads

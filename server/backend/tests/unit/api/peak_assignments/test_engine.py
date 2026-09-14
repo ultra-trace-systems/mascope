@@ -13,6 +13,7 @@ import json
 import pandas as pd
 import pytest
 
+from mascope_backend.api.controllers.match.lib.match_score_v2 import ion_score_v2
 from mascope_backend.api.new.peak_assignments.engine import (
     ISOTOPE_FORMULA_LENGTH,
     ROLE_ISO_CHILD,
@@ -1358,6 +1359,38 @@ class TestScoreIonsByFit:
 
         assert crowded["probe"] == pytest.approx(alone["probe"])
         assert crowded["probe"] < crowded["lib0"]
+
+    def _fit_of(self, lines, **kwargs):
+        rows = [
+            self._iso(ion, 1.0, mz_err, 1000.0, 0.9, snr=50.0, peak_id=ion)
+            for ion, mz_err in lines
+        ]
+        out = score_ions_by_fit(pd.DataFrame(rows), **kwargs)
+        return out.groupby("target_ion_id")["match_score"].first()
+
+    def test_a_library_too_thin_to_fit_a_width_scores_at_the_class_width(self):
+        # Four lines are too few to fit a width. The untargeted stage stands in
+        # the instrument class's width there, so Stage A must too. The fit
+        # score's own fallback is a generic 2 ppm, which on an Orbitrap scores a
+        # line 1.5 ppm off almost as well as one on the axis.
+        lines = [("lib0", 0.05), ("lib1", -0.05), ("lib2", 0.0), ("probe", 1.5)]
+
+        orbitrap = self._fit_of(lines, fallback_sigma_ppm=0.3)
+        generic = self._fit_of(lines)
+
+        probe = pd.DataFrame(
+            [self._iso("probe", 1.0, 1.5, 1000.0, 0.9, snr=50.0, peak_id="probe")]
+        )
+        assert orbitrap["probe"] == pytest.approx(ion_score_v2(probe, sigma_ppm=0.3))
+        assert orbitrap["probe"] < generic["probe"]
+
+    def test_a_fitted_width_is_not_replaced_by_the_class_width(self):
+        lines = [(f"lib{i}", 0.1 if i % 2 else -0.1) for i in range(10)]
+        lines.append(("probe", 1.5))
+
+        assert self._fit_of(lines, fallback_sigma_ppm=5.0)["probe"] == pytest.approx(
+            self._fit_of(lines)["probe"]
+        )
 
 
 class TestUntargetedMatches:
