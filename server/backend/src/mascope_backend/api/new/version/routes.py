@@ -49,9 +49,10 @@ async def get_version_route(user=Depends(guest_user)):
 
     Open to every signed-in user, because the About tab is. Not a
     confidentiality boundary: the frontend bundle already renders this same
-    version on the login screen, so the value is not secret. It stays behind
-    authentication so the API adds no new anonymous, machine-readable surface,
-    matching the deployment's ``server_tokens off``.
+    version on the login screen, and the OpenAPI document published with the
+    docs (``/docs/openapi.json``) names the version its image was built for, so
+    the value is not secret. Signing in is asked for as least privilege for an
+    operational endpoint, not to keep the version from anyone.
 
     :param user: The currently authenticated user.
     :type user: User

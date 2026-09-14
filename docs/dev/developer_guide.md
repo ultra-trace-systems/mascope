@@ -1410,10 +1410,12 @@ runtime home with placeholder secrets, and takes only the config layers from
 `MASCOPE_PATH`. Outside prod the session cookie is named per env, so rendering
 in your own runtime would describe your dev instance rather than a deployment;
 this way the document comes out the same on any machine and carries nothing of
-the one that rendered it. Its `info.version` stays a placeholder: the document
-is served anonymously, and the API offers the running version machine-readably
-only to signed-in users (`GET /api/version`), although the login screen shows
-it.
+the one that rendered it. Its `info.version` is whatever `--version` names: the
+image build passes the version it builds (the `MASCOPE_VERSION` build arg that
+`mascope prod build` sets, a release tag or a build id), and a render without
+one, such as the CI job's, carries the placeholder `0.0.0`. The app takes the
+same value from `MASCOPE_VERSION` when it starts, so the dev schema names the
+version `GET /api/version` reports.
 
 > [!TIP]
 > For better development experience, use [Postman](https://www.postman.com/) to access API docs. The staging server docs are [also hosted online](https://documenter.getpostman.com/view/27329225/2sA3kSn2t9).

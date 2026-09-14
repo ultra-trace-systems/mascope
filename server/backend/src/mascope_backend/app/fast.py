@@ -150,16 +150,15 @@ Each operation lists the credentials it accepts:
   401.
 """
 
-# Initialize FastAPI with the lifespan. `version` stays the workspace's
-# placeholder on purpose. The running version is not secret - the login screen
-# shows it - but the API offers it machine-readably only behind sign-in
-# (GET /api/version), and the published copy of this document is served
-# anonymously.
+# Initialize FastAPI with the lifespan. The document names the version the
+# runtime was started with (MASCOPE_VERSION), as GET /api/version reports it -
+# for the published copy, the version its image was built for - and the
+# workspace's placeholder when the runtime was started without one.
 fast = FastAPI(
     lifespan=lifespan,
     title="Mascope API",
     description=_API_DESCRIPTION,
-    version="0.0.0",
+    version=runtime.version or "0.0.0",
     **_docs_kwargs(runtime.mode),
 )
 
