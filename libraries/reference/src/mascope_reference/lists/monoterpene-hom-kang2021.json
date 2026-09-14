@@ -11,7 +11,7 @@
       "note": "Open access under CC BY 4.0 in the Jülich repository JuSER, http://hdl.handle.net/2128/30658."
     }
   ],
-  "polarity": "negative",
+  "polarity": "both",
   "native_detection": "[M+NO3]-",
   "applies_to_contexts": [
     "monoterpene_ox",
@@ -20,6 +20,7 @@
     "biogenic_soa"
   ],
   "provenance": {
+    "polarity": "Recorded as both although the thesis measured these molecules as [M+NO3]- in negative mode: ammonium and urea CIMS detect the same HOMs as adducts in positive mode, so the list is matched against samples of either polarity.",
     "extracted_from": "Appendix A of the thesis: the peak lists of alpha-pinene OH oxidation under pure, +CO, +isoprene and +NOx conditions, whose 'Molecule' column is the neutral detected as [M+NO3]-.",
     "caveat": "Alpha-pinene and limonene are isomeric C10H16 with overlapping OH-oxidation HOM, so this is a monoterpene-HOM proxy rather than a limonene-specific list. Radical status is read from each formula; the odd-electron species are in monoterpene-ro2-kang2021.",
     "license_statement": "The thesis is published open access under the Creative Commons Attribution 4.0 International licence (CC BY 4.0), as its imprint states and its repository record gives it: JuSER, Forschungszentrum Jülich, https://juser.fz-juelich.de/record/905049 (handle http://hdl.handle.net/2128/30658). The formulas are taken from its Appendix A peak lists and attributed to it."
