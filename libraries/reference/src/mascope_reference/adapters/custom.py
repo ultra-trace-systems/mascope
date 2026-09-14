@@ -18,6 +18,10 @@ Column schema (case-insensitive, common aliases accepted):
 
 Pair it with ``mascope reference sync custom <file> --name <list-name>`` so the
 list gets its own provenance name and does not collide with other custom lists.
+
+A hand-authored list is its own bound, so it loads unbounded: every formula in
+it is one somebody chose. The ``--elements``, ``--max-carbon`` and
+``--max-mass`` flags of the sync bound it when that is wanted.
 """
 
 from collections.abc import Iterator
@@ -25,6 +29,7 @@ from pathlib import Path
 
 from mascope_reference.adapters._io import read_delimited
 from mascope_reference.record import ReferenceRecord
+from mascope_reference.scope import UNBOUNDED
 
 
 def _first(row: dict[str, str], *keys: str) -> str | None:
@@ -42,6 +47,7 @@ class CustomAdapter:
 
     name = "custom"
     license = "custom"
+    known_window = UNBOUNDED
 
     def parse(self, path: Path) -> Iterator[ReferenceRecord]:
         # Tab-separated if the file says so, comma-separated otherwise.

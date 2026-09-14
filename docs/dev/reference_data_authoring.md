@@ -117,6 +117,44 @@ That is it. The compounds are now annotated wherever the assignment engine
 produces a matching formula - the **Identity** column in peak assignment, and the
 `known_only` suspect-screening prior on the composition query.
 
+### How a loaded source may be matched
+
+Every load records three things on its source row about how its compounds may be
+matched:
+
+- **A window**: the elements a formula may carry, its largest carbon count and
+  its largest monoisotopic mass. Any of the three can be unbounded.
+- **Whether its radicals may be matched**, read from each formula (a half-integer
+  DBE), never from a flag on the row.
+- **The polarity its compounds are detected in**: `positive`, `negative`, or both.
+
+What a load writes depends on what the source is. A list someone authored - a
+`custom` CSV, a list file, the lists Mascope ships - is its own bound and loads
+unbounded, because every formula in it was chosen. A public database is not: it
+holds hundreds of thousands of formulas no sample of these chemistries carries,
+so `pubchem`, `comptox`, `chebi`, `hmdb`, `lipidmaps`, `coconut` and `norman`
+load at the atmospheric window, C, H, N, O and S with at most 40 carbons and
+700 Da. `mascope reference sources` names the window each adapter writes, and
+`mascope reference status` shows what each load recorded.
+
+Flags on the sync set any of it:
+
+```sh
+# Bound a hand-authored list to the elements it should match in.
+mascope reference sync custom siloxanes.csv --name my-siloxanes -v 1 --elements C,H,O,Si --max-carbon 20
+
+# Let a database's silicon and phosphorus formulas through; 'any' lifts a bound.
+mascope reference sync norman susdat.csv -v 2024 --elements C,H,N,O,S,Si,P --max-mass any
+
+# A CSV of radicals, matched as radicals.
+mascope reference sync custom ro2.csv --name my-ro2 -v 1 --allow-radicals
+```
+
+A list file's header says `allow_radicals` and `polarity` itself, and its
+radicals are held back at ingest unless the header allows them, whatever the
+flag says. Stage A does not read the three fields yet: until it does, every
+active source is matched inside the atmospheric window.
+
 ### In a deployment (production)
 
 `mascope reference` is a developer command: it pulls the chemistry dependencies
@@ -143,8 +181,9 @@ deployment, depending on how it was installed:
   ```
 
   It takes the same arguments as `mascope reference sync` (`source`, `file`,
-  `--version`, `--name`, `--batch-size`, `--prune`, `--stage`) and runs the
-  identical versioned ingest - just where the dependencies live. The database is
+  `--version`, `--name`, `--batch-size`, `--prune`, `--stage`, `--elements`,
+  `--max-carbon`, `--max-mass`, `--allow-radicals`) and runs the identical
+  versioned ingest - just where the dependencies live. The database is
   the one the backend is already configured for, so no connection flags are
   needed.
 
@@ -175,7 +214,14 @@ mascope reference sync custom apinene_hom.csv --name apinene-hom-2019 -v 2020 --
 
 **Stage without exposing.** `--stage` ingests a load without activating it (it
 does not replace the current version) - useful to prepare an update and flip it
-in later by re-syncing without `--stage`.
+in later with `mascope reference activate <name> --version <version>`.
+
+**Take a source out.** `mascope reference deactivate <name>` leaves no version of
+the source active, so annotation and peak assignment stop reading it. Nothing is
+deleted: `mascope reference activate <name> --version <version>` brings the load
+back, and `mascope reference seed` loads a shipped list again. In a deployment,
+run `python -m mascope_backend.db.scripts.reference_deactivate <name>` inside the
+backend container.
 
 **License / attribution.** Set a per-record `license` column if the list carries
 one; it is carried through to every annotation, so results stay attributable.
@@ -222,6 +268,10 @@ In a deployment, run `python -m mascope_backend.db.scripts.reference_seed`
 inside the backend container instead (see [maintaining.md](../maintaining.md)).
 Each list becomes its own source, named by its id and versioned by its
 `data_version`, and seeding again loads only the lists whose version changed.
+A list's row is written unbounded, with the radical allowance and the polarity
+its header names, and seeding again brings the row of a list that is already
+loaded up to date with them. A list that says it was measured in `both`
+polarities is recorded as both.
 
 The lists are curated in a JSON format (schema 2). A list's header says what
 belongs to the whole list, and its species are neutral formulas:
