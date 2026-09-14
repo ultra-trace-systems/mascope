@@ -47,9 +47,12 @@ server runs.
   `https://your-instance.mascope.app/api/workspaces`.
 - Authenticate the way the SDK does, with an
   [API token](getting-started.md#generate-an-api-token) sent as
-  `Authorization: Bearer <token>`. Tokens are accepted by the routes the SDK
-  uses; the rest of the API answers only to the web app's signed-in session,
-  although the document currently lists both sign-in methods on every route.
+  `Authorization: Bearer <token>` together with the header
+  `X-Service-Name: mascope_sdk`, which names the service the token was
+  generated for. A token sent without that header is refused with 401.
+- Tokens are accepted by the operations the SDK uses, which the document marks
+  with the `APIToken` scheme; the rest of the API answers only to the web app's
+  signed-in session.
 
 <!-- TODO Phase 3: publish the SDK README content into this section as the single
 source, or keep this page thin and deep-link. See the roadmap. -->

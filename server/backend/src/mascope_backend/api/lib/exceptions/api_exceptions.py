@@ -1,4 +1,5 @@
 import uuid
+from typing import Any
 
 import httpx
 from fastapi import HTTPException, status
@@ -6,6 +7,7 @@ from fastapi.encoders import jsonable_encoder
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from fastapi_users.exceptions import InvalidPasswordException
+from pydantic import BaseModel, Field
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.exc import TimeoutError as SQLAlchemyTimeoutError
 
@@ -299,6 +301,24 @@ def process_exception(e: Exception, context_message: str) -> ApiException:
             runtime.logger.exception(error_message)
 
     return ApiException(user_message, tech_message, status_code)
+
+
+class ApiErrorBody(BaseModel):
+    """
+    The body of every error response, as ``api_e_response_json`` writes it.
+
+    Declared for the OpenAPI document (``app/fast.py``): every handler that
+    answers an error - validation, HTTP, ``ApiException`` or unhandled - goes
+    through ``handle_exception`` or ``api_e_response_json``, so no route answers
+    an error in another shape.
+    """
+
+    error: str = Field(description="What went wrong, written for a person.")
+    detail: dict[str, Any] = Field(
+        description="What identifies it: an `error_id` to quote when reporting "
+        "the error, and a stable `code` where a client is expected to react to "
+        "the condition."
+    )
 
 
 def api_e_response_json(e: ApiException):

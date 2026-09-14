@@ -73,7 +73,8 @@ def openapi(
     except OpenApiRenderError as e:
         typer.echo(str(e), err=True)
         raise typer.Exit(1)
-    typer.echo(f"Wrote {output} ({len(document['paths'])} paths)")
+    # stderr, so the line cannot interleave with a document written to stdout.
+    typer.echo(f"Wrote {output} ({len(document['paths'])} paths)", err=True)
 
 
 def exec():

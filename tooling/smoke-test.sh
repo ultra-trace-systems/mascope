@@ -4,9 +4,12 @@
 #
 # Works against any stack with known credentials; defaults match the demo
 # stack (docker-compose.demo.yaml). Used as the release gate in
-# .github/workflows/release.yaml and runnable locally:
+# .github/workflows/release.yaml and runnable locally. The checks follow this
+# checkout, so run them against images built from it: the demo compose file
+# otherwise pulls `latest`, which tracks master and can predate them.
 #
-#   docker compose -f docker-compose.demo.yaml up -d
+#   uv run mascope prod build
+#   MASCOPE_VERSION=<the tag it built> docker compose -f docker-compose.demo.yaml up -d
 #   bash tooling/smoke-test.sh
 #
 # Environment:

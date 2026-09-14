@@ -36,13 +36,16 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
 - **The API's OpenAPI document is published with the user docs.** Every
   deployment serves it at `/docs/openapi.json`, linked from the docs' SDK &
   API page, so the API can be imported into an API client or turned into a
-  generated client without a dev backend to ask. It is rendered from the
-  backend's routes when the frontend image is built - in a throwaway prod
-  runtime with placeholder secrets, so it is the same for every deployment of
-  a release and carries nothing of the machine that built it - while the
-  backend itself still serves its schema, `/docs` and `/redoc` in dev mode
-  only. Render one from a checkout with
-  `uv run mascope-backend openapi --output openapi.json`.
+  generated client without a dev backend to ask. Each operation lists the
+  credentials it accepts - the session cookie, and on the operations the SDK
+  uses an API token together with its `X-Service-Name` header - and declares
+  its errors in the `{"error", "detail"}` body the API answers them with. It
+  is rendered from the backend's routes when the frontend image is built - in
+  a throwaway prod runtime with placeholder secrets, so it is the same for
+  every deployment of a release and carries nothing of the machine that built
+  it - while the backend itself still serves its schema, `/docs` and `/redoc`
+  in dev mode only. Render one from a checkout with
+  `uv run mascope-backend openapi --output site/openapi.json`.
 
 - **Uploads from a paired File Agent are filed under the instrument the agent
   reports, so the file names no longer have to carry it.** An agent whose

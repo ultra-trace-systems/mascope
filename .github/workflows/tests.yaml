@@ -141,10 +141,12 @@ jobs:
         # The same render the image runs (its openapi-build stage), so a route
         # or model that breaks schema generation fails here, not in the image
         # build. --package installs just the backend and what it imports, as
-        # that stage does; the config layers are read from MASCOPE_PATH.
+        # that stage does, and --exact removes the docs group the steps above
+        # installed, so an import the backend does not declare fails here too;
+        # the config layers are read from MASCOPE_PATH.
         env:
           MASCOPE_PATH: ${{ github.workspace }}
-        run: uv run --frozen --no-dev --package mascope_backend python -m mascope_backend openapi --output site/openapi.json
+        run: uv run --frozen --exact --no-dev --package mascope_backend python -m mascope_backend openapi --output site/openapi.json
 
   frontend-unit:
     name: Frontend unit tests

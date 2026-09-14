@@ -79,12 +79,12 @@ WORKDIR /src
 COPY pyproject.toml uv.lock ./
 RUN uv sync --frozen --no-dev --package mascope_backend --no-install-workspace
 
-# Then the workspace members (uv reads every member, even to install one) and
-# the config layers the render copies into its throwaway runtime home.
+# Then the workspace members it installs - the backend and the libraries - and
+# the config layers the render copies into its throwaway runtime home. With
+# --frozen uv reads no other member, so the rest of the workspace stays out.
 COPY base.mascope.toml prod.mascope.toml ./
 COPY libraries ./libraries
 COPY server/backend ./server/backend
-COPY tooling/cli ./tooling/cli
 RUN uv sync --frozen --no-dev --package mascope_backend && \
     MASCOPE_PATH=/src uv run --no-sync python -m mascope_backend openapi \
         --output /openapi.json
