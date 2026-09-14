@@ -26,7 +26,7 @@ step PRs land on the epic and are named here as they merge.
 | 2.4 - mechanical tiers with reasons | #2099 (measurements), #2100 (tiering), #2101 (inspector), #2105 (curated rows) | **2.4a measured** on build `step-2.4-mechanical-tiers-2026.09.10-70438cb`: every committed row records `provenance.candidate_density`, the number of formulas the peak's evidence cannot separate from the one the row commits - anchored on the committed formula and not on the arbitration's top, which the finder need not have committed - counted one-sided, so a rival the evidence ranks ABOVE the commit is never reported as nothing tying it; the two anchorings differ on 444 of the 32,449 committed rows, every one of them upward, and on 23 rows at assigned tier - 22 on F1, 1 on F2 - of which one crosses from 1 to 2. Recording it changes nothing: 0 of 48,894 ledger rows differ from the 2.3 build on any other column and every gate number is identical. Measured, it is a sharp guard rather than a lever - 11 of A's 1,002 assigned rows sit at density >= 2 and 0 of those 11 are confirmed, against 75.4% at density 1 - because a continuous fit separates almost everything; the number of formulas the MASS admits is a different and wider quantity, and reaches 68 on the same set. **The plan's carbon-cluster demote is withdrawn.** `DBE/C >= 1` with the effective DBE reduces to `H <= 2 + N`, which names hydrogen-poor molecules rather than large skeletons: on the gate it took formic, oxalic and glyoxylic acid and a confirmed nitrogen heterocycle - 46 rows, 8 of them right - and no carbon cluster. What keeps a cluster out of a run is the chemistry context's DBE/C and H/C windows (ambient-air 0.75 and 0.7, uronium 1.1 and 0.4) and not the heuristic filter, which grades a formula and rejects none on H/C - C60 passes at plausibility 1.0 - and those windows apply only from three carbons up, which is where the signature misjudged; a run under context `none` has no such window and this would not have closed that gap either. The oxygen-lattice floor of five is measured on what it SPARES (at O >= 4 it reaches 260 rows and the reference confirms 35, at O >= 5 it reaches 212 and 3, flat to O >= 9); what it takes is 3 confirmed against 17 contradicted and 189 the reference does not judge, 174 of them on the TOF sets, so on the Orbitrap sets it is 3 right and 3 wrong. The carbon-free signature reaches nothing, because every resolved grid floors carbon at one and every carbon-free committed row on the gate is curated - and a curated row is not asked (#2105; as 2.4b first merged the pass did ask, and took 7 curated rows, none confirmed; re-measured on `step-2.4d-curated-implausibility-2026.09.11-2012665` the signature takes 0). The cross-family degeneracy measurement is not per-run: about 27 s of band grids a spectrum plus 6 ms a peak, against ten seconds for a whole sample's assignment **2.4b measured** on build `step-2.4b-tiering-2026.09.11-639e1df`: every committed monoisotopic row records `provenance.tier_reasons`, and none of the 32,449 carries zero - the 31 curated isotopologue rows with no owner that carried none on this build now say `not_measured`, which moves no tier; the rules only demote and move nothing but tiers - 0 formula, role or verdict shifts of 48,894 peaks, G2 and its denominator identical on all eight sets. The pass takes 3,778 assigned rows and the reference confirms 38 of them (1.0%): an odd-electron neutral, a rule the plan did not have and the gate found, 1,782 with none confirmed; candidate density 2,636 with 32; the oxygen lattice 212 with 3; the envelope neighbour 166 with 4; carbon-free none, because no curated row is asked the formula-shape questions (#2105, rule set version 2, measured on `step-2.4d-curated-implausibility-2026.09.11-2012665`: as first merged the pass took 7 curated carbon-free rows - trisulfur on C2, the dibromide ion's bromine on F1 - with none confirmed, and exempting them moves those rows and their 8 isotopologues back to assigned and nothing else). Read on the rows the reference commits an M0 on (decision 14), G1 meets the 20% bound on all five Orbitrap sets - A 3.1, B 12.3 (1.1 with the same-ion splits set aside), C 1.3, C2 0.4, D 1.4 - against 23.0, 36.9, 21.0, 24.6 and 8.4 unconditioned, a remainder that is 73-91% reference silence; the TOF sets are carried to 2.5 and 2.7. G6 at assigned tier falls 159 -> 71, of which 47 are the grid gap and 24 the envelope part, every one of them spared by the rule's height test or by the run holding no neighbour to predict it, so that Verify line as first written is missed; re-worded in 2.4c to the height-qualified form, which is the rule as measured, it is met. An isotopologue row follows an owner any pass capped; the earlier passes already cap their own, so that count is 0 on all 43 runs. **2.4c** puts the reasons in the peak inspector under *Why this tier* - the rule by name over the run's own sentence, a mark on each reason that holds the tier down, and on an isotopologue its M0's reasons beneath its own; a row no rule judged shows none. Display and documentation only: no run or gate number moves |
 | 2.5a - reference seed: list format, the lifted lists, `reference seed` (seed proposal phases 0-1) | #2111 (seed), #2112 (Stage A fix) | measured: schema 2 list files with radical status read from the formula, the `peaklist` adapter, `mascope reference seed`, the demo hook and an integrity test over every list; the lift is Kang 2021 split into 573 closed-shell and 257 RO2 formulas (opt-in), Keller 2008 less its ions and salts (50 of 59), peaky's pass-0 families as seven cited lists (45 of their 65 formulas, plus the D3-D6 siloxanes) and the example list, 1,008 formulas in all. The default seed (10 lists, 751 compounds) raises G2 same-formula on every set - A 93.8 -> 95.4, B 92.8 -> 93.5, C 91.7 -> 93.9, C2 77.7 -> 83.3 (now inside its bound), D 80.4 -> 84.0, E 33.3 -> 40.5, F1 13.0 -> 22.8, F2 15.9 -> 17.4 - and moves 211 peaks towards the reference's formula against 53 away, 23 of those with a seed row on the peak and 9 of the 23 one ion read two ways on B. The first seed round had lowered C and C2 (to 73.9 and 59.8) through two Stage A defects older than the seed, a labelled ion's M0 and isotopologues with no owner; #2112 fixes both and was measured alone (40 of 48,894 peaks moved, none away from the reference), and the insert overflow on merged TOF isotopologue names is fixed in #2111. On the TOF sets the seed's matches become most of Stage A's anchors and widen the fitted mass width 2-3x (F2 2.6 -> 6.5 ppm), which moves thousands of untargeted elections; that is the next row's, and D4/D5, triethyl phosphate and G6 wait for 2.5b's per-source window |
 | 2.5a fix - the reference seed out of the mass widths | #2113 | measured: Stage A's width is fitted over the target library's lines alone, only the target library's rows count as curated for the mass gate (decision 3's second addendum), the ingest fold runs the gate, and Stage A falls back to the instrument class's width as the untargeted stage does. With the seed loaded, every set's search width and Stage A anchor count equal the pre-seed round's (F2 6.54 -> 2.62 ppm, gate 6.75 -> 2.62). G2 same formula rises on E, F1 and F2 (40.5 -> 45.2, 22.8 -> 23.6, 17.4 -> 18.8) and holds on the Orbitrap sets (C2 83.3 -> 82.6, D 84.0 -> 83.9). All 3,883 peaks that change owner had been moved by the seed, and 3,866 go back to their pre-seed owner. Of the 30 mirror rows the estimate named, the gate caps 4 and the narrower width holds the other 26 below its cap |
-| 2.5b - Stage A window per source, polarity, radical filter, deactivate, the isoprene lift (seed proposal phase 3) | #2116 (schema and CLI) | in progress: scoped 2026-09-14 on the implementing agent's brief (decision 17); two PRs, the schema and the CLI first without a round, the engine, the list and the round second. #2116 records each source's window, radical allowance and polarity on its row (a database mirror at today's window, a list unbounded, existing rows backfilled at today's window), lets `reference sync` set them, has `reference seed` write and refresh them, and adds `reference deactivate`; Stage A does not read them yet |
+| 2.5b - Stage A window per source, polarity, radical filter, deactivate, the isoprene lift (seed proposal phase 3) | #2116 (schema and CLI), #2117 (engine, lists) | measured: #2116 records each source's window, radical allowance and polarity on its row (a database mirror at today's window, a list unbounded, existing rows backfilled at today's window), lets `reference sync` set them, has `reference seed` write and refresh them, and adds `reference deactivate`. The engine PR makes Stage A read all three under the context's ceiling (every shipped context opens Si, P, F, Cl, Br and I at C40/700 Da; `none` sets none) and lifts the isoprene list, D7/D8 (Fromme et al. 2019) and L3-L5. With the seed refreshed, G2 same formula rises on every set (A 95.4 -> 96.9, B 93.5 -> 95.3, C2 82.6 -> 87.1, D 83.9 -> 85.5, E 45.2 -> 54.8, F1 23.6 -> 27.6, F2 18.8 -> 26.1), D3-D7, the phosphates and TFA resolve on every sample the reference commits them on, and G6 on A falls 87 -> 31 with its grid part 15 -> 3. 1,509 owners change, 132 towards the reference and 30 away: 20 of those are the Kang HOM list gated off the uronium sets by its negative polarity, 6 new siloxane isotopologue claims on B, 4 isoprene nitrates on F2. IBr2- commits as an analyte on 8 reagent peaks |
 | 2.5c - the same-ion ambiguity on a Stage A mirror row | - | planned: right after 2.5b, measured alone |
 | 2.6 - frontend: profile, reasons, roles | - | planned |
 | 2.7 - stage 2 gate, engine 0.5.0 | - | planned |
@@ -830,7 +830,10 @@ its own status.
     verified citation supports: the linear L3 to L5 are covered by the
     siloxane list's Genualdi 2011 citation already, and D7 and D8 need a
     source of their own. What no citation supports is recorded as the
-    residue, named.
+    residue, named. D7 and D8 have one: Fromme et al. 2019 (Environment
+    International 126, 145-152) measured both in indoor air. L3 to L5 ship
+    as their own list, `linear-siloxanes`, since the cyclic list's id says
+    what it holds.
   - **Estimated on the #2113 round** (build `8c163be`, default seed
     loaded; the agent's `window_estimate.py`): 41 default-seed formulas sit
     outside today's window (P 17, F 11, Si 4, I 4, Cl+P 2, Cl+I 1, Br+I 1,
@@ -4268,6 +4271,112 @@ defect #2113 closed for Stage A. A run's frame usually holds hundreds of lines.
 The inspector's alternatives and a derived row's evidence measure a handful of
 formulas, which is where the generic width is reached. Changing it is its own
 measurement.
+
+### After step 2.5b, each source inside its own window (2026-09-14)
+
+#2117, on #2116, makes Stage A read what each source's row records (its
+window under the context's ceiling, its radical allowance and its polarity) and
+lifts the step's lists. The store round ran on
+`step-2.5b-stage-a-window-2026.09.14-af9d90d`, after the migration and a
+`reference_seed`:
+- the rows of the nine loaded lists whose version held were brought up to date;
+- the isoprene list, the linear siloxanes and the cyclic list's new version
+  with D7 and D8 were loaded (12 lists, 783 species).
+
+It is read against the #2113 round (`8c163be`).
+
+**The known set follows the sample's polarity.** Before, every sample matched
+the same 665 formulas inside the one window. Now a positive sample matches 132
+formulas (the positive-mode and both-polarity lists, siloxanes and phosphates
+included) and a negative sample 704. A's run time falls from 9.3 to 3.8 s a
+sample; the other sets are unchanged.
+
+**G2 same formula rises on every set, and G6 on A falls to 31, with its grid
+part at 3.**
+
+| set | G2 same formula | G2 same ion | G1 unconditioned | assigned M0 rows | G6 (assigned) | mass error MAD (ppm) |
+|---|---|---|---|---|---|---|
+| A | 95.4 -> 96.9 | 96.3 -> 97.8 | 24.7 -> 23.8 | 1,016 -> 1,024 | 87 (13) -> 31 (1) | 0.218 -> 0.203 |
+| B | 93.5 -> 95.3 | 94.8 -> 96.4 | 36.9 -> 36.8 | 4,126 -> 4,148 | 309 (47) -> 233 (36) | 0.305 -> 0.297 |
+| C | 93.9 -> 94.8 | 93.9 -> 94.8 | 20.4 -> 20.3 | 598 -> 602 | 53 (7) | 0.168 |
+| C2 | 82.6 -> 87.1 | 82.6 -> 87.1 | 26.3 -> 26.6 | 297 -> 312 | 18 (1) | 0.265 -> 0.268 |
+| D | 83.9 -> 85.5 | 85.5 -> 87.1 | 8.3 -> 8.1 | 895 -> 897 | 168 (2) | 0.321 -> 0.319 |
+| E | 45.2 -> 54.8 | 54.8 -> 64.3 | 93.9 -> 93.3 | 228 -> 225 | 12 (3) | 2.356 -> 2.391 |
+| F1 | 23.6 -> 27.6 | 25.2 -> 29.3 | 95.2 -> 94.9 | 729 -> 752 | 100 (4) -> 101 (4) | 1.097 -> 1.107 |
+| F2 | 18.8 -> 26.1 | 18.8 -> 26.1 | 97.8 -> 97.5 | 764 -> 772 | 31 (1) -> 32 (1) | 1.475 -> 1.479 |
+
+**The Verify's compounds resolve on every sample the reference commits them
+on.** None of them did before.
+- **A:** D3 on 9 of 9 peaks, D4 3 of 3, D5 6 of 6, D6 1 of 1, D7 1 of 1, and
+  triethyl phosphate 12 of 12, all at assigned tier.
+- **B:** D3 6 of 6, D4 1 of 1, D7 4 of 4, D8 4 of 4, triethyl phosphate 12 of 12,
+  tributyl phosphate 8 of 8, triphenylphosphine oxide 12 of 12. L5's two
+  reference peaks are its ammonium adduct, a channel Stage A does not search on B.
+- **TFA:** 12 of 12 on C2 and on D, where the peaks were unassigned.
+- **Beyond the reference:** the engine also commits triphenylphosphine oxide
+  on all six A samples (5 at assigned tier), where the reference leaves the
+  peak unassigned.
+
+**Owner changes: 1,509 peaks, 132 towards the reference's formula and 30 away.**
+
+| set | changed | towards | away | neither | reference silent |
+|---|---|---|---|---|---|
+| A | 245 | 32 | 4 | 27 | 182 |
+| B | 739 | 55 | 22 | 178 | 484 |
+| C | 5 | 4 | 0 | 0 | 1 |
+| C2 | 30 | 12 | 0 | 13 | 5 |
+| D | 118 | 13 | 0 | 36 | 69 |
+| E | 82 | 4 | 0 | 4 | 74 |
+| F1 | 166 | 5 | 0 | 8 | 153 |
+| F2 | 124 | 7 | 4 | 4 | 109 |
+
+- **Towards:** 124 of the 132 are a newly admitted formula taking the peak.
+- **Away, 20: the polarity gate on the uronium sets** (A 4, B 16).
+  - The Kang HOM list declares negative polarity, so it no longer matches A
+    and B. It had 114 M0 rows on A and 419 on B.
+  - The reference confirms 17 and 120 of them. The untargeted stage still
+    elects the same formula on 13 and 103 of those, and 4 and 16 go to another
+    reading.
+  - The other 396 were seed rows the reference does not confirm.
+  - Urea and ammonium CIMS detect HOMs too, so whether the list should match
+    positive samples is a question for the plan owner.
+- **Away, 6: new isotopologue claims on B.** D5's M+1 and M+3 lines (3), L5's
+  M+2 (2) and D3's M+2 (1) take peaks the reference reads as other M0s.
+- **Away, 4: isoprene nitrates on F2.** C5H10N2O8 and C5H9NO5 take peaks the
+  reference reads as C14H10OS.
+
+**The isoprene lift moves rows into Stage A under the formula they had.** Its
+19 new formulas own:
+- C2: 18 Stage A rows, every one the formula the untargeted stage elected
+  before; the reference confirms 13.
+- D: 56, every one the elected formula; the reference confirms 31.
+- E: 35, 31 of them the elected formula; F1: 86, 52; F2: 73, 40; C: 1.
+
+**IBr lands on reagent peaks.** IBr2- is committed as an analyte on 8 peaks the
+reference reads as reagent (D 1, E 3, F1 4), 5 of them at assigned tier. With
+HOI on E they are the round's new carbon-free rows. The bromide reagent
+pre-pass does not claim IBr2-.
+
+**G6's residue, named.** A's grid part, the parents outside the old window that
+no list holds, goes 15 -> 3 (C4H15N3O3Si3, C13H32O9Si4 and C9H18O9Si, one row
+each), inside the target of 10. Elsewhere:
+- **B:** 151 -> 131, led by C4H12O2Si2 (10), C14H36O11Si5 (9), C15H44O8Si8 (8),
+  C10H22O8Si3 (8) and C7H12O3Si (8). Only L7 (2 rows) is a methylsiloxane a
+  cited list could hold.
+- **The linear silanediols** C6H20O4Si3 and C8H26O5Si4, which 2.5a dropped for
+  want of a citation: 26 of C's 37, all 18 of C2's and 6 of D's.
+- **D's other 85** are mostly chlorinated paraffins (C14H26Cl4, C14H24Cl6, ...),
+  which no shipped list holds.
+- **E, F1 and F2:** organophosphorus and chlorinated formulas from the
+  reference's own search.
+
+**Verify, item by item.**
+- **The integrity test** holds all 13 lists.
+- **G3:** N >= 5 unchanged (B 2.6); the carbon-free rows rise by IBr and HOI
+  only.
+- **G4:** the IBr2- peaks above.
+- **G6 on A:** 31, with a grid part of 3.
+- **The known set and the run time:** above.
 
 ## Not in this plan
 
