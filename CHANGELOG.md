@@ -24,10 +24,14 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
   so the About tab can compare builds for whoever opens it; it still
   refuses anonymous callers. The frontend build writes the licence and notice
   files of every npm package in its bundle to
-  `/legal/THIRD_PARTY_NOTICES.txt`, with NOTICE and LICENSE beside them, and
-  the backend image build does the same for every installed Python
-  distribution (`tooling/third-party-notices.py`), served at
-  `GET /api/version/third-party-notices`. The new-version banner now names the
+  `/legal/THIRD_PARTY_NOTICES.txt`, with NOTICE and LICENSE beside them; the
+  docs build adds `/legal/DOCS_THIRD_PARTY_NOTICES.txt` for the packages that
+  build the user documentation and the KaTeX, mermaid and IBM Plex files
+  vendored into it, whose licence files now sit beside them; and the backend
+  image build does the same for every installed Python distribution
+  (`tooling/third-party-notices.py`), served at
+  `GET /api/version/third-party-notices`. Each entry names its licence as the
+  package declares it. The new-version banner now names the
   build it is offering and links its release notes.
 
 - **Uploads from a paired File Agent are filed under the instrument the agent

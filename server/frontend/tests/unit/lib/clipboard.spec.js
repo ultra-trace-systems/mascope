@@ -50,6 +50,26 @@ describe('copyText', () => {
     expect(document.execCommand).toHaveBeenCalledWith('copy')
   })
 
+  it('gives focus back to where it was, such as the copy button', async () => {
+    vi.stubGlobal('navigator', {})
+    let focusedWhileCopying
+    document.execCommand = vi.fn(() => {
+      focusedWhileCopying = document.activeElement?.tagName
+      return true
+    })
+    const button = document.createElement('button')
+    document.body.appendChild(button)
+    button.focus()
+
+    expect(await copyText('v1.7.3')).toBe(true)
+
+    // The field has to hold focus for the copy command to read it...
+    expect(focusedWhileCopying).toBe('TEXTAREA')
+    // ...but a keyboard user must not be left on <body> afterwards.
+    expect(document.activeElement).toBe(button)
+    button.remove()
+  })
+
   it('puts the temporary field inside the given container', async () => {
     vi.stubGlobal('navigator', {})
     const container = document.createElement('div')

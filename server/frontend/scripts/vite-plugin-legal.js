@@ -8,6 +8,10 @@
 //                                  and the sign-in footer
 //   <meta name="mascope-version">  the version this bundle was built as
 //
+// legal/DOCS_THIRD_PARTY_NOTICES.txt sits beside them in the image but is not
+// written here: the docs build stage generates it (server/frontend/Dockerfile),
+// and `vite dev` serves a placeholder for it like the one below.
+//
 // The attributions exist because the frontend image redistributes the code of
 // every package in its bundle, and the notice clauses of MIT and BSD, and
 // Apache-2.0 section 4(d), make the copyright and licence text a condition of
@@ -51,6 +55,11 @@ edit.
 
 const DEV_NOTICES = `Third-party notices are generated from the production bundle.
 Run \`npm run build\` and read dist/legal/THIRD_PARTY_NOTICES.txt.
+`
+
+const DEV_DOCS_NOTICES = `Mascope user documentation - third-party notices
+
+Generated when the web app image is built (tooling/third-party-notices.py --for docs).
 `
 
 /** The directory of the npm package a module id belongs to; null for our own code. */
@@ -192,7 +201,9 @@ export default function legal({ repoRoot }) {
       const files = new Map([
         ['NOTICE.txt', () => repoFile('NOTICE')],
         ['LICENSE.txt', () => repoFile('LICENSE')],
-        ['THIRD_PARTY_NOTICES.txt', () => DEV_NOTICES]
+        ['THIRD_PARTY_NOTICES.txt', () => DEV_NOTICES],
+        // Without an entry, vite's SPA fallback would answer with index.html.
+        ['DOCS_THIRD_PARTY_NOTICES.txt', () => DEV_DOCS_NOTICES]
       ])
       server.middlewares.use('/legal', (req, res, next) => {
         const body = files.get((req.url ?? '').replace(/^\/+/, '').split('?')[0])

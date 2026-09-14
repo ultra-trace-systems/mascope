@@ -91,9 +91,44 @@ def test_legacy_top_level_licence_files_are_found_and_metadata_is_not(tmp_path):
 
     [package] = notices.collect(set(), [dist])
 
-    # The classifier is read the way the licence gate reads it.
-    assert package["licence"] == "BSD-3-Clause"
+    assert package["licence"] == "License :: OSI Approved :: BSD License"
     assert [path for path, _ in package["files"]] == ["LICENSE.txt", "NOTICE"]
+
+
+def test_the_licence_is_named_as_declared_not_as_the_gate_maps_it(tmp_path):
+    """The licence gate reads a "BSD License" classifier as BSD-3-Clause, which
+    is fine for deciding what is allowed. In an attribution it would state a
+    licence the package never declared - nest-asyncio says so, and ships a
+    2-clause text - so the notices quote what the metadata says."""
+    classifier = _dist(
+        tmp_path / "a",
+        "iota",
+        "1.0",
+        metadata="Classifier: License :: OSI Approved :: BSD License\n",
+        files={"LICENSE": "BSD 2-Clause License\n"},
+    )
+    several = _dist(
+        tmp_path / "b",
+        "kappa",
+        "1.0",
+        metadata=(
+            "Classifier: License :: OSI Approved :: MIT License\n"
+            "Classifier: License :: OSI Approved :: GNU Lesser General Public "
+            "License v3 (LGPLv3)\n"
+            "Classifier: Programming Language :: Python :: 3\n"
+        ),
+    )
+    free_text = _dist(tmp_path / "c", "lambda", "1.0", metadata="License: BSD\n")
+
+    iota, kappa, lam = notices.collect(set(), [classifier, several, free_text])
+
+    assert iota["licence"] == "License :: OSI Approved :: BSD License"
+    # Every licence classifier applies, so none is dropped for another.
+    assert kappa["licence"] == (
+        "License :: OSI Approved :: GNU Lesser General Public License v3 (LGPLv3); "
+        "License :: OSI Approved :: MIT License"
+    )
+    assert lam["licence"] == "BSD"
 
 
 def test_line_endings_are_normalised(tmp_path):
@@ -179,6 +214,66 @@ def test_rendering_carries_each_package_and_its_licence_text(tmp_path):
     assert "--- licenses/LICENSE\nCopyright (c) Alpha authors\n" in text
     assert f"omega 9.9\nLicense: ISC\n\n{notices.NO_FILES}" in text
     assert text.index("alpha 1.0") < text.index("omega 9.9")
+
+
+def test_vendored_assets_carry_the_licence_files_kept_beside_them(tmp_path):
+    """The docs site ships KaTeX, mermaid and fonts copied into the repository.
+    No package metadata describes them, so the licence file next to each is
+    what the notices carry - and an asset without one is simply not listed."""
+    assets = tmp_path / "assets"
+    for relative, text in {
+        "katex/LICENSE": "MIT\r\nKhan Academy\r\n",
+        "katex/katex.min.js": "code",
+        "fonts/LICENSE": "SIL Open Font License",
+        "fonts/plex.woff2": "font",
+        "logo.png": "not third-party",
+    }.items():
+        (assets / relative).parent.mkdir(parents=True, exist_ok=True)
+        (assets / relative).write_bytes(text.encode("utf-8"))
+
+    vendored = notices.collect_vendored(assets)
+
+    assert [(asset["name"], asset["files"]) for asset in vendored] == [
+        ("assets/fonts", [("LICENSE", "SIL Open Font License")]),
+        ("assets/katex", [("LICENSE", "MIT\nKhan Academy\n")]),
+    ]
+
+    text = notices.render([], vendored, notices.HEADERS["docs"])
+    assert text.startswith("Mascope user documentation - third-party notices")
+    assert "0 packages, 2 vendored assets." in text
+    assert "assets/katex (vendored)\nLicense: as given in the files below\n" in text
+
+
+def test_docs_notices_include_the_vendored_assets(tmp_path, monkeypatch):
+    assets = tmp_path / "assets"
+    (assets / "mermaid").mkdir(parents=True)
+    (assets / "mermaid" / "LICENSE").write_text("MIT mermaid", encoding="utf-8")
+    lock = tmp_path / "uv.lock"
+    lock.write_text("version = 1\n", encoding="utf-8")
+    site = tmp_path / "site"
+    installed = [_dist(site, "mkdocs-material", "9.7.0", "License-Expression: MIT\n")]
+    monkeypatch.setattr(notices.importlib.metadata, "distributions", lambda: installed)
+    output = tmp_path / "DOCS_THIRD_PARTY_NOTICES.txt"
+
+    argv = ["--for", "docs", "--vendored", str(assets), "--lock", str(lock)]
+    assert notices.main([*argv, "-o", str(output)]) == 0
+
+    text = output.read_text(encoding="utf-8")
+    assert text.startswith("Mascope user documentation - third-party notices")
+    assert "mkdocs-material 9.7.0\nLicense: MIT\n" in text
+    assert "--- LICENSE\nMIT mermaid\n" in text
+
+
+def test_a_vendored_directory_without_licence_files_is_refused(tmp_path, monkeypatch):
+    """Asked for and empty means a wrong path, not assets that need nothing."""
+    (tmp_path / "assets").mkdir()
+    lock = tmp_path / "uv.lock"
+    lock.write_text("version = 1\n", encoding="utf-8")
+    installed = [_dist(tmp_path / "site", "mkdocs", "1.6.1")]
+    monkeypatch.setattr(notices.importlib.metadata, "distributions", lambda: installed)
+
+    with pytest.raises(SystemExit, match="no licence files"):
+        notices.main(["--vendored", str(tmp_path / "assets"), "--lock", str(lock)])
 
 
 @pytest.mark.skipif(not LOCK.is_file(), reason="needs the repository's uv.lock")

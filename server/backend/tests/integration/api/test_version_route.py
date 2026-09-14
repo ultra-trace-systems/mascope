@@ -156,6 +156,19 @@ async def test_missing_notices_are_a_404_not_an_empty_document(
     resp = await guest_client.get("/api/version/third-party-notices")
 
     assert resp.status_code == 404
+    # Any signed-in user may ask, so the answer does not map the host.
+    assert str(tmp_path) not in resp.text
+    assert tmp_path.name not in resp.text
+
+
+def test_the_notices_are_looked_for_in_the_runtime_home(monkeypatch, tmp_path):
+    """Where the image build writes them, via the runtime rather than a raw
+    environment read that would quietly fall back to the working directory."""
+    monkeypatch.setattr(runtime, "_path", str(tmp_path))
+
+    assert version_routes.third_party_notices_path() == (
+        tmp_path / "THIRD_PARTY_NOTICES.txt"
+    )
 
 
 @pytest.mark.asyncio

@@ -1086,8 +1086,11 @@ runtime config it was started with.
 
 The About tab also shows the licence and the notices - NOTICE together with
 the third-party attributions. Those need no setting: each image generates its
-own at build time (the npm packages in the web app's bundle, the Python
-distributions installed in the server image).
+own at build time (the npm packages in the web app's bundle; for the bundled
+user documentation, the packages that build it and the assets vendored under
+`docs/user/assets`, by the licence files kept beside them; the Python
+distributions installed in the server image). A new vendored asset needs its
+licence file next to it, or the docs build has nothing to carry for it.
 
 ### Where a deployment's settings live
 
