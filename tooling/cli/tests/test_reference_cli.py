@@ -191,6 +191,36 @@ def test_a_database_syncs_at_the_mirror_window_and_a_flag_lifts_it(
     )
 
 
+def test_a_custom_list_records_the_polarity_its_flag_names(dump, captured_ingest):
+    # A CSV names no polarity of its own; without the flag a positive-mode list
+    # would be matched against negative samples too.
+    result = runner.invoke(
+        reference_app,
+        [
+            "sync",
+            "custom",
+            str(dump),
+            "--version",
+            "v1",
+            "--polarity",
+            "positive",
+            "--yes",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    assert captured_ingest["scope"] == SourceScope(UNBOUNDED, polarity="positive")
+
+
+def test_a_polarity_that_cannot_be_read_is_refused_before_the_prompt(dump, no_engine):
+    result = runner.invoke(
+        reference_app,
+        ["sync", "custom", str(dump), "--version", "v1", "--polarity", "neutral"],
+        input="y\n",
+    )
+    assert result.exit_code == 1
+    assert "Continue?" not in result.output
+
+
 def test_a_bound_that_cannot_be_read_is_refused_before_the_prompt(dump, no_engine):
     result = runner.invoke(
         reference_app,
