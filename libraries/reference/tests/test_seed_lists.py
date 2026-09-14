@@ -12,8 +12,9 @@ import json
 from pathlib import Path
 
 import pytest
-from sqlalchemy import func, select
+from sqlalchemy import func, select, update
 
+from mascope_reference.adapters.peaklist import list_scope
 from mascope_reference.known import (
     DEFAULT_ELEMENTS,
     DEFAULT_MAX_CARBON,
@@ -23,6 +24,7 @@ from mascope_reference.known import (
 from mascope_reference.normalize import canonical_formula, monoisotopic_mass
 from mascope_reference.peaklist import admitted_species, is_odd_electron, list_problems
 from mascope_reference.schema import reference_compound, reference_source
+from mascope_reference.scope import MIRROR_WINDOW, UNBOUNDED, SourceScope
 from mascope_reference.seed import catalogue, lists_directory, seed, select_lists
 from mascope_reference.sources import available_sources, get_adapter
 
@@ -191,3 +193,80 @@ def test_a_new_version_replaces_the_old_one(sync_engine, tmp_path):
         ).all()
     # The replaced load is pruned; the new one is the only one left, active.
     assert [(v.version, v.is_active) for v in versions] == [("v2", True)]
+
+
+# --- The scope a seeded list's row records -------------------------------------------
+
+
+def _scopes(conn, *, active_only: bool = True) -> dict[str, SourceScope]:
+    query = select(
+        reference_source.c.name,
+        reference_source.c.version,
+        reference_source.c.known_window,
+        reference_source.c.allow_radicals,
+        reference_source.c.polarity,
+    )
+    if active_only:
+        query = query.where(reference_source.c.is_active.is_(True))
+    return {
+        (
+            row.name if active_only else f"{row.name}@{row.version}"
+        ): SourceScope.from_row(row)
+        for row in conn.execute(query)
+    }
+
+
+def test_seeding_writes_each_lists_scope_on_its_row(sync_engine):
+    seed(sync_engine)
+    with sync_engine.connect() as conn:
+        scopes = _scopes(conn)
+    assert scopes == {pl.id: list_scope(pl) for pl in select_lists(SHIPPED)}
+    # Every shipped list is its own bound, and says the rest in its header.
+    assert all(scope.known_window == UNBOUNDED for scope in scopes.values())
+    assert scopes["atmospheric-inorganics"].allow_radicals
+    assert not scopes["monoterpene-hom-kang2021"].allow_radicals
+    assert scopes["cyclic-siloxanes"].polarity == "positive"
+    assert scopes["perfluorocarboxylic-acids"].polarity == "negative"
+    # Keller's contaminants are seen in both polarities, which a row records as none.
+    assert scopes["contaminants-keller2008"].polarity is None
+
+
+def test_an_active_lists_row_is_brought_up_to_date_without_a_reload(sync_engine):
+    seed(sync_engine)
+    # What a deployment's rows hold after the migration: the mirror window, no
+    # radicals and both polarities, whatever the list says.
+    backfill = SourceScope(MIRROR_WINDOW)
+    with sync_engine.begin() as conn:
+        conn.execute(update(reference_source).values(**backfill.row_values()))
+        compounds = _compounds(conn)
+
+    outcomes = seed(sync_engine)
+
+    assert not any(o.loaded for o in outcomes)
+    assert all(o.refreshed for o in outcomes)
+    with sync_engine.connect() as conn:
+        assert _scopes(conn) == {pl.id: list_scope(pl) for pl in select_lists(SHIPPED)}
+        assert _compounds(conn) == compounds
+
+    # Once the rows say what the lists say, a seed has nothing to refresh.
+    assert not any(o.refreshed for o in seed(sync_engine))
+
+
+def test_the_refresh_leaves_an_earlier_inactive_load_alone(sync_engine, tmp_path):
+    lists = tmp_path / "lists"
+    _list_file(lists, "v1")
+    seed(sync_engine, directory=lists)
+    _list_file(lists, "v2")
+    seed(sync_engine, directory=lists)
+    stale = SourceScope(MIRROR_WINDOW)
+    with sync_engine.begin() as conn:
+        conn.execute(update(reference_source).values(**stale.row_values()))
+
+    (outcome,) = seed(sync_engine, directory=lists)
+
+    assert outcome.refreshed and not outcome.loaded
+    with sync_engine.connect() as conn:
+        scopes = _scopes(conn, active_only=False)
+    # The active load reads as the list; the replaced one is not what Stage A
+    # reads, and keeps what it had until someone activates it.
+    assert scopes == {"test-list@v2": SourceScope(UNBOUNDED), "test-list@v1": stale}

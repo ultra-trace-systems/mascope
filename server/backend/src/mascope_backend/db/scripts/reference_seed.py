@@ -13,7 +13,9 @@ Nothing runs it unasked - loading the lists is an operator's choice, because
 every active reference formula is one Stage A of peak assignment matches peaks
 against. Each list becomes its own versioned source, the same ingest
 ``reference_sync`` runs, and a list whose version is already active is left
-alone, so running it twice changes nothing.
+alone, so running it twice changes nothing - except that an active list's row is
+brought up to date with the window, radical allowance and polarity the list
+names, which is what an upgrade that added those fields runs it for.
 """
 
 import argparse
@@ -86,9 +88,15 @@ def main() -> None:
                 f"({outcome.ingested:,} records)."
             )
         else:
+            refreshed = (
+                "; its window, radical allowance and polarity were brought up to "
+                "date with the list"
+                if outcome.refreshed
+                else ""
+            )
             runtime.logger.info(
                 f"'{outcome.list_id}' version '{outcome.version}' is already "
-                "active - nothing to load."
+                f"active - nothing to load{refreshed}."
             )
 
 

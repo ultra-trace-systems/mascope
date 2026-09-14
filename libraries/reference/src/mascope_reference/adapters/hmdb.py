@@ -15,6 +15,7 @@ from xml.etree.ElementTree import Element, iterparse
 
 from mascope_reference.adapters._io import _open_binary
 from mascope_reference.record import ReferenceRecord
+from mascope_reference.scope import MIRROR_WINDOW
 
 
 def _localname(tag: str) -> str:
@@ -36,6 +37,7 @@ class HmdbAdapter:
 
     name = "hmdb"
     license = "hmdb-attribution"
+    known_window = MIRROR_WINDOW
 
     def parse(self, path: Path) -> Iterator[ReferenceRecord]:
         with _open_binary(path) as handle:

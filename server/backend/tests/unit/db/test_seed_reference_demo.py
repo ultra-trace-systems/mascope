@@ -21,7 +21,10 @@ CREATE TABLE reference_source (
     license TEXT,
     record_count INTEGER,
     is_active BOOLEAN,
-    ingested_at TEXT
+    ingested_at TEXT,
+    known_window JSON,
+    allow_radicals BOOLEAN,
+    polarity TEXT
 )
 """
 
@@ -51,7 +54,8 @@ def mirror(tmp_path, monkeypatch):
         conn.exec_driver_sql(_SOURCE_DDL)
         conn.exec_driver_sql(_COMPOUND_DDL)
         conn.exec_driver_sql(
-            "INSERT INTO reference_source VALUES "
+            "INSERT INTO reference_source (reference_source_id, name, version, "
+            "license, record_count, is_active, ingested_at) VALUES "
             "(1, 'demo', 'demo-seed', 'public-domain', 1, 1, '2026-01-01')"
         )
         conn.exec_driver_sql(
