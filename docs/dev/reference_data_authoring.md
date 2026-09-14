@@ -155,8 +155,22 @@ mascope reference sync custom esi_background.csv --name my-background -v 1 --pol
 
 A list file's header says `allow_radicals` and `polarity` itself, and its
 radicals are held back at ingest unless the header allows them, whatever the
-flag says. Stage A does not read the three fields yet: until it does, every
-active source is matched inside the atmospheric window.
+flag says.
+
+Stage A of peak assignment reads all three for every source:
+
+- **A formula is matched only inside the source's window**, intersected with a
+  ceiling the sample's chemistry context sets. Every shipped context opens C, H,
+  N, O, S, Si, P, F, Cl, Br and I at 40 carbons and 700 Da, so a list brings its
+  siloxanes, organophosphates, perfluorinated acids and iodine species in, while a
+  database mirror stays inside its own window. The identity context `none` sets
+  no ceiling. The run records the ceiling as `known_window` in its resolved
+  profile.
+- **A radical is matched only from a source whose row allows radicals.**
+- **A source detected in one polarity is not matched against a sample measured
+  in the other.** A list that says `both`, and a CSV, are matched in either.
+
+A formula carries the identities of the sources that admit it and no others.
 
 ### In a deployment (production)
 
@@ -255,9 +269,10 @@ public sources and where to obtain their dumps.
 ## 6. The lists that ship with Mascope
 
 Mascope carries a small curated seed of atmospheric CIMS lists: a monoterpene
-HOM list, mass spectrometry background contaminants, and families of species no
-formula grid reaches, such as reactive iodine, perfluorocarboxylic acids,
-siloxanes and organophosphates. They live in
+HOM list, isoprene's oxidation products, mass spectrometry background
+contaminants, and families of species no formula grid reaches, such as reactive
+iodine, perfluorocarboxylic acids, cyclic and linear siloxanes and
+organophosphates. They live in
 `libraries/reference/src/mascope_reference/lists/`, one list per file, and
 nothing loads them unasked:
 
@@ -320,11 +335,13 @@ belongs to the whole list, and its species are neutral formulas:
   compiled from, its caveats, and, for a list taken from one work, the licence
   statement its `license` tag rests on. Like the references, it stays in the
   file.
+- **`polarity` is recorded on the list's source row**, and Stage A matches the
+  list only against samples measured in that polarity (`both` matches either).
 - **`applies_to_contexts` and `always_active` are read, but nothing acts on them
   yet.** They say which chemistry contexts a list belongs to, and whether it
   should match in every context; the cyclic siloxanes, for example, are a
   background of every inlet. Until a source row carries tags, Stage A matches
-  every loaded list in every context.
+  every loaded list in every context, under that context's ceiling.
 
 `libraries/reference/tests/test_seed_lists.py` holds every shipped list to these
 checks, so a list that breaks one fails CI instead of loading.

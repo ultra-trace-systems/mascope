@@ -175,3 +175,62 @@ def test_invalid_compound_formula_yields_no_ions(bad_formula):
 
     assert target_ions == []
     assert target_isotopes == []
+
+
+@pytest.mark.parametrize(
+    "formula, notation, ion_formula, mz_m0, lines",
+    [
+        # D4: the 29Si and 30Si lines are what attach a column-bleed siloxane's
+        # envelope to its parent.
+        (
+            "C8H24O4Si4",
+            "+H+",
+            "C8H25O4Si4+",
+            297.08244,
+            {"[29Si]C8H25O4Si3+": 298.08201, "[30Si]C8H25O4Si3+": 299.07929},
+        ),
+        # Triethyl phosphate: phosphorus is monoisotopic, so only carbon's line.
+        ("C6H15O4P", "+H+", "C6H16O4P+", 183.07807, {"[13C]C5H16O4P+": 184.08143}),
+        # Chlorpyrifos: three chlorines and a sulfur.
+        (
+            "C9H11Cl3NO3PS",
+            "+H+",
+            "C9H12Cl3NO3PS+",
+            349.93356,
+            {"[37Cl]C9H12Cl2NO3PS+": 351.93061, "[34S]C9H12Cl3NO3P+": 351.92936},
+        ),
+        # Trifluoroacetic acid through the bromide channel.
+        ("C2HF3O2", "+Br-", "C2HBrF3O2-", 192.91175, {"[81Br]C2HF3O2-": 194.90970}),
+        # Iodic acid: iodine is monoisotopic too.
+        ("HIO3", "-H+", "IO3-", 174.88977, {}),
+    ],
+    ids=["D4", "triethyl-phosphate", "chlorpyrifos", "TFA", "iodic-acid"],
+)
+def test_the_silicon_phosphorus_and_halogen_families_generate_their_lines(
+    formula, notation, ion_formula, mz_m0, lines
+):
+    """The reference lists bring these elements into Stage A, and the known set
+    is built through this function, so each family's ion and its isotopologue
+    lines have to come out right."""
+    compound = TargetCompound(
+        target_compound_id="unit-families", target_compound_formula=formula
+    )
+    mechanism = IonizationMechanism(
+        ionization_mechanism_id="unit-mech",
+        ionization_mechanism_polarity=notation[-1],
+        ionization_mechanism=notation,
+    )
+
+    target_ions, target_isotopes = generate_target_ions_from_composition(
+        compound, [mechanism]
+    )
+
+    assert [ion.target_ion_formula for ion in target_ions] == [ion_formula]
+    high = {
+        isotope.target_isotope_formula: isotope.mz
+        for isotope in target_isotopes
+        if isotope.resolution == "HIGH"
+    }
+    assert high[ion_formula] == pytest.approx(mz_m0, abs=1e-4)
+    for line, mz in lines.items():
+        assert high[line] == pytest.approx(mz, abs=1e-4)

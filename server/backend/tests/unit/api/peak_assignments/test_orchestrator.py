@@ -655,6 +655,37 @@ class TestResolvedProfile:
         assert mocks["fit"].call_args.kwargs == {"fallback_sigma_ppm": 0.3}
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "context, ceiling",
+        [
+            ("ambient-air", "shipped"),
+            # The identity context sets no ceiling: each source is bounded by
+            # its own row alone.
+            ("none", None),
+        ],
+    )
+    async def test_stage_a_matches_the_reference_under_the_resolved_contexts_ceiling(
+        self, context, ceiling
+    ):
+        from mascope_backend.api.new.peak_assignments.config import (
+            PeakAssignmentConfig,
+        )
+        from mascope_tools.composition.profiles import KNOWN_WINDOW_CEILING
+
+        peaks = _peaks_df([("p1", 181.0707, 10000.0), ("p2", 182.0741, 660.0)])
+        recorder = _Recorder()
+        mocks = _start(_patches(recorder, peaks, _stage_a_rows()))
+
+        await _run(PeakAssignmentConfig(run_untargeted=False, context=context))
+
+        expected = KNOWN_WINDOW_CEILING if ceiling == "shipped" else None
+        assert mocks["reference"].await_args.kwargs == {"known_window": expected}
+        snapshot = recorder.recorded_configs()[0]["resolved_profile"]
+        assert snapshot["known_window"] == (
+            None if expected is None else expected.to_json()
+        )
+
+    @pytest.mark.asyncio
     async def test_the_resolution_is_stamped_on_the_run(self):
         from mascope_backend.api.new.peak_assignments.config import (
             PeakAssignmentConfig,

@@ -4,7 +4,8 @@ Exercises the real target-ion / IsoSpec path (no DB): a bounded set of reference
 formulas becomes matchable isotope rows carrying reference identities and no
 curated target linkage. The cache tests below fake the DB edges and pin the
 once-per-state property: the expansion is paid once per (reference state,
-mechanism set, resolution, threshold), not once per run.
+mechanism set, resolution, threshold, context ceiling, sample polarity), not
+once per run.
 """
 
 from types import SimpleNamespace
@@ -19,6 +20,7 @@ from mascope_backend.api.new.peak_assignments.service import (
     _fetch_reference_known_isotopes,
 )
 from mascope_reference import KnownComposition, KnownIdentity
+from mascope_tools.composition.profiles import KNOWN_WINDOW_CEILING
 
 
 _MOD = "mascope_backend.api.new.peak_assignments.service"
@@ -115,6 +117,7 @@ def _orbi_sample():
     return SimpleNamespace(
         sample_item_name="Sample One",
         filename="orbi-sample.raw",
+        polarity="-",
     )
 
 
@@ -158,10 +161,10 @@ class TestReferenceExpansionCache:
         _, known, build = self._patches([(("src-1", "t1"),)] * 2, built)
 
         first = await _fetch_reference_known_isotopes(
-            _orbi_sample(), 0.0, [_mechanism()]
+            _orbi_sample(), 0.0, [_mechanism()], known_window=None
         )
         second = await _fetch_reference_known_isotopes(
-            _orbi_sample(), 0.0, [_mechanism()]
+            _orbi_sample(), 0.0, [_mechanism()], known_window=None
         )
 
         build.assert_called_once()
@@ -173,8 +176,12 @@ class TestReferenceExpansionCache:
         built = pd.DataFrame({"mz": [183.1026], "relative_abundance": [1.0]})
         _, _, build = self._patches([(("src-1", "t1"),), (("src-1", "t2"),)], built)
 
-        await _fetch_reference_known_isotopes(_orbi_sample(), 0.0, [_mechanism()])
-        await _fetch_reference_known_isotopes(_orbi_sample(), 0.0, [_mechanism()])
+        await _fetch_reference_known_isotopes(
+            _orbi_sample(), 0.0, [_mechanism()], known_window=None
+        )
+        await _fetch_reference_known_isotopes(
+            _orbi_sample(), 0.0, [_mechanism()], known_window=None
+        )
 
         assert build.call_count == 2
 
@@ -184,12 +191,12 @@ class TestReferenceExpansionCache:
         self._patches([(("src-1", "t1"),)] * 2, built)
 
         first = await _fetch_reference_known_isotopes(
-            _orbi_sample(), 0.0, [_mechanism()]
+            _orbi_sample(), 0.0, [_mechanism()], known_window=None
         )
         first["mz"] = -1.0
         first["extra"] = True
         second = await _fetch_reference_known_isotopes(
-            _orbi_sample(), 0.0, [_mechanism()]
+            _orbi_sample(), 0.0, [_mechanism()], known_window=None
         )
 
         assert "extra" not in second.columns
@@ -199,7 +206,9 @@ class TestReferenceExpansionCache:
     async def test_no_active_sources_short_circuits(self):
         _, known, build = self._patches([()], pd.DataFrame())
 
-        df = await _fetch_reference_known_isotopes(_orbi_sample(), 0.0, [_mechanism()])
+        df = await _fetch_reference_known_isotopes(
+            _orbi_sample(), 0.0, [_mechanism()], known_window=None
+        )
 
         assert df.empty
         known.assert_not_awaited()
@@ -209,9 +218,53 @@ class TestReferenceExpansionCache:
     async def test_no_mechanisms_touches_nothing(self):
         fingerprint, known, build = self._patches([(("src-1", "t1"),)], pd.DataFrame())
 
-        df = await _fetch_reference_known_isotopes(_orbi_sample(), 0.0, [])
+        df = await _fetch_reference_known_isotopes(
+            _orbi_sample(), 0.0, [], known_window=None
+        )
 
         assert df.empty
         fingerprint.assert_not_awaited()
         known.assert_not_awaited()
         build.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_the_ceiling_and_the_samples_polarity_reach_the_known_set(self):
+        # Each source is matched inside its own window under the context's
+        # ceiling, and only when it is detected in the sample's polarity.
+        built = pd.DataFrame({"mz": [183.1026], "relative_abundance": [1.0]})
+        _, known, _ = self._patches([(("src-1", "t1"),)], built)
+
+        await _fetch_reference_known_isotopes(
+            _orbi_sample(), 0.0, [_mechanism()], known_window=KNOWN_WINDOW_CEILING
+        )
+
+        assert known.await_args.kwargs["ceiling"] == KNOWN_WINDOW_CEILING
+        assert known.await_args.kwargs["polarity"] == "negative"
+
+    @pytest.mark.asyncio
+    async def test_another_ceiling_or_polarity_rebuilds_rather_than_reusing(self):
+        # Same reference state: a frame built under one context's ceiling, or
+        # for one polarity, holds formulas another run may not match.
+        built = pd.DataFrame({"mz": [183.1026], "relative_abundance": [1.0]})
+        _, known, build = self._patches([(("src-1", "t1"),)] * 4, built)
+        positive = SimpleNamespace(
+            sample_item_name="Sample Two", filename="orbi-sample.raw", polarity="+"
+        )
+
+        for sample, ceiling in [
+            (_orbi_sample(), KNOWN_WINDOW_CEILING),
+            (_orbi_sample(), None),
+            (positive, None),
+            (_orbi_sample(), KNOWN_WINDOW_CEILING),
+        ]:
+            await _fetch_reference_known_isotopes(
+                sample, 0.0, [_mechanism()], known_window=ceiling
+            )
+
+        # Three distinct keys; the fourth call is the first one again.
+        assert build.call_count == 3
+        assert [call.kwargs["polarity"] for call in known.await_args_list] == [
+            "negative",
+            "negative",
+            "positive",
+        ]
