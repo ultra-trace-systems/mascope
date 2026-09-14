@@ -1,5 +1,9 @@
 <script setup>
+import { ref } from 'vue'
+
 import Button from 'primevue/button'
+
+import { copyText } from '@/lib/clipboard'
 
 const { field, tooltip } = defineProps({
   field: {
@@ -13,19 +17,19 @@ const { field, tooltip } = defineProps({
 
 const emit = defineEmits(['copy'])
 
+// Used inside dialogs and drawers, whose focus trap would pull focus back out of
+// a temporary text field on <body>: the fallback copy puts its field in here.
+const root = ref()
+
 async function copyField(text) {
-  try {
-    await navigator.clipboard.writeText(text)
-    return true
-  } catch (err) {
-    console.warn(err)
-    return false
-  }
+  const copied = await copyText(String(text), root.value)
+  if (!copied) console.warn('Could not copy the field to the clipboard')
+  return copied
 }
 </script>
 
 <template>
-  <span class="field">
+  <span ref="root" class="field">
     <span v-tooltip.top="tooltip">{{ field }}</span>
     <Button
       v-if="field && String(field).length > 0"

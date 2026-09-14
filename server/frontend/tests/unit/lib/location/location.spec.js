@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, vi } from 'vitest'
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { createPinia, setActivePinia } from 'pinia'
 
 // A mutable holder so the mocked useApp() returns whatever the test sets up.
@@ -212,5 +212,55 @@ describe('useLocation.apply', () => {
     app.current = makeApp()
     useLocation().apply({ tab: 'match' })
     expect(app.current.ui.tab.hydrate).not.toHaveBeenCalled()
+  })
+})
+
+// The share button copies a link to the current view. navigator.clipboard is
+// missing on a page served over plain HTTP from a network address, so the copy
+// has to fall back to the copy command and, when that fails too, hand the user
+// the link to copy by hand - the address bar no longer shows it.
+describe('useLocation.copyShareLink', () => {
+  const originalExecCommand = document.execCommand
+
+  beforeEach(() => {
+    setActivePinia(createPinia())
+    app.current = makeApp()
+    app.current.ui.notification = { push: vi.fn() }
+    app.current.data.batch.focusedId = 'b1'
+  })
+
+  afterEach(() => {
+    vi.unstubAllGlobals()
+    document.execCommand = originalExecCommand
+  })
+
+  it('copies through the copy command where there is no Clipboard API', async () => {
+    vi.stubGlobal('navigator', {})
+    let copied
+    document.execCommand = vi.fn(() => {
+      copied = document.querySelector('textarea')?.value
+      return true
+    })
+
+    const url = await useLocation().copyShareLink()
+
+    expect(url).toContain('b=b1')
+    expect(copied).toBe(url)
+    expect(app.current.ui.notification.push).toHaveBeenCalledTimes(1)
+    expect(app.current.ui.notification.push).toHaveBeenCalledWith(
+      expect.objectContaining({ status: 'success' })
+    )
+  })
+
+  it('says it failed, and shows the link, when nothing could copy it', async () => {
+    vi.stubGlobal('navigator', {})
+    document.execCommand = vi.fn(() => false)
+
+    const url = await useLocation().copyShareLink()
+
+    expect(app.current.ui.notification.push).toHaveBeenCalledTimes(1)
+    const [notification] = app.current.ui.notification.push.mock.calls[0]
+    expect(notification.status).toBe('warning')
+    expect(notification.message).toContain(url)
   })
 })
