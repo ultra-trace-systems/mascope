@@ -19,8 +19,8 @@ registered adapter name (``custom`` for hand-authored lists - see
 This is the same versioned, idempotent-by-replacement ingest the CLI runs; it
 just executes where the chemistry dependencies live. The source row records how
 the compounds may be matched - a database at the mirror window, a list
-unbounded - and ``--elements``, ``--max-carbon``, ``--max-mass`` and
-``--allow-radicals`` override it, as they do for the CLI.
+unbounded - and ``--elements``, ``--max-carbon``, ``--max-mass``,
+``--allow-radicals`` and ``--polarity`` override it, as they do for the CLI.
 """
 
 import argparse
@@ -97,6 +97,14 @@ def main() -> None:
             "not for a database or a CSV; a list file's own header decides for it."
         ),
     )
+    parser.add_argument(
+        "--polarity",
+        choices=["positive", "negative", "both"],
+        help=(
+            "The polarity this source's compounds are detected in. Default: both "
+            "for a database or a CSV; a list file's own header decides for it."
+        ),
+    )
     args = parser.parse_args()
 
     try:
@@ -111,6 +119,7 @@ def main() -> None:
             max_carbon=args.max_carbon,
             max_mass=args.max_mass,
             allow_radicals=args.allow_radicals,
+            polarity=args.polarity,
         )
     except ValueError as error:
         raise SystemExit(str(error))

@@ -40,6 +40,9 @@ MIRROR_MAX_MASS = 700.0
 #: What an argument or a flag writes to say "no bound on this axis".
 UNBOUNDED_TOKEN = "any"
 
+#: What a flag writes for a source detected in both polarities.
+BOTH_POLARITIES = "both"
+
 _SYMBOL = re.compile(r"[A-Z][a-z]?")
 
 
@@ -68,6 +71,23 @@ def parse_elements(text: str) -> frozenset[str] | None:
     if unknown:
         raise ValueError(f"not element symbols: {', '.join(unknown)}")
     return symbols
+
+
+def parse_polarity(text: str) -> str | None:
+    """Read a polarity flag: ``positive``, ``negative`` or ``both``.
+
+    :param text: The flag's value, in any case.
+    :raises ValueError: For anything else.
+    :return: The polarity, or None for both.
+    """
+    value = text.strip().lower()
+    if value == BOTH_POLARITIES:
+        return None
+    if value not in POLARITIES:
+        raise ValueError(
+            f"a polarity is {', '.join(POLARITIES)} or '{BOTH_POLARITIES}', not '{text}'"
+        )
+    return value
 
 
 def _parse_cap(text: str, kind, axis: str):
@@ -225,6 +245,7 @@ class SourceScope:
         max_carbon: str | None = None,
         max_mass: str | None = None,
         allow_radicals: bool | None = None,
+        polarity: str | None = None,
     ) -> "SourceScope":
         """The scope with what a person asked for at load time put over it.
 
@@ -237,6 +258,8 @@ class SourceScope:
         :param max_mass: A mass cap in Da, or the token.
         :param allow_radicals: Whether radicals may be matched; None keeps the
             source's own.
+        :param polarity: ``positive``, ``negative`` or ``both``, as a flag
+            writes it; None keeps the source's own.
         :raises ValueError: For a value none of the axes can take.
         :return: The new scope.
         """
@@ -253,6 +276,7 @@ class SourceScope:
             allow_radicals=(
                 self.allow_radicals if allow_radicals is None else allow_radicals
             ),
+            polarity=self.polarity if polarity is None else parse_polarity(polarity),
         )
 
     def describe(self) -> str:

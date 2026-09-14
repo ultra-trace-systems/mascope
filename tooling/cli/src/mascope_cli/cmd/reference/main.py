@@ -10,8 +10,8 @@ becomes the active version of its source.
 Each source row also records how its compounds may be matched - its window, its
 radical allowance and its polarity (``mascope_reference.scope``). A database
 mirror loads at the mirror window and a list loads unbounded; ``sync``'s
-``--elements``, ``--max-carbon``, ``--max-mass`` and ``--allow-radicals``
-override either.
+``--elements``, ``--max-carbon``, ``--max-mass``, ``--allow-radicals`` and
+``--polarity`` override either.
 """
 
 from pathlib import Path
@@ -29,7 +29,12 @@ from mascope_reference import available_sources, get_adapter, ingest
 from mascope_reference.ingest import DEFAULT_BATCH_SIZE, EmptyIngest, deactivate
 from mascope_reference.peaklist import admitted_species
 from mascope_reference.schema import reference_compound, reference_source
-from mascope_reference.scope import UNBOUNDED_TOKEN, SourceScope, scope_of
+from mascope_reference.scope import (
+    BOTH_POLARITIES,
+    UNBOUNDED_TOKEN,
+    SourceScope,
+    scope_of,
+)
 from mascope_reference.seed import catalogue, select_lists
 from mascope_reference.seed import seed as seed_lists
 
@@ -195,6 +200,17 @@ def sync(
             ),
         ),
     ] = None,
+    polarity: Annotated[
+        Optional[str],
+        typer.Option(
+            "--polarity",
+            help=(
+                "The polarity this source's compounds are detected in: positive, "
+                f"negative or '{BOTH_POLARITIES}'. Default: both for a database or a "
+                "CSV; a list file's own header decides for it."
+            ),
+        ),
+    ] = None,
     yes: Annotated[
         bool,
         typer.Option(
@@ -216,6 +232,7 @@ def sync(
             max_carbon=max_carbon,
             max_mass=max_mass,
             allow_radicals=allow_radicals,
+            polarity=polarity,
         )
     except ValueError as error:
         # Refused before the prompt, like an unknown source: a bound that cannot

@@ -148,6 +148,9 @@ mascope reference sync norman susdat.csv -v 2024 --elements C,H,N,O,S,Si,P --max
 
 # A CSV of radicals, matched as radicals.
 mascope reference sync custom ro2.csv --name my-ro2 -v 1 --allow-radicals
+
+# A list measured in positive mode.
+mascope reference sync custom esi_background.csv --name my-background -v 1 --polarity positive
 ```
 
 A list file's header says `allow_radicals` and `polarity` itself, and its
@@ -182,7 +185,7 @@ deployment, depending on how it was installed:
 
   It takes the same arguments as `mascope reference sync` (`source`, `file`,
   `--version`, `--name`, `--batch-size`, `--prune`, `--stage`, `--elements`,
-  `--max-carbon`, `--max-mass`, `--allow-radicals`) and runs the identical
+  `--max-carbon`, `--max-mass`, `--allow-radicals`, `--polarity`) and runs the identical
   versioned ingest - just where the dependencies live. The database is
   the one the backend is already configured for, so no connection flags are
   needed.
