@@ -181,6 +181,14 @@ class ResolvedProfile:
             "mz_precision_ppm": self.mz_precision_ppm,
             "mz_precision_source": self.mz_precision_source,
             "fallback_sigma_ppm": self.fallback_sigma_ppm,
+            # The ceiling Stage A put over every reference source's own window;
+            # null where the context sets none. Each source's own window is on
+            # its row.
+            "known_window": (
+                None
+                if self.context.known_window is None
+                else self.context.known_window.to_json()
+            ),
             "ratio_windows": {
                 key: list(window)
                 for key, window in self.context.ratio_windows().items()
