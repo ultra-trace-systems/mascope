@@ -1894,6 +1894,8 @@ async def _stage_a_assignments(
     mechanisms,
     peak_assignment_run_id: str,
     excluded_peak_ids: set[str] | None = None,
+    *,
+    fallback_sigma_ppm: float,
 ) -> tuple[list[dict], dict | None, SampleMassAccuracy]:
     """Stage A: database-first assignment from the known composition set.
 
@@ -1916,6 +1918,10 @@ async def _stage_a_assignments(
         adducts, so removing its row afterwards would leave a boost behind that
         no surviving row accounts for. Whole target ions go, not single rows -
         see :func:`drop_ions_claimed_elsewhere` for why the difference matters.
+    :param fallback_sigma_ppm: The resolved profile's instrument class width.
+        Stage A scores at it when the target library matched too few lines to
+        fit a width, as the untargeted stage does, so neither stage falls back
+        to a width the other does not use (:func:`score_ions_by_fit`).
     :return: The assignment rows; what a run records about the confidence curve
         their P(correct) came from - None when Stage A never ran or the
         instrument has no curve; and what the target library's own matched
@@ -1961,7 +1967,9 @@ async def _stage_a_assignments(
             # the peak-centric engine's scoring engine is the ion-level fit
             # quality, not the targeted matcher's per-isotopologue term. Runs
             # after gating so tolerance/intensity cuts carry into the fit.
-            match_isotope_df = score_ions_by_fit(match_isotope_df)
+            match_isotope_df = score_ions_by_fit(
+                match_isotope_df, fallback_sigma_ppm=fallback_sigma_ppm
+            )
             # Read off the frame the fit was computed on, so Stage B is judged
             # at the width Stage A was judged at rather than at one refitted
             # over a different set of rows.
@@ -2171,6 +2179,7 @@ async def _run_sample_assignment(
             mechanisms,
             run.peak_assignment_run_id,
             excluded_peak_ids=claimed_peak_ids,
+            fallback_sigma_ppm=resolved_profile.fallback_sigma_ppm,
         )
         runtime.logger.info(
             f"Stage A assigned {len(stage_a_assignments)} of {len(peaks_df)} "
@@ -2682,6 +2691,7 @@ async def _fold_sample_peaks_without_run(
         mechanisms,
         run_id,
         excluded_peak_ids=claimed_peak_ids,
+        fallback_sigma_ppm=resolved_profile.fallback_sigma_ppm,
     )
     # The run's gate over this path's commits, so that a reference mirror's
     # row off calibration is capped here as a run would cap it. Nothing records

@@ -185,7 +185,7 @@ def _patches(
         "apply_params": patch(
             f"{_MOD}.apply_match_params", side_effect=lambda df, _params: df
         ),
-        "fit": patch(f"{_MOD}.score_ions_by_fit", side_effect=lambda df: df),
+        "fit": patch(f"{_MOD}.score_ions_by_fit", side_effect=lambda df, **_kwargs: df),
         "calibration": patch(
             f"{_MOD}.load_calibration", new_callable=AsyncMock, return_value=None
         ),
@@ -633,6 +633,26 @@ class TestResolvedProfile:
     library data that will be revised. Without the snapshot two runs months
     apart would carry identical configs and incomparable results.
     """
+
+    @pytest.mark.asyncio
+    async def test_stage_a_stands_in_the_class_width_the_run_resolved(self):
+        # Where the target library matches too few lines to fit a width, the
+        # untargeted stage and the gate stand in the instrument class's. Stage A
+        # has to be told the same width, or it falls back to the fit score's
+        # generic 2 ppm, which on an Orbitrap is several times the instrument's.
+        from mascope_backend.api.new.peak_assignments.config import (
+            PeakAssignmentConfig,
+        )
+
+        peaks = _peaks_df([("p1", 181.0707, 10000.0), ("p2", 182.0741, 660.0)])
+        recorder = _Recorder()
+        mocks = _start(_patches(recorder, peaks, _stage_a_rows()))
+
+        await _run(PeakAssignmentConfig(run_untargeted=False))
+
+        snapshot = recorder.recorded_configs()[0]["resolved_profile"]
+        assert snapshot["fallback_sigma_ppm"] == 0.3  # the sample file is a .raw
+        assert mocks["fit"].call_args.kwargs == {"fallback_sigma_ppm": 0.3}
 
     @pytest.mark.asyncio
     async def test_the_resolution_is_stamped_on_the_run(self):

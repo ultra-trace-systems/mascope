@@ -663,7 +663,10 @@ def drop_ions_claimed_elsewhere(
     return match_isotope_df[keep]
 
 
-def score_ions_by_fit(match_isotope_df: pd.DataFrame) -> pd.DataFrame:
+def score_ions_by_fit(
+    match_isotope_df: pd.DataFrame,
+    fallback_sigma_ppm: float | None = None,
+) -> pd.DataFrame:
     """Set each isotopologue's ``match_score`` to its ion's fit score (Stage A).
 
     The peak-centric engine adopts the fit score (`score_pattern_v2`) *deliberately*
@@ -708,6 +711,19 @@ def score_ions_by_fit(match_isotope_df: pd.DataFrame) -> pd.DataFrame:
     is half of that product and stays the pure measurement; see
     `tier_for_evidence`. Per-instrument recalibration of the bands is a follow-up
     once verification labels accumulate.
+
+    :param match_isotope_df: The gated match frame.
+    :param fallback_sigma_ppm: The instrument class's width
+        (``profiles.resolve_fallback_sigma_ppm``). A sample whose target library
+        matched too few lines to fit a width is scored at it, the stand-in the
+        untargeted stage takes (:func:`pattern_scoring_for`), so the two stages
+        still score at one width. Without it such a sample is scored at
+        ``score_pattern_v2``'s generic 2 ppm. Measured on the gate's bromide
+        Orbitrap set, whose library matches two lines a sample, that generic
+        width put 155 more of a loaded seed's rows at assigned tier once the
+        seed's lines were out of the fit, and G1 rose from 8.0 to 15.3%. None
+        keeps the generic width, for a caller with no instrument class to name.
+    :return: The gated frame with every ion's fit as its rows' ``match_score``.
     """
     if match_isotope_df.empty or not _FIT_SCORE_COLS.issubset(match_isotope_df.columns):
         return match_isotope_df
@@ -721,15 +737,14 @@ def score_ions_by_fit(match_isotope_df: pd.DataFrame) -> pd.DataFrame:
         df.loc[gated_out, "sample_peak_intensity"] = 0.0
 
     # The one measurement the untargeted stage is scored at too, read off this
-    # same gated frame. mu is None where too few anchors matched to measure an
-    # offset; the scorer reads that as an uncorrected sample rather than a
-    # centred one.
+    # same gated frame, with the same class width standing in where it measured
+    # none. mu is None where too few anchors matched to measure an offset; the
+    # scorer reads that as an uncorrected sample rather than a centred one.
     accuracy = sample_mass_accuracy(df)
+    sigma = accuracy.sigma_ppm if accuracy.sigma_ppm is not None else fallback_sigma_ppm
     noise = sample_noise_floor(df)
     fit_by_ion = df.groupby("target_ion_id", sort=False, dropna=False).apply(
-        lambda g: ion_score_v2(
-            g, sigma_ppm=accuracy.sigma_ppm, mu=accuracy.mu_ppm, noise=noise
-        ),
+        lambda g: ion_score_v2(g, sigma_ppm=sigma, mu=accuracy.mu_ppm, noise=noise),
         include_groups=False,
     )
     # Return the GATED frame (not a fresh copy of the input): the zeroed intensities
