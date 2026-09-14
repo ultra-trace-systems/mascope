@@ -26,7 +26,8 @@ step PRs land on the epic and are named here as they merge.
 | 2.4 - mechanical tiers with reasons | #2099 (measurements), #2100 (tiering), #2101 (inspector), #2105 (curated rows) | **2.4a measured** on build `step-2.4-mechanical-tiers-2026.09.10-70438cb`: every committed row records `provenance.candidate_density`, the number of formulas the peak's evidence cannot separate from the one the row commits - anchored on the committed formula and not on the arbitration's top, which the finder need not have committed - counted one-sided, so a rival the evidence ranks ABOVE the commit is never reported as nothing tying it; the two anchorings differ on 444 of the 32,449 committed rows, every one of them upward, and on 23 rows at assigned tier - 22 on F1, 1 on F2 - of which one crosses from 1 to 2. Recording it changes nothing: 0 of 48,894 ledger rows differ from the 2.3 build on any other column and every gate number is identical. Measured, it is a sharp guard rather than a lever - 11 of A's 1,002 assigned rows sit at density >= 2 and 0 of those 11 are confirmed, against 75.4% at density 1 - because a continuous fit separates almost everything; the number of formulas the MASS admits is a different and wider quantity, and reaches 68 on the same set. **The plan's carbon-cluster demote is withdrawn.** `DBE/C >= 1` with the effective DBE reduces to `H <= 2 + N`, which names hydrogen-poor molecules rather than large skeletons: on the gate it took formic, oxalic and glyoxylic acid and a confirmed nitrogen heterocycle - 46 rows, 8 of them right - and no carbon cluster. What keeps a cluster out of a run is the chemistry context's DBE/C and H/C windows (ambient-air 0.75 and 0.7, uronium 1.1 and 0.4) and not the heuristic filter, which grades a formula and rejects none on H/C - C60 passes at plausibility 1.0 - and those windows apply only from three carbons up, which is where the signature misjudged; a run under context `none` has no such window and this would not have closed that gap either. The oxygen-lattice floor of five is measured on what it SPARES (at O >= 4 it reaches 260 rows and the reference confirms 35, at O >= 5 it reaches 212 and 3, flat to O >= 9); what it takes is 3 confirmed against 17 contradicted and 189 the reference does not judge, 174 of them on the TOF sets, so on the Orbitrap sets it is 3 right and 3 wrong. The carbon-free signature reaches nothing, because every resolved grid floors carbon at one and every carbon-free committed row on the gate is curated - and a curated row is not asked (#2105; as 2.4b first merged the pass did ask, and took 7 curated rows, none confirmed; re-measured on `step-2.4d-curated-implausibility-2026.09.11-2012665` the signature takes 0). The cross-family degeneracy measurement is not per-run: about 27 s of band grids a spectrum plus 6 ms a peak, against ten seconds for a whole sample's assignment **2.4b measured** on build `step-2.4b-tiering-2026.09.11-639e1df`: every committed monoisotopic row records `provenance.tier_reasons`, and none of the 32,449 carries zero - the 31 curated isotopologue rows with no owner that carried none on this build now say `not_measured`, which moves no tier; the rules only demote and move nothing but tiers - 0 formula, role or verdict shifts of 48,894 peaks, G2 and its denominator identical on all eight sets. The pass takes 3,778 assigned rows and the reference confirms 38 of them (1.0%): an odd-electron neutral, a rule the plan did not have and the gate found, 1,782 with none confirmed; candidate density 2,636 with 32; the oxygen lattice 212 with 3; the envelope neighbour 166 with 4; carbon-free none, because no curated row is asked the formula-shape questions (#2105, rule set version 2, measured on `step-2.4d-curated-implausibility-2026.09.11-2012665`: as first merged the pass took 7 curated carbon-free rows - trisulfur on C2, the dibromide ion's bromine on F1 - with none confirmed, and exempting them moves those rows and their 8 isotopologues back to assigned and nothing else). Read on the rows the reference commits an M0 on (decision 14), G1 meets the 20% bound on all five Orbitrap sets - A 3.1, B 12.3 (1.1 with the same-ion splits set aside), C 1.3, C2 0.4, D 1.4 - against 23.0, 36.9, 21.0, 24.6 and 8.4 unconditioned, a remainder that is 73-91% reference silence; the TOF sets are carried to 2.5 and 2.7. G6 at assigned tier falls 159 -> 71, of which 47 are the grid gap and 24 the envelope part, every one of them spared by the rule's height test or by the run holding no neighbour to predict it, so that Verify line as first written is missed; re-worded in 2.4c to the height-qualified form, which is the rule as measured, it is met. An isotopologue row follows an owner any pass capped; the earlier passes already cap their own, so that count is 0 on all 43 runs. **2.4c** puts the reasons in the peak inspector under *Why this tier* - the rule by name over the run's own sentence, a mark on each reason that holds the tier down, and on an isotopologue its M0's reasons beneath its own; a row no rule judged shows none. Display and documentation only: no run or gate number moves |
 | 2.5a - reference seed: list format, the lifted lists, `reference seed` (seed proposal phases 0-1) | #2111 (seed), #2112 (Stage A fix) | measured: schema 2 list files with radical status read from the formula, the `peaklist` adapter, `mascope reference seed`, the demo hook and an integrity test over every list; the lift is Kang 2021 split into 573 closed-shell and 257 RO2 formulas (opt-in), Keller 2008 less its ions and salts (50 of 59), peaky's pass-0 families as seven cited lists (45 of their 65 formulas, plus the D3-D6 siloxanes) and the example list, 1,008 formulas in all. The default seed (10 lists, 751 compounds) raises G2 same-formula on every set - A 93.8 -> 95.4, B 92.8 -> 93.5, C 91.7 -> 93.9, C2 77.7 -> 83.3 (now inside its bound), D 80.4 -> 84.0, E 33.3 -> 40.5, F1 13.0 -> 22.8, F2 15.9 -> 17.4 - and moves 211 peaks towards the reference's formula against 53 away, 23 of those with a seed row on the peak and 9 of the 23 one ion read two ways on B. The first seed round had lowered C and C2 (to 73.9 and 59.8) through two Stage A defects older than the seed, a labelled ion's M0 and isotopologues with no owner; #2112 fixes both and was measured alone (40 of 48,894 peaks moved, none away from the reference), and the insert overflow on merged TOF isotopologue names is fixed in #2111. On the TOF sets the seed's matches become most of Stage A's anchors and widen the fitted mass width 2-3x (F2 2.6 -> 6.5 ppm), which moves thousands of untargeted elections; that is the next row's, and D4/D5, triethyl phosphate and G6 wait for 2.5b's per-source window |
 | 2.5a fix - the reference seed out of the mass widths | #2113 | measured: Stage A's width is fitted over the target library's lines alone, only the target library's rows count as curated for the mass gate (decision 3's second addendum), the ingest fold runs the gate, and Stage A falls back to the instrument class's width as the untargeted stage does. With the seed loaded, every set's search width and Stage A anchor count equal the pre-seed round's (F2 6.54 -> 2.62 ppm, gate 6.75 -> 2.62). G2 same formula rises on E, F1 and F2 (40.5 -> 45.2, 22.8 -> 23.6, 17.4 -> 18.8) and holds on the Orbitrap sets (C2 83.3 -> 82.6, D 84.0 -> 83.9). All 3,883 peaks that change owner had been moved by the seed, and 3,866 go back to their pre-seed owner. Of the 30 mirror rows the estimate named, the gate caps 4 and the narrower width holds the other 26 below its cap |
-| 2.5b - Stage A window per source, radical filter, deactivate (seed proposal phase 3) | - | planned |
+| 2.5b - Stage A window per source, polarity, radical filter, deactivate, the isoprene lift (seed proposal phase 3) | - | planned: scoped 2026-09-14 on the implementing agent's brief (decision 17); two PRs, the schema and the CLI first without a round, the engine, the list and the round second |
+| 2.5c - the same-ion ambiguity on a Stage A mirror row | - | planned: right after 2.5b, measured alone |
 | 2.6 - frontend: profile, reasons, roles | - | planned |
 | 2.7 - stage 2 gate, engine 0.5.0 | - | planned |
 | 2.2b - mass-dependent centre for the mass gate | - | planned: after the TOF width fix, before 2.7 |
@@ -663,7 +664,8 @@ The confidence layer. This is where "assigned" starts meaning something.
   the trend too. G1 conditioned stays inside its bound on the Orbitrap
   sets.
 - **Size.** S-M. After the TOF width fix, which changes the anchors the
-  gate fits over; before 2.7. Independent of 2.5b.
+  gate fits over, and after 2.5c; before 2.6 and 2.7. Independent of 2.5b
+  in what it changes.
 
 ### 2.3 Cross-channel corroboration and the reagent-N rule
 
@@ -768,34 +770,135 @@ its own status.
 - **2.5b What.** The Stage A known window (`iter_known_compositions`:
   C/H/N/O/S, C <= 40, 700 Da) becomes per source, bounded by the context's
   `known_window`, so a curated list brings I, F, Si, P, Cl and Br into Stage
-  A while a PubChem mirror stays bounded. It also adds a radical filter on
-  the known set, off by default; the per-list allowance moves from the list
-  file onto the source row with the window. And a `reference deactivate`
-  command. Verify ion generation handles Si and P. It also lifts the one
-  list peaky added after 2.5a's lift: `isoprene-oxidation-wennberg2018`,
-  27 closed-shell products of isoprene's OH, NO3 and HO2 chemistry
-  (Wennberg et al., Chemical Reviews 118 (2018) 3337-3390, DOI
-  10.1021/acs.chemrev.7b00439; peaky #30). Mascope's reader parses peaky's
-  schema-1 file as it is, and the format check names the six header gaps
-  the lift closes: the schema, the hyphenated id, the licence, the
-  reference's citation and key names, and the `n_species` and `system`
-  keys the format does not carry.
+  A while a PubChem mirror stays bounded. Scoped 2026-09-14 on the
+  implementing agent's brief; the questions it asked are decision 17.
+  - **The source row carries its window, its radical allowance and its
+    polarity.** A migration adds `known_window` (JSON: elements, maximum
+    carbon, maximum mass; a null field is unbounded), `allow_radicals`
+    (false) and `polarity` (`positive`, `negative`, or null for both) to
+    `reference_source`, mirrored in the library's schema. The migration
+    backfills today's window on every existing row, so a mirror loaded
+    before this step stays bounded until it is re-synced. `reference seed`
+    writes a shipped list's row unbounded - a cited list is its own bound -
+    with the allowance and the polarity from its header, and refreshes
+    those three fields on a version that is already active instead of
+    skipping it, so a deployment that upgrades runs the seed once.
+    `reference sync` writes a list file or a `custom` CSV unbounded as
+    well, and a database mirror at today's window; `--elements`,
+    `--max-carbon`, `--max-mass` and `--allow-radicals` override either,
+    and `reference sources` prints each source's window.
+  - **Stage A applies, per source, the row's window intersected with the
+    context's ceiling, the row's allowance, and the row's polarity against
+    the sample's.** A formula keeps the identities of the sources that
+    admit it. The known-state fingerprint gains the three fields, the cache
+    key gains the context's ceiling and the sample's polarity, and the
+    resolved profile's snapshot records the window a run matched against.
+  - **The context's `known_window` is a ceiling.** Every shipped context
+    opens C, H, N, O, S, Si, P, F, Cl, Br and I at 40 carbons and 700 Da
+    (D6 is 444 Da, the longest PFCA 614). `none` sets no ceiling, as the
+    identity it is for the ratio windows: the two ESI profiles and the
+    identity profile default to it, and the siloxane list's second citation
+    is nanoESI background. A narrowing per context waits until a chemistry
+    gives a reason; polarity already keeps the negative-mode lists off the
+    uronium sets.
+  - **The radical filter.** Stage A drops an odd-electron formula unless
+    its source row allows radicals: decision 15's rule carried to every
+    source, and what guards a `custom` list or a public mirror, since only
+    the list adapter holds radicals back at ingest. The format's rule
+    stays. On the testbed nothing changes once the seed has refreshed the
+    rows; before it has, HO2 and OIO would be filtered, which is why the
+    seed runs before the round.
+  - **`reference deactivate <source>`** takes the source's active load out,
+    with a confirmation and `--yes`, and `activate` brings a version back;
+    it gets a counterpart inside the backend container beside the seed's.
+  - **Ion generation for Si and P** is verified - D4 [M+H]+ at 297.0824
+    with its 29Si and 30Si lines, triethyl phosphate [M+H]+ at 183.0781,
+    chlorpyrifos' 37Cl lines, the iodine ions - and gets its test.
+  - **The isoprene lift**: `isoprene-oxidation-wennberg2018`, the one list
+    peaky added after 2.5a's lift, 27 closed-shell products of isoprene's
+    OH, NO3 and HO2 chemistry (Wennberg et al., Chemical Reviews 118 (2018)
+    3337-3390, DOI 10.1021/acs.chemrev.7b00439; peaky #30): 8 already in
+    the default seed, 19 new, 9 of them with nitrogen, all inside today's
+    window; negative polarity, closed-shell, loaded by default. Mascope's
+    reader parses peaky's schema-1 file as it is, and the format check
+    names the six header gaps the lift closes: the schema, the hyphenated
+    id, the licence, the reference's citation and key names, and the
+    `n_species` and `system` keys the format does not carry. Its
+    provenance is written generically, as decision 15 requires; peaky's
+    names the campaign the list was curated for.
+  - **Siloxane content for G6.** A literature check adds only what a
+    verified citation supports: the linear L3 to L5 are covered by the
+    siloxane list's Genualdi 2011 citation already, and D7 and D8 need a
+    source of their own. What no citation supports is recorded as the
+    residue, named.
+  - **Estimated on the #2113 round** (build `8c163be`, default seed
+    loaded; the agent's `window_estimate.py`): 41 default-seed formulas sit
+    outside today's window (P 17, F 11, Si 4, I 4, Cl+P 2, Cl+I 1, Br+I 1,
+    and one Keller formula over both bounds that reaches no peak). Their M0
+    ions reach 84 peaks on A and 91 on B, where the reference commits the
+    admitted formula on 31 and 39 - D3 to D6, triethyl, tributyl and
+    triphenyl phosphate, triphenylphosphine oxide; today those peaks are
+    unassigned or carry CHNO readings, D5's urea adduct among them - and
+    TFA on every sample of C2 and D (12 peaks each, unassigned today). The
+    positive-mode lists reach 94 peaks on the negative sets where the
+    reference confirms none of them, and three assigned rows on D that it
+    does confirm; that is what the polarity gate is for. Of A's 87 G6
+    rows, 52 have a seed parent now outside the window (12 of the 13 at
+    assigned tier), 18 a parent inside it and 17 a parent no list holds,
+    so the grid part goes from 69 to 17 at best and the target of 10 needs
+    list content. The isoprene list's new ions reach C2 18, D 56, E 47, F1
+    68 and F2 66 peaks, mostly under the formula the untargeted stage
+    already elects there, so the lift moves rows from Stage B to Stage A
+    rather than changing formulas; on F2, 12 of those peaks hold a Stage A
+    row with another formula. IBr's `+Br-` ion lands on peaks the
+    reference reads as reagent (D 2, E 3, F1 4). The long PFCAs tier low
+    by `formula_plausibility` (C8 0.60), which is left as it is.
+  - **Two PRs.** The schema, the seed's refresh, the sync flags and
+    `deactivate` first, with no engine change and no store round; the
+    engine, the isoprene list and the Si/P test second, with the round.
 - **Why.** The siloxane and phosphate peaks are the brightest wrong answers
   in every sample, and the families peaky hard-codes are exactly the ones no
   formula grid reaches: known-formula matching is the only way they get
   assigned. A seed is a prior, not a label set - Stage A wins the peak -
   which is why decision 3 (tiers and the mass gate apply to Stage A rows)
   is part of this step's safety.
-- **Verify.** The integrity test; the D4/D5 siloxane peaks and triethyl
-  phosphate resolve on every testbed sample; when a seed loads, the gate
-  reports the peaks that change owner between the database and untargeted
-  stages, because a seed formula stealing a peak from a better untargeted
-  answer is the main risk; gate metric G3; and gate metric G6 (at most 10
-  on A), which decision 11 moves here from the stage-1 gate: on A the
-  reference's parent ion for 78 of the 79 carries silicon or phosphorus,
-  and the 29Si and 30Si lines of the column-bleed siloxanes attach to their
-  parents only once the known window names them.
-- **Size.** M for 2.5a, S-M for 2.5b. Independent of 2.1-2.4. The seed
+- **Verify.** The integrity test over every shipped list; D3 to D6,
+  triethyl, tributyl and triphenyl phosphate and triphenylphosphine oxide
+  per sample on A and B (polarity keeps those lists off the negative sets),
+  and TFA on C2 and D; when a seed loads, the gate reports the peaks that
+  change owner between the database and untargeted stages, split by
+  whether a newly admitted formula is on the peak, because a seed formula
+  stealing a peak from a better untargeted answer is the main risk; G1 and
+  G2 on every set; gate metric G3; G4 on the IBr2- peaks; the rows the
+  isoprene lift moves from Stage B to Stage A; the size of the known set
+  and the run time; and gate metric G6 (at most 10 on A), which decision 11
+  moves here from the stage-1 gate: on A the reference's parent ion for 78
+  of the 79 carries silicon or phosphorus, and the 29Si and 30Si lines of
+  the column-bleed siloxanes attach to their parents only once the known
+  window names them. The target stands as written; the residue is reported
+  with its parents named and split by whether a cited list could hold them.
+  The round runs with the seed refreshed, on the reference frozen at
+  `cc07ce1` (decision 16).
+- **2.5c What.** The same-ion ambiguity on a Stage A mirror row: its own
+  PR right after 2.5b, measured alone, for mirror rows only. The reagent-N
+  rule reads a row's same-ion readings off the finder's `alternatives`, and
+  a Stage A row carries none, so dropping the `source == database`
+  exemption in the cross-channel pass changes nothing on its own: carrying
+  the ambiguity means building the same-ion splits for a mirror row's ion
+  and recording them as the rule does for an election. The seed round's
+  cost was nine steals on B, where a nitrogen-bearing seed formula read
+  through `+H+` is the same ion as the reference's ammonium adduct of the
+  nitrogen-free neutral; and the isoprene lift adds nine nitrogen-bearing
+  formulas on the nitrate sets, where a row the untargeted stage elects
+  today is inside the rule's reach and the same row matched by Stage A is
+  not. The radical rule and the formula-shape signatures keep exempting
+  every Stage A row: narrowed to the target library they would cap HOI,
+  HIO3, ICl and IBr by the carbon-free signature, which is what the iodine
+  list exists to assign. **Verify.** The nine same-ion steals on B carry
+  the ambiguity; the owner-change report; G1 and G2 on B and on the nitrate
+  sets.
+- **Size.** M for 2.5a, M for 2.5b in two PRs, S for 2.5c. Independent of
+  2.1-2.4. The seed
   proposal's four decisions (sweep order nitrate, bromide, urea and
   ammonium; opt-in production loading; radicals and clusters off by
   default; widen the window together with the seed) are taken there and
@@ -858,8 +961,9 @@ its own status.
     at the profile's purity (peaky #30), and pass 0 gained positive-mode
     cyclosiloxane and indoor-sulfur families.
   A rebased reference therefore does not reproduce today's table. The
-  reference stays frozen at `cc07ce1` through the TOF width fix, 2.5b and
-  2.6, so each step's round is read against the round before it, and is
+  reference stays frozen at `cc07ce1` through the TOF width fix, 2.5b,
+  2.5c, 2.2b and 2.6, so each step's round is read against the round
+  before it, and is
   refreshed once as step 2.7a: the reference branch rebased on main 0.8.0
   (the overlap is `cli.py`, `io_mascope.py`, `assign.py`, `provenance.py`,
   `local_scoring.py` and the lockfile), `mascope-tools` re-pinned from
@@ -3181,7 +3285,7 @@ belongs in the fitted axis once anchors reach below m/z 100, which is step
      library's rows, which keep the exemption. The rules that doubt a search's
      election (the radical rule, the formula-shape signatures and the
      reagent-N rule) still exempt every Stage A row; whether a curated row
-     should carry the same-ion ambiguity stays 2.5b's.
+     should carry the same-ion ambiguity is step 2.5c's.
    - **What it moves.** Estimated on the seed round's ledgers, the cap would
      reach 30 mirror rows, 26 of them on F2. Those sit -9.6 to +13.8 ppm off
      runs centred within 1 ppm of zero, and 5 of them are below m/z 200.
@@ -3419,7 +3523,8 @@ belongs in the fitted axis once anchors reach below m/z 100, which is step
     reproduce today's table. Refreshing it mid-stage would make every
     step's delta unreadable against the round before it; never refreshing
     it would judge the TOF sets against a reference decision 14 already
-    called inadequate. So: frozen through the TOF width fix, 2.5b and 2.6;
+    called inadequate. So: frozen through the TOF width fix, 2.5b, 2.5c,
+    2.2b and 2.6;
     refreshed once before the gate (2.7a); the gate table read against
     both. Step 2.7's branch rule is restated: fixes land on main, the
     reference branch carries only the twelve commits that need the
@@ -3428,6 +3533,44 @@ belongs in the fitted axis once anchors reach below m/z 100, which is step
     centre becomes step 2.2b, its persistence admission, predicted
     satellites and vote rule are named in 3.2, and its two new profiles in
     3.5.
+
+17. **A source's window, radical allowance and polarity live on its row,
+    and Stage A reads all three** (taken 2026-09-14 with step 2.5b, on the
+    implementing agent's brief). The six questions the brief asked, as
+    decided:
+    - **Polarity gates Stage A**, as a column beside the window, null
+      meaning both. It is a detection fact, which 2.5a left to a later
+      `tags` column, but the estimate made it a safety: the positive-mode
+      lists reach 94 peaks on the negative sets where the reference
+      confirms none of them and three assigned rows it does confirm, and a
+      2.8 ppm coincidence on an Orbitrap is inside the gate's width. The
+      lists already declare it.
+    - **The window's meaning.** A shipped list, a list file and a `custom`
+      CSV are their own bound and load unbounded; a database mirror loads
+      at today's window; the flags override either. The context's window
+      is a ceiling: every shipped context opens the six elements at today's
+      carbon and mass bounds, and `none` sets none, as the identity it is
+      for the ratio windows - the ESI profiles default to it, and the
+      siloxane list's own second citation is nanoESI background. The
+      migration backfills today's window on every existing row, so null
+      (unbounded) is only ever written by the seed, the list adapters and
+      the flags.
+    - **"A radical filter, off by default"** reads as: no source's radicals
+      reach Stage A unless its row allows them. Decision 15's rule carried
+      to every source; the other reading, a deployment switch, would leave
+      a custom list's radicals in until someone turned it on.
+    - **The same-ion ambiguity on a mirror row is step 2.5c**, measured
+      alone, right after 2.5b. Folded into 2.5b, its owner changes would be
+      unreadable against the window's.
+    - **Siloxane content for G6** is what a verified citation supports. The
+      target of at most 10 on A stands as written; the residue is reported
+      with its parents named and split by whether a cited list could hold
+      them, and judged at the gate with the numbers in hand.
+    - **The testbed workspace's target library is left as it is** through
+      2.5b's round; a clean-up gets its own control round, on the user's
+      word.
+    - **Two PRs** for 2.5b: the schema and the CLI first, without a round;
+      the engine, the list and the round second.
 
 ## Risks
 
@@ -3904,7 +4047,7 @@ formula, and 53 away from a formula the reference confirms.
   organic nitrates from Kang 2021. The untargeted stage elects the adduct
   reading by step 1.3's same-ion policy, and the reagent-N rule records the
   ambiguity. A curated row goes through neither, so it wins. Whether a curated
-  row should carry that ambiguity is carried to 2.5b.
+  row should carry that ambiguity is step 2.5c's.
 - **Of the other 14**, one is at assigned tier, three at candidate and ten
   below assignability.
 - **The remaining 30 of the 53** have no seed row on the peak, and move through
