@@ -8,6 +8,8 @@ the direction the cap may move a tier, and the two ways a run declines to gate
 at all, and the centre that follows the mass range where a run's commits do.
 """
 
+from dataclasses import replace
+
 import pytest
 
 from mascope_backend.api.new.peak_assignments.mass_gate import (
@@ -20,6 +22,7 @@ from mascope_backend.api.new.peak_assignments.mass_gate import (
     apply_mass_gate,
     corroboration_of,
     fit_run_mass_accuracy,
+    peak_mz,
     tracking_tolerance_ppm,
 )
 from mascope_backend.api.new.peak_assignments.tiers import (
@@ -670,7 +673,10 @@ class TestTheCentreFollowsTheMassRange:
 
     def test_a_run_whose_commits_are_flat_keeps_the_constant_centre_exactly(self):
         # Every row's distance and tier are what the constant centre gives a
-        # run none of whose rows has an m/z at all.
+        # run none of whose rows has an m/z at all. The off row sits at m/z 40,
+        # where the line's 0.03 mDa floor is 0.75 ppm against the 0.583 ppm
+        # this run judges at: a floor that reached a run without a line would
+        # put it inside three widths and leave it uncapped.
         def flat(located):
             rows = _anchors(12, ppm=-0.1, spread=0.05) + [
                 _row(
@@ -680,7 +686,7 @@ class TestTheCentreFollowsTheMassRange:
                 )
                 for i in range(40)
             ]
-            return rows + [_row("off", ppm=2.0, mz=61.0 if located else None)]
+            return rows + [_row("off", ppm=2.0, mz=40.0 if located else None)]
 
         rows, unlocated = flat(True), flat(False)
         summary = apply_mass_gate(rows, fallback_sigma_ppm=PRECISION)
@@ -715,10 +721,34 @@ class TestTheCentreFollowsTheMassRange:
             1.5 / 0.583
         )
 
+    def test_a_run_without_a_line_puts_no_floor_under_its_width(self):
+        # The floor belongs to the line. At m/z 40 it is 0.75 ppm, wider than
+        # the 0.583 ppm this run judges at, and a run without a line judges a
+        # row there in its own width, as it does everywhere.
+        calibration = replace(_calibration_with_a_trend(), trend=None)
+
+        assert calibration.z_of(1.5 - 0.12, 40.0) == pytest.approx(1.5 / 0.583)
+
     def test_a_row_whose_mz_is_unknown_is_judged_at_the_constant_centre(self):
         calibration = _calibration_with_a_trend()
 
         assert calibration.z_of(0.46) == pytest.approx((0.46 + 0.12) / 0.583)
+
+    @pytest.mark.parametrize(
+        ("value", "usable"),
+        [
+            (61.0, 61.0),
+            (None, None),
+            (float("nan"), None),
+            (float("inf"), None),
+            (0.0, None),
+            (-61.0, None),
+        ],
+    )
+    def test_only_a_usable_mz_places_a_row_on_the_mass_range(self, value, usable):
+        # A row without one neither draws the line nor is read at it: there is
+        # no position on the mass range to take the centre or the floor at.
+        assert peak_mz({"sample_peak_mz": value}) == usable
 
     def test_the_run_records_the_centre_it_judged_at(self):
         summary = apply_mass_gate(
