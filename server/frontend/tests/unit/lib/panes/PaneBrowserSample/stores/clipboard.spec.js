@@ -106,6 +106,60 @@ describe('sample browser clipboard with the Clipboard API', () => {
     expect(clipboard.samples).toBeNull()
   })
 
+  it('stops offering a cut in another tab once it was pasted, even where that tab cannot read the clipboard', async () => {
+    let systemClipboard = ''
+    const writeText = vi.fn(async (text) => {
+      systemClipboard = text
+    })
+    const readText = vi.fn(async () => systemClipboard)
+    vi.stubGlobal('navigator', { clipboard: { writeText, readText } })
+    // Two tabs: each has its own store, and they share the system clipboard.
+    const tabA = useClipboard(createPinia())
+    const tabB = useClipboard(createPinia())
+    try {
+      await tabA.cut(SAMPLES)
+      await tabB.read()
+      expect(tabB.samples).toEqual(SAMPLES)
+
+      // Tab B pastes the cut; in tab A the user then dismisses the paste prompt.
+      await tabB.clear()
+      readText.mockRejectedValue(new Error('denied'))
+
+      await vi.waitFor(async () => {
+        await tabA.read()
+        expect(tabA.samples).toBeNull()
+      })
+    } finally {
+      tabA.$dispose()
+      tabB.$dispose()
+    }
+  })
+
+  it('keeps a different cut when another tab pastes its own', async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined)
+    const readText = vi.fn().mockRejectedValue(new Error('denied'))
+    vi.stubGlobal('navigator', { clipboard: { writeText, readText } })
+    const tabA = useClipboard(createPinia())
+    const tabB = useClipboard(createPinia())
+    const tabC = useClipboard(createPinia())
+    try {
+      await tabA.cut([SAMPLES[0]])
+      await tabB.cut([SAMPLES[1]])
+      await tabC.cut([SAMPLES[1]])
+
+      await tabB.clear()
+
+      // Tab C cut the same items as tab B, so it drops them once the paste is
+      // announced; by then tab A has had the announcement too, and keeps its own.
+      await vi.waitFor(() => expect(tabC.samples).toBeNull())
+      expect(tabA.samples).toEqual([SAMPLES[0]])
+    } finally {
+      tabA.$dispose()
+      tabB.$dispose()
+      tabC.$dispose()
+    }
+  })
+
   it('keeps its own copy when the browser refuses to read the clipboard', async () => {
     const writeText = vi.fn().mockResolvedValue(undefined)
     const readText = vi.fn().mockRejectedValue(new Error('denied'))

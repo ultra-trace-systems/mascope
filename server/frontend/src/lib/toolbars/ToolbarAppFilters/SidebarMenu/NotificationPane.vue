@@ -93,9 +93,12 @@ const vHelpLayer = app.ui.help.directive(layer)
                  entries render as one run-on paragraph with nothing between
                  them, since the reasons carry no trailing punctuation. It still
                  wraps on width, so a line longer than the pane reflows, and a
-                 one-line message is unchanged. The toast surface has the same
-                 rule already, from PrimeVue's own `.p-toast` stylesheet. -->
-            <p style="margin: 0; white-space: pre-line">
+                 one-line message is unchanged. `overflow-wrap: anywhere` breaks
+                 a single word wider than the pane - a link to copy by hand -
+                 instead of letting it run off the side. The toast surface does
+                 both already, from PrimeVue's own `.p-toast` stylesheet
+                 (`pre-line` and `word-break: break-word`). -->
+            <p style="margin: 0; white-space: pre-line; overflow-wrap: anywhere">
               {{ message }}
             </p>
           </ScrollPanel>

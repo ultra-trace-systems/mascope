@@ -1566,11 +1566,13 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
   browser console; copying or cutting datasets, batches and samples in the
   sample browser never offered a paste; and "copy link to this view" only
   warned that it could not copy. They now fall back to the browser's copy
-  command, as the About tab already did. A one-time password is still
-  discarded only once it was really copied; a share link that cannot be copied
-  either way is shown in the notification for copying by hand; and a dataset,
-  batch or sample copied or cut in a tab can be pasted in that tab even where
-  the clipboard cannot be read back.
+  command, as the About tab already did. A copy button that cannot copy either
+  way says so, and a one-time password is still discarded only once it was
+  really copied; a share link that cannot be copied either way is shown in the
+  notification for copying by hand; and a dataset, batch or sample copied or
+  cut in a tab can be pasted in that tab even where the clipboard cannot be
+  read back, while a cut stops being offered in the other tabs once it is
+  pasted.
   Pasting spreadsheet cells into batch import and the target collection editor
   reads what was pasted from the paste itself, so it works there too, and no
   longer asks for clipboard permission in a browser that would; a paste that

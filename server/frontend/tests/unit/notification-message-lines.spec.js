@@ -75,6 +75,17 @@ describe('the notification pane', () => {
     expect(getComputedStyle(rendered.element).whiteSpace).toBe('pre-line')
   })
 
+  it('breaks a link too long for the pane instead of letting it run off the side', () => {
+    // A share link that could not be copied is shown for copying by hand, on a
+    // line of its own and with no space in it to wrap at.
+    const rendered = mountPane(
+      'Could not copy the link to this view. Copy it from here:\n' +
+        'http://mascope.example:5173/?w=0f3c1d2e-5b6a-4c7d-8e9f-a0b1c2d3e4f5&d=7a8b9c0d&b=1e2f3a4b'
+    )
+
+    expect(getComputedStyle(rendered.element).overflowWrap).toBe('anywhere')
+  })
+
   it('shows an ordinary one-line notification word for word', () => {
     // `pre-line` differs from `normal` only on newlines - it collapses runs of
     // spaces and wraps on width just the same - so the far more common
