@@ -1,6 +1,6 @@
 [project]
 name = "mascope_cli"
-version = "2026.8.11"
+version = "2026.9.15"
 description = "Mascope's operations CLI: install, launch and back up a Mascope deployment."
 classifiers = [
     "Topic :: Scientific/Engineering :: Atmospheric Science",
@@ -16,9 +16,11 @@ requires-python = ">=3.12,<3.13"
 # Operator surface only (init, prod, env, demo, logs, cert). Developer
 # commands live behind the `dev` extra and a source-checkout gate in main.py.
 dependencies = [
-    # >=2026.8.11: MetaConfig carries the peak_assignment flag added in that
-    # release, which the bundled base.mascope.toml now sets.
-    "mascope_runtime[logs]>=2026.8.11",
+    # >=2026.9.15: the prod commands import is_release_tag and
+    # release_sort_key, which no earlier published runtime has, and an earlier
+    # MetaConfig would silently ignore settings the bundled base.mascope.toml
+    # sets (the peak-assignment ingest ledger among them).
+    "mascope_runtime[logs]>=2026.9.15",
     "typer>=0.27.1,<0.28",
     "rich>=15.0.0,<16",
 ]

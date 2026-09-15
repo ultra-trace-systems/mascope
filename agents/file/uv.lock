@@ -158,7 +158,7 @@ dev = [
 
 [[package]]
 name = "mascope-runtime"
-version = "2026.8.11"
+version = "2026.9.15"
 source = { editable = "../../libraries/runtime" }
 dependencies = [
     { name = "loguru" },
@@ -179,7 +179,7 @@ provides-extras = ["logs", "sentry"]
 
 [[package]]
 name = "mascope-sdk"
-version = "2026.8.19"
+version = "2026.9.15"
 source = { editable = "../../libraries/sdk" }
 dependencies = [
     { name = "loguru" },
