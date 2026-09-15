@@ -46,13 +46,18 @@ from mascope_tools.composition.heuristic_filter import (
     SCORE_VERSION,
     element_counts,
     formula_plausibility,
+    propose_same_ion_readings,
 )
 from mascope_tools.composition.mass_accuracy import (
     fit_sample_mass_accuracy,
     mass_accuracy_anchors,
     scoring_sigma_ppm,
 )
-from mascope_tools.composition.models import PatternScoring
+from mascope_tools.composition.models import (
+    CompositionSearchConfig,
+    HeuristicFilterConfig,
+    PatternScoring,
+)
 from mascope_tools.composition.utils import parse_formula_tokens
 
 
@@ -266,6 +271,21 @@ def is_target_library_row(assignment: dict) -> bool:
     """
     return assignment.get("source") == SOURCE_DATABASE and bool(
         assignment.get("target_compound_id")
+    )
+
+
+def is_reference_mirror_row(assignment: dict) -> bool:
+    """Whether a ledger row was committed for a reference mirror's formula.
+
+    The other Stage A source, told apart from the target library by the compound
+    id only a target winner keeps (:func:`is_target_library_row`).
+
+    :param assignment: A ledger row as the engine builds it.
+    :return: True for a Stage A row with no target compound, False for a target
+        library row and for every row another pass wrote.
+    """
+    return assignment.get("source") == SOURCE_DATABASE and not is_target_library_row(
+        assignment
     )
 
 
@@ -1258,6 +1278,116 @@ def _fold_adduct_corroboration(
             "n_adducts": len(all_adducts),
             "boost": round(p1 - p0, 4) if (p0 is not None and p1 is not None) else None,
         }
+
+
+def record_mirror_same_ion_readings(
+    assignments: list[dict],
+    *,
+    mechanism_id_by_notation: dict[str, str],
+    search_config: CompositionSearchConfig,
+    heuristics_config: HeuristicFilterConfig,
+    formula_formatter=None,
+    max_alternatives: int = 5,
+) -> int:
+    """Give each reference mirror row the other readings of its ion.
+
+    An election leaves the readings it displaced on its winner, flagged
+    ``same_ion``. A Stage A row was matched rather than elected, so it arrives
+    with none, and the question they answer is as open on it: the ion a list's
+    formula makes through one mechanism is, to the same mass and envelope,
+    another neutral's through another. This writes the family the untargeted
+    search would have given that ion
+    (``heuristic_filter.propose_same_ion_readings``) the way an election's
+    displaced readings are written: ahead of the row's scored rivals, and
+    carrying the row's own fit and mass error, since the ion and so the
+    measurement is the same.
+
+    A rival already on the row that restates a reading - the same neutral
+    through the same mechanism, which the known set can hold as a compound of
+    its own - is that reading, so it is flagged and moved ahead rather than
+    repeated.
+
+    The target library's rows get none. Their formulas are the workspace's own
+    curation (:func:`is_target_library_row`), where a list's is a prior matched
+    against every sample. Only a monoisotopic row gets them, as in an election:
+    an isotopologue is its owner's ion on another line.
+
+    :param assignments: Every row built for this sample; mirror rows are
+        modified in place.
+    :param mechanism_id_by_notation: The mechanisms the run searched, in the
+        finder's notation, mapped to their ids.
+    :param search_config: The untargeted search's configuration, whose element
+        box a reading has to sit in.
+    :param heuristics_config: The untargeted search's heuristic filter.
+    :param formula_formatter: How the untargeted stage writes a formula.
+    :param max_alternatives: Cap on stored alternatives per row.
+    :return: How many mirror rows carry at least one reading.
+    """
+    notation_by_id = {
+        str(mechanism_id): notation
+        for notation, mechanism_id in mechanism_id_by_notation.items()
+    }
+    format_formula = formula_formatter or (lambda formula: formula)
+    rows = [
+        row
+        for row in assignments
+        if is_reference_mirror_row(row)
+        and row.get("role") == ROLE_M0
+        and row.get("assigned_formula")
+        and str(row.get("ionization_mechanism_id")) in notation_by_id
+    ]
+    families = propose_same_ion_readings(
+        [
+            (
+                str(row["assigned_formula"]),
+                notation_by_id[str(row["ionization_mechanism_id"])],
+            )
+            for row in rows
+        ],
+        list(mechanism_id_by_notation),
+        search_config,
+        heuristics_config,
+    )
+    carrying = 0
+    for row, family in zip(rows, families, strict=True):
+        if not family:
+            continue
+        rivals = list(row.get("alternatives") or [])
+        readings = []
+        for member in family:
+            mechanism_id = mechanism_id_by_notation[member["ionization_mechanism"]]
+            counts = element_counts(member["formula"])
+            restated = next(
+                (
+                    index
+                    for index, rival in enumerate(rivals)
+                    if str(rival.get("ionization_mechanism_id")) == str(mechanism_id)
+                    and element_counts(str(rival.get("assigned_formula") or ""))
+                    == counts
+                ),
+                None,
+            )
+            if restated is not None:
+                readings.append({**rivals.pop(restated), "same_ion": True})
+                continue
+            readings.append(
+                {
+                    "assigned_formula": format_formula(member["formula"]),
+                    "ion_formula": row.get("ion_formula"),
+                    "ionization_mechanism_id": mechanism_id,
+                    "isotope_label": row.get("isotope_label"),
+                    "fit_score": row.get("fit_score"),
+                    "mz_error_ppm": row.get("mz_error_ppm"),
+                    "plausibility": round(
+                        float(formula_plausibility(member["formula"])), 4
+                    ),
+                    "same_ion": True,
+                    "source": SOURCE_DATABASE,
+                }
+            )
+        row["alternatives"] = (readings + rivals)[: max_alternatives or 0] or None
+        carrying += 1
+    return carrying
 
 
 # Mapping a finder result back to the observed peak it came from is an IDENTITY join,

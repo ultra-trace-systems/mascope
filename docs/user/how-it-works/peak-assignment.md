@@ -225,18 +225,21 @@ What caps a row at candidate:
   and a curated row was not arrived at by one.
 - **off calibration**, **ambiguous nitrogen** and **minor channel only** — caps the run
   applied earlier, restated here so every reason is in one place: a mass error far from
-  the run's own fitted calibration with nothing corroborating it; an ion that reads as a
-  neutral with a different nitrogen count through a channel that donates no nitrogen,
-  with no channel of the run to settle the count; and a commitment through a channel the
+  the run's own fitted calibration with nothing corroborating it; an ion that reads just
+  as well as a neutral with a different nitrogen count, the nitrogen moved between the
+  compound and a reagent channel that carries nitrogen (ammonium, urea, nitrate), with no
+  second channel of the run to settle the count; and a commitment through a channel the
   ionization mode treats as secondary, with no isotopologue or second channel behind it.
-  The last applies to the formula search's own results only. A curated identity is
-  exempt from the nitrogen count, which is a question about the search's choice. Only a
-  compound of your own target library is exempt from the calibration check, which counts
-  that curation as the corroboration it asks for. A formula from a loaded reference list
-  is a prior matched against every sample rather than a list assembled for your data, so
-  the check treats it like a search result unless one of its isotopologues tracks its mass
-  error. Those reference matches also play no part in measuring the sample's own mass
-  accuracy.
+  The last applies to the formula search's own results only. Only a compound of your own
+  target library is exempt from the nitrogen count and from the calibration check, which
+  counts that curation as the corroboration it asks for. A formula from a loaded
+  reference list is a prior matched against every sample rather than a list assembled for
+  your data. The run gives it the other readings of its ion that the formula search would
+  have considered, shown with its close alternatives - dimethylformamide with a proton is
+  the same ion as acrolein with ammonium - and questions its nitrogen count whichever
+  side of that split the list chose. The calibration check treats it like a search result
+  unless one of its isotopologues tracks its mass error. Those reference matches also play
+  no part in measuring the sample's own mass accuracy.
 
 What a row that keeps its tier kept it on: **second channel** (the same neutral committed
 through two or more of the run's ionization channels), **no close rival** (the evidence

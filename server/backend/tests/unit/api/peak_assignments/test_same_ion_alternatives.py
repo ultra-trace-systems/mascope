@@ -10,9 +10,14 @@ because the ion is the same one.
 import pandas as pd
 
 from mascope_backend.api.new.peak_assignments.engine import (
+    record_mirror_same_ion_readings,
     untargeted_matches_to_peak_assignments,
 )
 from mascope_tools.composition.heuristic_filter import formula_plausibility
+from mascope_tools.composition.models import (
+    CompositionSearchConfig,
+    HeuristicFilterConfig,
+)
 
 
 MECHANISM_IDS = {"+H+": "im-h", "+NH4+": "im-nh4"}
@@ -205,3 +210,125 @@ class TestARowWithoutAFamily:
 
         lone = next(row for row in rows if row["assigned_formula"] == "C12H21NO8")
         assert lone["alternatives"] is None
+
+
+URONIUM_IDS = {"+H+": "im-h", "+NH4+": "im-nh4", "+(CH4N2O)H+": "im-urea"}
+SEARCH = CompositionSearchConfig(
+    ionizations=",".join(URONIUM_IDS),
+    element_count_ranges="C1-40 H0-90 N0-5 O0-15 S0-2",
+)
+HEURISTICS = HeuristicFilterConfig(use_senior=True)
+
+
+def _stage_a(
+    row_id="pa-1",
+    formula="C3H7N1O1",
+    mechanism="im-h",
+    *,
+    compound=None,
+    role="M0",
+    alternatives=None,
+):
+    """A Stage A row as the inversion writes it: no compound id on a mirror's."""
+    return {
+        "peak_assignment_id": row_id,
+        "sample_peak_id": f"peak-{row_id}",
+        "role": role,
+        "source": "database",
+        "assigned_formula": formula,
+        "ion_formula": "C3H8N1O1+",
+        "ionization_mechanism_id": mechanism,
+        "isotope_label": "M0" if role == "M0" else "M+1",
+        "fit_score": 0.93,
+        "mz_error_ppm": 0.21,
+        "target_compound_id": compound,
+        "alternatives": alternatives,
+    }
+
+
+def _record(rows, max_alternatives=5, ids=None):
+    return record_mirror_same_ion_readings(
+        rows,
+        mechanism_id_by_notation=URONIUM_IDS if ids is None else ids,
+        search_config=SEARCH,
+        heuristics_config=HEURISTICS,
+        max_alternatives=max_alternatives,
+    )
+
+
+class TestAReferenceMirrorsRow:
+    """A list's formula arrives matched, and is given its ion's family."""
+
+    def test_it_carries_the_reading_an_election_would_have_displaced(self):
+        # Dimethylformamide through +H+ is acrolein through +NH4+.
+        rows = [_stage_a()]
+        assert _record(rows) == 1
+
+        (alternative,) = rows[0]["alternatives"]
+        assert alternative == {
+            "assigned_formula": "C3H4O",
+            "ion_formula": "C3H8N1O1+",
+            "ionization_mechanism_id": "im-nh4",
+            "isotope_label": "M0",
+            # The row's own measurement: the ion is the same one.
+            "fit_score": 0.93,
+            "mz_error_ppm": 0.21,
+            "plausibility": round(float(formula_plausibility("C3H4O")), 4),
+            "same_ion": True,
+            "source": "database",
+        }
+
+    def test_the_readings_go_ahead_of_the_scored_rivals_and_the_cap_holds(self):
+        rivals = [
+            {"assigned_formula": "C2H3N3", "ionization_mechanism_id": "im-h"},
+            {"assigned_formula": "C4H11N", "ionization_mechanism_id": "im-h"},
+        ]
+        rows = [_stage_a(alternatives=list(rivals))]
+        _record(rows, max_alternatives=2)
+        assert [alt["assigned_formula"] for alt in rows[0]["alternatives"]] == [
+            "C3H4O",
+            "C2H3N3",
+        ]
+
+    def test_a_rival_that_restates_a_reading_is_that_reading(self):
+        # The known set can hold acrolein as a compound of its own, matched to
+        # the same peak through the ammonium: that is the family's reading, so
+        # it is flagged and moved ahead, keeping what it carries, not repeated.
+        rivals = [
+            {"assigned_formula": "C4H11N", "ionization_mechanism_id": "im-h"},
+            {
+                "assigned_formula": "C3H4O1",
+                "ionization_mechanism_id": "im-nh4",
+                "reference_identities": [{"name": "acrolein"}],
+            },
+        ]
+        rows = [_stage_a(alternatives=list(rivals))]
+        _record(rows)
+        alternatives = rows[0]["alternatives"]
+        assert [alt["assigned_formula"] for alt in alternatives] == [
+            "C3H4O1",
+            "C4H11N",
+        ]
+        assert alternatives[0]["same_ion"] is True
+        assert alternatives[0]["reference_identities"] == [{"name": "acrolein"}]
+
+    def test_a_target_library_row_is_given_none(self):
+        rows = [_stage_a(compound="tc-1")]
+        assert _record(rows) == 0
+        assert rows[0]["alternatives"] is None
+
+    def test_an_isotopologue_is_given_none(self):
+        rows = [_stage_a(role="iso_child")]
+        assert _record(rows) == 0
+        assert rows[0]["alternatives"] is None
+
+    def test_a_row_through_a_channel_the_run_did_not_search_is_given_none(self):
+        rows = [_stage_a(mechanism="im-other")]
+        assert _record(rows) == 0
+
+    def test_an_ion_with_one_reading_is_left_as_it_came(self):
+        # Carbon dioxide through +H+ has no neutral one ammonia or one urea
+        # lighter, so there is no family and nothing is written.
+        rows = [_stage_a(formula="C1O2")]
+        assert _record(rows) == 0
+        assert rows[0]["alternatives"] is None

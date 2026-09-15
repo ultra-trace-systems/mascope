@@ -434,6 +434,92 @@ class TestStageHandoff:
         mocks["compositions"].assert_not_called()
 
 
+class TestAReferenceMirrorsNitrogenCount:
+    @pytest.mark.asyncio
+    async def test_its_ion_s_other_reading_reaches_the_cross_channel_pass(self):
+        """A list's formula is given its ion's family before the pass reads it.
+
+        Dimethylformamide through +H+ is acrolein through +NH4+, and the run
+        searches both channels. Nothing else saw the neutral, so the count on it
+        is the list's answer and the row is capped - which it can only be if the
+        family was written onto the row before the cross-channel pass ran.
+        """
+        from mascope_backend.api.new.peak_assignments.config import (
+            PeakAssignmentConfig,
+        )
+        from mascope_backend.api.new.peak_assignments.cross_channel import (
+            REASON_AMBIGUOUS_NITROGEN,
+        )
+
+        mz = 74.06004
+        peaks = _peaks_df([("p1", mz, 10000.0)])
+        dimethylformamide = _isotope_row(
+            target_isotope_id="ref-iso-1",
+            target_ion_id="ref-ion-1",
+            target_compound_id=None,
+            compound_formula="C3H7N1O1",
+            ion_formula="C3H8N1O1+",
+            mz=mz,
+            relative_abundance=1.0,
+            sample_peak_id="p1",
+            sample_peak_intensity=10000.0,
+            match_score=0.95,
+            match_mz_error=0.2,
+            ionization="+H+",
+            ionization_mechanism_id="im-1",
+        )
+        dimethylformamide["reference_identities"] = [
+            {"name": "N,N-dimethylformamide", "source": "a seed list"}
+        ]
+        recorder = _Recorder()
+        patches = _patches(recorder, peaks, [dimethylformamide])
+        patches["mechanisms"] = patch(
+            f"{_MOD}.fetch_sample_mechanisms",
+            new_callable=AsyncMock,
+            return_value=(
+                ["im-1", "im-2"],
+                [
+                    SimpleNamespace(
+                        ionization_mechanism_id="im-1",
+                        ionization_mechanism="+H+",
+                        ionization_mechanism_polarity="+",
+                    ),
+                    SimpleNamespace(
+                        ionization_mechanism_id="im-2",
+                        ionization_mechanism="+NH4+",
+                        ionization_mechanism_polarity="+",
+                    ),
+                ],
+            ),
+        )
+        patches["ionizations"] = patch(
+            f"{_MOD}._untargeted_ionization_notations",
+            return_value=(["+H+", "+NH4+"], {"+H+": "im-1", "+NH4+": "im-2"}),
+        )
+        _start(patches)
+
+        await _run(PeakAssignmentConfig(run_untargeted=False))
+
+        (row,) = [r for r in recorder.rows if r["sample_peak_id"] == "p1"]
+        assert row["assigned_formula"] == "C3H7N1O1"
+        assert row["target_compound_id"] is None
+        assert [
+            (alternative["assigned_formula"], alternative["ionization_mechanism_id"])
+            for alternative in row["alternatives"]
+            if alternative.get("same_ion")
+        ] == [("C3H4O", "im-2")]
+        assert row["provenance"]["cross_channel"]["ambiguous_nitrogen"] == {
+            "alternative": "C3H4O",
+            "via": "+NH4+",
+        }
+        assert row["tier"] == "candidate"
+        assert REASON_AMBIGUOUS_NITROGEN in {
+            reason["rule"] for reason in row["provenance"]["tier_reasons"]
+        }
+        cross_channel = recorder.recorded_configs()[-1]["cross_channel"]
+        assert (cross_channel["capped"], cross_channel["capped_mirror"]) == (1, 1)
+
+
 class TestRunFinalization:
     @pytest.mark.asyncio
     async def test_successful_run_is_finalized_completed(self):

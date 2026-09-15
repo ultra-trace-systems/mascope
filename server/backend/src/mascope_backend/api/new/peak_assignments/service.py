@@ -89,6 +89,7 @@ from mascope_backend.api.new.peak_assignments.engine import (
     invert_matches_to_peak_assignments,
     pattern_scoring_for,
     pattern_scoring_snapshot,
+    record_mirror_same_ion_readings,
     sample_mass_accuracy,
     score_ions_by_fit,
     untargeted_matches_to_peak_assignments,
@@ -2404,6 +2405,23 @@ async def _run_sample_assignment(
                 f"{mass_calibration['committed']} commits, too few to measure a "
                 "mass calibration; no row is gated on one"
             )
+        # -- The other readings of each reference mirror row's ion. An election
+        # carries the readings it displaced and a matched row carries none, so
+        # the pass below could not ask a list's formula what it asks the
+        # search's. Built under the untargeted search's own box and filter,
+        # whether or not that stage ran, so the family is the one it would
+        # have held.
+        searched_notations, searched_mechanism_ids = _untargeted_ionization_notations(
+            searched_mechanisms
+        )
+        mirror_families = record_mirror_same_ion_readings(
+            stage_a_assignments,
+            mechanism_id_by_notation=searched_mechanism_ids,
+            search_config=resolved_profile.search_config(searched_notations),
+            heuristics_config=resolved_profile.heuristics_config(),
+            formula_formatter=to_custom_element_format,
+            max_alternatives=config.max_alternatives,
+        )
         # -- What the sample's other channels say about each committed neutral,
         # and the nitrogen a reagent adduct can hide. After the mass gate
         # because both only ever demote, so the order cannot change a tier -
@@ -2412,9 +2430,7 @@ async def _run_sample_assignment(
             stage_a_assignments + stage_b_assignments,
             notation_by_id={
                 mechanism_id: notation
-                for notation, mechanism_id in _untargeted_ionization_notations(
-                    searched_mechanisms
-                )[1].items()
+                for notation, mechanism_id in searched_mechanism_ids.items()
             },
         )
         runtime.logger.info(
@@ -2422,11 +2438,14 @@ async def _run_sample_assignment(
             f"{cross_channel['corroborated']} of {cross_channel['committed_m0']} "
             f"committed readings across {len(cross_channel['channels'])} channels; "
             + (
-                f"{cross_channel['capped']} capped for an unfixable nitrogen count "
+                f"{cross_channel['capped']} capped for an unfixable nitrogen count, "
+                f"{cross_channel['capped_mirror']} of them reference-list matches "
                 f"({cross_channel['capped_isotopologues']} isotopologues with them)"
                 if cross_channel["reagent_rule_applied"]
                 else "no channel of this mode donates nitrogen, so none is gated on it"
             )
+            + f"; {mirror_families} reference-list matches carry other readings "
+            "of their ion"
         )
         # -- Why every committed row holds the tier it holds, and the rows whose
         # answer is that the top tier was not earned. Last, because two of its
