@@ -195,7 +195,7 @@ class DatasetUpdate(DatasetBaseValidator, BaseModel):
 
 
 # Columns `sort` accepts (see mascope_backend.api.lib.sorting).
-DATASET_SORT_COLUMNS = (
+DatasetSortColumn = Literal[
     "dataset_id",
     "workspace_id",
     "dataset_name",
@@ -205,7 +205,7 @@ DATASET_SORT_COLUMNS = (
     "instrument",
     "dataset_utc_created",
     "dataset_utc_modified",
-)
+]
 
 
 class GetDatasetsQueryParams(DatasetBaseValidator, QueryParamsModel):
@@ -227,7 +227,7 @@ class GetDatasetsQueryParams(DatasetBaseValidator, QueryParamsModel):
     instrument: list[str] | None = Field(
         None, description="Filter by associated instruments. Can specify many"
     )
-    sort: Literal[DATASET_SORT_COLUMNS] | None = Field(
+    sort: DatasetSortColumn | None = Field(
         "dataset_utc_created",
         description=(
             "Column name by which you want to sort the results. "

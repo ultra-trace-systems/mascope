@@ -207,7 +207,7 @@ class GetSampleItemsQueryValidator:
 
 
 # Columns `sort` accepts (see mascope_backend.api.lib.sorting).
-SAMPLE_ITEM_SORT_COLUMNS = (
+SampleItemSortColumn = Literal[
     "sample_item_id",
     "sample_batch_id",
     "sample_file_id",
@@ -222,7 +222,7 @@ SAMPLE_ITEM_SORT_COLUMNS = (
     "t1",
     "sample_item_utc_created",
     "sample_item_utc_modified",
-)
+]
 
 
 class GetSampleItemsQueryParams(GetSampleItemsQueryValidator, QueryParamsModel):
@@ -248,7 +248,7 @@ class GetSampleItemsQueryParams(GetSampleItemsQueryValidator, QueryParamsModel):
         default=None,
         description="Filter by ion polarity modes (+, -). Can specify multiple polarities.",
     )
-    sort: Literal[SAMPLE_ITEM_SORT_COLUMNS] | None = Field(
+    sort: SampleItemSortColumn | None = Field(
         "sample_item_utc_created",
         description="Column name by which to sort the results. Default is 'sample_item_utc_created'",
     )

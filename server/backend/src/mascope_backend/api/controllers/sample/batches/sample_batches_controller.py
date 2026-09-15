@@ -65,9 +65,9 @@ from mascope_backend.api.lib.exceptions.api_exceptions import (
 from mascope_backend.api.lib.sorting import order_by_column
 from mascope_backend.api.models.sample.batches.config import sample_batch_config
 from mascope_backend.api.models.sample.batches.sample_batch_pydantic_model import (
-    SAMPLE_BATCH_SORT_COLUMNS,
     SampleBatchCreate,
     SampleBatchRead,
+    SampleBatchSortColumn,
     SampleBatchUpdate,
 )
 from mascope_backend.api.models.sample.items.sample_item_pydantic_model import (
@@ -172,7 +172,7 @@ async def get_sample_batches(
         # Step 3: Apply sorting
         if sort:
             stmt = stmt.order_by(
-                order_by_column(SampleBatch, sort, order, SAMPLE_BATCH_SORT_COLUMNS)
+                order_by_column(SampleBatch, sort, order, SampleBatchSortColumn)
             )
 
         # Step 4: Apply pagination

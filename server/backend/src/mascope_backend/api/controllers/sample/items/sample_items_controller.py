@@ -42,10 +42,10 @@ from mascope_backend.api.lib.sorting import order_by_column
 from mascope_backend.api.lib.utils import generate_copy_name
 from mascope_backend.api.models.sample.items.config import sample_item_config
 from mascope_backend.api.models.sample.items.sample_item_pydantic_model import (
-    SAMPLE_ITEM_SORT_COLUMNS,
     SampleItemBase,
     SampleItemCreate,
     SampleItemRead,
+    SampleItemSortColumn,
     SampleItemUpdate,
 )
 from mascope_backend.api.new.temp.storage import download_name, user_temp_path
@@ -133,7 +133,7 @@ async def get_sample_items(
         # Step 2: Apply sorting if specified
         if sort:
             stmt = stmt.order_by(
-                order_by_column(SampleItem, sort, order, SAMPLE_ITEM_SORT_COLUMNS)
+                order_by_column(SampleItem, sort, order, SampleItemSortColumn)
             )
 
         # Step 3: Get total count for pagination

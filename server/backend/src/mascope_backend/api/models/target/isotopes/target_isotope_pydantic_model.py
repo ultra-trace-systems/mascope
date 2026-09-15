@@ -14,14 +14,14 @@ from mascope_backend.api.models.target.isotopes.config import target_isotope_con
 
 
 # Columns `sort` accepts (see mascope_backend.api.lib.sorting).
-TARGET_ISOTOPE_SORT_COLUMNS = (
+TargetIsotopeSortColumn = Literal[
     "target_isotope_id",
     "target_ion_id",
     "target_isotope_formula",
     "mz",
     "relative_abundance",
     "resolution",
-)
+]
 
 
 class GetTargetIsotopesQueryParams(QueryParamsModel):
@@ -64,9 +64,7 @@ class GetTargetIsotopesQueryParams(QueryParamsModel):
         False,
         description="Flag to include ionization mechanism details including polarity.",
     )
-    sort: Literal[TARGET_ISOTOPE_SORT_COLUMNS] | None = Field(
-        None, description="Field to sort by."
-    )
+    sort: TargetIsotopeSortColumn | None = Field(None, description="Field to sort by.")
     order: str | None = Field(None, description="Order of sorting ('asc' or 'desc').")
     page: int | None = Field(None, description="Pagination page number.")
     limit: int | None = Field(None, description="Number of items per page.")

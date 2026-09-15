@@ -54,22 +54,20 @@ class MatchRatingUpdate(MatchRatingBase):
 
 
 # Columns `sort` accepts (see mascope_backend.api.lib.sorting).
-MATCH_RATING_SORT_COLUMNS = (
+MatchRatingSortColumn = Literal[
     "match_rating_id",
     "sample_item_id",
     "target_ion_id",
     "match_rating_utc_created",
     "rating",
-)
+]
 
 
 class GetMatchRatingsQueryParams(QueryParamsModel):
     sample_item_id: Optional[str] = Field(None, description="ID of the sample item")
     target_ion_id: Optional[str] = Field(None, description="ID of the target ion")
     rating: Optional[int] = Field(None, description="Rating value between 0 and 2")
-    sort: Literal[MATCH_RATING_SORT_COLUMNS] | None = Field(
-        None, description="Field to sort by"
-    )
+    sort: MatchRatingSortColumn | None = Field(None, description="Field to sort by")
     order: Optional[str] = Field(None, description="Order of sorting ('asc' or 'desc')")
     page: int | None = Field(None, description="Page number for pagination")
     limit: int | None = Field(None, description="Number of items per page")

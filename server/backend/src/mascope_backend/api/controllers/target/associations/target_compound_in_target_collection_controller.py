@@ -6,7 +6,7 @@ from sqlalchemy import (
 from mascope_backend.api.lib.api_features import api_controller
 from mascope_backend.api.lib.sorting import order_by_column
 from mascope_backend.api.models.target.compounds.target_compound_pydantic_model import (
-    TARGET_COMPOUND_IN_TARGET_COLLECTION_SORT_COLUMNS,
+    TargetCompoundInTargetCollectionSortColumn,
 )
 from mascope_backend.db import (
     TargetCompoundInTargetCollection,
@@ -67,7 +67,7 @@ async def get_target_compound_in_target_collection(
                     TargetCompoundInTargetCollection,
                     sort,
                     order,
-                    TARGET_COMPOUND_IN_TARGET_COLLECTION_SORT_COLUMNS,
+                    TargetCompoundInTargetCollectionSortColumn,
                 )
             )
 

@@ -33,8 +33,8 @@ from mascope_backend.api.lib.exceptions.api_exceptions import (
 )
 from mascope_backend.api.lib.sorting import order_by_column
 from mascope_backend.api.models.sample.files.sample_file_pydantic_model import (
-    SAMPLE_FILE_SORT_COLUMNS,
     SampleFileCreate,
+    SampleFileSortColumn,
     SampleFileUpdate,
 )
 from mascope_backend.api.new.instruments import get_instruments
@@ -351,7 +351,7 @@ async def get_sample_files(
 
         # --- Apply sorting
         stmt = stmt.order_by(
-            order_by_column(SampleFile, sort, order, SAMPLE_FILE_SORT_COLUMNS)
+            order_by_column(SampleFile, sort, order, SampleFileSortColumn)
         )
 
         # --- Apply pagination

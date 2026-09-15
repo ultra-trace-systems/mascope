@@ -7,9 +7,9 @@ from sqlalchemy.orm import joinedload
 
 from mascope_backend.api.lib.api_features import api_controller
 from mascope_backend.api.lib.exceptions.api_exceptions import NotFoundException
-from mascope_backend.api.lib.sorting import order_by_column
+from mascope_backend.api.lib.sorting import order_by_column, order_distinct_on
 from mascope_backend.api.models.target.isotopes.target_isotope_pydantic_model import (
-    TARGET_ISOTOPE_SORT_COLUMNS,
+    TargetIsotopeSortColumn,
 )
 from mascope_backend.api.new.ionization.modes.util import (
     fetch_batch_ionization_mechanism_ids,
@@ -214,9 +214,14 @@ async def get_target_isotopes(
                 )
 
         # Step 4: Apply sorting
-        if sort:
+        if sort and sample_batch_id:
+            # The batch filter selects DISTINCT ON the isotope id.
+            stmt = order_distinct_on(
+                stmt, TargetIsotope, sort, order, TargetIsotopeSortColumn
+            )
+        elif sort:
             stmt = stmt.order_by(
-                order_by_column(TargetIsotope, sort, order, TARGET_ISOTOPE_SORT_COLUMNS)
+                order_by_column(TargetIsotope, sort, order, TargetIsotopeSortColumn)
             )
 
         # Step 5: Get total count

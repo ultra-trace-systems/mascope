@@ -332,11 +332,16 @@ class UserUpdate(schemas.BaseUserUpdate):
 
 
 # Columns `sort` accepts (see mascope_backend.api.lib.sorting).
-USER_SORT_COLUMNS = (
+UserSortColumn = Literal[
     "id",
     "username",
     "registered_at",
-)
+]
+# The subset a caller below admin may sort by: the columns UserPublic returns.
+PublicUserSortColumn = Literal[
+    "id",
+    "username",
+]
 
 
 class GetUsersQueryParams(QueryParamsModel):
@@ -345,15 +350,19 @@ class GetUsersQueryParams(QueryParamsModel):
     """
 
     role_name_min: Optional[str] = Field(
-        None, description="Minimum role name to filter users (e.g., 'guest')."
+        None,
+        description="Minimum role name to filter users (e.g., 'guest'). Admin only.",
     )
     role_name_max: Optional[str] = Field(
-        None, description="Maximum role name to filter users (e.g., 'admin')."
+        None,
+        description="Maximum role name to filter users (e.g., 'admin'). Admin only.",
     )
-    sort: Literal[USER_SORT_COLUMNS] | None = Field(
-        "registered_at",
+    sort: UserSortColumn | None = Field(
+        None,
         description=(
-            "Column name by which you want to sort the results: id, username or registered_at."
+            "Column to sort the results by. Defaults to registered_at for an "
+            "admin and id for anyone else. Callers below admin may sort by id "
+            "or username only."
         ),
     )
     order: Optional[str] = Field(

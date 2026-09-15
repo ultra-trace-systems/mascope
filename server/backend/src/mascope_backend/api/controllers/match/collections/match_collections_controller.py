@@ -20,8 +20,8 @@ from mascope_backend.api.lib.exceptions.api_exceptions import (
 )
 from mascope_backend.api.lib.sorting import order_by_column
 from mascope_backend.api.models.match.collections.match_collection_pydantic_model import (
-    MATCH_COLLECTION_SORT_COLUMNS,
     MatchCollectionBase,
+    MatchCollectionSortColumn,
 )
 from mascope_backend.db import MatchCollection, SampleItem, async_session
 from mascope_backend.runtime import runtime
@@ -95,9 +95,7 @@ async def get_match_collections(
         # Step 3: Apply sorting
         if sort:
             query = query.order_by(
-                order_by_column(
-                    MatchCollection, sort, order, MATCH_COLLECTION_SORT_COLUMNS
-                )
+                order_by_column(MatchCollection, sort, order, MatchCollectionSortColumn)
             )
 
         # Step 4: Count total matching collections

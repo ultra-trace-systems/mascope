@@ -19,9 +19,9 @@ from mascope_backend.api.lib.exceptions.api_exceptions import (
 )
 from mascope_backend.api.lib.sorting import order_by_column
 from mascope_backend.api.models.ionization_mechanisms.ionization_mechanism_pydantic_model import (
-    IONIZATION_MECHANISM_SORT_COLUMNS,
     IonizationMechanismCreate,
     IonizationMechanismRead,
+    IonizationMechanismSortColumn,
 )
 from mascope_backend.db import (
     IonizationMechanism,
@@ -91,7 +91,7 @@ async def get_ionization_mechanisms(
         if sort:
             stmt = stmt.order_by(
                 order_by_column(
-                    IonizationMechanism, sort, order, IONIZATION_MECHANISM_SORT_COLUMNS
+                    IonizationMechanism, sort, order, IonizationMechanismSortColumn
                 )
             )
 

@@ -7,8 +7,8 @@ from mascope_backend.api.lib.api_features import api_controller
 from mascope_backend.api.lib.exceptions.api_exceptions import NotFoundException
 from mascope_backend.api.lib.sorting import order_by_column
 from mascope_backend.api.models.attribute_templates.attribute_template_pydantic_model import (
-    ATTRIBUTE_TEMPLATE_SORT_COLUMNS,
     AttributeTemplateCreateBody,
+    AttributeTemplateSortColumn,
     AttributeTemplateUpdateBody,
 )
 from mascope_backend.db import AttributeTemplate, async_session
@@ -55,7 +55,7 @@ async def get_attribute_templates(
         if sort:
             stmt = stmt.order_by(
                 order_by_column(
-                    AttributeTemplate, sort, order, ATTRIBUTE_TEMPLATE_SORT_COLUMNS
+                    AttributeTemplate, sort, order, AttributeTemplateSortColumn
                 )
             )
         # Step 2: Count total results

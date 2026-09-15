@@ -23,8 +23,8 @@ from mascope_backend.api.lib.exceptions.api_exceptions import (
 from mascope_backend.api.lib.sorting import order_by_column
 from mascope_backend.api.lib.utils import strings_json_safe
 from mascope_backend.api.models.match.compounds.match_compound_pydantic_model import (
-    MATCH_COMPOUND_SORT_COLUMNS,
     MatchCompoundBase,
+    MatchCompoundSortColumn,
 )
 from mascope_backend.db import (
     MatchCompound,
@@ -155,7 +155,7 @@ async def get_match_compounds(
         # Step 4: Apply sorting
         if sort:
             query = query.order_by(
-                order_by_column(MatchCompound, sort, order, MATCH_COMPOUND_SORT_COLUMNS)
+                order_by_column(MatchCompound, sort, order, MatchCompoundSortColumn)
             )
 
         # Step 5: Count total
