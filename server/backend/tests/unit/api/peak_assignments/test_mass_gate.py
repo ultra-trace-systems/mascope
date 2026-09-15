@@ -98,6 +98,30 @@ class TestWhatCorroboratesACommit:
             "a": CORROBORATED_CURATED
         }
 
+    def test_a_confirmed_envelope_is_answered_ahead_of_curation(self):
+        # Both are true of a library row whose isotopologue tracks it, and the
+        # envelope is the answer the cap reads.
+        rows = [
+            _library("m0", ppm=0.4),
+            _library("child", ppm=0.5, role="iso_child", owner="m0"),
+        ]
+
+        assert corroboration_of(rows, precision_ppm=PRECISION) == {
+            "m0": CORROBORATED_ISOTOPOLOGUE,
+            "child": CORROBORATED_ISOTOPOLOGUE,
+        }
+
+    def test_a_library_isotopologue_that_does_not_track_is_only_curated(self):
+        rows = [
+            _library("m0", ppm=0.0),
+            _library("child", ppm=2.5, role="iso_child", owner="m0"),
+        ]
+
+        assert corroboration_of(rows, precision_ppm=PRECISION) == {
+            "m0": CORROBORATED_CURATED,
+            "child": CORROBORATED_CURATED,
+        }
+
     def test_a_reference_mirror_row_is_not_corroborated_by_its_list(self):
         # A mirror is a prior matched against every sample, not a library
         # somebody assembled for this data. On a TOF most of its pairings are
@@ -286,10 +310,12 @@ class TestTheGate:
         }
         assert summary["capped"] == 0
 
-    def test_a_reference_mirror_row_off_calibration_is_capped(self):
-        # The same error on the target library's row and on a mirror's: the
-        # library's curation is evidence the mass error does not overrule, and
-        # the mirror's is not.
+    def test_a_library_row_off_calibration_is_capped_like_a_mirrors(self):
+        # The same error on the target library's row and on a mirror's. A list
+        # names a compound, not where each of its lines has to sit, so neither
+        # identity is evidence the mass error does not overrule. The library's
+        # row still anchors the calibration it is judged against; the mirror's
+        # does not.
         rows = _anchors(12, spread=0.1) + [
             _library("library", ppm=5.0),
             _mirror("seed", ppm=5.0),
@@ -298,9 +324,11 @@ class TestTheGate:
         summary = apply_mass_gate(rows, fallback_sigma_ppm=PRECISION)
 
         library, seed = rows[-2], rows[-1]
-        assert library["tier"] == TIER_ASSIGNED
+        assert library["tier"] == TIER_BELOW_ASSIGNABILITY
         assert library["provenance"]["mass_gate"] == {
-            "corroborated_by": CORROBORATED_CURATED
+            "corroborated_by": CORROBORATED_CURATED,
+            "capped": TIER_BELOW_ASSIGNABILITY,
+            "reason": REASON_OFF_CALIBRATION,
         }
         assert seed["tier"] == TIER_BELOW_ASSIGNABILITY
         assert seed["provenance"]["mass_gate"] == {
@@ -308,8 +336,45 @@ class TestTheGate:
             "capped": TIER_BELOW_ASSIGNABILITY,
             "reason": REASON_OFF_CALIBRATION,
         }
-        assert summary["capped"] == 1
-        assert summary["below_assignability"] == 1
+        assert summary["capped"] == 2
+        assert summary["below_assignability"] == 2
+        assert summary["capped_curated"] == 1
+        assert summary["anchors"] == 13
+
+    def test_a_library_row_an_isotopologue_tracks_is_kept(self):
+        rows = _anchors(12, spread=0.1) + [
+            _library("m0", ppm=5.0),
+            _library("child", ppm=5.0, role="iso_child", owner="m0"),
+        ]
+
+        summary = apply_mass_gate(rows, fallback_sigma_ppm=PRECISION)
+
+        assert [row["tier"] for row in rows[-2:]] == [TIER_ASSIGNED, TIER_ASSIGNED]
+        assert rows[-2]["provenance"]["mass_gate"] == {
+            "corroborated_by": CORROBORATED_ISOTOPOLOGUE
+        }
+        assert summary["capped"] == 0
+
+    def test_a_library_isotopologue_off_its_own_line_is_capped(self):
+        # What the curation's exemption held at the top tier on the gate: an
+        # isotopologue line three widths off while its monoisotopic row sits on
+        # calibration - a weak line, or one half of a partly resolved pair.
+        rows = _anchors(12, spread=0.1) + [
+            _library("m0", ppm=0.0),
+            _library("child", ppm=2.5, role="iso_child", owner="m0"),
+        ]
+
+        summary = apply_mass_gate(rows, fallback_sigma_ppm=PRECISION)
+
+        m0, child = rows[-2], rows[-1]
+        assert m0["tier"] == TIER_ASSIGNED
+        assert child["tier"] == TIER_CANDIDATE
+        assert child["provenance"]["mass_gate"] == {
+            "corroborated_by": CORROBORATED_CURATED,
+            "capped": TIER_CANDIDATE,
+            "reason": REASON_OFF_CALIBRATION,
+        }
+        assert (summary["capped"], summary["capped_curated"]) == (1, 1)
 
     def test_it_only_ever_demotes(self):
         # A row the bands already put below the cap keeps the tier they gave it,
@@ -367,12 +432,13 @@ class TestTheStageAOnlyLedger:
     ``_fold_sample_peaks_without_run`` runs Stage A and the two pre-passes and
     then the gate, over its Stage A rows (``test_fold_without_run`` pins the
     call). Every commit on that path is a Stage A one, and these pin which of
-    them the gate may lower: none that the target library won, and a reference
-    mirror's that sits off calibration. Without the gate on that path, a
-    mirror's row would hold a tier there that a run takes from it.
+    them the gate may lower: any that sits off calibration with no isotopologue
+    behind it, the target library's as well as a reference mirror's. Without the
+    gate on that path, such a row would hold a tier there that a run takes from
+    it.
     """
 
-    def test_the_target_library_s_rows_are_never_capped(self):
+    def test_the_target_library_s_rows_off_calibration_are_capped(self):
         rows = [
             _library("a", ppm=9.0),
             _library("b", ppm=-9.0),
@@ -383,10 +449,10 @@ class TestTheStageAOnlyLedger:
         summary = apply_mass_gate(rows, fallback_sigma_ppm=PRECISION)
 
         assert summary["applied"] is True
-        assert summary["capped"] == 0
-        assert all(
-            row["tier"] == TIER_ASSIGNED for row in rows if row["assigned_formula"]
-        )
+        assert (summary["capped"], summary["capped_curated"]) == (2, 2)
+        assert [rows[0]["tier"], rows[1]["tier"]] == [TIER_BELOW_ASSIGNABILITY] * 2
+        assert all(row["tier"] == TIER_ASSIGNED for row in rows[2:-1])
+        assert rows[-1]["tier"] == TIER_ASSIGNED
 
     def test_a_reference_mirror_s_row_off_calibration_is_capped(self):
         rows = [
