@@ -4,6 +4,8 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
 
 ## [Unreleased]
 
+## [1.8.0] - 2026.09.15
+
 ### Added
 
 - **An About tab, legal links on the sign-in screen, and third-party
