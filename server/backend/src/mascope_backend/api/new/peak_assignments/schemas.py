@@ -169,8 +169,8 @@ class PeakAssignmentRecord(BaseModel):
     #: engine's arbitration measured, and peaky's is a different measurement
     #: rendered as text.
     candidate_density: int | None = None
-    #: How far this row's mass error sits from the run's own fitted centre, in
-    #: the run's own fitted widths (provenance.mass_z). Flattened because it is
+    #: How far this row's mass error sits from the run's own fitted centre at
+    #: the row's m/z, in the run's own fitted widths (provenance.mass_z). Flattened because it is
     #: the one per-row number a reader scanning a whole ledger needs and cannot
     #: derive: the ppm error beside it means nothing without the calibration the
     #: run recorded, and a gated row's tier cannot be audited without it.
