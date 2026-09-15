@@ -234,15 +234,17 @@ What caps a row at candidate:
   second channel of the run to settle the count; and a commitment through a channel the
   ionization mode treats as secondary, with no isotopologue or second channel behind it.
   The last applies to the formula search's own results only. Only a compound of your own
-  target library is exempt from the nitrogen count and from the calibration check, which
-  counts that curation as the corroboration it asks for. A formula from a loaded
-  reference list is a prior matched against every sample rather than a list assembled for
-  your data. The run gives it the other readings of its ion that the formula search would
-  have considered, shown with its close alternatives - dimethylformamide with a proton is
-  the same ion as acrolein with ammonium - and questions its nitrogen count whichever
-  side of that split the list chose. The calibration check treats it like a search result
-  unless one of its isotopologues tracks its mass error. Those reference matches also play
-  no part in measuring the sample's own mass accuracy. The calibration's centre can follow
+  target library is exempt from the nitrogen count. The calibration check exempts only a
+  line one of whose isotopologues tracks its mass error: your library's lines help measure
+  the calibration, but a list names a compound rather than where each of its lines has to
+  sit, so a line of it far off calibration with no isotopologue behind it is capped like
+  any other. A formula from a loaded reference list is a prior matched against every
+  sample rather than a list assembled for your data. The run gives it the other readings
+  of its ion that the formula search would have considered, shown with its close
+  alternatives - dimethylformamide with a proton is the same ion as acrolein with
+  ammonium - and questions its nitrogen count whichever side of that split the list
+  chose. Those reference matches also play no part in measuring the sample's own mass
+  accuracy. The calibration's centre can follow
   the mass range: where the run's assignments show their mass error changing with m/z the
   way a fixed offset in millidaltons does, growing in ppm as the mass falls, each ion is
   measured from the centre at its own m/z, so a small ion a couple of ppm out can sit
