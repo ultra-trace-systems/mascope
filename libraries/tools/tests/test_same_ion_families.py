@@ -16,7 +16,7 @@ import polars as pl
 import pytest
 
 from mascope_tools.composition import heuristic_filter
-from mascope_tools.composition.finder import assign_compositions
+from mascope_tools.composition.finder import assign_compositions, find_compositions
 from mascope_tools.composition.heuristic_filter import (
     SAME_ION_ALTERNATIVES,
     elect_same_ion_families,
@@ -24,8 +24,12 @@ from mascope_tools.composition.heuristic_filter import (
     mechanism_mass_contribution,
     neutral_is_closed_shell,
     predict_isotopes,
+    propose_same_ion_readings,
 )
-from mascope_tools.composition.models import CompositionSearchConfig
+from mascope_tools.composition.models import (
+    CompositionSearchConfig,
+    HeuristicFilterConfig,
+)
 from mascope_tools.composition.utils import calculate_mass, parse_ionization
 
 
@@ -236,6 +240,130 @@ class TestTheFinderCommitsTheElectedReading:
 
         assert not children.empty
         assert children[SAME_ION_ALTERNATIVES].isna().all()
+
+
+class TestTheFamilyAMatchedReadingWouldHave:
+    """A reading the finder did not make, given the family its ion would have had."""
+
+    MECHANISMS = ["+H+", "+NH4+", "+(CH4N2O)H+"]
+    CONFIG = CompositionSearchConfig(
+        ionizations=",".join(MECHANISMS),
+        element_count_ranges="C1-20 H0-40 N0-3 O0-10",
+        mass_range_ppm=2.0,
+    )
+    HEURISTICS = HeuristicFilterConfig(use_senior=True)
+
+    def _propose(self, readings, notations=None, config=None, heuristics=None):
+        return propose_same_ion_readings(
+            readings,
+            self.MECHANISMS if notations is None else notations,
+            self.CONFIG if config is None else config,
+            self.HEURISTICS if heuristics is None else heuristics,
+        )
+
+    @pytest.mark.parametrize(
+        "formula, mechanism",
+        [("C3H7NO", "+H+"), ("C10H14O7", "+(CH4N2O)H+"), ("C6H12O6", "+NH4+")],
+    )
+    def test_it_is_the_family_the_finder_holds_for_that_ion(self, formula, mechanism):
+        # The finder's own path for the ion's mass - the grid, every mechanism,
+        # the heuristic rules, the election - and the family it keeps for this
+        # ion, against the one proposed for the reading alone.
+        ionization = parse_ionization(mechanism)
+        mz = calculate_mass(formula=formula) + ionization.mass
+        candidates, _ = heuristic_filter.apply_heuristic_rules(
+            find_compositions(mz, self.CONFIG), self.HEURISTICS
+        )
+        ion = next(
+            candidate["ion"]
+            for candidate in candidates
+            if candidate["formula"] == formula
+            and candidate["ionization_mechanism"] == mechanism
+        )
+        (family,) = [
+            elected
+            for elected in elect_same_ion_families(candidates)
+            if elected["ion"] == ion
+        ]
+        held = {(family["formula"], family["ionization_mechanism"])} | {
+            (member["formula"], member["ionization_mechanism"])
+            for member in family.get(SAME_ION_ALTERNATIVES, [])
+        }
+
+        (proposed,) = self._propose([(formula, mechanism)])
+
+        assert {
+            (member["formula"], member["ionization_mechanism"]) for member in proposed
+        } == held - {(formula, mechanism)}
+        assert {member["ion"] for member in proposed} <= {ion}
+
+    def test_a_protonated_amide_is_an_ammoniated_aldehyde(self):
+        # The case the rule is for: a list names dimethylformamide, and its
+        # protonated ion is acrolein's ammonium adduct to the last electron.
+        (family,) = self._propose([("C3H7N1O1", "+H+")])
+        assert family == [
+            {"formula": "C3H4O", "ion": "C3H8NO+", "ionization_mechanism": "+NH4+"}
+        ]
+
+    def test_each_reading_gets_its_own_family_in_order(self):
+        families = self._propose([("C3H7NO", "+H+"), ("CO2", "+H+")])
+        assert [len(family) for family in families] == [1, 0]
+
+    def test_a_mechanism_of_the_other_charge_makes_no_reading(self):
+        (family,) = self._propose([("C3H7NO", "+H+")], notations=["+H+", "-H+"])
+        assert family == []
+
+    def test_a_labelled_mechanism_makes_no_reading_either_way(self):
+        # The finder never proposes the labelled neutral, so a family through
+        # the 15N reagent is one it never holds.
+        notations = ["-H+", "+[15N]O3-", "+NO3-"]
+        config = CompositionSearchConfig(
+            ionizations=",".join(notations),
+            element_count_ranges="C1-20 H0-40 N0-3 O0-15",
+        )
+        through_label, from_label = self._propose(
+            [("C5H9NO7", "-H+"), ("C5H8O4", "+[15N]O3-")],
+            notations=notations,
+            config=config,
+        )
+        assert [member["ionization_mechanism"] for member in through_label] == ["+NO3-"]
+        assert from_label == []
+
+    def test_the_element_box_cuts_a_reading_as_it_cuts_a_candidate(self):
+        # Through +H+, the ammonium adduct of C6H12O6 is C6H15NO6 - one nitrogen
+        # more than a box that holds none.
+        narrow = CompositionSearchConfig(
+            ionizations=",".join(self.MECHANISMS),
+            element_count_ranges="C1-20 H0-40 O0-10",
+        )
+        (family,) = self._propose([("C6H12O6", "+NH4+")], config=narrow)
+        assert family == []
+
+    def test_the_heuristic_rules_cut_a_reading_as_they_cut_a_candidate(self):
+        # Acrolein sits outside a context that asks for at least two hydrogens
+        # per carbon.
+        strict = HeuristicFilterConfig(
+            use_senior=True, context_ratio_windows={"H/C": (2.0, 3.0)}
+        )
+        (family,) = self._propose([("C3H7NO", "+H+")], heuristics=strict)
+        assert family == []
+
+    def test_the_reagent_ion_itself_is_no_reading(self):
+        # Protonated ammonia is the ammonium ion, which is no analyte at all:
+        # the finder calls that an ionization peak rather than a composition,
+        # even under a box that floors nothing at one.
+        floorless = CompositionSearchConfig(
+            ionizations=",".join(self.MECHANISMS),
+            element_count_ranges="C0-20 H0-40 N0-3 O0-10",
+        )
+        (family,) = self._propose([("NH3", "+H+")], config=floorless)
+        assert family == []
+
+    def test_an_unreadable_reading_has_no_family(self):
+        assert self._propose([("not a formula", "+H+"), ("C3H7NO", "+Xx+")]) == [
+            [],
+            [],
+        ]
 
 
 class TestTheFamilyIsOneScoringUnit:

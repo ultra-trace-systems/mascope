@@ -72,6 +72,7 @@ from typing import Any, Iterable
 from mascope_backend.api.new.peak_assignments.cross_channel import (
     CHANNELS_FOR_CORROBORATION,
     REASON_AMBIGUOUS_NITROGEN,
+    donates_nitrogen,
 )
 from mascope_backend.api.new.peak_assignments.engine import (
     ROLE_ISO_CHILD,
@@ -212,15 +213,22 @@ def earlier_reasons(row: dict) -> list[dict]:
     if cross_channel.get("capped"):
         ambiguity = cross_channel.get("ambiguous_nitrogen") or {}
         alternative = ambiguity.get("alternative")
-        reasons.append(
-            _reason(
-                REASON_AMBIGUOUS_NITROGEN,
+        # A reference mirror's row can be in doubt from the other side: read
+        # through a channel donating none, its ion reads through a donor as a
+        # neutral that leaves the nitrogen to the reagent.
+        if donates_nitrogen(ambiguity.get("via")):
+            detail = (
+                "the same ion reads as "
+                f"{alternative or 'a nitrogen-poorer neutral'} through a channel "
+                "that donates nitrogen, and no channel of this run fixes the count"
+            )
+        else:
+            detail = (
                 "the same ion reads as "
                 f"{alternative or 'a nitrogen-richer neutral'} through a channel "
-                "donating no nitrogen, and no channel of this run fixes the count",
-                caps=True,
+                "donating no nitrogen, and no channel of this run fixes the count"
             )
-        )
+        reasons.append(_reason(REASON_AMBIGUOUS_NITROGEN, detail, caps=True))
     minor_channel = provenance.get("minor_channel") or {}
     if minor_channel.get("capped"):
         reasons.append(
