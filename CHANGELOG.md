@@ -4,6 +4,18 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
 
 ## [Unreleased]
 
+### Fixed
+
+- **One ionization mechanism the current rules refuse no longer breaks the
+  whole list.** Reading mechanisms re-ran the create validators on every
+  stored row, and those validators have tightened over time (an empty
+  modification such as `++`, unknown elements) with nothing rewriting old
+  rows. A single such row - from an older release, or inserted directly -
+  made `GET /api/ionization_mechanisms` answer 400 for everyone, including
+  the frontend, which loads it; the single-mechanism read failed the same
+  way for that row. Reads now report stored rows as they are. Creating and
+  updating a mechanism validate exactly as before.
+
 ### Security
 
 - **A list endpoint's `sort` parameter accepts only the columns that endpoint
