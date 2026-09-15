@@ -246,6 +246,16 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
   for its own rows: such a row said a peak belongs to an envelope whose ion the
   ledger never commits, and the peak now goes to the untargeted stage instead.
 
+- **A peak assigned by hand from the composition search now counts a labelled
+  ion from its labelled line, as the assignment engine does.** Committing a
+  search result to a peak records which isotopologue of the ion the peak is,
+  counted from the ion's monoisotopic line, and the search pane took that line
+  to be the one isotopologue formula without a bracket. For a 15N-nitrate ion
+  that is the reagent's unlabelled remainder, 2% of the labelled line and one
+  mass unit below it, so the ion's own line was committed as its "M+1" and the
+  remainder as its "M0". The monoisotopic line is now the isotopologue whose
+  brackets name exactly the labels in the ion's formula.
+
 - **A loaded reference database no longer widens the mass width a TOF sample is
   scored and gated at.** Stage A matches a reference list's formulas in the
   same frame as the workspace's target library. On a TOF most of those pairings
