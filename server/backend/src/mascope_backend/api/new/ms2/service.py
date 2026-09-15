@@ -26,7 +26,8 @@ def ms2_group_key(parent_peak_mz: float, activation: str) -> str:
 
     ``"137.096@hcd40.00"``, mirroring the instrument's scan-filter notation, so
     the step a spectrum belongs to is readable straight off the key. Falls back
-    to the bare m/z when the filter carried no activation.
+    to the bare m/z when the group spans every activation of its precursor, or
+    the filter carried none.
     """
     return f"{parent_peak_mz}@{activation}" if activation else f"{parent_peak_mz}"
 
@@ -77,19 +78,24 @@ async def get_ms2_averaged_centroids(
     sample_item_id: str,
     noise_threshold: float = 10.0,
     parent_peak_tolerance: float = 0.001,
+    by_activation: bool = False,
     timeout: float = DEFAULT_TIMEOUT,
 ) -> dict:
-    """Retrieve averaged MS2 centroids for each (parent peak, activation) group.
+    """Retrieve averaged MS2 centroids for each parent peak.
 
-    Performs centroid extraction, noise filtering, grouping by parent peak and
-    activation, and centroid averaging. Keys are ``"<parent m/z>@<activation>"``
-    (e.g. ``"137.096@hcd40.00"``), mirroring the instrument's own scan-filter
-    notation -- a stepped-energy acquisition returns one spectrum per step
-    rather than one that blends them.
+    Performs centroid extraction, noise filtering, grouping by parent peak, and
+    centroid averaging. By default a parent peak is one spectrum over all of its
+    scans, keyed by its m/z (``"137.096"``) - the response shape clients written
+    against this route read. A stepped-energy acquisition measures one precursor
+    at several collision energies, and that average blends the steps, so
+    ``by_activation`` groups by activation as well and keys each spectrum
+    ``"<parent m/z>@<activation>"`` (e.g. ``"137.096@hcd40.00"``), mirroring the
+    instrument's own scan-filter notation.
 
     :param sample_item_id: Unique identifier for the sample.
     :param noise_threshold: Minimum signal-to-noise ratio threshold.
     :param parent_peak_tolerance: Tolerance in Da for merging parent peaks.
+    :param by_activation: Split each parent peak by activation.
     :param timeout: Maximum seconds to wait for the computation.
     :return: Dictionary with averaged MS2 centroids keyed by group.
     """
@@ -103,6 +109,7 @@ async def get_ms2_averaged_centroids(
                 t_max=sample.t1,
                 polarity=sample.polarity,
                 parent_peak_tolerance=parent_peak_tolerance,
+                by_activation=by_activation,
             ),
             timeout=timeout,
         )
@@ -131,9 +138,10 @@ async def get_ms2_averaged_centroids(
             "signal_to_noise": signal_to_noise[mask].tolist(),
         }
 
+    groups = "parent peak groups" if by_activation else "parent peaks"
     return {
         "message": (
-            f"Averaged MS2 centroids for {len(ms2_by_parent)} parent peak groups"
+            f"Averaged MS2 centroids for {len(ms2_by_parent)} {groups}"
             f" in sample '{sample.sample_item_name}'."
         ),
         "results": len(ms2_by_parent),

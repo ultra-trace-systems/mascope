@@ -790,6 +790,32 @@ def _cluster_scans_by_parent(
     )
 
 
+def _merge_activations(
+    parent_peak_mapping: dict[tuple[float, str], list[int]],
+) -> dict[tuple[float, str], list[int]]:
+    """Fold each precursor's activation groups into one group per precursor.
+
+    The per-precursor grouping: every scan of a precursor, whatever its
+    activation, so an average over the group blends a stepped-energy run's
+    steps into one spectrum. It is what the MS2 centroids API serves unless a
+    caller asks for the split, because its keys and spectra are what clients
+    written against a per-precursor response read. The activation is left
+    empty, which is what renders the bare m/z key.
+
+    :param parent_peak_mapping: Mapping of (parent peak m/z, activation) to scan
+                                numbers, as :func:`_cluster_scans_by_parent`
+                                returns it.
+    :type parent_peak_mapping: dict[tuple[float, str], list[int]]
+    :return: Mapping of (parent peak m/z, "") to every scan of that precursor,
+             in scan order, with the precursors in the order given.
+    :rtype: dict[tuple[float, str], list[int]]
+    """
+    merged: dict[tuple[float, str], list[int]] = {}
+    for (parent_peak_mz, _activation), scan_indices in parent_peak_mapping.items():
+        merged.setdefault((parent_peak_mz, ""), []).extend(scan_indices)
+    return {key: sorted(scan_indices) for key, scan_indices in merged.items()}
+
+
 def get_ms2_centroids_by_parent(
     datafile_path: str,
     t_min: float | None = None,
@@ -800,6 +826,7 @@ def get_ms2_centroids_by_parent(
     parent_peak_tolerance: float = 0.001,
     ppm: int = 1,
     average: bool = True,
+    by_activation: bool = True,
 ) -> dict[tuple[float, str], tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]]:
     """Extract averaged centroids for each MS2 group in an MS2 raw file.
 
@@ -807,7 +834,8 @@ def get_ms2_centroids_by_parent(
     (see :func:`_cluster_scans_by_parent`), and averages each group using
     Thermo's native ppm-based binning. A stepped-energy acquisition therefore
     yields one averaged spectrum per collision energy rather than one spectrum
-    blending them all.
+    blending them all - unless ``by_activation`` is False, which averages every
+    scan of a precursor together (see :func:`_merge_activations`).
 
     :param datafile_path: Path to the Thermo Fisher raw file (.raw).
     :type datafile_path: str
@@ -830,6 +858,10 @@ def get_ms2_centroids_by_parent(
     :param average: If True, return averaged intensities; if False,
                     scale by scan count.
     :type average: bool, optional
+    :param by_activation: If True (the default), one group per (parent peak,
+                          activation); if False, one per parent peak, with an
+                          empty activation.
+    :type by_activation: bool, optional
     :return: Mapping of (parent peak m/z, activation) to
              (masses, intensities, resolutions, signal_to_noise).
     :rtype: dict[tuple[float, str], tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]]
@@ -839,6 +871,8 @@ def get_ms2_centroids_by_parent(
         parent_peak_mapping = _cluster_scans_by_parent(events, parent_peak_tolerance)
         if not parent_peak_mapping:
             return {}
+        if not by_activation:
+            parent_peak_mapping = _merge_activations(parent_peak_mapping)
 
         # Filter parent peaks by m/z range
         if mz_min is not None or mz_max is not None:

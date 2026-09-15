@@ -99,30 +99,41 @@ class Ms2Resource(BaseResource):
         *,
         noise_threshold: float = 10.0,
         parent_peak_tolerance: float = 0.001,
+        by_activation: bool = False,
     ) -> dict | None:
-        """Retrieve averaged MS2 centroids for each (parent peak, activation) group.
+        """Retrieve averaged MS2 centroids for each parent peak.
 
-        A stepped-energy acquisition returns one spectrum per collision energy.
+        By default each parent peak is one spectrum averaged over all of its
+        scans, keyed by its m/z (e.g. ``"137.096"``). A stepped-energy
+        acquisition measures one precursor at several collision energies, and
+        that average blends the steps: pass ``by_activation=True`` for one
+        spectrum per (parent peak, activation) group instead, keyed
+        ``"<parent m/z>@<activation>"`` (e.g. ``"137.096@hcd40.00"``).
 
         :param noise_threshold: Minimum signal-to-noise ratio threshold.
         :type noise_threshold: float
         :param parent_peak_tolerance: Tolerance in Da for merging parent peaks.
         :type parent_peak_tolerance: float
-        :return: Dictionary keyed by ``"<parent m/z>@<activation>"`` (e.g.
-                 ``"137.096@hcd40.00"``), each value containing
-                 'parent_peak_mz', 'activation', 'mz', 'intensity',
-                 'resolution', and 'signal_to_noise'.
+        :param by_activation: Split each parent peak by activation. A server that
+                              predates the option ignores it and answers per
+                              parent peak.
+        :type by_activation: bool
+        :return: Dictionary of spectra keyed as above, each value containing
+                 'mz', 'intensity', 'resolution' and 'signal_to_noise', plus
+                 'parent_peak_mz' and 'activation' (empty for a spectrum that
+                 spans every activation) from a server that knows the option.
         :rtype: dict | None
 
         Example::
 
-            centroids = mascope.samples.ms2("sample-456").get_averaged_centroids()
-            for key, data in centroids.items():
+            ms2 = mascope.samples.ms2("sample-456")
+            for key, data in ms2.get_averaged_centroids(by_activation=True).items():
                 print(f"{key}: {len(data['mz'])} fragments")
         """
-        params: dict[str, int | float] = {
+        params: dict[str, int | float | bool] = {
             "noise_threshold": noise_threshold,
             "parent_peak_tolerance": parent_peak_tolerance,
+            "by_activation": by_activation,
         }
         return self._get(f"{self._base_path}/centroids", params=params)
 

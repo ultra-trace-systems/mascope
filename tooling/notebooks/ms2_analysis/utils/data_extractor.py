@@ -110,6 +110,7 @@ class DataExtractor:
         centroids_data = self._ms2.get_averaged_centroids(
             noise_threshold=noise_threshold,
             parent_peak_tolerance=parent_peak_tolerance,
+            by_activation=True,
         )
         self.ms2_spectra: dict[Ms2Group, CentroidedSpectrum] = {}
         if centroids_data:

@@ -48,6 +48,16 @@ class GetMs2CentroidsQueryParams(QueryParamsModel):
         DEFAULT_PARENT_PEAK_TOLERANCE,
         description="Tolerance in Da for merging near-duplicate parent peaks",
     )
+    by_activation: bool = Field(
+        False,
+        description=(
+            "Split each parent peak by activation, keying the spectra "
+            "'<parent m/z>@<activation>' (e.g. '137.096@hcd40.00') so a "
+            "stepped-energy acquisition returns one spectrum per step. By "
+            "default each parent peak is one spectrum over all of its scans, "
+            "keyed by its m/z"
+        ),
+    )
     timeout: float = Field(
         DEFAULT_TIMEOUT,
         description="Maximum seconds to wait for the computation before returning 504",

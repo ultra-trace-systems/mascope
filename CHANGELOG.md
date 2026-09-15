@@ -872,17 +872,20 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
   the untargeted stage on - that button *is* the stage - regardless of the
   shared switch.
 
-- **MS2 spectra are now grouped by collision energy as well as precursor.** A
-  stepped-energy acquisition measures one precursor at several energies as
-  separate scan events; grouping on precursor m/z alone averaged them into a
-  single spectrum whose reported energy was their mean - a number the
-  instrument never used. Scans are now keyed by precursor *and* activation, so
-  such a run yields one averaged spectrum per step. `GET
-  /api/samples/{id}/ms2/centroids` keys its spectra `"<parent m/z>@<activation>"`
-  (e.g. `"137.096@hcd40.00"`), mirroring the instrument's own scan-filter
-  notation, and each carries `parent_peak_mz` and `activation` of its own.
-  The activation is lower-cased, so the two reader backends key a spectrum
-  identically whichever of them read the file. `.../ms2/summary` gains
+- **MS2 spectra can be kept apart by collision energy.** A stepped-energy
+  acquisition measures one precursor at several energies as separate scan
+  events; grouping on precursor m/z alone averages them into a single spectrum
+  whose reported energy is their mean - a number the instrument never used.
+  Scans can now be grouped by precursor *and* activation, so such a run yields
+  one averaged spectrum per step: `GET
+  /api/samples/{id}/ms2/centroids?by_activation=true` keys its spectra
+  `"<parent m/z>@<activation>"` (e.g. `"137.096@hcd40.00"`), mirroring the
+  instrument's own scan-filter notation. Without the option the route answers
+  as before - one spectrum per precursor, keyed by its m/z - so scripts and SDK
+  installs written against it keep reading the same keys; every spectrum now
+  also carries `parent_peak_mz` and `activation` (empty for one that spans every
+  activation). The activation is lower-cased, so the two reader backends key a
+  spectrum identically whichever of them read the file. `.../ms2/summary` gains
   `groups`, one record per step with its activation, calibrated `hcd_energy`,
   scan count and time span, ordered by precursor and then by acquisition; its
   `hcd_energy_map` now lists the energies a precursor was measured at instead
@@ -890,9 +893,10 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
   energy belongs to matters.
   `.../ms2/timeseries` takes an optional `activation` to narrow to one step and
   still spans them all by default, which is the view that shows fragments
-  changing as the energy steps. `Ms2Resource` in the SDK passes the new
-  parameter through, and the MS2 analysis notebook
-  (`tooling/notebooks/ms2_analysis`) selects a group rather than a precursor -
+  changing as the energy steps. `Ms2Resource` in the SDK passes both options
+  through, `by_activation` off by default as on the server, and the MS2
+  analysis notebook (`tooling/notebooks/ms2_analysis`) asks for the split and
+  selects a group rather than a precursor -
   its dropdowns, fragment table, CSV export and charts now carry one entry per
   step, labelled with its activation.
 - **M0 is the monoisotopic peak everywhere.** The assignment engine now takes an ion's

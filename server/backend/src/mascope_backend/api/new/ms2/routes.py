@@ -80,6 +80,9 @@ async def get_ms2_averaged_centroids_route(
 ):
     """Retrieve averaged MS2 centroids for each parent peak.
 
+    With ``by_activation``, one spectrum per (parent peak, activation) group
+    instead, so a stepped-energy acquisition keeps its steps apart.
+
     :param sample_item_id: The unique identifier of the sample.
     :param query_params: Query parameters for MS2 centroid retrieval.
     :param user: The current authenticated user. Requires workspace guest role.
