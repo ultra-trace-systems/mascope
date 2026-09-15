@@ -211,15 +211,26 @@ export function labelledIsotopes(ionFormula) {
 }
 
 /**
- * The isotopes an isotopologue formula names in brackets, with their counts.
+ * The isotopes an isotopologue formula names, with their counts: its bracketed
+ * isotopes, and each labelled custom element as the isotope it stands for.
+ *
+ * The generator brackets a labelled atom like any substituted isotope
+ * (`[15N]C9H16O7-`), but an imported run can write a line in the ion's own
+ * notation, caret and all - the M0 of `C10H18O7^N-` as `C10H18O7^N-`. Both spell
+ * the same composition, so `^N` counts as `[15N]`, added to any `[15N]` beside
+ * it: in a mixed spelling that one is an atom of the analyte's own at 15N.
  *
  * @param {string} formula one isotopologue formula
- * @returns {Object<string, number>} bracketed isotope -> count
+ * @returns {Object<string, number>} isotope, spelled in brackets -> count
  */
-const substitutedIsotopes = (formula) =>
-  Object.fromEntries(
-    Object.entries(formulaTokens(formula)).filter(([symbol]) => symbol.startsWith('['))
-  )
+function substitutedIsotopes(formula) {
+  const isotopes = {}
+  for (const [symbol, count] of Object.entries(formulaTokens(formula))) {
+    const isotope = symbol.startsWith('[') ? symbol : LABELLED_ELEMENTS.get(symbol)?.labelled
+    if (isotope) isotopes[isotope] = (isotopes[isotope] ?? 0) + count
+  }
+  return isotopes
+}
 
 /**
  * Whether two sets of isotope counts name the same isotopes, each as often.
@@ -246,11 +257,14 @@ function sameIsotopes(a, b) {
  * monoisotopic isotopologue of a labelled ion names exactly its labels and
  * nothing else: `[15N]C9H16O7-` for `C9H16O7^N-`. The formula without a bracket
  * is then the reagent's unlabelled remainder, one mass unit below the line the
- * ion is measured by.
+ * ion is measured by. An imported run may spell that M0 with the ion's own caret
+ * element instead (`C10H18O7^N-` for `C10H18O7^N-`), which names the same labels
+ * (`substitutedIsotopes`).
  *
  * At a low resolution one line holds several isotopologues, their names joined
- * by "/"; it is the monoisotopic line when any of them is. The same rule as the
- * backend's `is_monoisotopic_formula`.
+ * by "/"; it is the monoisotopic line when any of them is. The rule of the
+ * backend's `is_monoisotopic_formula`, which meets only the generator's
+ * bracketed spelling.
  *
  * @param {string|null|undefined} formula an isotopologue formula
  * @param {Object<string, number>} [labels] the ion's labelled isotopes
@@ -333,6 +347,8 @@ function substitutionOf(name, labels) {
  * - "[15N]C9H16O7-" of "C9H16O7^N-" -> "M0"
  * - "C9H16NO7-" of "C9H16O7^N-" -> "[14N]"
  * - "[15N]HNO6-" of "HO6^N2-" -> "[14N]"
+ * - "C10H18O7^N-" of "C10H18O7^N-" -> "M0" (the label in caret spelling)
+ * - "[13C]C9H18O7^N-" of "C10H18O7^N-" -> "[13C]"
  */
 export function formatIsotopeFormula(formula, ionFormula) {
   if (!formula) return ''
