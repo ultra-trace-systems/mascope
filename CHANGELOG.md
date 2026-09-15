@@ -252,6 +252,20 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
 
 ### Fixed
 
+- **A target library entry keeps its own line however its formula is
+  written.** Stage A compared candidates' formulas as text, and a loaded
+  reference list writes its neutrals in Hill order while a library holds what
+  a person typed. A monitor's `CH3COOH`, `NH3` or `H2SO4` met the list's
+  `C2H4O2`, `H3N` or `H2O4S` on its own peak as a second hypothesis: the tie
+  between the two fell to alphabetical order, so the list's copy took the line,
+  the library's entry sat beside it as an alternative, and the candidate-density
+  rule counted the copy as a rival and capped the row. Stage A now compares a
+  formula's composition, and a reference list's copy of a reading the library
+  makes on the same peak through the same mechanism is dropped before the peak
+  is arbitrated: the library's row owns the line and the list's names ride
+  along in its provenance. On the assignment gate this was 27 rows on three
+  sets, 12 of them capped.
+
 - **A labelled ion is now read from its labelled line, and Stage A no longer
   writes an isotopologue whose ion won no main peak.** A labelled reagent's atom
   is written in brackets like any substituted isotope, so for a 15N-nitrate ion
