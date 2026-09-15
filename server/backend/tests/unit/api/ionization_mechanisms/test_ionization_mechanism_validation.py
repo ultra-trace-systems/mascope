@@ -10,6 +10,8 @@ from pydantic import ValidationError
 
 from mascope_backend.api.models.ionization_mechanisms.ionization_mechanism_pydantic_model import (
     IonizationMechanismCreate,
+    IonizationMechanismRead,
+    IonizationMechanismUpdate,
 )
 
 
@@ -46,3 +48,37 @@ def test_valid_mechanisms_accepted(mechanism):
 def test_invalid_mechanisms_rejected(mechanism):
     with pytest.raises(ValidationError):
         IonizationMechanismCreate(ionization_mechanism=mechanism)
+
+
+#: Rows a create would refuse today, as older rules or direct inserts left them.
+STORED_ROWS_CREATE_REFUSES = [
+    ("+", "++"),  # empty modification, accepted before that rule
+    ("+", "[M+H]+ 0123456789abcdef"),  # free-text label
+    ("-", "-H-"),  # polarity the mechanism does not imply
+    ("+", "+Zz+"),  # element the formula check does not know
+]
+
+
+@pytest.mark.parametrize(("polarity", "mechanism"), STORED_ROWS_CREATE_REFUSES)
+def test_stored_row_is_read_as_it_is(polarity, mechanism):
+    """One row the write validators refuse must not fail the whole listing."""
+    row = {
+        "ionization_mechanism_id": "0123456789abcdef",
+        "ionization_mechanism_polarity": polarity,
+        "ionization_mechanism": mechanism,
+    }
+    read = IonizationMechanismRead.model_validate(row)
+    assert read.model_dump() == row
+
+    with pytest.raises(ValidationError):
+        IonizationMechanismCreate(
+            ionization_mechanism_polarity=polarity, ionization_mechanism=mechanism
+        )
+
+
+@pytest.mark.parametrize("mechanism", ["++", "+Zz+", "H+"])
+def test_update_still_validates_the_mechanism(mechanism):
+    with pytest.raises(ValidationError):
+        IonizationMechanismUpdate(
+            ionization_mechanism_polarity="+", ionization_mechanism=mechanism
+        )
