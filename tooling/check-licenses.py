@@ -125,8 +125,9 @@ PYTHON_REVIEWED = {
     # LGPL, and the only copyleft licence in either tree that ships. psycopg2
     # is imported as a library and neither modified nor statically linked,
     # which is what the LGPL's conditions turn on, and LGPL-3.0 and Apache-2.0
-    # are compatible. Pinned so a major bump comes back for a fresh look.
-    "psycopg2-binary@2.9.12": (
+    # are compatible. Keyed by version, so every bump comes back for a fresh
+    # look.
+    "psycopg2-binary@2.9.13": (
         "LGPL with exceptions - verbatim in the LICENSE file shipped in the "
         "wheel; used as an unmodified imported library"
     ),
