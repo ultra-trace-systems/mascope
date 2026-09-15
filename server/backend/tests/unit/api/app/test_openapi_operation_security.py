@@ -64,8 +64,8 @@ def _operations():
 def test_each_operation_offers_a_token_exactly_where_one_is_accepted():
     """An operation the backend selector guards offers the cookie, and a token
     only when its endpoint is token_access. Any other offers no token: nothing
-    when it is public, the cookie alone when, like logout, it authenticates
-    without the selector."""
+    when it is public, the cookie alone when it authenticates without the
+    selector."""
     paths = fast.openapi()["paths"]
     checked = set()
     wrong = []
@@ -95,6 +95,9 @@ def test_each_operation_offers_a_token_exactly_where_one_is_accepted():
         ("patch", "/api/sample/files/upload/tus/{uuid}", _COOKIE_OR_TOKEN),
         # The web app's own: a token sent here is refused.
         ("get", "/api/attribute_templates", _COOKIE),
+        # Authenticated through fastapi-users' token dependency rather than a
+        # role dependency, but still behind the selector: a token is refused.
+        ("post", "/api/auth/logout", _COOKIE),
         ("post", "/api/auth/login", []),
     ],
 )

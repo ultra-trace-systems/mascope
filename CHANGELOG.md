@@ -1594,6 +1594,15 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
   longer asks for clipboard permission in a browser that would; a paste that
   cannot be read says so instead of doing nothing.
 
+- `POST /api/auth/logout` refuses an API token with 401, as the OpenAPI
+  document says: it takes the session cookie alone. A request carrying only
+  `Authorization: Bearer <token>` used to authenticate there - with no
+  `X-Service-Name` check, although logout does not accept tokens - because
+  logout chose its credentials without the backend selector every other
+  authenticated route uses. It ended nothing, since a token has no session to
+  clear, and nothing in Mascope logs out with a token; signing out of the web
+  app works as before.
+
 - The backend suite's Orbitrap calibration-fit test runs on every machine and
   in CI, and checks a result. It fitted whatever Orbitrap samples the
   machine's own runtime database held instead of using the suite's ephemeral
