@@ -4443,10 +4443,16 @@ asks an election:
   `capped_mirror`, and the tier reason names the side the doubt is from.
 
 The radical rule and the formula-shape signatures still exempt every Stage A
-row. The run-less ingest fold runs no cross-channel pass, for any row, as before.
+row. The run-less ingest fold, which assigns a newly processed sample by Stage
+A alone, runs the same check through the channels a run reads (#2118's second
+commit), so the batch ledger does not hold a row at assigned where a run caps
+it; a second channel there can only be another Stage A commit.
 
 All 43 samples re-run on `step-2.5c-mirror-same-ion-2026.09.15-22b0807`,
-compared with 2.5b's second round (`...-8917b25`); no list or seed changed.
+compared with 2.5b's second round (`...-8917b25`); no list or seed changed. A
+second round on `...-fcaa09d`, which adds the ingest commit and moves the run's
+channel resolution and check into helpers the fold shares, is identical to
+it: every row, every same-ion reading and every nitrogen record.
 
 **It moves tiers and nothing else.** No formula, role, stage or owner changes on
 any of the 48,894 peaks, and G2 and its denominator are identical on all eight
@@ -4505,8 +4511,11 @@ C10H14O7 for the Kang nitrates.
     C13H24N2O), whose other reading is an alkene or arene through ammonium, or
     through the urea adduct.
 - **Read by decision 18,** the nitrogen count on those rows is the list's answer
-  and not the spectrum's, so candidate is what the evidence supports. Whether a
-  named amine's nitrogen deserves more trust is the plan owner's question.
+  and not the spectrum's, so candidate is what the evidence supports. The plan
+  owner's answer to the PR's question keeps it so: where the ion reads equally
+  well another way, a reference list makes its formula the preferred reading
+  and not an assigned one. The ingest fold was the PR's second question, and
+  the answer was that it should apply the check too.
 - **On F2** the reference commits none of the 76 and another formula on 12. A
   HOM through `+NO3-` reads through `-H+` as the nitrate ester one HNO3 heavier.
   One row is capped on a radical reading, the only one crossing the boundary,
