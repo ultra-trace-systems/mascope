@@ -848,7 +848,6 @@ def elect_same_ion_families(
     return elected
 
 
-#: An element symbol with no isotope label or custom notation on it.
 def propose_same_ion_readings(
     readings: Sequence[tuple[str, str]],
     notations: Sequence[str],
