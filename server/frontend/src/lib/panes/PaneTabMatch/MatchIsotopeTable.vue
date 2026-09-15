@@ -72,11 +72,12 @@ const uiMatchCategory = (match) => {
         </template>
       </Column>
 
-      <!-- formula Column -->
+      <!-- formula Column: counted from the ion's M0, which the ion formula
+           names for a labelled ion (see formatIsotopeFormula) -->
       <Column header="Substitution" field="formula" style="width: 8rem">
         <template #body="{ data }">
           <span v-tooltip="data.target_isotope_formula">
-            {{ formatIsotopeFormula(data.target_isotope_formula) }}
+            {{ formatIsotopeFormula(data.target_isotope_formula, ionFormula()) }}
           </span>
         </template>
       </Column>

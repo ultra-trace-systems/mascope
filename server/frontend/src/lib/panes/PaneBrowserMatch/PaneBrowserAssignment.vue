@@ -409,9 +409,16 @@ const rows = computed(() => {
 })
 
 // Label for an unfolded isotopologue child row (compact substitution label,
-// falling back to the offset label).
+// falling back to the offset label). Counted from the family's M0, which the ion
+// formula names for a labelled ion (see formatIsotopeFormula): the row's own,
+// or its M0's when the row recorded none.
 const childLabel = (row) =>
-  row.isotope_formula ? formatIsotopeFormula(row.isotope_formula) : row.isotope_label || 'iso'
+  row.isotope_formula
+    ? formatIsotopeFormula(
+        row.isotope_formula,
+        row.ion_formula ?? assignments.value.m0Of(row)?.ion_formula
+      )
+    : row.isotope_label || 'iso'
 
 // Calibrated probability formatter for the P(correct) column.
 const pctFmt = new Intl.NumberFormat('en-US', { style: 'percent', maximumFractionDigits: 0 })
