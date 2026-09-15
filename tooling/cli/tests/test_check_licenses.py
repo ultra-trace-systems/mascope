@@ -752,8 +752,15 @@ def test_a_lockfile_with_no_third_party_packages_is_refused(tmp_path, environmen
 def test_reviewed_python_packages_are_exempt_at_the_pinned_version(
     tmp_path, environment
 ):
-    reviewed = "psycopg2-binary@2.9.12"
-    assert reviewed in licences.PYTHON_REVIEWED
+    # Read the reviewed version from the map rather than restating it, so a
+    # re-review for a routine bump does not have to edit this test as well.
+    (reviewed,) = [
+        ident
+        for ident in licences.PYTHON_REVIEWED
+        if ident.startswith("psycopg2-binary@")
+    ]
+    version = reviewed.split("@", 1)[1]
+    major, minor, patch = (int(part) for part in version.split("."))
 
     def at(version):
         environment(
@@ -769,8 +776,10 @@ def test_reviewed_python_packages_are_exempt_at_the_pinned_version(
         )
         return licences.check_python(uv_lock(tmp_path, {"psycopg2-binary": version}))
 
-    assert at("2.9.12") == []
-    assert at("3.0.0") != []
+    assert at(version) == []
+    # Keyed by exact version: the next patch release needs its own review.
+    assert at(f"{major}.{minor}.{patch + 1}") != []
+    assert at(f"{major + 1}.0.0") != []
 
 
 def test_names_are_normalised_between_the_lockfile_and_the_environment(
