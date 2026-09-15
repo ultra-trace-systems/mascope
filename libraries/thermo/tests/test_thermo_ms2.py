@@ -161,6 +161,13 @@ class TestGetMs2CentroidsByParent:
             # they must be at least as large as the averaged ones.
             assert summed[parent][1].sum() >= avg_int.sum()
 
+    def test_one_group_per_parent_without_the_activation_split(self, by_parent):
+        merged = m_thermo.get_ms2_centroids_by_parent(MS2_FILE, by_activation=False)
+        assert list(merged) == [(mz, "") for mz in sorted({mz for mz, _ in by_parent})]
+        for masses, intensities, resolutions, sn in merged.values():
+            assert masses.size > 0
+            assert intensities.size == resolutions.size == sn.size == masses.size
+
     def test_mz_range_filters_parents(self, by_parent):
         parents = sorted({mz for mz, _ in by_parent})
         if len(parents) < 2:
@@ -315,6 +322,82 @@ class TestClusterScansByParent:
             200.5,
             300.5,
         ]
+
+
+class TestMergeActivations:
+    """``_merge_activations`` folds each precursor's steps back into one group:
+    the per-precursor grouping the MS2 centroids API serves by default."""
+
+    def test_every_step_of_a_precursor_lands_in_one_group(self):
+        grouped = m_thermo._cluster_scans_by_parent(
+            {
+                1: (137.096, "hcd20.00"),
+                2: (200.5, "hcd25.00"),
+                3: (137.096, "hcd40.00"),
+                4: (137.096, "hcd20.00"),
+            }
+        )
+        # The empty activation is what renders the bare m/z key.
+        assert m_thermo._merge_activations(grouped) == {
+            (137.096, ""): [1, 3, 4],
+            (200.5, ""): [2],
+        }
+
+    def test_precursors_keep_their_order_and_scans_come_back_in_scan_order(self):
+        grouped = m_thermo._cluster_scans_by_parent(
+            {
+                7: (300.5, "hcd10.00"),
+                2: (200.5, "hcd80.00"),
+                5: (200.5, "hcd10.00"),
+                1: (300.5, "hcd40.00"),
+            }
+        )
+        merged = m_thermo._merge_activations(grouped)
+        assert list(merged) == [(200.5, ""), (300.5, "")]
+        assert merged[(200.5, "")] == [2, 5]
+        assert merged[(300.5, "")] == [1, 7]
+
+    def test_centroids_average_every_step_together_without_the_split(self, monkeypatch):
+        """The option reaches the averaging: one call per precursor over all of
+        its scans, rather than one per step. Runs against a stub reader, since
+        no committed acquisition carries MS2 scans."""
+        events = {
+            1: (137.096, "hcd20.00"),
+            2: (137.096, "hcd40.00"),
+            3: (200.5, "hcd25.00"),
+            4: (137.096, "hcd20.00"),
+        }
+
+        class StubReader:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc):
+                return False
+
+            def ms2_events_by_scan(self, polarity=None, t_min=None, t_max=None):
+                return events
+
+            def average_centroids(self, scan_indices, ppm=1, average=True):
+                # Hand the averaged scans back as the "masses", so the test can
+                # read off which scans each group was averaged over.
+                scans = np.array(scan_indices, dtype=float)
+                return scans, scans, scans, scans
+
+        monkeypatch.setattr(m_thermo, "open_backend", lambda path: StubReader())
+
+        split = m_thermo.get_ms2_centroids_by_parent("stub.raw")
+        assert {key: masses.tolist() for key, (masses, *_) in split.items()} == {
+            (137.096, "hcd20.00"): [1.0, 4.0],
+            (137.096, "hcd40.00"): [2.0],
+            (200.5, "hcd25.00"): [3.0],
+        }
+
+        merged = m_thermo.get_ms2_centroids_by_parent("stub.raw", by_activation=False)
+        assert {key: masses.tolist() for key, (masses, *_) in merged.items()} == {
+            (137.096, ""): [1.0, 2.0, 4.0],
+            (200.5, ""): [3.0],
+        }
 
 
 class TestParseMs2Event:

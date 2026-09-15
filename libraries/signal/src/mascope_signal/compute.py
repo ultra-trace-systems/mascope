@@ -724,11 +724,13 @@ async def get_orbi_ms2_centroids_by_parent(
     parent_peak_tolerance: float = 0.001,
     ppm: int = 1,
     average: bool = True,
+    by_activation: bool = True,
 ) -> dict[tuple[float, str], tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]]:
     """Extract averaged MS2 centroids per (parent peak, activation) group.
 
     Grouping includes the activation, so a stepped-energy acquisition returns
-    one averaged spectrum per collision energy.
+    one averaged spectrum per collision energy. With ``by_activation`` False
+    each parent peak is one group instead, keyed with an empty activation.
 
     :param base_filename: Sample file name (base, not full path).
     :type base_filename: str
@@ -748,6 +750,9 @@ async def get_orbi_ms2_centroids_by_parent(
     :type ppm: int, optional
     :param average: If True, return averaged intensities, defaults to True.
     :type average: bool, optional
+    :param by_activation: If True (the default), group by activation as well as
+                          parent peak; if False, one group per parent peak.
+    :type by_activation: bool, optional
     :return: Mapping of (parent peak m/z, activation) to
              (masses, intensities, resolutions, signal_to_noise).
     :rtype: dict[tuple[float, str], tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]]
@@ -767,6 +772,7 @@ async def get_orbi_ms2_centroids_by_parent(
                 parent_peak_tolerance=parent_peak_tolerance,
                 ppm=ppm,
                 average=average,
+                by_activation=by_activation,
             )
             props = m_io.read_props(base_filename)
             calibration = props["mz_calibration"]
