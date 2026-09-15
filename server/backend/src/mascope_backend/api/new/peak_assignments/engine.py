@@ -12,6 +12,7 @@ persistence.
 """
 
 from dataclasses import dataclass
+from functools import lru_cache
 
 import numpy as np
 import pandas as pd
@@ -58,7 +59,11 @@ from mascope_tools.composition.models import (
     HeuristicFilterConfig,
     PatternScoring,
 )
-from mascope_tools.composition.utils import parse_formula_tokens
+from mascope_tools.composition.utils import (
+    parse_composition,
+    parse_formula_tokens,
+    to_hill_order,
+)
 
 
 # Sentinel so a caller can pass calibration=None (explicitly uncalibrated) distinctly from
@@ -853,20 +858,48 @@ def _alternative_dict(
         "plausibility": _float_or_none(row.get("_plaus")),
         "source": SOURCE_DATABASE,
     }
-    formula_identities = reference_identities_by_formula.get(formula)
+    formula_identities = reference_identities_by_formula.get(formula_identity(formula))
     if formula_identities:
         alternative["reference_identities"] = formula_identities
     return alternative
+
+
+@lru_cache(maxsize=4096)
+def formula_identity(formula: str | None) -> str:
+    """A neutral formula's identity, however it was written.
+
+    Stage A's frame holds formulas from two authors. A target library holds what
+    a person typed - ``CH3COOH``, ``NH3``, ``H2SO4`` - and a reference list holds
+    the same neutrals in Hill order, so one reading of a peak can arrive spelled
+    twice. Compared as text the two spellings were two hypotheses: the tie
+    between them fell to alphabetical order, the library's entry lost its own
+    line to the list's copy, and the candidate-density rule counted the copy as
+    a rival. Read as a composition they are one.
+
+    :param formula: A neutral formula as a library or a reference list spells it.
+    :return: The Hill-order formula of its composition, ``"()"`` for the empty
+        neutral, and the text as given where it does not parse, so an unreadable
+        formula is never merged with another.
+    """
+    text = str(formula or "").strip()
+    try:
+        counts = {symbol: n for symbol, n in parse_composition(text).items() if n}
+    except Exception:  # noqa: BLE001 - an unreadable formula keeps its own text
+        return text
+    if not counts and text not in ("", "()"):
+        return text
+    return to_hill_order(counts)
 
 
 def _restates_winner(contenders: "pd.DataFrame", winner) -> "pd.Series":
     """Mask of contender rows that restate the winner's own hypothesis.
 
     Same formula through the same ionization mechanism is one explanation of the
-    peak, however many rows carried it into the frame - the reference mirror sits
-    in the same frame as the curated targets, so a compound that is both a target
-    and a known reference contributes two rows, and two targets can share a
-    formula outright. Excluding the winner by position alone left those twins in
+    peak, however many rows carried it into the frame and however each spelled
+    it (:func:`formula_identity`) - the reference mirror sits in the same frame
+    as the curated targets, so a compound that is both a target and a known
+    reference contributes two rows, and two targets can share a formula
+    outright. Excluding the winner by position alone left those twins in
     `alternatives`, where the inspector rendered them exactly like the committed
     assignment: the peak's own answer offered back as a close alternative.
 
@@ -879,18 +912,58 @@ def _restates_winner(contenders: "pd.DataFrame", winner) -> "pd.Series":
     carries no isotope label, so it would render as the bare committed formula,
     which is the duplicate this screen exists to remove.
 
-    :param contenders: The peak's rows other than the winning one.
+    :param contenders: The peak's rows other than the winning one, carrying
+        ``_formula_key``.
     :param winner: The row that won the peak.
     :return: Boolean mask, True where the row is the winner's hypothesis again.
     """
-    same = contenders["target_compound_formula"].astype(str) == str(
-        winner.get("target_compound_formula")
-    )
+    same = contenders["_formula_key"] == str(winner["_formula_key"])
     if "ionization_mechanism_id" in contenders.columns:
         same &= contenders["ionization_mechanism_id"].astype(str) == str(
             winner.get("ionization_mechanism_id")
         )
     return same
+
+
+def _reference_copies(matched: "pd.DataFrame") -> "pd.Series":
+    """Mask of reference mirror rows that restate a target library row on their peak.
+
+    A copy is the same neutral (:func:`formula_identity`) through the same
+    mechanism on the same peak: the same ion, so the same line of it.
+
+    :param matched: The gated Stage A frame, carrying ``_formula_key``.
+    :return: Boolean mask on the frame's index, True for a mirror row whose
+        reading the target library also makes on that peak.
+    """
+    mirror = reference_mirror_mask(matched)
+    if not mirror.any():
+        return mirror
+    mechanism = (
+        matched["ionization_mechanism_id"].astype(str)
+        if "ionization_mechanism_id" in matched.columns
+        else pd.Series("", index=matched.index)
+    )
+    readings = list(
+        zip(
+            matched["sample_peak_id"].astype(str),
+            matched["_formula_key"],
+            mechanism,
+            strict=True,
+        )
+    )
+    library = {
+        reading
+        for reading, is_mirror in zip(readings, mirror, strict=True)
+        if not is_mirror
+    }
+    return pd.Series(
+        [
+            bool(is_mirror) and reading in library
+            for reading, is_mirror in zip(readings, mirror, strict=True)
+        ],
+        index=matched.index,
+        dtype=bool,
+    )
 
 
 def invert_matches_to_peak_assignments(
@@ -968,7 +1041,9 @@ def invert_matches_to_peak_assignments(
     reference_identities_by_formula: dict[str, list] = {}
     if REFERENCE_IDENTITIES_COL in match_isotope_df.columns:
         reference_rows = match_isotope_df[reference_mirror_mask(match_isotope_df)]
-        for formula, group in reference_rows.groupby("target_compound_formula"):
+        for formula, group in reference_rows.groupby(
+            reference_rows["target_compound_formula"].map(formula_identity)
+        ):
             reference_identities_by_formula[str(formula)] = group.iloc[0][
                 REFERENCE_IDENTITIES_COL
             ]
@@ -995,9 +1070,21 @@ def invert_matches_to_peak_assignments(
     # but evidence now decides the winner, the reported confidence AND the tier - the
     # three used to disagree, and a formula that won a peak on evidence could then be
     # banded as though it had fit cleanly.
-    formulas = matched["target_compound_formula"].astype(str)
-    plaus_by_formula = {f: formula_plausibility(f) for f in formulas.unique()}
-    matched["_plaus"] = formulas.map(plaus_by_formula)
+    #
+    # Every comparison of two candidates' formulas below is of their identities, so
+    # one neutral spelled two ways is one hypothesis (:func:`formula_identity`).
+    matched["_formula_key"] = (
+        matched["target_compound_formula"].astype(str).map(formula_identity)
+    )
+    plaus_by_formula = {
+        f: formula_plausibility(f) for f in matched["_formula_key"].unique()
+    }
+    matched["_plaus"] = matched["_formula_key"].map(plaus_by_formula)
+    # A reference list's copy of a reading the target library makes on the same
+    # peak is that reading again, and the library's row owns it. The list's names
+    # still ride along on it (above), but the copy never takes the line, whichever
+    # of the two the matcher happened to fit a shade better.
+    matched = matched[~_reference_copies(matched)].copy()
     # Calibration maps the winner's evidence to P(correct) for this instrument. None
     # when the instrument has no curated calibration (e.g. TOF) -> the assignment is
     # reported uncalibrated rather than borrowing another instrument's curve. The service
@@ -1008,7 +1095,6 @@ def invert_matches_to_peak_assignments(
     matched["_fit"] = matched["match_score"].map(lambda v: _score_or_none(v) or 0.0)
     matched["_evidence"] = matched["_fit"] * matched["_plaus"]
     matched["_abs_mz_error"] = matched["match_mz_error"].abs()
-    matched["_formula_key"] = formulas
     # This row sort selects the winning ROW only; confidence and ties are delegated
     # to `arbitration.arbitrate_candidates` per peak below. The selection cannot be
     # delegated because the winner has to keep the whole match row - target FKs,
@@ -1095,8 +1181,9 @@ def invert_matches_to_peak_assignments(
         # FKs. Separately, any winner (target or reference) whose *formula* is in the
         # reference mirror inherits those identities in provenance.
         winner_is_reference_row = _row_reference_identities(winner) is not None
-        winner_formula = _str_or_none(winner.get("target_compound_formula"))
-        formula_identities = reference_identities_by_formula.get(winner_formula)
+        formula_identities = reference_identities_by_formula.get(
+            str(winner["_formula_key"])
+        )
         is_main = winner["target_isotope_id"] in main_isotope_ids
         isotope_label = (
             "M0"
