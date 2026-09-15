@@ -63,6 +63,24 @@ reagents, the alternative reading would need a different analyte for each, the
 two differing by exactly the difference of the two reagents - so the pair fixes
 the count as well.
 
+A reference mirror's row
+------------------------
+
+A Stage A row is matched rather than elected, and a row of the target library
+stays exempt: the workspace named that compound, so its nitrogen sits where the
+curation put it. A reference mirror's row is a list's formula matched against
+every sample, and the same arithmetic reaches it - dimethylformamide through
+``+H+`` is the same ion as acrolein through ``+NH4+``. Such a row is given the
+readings the untargeted search would have held in its ion's family
+(``engine.record_mirror_same_ion_readings``) and asked what an election is
+asked, from both sides. An election is asked from the donor's: its policy
+prefers the mechanism carrying the most mass, which put the nitrogen on the
+reagent, and that preference is the prior in doubt. A list can name the
+nitrogen on either side, so a mirror row read through a channel that donates
+none is in doubt too, where its ion reads through a donor as a neutral with
+less nitrogen. A second channel fixes the count from either side, because each
+of its ions would need an alternative analyte of its own.
+
 A labelled reagent donates no nitrogen for this purpose, and that is the whole
 reason to run one: the 15N of a ``+[15N]O3-`` reagent is 0.997 Da from an
 analyte's own nitrogen, so the two readings are two ions at two masses and the
@@ -73,12 +91,11 @@ own terms here rather than left to that.
 
 from __future__ import annotations
 
-from typing import Iterable
-
 from mascope_backend.api.new.peak_assignments.engine import (
     ROLE_ISO_CHILD,
     ROLE_M0,
-    SOURCE_DATABASE,
+    is_reference_mirror_row,
+    is_target_library_row,
 )
 from mascope_backend.api.new.peak_assignments.mass_gate import is_committed
 from mascope_backend.api.new.peak_assignments.tiers import TIER_CANDIDATE, TIER_RANK
@@ -140,12 +157,14 @@ def nitrogen_donating_channels(notations: list[str]) -> frozenset[str]:
 
 
 def same_ion_readings(row: dict, notation_by_id: dict[str, str]) -> list[dict]:
-    """The readings of this row's ion that the finder's policy displaced.
+    """The readings of this row's ion that the row's own reading displaced.
 
-    Read off the row rather than re-derived. The finder already decided which
-    readings of one ion exist - it enumerated them, elected one and kept the
-    rest - so asking the row is asking what this run actually proposed, where
-    rebuilding a candidate from the element grid would ask what it might have.
+    Read off the row rather than re-derived. On an election the finder already
+    decided which readings of one ion exist - it enumerated them, elected one
+    and kept the rest - so asking the row is asking what this run actually
+    proposed, where rebuilding a candidate from the element grid would ask what
+    it might have. A reference mirror's row carries the family the same search
+    would have held, written onto it before this pass runs.
 
     :param row: A committed assignment row.
     :param notation_by_id: The run's mechanisms, by the id the rows carry.
@@ -164,12 +183,16 @@ def same_ion_readings(row: dict, notation_by_id: dict[str, str]) -> list[dict]:
 def nitrogen_ambiguity(
     row: dict, notation_by_id: dict[str, str], donors: frozenset[str]
 ) -> dict | None:
-    """The reading that would put this row's nitrogen on the analyte instead.
+    """The reading that would put this row's nitrogen somewhere else.
 
-    The row is ambiguous exactly when the finder proposed both splits: this one,
-    through a channel that donates nitrogen, and another of the same ion through
-    a channel that does not. Then the count on the reported neutral is the
-    election policy's answer rather than the spectrum's.
+    The row is ambiguous exactly when its ion holds both splits: one through a
+    channel that donates nitrogen and one through a channel that does not. Then
+    the count on the reported neutral is a prior's answer rather than the
+    spectrum's.
+
+    An election is asked only where its own reading is the donor's, because the
+    preference that elected it is the prior in doubt. A reference mirror's row
+    is asked from both sides: its list, not that preference, chose the split.
 
     :param row: A committed monoisotopic row.
     :param notation_by_id: The run's mechanisms, by the id the rows carry.
@@ -177,10 +200,13 @@ def nitrogen_ambiguity(
     :return: The displaced reading, or None where the count is not in question.
     """
     channel = notation_by_id.get(str(row.get("ionization_mechanism_id")))
-    if channel not in donors:
+    if channel is None:
+        return None
+    donates = channel in donors
+    if not donates and not is_reference_mirror_row(row):
         return None
     for reading in same_ion_readings(row, notation_by_id):
-        if reading["channel"] not in donors:
+        if (reading["channel"] in donors) != donates:
             return reading
     return None
 
@@ -263,22 +289,6 @@ def partner_tier(channels: dict[str, str | None], own: str | None) -> str | None
     return best
 
 
-def fixes_nitrogen(channels: Iterable[str], donors: frozenset[str]) -> bool:
-    """Whether this neutral's own channels settle how many nitrogens it has.
-
-    Either of the two ways named in the module docstring: a channel that donates
-    no nitrogen observed the neutral directly, or two different nitrogen donors
-    did and the alternative reading cannot hold for both.
-
-    :param channels: The channels the neutral was committed through.
-    :param donors: This run's nitrogen-donating channels.
-    :return: Whether the count is fixed by observation.
-    """
-    seen = frozenset(channels)
-    seen_donors = seen & donors
-    return bool(seen - seen_donors) or len(seen_donors) >= CHANNELS_FOR_CORROBORATION
-
-
 def apply_cross_channel(
     assignments: list[dict],
     *,
@@ -289,9 +299,10 @@ def apply_cross_channel(
     Modifies the rows in place, after both stages have built them: which
     channels a neutral was seen through is a property of the whole ledger.
 
-    A curated row is exempt. Its formula came from a library that named the
-    compound, so the nitrogen sits where the curation put it rather than where
-    the election policy did.
+    A row of the target library is exempt. The workspace named the compound, so
+    the nitrogen sits where its curation put it rather than where a prior did. A
+    reference mirror's row is not exempt, and is asked from both sides
+    (:func:`nitrogen_ambiguity`).
 
     :param assignments: Every row built for this sample, modified in place.
     :param notation_by_id: The run's mechanisms, by the id the rows carry.
@@ -309,6 +320,11 @@ def apply_cross_channel(
         "corroborated": 0,
         "ambiguous_nitrogen": 0,
         "capped": 0,
+        # Of the two counts above, the rows a reference mirror committed. Named
+        # apart because the rule asks a list's formula from both sides and an
+        # election from one, so the two reaches are different questions.
+        "ambiguous_nitrogen_mirror": 0,
+        "capped_mirror": 0,
         # Stored as `capped_satellites` on runs written by earlier builds. Only
         # this summary's own log line reads the count back, so a stored run is
         # never translated; a reader of old run configs has to accept both.
@@ -335,16 +351,21 @@ def apply_cross_channel(
                 seen, notation_by_id.get(str(row.get("ionization_mechanism_id")))
             ),
         }
-        if row.get("source") != SOURCE_DATABASE and not fixes_nitrogen(seen, donors):
+        # A second channel is what fixes the count, whichever side of the donor
+        # boundary the row's own reading sits on (the module docstring's reasons).
+        if not corroborated and not is_target_library_row(row):
             displaced = nitrogen_ambiguity(row, notation_by_id, donors)
             if displaced is not None:
+                mirror = is_reference_mirror_row(row)
                 record["ambiguous_nitrogen"] = {
                     "alternative": displaced.get("assigned_formula"),
                     "via": displaced["channel"],
                 }
                 summary["ambiguous_nitrogen"] += 1
+                summary["ambiguous_nitrogen_mirror"] += mirror
                 if _cap(row, record):
                     summary["capped"] += 1
+                    summary["capped_mirror"] += mirror
                     capped_owners.add(str(row["peak_assignment_id"]))
         row.setdefault("provenance", {})["cross_channel"] = record
 

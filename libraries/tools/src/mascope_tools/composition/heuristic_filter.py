@@ -19,10 +19,19 @@ from mascope_tools.composition.config import (
     ISOTOPE_MATCHING_MZ_TOLERANCE_PPM,
 )
 from mascope_tools.composition.custom_elements import CUSTOM_ELEMENTS
-from mascope_tools.composition.models import HeuristicFilterConfig, PatternScoring
+from mascope_tools.composition.grid import admits
+from mascope_tools.composition.models import (
+    CompositionSearchConfig,
+    HeuristicFilterConfig,
+    PatternScoring,
+)
 from mascope_tools.composition.utils import (
+    combine_counts_and_ionization,
+    ionization_composition,
     normalize_formula_with_isotopes,
+    parse_composition,
     parse_ionization,
+    to_hill_order,
     to_pyteomics,
 )
 
@@ -837,6 +846,96 @@ def elect_same_ion_families(
         ]
         elected.append(winner)
     return elected
+
+
+#: An element symbol with no isotope label or custom notation on it.
+def propose_same_ion_readings(
+    readings: Sequence[tuple[str, str]],
+    notations: Sequence[str],
+    config: CompositionSearchConfig,
+    heuristics_config: HeuristicFilterConfig | None = None,
+) -> list[list[dict[str, Any]]]:
+    """The family a search would have given each reading's ion.
+
+    :func:`elect_same_ion_families` collapses the readings of one ion that the
+    finder enumerated. A reading the finder did not make - a formula a reference
+    list names, matched through one mechanism - arrives with no family, and this
+    builds the one its ion would have had: through every other mechanism of the
+    search, the neutral that makes the same ion formula, kept where the grid
+    holds it (:func:`grid.admits`) and the heuristic rules pass it, the two cuts
+    every enumerated candidate goes through before an election sees it.
+
+    It is arithmetic on one ion, not a search. Readings of the same ion formula
+    share its mass and its envelope, so a split needs no window and no score to
+    be a member. A mechanism of the other charge makes no reading. A split that
+    would need a negative count, or the label of a labelled reagent, is one no
+    grid holds, and :func:`grid.admits` refuses it: the finder never proposes a
+    labelled neutral. Nor is the reagent ion itself a reading of an analyte.
+
+    :param readings: ``(neutral formula, mechanism notation)`` pairs.
+    :param notations: Every mechanism the search runs, the readings' own among
+        them.
+    :param config: The search whose element box and unsaturation window a
+        split has to sit in.
+    :param heuristics_config: The filter a split has to pass.
+    :return: For each reading, in order, the other readings of its ion - each
+        carrying the formula, ion and mechanism an election's displaced reading
+        does - and an empty list where the ion has none.
+    """
+    mechanisms = {}
+    for notation in dict.fromkeys(notations):
+        try:
+            mechanism = parse_ionization(notation)
+        except Exception:  # noqa: BLE001 - a mechanism nobody can parse splits nothing
+            continue
+        moiety = ionization_composition(mechanism.formula) if mechanism.formula else {}
+        sign = 1 if mechanism.addition else -1
+        mechanisms[notation] = (
+            mechanism,
+            {symbol: sign * n for symbol, n in moiety.items()},
+        )
+
+    splits: list[list[tuple[str, str, str]]] = []
+    for formula, notation in readings:
+        members: list[tuple[str, str, str]] = []
+        try:
+            counts = dict(parse_composition(formula))
+        except Exception:  # noqa: BLE001 - a formula nobody can parse has no family
+            counts = {}
+        if counts and notation in mechanisms:
+            own, own_moiety = mechanisms[notation]
+            for other, (mechanism, moiety) in mechanisms.items():
+                if other == notation or (mechanism.charge > 0) != (own.charge > 0):
+                    continue
+                split = dict(counts)
+                for symbol, n in own_moiety.items():
+                    split[symbol] = split.get(symbol, 0) + n
+                for symbol, n in moiety.items():
+                    split[symbol] = split.get(symbol, 0) - n
+                split = {symbol: n for symbol, n in split.items() if n}
+                if split and admits(config, split):
+                    members.append(
+                        (
+                            to_hill_order(split),
+                            combine_counts_and_ionization(split, mechanism),
+                            other,
+                        )
+                    )
+        splits.append(members)
+
+    formulas = sorted({member[0] for members in splits for member in members})
+    passed, _ = apply_heuristic_rules(
+        [{"formula": formula} for formula in formulas], heuristics_config
+    )
+    kept = {candidate["formula"] for candidate in passed}
+    return [
+        [
+            {"formula": formula, "ion": ion, "ionization_mechanism": notation}
+            for formula, ion, notation in members
+            if formula in kept
+        ]
+        for members in splits
+    ]
 
 
 def _candidate_rank_key(candidate: dict[str, Any]) -> tuple:

@@ -315,6 +315,26 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
 ## [1.8.1] - 2026.09.16
 ### Changed
 
+- **A reference list's match now has its nitrogen count questioned like a
+  search result's.** The reagent-nitrogen rule caps a reading whose ion reads
+  equally well as a neutral with a different nitrogen count, the nitrogen
+  moved between the analyte and a reagent that carries it, unless a second
+  ionization channel saw the same neutral. It read the finder's same-ion
+  alternatives, which a Stage A row never had, so a formula from a loaded
+  reference list went unquestioned: dimethylformamide through `+H+` took peaks
+  that are equally acrolein through `+NH4+`. A reference mirror's row now
+  carries the other readings of its ion that the untargeted search would have
+  held - built under the run's element box and heuristic filter, stored as
+  `same_ion` alternatives ahead of its rivals, with the row's own fit and mass
+  error - and the rule asks its nitrogen count from both sides, since a list,
+  unlike the election, can put the nitrogen on the analyte. A compound of the
+  workspace's target library stays exempt. `config.cross_channel` counts the
+  reference rows among the ambiguous and capped readings as
+  `ambiguous_nitrogen_mirror` and `capped_mirror`. In `mascope_tools`,
+  `heuristic_filter.propose_same_ion_readings` builds such a family for any
+  reading, and `grid.admits` asks whether a search's grid would hold one
+  composition.
+
 - **"Satellite" means a signal artifact in the assignment layer, never an
   isotopologue.** Peak detection uses the word for the FT side lobes it flags
   around an intense peak, and the assignment engine, manual curation, the peak

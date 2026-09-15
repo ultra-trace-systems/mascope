@@ -28,6 +28,7 @@ per peak - which is bounded by construction, because a peak's window is narrow.
 from __future__ import annotations
 
 import warnings
+from collections.abc import Mapping
 from dataclasses import dataclass
 from math import ceil, floor
 
@@ -42,6 +43,7 @@ from mascope_tools.composition.models import Atom, CompositionSearchConfig
 __all__ = [
     "DEFAULT_MAX_GRID_ROWS",
     "NeutralGrid",
+    "admits",
     "build_neutral_grid",
 ]
 
@@ -161,6 +163,45 @@ def build_neutral_grid(
         unsaturation=None if unsaturations is None else unsaturations[order],
         pyteomics_symbols=tuple(utils.to_pyteomics(atom.symbol) for atom in atoms),
     )
+
+
+def admits(config: CompositionSearchConfig, composition: Mapping[str, int]) -> bool:
+    """Whether a grid of this search would hold one composition.
+
+    The cut :func:`build_neutral_grid` enumerates, asked of a composition the
+    walk did not produce: the neutral that makes another stage's ion through a
+    different mechanism, which the search would have held beside the one it
+    elected if it had enumerated that ion itself. Mass decides nothing here -
+    whichever window a grid is built over holds a composition's own mass.
+
+    :param config: The search whose element box, and whose unsaturation window
+        when it uses one, decides.
+    :param composition: Element counts, keyed by the box's own symbols.
+    :return: True where every element with a count is in the box, every count
+        sits in its range, and the unsaturation sits in the window when the
+        search uses one.
+    """
+    atoms = utils.parse_atom_count_ranges(config.element_count_ranges)
+    symbols = {atom.symbol for atom in atoms}
+    if any(count and symbol not in symbols for symbol, count in composition.items()):
+        return False
+    if not all(
+        atom.min_count <= composition.get(atom.symbol, 0) <= atom.max_count
+        for atom in atoms
+    ):
+        return False
+    if not config.use_unsaturation:
+        return True
+    unsaturation = (
+        sum(
+            UNSATURATION_COEFFICIENTS.get(symbol, 0) * count
+            for symbol, count in composition.items()
+        )
+        + 2
+    ) / 2.0
+    if not config.min_unsaturation <= unsaturation <= config.max_unsaturation:
+        return False
+    return not config.only_integer_unsaturation or unsaturation == floor(unsaturation)
 
 
 def _unsaturation_coefficients(atoms: list[Atom]) -> list[int]:
