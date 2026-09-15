@@ -10,33 +10,132 @@
  */
 
 /**
- * Whether an isotopologue formula names the ion's monoisotopic isotopologue.
+ * The isotope each labelled custom element puts in an ion, spelled the way the
+ * isotope generator writes it into the ion's isotopologue formulas.
  *
- * The generator brackets a substituted isotope (`C5[13C]H13O6+`, `[81Br]Br2-`)
- * and leaves the monoisotopic one - every element at its lightest isotope -
- * unmarked. The same rule as the backend's `is_monoisotopic_formula`.
- *
- * @param {string|null|undefined} formula an isotopologue formula
- * @returns {boolean}
+ * A copy of the registry in `mascope_tools/composition/custom_elements.py`, where
+ * `^N` - the 15N of a labelled nitrate reagent - is the only entry today. An
+ * element added there has to be added here, or its ions count from their
+ * unlabelled remainder again.
  */
-const isMonoisotopicFormula = (formula) =>
-  typeof formula === 'string' && formula.length > 0 && !formula.includes('[')
+const LABELLED_ISOTOPES = new Map([['^N', '[15N]']])
 
 /**
- * The monoisotopic isotopologue of a hit's predicted pattern.
+ * One token of a flat formula: a bracketed isotope (`[15N]`), a caret custom
+ * element (`^N`) or a plain element (`C`, `Br`), then its count if it has one.
+ * The backend's `parse_formula_tokens` pattern, so both read a formula alike.
+ */
+const FORMULA_TOKEN = /(\[\d+[A-Z][a-z]?\]|\^?[A-Z][a-z]?)(\d*)/g
+
+/**
+ * A flat formula's symbols and their counts. A charge sign is not a token.
+ *
+ * @param {string} formula a formula without parentheses
+ * @returns {Object<string, number>} symbol -> count
+ */
+function formulaTokens(formula) {
+  const counts = {}
+  for (const [, symbol, count] of formula.matchAll(FORMULA_TOKEN)) {
+    counts[symbol] = (counts[symbol] ?? 0) + (count ? Number(count) : 1)
+  }
+  return counts
+}
+
+/**
+ * The isotopes an ion carries by design, spelled the way its isotopologue
+ * formulas spell them: a labelled reagent's `^N` is `{'[15N]': 1}`, `^N2` is
+ * `{'[15N]': 2}`, and an ion without a label carries none. The backend's
+ * `labelled_isotopes`.
+ *
+ * @param {string|null|undefined} ionFormula the ion's formula (`C9H16O7^N-`)
+ * @returns {Object<string, number>} labelled isotope -> count
+ */
+function labelledIsotopes(ionFormula) {
+  const labels = {}
+  if (typeof ionFormula !== 'string') return labels
+  for (const [symbol, count] of Object.entries(formulaTokens(ionFormula))) {
+    const isotope = LABELLED_ISOTOPES.get(symbol)
+    if (isotope) labels[isotope] = (labels[isotope] ?? 0) + count
+  }
+  return labels
+}
+
+/**
+ * The isotopes an isotopologue formula names in brackets, with their counts.
+ *
+ * @param {string} formula one isotopologue formula
+ * @returns {Object<string, number>} bracketed isotope -> count
+ */
+const substitutedIsotopes = (formula) =>
+  Object.fromEntries(
+    Object.entries(formulaTokens(formula)).filter(([symbol]) => symbol.startsWith('['))
+  )
+
+/**
+ * Whether two sets of isotope counts name the same isotopes, each as often.
+ *
+ * @param {Object<string, number>} a
+ * @param {Object<string, number>} b
+ * @returns {boolean}
+ */
+function sameIsotopes(a, b) {
+  const isotopes = Object.keys(a)
+  return (
+    isotopes.length === Object.keys(b).length &&
+    isotopes.every((isotope) => a[isotope] === b[isotope])
+  )
+}
+
+/**
+ * Whether an isotopologue formula names the ion's monoisotopic isotopologue.
+ *
+ * The generator writes a substituted isotope in brackets (`C5[13C]H13O6+`,
+ * `[81Br]Br2-`) and the monoisotopic isotopologue - every element at its most
+ * abundant isotope - without (`C6H13O6+`, `Br3-`). A labelled reagent's atom is
+ * bracketed too, because its isotope is the one the label put there, so the
+ * monoisotopic isotopologue of a labelled ion names exactly its labels and
+ * nothing else: `[15N]C9H16O7-` for `C9H16O7^N-`. The formula without a bracket
+ * is then the reagent's unlabelled remainder, one mass unit below the line the
+ * ion is measured by.
+ *
+ * At a low resolution one line holds several isotopologues, their names joined
+ * by "/"; it is the monoisotopic line when any of them is. The same rule as the
+ * backend's `is_monoisotopic_formula`.
+ *
+ * @param {string|null|undefined} formula an isotopologue formula
+ * @param {Object<string, number>} labels the ion's labelled isotopes
+ *   (`labelledIsotopes`); empty for an ion without a label
+ * @returns {boolean}
+ */
+const isMonoisotopicFormula = (formula, labels) =>
+  typeof formula === 'string' &&
+  formula.length > 0 &&
+  formula.split('/').some((name) => sameIsotopes(substitutedIsotopes(name), labels))
+
+/**
+ * The monoisotopic isotopologue of a hit's predicted pattern: the M0 every
+ * offset label counts from, the way an isotope table counts - which for a
+ * bromine- or chlorine-rich ion is the lightest line of the cluster, not the
+ * tallest, and for a labelled ion is the labelled line, not the unlabelled
+ * remainder below it.
  *
  * The lightest row stands in when no formula carries the marker that tells the
- * two apart, and is the same row wherever an element's most abundant isotope is
- * also its lightest. The backend's `monoisotopic_row` resolves it the same way.
+ * lines apart, and is the same row wherever an element's most abundant isotope
+ * is also its lightest. The backend's `monoisotopic_row` resolves it the same way.
  *
  * @param {Array<Object>} children the hit's predicted isotopologues
+ * @param {string|null|undefined} ionFormula the ion's formula, which names its
+ *   labels; without one, the pattern is read as an unlabelled ion's
  * @returns {Object} the monoisotopic row, or the lightest one
  */
-function monoisotopicOf(children) {
+function monoisotopicOf(children, ionFormula) {
   // Copied before sorting: `children` is the hit's own array, and the results
   // table renders from it.
   const ordered = [...children].sort((a, b) => (a.mz ?? 0) - (b.mz ?? 0))
-  return ordered.find((row) => isMonoisotopicFormula(row.target_isotope_formula)) ?? ordered[0]
+  const labels = labelledIsotopes(ionFormula)
+  return (
+    ordered.find((row) => isMonoisotopicFormula(row.target_isotope_formula, labels)) ?? ordered[0]
+  )
 }
 
 /**
@@ -50,12 +149,13 @@ function monoisotopicOf(children) {
  * everything that folds an isotopologue family onto its M0 (the tier histogram,
  * the batch consensus, a verification verdict) would then believe.
  *
- * Labels count from the ion's MONOISOTOPIC isotopologue - every element at its
- * lightest isotope - and the label is the nominal mass offset from it. That is
- * the convention the assignment engine's `monoisotopic_row` and
- * `_isotope_offset_label` use, so a hand-assigned row reads like an
- * engine-assigned one: for a bromine-rich ion the lightest peak of the cluster
- * is the M0 and the tallest is its M+2, as in an isotope table.
+ * Labels count from the ion's MONOISOTOPIC isotopologue (`monoisotopicOf`), and
+ * the label is the nominal mass offset from it. That is the convention the
+ * assignment engine's `monoisotopic_row` and `_isotope_offset_label` use, so a
+ * hand-assigned row reads like an engine-assigned one: for a bromine-rich ion
+ * the lightest peak of the cluster is the M0 and the tallest is its M+2, as in
+ * an isotope table, and for a 15N-labelled ion the labelled line is the M0 and
+ * the reagent's unlabelled remainder below it is the M-1.
  *
  * @param {Object} hit a composition-search result row
  * @returns {{label: string, formula: string|null}} the isotopologue label
@@ -68,7 +168,9 @@ export function isotopeOfHit(hit) {
   // isotopologue, which is what a single-isotope candidate means anyway.
   if (!children.length) return { label: 'M0', formula: null }
 
-  const main = monoisotopicOf(children)
+  // The labels are read off the ion formula, which the search spreads onto the
+  // hit with the rest of the matched ion; an isotope row carries only its own.
+  const main = monoisotopicOf(children, hit?.target_ion_formula)
   // The isotope the search matched at this peak. Taken from the hit's own
   // `cheminfo` rather than from the focused peak, so the answer does not depend
   // on which peak happens to be focused when the button is clicked.
