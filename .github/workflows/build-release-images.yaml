@@ -23,6 +23,11 @@ on:
   release:
     types: [published]
 
+# No token scope by default: each job that needs one declares exactly what it
+# needs, and a job that declares nothing - check-release-kind reads only the
+# event payload - gets none, rather than the repository's default grant.
+permissions: {}
+
 jobs:
   # Whether a release is a candidate is asserted twice, independently: by the
   # tag's suffix, and by the "Set as a pre-release" checkbox in the Publish UI.
