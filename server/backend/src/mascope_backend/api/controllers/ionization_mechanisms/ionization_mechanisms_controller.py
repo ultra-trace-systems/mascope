@@ -4,9 +4,7 @@ Ionization mechanisms controller for managing ionization mechanism operations.
 
 from fastapi import HTTPException
 from sqlalchemy import (
-    asc,
     delete,
-    desc,
     func,
     select,
 )
@@ -19,7 +17,9 @@ from mascope_backend.api.lib.exceptions.api_exceptions import (
     ApiException,
     NotFoundException,
 )
+from mascope_backend.api.lib.sorting import order_by_column
 from mascope_backend.api.models.ionization_mechanisms.ionization_mechanism_pydantic_model import (
+    IONIZATION_MECHANISM_SORT_COLUMNS,
     IonizationMechanismCreate,
     IonizationMechanismRead,
 )
@@ -89,12 +89,11 @@ async def get_ionization_mechanisms(
 
         # Step 3: Apply sorting
         if sort:
-            sort_expression = (
-                desc(getattr(IonizationMechanism, sort))
-                if order == "desc"
-                else asc(getattr(IonizationMechanism, sort))
+            stmt = stmt.order_by(
+                order_by_column(
+                    IonizationMechanism, sort, order, IONIZATION_MECHANISM_SORT_COLUMNS
+                )
             )
-            stmt = stmt.order_by(sort_expression)
 
         # Step 4: Apply pagination
         total = await session.scalar(select(func.count()).select_from(stmt))

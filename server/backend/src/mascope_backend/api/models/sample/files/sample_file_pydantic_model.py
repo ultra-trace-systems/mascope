@@ -191,12 +191,32 @@ class SampleFilesUpload(BaseModel):
         return files
 
 
+# Columns `sort` accepts (see mascope_backend.api.lib.sorting).
+SAMPLE_FILE_SORT_COLUMNS = (
+    "sample_file_id",
+    "instrument_function_id",
+    "filename",
+    "instrument",
+    "method_file",
+    "datetime",
+    "datetime_utc",
+    "length",
+    "polarity",
+    "uploaded_by_user_id",
+    "uploaded_by_device_id",
+    "acquisition_timezone",
+    "utc_offset_source",
+    "instrument_type",
+    "source_filename",
+)
+
+
 class GetSampleFilesQueryParams(QueryParamsModel):
     datetime_min: Optional[dt] = Field(None, description="Minimum datetime filter")
     datetime_max: Optional[dt] = Field(None, description="Maximum datetime filter")
     instrument: Optional[str] = Field(None, description="Filter by instrument")
     filename: Optional[str] = Field(None, description="Filter by filename")
-    sort: Optional[str] = Field(
+    sort: Literal[SAMPLE_FILE_SORT_COLUMNS] | None = Field(
         "datetime_utc",
         description="The column name by which you want to sort the results.",
     )

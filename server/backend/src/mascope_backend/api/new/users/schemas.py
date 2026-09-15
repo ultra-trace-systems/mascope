@@ -1,5 +1,5 @@
 from datetime import datetime
-from typing import Optional
+from typing import Literal, Optional
 
 from fastapi_users import schemas
 from pydantic import (
@@ -331,6 +331,14 @@ class UserUpdate(schemas.BaseUserUpdate):
         return values
 
 
+# Columns `sort` accepts (see mascope_backend.api.lib.sorting).
+USER_SORT_COLUMNS = (
+    "id",
+    "username",
+    "registered_at",
+)
+
+
 class GetUsersQueryParams(QueryParamsModel):
     """
     Query parameter model for retrieving users with pagination, sorting, and filtering options.
@@ -342,10 +350,10 @@ class GetUsersQueryParams(QueryParamsModel):
     role_name_max: Optional[str] = Field(
         None, description="Maximum role name to filter users (e.g., 'admin')."
     )
-    sort: Optional[str] = Field(
+    sort: Literal[USER_SORT_COLUMNS] | None = Field(
         "registered_at",
         description=(
-            "Column name by which you want to sort the results. The column name should match the columns in the user table."
+            "Column name by which you want to sort the results: id, username or registered_at."
         ),
     )
     order: Optional[str] = Field(

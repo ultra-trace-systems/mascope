@@ -1,5 +1,5 @@
 import re
-from typing import Optional
+from typing import Literal, Optional
 
 from pydantic import BaseModel, Field, field_validator
 
@@ -104,6 +104,15 @@ class TargetCompoundUpdate(BaseModel):
     )
 
 
+# Columns `sort` accepts (see mascope_backend.api.lib.sorting).
+TARGET_COMPOUND_SORT_COLUMNS = (
+    "target_compound_id",
+    "target_compound_name",
+    "target_compound_formula",
+    "cas_number",
+)
+
+
 class GetTargetCompoundsQueryParams(QueryParamsModel):
     target_compound_name: Optional[str] = Field(
         None, description="The name of the target compound to filter by."
@@ -121,7 +130,7 @@ class GetTargetCompoundsQueryParams(QueryParamsModel):
         False,
         description="Flag to include target collection ID, also duplicate compounds present in several collections will be shown.",
     )
-    sort: Optional[str] = Field(
+    sort: Literal[TARGET_COMPOUND_SORT_COLUMNS] | None = Field(
         None, description="The column name to sort the results by."
     )
     order: Optional[str] = Field(
@@ -138,6 +147,13 @@ class GetTargetCompoundsQueryParams(QueryParamsModel):
     )
 
 
+# Columns `sort` accepts (see mascope_backend.api.lib.sorting).
+TARGET_COMPOUND_IN_TARGET_COLLECTION_SORT_COLUMNS = (
+    "target_compound_id",
+    "target_collection_id",
+)
+
+
 class GetTargetCompoundInTargetCollectionQueryParams(QueryParamsModel):
     target_compound_id: Optional[str] = Field(
         None,
@@ -147,7 +163,7 @@ class GetTargetCompoundInTargetCollectionQueryParams(QueryParamsModel):
         None,
         description="The target collection ID filter for which you want to fetch the assosiated target compound ids.",
     )
-    sort: Optional[str] = Field(
+    sort: Literal[TARGET_COMPOUND_IN_TARGET_COLLECTION_SORT_COLUMNS] | None = Field(
         None,
         description="The column name by which you want to sort the results. The column name should be either target_compound_id or target_collection_id.",
     )

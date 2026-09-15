@@ -6,6 +6,7 @@ with validation rules and business logic constraints.
 """
 
 from datetime import datetime
+from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
@@ -167,6 +168,21 @@ class SampleBatchUpdateStatusBody(BaseModel):
         return status
 
 
+# Columns `sort` accepts (see mascope_backend.api.lib.sorting).
+SAMPLE_BATCH_SORT_COLUMNS = (
+    "sample_batch_id",
+    "dataset_id",
+    "sample_batch_name",
+    "sample_batch_description",
+    "sample_batch_type",
+    "status",
+    "locked",
+    "polarity",
+    "sample_batch_utc_created",
+    "sample_batch_utc_modified",
+)
+
+
 class GetSampleBatchesQueryParams(QueryParamsModel):
     dataset_id: str = Field(
         description="The dataset ID for which to fetch sample batches.",
@@ -186,7 +202,7 @@ class GetSampleBatchesQueryParams(QueryParamsModel):
         default=None,
         description="Filter by polarities (+, -, +-). Can specify multiple polarities.",
     )
-    sort: str | None = Field(
+    sort: Literal[SAMPLE_BATCH_SORT_COLUMNS] | None = Field(
         "sample_batch_utc_created",
         description="Column name by which you want to sort the results. The column name should be one of the columns in the sample batch table.",
     )

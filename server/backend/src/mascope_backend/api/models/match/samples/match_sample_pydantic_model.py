@@ -1,4 +1,4 @@
-from typing import Optional
+from typing import Literal, Optional
 
 from pydantic import BaseModel, Field
 
@@ -14,6 +14,18 @@ class MatchSampleBase(BaseModel):
     )
 
 
+# Columns `sort` accepts (see mascope_backend.api.lib.sorting).
+MATCH_SAMPLE_SORT_COLUMNS = (
+    "match_sample_id",
+    "sample_item_id",
+    "match_score",
+    "match_category",
+    "sample_peak_intensity_sum",
+    "match_sample_utc_created",
+    "match_sample_utc_modified",
+)
+
+
 class GetMatchSamplesQueryParams(QueryParamsModel):
     sample_item_id: Optional[str] = Field(
         None, description="Filter match samples by sample item ID"
@@ -25,7 +37,7 @@ class GetMatchSamplesQueryParams(QueryParamsModel):
         None,
         description="Filter match samples by match_category to include match samples with specified match category and higher",
     )
-    sort: Optional[str] = Field(
+    sort: Literal[MATCH_SAMPLE_SORT_COLUMNS] | None = Field(
         None, description="The column name to sort the results by."
     )
     order: Optional[str] = Field(

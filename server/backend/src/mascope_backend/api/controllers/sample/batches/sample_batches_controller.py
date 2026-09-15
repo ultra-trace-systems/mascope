@@ -6,9 +6,7 @@ import pandas as pd
 import xarray as xr
 from sqlalchemy import (
     and_,
-    asc,
     delete,
-    desc,
     func,
     select,
 )
@@ -64,8 +62,10 @@ from mascope_backend.api.lib.api_features import (
 from mascope_backend.api.lib.exceptions.api_exceptions import (
     NotFoundException,
 )
+from mascope_backend.api.lib.sorting import order_by_column
 from mascope_backend.api.models.sample.batches.config import sample_batch_config
 from mascope_backend.api.models.sample.batches.sample_batch_pydantic_model import (
+    SAMPLE_BATCH_SORT_COLUMNS,
     SampleBatchCreate,
     SampleBatchRead,
     SampleBatchUpdate,
@@ -171,10 +171,9 @@ async def get_sample_batches(
 
         # Step 3: Apply sorting
         if sort:
-            if order == "desc":
-                stmt = stmt.order_by(desc(getattr(SampleBatch, sort)))
-            else:
-                stmt = stmt.order_by(asc(getattr(SampleBatch, sort)))
+            stmt = stmt.order_by(
+                order_by_column(SampleBatch, sort, order, SAMPLE_BATCH_SORT_COLUMNS)
+            )
 
         # Step 4: Apply pagination
         count_stmt = select(func.count()).select_from(stmt)

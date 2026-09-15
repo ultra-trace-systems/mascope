@@ -1,6 +1,6 @@
 from datetime import datetime, timezone
 
-from sqlalchemy import and_, asc, delete, desc, func, insert, select
+from sqlalchemy import and_, delete, func, insert, select
 
 from mascope_backend.api.controllers.match.lib.match_write_lock import (
     acquire_match_write_locks,
@@ -13,7 +13,9 @@ from mascope_backend.api.lib.exceptions.api_exceptions import (
     DuplicateException,
     NotFoundException,
 )
+from mascope_backend.api.lib.sorting import order_by_column
 from mascope_backend.api.models.match.isotopes.match_isotopes_pydantic_model import (
+    MATCH_ISOTOPE_SORT_COLUMNS,
     MatchIsotopeBase,
 )
 from mascope_backend.db import (
@@ -95,12 +97,9 @@ async def get_match_isotopes(
 
         # Step 4: Apply sorting
         if sort:
-            sort_expression = (
-                desc(getattr(MatchIsotope, sort))
-                if order == "desc"
-                else asc(getattr(MatchIsotope, sort))
+            stmt = stmt.order_by(
+                order_by_column(MatchIsotope, sort, order, MATCH_ISOTOPE_SORT_COLUMNS)
             )
-            stmt = stmt.order_by(sort_expression)
 
         # Step 5: Count total
         total = await session.scalar(select(func.count()).select_from(stmt))

@@ -7,8 +7,6 @@ from uuid import uuid4
 
 from fastapi import BackgroundTasks, HTTPException, UploadFile
 from sqlalchemy import (
-    asc,
-    desc,
     exists,
     func,
     or_,
@@ -33,7 +31,9 @@ from mascope_backend.api.lib.exceptions.api_exceptions import (
     NotFoundException,
     raise_api_warning,
 )
+from mascope_backend.api.lib.sorting import order_by_column
 from mascope_backend.api.models.sample.files.sample_file_pydantic_model import (
+    SAMPLE_FILE_SORT_COLUMNS,
     SampleFileCreate,
     SampleFileUpdate,
 )
@@ -350,10 +350,8 @@ async def get_sample_files(
             stmt = stmt.where(SampleFile.filename == filename)
 
         # --- Apply sorting
-        stmt = (
-            stmt.order_by(desc(getattr(SampleFile, sort)))
-            if order == "desc"
-            else stmt.order_by(asc(getattr(SampleFile, sort)))
+        stmt = stmt.order_by(
+            order_by_column(SampleFile, sort, order, SAMPLE_FILE_SORT_COLUMNS)
         )
 
         # --- Apply pagination

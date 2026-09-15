@@ -4,6 +4,29 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
 
 ## [Unreleased]
 
+### Security
+
+- **A list endpoint's `sort` parameter accepts only the columns that endpoint
+  declares.** Every list route that takes `sort` (users, datasets, sample
+  batches, items, files and samples, target collections, compounds, ions and
+  isotopes and their associations, match results and ratings, ionization
+  mechanisms, attribute templates, instrument configs) passed the value
+  straight to `getattr` on the model. An unknown name answered 500 - which is
+  how `GET /api/users?sort=1' OR '1'='1` failed a pentest injection control,
+  though no SQL was ever injected - and any mapped attribute was orderable,
+  so any active user could order `/api/users` by the password hash or email
+  and use the order as an oracle over values the listing does not show.
+  Each endpoint now names its sortable columns explicitly
+  (`mascope_backend/api/lib/sorting.py`): anything else is refused with 422
+  during request validation, the accepted values are listed as an enum in
+  the OpenAPI document, and the controllers check the same list again before
+  touching the model. `/api/users` sorts by `id`, `username` or
+  `registered_at` only; the other endpoints keep every scalar column they
+  return, so the frontend's sorts are unaffected. The match collection,
+  compound, ion and sample endpoints used to ignore a name they did not
+  recognise and return the results unsorted; they now refuse it like the
+  rest. An unexpected `AttributeError` still maps to 500.
+
 ## [1.8.0] - 2026.09.15
 
 ### Added

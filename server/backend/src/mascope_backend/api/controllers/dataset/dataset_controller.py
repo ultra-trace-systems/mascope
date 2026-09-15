@@ -1,7 +1,7 @@
 from datetime import datetime, timezone
 
 from fastapi import HTTPException, status
-from sqlalchemy import asc, desc, func, select
+from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -10,8 +10,10 @@ from mascope_backend.api.lib.exceptions.api_exceptions import (
     DuplicateException,
     NotFoundException,
 )
+from mascope_backend.api.lib.sorting import order_by_column
 from mascope_backend.api.models.dataset.config import dataset_config
 from mascope_backend.api.models.dataset.dataset_pydantic_model import (
+    DATASET_SORT_COLUMNS,
     DatasetCreate,
     DatasetRead,
     DatasetUpdate,
@@ -236,10 +238,9 @@ async def get_datasets(
 
         # Step 2: Apply sorting if specified
         if sort:
-            if order == "desc":
-                stmt = stmt.order_by(desc(getattr(Dataset, sort)))
-            else:
-                stmt = stmt.order_by(asc(getattr(Dataset, sort)))
+            stmt = stmt.order_by(
+                order_by_column(Dataset, sort, order, DATASET_SORT_COLUMNS)
+            )
 
         # Step 3: Get total count
         count_stmt = select(func.count()).select_from(stmt.subquery())
