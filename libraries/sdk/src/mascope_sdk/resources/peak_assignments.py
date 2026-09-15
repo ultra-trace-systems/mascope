@@ -237,10 +237,13 @@ class PeakAssignmentsResource(BaseResource):
                    column, because it is a different measurement.
                  - ``mass_z``: how far the row's mass error sits from the
                    centre the run fitted over its own corroborated
-                   assignments, in the widths it fitted there. The run's
-                   ``config.mass_calibration`` holds that fit; a row beyond
-                   three widths with nothing but the mass fit behind it is
-                   capped, and says so in its detail provenance.
+                   assignments, in the widths it fitted there. Where the run's
+                   commits follow the mass range the centre does too, and is
+                   read at the row's own m/z. The run's
+                   ``config.mass_calibration`` holds that fit, its ``centre``
+                   and any ``trend``; a row beyond three widths with nothing
+                   but the mass fit behind it is capped, and says so in its
+                   detail provenance.
                  - ``target_compound_id``, ``target_ion_id`` (set for
                    database-sourced assignments)
                  - ``owner_peak_assignment_id`` (for isotope children, the

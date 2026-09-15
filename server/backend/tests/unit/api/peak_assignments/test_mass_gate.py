@@ -5,7 +5,7 @@ to define the run's centre decides which rows can be found to sit away from it,
 and a mistake there condemns exactly the samples that most need the correction -
 the ones sitting a ppm out. These pin the corroboration rule, the fit over it,
 the direction the cap may move a tier, and the two ways a run declines to gate
-at all.
+at all, and the centre that follows the mass range where a run's commits do.
 """
 
 import pytest
@@ -16,6 +16,7 @@ from mascope_backend.api.new.peak_assignments.mass_gate import (
     CORROBORATED_ISOTOPOLOGUE,
     OFF_CALIBRATION_Z,
     REASON_OFF_CALIBRATION,
+    MassCalibration,
     apply_mass_gate,
     corroboration_of,
     fit_run_mass_accuracy,
@@ -26,6 +27,11 @@ from mascope_backend.api.new.peak_assignments.tiers import (
     TIER_BELOW_ASSIGNABILITY,
     TIER_CANDIDATE,
     TIER_UNASSIGNED,
+)
+from mascope_tools.composition.mass_accuracy import (
+    MASS_TREND_ABS_FLOOR_MDA,
+    TREND_TOO_FEW_POINTS,
+    MassTrend,
 )
 
 
@@ -45,6 +51,7 @@ def _row(
     formula="C6H12O6",
     owner=None,
     compound=None,
+    mz=None,
 ):
     return {
         "peak_assignment_id": row_id,
@@ -52,6 +59,7 @@ def _row(
         "source": source,
         "assigned_formula": formula,
         "mz_error_ppm": ppm,
+        "sample_peak_mz": mz,
         "tier": tier,
         "owner_peak_assignment_id": owner,
         "target_compound_id": compound,
@@ -522,3 +530,220 @@ class TestWhatAnchorsTheCalibration:
         assert summary["gate_sigma_ppm"] == pytest.approx(summary["sigma_ppm"])
         assert summary["gate_sigma_ppm"] > summary["search_sigma_ppm"]
         assert summary["capped"] == 1
+
+
+#: The line the commits of a run follow below: an absolute offset of -0.15 mDa,
+#: which is -2.1 ppm at m/z 61 and near zero at m/z 400.
+TREND_INTERCEPT_PPM, TREND_OFFSET_MDA = 0.35, -0.15
+
+
+def _centre(mz):
+    return TREND_INTERCEPT_PPM + TREND_OFFSET_MDA * 1000.0 / mz
+
+
+def _trend_run(probe_ppm, probe_mz=61.0, *, located=True):
+    """A run whose commits follow the line over m/z 59-400, then a probe.
+
+    Twelve target library anchors at m/z 250-400, forty uncorroborated commits
+    spread evenly in 1000/mz over the whole range, and last an uncorroborated
+    probe. ``located=False`` drops every row's m/z, which leaves the run
+    nothing to fit a line over.
+    """
+
+    def at(mz):
+        return mz if located else None
+
+    anchors = [
+        _library(f"anchor-{i}", ppm=_centre(mz) + (0.05 if i % 2 else -0.05), mz=at(mz))
+        for i, mz in enumerate(250.0 + 150.0 * i / 11 for i in range(12))
+    ]
+    commits = [
+        _row(f"commit-{i}", ppm=_centre(mz) + (0.05 if i % 2 else -0.05), mz=at(mz))
+        for i, mz in enumerate(
+            1000.0 / (2.5 + (1000.0 / 59.0 - 2.5) * i / 39) for i in range(40)
+        )
+    ]
+    return anchors + commits + [_row("probe", ppm=probe_ppm, mz=at(probe_mz))]
+
+
+def _calibration_with_a_trend(mz_lo=59.0):
+    """A run centred at -0.12 ppm and judged at 0.583, whose commits drew the line."""
+    return MassCalibration(
+        mu_ppm=-0.12,
+        sigma_ppm=0.08,
+        anchors=12,
+        gate_sigma_ppm=0.583,
+        trend=MassTrend(
+            intercept_ppm=TREND_INTERCEPT_PPM,
+            offset_mda=TREND_OFFSET_MDA,
+            sigma_ppm=0.05,
+            points=53,
+            mz_lo=mz_lo,
+            mz_hi=400.0,
+        ),
+        trend_rows=53,
+    )
+
+
+class TestTheCentreFollowsTheMassRange:
+    """Where a run's commits drift with m/z, a row is judged at its own."""
+
+    def test_a_small_ion_on_the_run_s_line_is_on_calibration(self):
+        # -2.1 ppm at m/z 61 is where this run's commits sit there. From the
+        # constant centre, which the anchors put near -0.1 ppm, it is more than
+        # three widths out, capped for the calibration's shape.
+        rows = _trend_run(probe_ppm=_centre(61.0))
+
+        summary = apply_mass_gate(rows, fallback_sigma_ppm=PRECISION)
+
+        assert summary["centre"] == "trend"
+        assert rows[-1]["provenance"]["mass_z"] == pytest.approx(0.0, abs=0.3)
+        assert rows[-1]["tier"] == TIER_ASSIGNED
+
+        constant = _trend_run(probe_ppm=_centre(61.0), located=False)
+        summary = apply_mass_gate(constant, fallback_sigma_ppm=PRECISION)
+
+        assert summary["centre"] == "constant"
+        assert constant[-1]["provenance"]["mass_z"] < -OFF_CALIBRATION_Z
+        assert constant[-1]["tier"] == TIER_CANDIDATE
+
+    def test_a_small_ion_off_the_run_s_line_is_capped(self):
+        # On the constant centre, and 2.1 ppm off the line the run's own commits
+        # draw at m/z 61: the shape is no excuse for a row that is not on it.
+        rows = _trend_run(probe_ppm=0.0)
+
+        summary = apply_mass_gate(rows, fallback_sigma_ppm=PRECISION)
+
+        assert rows[-1]["provenance"]["mass_z"] > OFF_CALIBRATION_Z
+        assert rows[-1]["tier"] == TIER_CANDIDATE
+        assert summary["capped"] == 1
+
+        constant = _trend_run(probe_ppm=0.0, located=False)
+        apply_mass_gate(constant, fallback_sigma_ppm=PRECISION)
+
+        assert constant[-1]["tier"] == TIER_ASSIGNED
+
+    def test_the_line_is_the_commits_and_the_centre_and_width_the_anchors(self):
+        # The anchors thin out below m/z 100, where a small ion's isotopologue
+        # is too weak to track, so the line is fitted over every commit. The
+        # constant centre and the width stay the anchors' alone: the rows being
+        # judged do not set the width they are judged in.
+        rows = _trend_run(probe_ppm=_centre(61.0))
+        anchors = [row for row in rows if row["source"] == "database"]
+
+        calibration = fit_run_mass_accuracy(
+            rows, corroboration_of(rows, precision_ppm=PRECISION)
+        )
+        alone = fit_run_mass_accuracy(
+            anchors, corroboration_of(anchors, precision_ppm=PRECISION)
+        )
+
+        assert alone.trend is None
+        assert alone.trend_refused == TREND_TOO_FEW_POINTS
+        assert calibration.trend.offset_mda == pytest.approx(TREND_OFFSET_MDA, abs=0.01)
+        assert calibration.trend_rows == len(rows)
+        assert (calibration.mu_ppm, calibration.sigma_ppm, calibration.anchors) == (
+            alone.mu_ppm,
+            alone.sigma_ppm,
+            alone.anchors,
+        )
+
+    def test_an_isotopologue_does_not_draw_the_line(self):
+        # The same ion on a weaker peak, and on a crowded spectrum often a line
+        # the matching window reached: it is judged at the line, not fitted.
+        rows = _trend_run(probe_ppm=_centre(61.0))
+        children = [
+            _row(f"child-{i}", ppm=3.0, role="iso_child", mz=59.0 + i)
+            for i in range(40)
+        ]
+
+        with_children = fit_run_mass_accuracy(
+            rows + children,
+            corroboration_of(rows + children, precision_ppm=PRECISION),
+        )
+        without = fit_run_mass_accuracy(
+            rows, corroboration_of(rows, precision_ppm=PRECISION)
+        )
+
+        assert with_children.trend == without.trend
+        assert with_children.trend_rows == without.trend_rows
+
+    def test_a_run_whose_commits_are_flat_keeps_the_constant_centre_exactly(self):
+        # Every row's distance and tier are what the constant centre gives a
+        # run none of whose rows has an m/z at all.
+        def flat(located):
+            rows = _anchors(12, ppm=-0.1, spread=0.05) + [
+                _row(
+                    f"commit-{i}",
+                    ppm=-0.1 + (0.05 if i % 2 else -0.05),
+                    mz=(1000.0 / (2.5 + 14.5 * i / 39)) if located else None,
+                )
+                for i in range(40)
+            ]
+            return rows + [_row("off", ppm=2.0, mz=61.0 if located else None)]
+
+        rows, unlocated = flat(True), flat(False)
+        summary = apply_mass_gate(rows, fallback_sigma_ppm=PRECISION)
+        apply_mass_gate(unlocated, fallback_sigma_ppm=PRECISION)
+
+        assert summary["centre"] == "constant"
+        assert summary["trend"] is None
+        assert summary["trend_refused"] is not None
+        assert [row["provenance"] for row in rows] == [
+            row["provenance"] for row in unlocated
+        ]
+        assert [row["tier"] for row in rows] == [row["tier"] for row in unlocated]
+
+    def test_below_the_lowest_commit_the_centre_is_held_where_it_was_measured(self):
+        # Extended to m/z 70, the line fitted over m/z 90-400 would put its
+        # centre 0.5 ppm further out than anything the run measured. Held, m/z
+        # 70 is judged from the centre at m/z 90, and m/z 900 from m/z 400's.
+        calibration = _calibration_with_a_trend(mz_lo=90.0)
+
+        assert calibration.z_of(_centre(90.0), 70.0) == pytest.approx(0.0)
+        assert calibration.z_of(_centre(400.0), 900.0) == pytest.approx(0.0)
+
+    def test_at_low_mass_the_width_is_floored_in_millidaltons(self):
+        # 0.03 mDa is 0.75 ppm at m/z 40, wider than the 0.583 ppm the gate
+        # judges at; at m/z 200 it is 0.15 ppm, and the gate's width stands.
+        calibration = _calibration_with_a_trend()
+
+        assert calibration.z_of(_centre(59.0) + 1.5, 40.0) == pytest.approx(
+            1.5 / (MASS_TREND_ABS_FLOOR_MDA * 1000.0 / 40.0)
+        )
+        assert calibration.z_of(_centre(200.0) + 1.5, 200.0) == pytest.approx(
+            1.5 / 0.583
+        )
+
+    def test_a_row_whose_mz_is_unknown_is_judged_at_the_constant_centre(self):
+        calibration = _calibration_with_a_trend()
+
+        assert calibration.z_of(0.46) == pytest.approx((0.46 + 0.12) / 0.583)
+
+    def test_the_run_records_the_centre_it_judged_at(self):
+        summary = apply_mass_gate(
+            _trend_run(probe_ppm=_centre(61.0)), fallback_sigma_ppm=PRECISION
+        )
+
+        assert summary["trend_refused"] is None
+        trend = summary["trend"]
+        assert trend["offset_mda"] == pytest.approx(TREND_OFFSET_MDA, abs=0.01)
+        assert trend["intercept_ppm"] == pytest.approx(TREND_INTERCEPT_PPM, abs=0.05)
+        assert trend["rows"] == 53
+        assert 0 < trend["kept"] <= 53
+        assert (trend["mz_lo"], trend["mz_hi"]) == pytest.approx((59.0, 400.0), abs=0.5)
+        assert trend["abs_floor_mda"] == MASS_TREND_ABS_FLOOR_MDA
+
+        unlocated = apply_mass_gate(
+            _trend_run(probe_ppm=0.0, located=False), fallback_sigma_ppm=PRECISION
+        )
+
+        assert unlocated["centre"] == "constant"
+        assert unlocated["trend"] is None
+        assert unlocated["trend_refused"] == TREND_TOO_FEW_POINTS
+
+        unmeasured = apply_mass_gate(_anchors(3), fallback_sigma_ppm=PRECISION)
+
+        assert unmeasured["centre"] == "none"
+        assert unmeasured["trend"] is None
+        assert unmeasured["trend_refused"] is None

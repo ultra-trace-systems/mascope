@@ -7,6 +7,14 @@ the rows it has more than a mass fit for - and once measured, every committed
 row has a position in that distribution. ``mass_z`` is that position, and this
 is where it is put on the row.
 
+The centre is not always one number. On an Orbitrap the calibration's residual
+below about m/z 120 is closer to a constant absolute offset, so in ppm it grows
+as 1/mz: on the sparse Orbitrap set the run's commits sit near 0 ppm above m/z
+120, at -0.6 to -0.8 at m/z 80-120 and at -1.4 to -1.5 below m/z 80, in every
+sample. Where a run's commits demand it, its centre follows
+``ppm = a + b * 1000 / mz`` and a row is judged at its own m/z; a run whose
+commits do not keeps the constant centre exactly. The width stays one number.
+
 The gate on top of it is deliberately narrow. A row the run corroborated is
 never demoted: an isotope envelope that was confirmed, or a compound of the
 workspace's own target library that was matched, is evidence the mass error
@@ -49,8 +57,12 @@ from mascope_backend.api.new.peak_assignments.tiers import (
     TIER_RANK,
 )
 from mascope_tools.composition.mass_accuracy import (
+    MASS_TREND_ABS_FLOOR_MDA,
+    MassTrend,
     fit_mass_accuracy,
+    fit_mass_trend,
     scoring_sigma_ppm,
+    trend_width_floor_ppm,
 )
 
 
@@ -132,6 +144,9 @@ class MassCalibration:
     The two answer different questions and a run records both: on a sample whose
     curated library holds two targets the first has nothing to say and the
     second has thousands of rows.
+
+    The centre is :attr:`mu_ppm` unless the run's commits demanded one that
+    follows the mass range, which is then :attr:`trend`.
     """
 
     mu_ppm: float | None = None
@@ -148,6 +163,12 @@ class MassCalibration:
     #: that set alone. A row cannot be off calibration for a distance its own
     #: search was told to accept, so the search's width is the floor.
     gate_sigma_ppm: float | None = None
+    #: The centre as a function of m/z, where the run's commits demanded one.
+    trend: MassTrend | None = None
+    #: Why the run judged at the constant centre instead, once it had one.
+    trend_refused: str | None = None
+    #: The committed monoisotopic rows the trend was asked of.
+    trend_rows: int = 0
 
     @property
     def measured(self) -> bool:
@@ -160,20 +181,29 @@ class MassCalibration:
         """
         return self.mu_ppm is not None and self.sigma_ppm is not None
 
-    def z_of(self, mz_error_ppm: float | None) -> float | None:
+    def z_of(self, mz_error_ppm: float | None, mz: float | None = None) -> float | None:
         """Where a mass error sits in this run's own distribution, in sigma.
 
         In :attr:`gate_sigma_ppm`, not in the fitted width, so that one number
         on the row means one thing: a row reads beyond 3 exactly when the gate
         would cap it for being there.
+
+        Measured from the centre at the row's own m/z where the run has a
+        :attr:`trend`, in that width floored by the trend's absolute floor
+        (:data:`MASS_TREND_ABS_FLOOR_MDA`); from the constant centre otherwise,
+        and for a row whose m/z is unknown.
         """
         if not self.measured or mz_error_ppm is None:
             return None
         error = float(mz_error_ppm)
         if not np.isfinite(error):
             return None
-        width = self.gate_sigma_ppm or self.sigma_ppm
-        return (error - float(self.mu_ppm)) / float(width)
+        centre = float(self.mu_ppm)
+        width = float(self.gate_sigma_ppm or self.sigma_ppm)
+        if self.trend is not None and mz is not None:
+            centre = self.trend.centre_ppm(mz)
+            width = max(width, trend_width_floor_ppm(mz))
+        return (error - centre) / width
 
     def snapshot(self) -> dict:
         """What the run records about the calibration it judged its rows at."""
@@ -195,7 +225,44 @@ class MassCalibration:
             # which is a different statement from measuring zero.
             "mu_source": "fitted" if self.mu_ppm is not None else "none",
             "sigma_source": "fitted" if self.sigma_ppm is not None else "none",
+            # Which centre a row's distance was measured from: the line below,
+            # or the constant one, with the rule that refused the line.
+            "centre": (
+                "trend"
+                if self.trend is not None
+                else "constant"
+                if self.measured
+                else "none"
+            ),
+            "trend": None if self.trend is None else _trend_snapshot(self),
+            "trend_refused": self.trend_refused,
         }
+
+
+def _trend_snapshot(calibration: MassCalibration) -> dict:
+    """The run's record of the line its centre followed."""
+    trend = calibration.trend
+    return {
+        "intercept_ppm": round(trend.intercept_ppm, 4),
+        # The absolute offset, the same at every mass: the centre at an m/z is
+        # intercept_ppm + offset_mda * 1000 / mz, held at mz_lo and mz_hi.
+        "offset_mda": round(trend.offset_mda, 4),
+        "sigma_ppm": round(trend.sigma_ppm, 4),
+        "rows": int(calibration.trend_rows),
+        "kept": int(trend.points),
+        "mz_lo": round(trend.mz_lo, 4),
+        "mz_hi": round(trend.mz_hi, 4),
+        "abs_floor_mda": MASS_TREND_ABS_FLOOR_MDA,
+    }
+
+
+def peak_mz(row: dict) -> float | None:
+    """The m/z of the peak a row sits on, where it has a usable one."""
+    value = row.get("sample_peak_mz")
+    if value is None:
+        return None
+    mz = float(value)
+    return mz if np.isfinite(mz) and mz > 0 else None
 
 
 def is_committed(row: dict) -> bool:
@@ -343,9 +410,28 @@ def fit_run_mass_accuracy(
     put the run at +0.4 to +1.6 ppm and 4.4 to 4.6 ppm wide, while the run's own
     uncorroborated M0 rows sat at -0.1 to +0.1 and 2.7 to 2.9 wide.
 
+    Where that fit is measured, the centre may follow the mass range, and that
+    line is fitted over every committed monoisotopic row rather than over the
+    anchors (``fit_mass_trend``, whose acceptance rule is peaky's). The anchors
+    thin out exactly where the shape lives, because a small ion's isotopologue
+    is too weak to track: on the sparse Orbitrap set three or four of about
+    forty anchors sit below m/z 104, where 27 to 29 commits sit at -1.1 to -1.3
+    ppm, and the rule's lever guard - five points in each half of the fitted
+    range - refuses the anchors' line on every sample. Over the commits the
+    line is accepted on all six at -0.11 to -0.14 mDa, which is where the
+    anchors' own line sits once that guard is relaxed. What keeps the rows
+    being judged out of the WIDTH does not carry to this line: a width fitted
+    over them stretches to cover their tail, while a line of two parameters
+    trimmed at three widths is not bent by one, and the rule refuses a line the
+    commits do not demand. That rule is also what keeps a trend off the
+    long-range Orbitrap set, whose anchors alone accept a 1/mz line through
+    their dip to -0.9 ppm at m/z 300-450, which about 140 commits above m/z
+    450, sitting near 0 ppm, contradict.
+
     :param assignments: Every row built for this sample.
     :param corroboration: What :func:`corroboration_of` answered for them.
-    :return: The offset and width, each None where too few anchors were found.
+    :return: The offset and width, each None where too few anchors were found,
+        and where both were found, the trend or the rule that refused it.
     """
     errors = [
         row["mz_error_ppm"]
@@ -355,7 +441,23 @@ def fit_run_mass_accuracy(
         and row.get("mz_error_ppm") is not None
     ]
     mu, sigma = fit_mass_accuracy(errors)
-    return MassCalibration(mu_ppm=mu, sigma_ppm=sigma, anchors=len(errors))
+    calibration = MassCalibration(mu_ppm=mu, sigma_ppm=sigma, anchors=len(errors))
+    if not calibration.measured:
+        return calibration
+    commits = [
+        (peak_mz(row), row["mz_error_ppm"])
+        for row in assignments
+        if row.get("role") == ROLE_M0
+        and str(row.get("peak_assignment_id")) in corroboration
+        and row.get("mz_error_ppm") is not None
+        and peak_mz(row) is not None
+    ]
+    trend, refused = fit_mass_trend(
+        [mz for mz, _ in commits], [error for _, error in commits]
+    )
+    return replace(
+        calibration, trend=trend, trend_refused=refused, trend_rows=len(commits)
+    )
 
 
 def apply_mass_gate(
@@ -429,7 +531,7 @@ def apply_mass_gate(
             continue
         corroborated = corroboration[row_id]
         gate: dict = {"corroborated_by": corroborated}
-        z = calibration.z_of(row.get("mz_error_ppm"))
+        z = calibration.z_of(row.get("mz_error_ppm"), peak_mz(row))
         provenance = row.setdefault("provenance", {})
         if z is not None:
             provenance["mass_z"] = round(z, 2)

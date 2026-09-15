@@ -205,7 +205,7 @@ def earlier_reasons(row: dict) -> list[dict]:
             _reason(
                 REASON_OFF_CALIBRATION,
                 f"mass error sits {z} widths off the run's own fitted centre "
-                "with nothing corroborating the reading",
+                "at its m/z with nothing corroborating the reading",
                 caps=True,
             )
         )
