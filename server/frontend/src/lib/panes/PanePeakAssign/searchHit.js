@@ -1,3 +1,5 @@
+import { isMonoisotopicFormula, labelledIsotopes } from '@/lib/chem'
+
 /**
  * What a composition-search hit means when it is committed to a peak.
  *
@@ -8,109 +10,6 @@
  * translation, kept out of the pane so the rules in it can be tested without
  * mounting a DataTable.
  */
-
-/**
- * The isotope each labelled custom element puts in an ion, spelled the way the
- * isotope generator writes it into the ion's isotopologue formulas.
- *
- * A copy of the registry in `mascope_tools/composition/custom_elements.py`, where
- * `^N` - the 15N of a labelled nitrate reagent - is the only entry today. An
- * element added there has to be added here, or its ions count from their
- * unlabelled remainder again.
- */
-const LABELLED_ISOTOPES = new Map([['^N', '[15N]']])
-
-/**
- * One token of a flat formula: a bracketed isotope (`[15N]`), a caret custom
- * element (`^N`) or a plain element (`C`, `Br`), then its count if it has one.
- * The backend's `parse_formula_tokens` pattern, so both read a formula alike.
- */
-const FORMULA_TOKEN = /(\[\d+[A-Z][a-z]?\]|\^?[A-Z][a-z]?)(\d*)/g
-
-/**
- * A flat formula's symbols and their counts. A charge sign is not a token.
- *
- * @param {string} formula a formula without parentheses
- * @returns {Object<string, number>} symbol -> count
- */
-function formulaTokens(formula) {
-  const counts = {}
-  for (const [, symbol, count] of formula.matchAll(FORMULA_TOKEN)) {
-    counts[symbol] = (counts[symbol] ?? 0) + (count ? Number(count) : 1)
-  }
-  return counts
-}
-
-/**
- * The isotopes an ion carries by design, spelled the way its isotopologue
- * formulas spell them: a labelled reagent's `^N` is `{'[15N]': 1}`, `^N2` is
- * `{'[15N]': 2}`, and an ion without a label carries none. The backend's
- * `labelled_isotopes`.
- *
- * @param {string|null|undefined} ionFormula the ion's formula (`C9H16O7^N-`)
- * @returns {Object<string, number>} labelled isotope -> count
- */
-function labelledIsotopes(ionFormula) {
-  const labels = {}
-  if (typeof ionFormula !== 'string') return labels
-  for (const [symbol, count] of Object.entries(formulaTokens(ionFormula))) {
-    const isotope = LABELLED_ISOTOPES.get(symbol)
-    if (isotope) labels[isotope] = (labels[isotope] ?? 0) + count
-  }
-  return labels
-}
-
-/**
- * The isotopes an isotopologue formula names in brackets, with their counts.
- *
- * @param {string} formula one isotopologue formula
- * @returns {Object<string, number>} bracketed isotope -> count
- */
-const substitutedIsotopes = (formula) =>
-  Object.fromEntries(
-    Object.entries(formulaTokens(formula)).filter(([symbol]) => symbol.startsWith('['))
-  )
-
-/**
- * Whether two sets of isotope counts name the same isotopes, each as often.
- *
- * @param {Object<string, number>} a
- * @param {Object<string, number>} b
- * @returns {boolean}
- */
-function sameIsotopes(a, b) {
-  const isotopes = Object.keys(a)
-  return (
-    isotopes.length === Object.keys(b).length &&
-    isotopes.every((isotope) => a[isotope] === b[isotope])
-  )
-}
-
-/**
- * Whether an isotopologue formula names the ion's monoisotopic isotopologue.
- *
- * The generator writes a substituted isotope in brackets (`C5[13C]H13O6+`,
- * `[81Br]Br2-`) and the monoisotopic isotopologue - every element at its most
- * abundant isotope - without (`C6H13O6+`, `Br3-`). A labelled reagent's atom is
- * bracketed too, because its isotope is the one the label put there, so the
- * monoisotopic isotopologue of a labelled ion names exactly its labels and
- * nothing else: `[15N]C9H16O7-` for `C9H16O7^N-`. The formula without a bracket
- * is then the reagent's unlabelled remainder, one mass unit below the line the
- * ion is measured by.
- *
- * At a low resolution one line holds several isotopologues, their names joined
- * by "/"; it is the monoisotopic line when any of them is. The same rule as the
- * backend's `is_monoisotopic_formula`.
- *
- * @param {string|null|undefined} formula an isotopologue formula
- * @param {Object<string, number>} labels the ion's labelled isotopes
- *   (`labelledIsotopes`); empty for an ion without a label
- * @returns {boolean}
- */
-const isMonoisotopicFormula = (formula, labels) =>
-  typeof formula === 'string' &&
-  formula.length > 0 &&
-  formula.split('/').some((name) => sameIsotopes(substitutedIsotopes(name), labels))
 
 /**
  * The monoisotopic isotopologue of a hit's predicted pattern: the M0 every

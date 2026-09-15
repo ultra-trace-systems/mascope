@@ -156,10 +156,12 @@ export function validateCompoundPaste(data) {
  * remainder is written as the plain element, which is its lightest isotope, and
  * is named `[14N]` here for when a label has to say so.
  *
- * A copy of the registry in `mascope_tools/composition/custom_elements.py`, where
- * `^N` - the 15N of a labelled nitrate reagent - is the only entry today. An
- * element added there has to be added here, or its ions are read as unlabelled:
- * the remainder as their M0, and the labelled line as a substitution.
+ * The frontend's one copy of the registry in
+ * `mascope_tools/composition/custom_elements.py`, where `^N` - the 15N of a
+ * labelled nitrate reagent - is the only entry today. An element added there has
+ * to be added here, or its ions are read as unlabelled: the isotopologue tables
+ * label the remainder M0, and a search hit committed from the peak inspector is
+ * counted from it.
  */
 const LABELLED_ELEMENTS = new Map([['^N', { labelled: '[15N]', unlabelled: '[14N]' }]])
 
