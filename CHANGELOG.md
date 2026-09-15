@@ -19,7 +19,11 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
   `same_ion` alternatives ahead of its rivals, with the row's own fit and mass
   error - and the rule asks its nitrogen count from both sides, since a list,
   unlike the election, can put the nitrogen on the analyte. A compound of the
-  workspace's target library stays exempt. `config.cross_channel` counts the
+  workspace's target library stays exempt. The automatic assignment at sample
+  ingest, which folds Stage A's rows into the batch ledger without a run, now
+  runs the same check through the channels a run would read, so the batch
+  ledger does not show such a row as assigned where a run holds it at
+  candidate. An imported ledger is untouched. `config.cross_channel` counts the
   reference rows among the ambiguous and capped readings as
   `ambiguous_nitrogen_mirror` and `capped_mirror`. In `mascope_tools`,
   `heuristic_filter.propose_same_ion_readings` builds such a family for any

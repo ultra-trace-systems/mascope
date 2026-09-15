@@ -117,6 +117,15 @@ def _patched(
                 return_value=(["m-h"], []),
             )
         ),
+        # The deployment's rows for the profile's secondary channels, which the
+        # nitrogen check reads through as a run does. None unless a test says.
+        "secondary": stack.enter_context(
+            patch(
+                f"{_SVC}.fetch_mechanisms_by_notation",
+                new_callable=AsyncMock,
+                return_value=[],
+            )
+        ),
         "stage_a": stack.enter_context(
             patch(f"{_SVC}._stage_a_assignments", new_callable=AsyncMock)
         ),
@@ -209,6 +218,61 @@ async def test_the_fold_gates_its_stage_a_rows_as_a_run_does():
     assert folded["peak-library"].tier == "assigned"
     assert folded["peak-seed"].tier == "below_assignability"
     assert folded["peak-seed"].assigned_formula == "C6H12O6"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "ammonium_shows, tier", [(True, "candidate"), (False, "assigned")]
+)
+async def test_the_fold_asks_a_mirror_rows_nitrogen_count_as_a_run_does(
+    ammonium_shows, tier
+):
+    """A reference-list row whose ion reads as well another way is capped here too.
+
+    Dimethylformamide through +H+ is acrolein through the ammonium adduct, the
+    uronium profile's secondary channel. Where the spectrum shows that channel's
+    carrier a run reads the row through it and caps it at candidate, so the
+    fold does as well. Where it does not, no run reads that channel and the row
+    keeps its tier.
+    """
+    from mascope_backend.api.new.peak_assignments.service import (
+        fold_sample_peaks_without_run,
+    )
+
+    dimethylformamide = _stage_a_row("si-1", fold_run_id("si-1")) | {
+        "sample_peak_mz": 74.06004,
+        "assigned_formula": "C3H7N1O1",
+        "ion_formula": "C3H8N1O1+",
+        "ionization_mechanism_id": "m-h",
+    }
+    peaks = {"sample_peak_id": ["p1"], "mz": [74.06004], "intensity": [5000.0]}
+    if ammonium_shows:
+        # The urea-ammonium cluster the channel is detected by.
+        peaks["sample_peak_id"].append("p2")
+        peaks["mz"].append(78.06619)
+        peaks["intensity"].append(1000.0)
+
+    def mechanism(mechanism_id, notation):
+        return SimpleNamespace(
+            ionization_mechanism_id=mechanism_id,
+            ionization_mechanism=notation,
+            ionization_mechanism_polarity="+",
+        )
+
+    stack, mocks = _patched()
+    mocks["stage_a"].return_value = ([dimethylformamide], None, SampleMassAccuracy())
+    mocks["peaks"].return_value = pd.DataFrame(peaks)
+    mocks["mechanisms"].return_value = (
+        ["m-h", "m-urea"],
+        [mechanism("m-h", "+H+"), mechanism("m-urea", "+(CH4N2O)H+")],
+    )
+    mocks["secondary"].return_value = [mechanism("m-nh4", "+NH4+")]
+    with stack:
+        assert await fold_sample_peaks_without_run("si-1") == "batch-1"
+
+    folded = {row.sample_peak_id: row for row in mocks["fold"].call_args.kwargs["rows"]}
+    assert folded["p1"].assigned_formula == "C3H7N1O1"
+    assert folded["p1"].tier == tier
 
 
 @pytest.mark.asyncio
