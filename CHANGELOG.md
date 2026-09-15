@@ -101,17 +101,18 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
   e.g. `Orbi-Lab2`), offering the name the watched folder's files already start
   with as the default, and the agent sends it when pairing and as metadata with
   every upload, next to the file's on-disk name, plus an `X-Agent-Version`
-  header on every request. A current server ignores all of it; a later one can
-  file uploads under the reported instrument instead of reading it from the
-  file name, and show which release each paired machine runs. When the files in
+  header on every request. A server that predates the fields ignores all of
+  it; this release's server files uploads under the reported instrument
+  instead of reading it from the file name, and shows which release each
+  paired machine runs (see the entries around this one). When the files in
   the watched folder would not be filed under a name the server reads, setup
   offers to add the instrument name in front of every uploaded name - the
   `filename_prefix` such sites had to set by hand before. A prefix already
   configured is checked the same way, so one left over from an earlier
   instrument is reported rather than silently kept. The setup's questions
   were reordered so the local ones come first and pairing, which needs a second
-  person at a browser, comes last. `instrument` is a new `[file-agent]` setting;
-  leaving it empty keeps today's behaviour exactly.
+  person at a browser, comes last. `instrument` is a new `[file-agent]` setting,
+  and a required one: the agent refuses to start without it.
 - **Paired machines shows what each agent watches and which release it runs.**
   A paired device now records the instrument its agent reported when pairing
   (or, for a machine paired before the server knew the field, with the first
@@ -560,11 +561,6 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
   unread badge with it, so no count is left standing for rows that are gone;
   running processes keep their progress bars, and nothing is deleted on the
   server.
-- The SDK's peak dataframe now carries `target_collection_names` beside
-  `target_collection_ids`, so grouping or plotting by collection no longer
-  means resolving the identifiers yourself. The names are for display -
-  they are not unique, and a peak can match several collections - so
-  `target_collection_id` remains the key to join on.
 - Peak matches now carry the name of the target collection they came from,
   not just its identifier, so grouping or plotting by collection no longer
   means resolving the identifiers yourself. It appears as
@@ -762,15 +758,15 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
   `mascope prod mfa reset <email>` on the host for when nobody who could do that
   can sign in either. None of them reveals or changes a password.
   **New secret**: `.runtime/secrets/mfa_encryption_key.txt` encrypts the stored
-  TOTP seeds. The 2.0.0 CLI generates it when missing before starting the stack,
+  TOTP seeds. The 1.8.0 CLI generates it when missing before starting the stack,
   so an existing deployment picks it up on its next start - once that CLI is
   installed. **Upgrading:** reinstall the CLI *before* `mascope prod update`,
   right after checking out the release. The older CLI knows nothing about the
   secret, and compose refuses to create the backend without the file after
   stopping the running one. This applies to the unattended updater too: it
   never reinstalls itself, so on a server running `mascope-update.timer`,
-  reinstall the CLI as soon as the timer reports 2.0.0 applied - otherwise the
-  next reboot starts the 2.0.0 compose file with the old CLI. See
+  reinstall the CLI as soon as the timer reports 1.8.0 applied - otherwise the
+  next reboot starts the 1.8.0 compose file with the old CLI. See
   [maintaining.md](docs/maintaining.md#rolling-out-a-release-across-several-servers).
   Back it up with the others and do not rotate it casually: replacing it makes
   every enrolled seed undecryptable, and each of those users has to sign in with
@@ -961,8 +957,8 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
 
 - **Ingest can fold a sample into the batch ledger without writing a run.** A
   new `[meta]` setting, `peak_assignment_ingest_ledger`, chooses what an
-  ingest-time assignment writes: `"sample"` (the default, unchanged) writes a
-  per-sample run and folds it; `"batch"` runs the same database-first
+  ingest-time assignment writes: `"sample"` writes a per-sample run and folds
+  it; `"batch"` - the default, see the entry above - runs the same database-first
   assignment and folds the result straight into the batch peaks, writing no
   per-sample run - the Sample view is then served from the batch ledger. That
   removes the per-sample rows, about half of the per-peak database cost and
@@ -1253,24 +1249,6 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
   workflow enabled yet; it is there for databases developers already have, where
   an unrecognised tier would otherwise be quietly counted as *unassigned*.
 
-
-- **The orange accent is quieter, and the selection wash is finally a wash.**
-  The interface palette is swept from the brand safety orange into eleven
-  shades, and that sweep used to carry the seed's full colourfulness to every
-  shade. Almost none of them could be shown that way on a normal screen, so
-  each one was quietly flattened on its way to the display, arriving off its
-  intended brightness and off its intended hue - the pale end as a vivid peach
-  rather than a tint, the dark end as maroon rather than orange. The sweep now
-  asks how much colour the screen can actually hold at each shade and stays
-  inside that, at 80% strength. What you see: selected rows in the peak and
-  match tables are washed in a soft cream instead of banded in orange, and
-  buttons, tabs, focus rings and panel labels settle to a warmer, less
-  insistent orange in both themes. Nothing moves in the layout, and the brand
-  seed is unchanged - only how it is swept. Text contrast is held or improved
-  everywhere; text on a selected row improves markedly. Status colours that
-  are deliberately their own - the amber for calibration drift, an unsure
-  verdict, or a provisional assignment - do not follow this accent and are
-  unchanged, so they now stand out a little more against it.
 - **One *Targets* / *Assignments* switch.** The switch above the browser is the
   only one, and it decides both what the browser lists and what the *Batch*
   overview plots, so the two can never sit on different sides. That pairing
@@ -1490,10 +1468,9 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
   the instrument agents. **Upgrading:** the setting moves from `[backend]` to
   `[meta]` in the env config toml. A value left under `[backend]` keeps
   working and is moved automatically with a warning, but move it, because
-  only the `[meta]` copy reaches the web app. The frontend reads it at build
-  time, so raising the browser cap on a deployment running a released image
-  needs a frontend rebuild; a backend restart alone lifts it for the SDK and
-  agent paths.
+  only the `[meta]` copy reaches the web app. Both halves read it at start, so
+  raising the cap for browsers, the SDK and the agents alike is a stack
+  restart - see *The web app reads the config the server is running on*.
 
 - Running an m/z calibration no longer requires the global `admin` role. It now
   requires `admin` in the *instrument* workspace holding the raw file - the

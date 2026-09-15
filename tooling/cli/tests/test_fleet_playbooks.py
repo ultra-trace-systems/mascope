@@ -43,7 +43,7 @@ def test_cli_is_reinstalled_before_the_stack_update():
     The deployment checkout *is* MASCOPE_PATH, so checking out the release
     tag swaps in that release's `docker-compose.yaml` before anything else
     runs. A release may add a compose secret that only the matching CLI
-    provisions (2.0.0 adds `mfa_encryption_key`, written by `prod update` ->
+    provisions (1.8.0 adds `mfa_encryption_key`, written by `prod update` ->
     `_ensure_secrets`). Update the stack first and the still-installed older
     CLI drives the newer compose file: compose refuses to create the backend
     on the missing secret file, having already stopped the running one, so
@@ -70,7 +70,7 @@ def test_every_runtime_secret_in_compose_is_generated_by_the_cli():
     how to create, or a deployment that predates it cannot start: compose
     refuses to create the container on a declared-but-absent secret file.
     Shipping the compose change ahead of the CLI that provisions it is what
-    made the 2.0.0 rollout order load-bearing.
+    made the 1.8.0 rollout order load-bearing.
 
     This passes today - it guards the next secret somebody adds, and is not a
     substitute for the ordering test above.
