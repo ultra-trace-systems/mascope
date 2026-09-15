@@ -315,6 +315,21 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
 ## [1.8.1] - 2026.09.16
 ### Changed
 
+- **The assignment mass gate caps a target library's line off calibration like
+  any other.** A run caps a committed row more than three widths from its own
+  fitted mass calibration at candidate, and more than six at below
+  assignability, unless something beyond the mass fit stands behind it. A
+  compound of the workspace's target library counted as such corroboration, so
+  none of its lines was ever capped. A list names a compound, not where each of
+  its lines has to sit, and the lines that exemption held at the top tier were
+  the ones a mass error has reason to doubt: isotopologues three widths off a
+  monoisotopic row on calibration, a weak M+2 or one half of a partly resolved
+  pair. Only an isotopologue that tracks its parent's mass error now exempts a
+  row; a library's rows still anchor the calibration they are judged against.
+  `config.mass_calibration` records `capped_curated`, the library rows the gate
+  capped, and a library row an isotopologue tracks records
+  `corroborated_by: isotopologue` rather than `curated`.
+
 - **The assignment mass gate judges a row at its own m/z where the run's
   calibration drifts with mass.** A run measures its mass calibration over its
   own corroborated commits and caps an uncorroborated row that sits more than
