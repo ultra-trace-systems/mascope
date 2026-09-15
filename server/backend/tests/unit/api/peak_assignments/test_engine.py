@@ -28,6 +28,7 @@ from mascope_backend.api.new.peak_assignments.engine import (
     build_unassigned_assignments,
     evidence_for,
     fit_isotope_formula,
+    formula_identity,
     invert_matches_to_peak_assignments,
     labelled_isotopes,
     monoisotopic_row,
@@ -2209,6 +2210,159 @@ class TestReferenceStageAInversion:
         assert assignment["target_ion_id"] == "ion1"
         # ...and the reference name rides alongside.
         assert assignment["provenance"]["reference_identities"] == _REF_IDENTITIES
+
+
+@pytest.mark.parametrize(
+    ("written", "identity"),
+    [
+        ("CH3COOH", "C2H4O2"),
+        ("C2H4O2", "C2H4O2"),
+        ("NH3", "H3N"),
+        ("H2SO4", "H2O4S"),
+        ("(HNO3)2", "H2N2O6"),
+        ("()", "()"),
+        ("H2O6^N2", "H2O6^N2"),
+        ("not a formula", "not a formula"),
+    ],
+)
+def test_a_formulas_identity_is_its_composition_in_hill_order(written, identity):
+    # An unreadable formula keeps its own text, so it is never merged with another.
+    assert formula_identity(written) == identity
+
+
+class TestALibraryEntryKeepsItsLineHoweverItIsSpelled:
+    """A target library holds what a person typed; a reference list holds the
+    same neutral in Hill order. Compared as text the two were two hypotheses on
+    one peak: the tie between them fell to alphabetical order, so the library's
+    ``CH3COOH`` lost its own line to the list's ``C2H4O2``, sat beside it as an
+    alternative, and the density rule counted it as a rival. Read as
+    compositions they are one reading, and the library's row owns it."""
+
+    def _frame(
+        self,
+        *,
+        library_score: float = 0.9,
+        copy_score: float = 0.9,
+        copy_mechanism: str = "-H+",
+        library_first: bool = False,
+        library_formula: str = "CH3COOH",
+        copy_formula: str = "C2H4O2",
+    ) -> pd.DataFrame:
+        library = _isotope_row(
+            target_isotope_id="iso1",
+            target_ion_id="ion1",
+            target_compound_id="acetic",
+            compound_formula=library_formula,
+            ion_formula="C2H3O2-",
+            mz=59.0139,
+            relative_abundance=1.0,
+            sample_peak_id="p1",
+            match_score=library_score,
+            ionization="-H+",
+        )
+        copy = _reference_row(
+            target_isotope_id="refiso1",
+            target_ion_id="refion1",
+            compound_formula=copy_formula,
+            ion_formula="C2H3O2-",
+            mz=59.0139,
+            relative_abundance=1.0,
+            sample_peak_id="p1",
+            match_score=copy_score,
+            ionization=copy_mechanism,
+        )
+        return pd.DataFrame([library, copy] if library_first else [copy, library])
+
+    def _invert(self, df: pd.DataFrame) -> dict:
+        [assignment] = invert_matches_to_peak_assignments(
+            df,
+            sample_item_id="s1",
+            peak_assignment_run_id="run1",
+            candidate_threshold=CANDIDATE,
+            assigned_threshold=ASSIGNED,
+        )
+        return assignment
+
+    @pytest.mark.parametrize("library_first", [False, True])
+    @pytest.mark.parametrize(
+        ("library_formula", "copy_formula"),
+        [("CH3COOH", "C2H4O2"), ("C2H4O2", "CH3COOH")],
+    )
+    def test_the_library_entry_keeps_its_line_over_the_lists_copy(
+        self, library_first, library_formula, copy_formula
+    ):
+        assignment = self._invert(
+            self._frame(
+                library_first=library_first,
+                library_formula=library_formula,
+                copy_formula=copy_formula,
+            )
+        )
+
+        assert assignment["target_compound_id"] == "acetic"
+        assert assignment["assigned_formula"] == library_formula
+        # The list's names still ride along on the library's row.
+        assert assignment["provenance"]["reference_identities"] == _REF_IDENTITIES
+
+    def test_the_lists_copy_is_no_rival(self):
+        assignment = self._invert(self._frame())
+
+        provenance = assignment["provenance"]
+        assert provenance["n_candidates"] == 1
+        assert provenance["candidate_density"] == 1
+        assert provenance["is_tie"] is False
+        assert provenance["confidence"] == pytest.approx(1.0)
+        assert assignment["alternatives"] is None
+
+    def test_a_copy_that_fits_a_shade_better_does_not_take_the_line(self):
+        assignment = self._invert(self._frame(library_score=0.90, copy_score=0.92))
+
+        assert assignment["target_compound_id"] == "acetic"
+
+    def test_two_library_entries_spelling_one_neutral_are_one_reading(self):
+        # Two lists attached to one batch can hold the same compound written two
+        # ways; neither is the other's alternative or its rival.
+        df = pd.DataFrame(
+            [
+                _isotope_row(
+                    target_isotope_id="iso1",
+                    target_ion_id="ion1",
+                    target_compound_id="urea-monitor",
+                    compound_formula="CON2H4",
+                    ion_formula="CH5N2O+",
+                    mz=61.0396,
+                    relative_abundance=1.0,
+                    sample_peak_id="p1",
+                ),
+                _isotope_row(
+                    target_isotope_id="iso2",
+                    target_ion_id="ion2",
+                    target_compound_id="urea-calibrants",
+                    compound_formula="CH4N2O",
+                    ion_formula="CH5N2O+",
+                    mz=61.0396,
+                    relative_abundance=1.0,
+                    sample_peak_id="p1",
+                ),
+            ]
+        )
+
+        assignment = self._invert(df)
+
+        assert assignment["alternatives"] is None
+        assert assignment["provenance"]["n_candidates"] == 1
+        assert assignment["provenance"]["candidate_density"] == 1
+
+    def test_the_lists_reading_through_another_mechanism_is_not_a_copy(self):
+        # Another mechanism makes another ion, so the list's row is a reading of
+        # its own and competes on its evidence as before.
+        assignment = self._invert(
+            self._frame(library_score=0.90, copy_score=0.95, copy_mechanism="+NO3-")
+        )
+
+        assert assignment["target_compound_id"] is None
+        assert assignment["assigned_formula"] == "C2H4O2"
+        assert assignment["alternatives"][0]["target_compound_id"] == "acetic"
 
 
 class TestALabelledIonCountsFromItsLabel:
