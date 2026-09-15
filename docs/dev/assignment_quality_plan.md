@@ -30,7 +30,7 @@ step PRs land on the epic and are named here as they merge.
 | 2.5c - the same-ion ambiguity on a Stage A mirror row | #2118 | measured: a reference mirror's M0 row carries the readings of its ion the untargeted search would have held, as `same_ion` alternatives (2,725 rows over the 43 samples), and the reagent-N rule asks it from both sides, since a list can put the nitrogen on the analyte; a second channel fixes the count either way and a target library row stays exempt. It moves tiers and nothing else: no formula, role or owner change on 48,894 peaks, G2 identical on every set, no untargeted or target library row touched. The rule reaches 746 mirror rows and caps 167 from assigned (A 24, B 67, F2 76) with 25 isotopologues. All nine same-ion steals on B carry their ammonium reading: two are capped and seven fixed by the same neutral's urea adduct. G1 A 24.3 -> 23.2, B 36.8 -> 37.0 (conditioned 11.6 -> 11.7), F2 97.5 -> 97.3; on B the cap takes 50 rows the reference confirms, 18 of them Keller's amines through `+H+` |
 | 2.6 - frontend: profile, reasons, roles | - | planned |
 | 2.7 - stage 2 gate, engine 0.5.0 | - | planned |
-| 2.2b - mass-dependent centre for the mass gate | - | planned: after the TOF width fix, before 2.7 |
+| 2.2b - mass-dependent centre for the mass gate | #2131 | measured: a run's mass gate judges a row at its own m/z where the run's commits demand a centre that follows `ppm = a + b * 1000 / mz`, accepted on peaky's rules; the line is fitted over every committed monoisotopic row (the plan owner's answer, recorded in the step), and the constant centre and the width stay the anchors'. A takes a line on all six samples (-0.113 to -0.137 mDa over m/z 57 to about 500) and C2 on one (-0.077); every other run keeps the constant centre and records the rule that refused the line. It moves no tier, formula, role, owner or cap on 48,894 peaks, and G1, G1 conditioned and G2 are identical on every set: every row that crosses three widths was already below assignability. What moves is `mass_z` - 2,316 rows on A, 130 on C2 - and A's seven itemised curated rows come inside three widths (-3.49..-4.38 to -0.80..-1.62). Lifting the target library's exemption from the cap would now move three isotopologues, the plan owner's question in the PR |
 | 2.7a - reference refresh: peaky's branch rebased on main 0.8.0, re-pinned, the 43 runs re-published | - | planned: the reference stays at `cc07ce1` until then; the gate is read against both |
 | 3.1 - series detection on the batch ledger | - | planned |
 | 3.2 - time-series coherence | - | planned |
@@ -666,6 +666,20 @@ The confidence layer. This is where "assigned" starts meaning something.
 - **Size.** S-M. After the TOF width fix, which changes the anchors the
   gate fits over, and after 2.5c; before 2.6 and 2.7. Independent of 2.5b
   in what it changes.
+- *Addendum (2026-09-15, the plan owner's answer on the implementing agent's
+  estimate): the line is fitted over every committed monoisotopic row, and
+  the constant centre and the width stay on the anchors.* Estimated on 2.5c's
+  last round, the anchors as written accept a line on four of B's six runs
+  and no other. A's low-mass shape is refused on all six by the coverage
+  rule: 3 or 4 of its 39 to 45 anchors sit below the fitted range's midpoint
+  near m/z 104, where the rule asks for five, because a small ion's
+  isotopologue is too weak to track. B's accepted line describes a dip to
+  -0.9 ppm at m/z 300-450 that about 140 commits above m/z 450, near 0 ppm,
+  contradict. Over every commit, A accepts a line on all six at -0.11 to
+  -0.14 mDa, B on none and C2 on one. Rows banded by their evidence were
+  tried as the pool too, and refuse A as well: of A's 27 to 29 commits below
+  m/z 104, 19 to 22 are below assignability, at a median evidence of 0.18 to
+  0.28 against 0.88 to 0.92 above m/z 160.
 
 ### 2.3 Cross-channel corroboration and the reagent-N rule
 
@@ -4540,6 +4554,107 @@ C10H14O7 for the Kang nitrates.
 - **The owner-change report:** empty.
 - **G1 and G2 on B and on the nitrate sets:** the table. C and C2 do not move,
   and neither does G2 anywhere.
+
+### After step 2.2b, a centre that follows m/z (2026-09-15)
+
+#2131 lets a run's mass gate judge a row at its own m/z:
+- **The line.** `mass_accuracy.fit_mass_trend` fits `ppm = a + b * 1000 / mz`,
+  trimmed at three robust widths, and accepts it on peaky's rules
+  (`masscal.fit_mass_trend`, peaky #30): twenty points, five kept in each half
+  of the fitted range, the slope beyond three standard errors, the residual
+  RMS at most 0.8 of the constant model's and `|b|` at most 0.5 mDa. The
+  centre is held at the edges of the m/z the points covered. The port gives
+  peaky main's answer on 3,000 random samples, 748 of them accepted.
+- **Its rows.** Every committed monoisotopic row, by the plan owner's answer
+  recorded in the step. The constant centre and the width stay the
+  corroborated anchors'.
+- **The gate.** `MassCalibration.z_of` measures from the line's centre at the
+  row's m/z, in the run's one width floored by 0.03 mDa, where the run has a
+  line; from the constant centre otherwise. A run with no line judges every
+  row exactly as before.
+- **Recorded.** `config.mass_calibration` carries the `centre` a run judged at
+  (`trend`, `constant` or `none`), the `trend` and `trend_refused`, the rule
+  that refused a line.
+
+All 43 samples re-run on `step-2.2b-mass-dependent-centre-2026.09.15-0f2c9e7`,
+compared with 2.5c's confirmation round (`...-fcaa09d`); no list or seed
+changed.
+
+**It moves no tier.** No tier, formula, role, owner or mass error changes on
+any of the 48,894 peaks. The gate caps the same rows on every run, and G1, G1
+conditioned and G2 with its denominator are identical on all eight sets. The
+anchors' constant fit is unchanged on all 43 runs. What moves is `mass_z` on
+the seven runs judged at a line, and the runs' record.
+
+| set | runs judged at a line | offset (mDa) | m/z covered | the others refused as | rows whose `mass_z` moved |
+|---|---|---|---|---|---|
+| A | 6 of 6 | -0.113 to -0.137 | 57 to 446-505 | - | 2,316 of 2,344 |
+| B | 0 of 6 | - | - | no better than constant 6 | 0 |
+| C | 0 of 5 | - | - | no better 3, slope not significant 2 | 0 |
+| C2 | 1 of 6 | -0.077 | 71-404 | no better 5 | 130 of 133 |
+| D | 0 of 6 | - | - | slope not significant 5, no better 1 | 0 |
+| E | 0 of 3 | - | - | no better 3 | 0 |
+| F1 | 0 of 6 | - | - | no better 4, slope not significant 1, one-sided 1 | 0 |
+| F2 | 0 of 5 | - | - | no better 3, slope not significant 1, one-sided 1 | 0 |
+
+- **A's lines** were fitted over 329 to 358 commits and kept 284 to 323. They
+  put the centre at -1.42 to -1.65 ppm at m/z 60, -0.64 to -0.74 at m/z 100,
+  -0.10 to +0.01 at m/z 200 and +0.18 to +0.34 at m/z 400, where the constant
+  centre sat at +0.02 to +0.06.
+- **C2's one line** runs from -1.88 ppm at m/z 71 to -1.00 at m/z 400, about
+  that sample's constant -1.13.
+- **B keeps the constant centre.** On its four long-range samples the commits
+  dip to -0.7 ppm at m/z 300-450 and come back to 0 above m/z 450, which no
+  1/mz line describes.
+- **The estimate held:** the same runs and the same offsets.
+
+**Why no tier moves.** 37 rows cross three widths: 28 inward on A, 1 inward on
+C2 and 8 outward on A. One isotopologue on A crosses six outward. Every one of
+them is already below assignability on its own evidence, where the cap has
+nothing to take. A's low-mass rows stay there because the fit scores them
+before the gate sees them: of its 27 to 29 commits below m/z 104, 19 to 22 are
+below assignability.
+
+**Verify, item by item.**
+- **Which runs accept a trend, and its `b` in mDa:** the table.
+- **The 26 curated rows decision 3's addendum itemised.** Five are no longer on
+  the ledgers.
+  - A's seven come inside three widths: C3H6O `[M+H]+` at m/z 59 on all six
+    samples goes from -3.77..-4.38 to -1.09..-1.62, and C3H9N at m/z 60 from
+    -3.49 to -0.80.
+  - The rest sit on runs that keep the constant centre and do not move: C's two
+    C11H15O4 isotopologues (3.10, 3.43), F1's bromide adduct of C3H6O3
+    (-3.40), and F2's nitrous acid, oxalic, malonic and nitrate cluster rows
+    (-3.04 to 7.12).
+- **The low-mass untargeted rows.** On A the median |z| of the untargeted M0
+  rows below m/z 120 goes from 1.54 to 0.39, and those beyond three widths go
+  from 11 to 5 of 206 (between m/z 120 and 200, 10 to 9 of 546). Coming inside:
+  C4H9+ at m/z 57 on all six samples, C3H8N+ at m/z 58 on three and C4H8N+ at
+  m/z 70 on two, all of which the reference is silent on, and a reference
+  list's acetic acid at m/z 61 on three, a peak the reference calls an
+  artifact.
+- **The gate caps nothing below m/z 200 that it did not cap before:** it caps
+  nothing new anywhere. Six rows below m/z 200 are newly beyond three widths:
+  C9H11+ at m/z 119 on four samples, C5H10NO2+ at m/z 116 and C3H11N3O2+ at m/z
+  121 on one each. They sit at +1.3 to +1.7 ppm where the line's centre is
+  -0.5, so they are off the line too, and all six are below assignability with
+  the reference silent.
+- **G1 conditioned on the Orbitrap sets:** identical, A 2.5, B 11.7, C 1.2, C2
+  0.4, D 1.0.
+
+**The curation exemption, revisited on the evidence.** With the centre at A's
+line, every target library row on A sits within three widths of it, so the
+low-mass argument of decision 3's addendum no longer protects a row there.
+Across the 43 runs, 15 target library rows sit beyond three widths, against
+22 before, all on runs that keep the constant centre:
+- **At assigned:** C's two C11H15O4 isotopologues (+2.07 and +1.65 ppm) and
+  F2's C3H4O4 M+2 (+11.2 ppm), whose owners sit at 0.65, 0.83 and 0.0 widths.
+- **At candidate:** three F2 isotopologues.
+- **Below assignability:** F1's bromide adduct and F2's nitrous acid rows.
+
+Lifting the exemption from the cap alone, the target library rows still
+anchoring the fit, would move those three isotopologues to candidate and
+nothing else. Whether to is the plan owner's question in #2131.
 
 ## Not in this plan
 
