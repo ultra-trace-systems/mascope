@@ -132,8 +132,11 @@ async def owner_require_password_change_route(
             "now set a new password - including your own. Everyone keeps signing "
             "in with their current password until they change it. Changing it "
             "revokes that user's API access tokens (SDK, notebooks), which must "
-            "be regenerated. Paired instrument agents authenticate as their own "
-            "machine accounts and are not affected."
+            "be regenerated. Instrument agents registered as paired machines "
+            "authenticate as their own machine accounts and are not affected; an "
+            "agent still using a token issued to a person - a TOF agent, or one "
+            "set up before its machine was registered - is revoked with that "
+            "person's tokens."
         ),
         "data": data,
     }

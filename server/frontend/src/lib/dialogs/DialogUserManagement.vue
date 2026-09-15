@@ -174,8 +174,11 @@ const user = {
         'Every Mascope account - including your own - will be asked to set a new password. ' +
         'Everyone keeps signing in with their current password until they change it. Once a ' +
         'user changes theirs, their API access tokens (SDK, notebooks) stop working and must ' +
-        'be regenerated. Paired instrument agents are not affected. You will be asked to set ' +
-        'yours immediately. Only a server administrator can reverse this.',
+        'be regenerated. Instrument agents listed under Paired machines are not affected, but ' +
+        'an agent still using a token issued to a person - a TOF agent, or one set up before ' +
+        'its machine was listed - stops uploading when that person changes their password, so ' +
+        're-pair those machines first. You will be asked to set yours immediately. Only a ' +
+        'server administrator can reverse this.',
       accept: async () => {
         // PrimeVue does not await this callback, so a rejection here would be
         // unhandled - and the dialog would sit open with nothing explaining

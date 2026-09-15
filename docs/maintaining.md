@@ -583,7 +583,11 @@ machine account the pairing created, not to the person who approved it, so no
 password change touches it. The exception is an agent still running on a
 pre-registry token issued to a human before it was re-paired - that token sits on
 the person's row and is revoked with the rest. Re-pair those machines before a
-deployment-wide password requirement, not after.
+deployment-wide password requirement, not after. A **TOF agent** is always such
+an exception: it has no pairing support, so its token stays a person's for as
+long as it runs. Replace it with the File Agent before the requirement, or regenerate its
+token from that person's settings and put it in the agent's config once they
+have changed their password.
 
 Requiring the change does not revoke anything by itself; tokens are revoked per
 user, as each one complies.
@@ -630,9 +634,11 @@ then `mascope prod up`. Any `file-agent`, `tof-agent` or `export-agent` bearer
 token with no device behind it is then refused with a message telling the
 operator to re-pair, instead of being accepted as a person's token. It ships
 **off**, and turning it on before a machine is re-paired stops that machine's
-uploads - so treat it as the last step of the rollout, not the first. Personal
-and SDK tokens are unaffected either way: the rule applies only to agent
-services.
+uploads - so treat it as the last step of the rollout, not the first. The TOF
+agent and the export agent have no pairing support on the client side, so it
+stops those outright: replace every TOF agent with the File Agent before turning
+it on. Personal and
+SDK tokens are unaffected either way: the rule applies only to agent services.
 
 ### Two-factor authentication
 
