@@ -27,7 +27,7 @@ step PRs land on the epic and are named here as they merge.
 | 2.5a - reference seed: list format, the lifted lists, `reference seed` (seed proposal phases 0-1) | #2111 (seed), #2112 (Stage A fix) | measured: schema 2 list files with radical status read from the formula, the `peaklist` adapter, `mascope reference seed`, the demo hook and an integrity test over every list; the lift is Kang 2021 split into 573 closed-shell and 257 RO2 formulas (opt-in), Keller 2008 less its ions and salts (50 of 59), peaky's pass-0 families as seven cited lists (45 of their 65 formulas, plus the D3-D6 siloxanes) and the example list, 1,008 formulas in all. The default seed (10 lists, 751 compounds) raises G2 same-formula on every set - A 93.8 -> 95.4, B 92.8 -> 93.5, C 91.7 -> 93.9, C2 77.7 -> 83.3 (now inside its bound), D 80.4 -> 84.0, E 33.3 -> 40.5, F1 13.0 -> 22.8, F2 15.9 -> 17.4 - and moves 211 peaks towards the reference's formula against 53 away, 23 of those with a seed row on the peak and 9 of the 23 one ion read two ways on B. The first seed round had lowered C and C2 (to 73.9 and 59.8) through two Stage A defects older than the seed, a labelled ion's M0 and isotopologues with no owner; #2112 fixes both and was measured alone (40 of 48,894 peaks moved, none away from the reference), and the insert overflow on merged TOF isotopologue names is fixed in #2111. On the TOF sets the seed's matches become most of Stage A's anchors and widen the fitted mass width 2-3x (F2 2.6 -> 6.5 ppm), which moves thousands of untargeted elections; that is the next row's, and D4/D5, triethyl phosphate and G6 wait for 2.5b's per-source window |
 | 2.5a fix - the reference seed out of the mass widths | #2113 | measured: Stage A's width is fitted over the target library's lines alone, only the target library's rows count as curated for the mass gate (decision 3's second addendum), the ingest fold runs the gate, and Stage A falls back to the instrument class's width as the untargeted stage does. With the seed loaded, every set's search width and Stage A anchor count equal the pre-seed round's (F2 6.54 -> 2.62 ppm, gate 6.75 -> 2.62). G2 same formula rises on E, F1 and F2 (40.5 -> 45.2, 22.8 -> 23.6, 17.4 -> 18.8) and holds on the Orbitrap sets (C2 83.3 -> 82.6, D 84.0 -> 83.9). All 3,883 peaks that change owner had been moved by the seed, and 3,866 go back to their pre-seed owner. Of the 30 mirror rows the estimate named, the gate caps 4 and the narrower width holds the other 26 below its cap |
 | 2.5b - Stage A window per source, polarity, radical filter, deactivate, the isoprene lift (seed proposal phase 3) | #2116 (schema and CLI), #2117 (engine, lists) | measured: #2116 records each source's window, radical allowance and polarity on its row (a database mirror at today's window, a list unbounded, existing rows backfilled at today's window), lets `reference sync` set them (`--polarity` included), has `reference seed` write and refresh them, and adds `reference deactivate`. #2117 makes Stage A read all three under the context's ceiling (every shipped context opens Si, P, F, Cl, Br and I at C40/700 Da; `none` sets none) and lifts the isoprene list, D7/D8 (Fromme et al. 2019) and L3-L5; the monoterpene HOM list matches both polarities (decision 17's addendum). With the seed refreshed, G2 same formula rises on every set (A 95.4 -> 97.1, B 93.5 -> 95.1, C2 82.6 -> 87.1, D 83.9 -> 85.5, E 45.2 -> 54.8, F1 23.6 -> 27.6, F2 18.8 -> 26.1); D3-D8, the phosphates and TFA resolve on every sample the reference commits them on, the siloxanes mostly at candidate tier by the evidence's own reading (decision 18); G6 on A falls 87 -> 50 with its grid part 69 -> 5. 987 owners change, 125 towards the reference and 9 away (5 new siloxane isotopologue claims on B, 4 isoprene nitrates on F2). IBr2- commits as an analyte on 8 reagent peaks, read at the gate |
-| 2.5c - the same-ion ambiguity on a Stage A mirror row | - | planned: right after 2.5b, measured alone |
+| 2.5c - the same-ion ambiguity on a Stage A mirror row | #2118 | measured: a reference mirror's M0 row carries the readings of its ion the untargeted search would have held, as `same_ion` alternatives (2,725 rows over the 43 samples), and the reagent-N rule asks it from both sides, since a list can put the nitrogen on the analyte; a second channel fixes the count either way and a target library row stays exempt. It moves tiers and nothing else: no formula, role or owner change on 48,894 peaks, G2 identical on every set, no untargeted or target library row touched. The rule reaches 746 mirror rows and caps 167 from assigned (A 24, B 67, F2 76) with 25 isotopologues. All nine same-ion steals on B carry their ammonium reading: two are capped and seven fixed by the same neutral's urea adduct. G1 A 24.3 -> 23.2, B 36.8 -> 37.0 (conditioned 11.6 -> 11.7), F2 97.5 -> 97.3; on B the cap takes 50 rows the reference confirms, 18 of them Keller's amines through `+H+` |
 | 2.6 - frontend: profile, reasons, roles | - | planned |
 | 2.7 - stage 2 gate, engine 0.5.0 | - | planned |
 | 2.2b - mass-dependent centre for the mass gate | - | planned: after the TOF width fix, before 2.7 |
@@ -4418,6 +4418,105 @@ On A the grid part is inside the target of 10. The linear silanediols, which
   bound pushed into the query, so a database mirror would stream whole and be
   decided row by row. No mirror is loaded anywhere yet; a source's own cap can
   join the query when one is.
+
+### After step 2.5c, a mirror row's nitrogen count (2026-09-15)
+
+#2118 gives a reference mirror's M0 row the readings of its ion that the
+untargeted search would have held, and lets the reagent-N rule ask it what it
+asks an election:
+- **The family.** `heuristic_filter.propose_same_ion_readings` builds it for a
+  `(formula, mechanism)` reading: through every other mechanism of the same
+  charge, the neutral that makes the same ion formula, kept where the grid
+  holds it (`grid.admits`) and the heuristic rules pass it. On three readings
+  the test finds it equal to what `find_compositions`, the rules and
+  `elect_same_ion_families` hold for that ion.
+- **Where it is written.** `engine.record_mirror_same_ion_readings` stores it as
+  `same_ion` alternatives ahead of the row's rivals, under the run's own box and
+  filter. A target library row gets none.
+- **The rule, from both sides.** An election is still asked only where its
+  reading is the donor's, the preference for the heavier mechanism being the
+  prior in doubt. A list can put the nitrogen on the analyte, so a mirror row
+  read through a channel that donates none is asked too, where its ion reads
+  through a donor as a neutral with less nitrogen. A second channel fixes the
+  count from either side, and a target library row stays exempt.
+- **Recorded.** `config.cross_channel` counts `ambiguous_nitrogen_mirror` and
+  `capped_mirror`, and the tier reason names the side the doubt is from.
+
+The radical rule and the formula-shape signatures still exempt every Stage A
+row. The run-less ingest fold runs no cross-channel pass, for any row, as before.
+
+All 43 samples re-run on `step-2.5c-mirror-same-ion-2026.09.15-22b0807`,
+compared with 2.5b's second round (`...-8917b25`); no list or seed changed.
+
+**It moves tiers and nothing else.** No formula, role, stage or owner changes on
+any of the 48,894 peaks, and G2 and its denominator are identical on all eight
+sets. No untargeted or target library row changes tier. Every move is a mirror
+row from assigned to candidate: A 24 M0 rows and 5 isotopologues, B 67 and 17,
+F2 76 and 3.
+
+| set | mirror M0 rows with same-ion readings | the rule's reach (donor side / the other) | capped from assigned | G1 unconditioned | G1 conditioned (n) |
+|---|---|---|---|---|---|
+| A | 158 | 45 (19 / 26) | 24 | 24.3 -> 23.2 | 2.5 -> 2.5 (804 -> 797) |
+| B | 440 | 143 (105 / 38) | 67 | 36.8 -> 37.0 | 11.6 -> 11.7 (2,953 -> 2,900) |
+| C | 115 | 0 | 0 | 20.3 | 1.2 |
+| C2 | 49 | 0 | 0 | 26.6 | 0.4 |
+| D | 31 | 0 | 0 | 8.1 | 1.0 |
+| E | 87 | 0 | 0 | 93.3 | 42.3 |
+| F1 | 634 | 0 | 0 | 94.9 | 49.3 |
+| F2 | 1,211 | 558 (542 / 16) | 76 | 97.5 -> 97.3 | 80.4 -> 77.6 (97 -> 85) |
+
+- **Where the rule reads nothing.** C and C2's reagent is labelled and the
+  bromide sets have no donor channel. Their readings are the splits those modes'
+  elections record: carbonate against deprotonation, and bromide against it.
+- **The estimate held.** It was made on 2.5b's ledgers and named the same reach:
+  45, 143 and 558 rows, 24, 67 and 76 of them at assigned tier.
+- **The runs' `capped_mirror` is 25, 73 and 95.** The difference from the tier
+  moves is rows 2.5b's tiering pass capped after this pass. This pass now caps
+  them first: `envelope_neighbour` A 14 -> 13, B 33 -> 27, F2 33 -> 31, and
+  `candidate_density` F2 687 -> 670.
+
+**The nine same-ion steals on B all carry the ambiguity.** Each holds its
+ammonium reading: acrolein for DMF, C5H6O for NMP, and C9H12O5, C9H12O6 and
+C10H14O7 for the Kang nitrates.
+- **Two are capped.** C9H15NO6 and C10H17NO7 on one sample go from assigned to
+  candidate.
+- **Seven are fixed by a second channel.** The same sample commits the same
+  neutral through the urea adduct: C9H15NO5 on four samples, NMP on two, DMF on
+  one. The reference commits that urea reading itself on six of them while
+  reading the protonated peak as the ammonium adduct, one neutral read two ways.
+  The seven keep their evidence's tier, 4 assigned and 3 candidate.
+
+**What the capped rows are, and what the reference says of them:**
+
+| set | side | rows | formulas | the reference commits the same formula | another | the displaced reading | silent |
+|---|---|---|---|---|---|---|---|
+| A | donor (urea adduct, `+H+` reading) | 13 | HOMs and atmospheric organics 11, Keller 2 | 2 | 0 | 0 | 11 |
+| A | plain (`+H+`, ammonium reading) | 11 | Keller's amines C6H15N and C8H19N | 5 | 0 | 0 | 6 |
+| B | donor (urea adduct, `+H+` reading) | 43 | HOMs and atmospheric organics 42, Keller 1 | 32 | 1 | 0 | 10 |
+| B | plain (`+H+`, ammonium or urea reading) | 24 | Keller's amines 22, Kang nitrates 2 | 18 | 0 | 2 | 4 |
+| F2 | donor (`+NO3-`, `-H+` reading; one `+CO3-`) | 74 | Kang HOMs 63, atmospheric organics and isoprene 7, Keller 4 | 0 | 12 | 0 | 62 |
+| F2 | plain (`-H+`, `+NO3-` reading) | 2 | Kang formulas with nitrogen | 0 | 0 | 0 | 2 |
+
+- **The cost is on B.** The cap takes 50 rows the reference confirms, 43 of them
+  at the reference's own assigned tier.
+  - 32 are on the donor side, where the same formula elected through the urea
+    adduct would be capped too.
+  - 18 are Keller's amines through `+H+` (C8H19N, C9H21N, C7H10N2, C10H15N,
+    C13H24N2O), whose other reading is an alkene or arene through ammonium, or
+    through the urea adduct.
+- **Read by decision 18,** the nitrogen count on those rows is the list's answer
+  and not the spectrum's, so candidate is what the evidence supports. Whether a
+  named amine's nitrogen deserves more trust is the plan owner's question.
+- **On F2** the reference commits none of the 76 and another formula on 12. A
+  HOM through `+NO3-` reads through `-H+` as the nitrate ester one HNO3 heavier.
+  One row is capped on a radical reading, the only one crossing the boundary,
+  which the election's rule would do as well.
+
+**Verify, item by item.**
+- **The nine same-ion steals on B:** above.
+- **The owner-change report:** empty.
+- **G1 and G2 on B and on the nitrate sets:** the table. C and C2 do not move,
+  and neither does G2 anywhere.
 
 ## Not in this plan
 
