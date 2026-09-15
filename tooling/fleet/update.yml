@@ -110,7 +110,7 @@
     # Before the stack update, not after: the checkout above has already
     # swapped in the release's docker-compose.yaml (the deployment checkout is
     # MASCOPE_PATH), and a release may add a compose secret that only the
-    # matching CLI provisions - 2.0.0 adds `mfa_encryption_key`, written by
+    # matching CLI provisions - 1.8.0 adds `mfa_encryption_key`, written by
     # `prod update` -> `_ensure_secrets`. Driving the new compose file with the
     # still-installed older CLI makes compose refuse to create the backend on
     # the missing secret file, after it has already stopped the running one:

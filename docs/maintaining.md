@@ -292,7 +292,7 @@ stays clean.
 
     The next `mascope prod up` - a restart, or a reboot - then drives the new
     compose file with the old CLI. If the release added a compose secret, as
-    2.0.0 does with `mfa_encryption_key`, compose refuses to create the backend
+    1.8.0 does with `mfa_encryption_key`, compose refuses to create the backend
     *after* stopping the running one, and the server comes up with no backend.
 
     So when the timer reports a release applied, reinstall the CLI from the
@@ -356,7 +356,7 @@ git fetch --tags origin
 git checkout vX.Y.Z        # the release you are rolling out
 
 # CLI first, stack second. The checkout above already swapped in the release's
-# docker-compose.yaml, and a release that adds a compose secret (2.0.0 adds
+# docker-compose.yaml, and a release that adds a compose secret (1.8.0 adds
 # mfa_encryption_key) has that file created only by the matching CLI - the
 # older one stops the backend and then cannot recreate it.
 CFLAGS="-std=c17" uv tool install --force --reinstall --python 3.12 .   --with-executables-from mascope-cli
@@ -385,7 +385,7 @@ Two gotchas this procedure exists to avoid:
   first.** `prod update` only pulls images; the `mascope` binary is a `uv` tool
   installed by `tooling/ubuntu.sh`. Reinstall it between the checkout and the
   update, as in the sequence above: the checkout brings in the release's
-  `docker-compose.yaml`, and a release that adds a compose secret (2.0.0 adds
+  `docker-compose.yaml`, and a release that adds a compose secret (1.8.0 adds
   `mfa_encryption_key`) has it provisioned only by the matching CLI - compose
   then refuses to recreate the backend it has just stopped. Prefer the
   `uv tool install` line over `ubuntu.sh reinstall`: reinstall goes through the
