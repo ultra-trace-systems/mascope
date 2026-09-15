@@ -237,6 +237,16 @@ describe('isMonoisotopicFormula', () => {
     expect(isMonoisotopicFormula('[13C][15N]C8H16O7-/[2H][15N]C9H15O7-', labels)).toBe(false)
   })
 
+  // An imported run writes a labelled ion's M0 in the ion's own notation, caret
+  // and all, so its isotopologue formula is the ion formula itself.
+  it('takes a label written as the caret element as the labelled isotope', () => {
+    const labels = labelledIsotopes('C10H18O7^N-')
+
+    expect(isMonoisotopicFormula('C10H18O7^N-', labels)).toBe(true)
+    expect(isMonoisotopicFormula('[13C]C9H18O7^N-', labels)).toBe(false)
+    expect(isMonoisotopicFormula('HO6^N2-', labelledIsotopes('HO6^N2-'))).toBe(true)
+  })
+
   it('is no M0 without a formula', () => {
     expect(isMonoisotopicFormula('', {})).toBe(false)
     expect(isMonoisotopicFormula(null, {})).toBe(false)
@@ -294,6 +304,18 @@ describe('formatIsotopeFormula of a labelled ion', () => {
     expect(formatIsotopeFormula('[13C][15N]C8H16O7-/[2H][15N]C9H15O7-', 'C9H16O7^N-')).toBe(
       '[13C]/[2H]'
     )
+  })
+
+  // The store's pair: an imported run writes a labelled ion's M0 in the ion's own
+  // notation, so the isotopologue formula is the ion formula, caret and all. It
+  // names the labelled composition, and a caret atom beside brackets is the
+  // label too - the [15N] of the last one is an atom of the analyte's own.
+  it('reads a label written as the caret element, as an imported run writes it', () => {
+    expect(formatIsotopeFormula('C10H18O7^N-', 'C10H18O7^N-')).toBe('M0')
+    expect(formatIsotopeFormula('[13C]C9H18O7^N-', 'C10H18O7^N-')).toBe('[13C]')
+    expect(formatIsotopeFormula('HO6^N2-', 'HO6^N2-')).toBe('M0')
+    expect(formatIsotopeFormula('C2H3NO5^N-', 'C2H3N^NO5-')).toBe('M0')
+    expect(formatIsotopeFormula('[15N]C2H3O5^N-', 'C2H3N^NO5-')).toBe('[15N]')
   })
 
   // What a call site that passes no ion formula shows: the unlabelled reading.
