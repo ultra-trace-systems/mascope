@@ -18,9 +18,9 @@ from mascope_backend.api.new.instrument_configs.lib import (
     fetch_instrument_config_by_filename,
 )
 from mascope_backend.api.new.instrument_configs.schemas import (
-    INSTRUMENT_CONFIG_SORT_COLUMNS,
     CreateInstrumentConfigBody,
     InstrumentConfigFitParams,
+    InstrumentConfigSortColumn,
     InstrumentFunctionData,
     PeakShape,
 )
@@ -124,7 +124,7 @@ async def get_instrument_configs(
         if sort:
             stmt = stmt.order_by(
                 order_by_column(
-                    InstrumentConfig, sort, order, INSTRUMENT_CONFIG_SORT_COLUMNS
+                    InstrumentConfig, sort, order, InstrumentConfigSortColumn
                 )
             )
 

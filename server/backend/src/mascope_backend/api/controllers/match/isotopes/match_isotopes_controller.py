@@ -15,8 +15,8 @@ from mascope_backend.api.lib.exceptions.api_exceptions import (
 )
 from mascope_backend.api.lib.sorting import order_by_column
 from mascope_backend.api.models.match.isotopes.match_isotopes_pydantic_model import (
-    MATCH_ISOTOPE_SORT_COLUMNS,
     MatchIsotopeBase,
+    MatchIsotopeSortColumn,
 )
 from mascope_backend.db import (
     MatchIsotope,
@@ -98,7 +98,7 @@ async def get_match_isotopes(
         # Step 4: Apply sorting
         if sort:
             stmt = stmt.order_by(
-                order_by_column(MatchIsotope, sort, order, MATCH_ISOTOPE_SORT_COLUMNS)
+                order_by_column(MatchIsotope, sort, order, MatchIsotopeSortColumn)
             )
 
         # Step 5: Count total

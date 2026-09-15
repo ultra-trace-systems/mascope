@@ -152,13 +152,13 @@ class TargetCollectionUpdate(TargetCollectionValidator, TargetCollectionBase):
 
 
 # Columns `sort` accepts (see mascope_backend.api.lib.sorting).
-TARGET_COLLECTION_SORT_COLUMNS = (
+TargetCollectionSortColumn = Literal[
     "target_collection_id",
     "target_collection_name",
     "target_collection_description",
     "target_collection_type",
     "workspace_id",
-)
+]
 
 
 class GetTargetCollectionsQueryParams(QueryParamsModel):
@@ -177,7 +177,7 @@ class GetTargetCollectionsQueryParams(QueryParamsModel):
         None,
         description="Filter by workspace ID. Null-workspace (global) collections are always included.",
     )
-    sort: Literal[TARGET_COLLECTION_SORT_COLUMNS] | None = Field(
+    sort: TargetCollectionSortColumn | None = Field(
         None,
         description="The column name by which you want to sort the results. The column name should be one of the fields of target_collection.",
     )
@@ -211,10 +211,10 @@ class GetTargetCollectionsQueryParams(QueryParamsModel):
 
 
 # Columns `sort` accepts (see mascope_backend.api.lib.sorting).
-TARGET_COLLECTION_IN_SAMPLE_BATCH_SORT_COLUMNS = (
+TargetCollectionInSampleBatchSortColumn = Literal[
     "target_collection_id",
     "sample_batch_id",
-)
+]
 
 
 class GetTargetCollectionsInSampleBatchQueryParams(QueryParamsModel):
@@ -226,7 +226,7 @@ class GetTargetCollectionsInSampleBatchQueryParams(QueryParamsModel):
         None,
         description="The target collection ID filter for which you want to fetch the associated sample batches ids.",
     )
-    sort: Literal[TARGET_COLLECTION_IN_SAMPLE_BATCH_SORT_COLUMNS] | None = Field(
+    sort: TargetCollectionInSampleBatchSortColumn | None = Field(
         None,
         description="The column name by which you want to sort the results. The column name should be either sample_batch_id or target_collection_id.",
     )

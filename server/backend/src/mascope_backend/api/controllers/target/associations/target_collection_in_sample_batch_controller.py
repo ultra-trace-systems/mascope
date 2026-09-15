@@ -6,7 +6,7 @@ from sqlalchemy import (
 from mascope_backend.api.lib.api_features import api_controller
 from mascope_backend.api.lib.sorting import order_by_column
 from mascope_backend.api.models.target.collections.target_collection_pydantic_model import (
-    TARGET_COLLECTION_IN_SAMPLE_BATCH_SORT_COLUMNS,
+    TargetCollectionInSampleBatchSortColumn,
 )
 from mascope_backend.db import TargetCollectionInSampleBatch, async_session
 
@@ -45,7 +45,7 @@ async def get_target_collections_in_sample_batch(
                     TargetCollectionInSampleBatch,
                     sort,
                     order,
-                    TARGET_COLLECTION_IN_SAMPLE_BATCH_SORT_COLUMNS,
+                    TargetCollectionInSampleBatchSortColumn,
                 )
             )
 

@@ -27,6 +27,17 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
   recognise and return the results unsorted; they now refuse it like the
   rest. An unexpected `AttributeError` still maps to 500.
 
+  Sorting target ions or isotopes filtered by `sample_batch_id`, or match
+  ions with `show_target_collection`, by any column other than the row id
+  answered 500 (those queries select `DISTINCT ON` the id, which Postgres
+  requires to lead the `ORDER BY`); it now orders as asked.
+
+  A caller below admin reads only ids and usernames from `/api/users`, and
+  may now neither filter it by role (`role_name_min` / `role_name_max`,
+  which listed who holds a role) nor sort it by `registered_at`: both answer
+  403. Such a caller's default order is `id` instead of `registered_at`;
+  admins keep `registered_at`.
+
 ## [1.8.0] - 2026.09.15
 
 ### Added

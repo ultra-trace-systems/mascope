@@ -13,9 +13,9 @@ from mascope_backend.api.lib.exceptions.api_exceptions import (
 from mascope_backend.api.lib.sorting import order_by_column
 from mascope_backend.api.models.dataset.config import dataset_config
 from mascope_backend.api.models.dataset.dataset_pydantic_model import (
-    DATASET_SORT_COLUMNS,
     DatasetCreate,
     DatasetRead,
+    DatasetSortColumn,
     DatasetUpdate,
 )
 from mascope_backend.api.new.workspaces.exceptions import (
@@ -239,7 +239,7 @@ async def get_datasets(
         # Step 2: Apply sorting if specified
         if sort:
             stmt = stmt.order_by(
-                order_by_column(Dataset, sort, order, DATASET_SORT_COLUMNS)
+                order_by_column(Dataset, sort, order, DatasetSortColumn)
             )
 
         # Step 3: Get total count

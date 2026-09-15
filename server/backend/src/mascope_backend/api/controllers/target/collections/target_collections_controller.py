@@ -26,8 +26,8 @@ from mascope_backend.api.lib.exceptions.api_exceptions import (
 )
 from mascope_backend.api.lib.sorting import order_by_column
 from mascope_backend.api.models.target.collections.target_collection_pydantic_model import (
-    TARGET_COLLECTION_SORT_COLUMNS,
     TargetCollectionCreate,
+    TargetCollectionSortColumn,
     TargetCollectionUpdate,
 )
 from mascope_backend.db import (
@@ -140,7 +140,7 @@ async def get_target_collections(
         if sort:
             stmt = stmt.order_by(
                 order_by_column(
-                    TargetCollection, sort, order, TARGET_COLLECTION_SORT_COLUMNS
+                    TargetCollection, sort, order, TargetCollectionSortColumn
                 )
             )
 

@@ -52,7 +52,7 @@ class MatchIsotopeBase(BaseModel):
 
 
 # Columns `sort` accepts (see mascope_backend.api.lib.sorting).
-MATCH_ISOTOPE_SORT_COLUMNS = (
+MatchIsotopeSortColumn = Literal[
     "match_isotope_id",
     "target_isotope_id",
     "sample_item_id",
@@ -67,7 +67,7 @@ MATCH_ISOTOPE_SORT_COLUMNS = (
     "signal_to_noise",
     "match_isotope_utc_created",
     "match_isotope_utc_modified",
-)
+]
 
 
 class GetMatchesQueryParams(QueryParamsModel):
@@ -84,9 +84,7 @@ class GetMatchesQueryParams(QueryParamsModel):
         False,
         description="Flag to include target isotope details.",
     )
-    sort: Literal[MATCH_ISOTOPE_SORT_COLUMNS] | None = Field(
-        None, description="Field to sort by"
-    )
+    sort: MatchIsotopeSortColumn | None = Field(None, description="Field to sort by")
     order: Optional[str] = Field(None, description="Order of sorting ('asc' or 'desc')")
     page: int | None = Field(None, description="Pagination page number")
     limit: int | None = Field(None, description="Number of items per page")

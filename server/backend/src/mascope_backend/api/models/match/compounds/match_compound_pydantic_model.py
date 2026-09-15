@@ -19,7 +19,7 @@ class MatchCompoundBase(BaseModel):
 
 
 # Columns `sort` accepts (see mascope_backend.api.lib.sorting).
-MATCH_COMPOUND_SORT_COLUMNS = (
+MatchCompoundSortColumn = Literal[
     "match_compound_id",
     "sample_item_id",
     "target_compound_id",
@@ -28,7 +28,7 @@ MATCH_COMPOUND_SORT_COLUMNS = (
     "sample_peak_intensity_sum",
     "match_compound_utc_created",
     "match_compound_utc_modified",
-)
+]
 
 
 class GetMatchCompoundsQueryParams(QueryParamsModel):
@@ -57,7 +57,7 @@ class GetMatchCompoundsQueryParams(QueryParamsModel):
         False,
         description="Flag to include target compound name, used for BatchOverview.",
     )
-    sort: Literal[MATCH_COMPOUND_SORT_COLUMNS] | None = Field(
+    sort: MatchCompoundSortColumn | None = Field(
         None, description="The column name to sort the results by."
     )
     order: Optional[str] = Field(

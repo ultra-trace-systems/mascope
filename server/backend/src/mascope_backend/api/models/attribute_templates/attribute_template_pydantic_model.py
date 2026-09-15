@@ -56,15 +56,15 @@ class AttributeTemplateUpdateBody(AttributeTemplateBase):
 
 
 # Columns `sort` accepts (see mascope_backend.api.lib.sorting).
-ATTRIBUTE_TEMPLATE_SORT_COLUMNS = (
+AttributeTemplateSortColumn = Literal[
     "attribute_template_id",
     "name",
     "type",
-)
+]
 
 
 class GetAttributeTemplatesQueryParams(QueryParamsModel):
-    sort: Literal[ATTRIBUTE_TEMPLATE_SORT_COLUMNS] | None = Field(
+    sort: AttributeTemplateSortColumn | None = Field(
         "name", description="The column name by which you want to sort the results."
     )
     order: Optional[str] = Field(

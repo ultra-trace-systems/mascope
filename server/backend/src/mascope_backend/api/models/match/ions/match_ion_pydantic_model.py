@@ -19,7 +19,7 @@ class MatchIonBase(BaseModel):
 
 
 # Columns `sort` accepts (see mascope_backend.api.lib.sorting).
-MATCH_ION_SORT_COLUMNS = (
+MatchIonSortColumn = Literal[
     "match_ion_id",
     "sample_item_id",
     "target_ion_id",
@@ -28,7 +28,7 @@ MATCH_ION_SORT_COLUMNS = (
     "sample_peak_intensity_sum",
     "match_ion_utc_created",
     "match_ion_utc_modified",
-)
+]
 
 
 class GetMatchIonsQueryParams(QueryParamsModel):
@@ -68,7 +68,7 @@ class GetMatchIonsQueryParams(QueryParamsModel):
         False,
         description="Flag to to include ionization mechanism details.",
     )
-    sort: Literal[MATCH_ION_SORT_COLUMNS] | None = Field(
+    sort: MatchIonSortColumn | None = Field(
         None, description="The column name to sort the results by."
     )
     order: Optional[str] = Field(

@@ -21,8 +21,8 @@ from mascope_backend.api.lib.api_features import api_controller
 from mascope_backend.api.lib.exceptions.api_exceptions import NotFoundException
 from mascope_backend.api.lib.sorting import order_by_column
 from mascope_backend.api.models.target.compounds.target_compound_pydantic_model import (
-    TARGET_COMPOUND_SORT_COLUMNS,
     TargetCompoundBase,
+    TargetCompoundSortColumn,
     TargetCompoundUpdate,
 )
 from mascope_backend.db import (
@@ -147,9 +147,7 @@ async def get_target_compounds(
         # Step 4: Apply sorting if specified
         if sort:
             stmt = stmt.order_by(
-                order_by_column(
-                    TargetCompound, sort, order, TARGET_COMPOUND_SORT_COLUMNS
-                )
+                order_by_column(TargetCompound, sort, order, TargetCompoundSortColumn)
             )
 
         # Step 5: Count total results

@@ -18,7 +18,7 @@ DEFAULT_PEAK_MZ_TOLERANCE_PPM = 1.0
 
 
 # Columns `sort` accepts (see mascope_backend.api.lib.sorting).
-SAMPLE_SORT_COLUMNS = (
+SampleSortColumn = Literal[
     "sample_item_id",
     "sample_file_id",
     "instrument_function_id",
@@ -42,7 +42,7 @@ SAMPLE_SORT_COLUMNS = (
     "length",
     "datetime",
     "datetime_utc",
-)
+]
 
 
 class GetSamplesQueryParams(GetSampleItemsQueryValidator, QueryParamsModel):
@@ -85,7 +85,7 @@ class GetSamplesQueryParams(GetSampleItemsQueryValidator, QueryParamsModel):
         None,
         description="Filter samples by match_category to include samples with specified match category and higher",
     )
-    sort: Literal[SAMPLE_SORT_COLUMNS] = Field(
+    sort: SampleSortColumn = Field(
         "datetime_utc",
         description="Column name by which you want to sort the results. Should be one of the Sample table columns (e.g., datetime_utc, filename, sample_item_type).",
     )

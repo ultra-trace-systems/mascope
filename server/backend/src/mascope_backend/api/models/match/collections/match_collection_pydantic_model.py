@@ -21,7 +21,7 @@ class MatchCollectionBase(BaseModel):
 
 
 # Columns `sort` accepts (see mascope_backend.api.lib.sorting).
-MATCH_COLLECTION_SORT_COLUMNS = (
+MatchCollectionSortColumn = Literal[
     "match_collection_id",
     "sample_item_id",
     "target_collection_id",
@@ -30,7 +30,7 @@ MATCH_COLLECTION_SORT_COLUMNS = (
     "sample_peak_intensity_sum",
     "match_collection_utc_created",
     "match_collection_utc_modified",
-)
+]
 
 
 class GetMatchCollectionsQueryParams(QueryParamsModel):
@@ -47,7 +47,7 @@ class GetMatchCollectionsQueryParams(QueryParamsModel):
         None,
         description="Filter match collections by match_category to include match collections with specified match category and higher",
     )
-    sort: Literal[MATCH_COLLECTION_SORT_COLUMNS] | None = Field(
+    sort: MatchCollectionSortColumn | None = Field(
         None, description="The column name to sort the results by."
     )
     order: Optional[str] = Field(

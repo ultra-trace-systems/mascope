@@ -169,7 +169,7 @@ class SampleBatchUpdateStatusBody(BaseModel):
 
 
 # Columns `sort` accepts (see mascope_backend.api.lib.sorting).
-SAMPLE_BATCH_SORT_COLUMNS = (
+SampleBatchSortColumn = Literal[
     "sample_batch_id",
     "dataset_id",
     "sample_batch_name",
@@ -180,7 +180,7 @@ SAMPLE_BATCH_SORT_COLUMNS = (
     "polarity",
     "sample_batch_utc_created",
     "sample_batch_utc_modified",
-)
+]
 
 
 class GetSampleBatchesQueryParams(QueryParamsModel):
@@ -202,7 +202,7 @@ class GetSampleBatchesQueryParams(QueryParamsModel):
         default=None,
         description="Filter by polarities (+, -, +-). Can specify multiple polarities.",
     )
-    sort: Literal[SAMPLE_BATCH_SORT_COLUMNS] | None = Field(
+    sort: SampleBatchSortColumn | None = Field(
         "sample_batch_utc_created",
         description="Column name by which you want to sort the results. The column name should be one of the columns in the sample batch table.",
     )

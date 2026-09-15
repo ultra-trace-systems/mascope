@@ -18,12 +18,12 @@ class TargetIonUpdate(BaseModel):
 
 
 # Columns `sort` accepts (see mascope_backend.api.lib.sorting).
-TARGET_ION_SORT_COLUMNS = (
+TargetIonSortColumn = Literal[
     "target_ion_id",
     "target_compound_id",
     "ionization_mechanism_id",
     "target_ion_formula",
-)
+]
 
 
 class GetTargetIonsQueryParams(QueryParamsModel):
@@ -50,9 +50,7 @@ class GetTargetIonsQueryParams(QueryParamsModel):
         False,
         description="Flag to to include ionization mechanism details.",
     )
-    sort: Literal[TARGET_ION_SORT_COLUMNS] | None = Field(
-        None, description="Field to sort by."
-    )
+    sort: TargetIonSortColumn | None = Field(None, description="Field to sort by.")
     order: str | None = Field(None, description="Order of sorting ('asc' or 'desc').")
     page: int | None = Field(None, description="Pagination page.")
     limit: int | None = Field(None, description="Number of items per page.")

@@ -7,19 +7,19 @@ from mascope_backend.api.models.base_pydantic_model import QueryParamsModel
 
 
 # Columns `sort` accepts (see mascope_backend.api.lib.sorting).
-INSTRUMENT_CONFIG_SORT_COLUMNS = (
+InstrumentConfigSortColumn = Literal[
     "instrument_function_id",
     "instrument",
     "method_file",
     "datetime_utc",
-)
+]
 
 
 class GetInstrumentConfigsQueryParams(QueryParamsModel):
     filename: str | None = Field(None, description="Filter by filename")
     instrument: str | None = Field(None, description="Filter by instrument name.")
     method_file: str | None = Field(None, description="Filter by method file name.")
-    sort: Literal[INSTRUMENT_CONFIG_SORT_COLUMNS] | None = Field(
+    sort: InstrumentConfigSortColumn | None = Field(
         None, description="Field to sort by."
     )
     order: str | None = Field(

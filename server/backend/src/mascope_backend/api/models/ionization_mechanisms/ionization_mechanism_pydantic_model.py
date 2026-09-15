@@ -184,11 +184,11 @@ class IonizationMechanismUpdate(IonizationMechanismBaseValidator, BaseModel):
 
 
 # Columns `sort` accepts (see mascope_backend.api.lib.sorting).
-IONIZATION_MECHANISM_SORT_COLUMNS = (
+IonizationMechanismSortColumn = Literal[
     "ionization_mechanism_id",
     "ionization_mechanism_polarity",
     "ionization_mechanism",
-)
+]
 
 
 class GetIonizationMechanismsQueryParams(QueryParamsModel):
@@ -203,7 +203,7 @@ class GetIonizationMechanismsQueryParams(QueryParamsModel):
         description="Filter by the chemical formula modification of the ionization mechanism. Can specify multiple values.",
     )
 
-    sort: Literal[IONIZATION_MECHANISM_SORT_COLUMNS] | None = Field(
+    sort: IonizationMechanismSortColumn | None = Field(
         "ionization_mechanism", description="Field to sort by"
     )
     order: str | None = Field(

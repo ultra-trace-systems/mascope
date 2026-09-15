@@ -15,7 +15,7 @@ class MatchSampleBase(BaseModel):
 
 
 # Columns `sort` accepts (see mascope_backend.api.lib.sorting).
-MATCH_SAMPLE_SORT_COLUMNS = (
+MatchSampleSortColumn = Literal[
     "match_sample_id",
     "sample_item_id",
     "match_score",
@@ -23,7 +23,7 @@ MATCH_SAMPLE_SORT_COLUMNS = (
     "sample_peak_intensity_sum",
     "match_sample_utc_created",
     "match_sample_utc_modified",
-)
+]
 
 
 class GetMatchSamplesQueryParams(QueryParamsModel):
@@ -37,7 +37,7 @@ class GetMatchSamplesQueryParams(QueryParamsModel):
         None,
         description="Filter match samples by match_category to include match samples with specified match category and higher",
     )
-    sort: Literal[MATCH_SAMPLE_SORT_COLUMNS] | None = Field(
+    sort: MatchSampleSortColumn | None = Field(
         None, description="The column name to sort the results by."
     )
     order: Optional[str] = Field(
