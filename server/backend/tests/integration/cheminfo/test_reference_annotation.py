@@ -133,9 +133,8 @@ def reference_in_play(monkeypatch):
 async def test_annotation_is_gated_off_when_disabled(seeded, monkeypatch):
     """With the feature off and no known_only, the response is left untouched.
 
-    Peak assignment is on by default, so "off" has to be set rather than left
-    alone: clearing the override would now resolve to the flag's own default and
-    exercise the annotated path this test exists to rule out.
+    "Off" is set explicitly rather than left to the flag's own default, so the
+    test keeps ruling out the annotated path whatever that default is.
     """
     monkeypatch.setenv("MASCOPE_PEAK_ASSIGNMENT", "0")
     resp = await retrieve_compositions_by_mz(

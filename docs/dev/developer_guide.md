@@ -702,7 +702,7 @@ now a stack restart, not an image rebuild.
 
 | Flag | Default | What it gates |
 |---|---|---|
-| `peak_assignment` | `true` | [Peak-centric assignment](peak_assignment_paradigm.md): assignment on sample ingest, the rescored composition search, and the `/api/peak-assignments` write routes (403 while off; reads stay open). It **adds** the assignment views; the targeted workflow, the Match tab included, renders either way. `MASCOPE_PEAK_ASSIGNMENT=0`/`=1` overrides it **for the backend only**, and is not forwarded by the production compose file - a development knob, not a deployment switch. |
+| `peak_assignment` | `false` | [Peak-centric assignment](peak_assignment_paradigm.md): assignment on sample ingest, the rescored composition search, and the `/api/peak-assignments` write routes (403 while off; reads stay open). It **adds** the assignment views; the targeted workflow, the Match tab included, renders either way. `MASCOPE_PEAK_ASSIGNMENT=0`/`=1` overrides it **for the backend only**, and is not forwarded by the production compose file - a development knob, not a deployment switch. |
 
 Read it via `peak_assignment_enabled()`
 (`api/new/peak_assignments/config.py`) on the backend and `peakAssignmentEnabled`

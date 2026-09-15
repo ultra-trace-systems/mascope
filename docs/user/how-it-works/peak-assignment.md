@@ -6,7 +6,7 @@ observed peak, what is the most likely chemical composition, and how confident a
 Each peak gets exactly one assignment per run, together with a **fit score** and a
 **confidence tier**.
 
-!!! note "Peak assignment is on by default"
+!!! note "Peak assignment is off by default"
 
     Targeted matching keeps working exactly as before either way — peak assignment is
     an addition, not a replacement. Target collections, ion tables, the batch overview
@@ -14,13 +14,13 @@ Each peak gets exactly one assignment per run, together with a **fit score** and
     known target library as it is processed, the assignment views appear, and the
     composition search reports assignment confidence.
 
-    A deployment that would rather not assign at ingest can switch it off: set
-    `peak_assignment = false` under `[meta]` in the environment's config toml and
-    restart the stack — that is the whole procedure. With
-    it off nothing is assigned when a sample is processed, the composition search
-    reports the familiar match score, the Sample tab keeps its peak ledger, and the API
-    refuses to launch assignment runs (the write routes return 403; reads stay open, so
-    results from a period when it was on remain visible).
+    A deployment switches it on by setting `peak_assignment = true` under `[meta]` in
+    the environment's config toml and restarting the stack — that is the whole
+    procedure, and setting it back to `false` undoes it. With it off nothing is
+    assigned when a sample is processed, the composition search reports the familiar
+    match score, the Sample tab keeps its peak ledger, and the API refuses to launch
+    assignment runs (the write routes return 403; reads stay open, so results from a
+    period when it was on remain visible).
 
 The design rests on a foundational result of the field: **accurate mass alone — even at
 sub-ppm — cannot uniquely determine an elemental composition**, and isotope-pattern

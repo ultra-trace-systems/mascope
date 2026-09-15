@@ -64,8 +64,8 @@ async def test_does_nothing_when_feature_disabled():
 
     This is the guarantee that a deployment which has switched peak-centric
     assignment off processes samples exactly as it did before the feature
-    landed. The flag is on by default, so this pins the opted-out behaviour
-    rather than the default one.
+    landed - which is also what a deployment that never opted in does, since
+    the flag is off by default.
     """
     from mascope_backend.api.new.peak_assignments.service import (
         auto_assign_sample_peaks,

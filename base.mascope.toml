@@ -10,21 +10,21 @@ description = "The default runtime env"
 api_port = 8090
 filestore = './filestore'
 # Peak-centric assignment (assign a composition to every peak) - see
-# docs/user/how-it-works/peak-assignment.md. On by default: it turns on
-# assignment at sample ingest (the fast database-only stage), the assignment
-# views in the UI, and the API write routes. Targeted matching is unchanged
-# either way - the two coexist. Set this to false to keep the pre-assignment
-# behaviour: ingest assigns nothing, the assignment views are hidden, and the
-# write routes return 403 (the read routes stay open, so ledgers written while
-# it was on remain inspectable). Both sides read this same value at start, so
-# changing it takes a stack restart and nothing more (prod restarts the
-# frontend container too; in dev, restart the dev server).
+# docs/user/how-it-works/peak-assignment.md. Off by default. Set this to true
+# to turn on assignment at sample ingest (the fast database-only stage), the
+# assignment views in the UI, and the API write routes. Targeted matching is
+# unchanged either way - the two coexist. Off, ingest assigns nothing, the
+# assignment views are hidden, and the write routes return 403 (the read routes
+# stay open, so ledgers written while it was on remain inspectable). Both sides
+# read this same value at start, so changing it takes a stack restart and
+# nothing more (prod restarts the frontend container too; in dev, restart the
+# dev server).
 # Superseded re-runs are reclaimed with the prune_peak_assignment_runs script
 # (a host provisioned with tooling/ubuntu.sh runs it nightly on a timer; any
 # other deployment should schedule it itself). A sample's ingest run is never
 # superseded, so that pass does not bound the ledger itself - the two settings
 # below do (docs/maintaining.md).
-peak_assignment = true
+peak_assignment = false
 # Ingest-time assignment can be bounded without switching the feature off -
 # the views, on-demand runs and imports keep working either way. Assignment at
 # ingest writes one ledger row and one batch-peak occurrence per detected peak

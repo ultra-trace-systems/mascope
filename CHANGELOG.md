@@ -1322,42 +1322,43 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
   accent, and the flags that had borrowed it - poor isotope match, tied
   candidates, provisional assignment - are warnings and now say so.
 
-- **Peak assignment is now on by default.** A composition is assigned to every
-  peak of a sample as it is processed (the fast database stage only - the
-  untargeted search stays something you launch deliberately), the assignment
-  views are present, and the `/api/peak-assignments` write routes accept work
-  instead of answering 403. Targeted matching is unchanged: assignment is an
-  addition, not a replacement. The target collections, ion tables and batch
-  overview behave exactly as before, and the *Match* tab stays where it is -
-  with the match-parameter drawer and *Rate Match* it carries, which the Sample
-  tab does not. The two views answer different questions and are meant to be
-  used together: Match reads one target ion across the batch, the Sample tab
-  reads every peak of one sample.
-  **What an upgrade changes for you.** An env config written before this
-  release names no `peak_assignment`, so it takes the new default; a deployment
-  that already set it to `false` is unaffected. Processing a sample now also
-  writes an assignment run and one row per detected peak, so it takes a little
-  longer and uses more database space - permanently. That ledger is the
-  baseline cost of the feature and nothing reclaims it: the nightly retention
-  timer a `tooling/ubuntu.sh` host runs bounds *re-assignment* of the same
-  sample, keeping the newest runs per sample, so on a deployment that only
-  assigns at ingest it has nothing to delete. Batch peaks add a second row per
-  observed peak per sample, and the retention pass does not touch those at all.
-  Budget disk accordingly - see `docs/maintaining.md`. Samples processed before
-  the upgrade are not assigned retroactively.
+- **Peak assignment ships off, and switching it on is one setting.** With it on,
+  a composition is assigned to every peak of a sample as it is processed (the
+  fast database stage only - the untargeted search stays something you launch
+  deliberately), the assignment views are present, and the
+  `/api/peak-assignments` write routes accept work instead of answering 403. A
+  deployment runs without it unless its env config opts in, so an upgrade
+  changes nothing here by itself. Targeted matching is unchanged either way:
+  assignment is an addition, not a replacement. The target collections, ion
+  tables and batch overview behave exactly as before, and the *Match* tab stays
+  where it is - with the match-parameter drawer and *Rate Match* it carries,
+  which the Sample tab does not. The two views answer different questions and
+  are meant to be used together: Match reads one target ion across the batch,
+  the Sample tab reads every peak of one sample.
+  **What switching it on costs.** Processing a sample also folds it into its
+  batch's ledger, so it takes a little longer and uses more database space -
+  about 200 bytes per detected peak, permanently; nothing reclaims those member
+  rows. An explicit run (*Assign peaks*, or an import) writes a per-sample
+  ledger as well, about 0.8 KB per peak, and those runs are what the nightly
+  retention timer a `tooling/ubuntu.sh` host runs bounds, keeping the newest
+  runs per sample. Budget disk accordingly - see `docs/maintaining.md`. Samples
+  processed before it was switched on are not assigned retroactively; *Rebuild
+  batch ledger* folds them in.
 
-  To stop it, set `peak_assignment = false` under `[meta]` in the env config:
+  To switch it on, set `peak_assignment = true` under `[meta]` in the env
+  config:
 
   ```toml
   [meta]
-  peak_assignment = false
+  peak_assignment = true
   ```
 
-  Then `mascope prod up`. That ends the ingest work, closes the write routes,
-  and removes the assignment views - one restart is the whole procedure now, see
-  the entry below. (`MASCOPE_PEAK_ASSIGNMENT=0` moves the backend only and is a
-  development knob: the web app reads the `[meta]` value, so the assignment
-  views would stay on screen over write routes answering 403.)
+  Then `mascope prod up`. That starts the ingest work, opens the write routes,
+  and shows the assignment views - one restart is the whole procedure, see the
+  entry below, and `false` plus a restart reverses it.
+  (`MASCOPE_PEAK_ASSIGNMENT=1` moves the backend only and is a development knob:
+  the web app reads the `[meta]` value, so the assignment views would stay
+  hidden over write routes that accept work.)
 
 - **The web app reads the config the server is running on, not the one its image
   was built with.** `[meta]` reached the frontend only as a JSON blob compiled
