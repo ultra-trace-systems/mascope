@@ -74,14 +74,14 @@ class MetaConfig(BaseModel):
     description: str = "Mascope configuration"  # Description for `mascope env list`
     api_port: int = 8090  # API port
     filestore: str = r"./filestore"  # filestore path
-    # Peak-centric assignment (docs/dev/peak_assignment_paradigm.md). On by
-    # default: the feature is generally available, and targeted matching is
-    # unaffected either way - it coexists rather than being replaced. The
-    # backend reads it via `peak_assignment_enabled()` and the frontend via
-    # `runtime.meta`, so one switch gates both sides. Set it to false to keep
-    # a deployment on the pre-assignment behaviour: no assignment at sample
-    # ingest, no assignment views, and the API write routes answering 403.
-    peak_assignment: bool = True
+    # Peak-centric assignment (docs/dev/peak_assignment_paradigm.md). Off by
+    # default: a deployment opts in, and targeted matching is unaffected either
+    # way - it coexists rather than being replaced. The backend reads it via
+    # `peak_assignment_enabled()` and the frontend via `runtime.meta`, so one
+    # switch gates both sides. Off means the pre-assignment behaviour: no
+    # assignment at sample ingest, no assignment views, and the API write routes
+    # answering 403.
+    peak_assignment: bool = False
     # Whether a newly processed sample is assigned as it arrives (the database
     # stage only). Subordinate to `peak_assignment`: with the feature off nothing
     # assigns at ingest whatever this says. Off, the feature stays available -

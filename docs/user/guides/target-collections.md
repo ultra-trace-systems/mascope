@@ -112,8 +112,9 @@ modified, matches may be out of date"*.
 
 !!! note "Matching and peak assignment coexist"
 
-    [Peak assignment](../how-it-works/peak-assignment.md) is on by default and
-    adds the Sample tab's peak ledger, but it takes nothing away here. The
+    [Peak assignment](../how-it-works/peak-assignment.md) is off by default;
+    switched on, it adds its views to the Sample tab, but it takes nothing
+    away here. The
     Match tab, the *Visualize ion match* expander, the batch chart's
     click-through, the match-parameter drawer and *Rate Match* all work the
     same whether assignment is on or off. The two answer different questions:

@@ -47,7 +47,7 @@ measurements, and justified by the product shape it produces.*
 
 ## 1. The problem: ingest-time growth
 
-With peak assignment on by default, every processed sample is assigned at ingest
+With peak assignment on, every processed sample is assigned at ingest
 ([`auto_assign_sample_peaks`](../../server/backend/src/mascope_backend/api/new/peak_assignments/service.py),
 `service.py:1666`): a Stage-A run writes one `peak_assignment` row per detected peak, and
 the fold writes one `batch_peak_occurrence` per peak. Both are permanent — a sample's ingest

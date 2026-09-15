@@ -745,16 +745,18 @@ transactions are far more numerous than errors.
 ### Peak assignment
 
 **Peak assignment** (assign a chemical composition to every peak - see
-[the user docs](user/how-it-works/peak-assignment.md)) ships **on**. What that
-costs a server is a database-stage assignment of every newly processed sample,
-folded into its batch's ledger: some extra processing time, and **about 200
-bytes of database per detected peak** - one batch-ledger member row - so
-roughly 0.4-1.6 MB for a typical sample of 2,000-8,000 peaks. That is
-permanent, in the database's volume, and grows with everything you acquire;
-on most instruments it is a fraction of the raw data the sample itself
-brings. Targeted matching is unaffected - assignment is an addition, not a
-replacement - and samples processed before the upgrade are not assigned
-retroactively; use *Rebuild batch ledger* on their batch for those.
+[the user docs](user/how-it-works/peak-assignment.md)) ships **off**; a
+deployment switches it on as described under [Turning peak assignment on or
+off](#turning-peak-assignment-on-or-off). What it costs a server once on is a
+database-stage assignment of every newly processed sample, folded into its
+batch's ledger: some extra processing time, and **about 200 bytes of database
+per detected peak** - one batch-ledger member row - so roughly 0.4-1.6 MB for a
+typical sample of 2,000-8,000 peaks. That is permanent, in the database's
+volume, and grows with everything you acquire; on most instruments it is a
+fraction of the raw data the sample itself brings. Targeted matching is
+unaffected - assignment is an addition, not a replacement - and samples
+processed before it was switched on are not assigned retroactively; use
+*Rebuild batch ledger* on their batch for those.
 
 An **explicit** assignment run - *Assign peaks* on a sample, or an import from
 an external engine - writes a per-sample ledger as well: one row per detected
@@ -790,19 +792,19 @@ gigabytes a month. It buys the inspector's per-peak alternatives and error
 figures and hand curation on every sample without an explicit run. All three
 take effect on the next stack restart.
 
-#### Turning peak assignment off
+#### Turning peak assignment on or off
 
 Set it in the env's config toml (see [Where a deployment's settings
 live](#where-a-deployments-settings-live)):
 
 ```toml
 [meta]
-peak_assignment = false
+peak_assignment = true
 ```
 
-and restart the stack (`mascope prod up`). Samples stop being assigned at
-ingest, the write routes return 403 again, and the assignment views disappear
-from the UI.
+and restart the stack (`mascope prod up`). Samples are assigned at ingest from
+then on, the write routes accept work, and the assignment views appear in the
+UI. Setting it back to `false` and restarting reverses all three.
 
 There is also a `MASCOPE_PEAK_ASSIGNMENT` environment variable, but it is a
 **development knob, not an operator switch**: it is read by the backend only,
@@ -828,9 +830,9 @@ routes answering 403. Use the toml.
     to reconcile by hand afterwards.
 
 A server with it off is unaffected by the feature: samples process as they did
-before it landed, the UI is unchanged, and the `/api/peak-assignments` write
-routes refuse to launch runs (403; the read routes stay open, so ledgers
-written while it was on remain visible).
+before it landed, the UI shows no assignment views, and the
+`/api/peak-assignments` write routes refuse to launch runs (403; the read
+routes stay open, so ledgers written while it was on remain visible).
 
 ### Reclaiming assignment runs
 

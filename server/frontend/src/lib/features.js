@@ -3,7 +3,7 @@ import { runtime } from '@/lib/runtime'
 /**
  * Peak-centric assignment (docs/user/how-it-works/peak-assignment.md).
  *
- * On unless the deployment switches it off via the `peak_assignment` flag in
+ * Off unless the deployment switches it on via the `peak_assignment` flag in
  * the runtime `[meta]` config -- the same switch the backend reads. With it off
  * the targeted workflow renders exactly as it did before the feature landed:
  * the peak ledger and composition search in the Sample tab, legacy match scores
@@ -14,11 +14,9 @@ import { runtime } from '@/lib/runtime'
  * `@/lib/runtime`). Flipping the flag is therefore a stack restart, and the
  * value the UI gates on is the one the backend is actually enforcing.
  *
- * A missing key reads as OFF here, while the backend's own fallback is on. The
- * asymmetry is deliberate and effectively unreachable - `peak_assignment` is a
- * MetaConfig field, so the serialized runtime always carries it - but if a
- * runtime ever arrived without it, hiding the views is the safer half to be
- * wrong on: the writes would still be gated server-side.
+ * A missing key reads as off, as the backend's own fallback does. That is
+ * effectively unreachable - `peak_assignment` is a MetaConfig field, so the
+ * serialized runtime always carries it.
  */
 export const peakAssignmentEnabled = Boolean(runtime?.meta?.peak_assignment)
 

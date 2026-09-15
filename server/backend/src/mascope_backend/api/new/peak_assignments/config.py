@@ -96,13 +96,12 @@ class PeakAssignmentLimits(BaseModel):
 def peak_assignment_enabled() -> bool:
     """Whether the peak-centric assignment feature is switched on for this env.
 
-    On by default: the feature is generally available. Peak-centric assignment
-    coexists with the targeted workflow rather than replacing it, so targeted
-    matching behaves the same either way; what this switch decides is whether
-    the parts that act on their own are active - assignment on sample ingest,
-    the rescored composition search, and the reworked Sample view. A deployment
-    that wants the pre-assignment behaviour sets the flag to false, which is
-    what an operator reaches for when ingest-time assignment is unwanted.
+    Off by default: a deployment opts in. Peak-centric assignment coexists with
+    the targeted workflow rather than replacing it, so targeted matching behaves
+    the same either way; what this switch decides is whether the parts that act
+    on their own are active - assignment on sample ingest, the rescored
+    composition search, and the reworked Sample view. Left off, a deployment
+    keeps the pre-assignment behaviour.
 
     Resolution order:
     - ``MASCOPE_PEAK_ASSIGNMENT`` env var (``1``/``true``/``yes``/``on``), which
@@ -132,7 +131,7 @@ def peak_assignment_enabled() -> bool:
         return override.strip().lower() in {"1", "true", "yes", "on"}
     # The fallback matches MetaConfig's own default, so a runtime whose config
     # model predates the field reads the same way as one that carries it.
-    return bool(getattr(runtime.meta, "peak_assignment", True))
+    return bool(getattr(runtime.meta, "peak_assignment", False))
 
 
 # The ingest ceiling's default, matching MetaConfig's, for the same reason the
