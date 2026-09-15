@@ -32,6 +32,23 @@ export function withStatusColumn(columns) {
 }
 
 /**
+ * The columns with the status badge where peak assignment is on, and without
+ * it where it is off: a deployment with the feature off has no assignment
+ * status to show, and a configuration stored while it was on still names the
+ * badge. Off, the badge is dropped; on, it is kept or put in its default place
+ * (`withStatusColumn`).
+ *
+ * @param {Array<{field: string, kind: string}>} columns
+ * @param {boolean} enabled - whether peak assignment is on
+ * @returns {Array} the same list, or a new one with the badge added or removed
+ */
+export function withStatusColumnIf(columns, enabled) {
+  if (enabled) return withStatusColumn(columns)
+  if (!columns.some((column) => column.kind === STATUS_COLUMN.kind)) return columns
+  return columns.filter((column) => column.kind !== STATUS_COLUMN.kind)
+}
+
+/**
  * The configurable columns after a header drag.
  *
  * PrimeVue reports the drag and drop indices over ALL displayed columns, the

@@ -12,6 +12,13 @@ vi.mock('@/stores/data/modules/batch', () => ({
   useBatch: () => ({ focusedId: 'sb-1' })
 }))
 vi.mock('@/stores/auth', () => ({ useAuth: () => ({ user: {}, onLogin: vi.fn() }) }))
+// A getter, so a test can switch peak assignment off before importing the store.
+const { flags } = vi.hoisted(() => ({ flags: { peakAssignment: true } }))
+vi.mock('@/lib/features', () => ({
+  get peakAssignmentEnabled() {
+    return flags.peakAssignment
+  }
+}))
 
 const RECORDS = [
   {
@@ -28,6 +35,7 @@ beforeEach(async () => {
   setActivePinia(createPinia())
   vi.clearAllMocks()
   vi.resetModules()
+  flags.peakAssignment = true
   ;({ useBatchPeakSampleStatus } = await import('@/stores/data/modules/batchPeak/sampleStatus'))
 })
 
@@ -50,5 +58,16 @@ describe('batchPeak sample status store', () => {
     expect(store.forSample('s-1')).toMatchObject({ n_assigned: 2 })
     expect(store.forSample('s-2')).toMatchObject({ run: null })
     expect(store.forSample('s-9')).toBeNull()
+  })
+
+  // The badge it feeds is not shown where peak assignment is off, so a batch
+  // focus there costs no request.
+  it('fetches nothing where peak assignment is off', async () => {
+    flags.peakAssignment = false
+    get.mockResolvedValue(RECORDS)
+    const store = useBatchPeakSampleStatus()
+    await store.load('test')
+    expect(get).not.toHaveBeenCalled()
+    expect(store.list).toHaveLength(0)
   })
 })

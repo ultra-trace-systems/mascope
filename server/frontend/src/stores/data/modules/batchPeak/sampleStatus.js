@@ -3,6 +3,7 @@ import { defineStore } from 'pinia'
 
 import { api } from '@/api'
 import { useData } from '@/lib/store'
+import { peakAssignmentEnabled } from '@/lib/features'
 
 import { useBatch } from '../batch'
 
@@ -15,7 +16,8 @@ import { useBatch } from '../batch'
  *
  * Reloads with the ledger (`peak_assignment_reload`): a fold, a rebuild, a
  * search or an import changes what the ledger holds for a sample, and a run
- * completing changes whether it has one of its own.
+ * completing changes whether it has one of its own. Where peak assignment is
+ * off the badge is not shown, so nothing is fetched for it.
  */
 export const useBatchPeakSampleStatus = defineStore('app.data.batchPeak.sampleStatus', () => {
   const name = 'batch_peak_sample_status'
@@ -32,7 +34,9 @@ export const useBatchPeakSampleStatus = defineStore('app.data.batchPeak.sampleSt
     },
     {
       key,
-      deps: () => ({ sample_batch_id: useBatch().focusedId }),
+      deps: () => ({
+        sample_batch_id: peakAssignmentEnabled ? useBatch().focusedId : null
+      }),
       events: ['peak_assignment_reload']
     }
   )

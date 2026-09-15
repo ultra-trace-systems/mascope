@@ -9,9 +9,10 @@ import SelectButton from 'primevue/selectbutton'
 import { beautifySnakeCase } from '@/lib/utils'
 import { useApp } from '@/stores'
 import { runtime } from '@/lib/runtime'
+import { peakAssignmentEnabled } from '@/lib/features'
 
 import { useCustomizerPopover } from './stores'
-import { STATUS_COLUMN, withStatusColumn } from './columnOrder.js'
+import { STATUS_COLUMN, withStatusColumnIf } from './columnOrder.js'
 
 const app = useApp()
 
@@ -43,10 +44,11 @@ const availableColumns = computed(() => {
   })
   const listed = (entries) => entries.map(describe).filter(({ type }) => type !== 'object')
   // The status badge is a column of the table's own, not a field of the sample,
-  // so it is listed rather than discovered.
+  // so it is listed rather than discovered - and only where peak assignment is
+  // on, since there is no assignment status to show otherwise.
   return [
     ...listed(standard),
-    { ...STATUS_COLUMN },
+    ...(peakAssignmentEnabled ? [{ ...STATUS_COLUMN }] : []),
     ...listed([{ field: 'time', kind: 'custom' }, ...custom])
   ]
 })
@@ -54,12 +56,13 @@ const availableColumns = computed(() => {
 const runtimeConfig = runtime.config.sample_table_defaults
 
 // The server's default columns, with the status badge in its default place
-// unless the server names it somewhere itself.
+// unless the server names it somewhere itself, where peak assignment is on.
 const defaultConfig = computed(() => ({
-  columns: withStatusColumn(
+  columns: withStatusColumnIf(
     runtimeConfig.columns
       .map((col) => availableColumns.value.find(({ field }) => field === col))
-      .filter((col) => !!col)
+      .filter((col) => !!col),
+    peakAssignmentEnabled
   ),
   sortField: runtimeConfig.sort_field,
   sortOrder: runtimeConfig.sort_order
@@ -95,7 +98,8 @@ function writeConfig() {
 }
 // read from local storage, falling back on default. A stored configuration
 // from before the status badge was a column of its own has no entry for it and
-// gets the badge in its default place rather than losing it.
+// gets the badge in its default place rather than losing it; one stored while
+// peak assignment was on loses the badge on a deployment that has it off.
 function readConfig() {
   const storedState = localStorage.getItem(STORAGE_KEY)
   if (!storedState) {
@@ -103,7 +107,10 @@ function readConfig() {
     return
   }
   const stored = JSON.parse(storedState)
-  customizer.config = { ...stored, columns: withStatusColumn(stored.columns ?? []) }
+  customizer.config = {
+    ...stored,
+    columns: withStatusColumnIf(stored.columns ?? [], peakAssignmentEnabled)
+  }
 }
 // reset to default config and clear local storage
 function resetConfig() {

@@ -3,7 +3,8 @@ import { describe, it, expect } from 'vitest'
 import {
   STATUS_COLUMN,
   reorderColumns,
-  withStatusColumn
+  withStatusColumn,
+  withStatusColumnIf
 } from '@/lib/panes/PaneBrowserSample/columnOrder.js'
 
 const column = (field, kind = 'standard') => ({ field, kind, label: field, type: 'string' })
@@ -35,6 +36,30 @@ describe('withStatusColumn', () => {
     const columns = [column('sample_item_name')]
     withStatusColumn(columns)
     expect(fields(columns)).toEqual(['sample_item_name'])
+  })
+})
+
+describe('withStatusColumnIf', () => {
+  it('places the badge where peak assignment is on', () => {
+    const columns = [column('sample_item_name'), column('filter_id')]
+    expect(fields(withStatusColumnIf(columns, true))).toEqual([
+      'sample_item_name',
+      'assignment_status',
+      'filter_id'
+    ])
+  })
+
+  // A configuration stored while assignment was on still names the badge; a
+  // deployment with it off has no status to show in it.
+  it('drops a stored badge where peak assignment is off', () => {
+    const columns = [column('sample_item_name'), { ...STATUS_COLUMN }, column('filter_id')]
+    expect(fields(withStatusColumnIf(columns, false))).toEqual(['sample_item_name', 'filter_id'])
+    expect(fields(columns)).toContain('assignment_status')
+  })
+
+  it('leaves a list without the badge alone where peak assignment is off', () => {
+    const columns = [column('sample_item_name')]
+    expect(withStatusColumnIf(columns, false)).toBe(columns)
   })
 })
 

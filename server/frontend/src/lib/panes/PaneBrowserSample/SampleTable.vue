@@ -14,6 +14,7 @@ import { BaseTabbedPanel, BaseMatchTag, BaseCopyableField } from '@/lib/base'
 import { DialogSampleOp, DialogCalibration } from '@/lib/dialogs'
 import { assignmentStatus } from '@/lib/assignmentStatus'
 import { calibrationStatus } from '@/lib/calibrationStatus'
+import { peakAssignmentEnabled } from '@/lib/features'
 import { num } from '@/lib/formatters'
 import { useApp } from '@/stores'
 
@@ -314,8 +315,13 @@ const openCalibration = (sample) => {
         <!-- Which samples have been assigned: solid for a run of the sample's
              own, dimmed for one served from the batch ledger, faint for nothing
              yet. A configurable column like the others - after the sample name
-             by default (columnOrder.js), movable and hideable from the cog. -->
-        <Column v-if="kind == 'status'" :columnKey="field" class="assignment-column">
+             by default (columnOrder.js), movable and hideable from the cog -
+             and only where peak assignment is on. -->
+        <Column
+          v-if="kind == 'status' && peakAssignmentEnabled"
+          :columnKey="field"
+          class="assignment-column"
+        >
           <template #header>
             <span
               class="pi ph ph-tag"
