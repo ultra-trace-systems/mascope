@@ -20,7 +20,7 @@ from mascope_backend.api.lib.api_features import (
 from mascope_backend.api.new.match.records.collection.service import (
     get_match_collection_records,
 )
-from mascope_backend.api.new.temp.storage import user_temp_path
+from mascope_backend.api.new.temp.storage import download_name, user_temp_path
 from mascope_backend.runtime import runtime
 
 
@@ -163,7 +163,7 @@ async def sample_batch_export_spreadsheet(
 
     # --- Generate Excel file ---
     dt_str = datetime.now().isoformat().replace("-", "").replace(":", "").split(".")[0]
-    file = f"{dt_str}_{sample_batch_name.replace(' ', '_')}.xlsx"
+    file = download_name(dt_str, sample_batch_name, extension="xlsx")
     filepath = user_temp_path(user_id, file)
 
     runtime.logger.info(f"Writing spreadsheet to file {file}")

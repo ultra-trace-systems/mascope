@@ -375,6 +375,13 @@ def latest_release_tag(repo: str) -> Optional[str]:
     Newest published release tag for ``repo`` (e.g. ``v1.4.0``), read from the
     public GitHub REST API without authentication.
 
+    ``/releases/latest`` is the newest release that is neither a draft nor a
+    **pre-release**, which is what keeps an unattended update from ever moving
+    a deployment onto a ``vX.Y.Z-rc.N``: a pre-release is opt-in, reached only
+    by pinning it or checking its tag out. Do not swap this for the releases
+    *list* endpoint, whose first entry is simply the most recent release of any
+    kind.
+
     Returns None if it cannot be determined (no releases, no network).
     """
     try:

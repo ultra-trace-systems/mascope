@@ -74,3 +74,37 @@ def test_user_temp_path_never_escapes_user_dir(temp_base, attack):
     except ValueError:
         return
     assert os.path.dirname(resolved) == base
+
+
+# --- download names ---------------------------------------------------------
+
+
+def test_download_name_replaces_what_a_file_system_or_a_route_cannot_take():
+    # A batch named with a slash was a directory to the file system and a path
+    # to the download route: the file went under one name, the request under
+    # another, and the download failed.
+    name = storage.download_name(
+        "20260904T101500", "batch_ledger", "site A/run 3", extension="csv"
+    )
+    assert name == "20260904T101500_batch_ledger_site_A_run_3.csv"
+    assert "/" not in name
+    assert os.path.basename(name) == name
+
+    hostile = storage.download_name("x", 'a\\b:c*d?e"f<g>h|i', extension="xlsx")
+    assert hostile == "x_a_b_c_d_e_f_g_h_i.xlsx"
+
+
+def test_download_name_collapses_whitespace_and_underscores_and_drops_empty_parts():
+    assert (
+        storage.download_name("t", "", "  two   words  ", extension=".csv")
+        == "t_two_words.csv"
+    )
+    assert storage.download_name("t", "a__b", extension="csv") == "t_a_b.csv"
+    assert storage.download_name("t", "...", extension="csv") == "t.csv"
+
+
+def test_download_name_caps_the_stem_and_never_comes_back_empty():
+    long = storage.download_name("t", "n" * 500, extension="csv")
+    assert len(long) <= storage.MAX_DOWNLOAD_STEM + len(".csv")
+    assert long.endswith(".csv")
+    assert storage.download_name("", "/", extension="csv") == "download.csv"

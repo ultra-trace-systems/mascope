@@ -1,10 +1,12 @@
 """
 Fixtures for the Alembic migrations test category.
 
-Provides two independent test databases (`mascope_test_migrations` for
-the stairway test, `mascope_test_migrations_drift` for the drift test)
-and the matching Alembic `Config` / engine fixtures. Self-contained sync
-infrastructure — does not use the async machinery from the root conftest.
+Provides three independent test databases - one for the stairway test, one
+for the drift test, and a module-scoped one for seeded data migrations - and
+the matching Alembic `Config` / engine fixtures. Self-contained sync
+infrastructure — does not use the async machinery from the root conftest, but
+shares its database naming so a suite running concurrently from another
+checkout gets databases of its own.
 
 See `server/backend/tests/README.md` (Migration tests) for the rationale,
 lifecycle, and how this category interacts with `alembic/env.py`.
@@ -17,7 +19,6 @@ NOTE: For adding more pytest-alembic tests later:
     fixture to function scope.
 """
 
-import os
 from pathlib import Path
 from typing import Iterator
 
@@ -31,16 +32,26 @@ from test_utils import (
     TEST_DB_PORT,
     TEST_DB_USER,
     get_test_password,
+    scoped_db_name,
 )
 
 
 # --- Constants ---
 
-BACKEND_PATH = Path(os.environ["MASCOPE_PATH"]) / "server" / "backend"
+# Resolved from this file, so the suite always tests the migrations of the
+# checkout it lives in. Deriving it from MASCOPE_PATH (the shared runtime home,
+# normally the main checkout) would test *those* migrations against *this*
+# tree's models - a convincing but bogus drift failure from a worktree.
+BACKEND_PATH = Path(__file__).resolve().parents[2]
 ALEMBIC_INI = BACKEND_PATH / "alembic.ini"
 
-STAIRWAY_DB_NAME = "mascope_test_migrations"
-DRIFT_DB_NAME = "mascope_test_migrations_drift"
+# Scoped to this checkout's env, like every other test database - see the
+# naming note in `test_utils.py`. Each is dropped and recreated at the start of
+# the fixture that owns it, so unscoped names let a concurrent run from another
+# worktree delete a chain this one is halfway down.
+STAIRWAY_DB_NAME = scoped_db_name("migrations")
+DRIFT_DB_NAME = scoped_db_name("migrations_drift")
+SEEDED_DB_NAME = scoped_db_name("migrations_seeded")
 
 
 # --- URL builders (sync, psycopg2 — matches DatabaseConfig.get_postgres_url_sync) ---
@@ -110,7 +121,7 @@ def _ephemeral_db(db_name: str) -> Iterator[str]:
 
 @pytest.fixture(scope="session")
 def stairway_db_url() -> Iterator[str]:
-    """Session-scoped: drop+create `mascope_test_migrations`, drop on teardown.
+    """Session-scoped: drop+create the stairway database, drop on teardown.
 
     Used by the stairway test exclusively. State accumulates across the
     parametrize chain — after revision N is applied, the DB is at N and
@@ -137,12 +148,56 @@ def stairway_alembic_config(stairway_db_url: str) -> Config:
     return cfg
 
 
+# --- Seeded data-migration fixtures ---
+#
+# Stairway and drift both walk the chain against a database created empty, so
+# neither one ever executes a data migration's row-handling code. A migration
+# that rewrites customer data needs rows to act on: these fixtures give a test
+# its own database it can stop partway down the chain, seed, and then finish
+# upgrading. Module-scoped so one such test file pays for one walk of the
+# chain no matter how many assertions it makes; a second file gets a fresh
+# database because the fixtures are torn down between modules.
+
+
+@pytest.fixture(scope="module")
+def seeded_db_url() -> Iterator[str]:
+    """Module-scoped: drop+create the seeded database, drop after.
+
+    Separate from both the stairway and the drift databases so a seeded test
+    can leave the chain part-applied without disturbing either.
+    """
+    yield from _ephemeral_db(SEEDED_DB_NAME)
+
+
+@pytest.fixture(scope="module")
+def seeded_alembic_config(seeded_db_url: str) -> Config:
+    """Programmatic Alembic Config pointed at the seeded test database.
+
+    Same override mechanism as `stairway_alembic_config`: `alembic.ini` for
+    `script_location`, `sqlalchemy.url` replaced so the patched
+    `env.py._resolve_url()` targets this database instead of the active env's.
+    """
+    cfg = Config(str(ALEMBIC_INI))
+    cfg.set_main_option("sqlalchemy.url", seeded_db_url)
+    return cfg
+
+
+@pytest.fixture(scope="module")
+def seeded_engine(seeded_db_url: str) -> Iterator[Engine]:
+    """Sync engine on the seeded database, for inserting and reading rows."""
+    engine = create_engine(seeded_db_url, poolclass=NullPool)
+    try:
+        yield engine
+    finally:
+        engine.dispose()
+
+
 # --- Drift test fixtures (pytest-alembic) ---
 
 
 @pytest.fixture(scope="session")
 def drift_db_url() -> Iterator[str]:
-    """Session-scoped: drop+create `mascope_test_migrations_drift`, drop on teardown.
+    """Session-scoped: drop+create the drift database, drop on teardown.
 
     Used by the pytest-alembic drift test. Separate from the stairway DB
     so the two test files don't share state — `test_model_definitions_match_ddl`

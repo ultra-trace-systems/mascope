@@ -10,16 +10,54 @@ description = "The default runtime env"
 api_port = 8090
 filestore = './filestore'
 # Peak-centric assignment (assign a composition to every peak) - see
-# docs/user/how-it-works/peak-assignment.md. Off by default: the targeted
-# workflow is unchanged until you opt in. Enabling it turns on assignment at
-# sample ingest, the assignment views in the UI, and the API write routes
-# (they return 403 while this is false; the read routes stay open so ledgers
-# from opted-in periods remain inspectable). The frontend bakes this flag in
-# at build time: after changing it, rebuild the frontend image (prod) or
-# restart the dev server - a container restart alone does not flip the UI.
-# Ledger rows are reclaimed with the prune_peak_assignment_runs script
-# (docs/maintaining.md), which nothing schedules for you.
+# docs/user/how-it-works/peak-assignment.md. Off by default. Set this to true
+# to turn on assignment at sample ingest (the fast database-only stage), the
+# assignment views in the UI, and the API write routes. Targeted matching is
+# unchanged either way - the two coexist. Off, ingest assigns nothing, the
+# assignment views are hidden, and the write routes return 403 (the read routes
+# stay open, so ledgers written while it was on remain inspectable). Both sides
+# read this same value at start, so changing it takes a stack restart and
+# nothing more (prod restarts the frontend container too; in dev, restart the
+# dev server).
+# Superseded re-runs are reclaimed with the prune_peak_assignment_runs script
+# (a host provisioned with tooling/ubuntu.sh runs it nightly on a timer; any
+# other deployment should schedule it itself). A sample's ingest run is never
+# superseded, so that pass does not bound the ledger itself - the two settings
+# below do (docs/maintaining.md).
 peak_assignment = false
+# Ingest-time assignment can be bounded without switching the feature off -
+# the views, on-demand runs and imports keep working either way. Assignment at
+# ingest writes one ledger row and one batch-peak occurrence per detected peak
+# (about 1 KB per peak, 2-8 MB for a typical sample), permanently.
+# `peak_assignment_on_ingest = false` assigns on demand only (what a
+# high-throughput instrument wants); `peak_assignment_ingest_max_peaks` skips
+# (and logs) a sample denser than this at ingest, 0 meaning no ceiling. Both
+# take effect on restart.
+peak_assignment_on_ingest = true
+peak_assignment_ingest_max_peaks = 100000
+# Which ledger an ingest-time assignment writes: "batch" (the default) folds the
+# sample into the batch peaks and writes no per-sample run - one member row of
+# some 200 bytes per detected peak, the Sample view served from the batch
+# ledger; "sample" writes a per-sample run as well and folds it, about a
+# kilobyte per detected peak. An explicit run on a sample always writes one.
+# Takes effect on restart.
+peak_assignment_ingest_ledger = "batch"
+# Uploads: size cap (GB) for a single resumable (tus) upload, enforced by the
+# backend and used by the web uploader to size its own client-side limit (see
+# docs/maintaining.md). It lives here rather than in [backend] because both
+# sides read it, both at start, so changing it takes a stack restart. A value
+# still under [backend] keeps working and is promoted with a warning.
+# tus_max_upload_gb = 5
+# Legal and support links, shown on the sign-in screen and in the home menu's
+# About tab. The defaults are Ultra Trace's published privacy notice and
+# support address; a deployment operated by someone else should point them at
+# its own (docs/maintaining.md). An empty string hides a link, and no terms of
+# service are linked until one is set. privacy_notice_url and terms_url take an
+# http(s) URL, support_url an http(s) or mailto: one. Read by the web app at
+# start, so a change takes a stack restart.
+# privacy_notice_url = "https://ultratrace.eu/mascope/privacy"
+# terms_url = ""
+# support_url = "mailto:support@ultratrace.eu"
 
 [cli]
 color = "blue"
@@ -33,8 +71,40 @@ log_path = './logs'
 color = "green"
 # paths
 filestreams = './filestreams'
-# uploads: size cap (GB) for a single resumable upload (see docs/maintaining.md)
-# tus_max_upload_gb = 5
+# Uploads: free space (GB) that must remain on the upload spool's filesystem
+# after a resumable upload is admitted, so N concurrent uploads cannot fill the
+# disk. 0 disables the check. The per-upload size cap is meta.tus_max_upload_gb.
+# tus_min_free_disk_gb = 10
+# Two-factor authentication: the lowest role required to hold a second factor.
+# Unset (the default) means nobody is required to enrol, though anyone may turn
+# it on for their own account. Set to "admin" to cover admins and owners, or
+# "guest" to cover everyone. A name that is not a role stops the backend at
+# startup rather than silently requiring nothing. Requires
+# .runtime/secrets/mfa_encryption_key.txt (see docs/hosting.md).
+# mfa_required_min_role = "admin"
+# Agent credentials: when true, bearer tokens for the agent services
+# (file-agent, tof-agent, export-agent) are refused unless they are bound to
+# a paired device. Leave false until every agent machine on this deployment
+# has been (re-)paired - pairing binds the token to a device automatically;
+# tokens issued before the device registry have no binding.
+# require_device_tokens = false
+# Reference chemistry: the per-record licence tags peak assignment's database
+# stage is allowed to match against. Unset (the default) means no gating -
+# every active reference source is matched, which is what every deployment did
+# before this setting existed. Set it only to decline sources whose terms you
+# have not accepted (HMDB, for one, asks that commercial terms be verified
+# first); narrowing it shrinks what assignment can find, and nothing in the UI
+# says so. The gate is an EXACT string match on the tag, so every tag left out
+# is dropped silently. All six: public-domain (comptox, pubchem), CC-BY-4.0
+# (chebi, lipidmaps), CC0 (coconut), open (norman), hmdb-attribution (hmdb),
+# custom (hand-authored rows with no licence of their own). `mascope reference
+# sources` / `status` print them too, on a monorepo checkout, and every run
+# records the set it ran under. An empty list is refused - delete the line to
+# allow every licence. The example below declines HMDB and keeps the other
+# five; write yours the same way round rather than allowlisting a few tags from
+# memory. A written-out list freezes the vocabulary, so re-check it after an
+# upgrade that adds a source - its tag will not be in your list.
+# reference_licenses = ["public-domain", "CC-BY-4.0", "CC0", "open", "custom"]
 # scripts
 run = "uv run mascope-backend run api-server"
 
@@ -139,6 +209,7 @@ mask = '*.raw'
 timeout = 10
 source = './agents/file'
 # recursive = false
+# instrument = ''
 host = 'localhost'
 access_token = ''
 # filename_prefix = ''

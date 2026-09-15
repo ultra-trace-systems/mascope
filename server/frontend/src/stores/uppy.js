@@ -5,16 +5,17 @@ import Uppy from '@uppy/core'
 import Tus from '@uppy/tus'
 
 import { useAuth } from './auth'
+import { useInstrument } from './data/modules/instrument'
 import { useIonizationMode } from './data/modules/ionization'
 import { useUi } from './ui'
 
 import { api } from '@/api'
+import { maxUploadBytes } from '@/lib/features'
 import { runtime } from '@/lib/runtime.js'
-import { genId, instrumentType } from '@/lib/utils'
+import { genId } from '@/lib/utils'
 
 // TODO_configuration Default sample file upload params
 const FILE_UPLOAD_EXTENSIONS = ['.h5', '.raw']
-const FILE_UPLOAD_SIZE_LIMIT = 2.5 * 1024 * 1024 * 1024 // 2.5 GB
 
 function validateFile(file) {
   const validInstrument = validateInstrument(file)
@@ -23,9 +24,11 @@ function validateFile(file) {
 }
 
 function validateInstrument(file) {
-  // parse filename
+  // parse filename. The prefix names the instrument, and the instrument's
+  // class is the one recorded for its files - a name need not say it, so a
+  // name the server does not know is what makes a file invalid here.
   const prefix = file.name.split('_')[0]
-  const prefixType = instrumentType(prefix)
+  const prefixType = useInstrument().typeOf(prefix)
   const ext = file.name.split('.').slice(-1)[0].toLowerCase()
   // check filename validity
   if (ext === 'h5' && prefixType !== 'tof') {
@@ -53,7 +56,9 @@ export const useUppy = defineStore('app.uppy', () => {
   const uppy = new Uppy({
     restrictions: {
       allowedFileTypes: FILE_UPLOAD_EXTENSIONS,
-      maxFileSize: FILE_UPLOAD_SIZE_LIMIT,
+      // The server's own per-upload cap, not a separate browser limit: a
+      // smaller one here refused files the backend would have accepted.
+      maxFileSize: maxUploadBytes,
       maxNumberOfFiles: 1000
     },
     onBeforeFileAdded: (currentFile) => {

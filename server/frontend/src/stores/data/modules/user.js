@@ -92,6 +92,17 @@ export const useUser = defineStore('app.data.user', () => {
           type: 'reset_password'
         })
       ),
+    // Clears another account's second factor, for an authenticator lost with
+    // its recovery codes. Admins may do this for guests and editors, owners for
+    // anyone but themselves - both enforced server-side; the button is hidden
+    // on the cases the caller cannot perform.
+    resetMfa: (user) =>
+      sudo((role) =>
+        api.http.post(`/users/${role}/${user.id}/mfa/reset`, null, {
+          use: 'update',
+          type: 'reset_mfa'
+        })
+      ),
     // Owner-only, with no admin equivalent, so it deliberately does not go
     // through sudo() - that would send an admin to a /users/admin/... path
     // which does not exist. The button is gated on the owner role in

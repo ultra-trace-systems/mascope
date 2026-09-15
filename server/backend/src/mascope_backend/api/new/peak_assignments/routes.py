@@ -7,22 +7,46 @@ formula and confidence") and the endpoint that launches an assignment run.
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, Request
 
-from mascope_backend.api.controllers.sample.lib.sample_batches_fetch import (
-    fetch_sample_batch,
-)
 from mascope_backend.api.controllers.samples.lib.samples_fetch import fetch_sample
 from mascope_backend.api.lib.api_features import api_route
+from mascope_backend.api.lib.exceptions.api_exceptions import ApiException
 from mascope_backend.api.new.auth.dependencies import (
     current_active_user,
     current_superuser,
 )
-from mascope_backend.api.new.peak_assignments.batch import assign_sample_batch_peaks
-from mascope_backend.api.new.peak_assignments.config import peak_assignment_enabled
+from mascope_backend.api.new.peak_assignments.admission import (
+    assignment_claim,
+    in_flight_run_id,
+)
+from mascope_backend.api.new.peak_assignments.alternatives_scoring import (
+    score_row_alternatives,
+)
+from mascope_backend.api.new.peak_assignments.config import (
+    MAX_IMPORT_BODY_BYTES,
+    MAX_IMPORT_ROWS_PER_REQUEST,
+    peak_assignment_enabled,
+)
+from mascope_backend.api.new.peak_assignments.curation import curate_assignment
+from mascope_backend.api.new.peak_assignments.derived_evidence import (
+    measure_derived_assignment,
+)
+from mascope_backend.api.new.peak_assignments.import_service import (
+    abandon_import_run,
+    import_assignment_run,
+)
 from mascope_backend.api.new.peak_assignments.schemas import (
+    AlternativeScoresResponse,
+    AssignmentCurationResponse,
     AssignmentVerificationsResponse,
     AssignSamplePeaksBody,
+    AssignSampleResponse,
     CompositionFitBody,
     CompositionVisualizeBody,
+    CurateAssignmentBody,
+    DerivedEvidenceResponse,
+    ImportRunBody,
+    PeakAssignmentDetailResponse,
+    PeakAssignmentImportResponse,
     PeakAssignmentQueryParams,
     PeakAssignmentRunsResponse,
     PeakAssignmentsResponse,
@@ -31,10 +55,13 @@ from mascope_backend.api.new.peak_assignments.schemas import (
 )
 from mascope_backend.api.new.peak_assignments.service import (
     assign_sample_peaks,
+    create_pending_run,
     create_verification,
+    get_peak_assignment_detail,
     get_peak_assignment_runs,
     get_peak_assignments,
     get_verifications,
+    ineligible_reason,
     recalibrate_instrument,
 )
 from mascope_backend.api.new.peak_assignments.visualization import (
@@ -43,7 +70,6 @@ from mascope_backend.api.new.peak_assignments.visualization import (
 )
 from mascope_backend.api.new.workspaces.dependencies import (
     check_sample_access,
-    require_batch_role,
     require_sample_role,
 )
 from mascope_backend.db import User
@@ -53,6 +79,34 @@ from mascope_backend.db.id import gen_id
 peak_assignments_router = APIRouter(
     prefix="/api/peak-assignments", tags=["Peak Assignments"]
 )
+
+
+async def reject_oversized_import(request: Request) -> None:
+    """Refuse an import body above the byte cap, naming the limit.
+
+    The row cap bounds how many rows a request carries but not how many bytes:
+    a row's `alternatives` and `provenance` are client JSON of no fixed size.
+
+    On a deployed stack nginx is what actually stops an oversized body, before
+    it reaches this process (`client_max_body_size` on the peak-assignment
+    location). This is the same limit stated where a client can act on it: a
+    caller talking to the backend directly - the SDK against a dev server, a
+    test - gets a 413 that names the cap and the row limit instead of a slow
+    parse of a body the deployed path would have rejected outright.
+    """
+    declared = request.headers.get("content-length")
+    if declared is None or not declared.isdigit():
+        return
+    if int(declared) > MAX_IMPORT_BODY_BYTES:
+        raise HTTPException(
+            status_code=413,
+            detail=(
+                f"Import body is {int(declared)} bytes, above the "
+                f"{MAX_IMPORT_BODY_BYTES}-byte limit. Send fewer rows per "
+                f"request (at most {MAX_IMPORT_ROWS_PER_REQUEST}); an import is "
+                "assembled from several requests."
+            ),
+        )
 
 
 async def require_peak_assignment_enabled() -> None:
@@ -93,6 +147,14 @@ async def get_peak_assignments_route(
     completed run), each carrying the committed formula, adduct, evidence,
     confidence tier, and optional reference to the curated target library.
 
+    Rows are a slim projection: the `alternatives` and `provenance` JSON are
+    inspector detail (~74% of a full row's bytes) and are served per assignment
+    by the sibling detail endpoint instead.
+
+    Returns 404 for a run id this sample does not have, and 409 (with the code
+    `run_still_assembling`) for one whose import has not finished - a partial
+    ledger is not served as a ledger.
+
     :param sample_item_id: The unique identifier of the sample.
     :param query_params: Optional run id and tier/role/source filters.
     :param user: The current authenticated user. Requires workspace guest role.
@@ -104,6 +166,105 @@ async def get_peak_assignments_route(
         sample_item_id=sample_item_id, **query_params.model_dump()
     )
     return PeakAssignmentsResponse.model_validate(result)
+
+
+@peak_assignments_router.get(
+    "/sample/{sample_item_id}/assignment/{peak_assignment_id}",
+    response_model=PeakAssignmentDetailResponse,
+)
+@api_route(token_access=True)
+async def get_peak_assignment_detail_route(
+    sample_item_id: str,
+    peak_assignment_id: str,
+    user: User = Depends(current_active_user),
+) -> PeakAssignmentDetailResponse:
+    """
+    Retrieve one assignment in full, including `alternatives` and `provenance`.
+
+    The complement of the paged list endpoint, whose rows are a slim
+    projection: the peak inspector fetches this when a peak is selected.
+
+    :param sample_item_id: The unique identifier of the sample.
+    :param peak_assignment_id: The unique identifier of the assignment.
+    :param user: The current authenticated user. Requires workspace guest role.
+    :return: The full assignment record.
+    """
+    await check_sample_access(sample_item_id, user, "guest")
+    result = await get_peak_assignment_detail(
+        sample_item_id=sample_item_id, peak_assignment_id=peak_assignment_id
+    )
+    return PeakAssignmentDetailResponse.model_validate(result)
+
+
+@peak_assignments_router.get(
+    "/sample/{sample_item_id}/assignment/{peak_assignment_id}/alternative-scores",
+    response_model=AlternativeScoresResponse,
+)
+@api_route(token_access=True)
+async def get_alternative_scores_route(
+    sample_item_id: str,
+    peak_assignment_id: str,
+    user: User = Depends(current_active_user),
+) -> AlternativeScoresResponse:
+    """
+    Score this row's formula-only alternatives against its peak, on demand.
+
+    The untargeted finder's shortlist reaches a row as formulas and chemical
+    plausibilities only - the run does not measure them, because doing it for
+    every peak of a sample is an isotope-envelope match per candidate. For one
+    peak it is cheap, so it is done here when somebody is looking at that peak.
+
+    Deliberately separate from the detail endpoint, which is a database read on
+    the path of every peak click: this one loads peaks and generates isotope
+    envelopes, and most rows have no formula-only alternatives to spend that on.
+
+    Nothing is written. The scores are not persisted onto the run's rows - a run
+    records what the engine did, and this is not something it did - so a client
+    committing one of these candidates sends it back through the
+    `set_assignment` curation action, whose provenance says the numbers came
+    from a composition search.
+
+    :param sample_item_id: The unique identifier of the sample.
+    :param peak_assignment_id: The assignment whose shortlist to measure.
+    :param user: The current authenticated user. Requires workspace guest role.
+    :return: One entry per formula-only alternative, scored or blocked.
+    """
+    await check_sample_access(sample_item_id, user, "guest")
+    result = await score_row_alternatives(
+        sample_item_id=sample_item_id, peak_assignment_id=peak_assignment_id
+    )
+    return AlternativeScoresResponse.model_validate(result)
+
+
+@peak_assignments_router.get(
+    "/sample/{sample_item_id}/assignment/{peak_assignment_id}/evidence",
+    response_model=DerivedEvidenceResponse,
+)
+@api_route()
+async def get_derived_evidence_route(
+    sample_item_id: str,
+    peak_assignment_id: str,
+    user: User = Depends(current_active_user),
+) -> DerivedEvidenceResponse:
+    """Measure a derived row's family against its sample, for the inspector.
+
+    A sample served from the batch ledger shows each peak with the fit and
+    tier its member carries and nothing else a run computes - the m/z and
+    abundance error of each isotopologue, the isotope labels, the
+    plausibility, the evidence the tier was read off. This measures them on
+    request, through the family's M0, the way the finder's alternatives are
+    measured; nothing is stored. A run's own row answers with no entry.
+
+    :param sample_item_id: The unique identifier of the sample item.
+    :param peak_assignment_id: The derived row (``fold-<batch peak>``).
+    :param user: The current authenticated user. Requires workspace guest role.
+    :return: One entry, scored or blocked with a reason, or none.
+    """
+    await check_sample_access(sample_item_id, user, "guest")
+    result = await measure_derived_assignment(
+        sample_item_id=sample_item_id, peak_assignment_id=peak_assignment_id
+    )
+    return DerivedEvidenceResponse.model_validate(result)
 
 
 @peak_assignments_router.get(
@@ -188,6 +349,111 @@ async def verify_assignment_route(
     return AssignmentVerificationsResponse.model_validate(result)
 
 
+@peak_assignments_router.patch(
+    "/sample/{sample_item_id}/assignment/{peak_assignment_id}",
+    response_model=AssignmentCurationResponse,
+    dependencies=[Depends(require_peak_assignment_enabled)],
+)
+@api_route(token_access=True)
+async def curate_assignment_route(
+    sample_item_id: str,
+    peak_assignment_id: str,
+    body: CurateAssignmentBody,
+    user: User = Depends(current_active_user),
+    membership=Depends(require_sample_role("editor")),
+) -> AssignmentCurationResponse:
+    """
+    Curate one assignment by hand: commit a different composition for its peak.
+
+    Two actions, the same edit with a different source for the winner:
+
+    - **`promote_alternative`** commits one of the row's own stored runner-ups,
+      named by its index in `alternatives`. No numbers come from the caller;
+      pass `expected_formula` to have the choice checked against the list you
+      actually read.
+    - **`set_assignment`** commits a composition you name - the re-search case,
+      where the peak's row is usually an `unassigned` placeholder with no
+      runner-ups to promote.
+
+    **The row is edited in place**, keeping its `peak_assignment_id`, its
+    `sample_peak_id` and its peak. The displaced winner moves to the head of
+    `alternatives` (so the choice is reversible by promoting it back), the row
+    is marked `source: "manual"`, and `provenance.manual` records who, when,
+    and what it said before. The tier is recomputed from the run's own
+    `tier_bands` rather than inherited, and the calibrated fields (`p_correct`
+    and its calibration metadata) do not survive the edit: they are this
+    server's judgement about the arbitration that produced the previous winner.
+
+    **Isotopologue satellites follow their M0's compound, in both
+    directions.** The satellites of the formula being replaced are demoted to
+    `unassigned`, keeping their own previous winner in their `alternatives`:
+    they were the same compound seen through one heavy atom, and that compound
+    is no longer what their M0 carries. The reverse of that is the undo -
+    committing a compound this row was overridden away from **restores the
+    satellites that earlier override stripped**, so promoting the displaced
+    winner back really puts the family back instead of reviving the M0 alone
+    and leaving its satellites unassigned and ownerless. Neither happens when
+    the edit commits the formula and mechanism the row already held: the family
+    still stands for what it stood for, so it is left alone.
+
+    **A satellite a person has curated by hand since it was demoted is never
+    overwritten** by such a restore - their judgement is the newer one, and a
+    restore that replaced it with the engine's older row would destroy a
+    deliberate act to reverse an accidental one. Those rows stay exactly as
+    they were left, and `message` says how many were skipped for that reason.
+    `message` reports a second and opposite group beside them: satellites the
+    undo could not put back at all - their row gone from this run, or the state
+    archived for them not committable - which is a restore that failed rather
+    than one withheld on purpose, so the two counts must not be read as the
+    same thing. The curated row's `provenance.manual` names the ids behind all
+    three outcomes, under `restored`, `restore_skipped` and `restore_failed`.
+
+    **An override lives in the run it edits.** A later assignment run rebuilds
+    the sample's ledger and supersedes it; the durable record of a human
+    judgement is a verification, which is keyed to the peak rather than the run.
+    Nothing is auto-verified here - choosing a candidate and vouching for one
+    are different acts, and a verdict needs the evidence level only the person
+    can supply. Batch views are a snapshot taken at fold-in, so an override
+    reaches them at the batch's next compute rather than immediately.
+
+    Returns 403 when peak assignment is not enabled for this environment or the
+    user is not an editor on the sample, 404 for an assignment this sample does
+    not have, and 409 when the run is not completed (something else is still
+    writing its ledger) or when `expected_formula` no longer matches the
+    candidate sitting at `alternative_index`. 422 is the verdict on anything
+    that cannot be committed to the peak: an index past the end of the
+    `alternatives` list or an entry with no formula in it; a stored candidate
+    whose fields do not fit their columns (not text, over length, not a number,
+    non-finite, or out of range); an `ionization_mechanism_id` that does not
+    exist, or one whose polarity is not this sample's, which is not an adduct
+    the measurement could have produced; and a candidate that resolves to no
+    adduct at all - `set_assignment` requires the mechanism outright and
+    `promote_alternative` refuses a candidate that names none, because a
+    formula without its adduct is half an assignment and can never carry a
+    verification. The way to commit such a formula is the re-search action,
+    which finds it under one of the sample's own adducts.
+
+    :param sample_item_id: The unique identifier of the sample.
+    :param peak_assignment_id: The assignment to curate.
+    :param body: The curation action and its payload.
+    :param user: The current authenticated user. Requires workspace editor role.
+    :param membership: Workspace membership with editor role on the sample.
+    :return: The curated row first, then the satellite rows the override
+        demoted, then the ones it restored. Satellites left alone because
+        someone had curated them by hand are counted in `message` but not
+        returned, and so are the ones the restore could not reach at all -
+        absent from `data` for the opposite reason, since nothing about them
+        was rewritten.
+    """
+    result = await curate_assignment(
+        sample_item_id=sample_item_id,
+        peak_assignment_id=peak_assignment_id,
+        body=body,
+        user_id=user.id,
+    )
+    return AssignmentCurationResponse.model_validate(result)
+
+
 @peak_assignments_router.post(
     "/calibration/{instrument}/recalibrate",
     response_model=RecalibrateResponse,
@@ -217,6 +483,7 @@ async def recalibrate_instrument_route(
 
 @peak_assignments_router.post(
     "/sample/{sample_item_id}/assign",
+    response_model=AssignSampleResponse,
     dependencies=[Depends(require_peak_assignment_enabled)],
 )
 @api_route(status_code=202, token_access=True)
@@ -226,7 +493,7 @@ async def assign_sample_peaks_route(
     body: AssignSamplePeaksBody | None = None,
     user: User = Depends(current_active_user),
     membership=Depends(require_sample_role("editor")),
-) -> dict:
+) -> AssignSampleResponse:
     """
     Launch a peak assignment run for a sample.
 
@@ -235,87 +502,193 @@ async def assign_sample_peaks_route(
     remainder (Stage B, configurable). Results are persisted as a new
     PeakAssignmentRun and readable via the sibling GET endpoints.
 
-    Returns 403 when peak assignment is not enabled for this environment.
+    **The outcome is decided here, not behind the response.** Eligibility and
+    admission are both synchronous questions - a pure function of the sample row
+    and one indexed query - so answering 202 unconditionally and settling them
+    inside the background task would leave a headless client with nothing to read
+    but a socket notification it cannot receive. Instead:
+
+    - **202** carries the id of the run this request created. The run exists
+      before the response does, so a client polls one known run rather than
+      diffing run sets to guess which of them is its own - and the engine adopts
+      that run instead of minting a second one.
+    - **409** when another run for this sample is still in flight, naming it, so
+      a client can follow the run that is actually producing the ledger. (A race
+      with another worker's creation can leave the id absent.)
+    - **422** when the sample cannot usefully be assigned, carrying the reason.
+    - **403** when peak assignment is not enabled for this environment.
 
     :param sample_item_id: The unique identifier of the sample.
     :param body: Optional run configuration overrides.
     :param user: The current authenticated user. Requires workspace editor role.
     :param membership: Workspace membership with editor role on the sample.
-    :return: Acknowledgement message with the background process id.
+    :return: The created run's id and status.
     """
     # Verify the existence of the sample item before queueing the task
     sample = await fetch_sample(sample_item_id)
+
+    if (reason := ineligible_reason(sample)) is not None:
+        raise ApiException(
+            f"Peak assignment is not possible for sample "
+            f"'{sample.sample_item_name}': {reason}.",
+            {"sample_item_id": sample_item_id, "reason": reason},
+            422,
+        )
+
+    config = body.config if body else None
+    # Under the claim, so the admission read and the run creation that follows it
+    # cannot interleave with another worker's pair. The run then holds the sample
+    # durably from this commit onwards, which is what covers the window between
+    # the response and the background task starting.
+    async with assignment_claim("sample", sample_item_id) as acquired:
+        blocking_run_id = await in_flight_run_id(sample_item_id)
+        if not acquired or blocking_run_id is not None:
+            raise ApiException(
+                f"Peak assignment is already running for sample "
+                f"'{sample.sample_item_name}'.",
+                {
+                    "sample_item_id": sample_item_id,
+                    "peak_assignment_run_id": blocking_run_id,
+                },
+                409,
+            )
+        run = await create_pending_run(sample_item_id, config)
 
     process_id = gen_id(8)
     background_tasks.add_task(
         assign_sample_peaks,
         sample_item_id=sample_item_id,
-        config=body.config if body else None,
+        config=config,
         independent_transaction=True,
         user_id=user.id,
         process_id=process_id,
+        run_id=run.peak_assignment_run_id,
     )
     return {
+        "status": "success",
         "message": (
             f"Assigning peaks for sample '{sample.sample_item_name}', please wait."
         ),
+        "results": 1,
+        "data": [
+            {
+                "sample_item_id": sample_item_id,
+                "peak_assignment_run_id": run.peak_assignment_run_id,
+                "run_status": run.status,
+            }
+        ],
         "process_id": process_id,
     }
 
 
 @peak_assignments_router.post(
-    "/batch/{sample_batch_id}/assign",
+    "/sample/{sample_item_id}/runs/import",
+    response_model=PeakAssignmentImportResponse,
+    dependencies=[
+        Depends(require_peak_assignment_enabled),
+        Depends(reject_oversized_import),
+    ],
+)
+@api_route(token_access=True)
+async def import_assignment_run_route(
+    sample_item_id: str,
+    body: ImportRunBody,
+    user: User = Depends(current_active_user),
+    membership=Depends(require_sample_role("editor")),
+) -> PeakAssignmentImportResponse:
+    """
+    Import an assignment run computed by an external engine.
+
+    Publishes a finished ledger into this sample's run history as a first-class
+    run - same tables, same read model, same batch fold-in as a run this server
+    computed - stamped with the producing `engine` so a reader always knows
+    which engine's judgement they are looking at.
+
+    **One import, one or more requests.** A dense sample's ledger is too large
+    for one body, so `rows` is capped per request and the run assembles: send
+    the first request with no `chunk.run_id` to create the run and receive its
+    id, follow up with that id and the next `chunk.index`, and set
+    `chunk.complete` on the last one (which may be the first, for a slim
+    ledger). Every response reports `max_rows_per_request`, so size chunks from
+    that rather than from a hardcoded guess.
+
+    **Retries are safe.** `chunk.index` is an offset in **rows**: it must equal
+    the `rows` count the previous response reported, and re-sending the last
+    chunk is an idempotent no-op that reports that count again. That covers
+    appends and the finalize, but not the request that *creates* the run, which
+    has no id yet to be idempotent about - which is why `chunk.import_id` (any
+    id unique to this import) is required, and why a retried create returns the
+    run it already made instead of a second one.
+
+    **What is accepted.** Each row is a ledger record minus the fields this
+    server owns: it mints the ids, resolves `owner_sample_peak_id` into the
+    owner's assignment id when the import finalizes, and leaves the calibrated
+    P(correct) columns empty because those are its own judgement, not the
+    importer's. `tier_bands` and `calibration` are required: tiers are validated
+    against the bands the engine actually tiered with, and an import bypasses
+    the m/z verification gate, so what it calibrated against goes on the record.
+    `config` is opaque and stored verbatim.
+
+    **Partial imports are allowed, and they replace.** A run may cover a subset
+    of the sample's peaks, but the batch overview takes the sample's whole
+    contribution from the latest completed run - so publishing a handful of rows
+    of interest withdraws that sample's other peaks from the batch view.
+
+    Returns 403 when peak assignment is not enabled for this environment, 409
+    when another run for this sample is still in flight (naming it) or a chunk
+    arrives out of order, 413 when one request's body exceeds the byte cap, and
+    422 when the payload is well-formed but refused.
+
+    :param sample_item_id: The unique identifier of the sample.
+    :param body: The run metadata and this chunk's assignment rows.
+    :param user: The current authenticated user. Requires workspace editor role.
+    :param membership: Workspace membership with editor role on the sample.
+    :return: The run id, its status, and the rows it now holds.
+    """
+    result = await import_assignment_run(
+        sample_item_id=sample_item_id, body=body, user_id=user.id
+    )
+    return PeakAssignmentImportResponse.model_validate(result)
+
+
+@peak_assignments_router.delete(
+    "/sample/{sample_item_id}/runs/{peak_assignment_run_id}",
+    response_model=PeakAssignmentImportResponse,
     dependencies=[Depends(require_peak_assignment_enabled)],
 )
-@api_route(status_code=202, token_access=True)
-async def assign_sample_batch_peaks_route(
-    sample_batch_id: str,
-    background_tasks: BackgroundTasks,
-    body: AssignSamplePeaksBody | None = None,
+@api_route(token_access=True)
+async def abandon_import_run_route(
+    sample_item_id: str,
+    peak_assignment_run_id: str,
     user: User = Depends(current_active_user),
-    membership=Depends(require_batch_role("editor")),
-) -> dict:
+    membership=Depends(require_sample_role("editor")),
+) -> PeakAssignmentImportResponse:
     """
-    Launch a peak assignment run for every sample in a sample batch.
+    Abandon an unfinished import, deleting it with its staged rows.
 
-    Assigns a composition to every observed peak of each sample: first from the
-    known target library (Stage A), then via untargeted composition search for
-    the remainder (Stage B, configurable). Each sample gets its own
-    PeakAssignmentRun, readable via the sample GET endpoints.
+    A client that dies mid-upload - or that simply loses the run id it was
+    handed - leaves an `importing` run that blocks every later import *and*
+    in-app assignment for the sample, because admission refuses on any run still
+    in flight and the startup reaper deliberately leaves imports alone. Retention
+    reclaims it eventually; this releases it now.
 
-    Because a batch multiplies per-sample cost by the number of samples, it
-    defaults to **Stage A only**; pass a config with ``run_untargeted: true`` to
-    include the untargeted stage. Blank samples and samples whose m/z
-    calibration is unverified are skipped. A batch already being assigned by
-    this worker is refused rather than queued.
+    Deliberately restricted to runs in `importing`: a completed run is ledger
+    data, and removing that is retention's business rather than a client's.
+    Anything else is refused with 409.
 
     Returns 403 when peak assignment is not enabled for this environment.
 
-    :param sample_batch_id: The unique identifier of the sample batch.
-    :param body: Optional run configuration overrides applied to every sample.
+    :param sample_item_id: The unique identifier of the sample.
+    :param peak_assignment_run_id: The unfinished import to delete.
     :param user: The current authenticated user. Requires workspace editor role.
-    :param membership: Workspace membership with editor role on the batch.
-    :return: Acknowledgement message with the background process id.
+    :param membership: Workspace membership with editor role on the sample.
+    :return: The abandoned run id and the number of staged rows reclaimed.
     """
-    # Verify the existence of the sample batch before queueing the task
-    sample_batch = await fetch_sample_batch(sample_batch_id)
-
-    process_id = gen_id(8)
-    background_tasks.add_task(
-        assign_sample_batch_peaks,
-        sample_batch_id=sample_batch_id,
-        config=body.config if body else None,
-        independent_transaction=True,
-        user_id=user.id,
-        process_id=process_id,
+    result = await abandon_import_run(
+        sample_item_id=sample_item_id,
+        peak_assignment_run_id=peak_assignment_run_id,
     )
-    return {
-        "message": (
-            f"Assigning peaks for sample batch '{sample_batch.sample_batch_name}', "
-            "please wait."
-        ),
-        "process_id": process_id,
-    }
+    return PeakAssignmentImportResponse.model_validate(result)
 
 
 @peak_assignments_router.post("/sample/{sample_item_id}/fit/aggregate")
@@ -326,12 +699,13 @@ async def composition_fit_aggregate_route(
     user: User = Depends(current_active_user),
 ) -> dict:
     """
-    Fit-view isotope table for an assigned composition.
+    Isotope-table data for an assigned composition.
 
     Scores an assigned neutral formula + ionization mechanism against the
     sample on the fly (no persisted target ion), returning the same nested
-    match_ions / match_isotopes shape the Fit view consumes - so an untargeted
-    assignment (which has no target_ion_id) can be verified.
+    match_ions / match_isotopes shape the targeted ion aggregate returns - so
+    an untargeted assignment (which has no target_ion_id) can be verified.
+    API/SDK surface: no in-app view calls this endpoint.
 
     :param sample_item_id: The unique identifier of the sample.
     :param body: Composition (assigned formula + ionization mechanism).
@@ -356,11 +730,12 @@ async def composition_fit_visualize_route(
     user: User = Depends(current_active_user),
 ) -> dict:
     """
-    Launch the Fit-view visualization for an assigned composition.
+    Launch the fit visualization for an assigned composition.
 
     Emits the sum-spectrum and time-series traces (same socket events the
     targeted ion_focus visualization uses) for an on-the-fly composition,
-    so untargeted assignments render in the Fit view like targeted ones.
+    so an untargeted assignment visualizes like a targeted ion.
+    API/SDK surface: no in-app view calls this endpoint.
 
     :param sample_item_id: The unique identifier of the sample.
     :param body: Composition + visualization tolerances.

@@ -51,6 +51,8 @@ stages; the confidence layers are the paradigm's **Phase 3** (tiers/arbitration)
   (`HeuristicFilterConfig.use_senior`): it replaced a no-op placeholder, so enabling it for
   every caller would silently narrow the pre-existing composition search. Stage B sets it.
 - **The whole feature is off by default**, behind `peak_assignment` in the runtime
+  *(historical: the flag stayed; its default was on for a while during
+  development and ships off - see `peak_assignment_paradigm.md`)*
   `[meta]` config (env override `MASCOPE_PEAK_ASSIGNMENT`), read by backend
   (`peak_assignment_enabled()`) and frontend (`runtime.meta`) alike. "Coexist, don't
   replace" turned out to need enforcing: ingest-time assignment, the rescored composition
@@ -97,17 +99,17 @@ branch's shape, not a commit hash that goes stale within a day.*
   own revision (`c4f7a2e9b1d8`): independent subsystem, no foreign key either way.
   Equivalence was proved by diffing a schema dump built from the old chain against one
   built from the new (identical), and the stairway/single-head/model-drift tests pass.
-- **Opt-in:** the feature is **off by default** (§3). Work stacks on
+- **Opt-in:** the feature was **off by default** (§3) at the time of writing,
+  and ships off. Work stacked on
   `feat/peak-assignment-opt-in`.
 - **Tests:** the full suite is green — libraries, CLI, backend unit + integration +
-  migrations, frontend unit, lint/format. Two gotchas when running them from a worktree:
-  - the backend suite is gated on Postgres at *import* time
-    (`server/backend/tests/conftest.py`), so even the pure-unit tests need `mascope dev up`;
-  - the **migration** tests resolve Alembic from `$MASCOPE_PATH`, the shared runtime home
-    — from a worktree they silently test the *main* checkout's migrations and can report a
-    bogus model-drift failure. Run them with `MASCOPE_PATH` pointed at the worktree and
-    `POSTGRES_TEST_PASSWORD` set (the password otherwise resolves under `MASCOPE_PATH`
-    too). This is the "worktree/main alembic split" of roadmap item E8.
+  migrations, frontend unit, lint/format. One gotcha when running them from a worktree:
+  the backend suite is gated on Postgres at *import* time
+  (`server/backend/tests/conftest.py`), so even the pure-unit tests need `mascope dev up`.
+  (The migration tests used to resolve Alembic from `$MASCOPE_PATH` and silently test the
+  *main* checkout's migrations against this tree's models — a bogus model-drift failure.
+  Fixed with roadmap item E8; they now resolve from the checkout they live in, so no
+  `MASCOPE_PATH` juggling is needed.)
 - **Code map:**
   - Fit score: `libraries/tools/src/mascope_tools/composition/heuristic_filter.py`
     (`score_pattern_v2`, `calibrate_score`, `rule_senior`).
@@ -140,9 +142,11 @@ branch's shape, not a commit hash that goes stale within a day.*
    peak-assignment-tables head). Legacy `match_ion` / `match_isotope.match_score`
    deliberately untouched. **Applied to `mascope_demo` (dev postgres) end-to-end**; the
    live API serves `fit_score`.
-4. ✅ **Fit-scale tier bands (0.8 / 0.5).** `PeakAssignmentConfig.identified_threshold`
-   (0.8) / `candidate_threshold` (0.5); Stage A/B tier against them instead of the legacy
-   `match_params` thresholds. Persisted on the run config; provisional (see below).
+4. ✅ **Engine-owned tier bands (0.75 / 0.45).** `PeakAssignmentConfig.assigned_threshold`
+   (0.75) / `candidate_threshold` (0.45); Stage A/B tier against them instead of the legacy
+   `match_params` thresholds. Persisted on the run config; provisional (see below). The two
+   key names are the original ones — only the scale they sit on moved, from the bare fit to
+   the evidence (item 10), which is why the numbers came down from 0.8 / 0.5.
 5. ✅ **Phase 3 P2 — candidate arbitration (core).**
    `mascope_tools.composition.arbitration.arbitrate_candidates`: competes a peak's
    candidates by **fit × plausibility**, emits a normalised confidence, flags ties
@@ -150,16 +154,19 @@ branch's shape, not a commit hash that goes stale within a day.*
 6. ✅ **Live end-to-end on real demo spectra.** Migrated `mascope_demo` to head and ran
    `assign_sample_peaks` over all 161 demo samples. `fit_score` median ≈ 0.95; tiers band
    cleanly; Stage A winners chosen by fit × plausibility with confidence/tie in
-   `provenance`. Data sits in `mascope_demo.peak_assignment` for the UI.
+   `provenance`. Data sits in `mascope_demo.peak_assignment` for the UI. *(The banding was
+   measured under fit-scale bands at 0.8 / 0.5, the split in force when the run was made;
+   tiers are read off the evidence now — item 10.)*
 7. ✅ **P2 confidence calibration (pipeline; data provisional).**
    `mascope_tools.composition.calibration`: `Calibration` (provenance-carrying),
    `fit_calibration` (Platt + held-out ECE, refuses too-little data), `apply_calibration`,
    `calibration_error`, per-instrument `calibration_for`. **Honest fallback:** no curve for
-   an instrument → `p_correct=null, calibrated=false` (TOF today); one **provisional
+   an instrument → `p_correct=null` and no curve on the run (TOF today); one **provisional
    Orbitrap** curve (a=5.74, b=-3.36, held-out ECE 0.029) fit from the demo bundle via
    `arbitration_eval.py --fit-calibration` (untracked scratch alongside the
-   `tooling/score_eval` harness). Wired into the engine → `provenance.p_correct /
-   calibrated / calibration`. Labels = reference-confirmed identities (Schymanski L1) vs
+   `tooling/score_eval` harness). Wired into the engine → `provenance.p_correct` per row,
+   with the curve recorded once per run (`confidence_calibration`) and folded back into the
+   detail row as `calibrated` / `calibration`. Labels = reference-confirmed identities (Schymanski L1) vs
    decoys — the reference-dataset link + basis for future user self-calibration. See
    `assignment_confidence.md` §4 + `how-it-works/peak-assignment.md`.
 8. ✅ **How-it-works docs** — new user-facing `how-it-works/peak-assignment.md` (fit score,
@@ -172,6 +179,38 @@ branch's shape, not a commit hash that goes stale within a day.*
    ~71% of Stage A rows), inherited its ion's tier, and blocked that peak's correct
    assignment. Out-of-tolerance pairings now fall through to Stage B / unassigned.
    Unit-tested.
+10. ✅ **Tiers derive from the evidence (fit × plausibility), not the fit alone.**
+    `engine.evidence_for(fit_score, formula)` weighs the fit by the formula's chemical
+    plausibility, and `engine.tier_for_evidence` — renamed from `tier_for_score`, bands now
+    **keyword-only** because they read in the opposite order to their names and a positional
+    call written in band order silently inverted them — buckets that product. The rationale
+    is that this is already the currency both stages arbitrate a contested peak in (item 5),
+    so the tier now agrees with the quantity that picked the winner, and a chemically
+    implausible formula can no longer hold the ledger's strongest word on mass accuracy.
+    Every derivation site moved together: both engine stages, manual curation and its
+    demote-restore fallback, the copy service's re-tier, the composition-search preview, and
+    the import tier-coherence check (`tier_coherence_error` gained a `formula` parameter).
+    Plausibility is always **recomputed from the formula**, never trusted from a payload —
+    it is a pure function of the formula, so an imported row can be checked without asking
+    its author to declare one; it fails open to the bare fit when the formula is absent or
+    unparseable. `fit_score` is **unchanged**: still stored and displayed as the pure
+    measurement, just no longer what buckets the row. `PEAK_ASSIGNMENT_ENGINE_VERSION`
+    0.2.0 → 0.3.0. The bands were re-fit by sweeping the pair over a real ledger — all 161
+    demo samples assigned, 213,146 rows, 77,911 of them tiered. Plausibility turned out to
+    be a spike at 1.0 with a thin tail (92.8% of tiered rows score exactly 1.0; Stage A
+    98.3%, Stage B 88.4%), so only 7.2% of rows move at all: 0.75/0.45 gives assigned
+    85.38% / candidate 11.73% / below_assignability 2.89% against 84.08% / 12.41% / 3.51%
+    under fit-tiering at 0.8/0.5, the closest pair in the sweep to the split it replaces,
+    with the 6.93% of tiered rows that change tier moving in both directions (2,717 up,
+    1,710 down) rather than draining one band. Known and deliberately not solved: Stage A's
+    fit is `ion_score_v2` and Stage B's is `score_pattern` (v1, no per-peak SNR), so one
+    band means slightly different things to each — on the sweep, holding the upper band at
+    0.80 would cost Stage B 5.3% of its assigned rows and Stage A only 0.5%. That
+    heterogeneity **predates** this binding (it was equally true under fit-tiering), and
+    per-stage bands were not introduced. This does **not** supersede the end state: binding
+    the tier to a calibrated P(correct) remains the documented destination, still gated on
+    universal calibration coverage (untargeted + all instruments) and still deferred. Item
+    4's bands are directional, not calibrated — see D7.
 
 ## 6a. Roadmap / next steps (priority order)
 
@@ -219,8 +258,10 @@ branch's shape, not a commit hash that goes stale within a day.*
   D9/V2 (`recalibrate_instrument`); *remaining:* the front-end "calibrate my instrument" trigger +
   the verification capture UI that feeds it — designed in
   [`verification_calibration_loop.md`](verification_calibration_loop.md).
-- **D7. Recalibrate the fit-scale tier bands** (currently the 0.8/0.5 estimates) per
-  instrument — a "what users see" decision.
+- **D7. Recalibrate the tier bands** (currently the 0.75/0.45 estimates) per instrument — a
+  "what users see" decision. Still open, and now a recalibration on the **evidence** scale:
+  because plausibility is ≤ 1, evidence ≤ fit for every row, so a given number is stricter
+  here than the same number was on the fit scale.
 - **D9. Interactive verification → calibration golden set.** Human-in-the-loop confirm/reject in
   the UI feeding `fit_calibration` per instrument. Designed in
   [`verification_calibration_loop.md`](verification_calibration_loop.md); the central risk is the
@@ -233,15 +274,17 @@ branch's shape, not a commit hash that goes stale within a day.*
   open:** active-learning queue, evidence-level weighting in the fit, Schymanski surfacing.
 
 **E — ops**
-- **E8. Resolve the worktree/main alembic split.** The CLI resolves alembic from
-  `$MASCOPE_PATH` — the *main* checkout — so from a worktree it applies **develop's**
-  chain and then reports "Database up to date". Consequences, both observed: the
-  migration tests silently verify the wrong migrations (run them with `MASCOPE_PATH`
-  pointed at the worktree and `POSTGRES_TEST_PASSWORD` set, §5), and **`mascope dev run
-  --instance` cannot create this feature's tables at all**, so a worktree stack comes up
-  without them. This is a developer-experience blocker for anyone trying the feature from
-  a worktree, not just a testing annoyance. (The startup reaper tolerates the resulting
-  missing-table state rather than failing the boot, but that is damage control, not a fix.)
+- **E8. Resolve the worktree/main alembic split. — DONE.** The CLI resolved alembic from
+  `$MASCOPE_PATH` — the *main* checkout — so from a worktree it applied **develop's**
+  chain and then reported "Database up to date". Consequences, both observed: the
+  migration tests silently verified the wrong migrations, and `mascope dev run --instance`
+  could not create this feature's tables at all, so a worktree stack came up without them.
+  Both now resolve from the running source tree instead — `checkout.backend_path()` for
+  the CLI, `Path(__file__)` for the test suite — with `MASCOPE_PATH` left to its documented
+  job (database, secrets, `.runtime`). Regression coverage in
+  `tooling/cli/tests/test_dev_migrate.py`. (The startup reaper still tolerates a
+  missing-table state rather than failing the boot; that remains damage control, and is
+  now a backstop rather than the only line of defence.)
 - **E8b. Schedule the retention prune.** `prune_peak_assignment_runs` exists and is
   documented for operators, but nothing runs it — there is no timer or cron entry, so
   unattended growth is unchanged until one exists.

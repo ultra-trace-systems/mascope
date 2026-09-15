@@ -90,6 +90,8 @@ class HeuristicFilterConfig:
 class Result:
     formula: str
     neutral_mass: float
+    # Signed, (observed - predicted)/predicted * 1e6: the targeted matcher's
+    # match_mz_error convention. Rank candidates on its magnitude.
     composition_error_ppm: float
     ion: str | None
     ionization_mechanism: str | None

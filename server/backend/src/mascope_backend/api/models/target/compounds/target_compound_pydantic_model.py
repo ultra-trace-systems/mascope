@@ -12,6 +12,10 @@ from mascope_tools.composition.utils import assert_valid_formula
 # misclassify the chemically valid formula "NaN" (sodium nitride) as a mass.
 _NUMERIC_MASS = re.compile(r"[+-]?(\d+\.?\d*|\.\d+)([eE][+-]?\d+)?")
 
+# Bracket isotope notation in either accepted spelling: '[15N]O3' and 'N[15]O3'.
+# Caret isotopes ('^N') are deliberately NOT matched - see the docstring below.
+_BRACKET_ISOTOPE = re.compile(r"\[\d+[A-Za-z]|[A-Za-z]\[\d+\]")
+
 
 def validate_compound_formula(value: Optional[str]) -> Optional[str]:
     """Validate a target compound formula, rejecting masses and invalid formulas.
@@ -21,6 +25,16 @@ def validate_compound_formula(value: Optional[str]) -> Optional[str]:
     generated from the mass alone, which relied on the retired molmass fork.
     Compounds must now be given by composition so an isotope pattern can be
     computed. An empty formula (``"()"``, adduct-only) is still allowed.
+
+    Explicit bracket isotope notation (``"[13C]C5H12O6"``, ``"C[13]C5H12O6"``) is
+    rejected too. Isotopes are always generated from the formula, so pinning one
+    on the compound asks for a monoisotopic species where the pipeline will
+    compute a full pattern anyway - the two cannot both be right.
+
+    Caret isotopes (``"^N"`` = 15N) stay allowed: they name a *labelled reagent*
+    - a genuinely different substance, such as the 15N nitrate behind the
+    ``+^NO3-`` mechanism - rather than one isotopologue of an ordinary compound,
+    and a natural-abundance pattern is still computed around them.
 
     Anything that is not a parseable chemical formula (unknown elements such as
     ``"Zz"``, unknown custom elements such as ``"^C"``, stray characters) is also
@@ -33,6 +47,13 @@ def validate_compound_formula(value: Optional[str]) -> Optional[str]:
         raise ValueError(
             "Mass-based target compounds are no longer supported; provide a "
             "chemical formula (e.g. 'C6H12O6'), not a numeric mass."
+        )
+    if _BRACKET_ISOTOPE.search(value):
+        raise ValueError(
+            "Explicit isotope notation is not allowed for target compounds; "
+            "isotopes are generated from the formula. Give the unlabelled "
+            "composition (e.g. 'C6H12O6'), or use a caret isotope such as "
+            "'^N' when the compound really is a labelled reagent."
         )
     assert_valid_formula(value)
     return value

@@ -77,6 +77,43 @@ describe('notification store', () => {
     expect(store.latest).toBe(null)
   })
 
+  it('ends a tracked process on a silent packet, without logging or counting it', () => {
+    store.push({
+      type: 'calibration_mz_fit',
+      status: 'pending',
+      process_id: 'child',
+      parent_id: 'root',
+      progress: 10
+    })
+    expect(store.progress).toHaveLength(1)
+
+    // What the backend sends when a parent handler reports the warning: the
+    // bar has to clear now, not 30 seconds later, but nothing about it may
+    // reach the drawer or the badge.
+    store.push({
+      type: 'calibration_mz_fit',
+      status: 'warning',
+      process_id: 'child',
+      parent_id: 'root',
+      message: 'careful',
+      silent: true
+    })
+
+    expect(store.progress).toHaveLength(0)
+    expect(store.log).toHaveLength(0)
+    expect(store.recentWarnings).toBe(0)
+    expect(store.latest).toBe(null)
+  })
+
+  it('ignores a silent packet for a process it is not tracking', () => {
+    store.push({ type: 'mz_fit', status: 'warning', process_id: 'gone', silent: true })
+
+    expect(store.progress).toHaveLength(0)
+    expect(store.log).toHaveLength(0)
+    expect(store.recentWarnings).toBe(0)
+    expect(store.latest).toBe(null)
+  })
+
   it('expires an idle pending process after its timeout', () => {
     store.push({ type: 'mz_fit', status: 'pending', process_id: 'p1', progress: 10 })
     expect(store.progress).toHaveLength(1)
@@ -112,6 +149,40 @@ describe('notification store', () => {
 
     expect(store.log).toHaveLength(250)
     expect(store.log[0].message).toBe('m259')
+  })
+
+  it('clears the log without cancelling live processes', () => {
+    store.push({ type: 'mz_fit', status: 'pending', process_id: 'p1', progress: 10 })
+    store.push({ type: 'x', status: 'success', message: 'saved' })
+    expect(store.log).toHaveLength(1)
+
+    store.clearLog()
+
+    expect(store.log).toHaveLength(0)
+    expect(store.progress).toHaveLength(1)
+  })
+
+  it('keeps logging after a clear', () => {
+    store.push({ type: 'x', status: 'success', message: 'a' })
+    store.clearLog()
+    store.push({ type: 'x', status: 'success', message: 'b' })
+
+    expect(store.log).toHaveLength(1)
+    expect(store.log[0].message).toBe('b')
+  })
+
+  it('clears the unread badge along with the log', () => {
+    store.push({ type: 'x', status: 'warning', message: 'w' })
+    store.push({ type: 'x', status: 'error', message: 'e' })
+    expect(store.recentWarnings).toBe(1)
+    expect(store.recentErrors).toBe(1)
+
+    store.clearLog()
+
+    // The badge sits on the bell right above the feed the user just emptied,
+    // so it must not keep a count for rows that are gone.
+    expect(store.recentWarnings).toBe(0)
+    expect(store.recentErrors).toBe(0)
   })
 
   it('keeps result payloads out of the log', () => {

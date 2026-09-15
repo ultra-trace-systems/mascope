@@ -1,5 +1,5 @@
 <script setup>
-import { ref, computed, watch } from 'vue'
+import { ref, computed, watch, onUnmounted } from 'vue'
 
 import Dialog from 'primevue/dialog'
 import Button from 'primevue/button'
@@ -8,6 +8,7 @@ import Column from 'primevue/column'
 import Select from 'primevue/select'
 import { useConfirm } from 'primevue/useconfirm'
 
+import { api } from '@/api'
 import { useApp } from '@/stores'
 import { workspaceRoles, prettyWorkspaceRoleName, roleLevel } from '@/lib/roles'
 
@@ -154,10 +155,86 @@ const invalidCreated = computed(() => {
   return !created.value?.user_id
 })
 
+// A membership can change while this dialog sits open: another administrator
+// editing the same workspace, or an account being registered, which enrols the
+// new account in every system workspace. Both go through the member
+// controller, which announces the change on the workspace record-reload
+// channel - so listen for it and refresh the roster in place.
+const onWorkspaceReload = ({ record_id } = {}) => {
+  // The broadcast reaches every room this tab is subscribed to, and the
+  // list-level ones (a workspace created or deleted) name no workspace at all.
+  // Only the ones naming the workspace on screen say anything about this list.
+  if (!record_id || record_id !== props.workspace?.workspace_id) return
+  loadMembers()
+}
+
+// The announcement only reaches rooms this tab has joined, and the workspace
+// store joins just the focused one. The dialog can be opened on another: the
+// workspace pane's context menu passes the right-clicked workspace, which need
+// not be the selected one. So the dialog joins its own workspace's room for as
+// long as it needs it.
+//
+// The tab holds one subscription per room and counts no references (the socket
+// keeps a Set, and the server does a plain leave_room), so the store and this
+// dialog can end up needing the same room. Focus can move onto the workspace
+// on screen while the dialog sits open, and the store re-joins only when focus
+// changes - so a leave here would take the store's live updates down with it
+// and the store would never learn. The invariant is therefore two-sided:
+//
+//   the dialog joins a room only when the store does not already hold it, and
+//   leaves a room only if it joined that room itself AND the store does not
+//   hold it by the time the dialog lets go.
+//
+// The mirror failure - hoarding rooms - cannot follow: a room kept back on
+// close is by definition the focused one, which the store now owns and drops
+// on its next focus change.
+const joinedRoom = ref(null)
+
+const claimRoom = (room) => {
+  if (!room || room === app.data.workspace.focusedId) return
+  api.socket.addSubscription(room)
+  joinedRoom.value = room
+}
+
+const releaseRoom = () => {
+  const room = joinedRoom.value
+  if (!room) return
+  joinedRoom.value = null
+  if (room === app.data.workspace.focusedId) return
+  api.socket.removeSubscription(room)
+}
+
+// The workspace this dialog is showing, and nothing once it closes. Driving
+// the room off this rather than off `visible` alone keeps the joined room and
+// the roster from drifting away from the workspace on screen, should the
+// dialog ever be rebound to another workspace without being closed first.
+const shownWorkspaceId = computed(() =>
+  visible.value ? (props.workspace?.workspace_id ?? null) : null
+)
+
+watch(shownWorkspaceId, (id) => {
+  releaseRoom()
+  claimRoom(id)
+  if (id) loadMembers()
+})
+
+const teardown = () => {
+  api.socket.off('workspace_reload', onWorkspaceReload)
+  releaseRoom()
+}
+
 watch(visible, (v) => {
   reset()
-  if (v) loadMembers()
+  if (v) {
+    api.socket.on('workspace_reload', onWorkspaceReload)
+  } else {
+    teardown()
+  }
 })
+
+// The dialog is hidden rather than unmounted, so the close branch above is the
+// usual teardown; this catches the view being torn down with it still open.
+onUnmounted(teardown)
 </script>
 
 <template>

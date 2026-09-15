@@ -83,6 +83,13 @@ modified, matches may be out of date"*.
   and choose **Process → Refresh matches**. (**Process → Rematch** rebuilds
   all matches from scratch — use it if results look stale after parameter
   changes.)
+- To refresh a whole dataset at once, right-click it in the *Datasets* pane and
+  choose **Process → Refresh matches**. Unlike the per-batch entry this one asks
+  you to confirm first, because the run walks the whole dataset and cannot be
+  stopped once it starts. Its batches are refreshed one after another, newest
+  first; batches that are already up to date are skipped, and a batch that is
+  mid-processing is left alone. A toast reports what was done when the run
+  finishes.
 - While matching runs, the batch row shows a spinner, progress bars appear
   along the bottom edge of the app, and a toast reports completion. New files
   processed into a batch are matched automatically as part of processing.
@@ -102,6 +109,17 @@ modified, matches may be out of date"*.
 - **Batch tab** — the batch-wide overview chart. It needs a collection
   selected (it says so until you click one); then it plots the matched
   intensities per sample. Click any data point to jump to that sample's match.
+
+!!! note "Matching and peak assignment coexist"
+
+    [Peak assignment](../how-it-works/peak-assignment.md) is off by default;
+    switched on, it adds its views to the Sample tab, but it takes nothing
+    away here. The
+    Match tab, the *Visualize ion match* expander, the batch chart's
+    click-through, the match-parameter drawer and *Rate Match* all work the
+    same whether assignment is on or off. The two answer different questions:
+    Match reads one *target* ion across the batch, the Sample tab reads every
+    *peak* of one sample.
 
 ### Tune the match parameters
 

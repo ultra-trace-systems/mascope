@@ -318,11 +318,12 @@ def _ensure_dev_secrets() -> None:
     """
     Create the dev secrets the backend reads, if missing.
 
-    Removes setup steps for newcomers. The dev stack reads three arbitrary-string
+    Removes setup steps for newcomers. The dev stack reads these arbitrary-string
     secrets at startup/import:
     - ``postgres_password.txt`` - dev PostgreSQL password,
     - ``jwt_secret_key.txt`` - JWT signing key,
-    - ``server_owner_secret_key.txt`` - first-owner registration key.
+    - ``server_owner_secret_key.txt`` - first-owner registration key,
+    - ``mfa_encryption_key.txt`` - encrypts stored TOTP seeds.
 
     Each is written with a random value only when absent, so existing secrets are
     never clobbered. The SSL cert secrets are not created - they are only needed
@@ -338,6 +339,7 @@ def _ensure_dev_secrets() -> None:
         "postgres_password.txt",
         "jwt_secret_key.txt",
         "server_owner_secret_key.txt",
+        "mfa_encryption_key.txt",
     ):
         path = secrets_dir / filename
         if path.exists():

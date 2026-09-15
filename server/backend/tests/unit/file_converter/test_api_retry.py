@@ -76,8 +76,40 @@ def test_transport_error_then_success_recovers(_no_sleep):
 
 
 def test_default_timeout_exceeds_server_pool_patience():
-    """Client timeout must outlast the server's 120s pool_timeout."""
+    """
+    Client timeout must outlast the server's configured pool_timeout.
+
+    Compared against the setting rather than a literal: the two used to be
+    independent constants, so nothing caught them drifting apart. A client that
+    gives up first abandons requests the server would still have answered and
+    retries them into a pool that is no less busy.
+    """
     with patch.object(api.requests, "request", return_value=_response(200)) as request:
         api._request_with_retry("GET", "http://x/api/y")
 
-    assert request.call_args.kwargs["timeout"] > 120
+    assert request.call_args.kwargs["timeout"] > api._POOL_TIMEOUT_S
+
+
+def test_timeout_floor_holds_for_a_short_pool_timeout():
+    """A small pool_timeout does not shrink the client timeout below its floor."""
+    assert api._REQUEST_TIMEOUT_S >= api._REQUEST_TIMEOUT_FLOOR_S
+
+
+@pytest.mark.parametrize(
+    ("pool_timeout", "expected"),
+    [
+        (30, 180),  # config default - the floor governs
+        (120, 180),  # base/prod - floor still governs, unchanged from before
+        (180, 240),  # would have inverted the invariant when hardcoded at 180
+        (600, 660),  # far past the floor
+    ],
+)
+def test_client_timeout_is_derived_from_pool_timeout(pool_timeout, expected):
+    """The invariant is enforced by derivation, not by two constants agreeing."""
+    assert api._client_timeout(pool_timeout) == expected
+    assert api._client_timeout(pool_timeout) > pool_timeout
+
+
+def test_request_timeout_matches_the_configured_pool_timeout():
+    """What the module actually uses comes from that derivation."""
+    assert api._REQUEST_TIMEOUT_S == api._client_timeout(api._POOL_TIMEOUT_S)

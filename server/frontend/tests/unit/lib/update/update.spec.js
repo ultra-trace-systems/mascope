@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { createPinia, setActivePinia } from 'pinia'
 
-import { extractModuleScripts, scriptsChanged, useUpdate } from '@/lib/update'
+import { extractModuleScripts, extractVersion, scriptsChanged, useUpdate } from '@/lib/update'
 
 const INDEX = (hash) => `
 <!doctype html>
@@ -33,6 +33,19 @@ describe('update: pure helpers', () => {
   })
 })
 
+describe('update: naming the new build', () => {
+  it('reads the version a build names in its index.html', () => {
+    expect(extractVersion('<meta name="mascope-version" content="v1.8.0" />')).toBe('v1.8.0')
+    // Attribute order is the serializer's business, not a contract.
+    expect(extractVersion("<meta content='v1.8.0' name='mascope-version'>")).toBe('v1.8.0')
+  })
+
+  it('returns null for a build that names no version', () => {
+    expect(extractVersion(INDEX('DEADBEEF'))).toBeNull()
+    expect(extractVersion('<meta name="mascope-version" content="">')).toBeNull()
+  })
+})
+
 describe('update store: check()', () => {
   let script
 
@@ -59,6 +72,21 @@ describe('update store: check()', () => {
 
     expect(await update.check()).toBe(true)
     expect(update.available).toBe(true)
+  })
+
+  it('records the version the new build names', async () => {
+    const named = INDEX('NEWHASH').replace(
+      '<head>',
+      '<head><meta name="mascope-version" content="v1.8.0">'
+    )
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => ({ ok: true, text: async () => named }))
+    )
+    const update = useUpdate()
+
+    expect(await update.check()).toBe(true)
+    expect(update.version).toBe('v1.8.0')
   })
 
   it('does not flag when the entry bundle is unchanged', async () => {
@@ -111,10 +139,7 @@ describe('update store: reload()', () => {
 
     await useUpdate().reload()
 
-    expect(order).toEqual([
-      ['fetch', window.location.pathname, { cache: 'reload' }],
-      ['reload']
-    ])
+    expect(order).toEqual([['fetch', window.location.pathname, { cache: 'reload' }], ['reload']])
     expect(reloadSpy).toHaveBeenCalledTimes(1)
   })
 

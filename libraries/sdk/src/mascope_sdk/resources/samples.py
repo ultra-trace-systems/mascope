@@ -306,7 +306,15 @@ class SamplesResource(BaseResource):
                  - ``target_compound_id``, ``target_compound_name``,
                    ``target_compound_formula``
                  - ``ionization_mechanism``
-                 - ``target_collection_ids``
+                 - ``target_collection_ids``,
+                   ``target_collection_names``
+
+                 ``target_collection_names`` is a list aligned
+                 element-wise with ``target_collection_ids`` and is
+                 display-only: names are not unique, so group by
+                 ``target_collection_id``. Servers older than the
+                 release that added the names send only the IDs, and
+                 the column is then ``None`` throughout.
 
                  Returns None if no peaks are found.
         :rtype: pd.DataFrame | None
@@ -372,6 +380,10 @@ class SamplesResource(BaseResource):
                 "target_compound_formula",
                 "ionization_mechanism_id",
                 "target_collection_ids",
+                # Older servers omit the names; `.get` below then leaves the
+                # column None rather than dropping it, so the frame's schema
+                # does not depend on the server version.
+                "target_collection_names",
             ]
 
             # Replace empty lists with [None] so unmatched peaks survive

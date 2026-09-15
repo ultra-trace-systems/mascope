@@ -16,7 +16,15 @@ from mascope_backend.api.models.dataset.dataset_pydantic_model import (
 )
 from mascope_backend.api.new.auth.config import auth_settings
 from mascope_backend.api.new.instruments.service import get_instruments
-from mascope_backend.db import Dataset, User, Workspace, WorkspaceMember, async_session
+from mascope_backend.db import (
+    AgentDevice,
+    Dataset,
+    SampleFile,
+    User,
+    Workspace,
+    WorkspaceMember,
+    async_session,
+)
 from mascope_backend.db.id import gen_id
 from mascope_backend.runtime import runtime
 from mascope_backend.socket.records.service import (
@@ -37,6 +45,33 @@ _ROLE_MAP = {
 }
 
 
+async def _resolve_device_sponsor(session, machine_user_id: int | None) -> int | None:
+    """The sponsor of the device that authenticates as this machine account.
+
+    Returns ``None`` when the id is not a machine account's - a person's
+    upload has no sponsor to add. This is what lets a plain-editor sponsor keep
+    seeing what their instrument agent ingests, even though the upload itself
+    authenticates as the machine.
+
+    :param session: An open async session.
+    :param machine_user_id: The uploading account's id (may be a person's).
+    :return: The sponsor's user id, or ``None``.
+    """
+    if machine_user_id is None:
+        return None
+    return (
+        (
+            await session.execute(
+                select(AgentDevice.sponsor_user_id).where(
+                    AgentDevice.machine_user_id == machine_user_id
+                )
+            )
+        )
+        .scalars()
+        .first()
+    )
+
+
 async def _ensure_instrument_workspace(
     instrument: str, owner_user_id: int | None = None
 ) -> str:
@@ -45,7 +80,10 @@ async def _ensure_instrument_workspace(
     When a new workspace is created, global admins and owners are added
     with matching workspace roles.  If *owner_user_id* is given, that
     user is always assigned the ``owner`` role regardless of their
-    global role.  Guests and editors are not auto-added.
+    global role.  When the owner is a machine account, the device's sponsor
+    is also added as owner, so the human who paired the agent sees its
+    acquisitions without needing an admin's help.  Other guests and editors
+    are not auto-added.
 
     :param instrument: Instrument name
     :param owner_user_id: User who triggered the creation (becomes owner)
@@ -85,10 +123,17 @@ async def _ensure_instrument_workspace(
                 )
             )
 
+            # The uploading account and (for an agent upload) the device's
+            # sponsor both become owners.
+            sponsor_id = await _resolve_device_sponsor(session, owner_user_id)
+            force_owner_ids = {
+                uid for uid in (owner_user_id, sponsor_id) if uid is not None
+            }
+
             users = (await session.execute(select(User.id, User.role_id))).all()
             added = 0
             for user_id, role_id in users:
-                if user_id == owner_user_id:
+                if user_id in force_owner_ids:
                     ws_role = "owner"
                 else:
                     ws_role = _ROLE_MAP.get(role_id)
@@ -180,6 +225,42 @@ async def _find_acquisition_dataset(
     return datasets[0] if datasets else None
 
 
+async def recorded_instrument_type(instrument: str) -> str | None:
+    """The class the files already converted under a name were read with.
+
+    One instrument is one class - an upload whose data file contradicts this
+    is refused - so any of its files answers for all of them. The lowest is
+    taken so the answer does not depend on which row the planner reaches
+    first, for a name that carried both before that was refused.
+
+    :param instrument: The instrument name
+    :type instrument: str
+    :return: The instrument class, or None when the name has no files yet
+    :rtype: str | None
+    """
+    async with async_session() as session:
+        return await session.scalar(
+            select(func.min(SampleFile.instrument_type)).where(
+                SampleFile.instrument == instrument
+            )
+        )
+
+
+async def instrument_type_of(instrument: str) -> str | None:
+    """The class of an instrument, "orbi" or "tof".
+
+    From the files converted under its name, where the reader recorded it;
+    the name itself when it has none yet and says.
+
+    :param instrument: The instrument name
+    :type instrument: str
+    :return: The instrument class, or None when nothing says
+    :rtype: str | None
+    """
+    recorded = await recorded_instrument_type(instrument)
+    return recorded or resolve_instrument_type(instrument, throw=False)
+
+
 @api_controller()
 async def get_acquisition_dataset(
     instrument: str,
@@ -263,7 +344,7 @@ async def get_acquisition_dataset(
         room=workspace_id,
     )
 
-    instrument_type = resolve_instrument_type(instrument, throw=False)
+    instrument_type = await instrument_type_of(instrument)
     await emit_record_created(
         record_type="instrument",
         record_id=instrument,

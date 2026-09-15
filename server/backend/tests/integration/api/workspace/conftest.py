@@ -292,6 +292,63 @@ async def alpha_item(async_session_factory, alpha_batch, sample_file):
 
 
 # ---------------------------------------------------------------------------
+# A file whose recorded instrument spelling differs from its workspace name
+# ---------------------------------------------------------------------------
+
+
+@pytest_asyncio.fixture(scope="session")
+async def cased_sample_file(async_session_factory):
+    """A file for the same instrument, recorded with different case/whitespace.
+
+    ``SampleFile.instrument`` is not normalised - the workspace migration
+    strips and lowercases precisely because the same physical instrument is
+    recorded several ways - and one workspace serves every variant. A file
+    spelled unlike the variant that named the workspace must still resolve to
+    it.
+    """
+    file_id = gen_id()
+    async with async_session_factory() as session:
+        session.add(
+            SampleFile(
+                sample_file_id=file_id,
+                filename=f"Test-Orbion_{file_id}.raw",
+                instrument=" Test-Orbion ",
+                datetime=_NOW_NAIVE,
+                datetime_utc=_NOW,
+                length=60.0,
+                range={"min": 0, "max": 500},
+                polarity="+",
+            )
+        )
+        await session.commit()
+    return file_id
+
+
+@pytest_asyncio.fixture(scope="session")
+async def cased_alpha_item(async_session_factory, alpha_batch, cased_sample_file):
+    """A sample item in Alpha backed by ``cased_sample_file``."""
+    item_id = gen_id()
+    async with async_session_factory() as session:
+        session.add(
+            SampleItem(
+                sample_item_id=item_id,
+                sample_batch_id=alpha_batch,
+                sample_file_id=cased_sample_file,
+                sample_item_name="Alpha Cased Item",
+                sample_item_type="ANALYSIS",
+                sample_item_attributes={},
+                polarity="+",
+                tic=1000.0,
+                t0=0.0,
+                t1=60.0,
+                sample_item_utc_created=_NOW,
+            )
+        )
+        await session.commit()
+    return item_id
+
+
+# ---------------------------------------------------------------------------
 # Sample file for beta workspace (exposed separately for ACL tests)
 # ---------------------------------------------------------------------------
 
@@ -564,6 +621,42 @@ async def acq_guest_user(async_session_factory, roles, acquisitions_workspace):
         return user
 
 
+@pytest_asyncio.fixture(scope="session")
+async def acq_admin_user(async_session_factory, roles, acquisitions_workspace):
+    """A user who is an admin of the Acquisitions workspace.
+
+    Deliberately holds the *global* ``editor`` role, not ``admin``: the point
+    of the fixture is to prove that operations writing to a raw file need a
+    role in the instrument's workspace and nothing more. If this user could
+    only calibrate by also being a global admin, the gate would be back where
+    it started.
+    """
+    async with async_session_factory() as session:
+        user = User(
+            email="acq_admin@test.com",
+            username="acq_admin_user",
+            hashed_password="123456",
+            is_active=True,
+            is_verified=False,
+            role_id=roles["editor"].role_id,
+        )
+        session.add(user)
+        await session.flush()
+
+        member = WorkspaceMember(
+            workspace_member_id=gen_id(),
+            workspace_id=acquisitions_workspace,
+            user_id=user.id,
+            workspace_role="admin",
+            granted_at=_NOW,
+            granted_by=user.id,
+        )
+        session.add(member)
+        await session.commit()
+        await session.refresh(user)
+        return user
+
+
 @pytest_asyncio.fixture
 async def acq_editor_client(acq_editor_user, create_jwt_auth_token):
     """AsyncClient authenticated as an Acquisitions workspace editor."""
@@ -588,6 +681,22 @@ async def acq_guest_client(acq_guest_user, create_jwt_auth_token):
     from mascope_backend.app.fast import fast
 
     token = create_jwt_auth_token(acq_guest_user)
+    async with AsyncClient(
+        transport=ASGITransport(app=fast),
+        base_url="http://test",
+        cookies={auth_settings.COOKIE_NAME: token},
+    ) as client:
+        yield client
+
+
+@pytest_asyncio.fixture
+async def acq_admin_client(acq_admin_user, create_jwt_auth_token):
+    """AsyncClient authenticated as an Acquisitions workspace admin."""
+    from httpx import ASGITransport, AsyncClient
+
+    from mascope_backend.app.fast import fast
+
+    token = create_jwt_auth_token(acq_admin_user)
     async with AsyncClient(
         transport=ASGITransport(app=fast),
         base_url="http://test",

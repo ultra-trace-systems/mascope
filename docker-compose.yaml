@@ -123,6 +123,15 @@ services:
     image: ghcr.io/ultra-trace-systems/mascope/backend:${MASCOPE_VERSION:-latest}
     container_name: ${MASCOPE_BACKEND_CONTAINER_NAME:-mascope_prod_backend}
     restart: unless-stopped
+    # Long enough for the lifespan to drain in-flight auto-processing
+    # (AUTO_PROCESS_DRAIN_TIMEOUT_S, 60s) plus its cancel grace, with margin.
+    # Docker's 10s default would SIGKILL the worker mid-drain, and a SIGKILL
+    # raises nothing and logs nothing - the pipeline just stops, leaving the
+    # sample file committed with no matched peaks and no explanation. Inherited
+    # by file_converter through the anchor, which wants the same protection for
+    # a conversion in flight. Raise together with the drain timeout, never
+    # below it.
+    stop_grace_period: 90s
     logging: *default-logging
     build:
       dockerfile: server/backend/Dockerfile
@@ -170,8 +179,10 @@ services:
       POSTGRES_PASSWORD_FILE: /run/secrets/postgres_password
       JWT_SECRET_KEY_FILE: /run/secrets/jwt_secret_key
       SERVER_OWNER_SECRET_KEY_FILE: /run/secrets/server_owner_secret_key
+      MFA_ENCRYPTION_KEY_FILE: /run/secrets/mfa_encryption_key
     secrets:
       - jwt_secret_key
+      - mfa_encryption_key
       - postgres_password
       - server_owner_secret_key
   file_converter:
@@ -195,11 +206,19 @@ services:
       dockerfile: server/frontend/Dockerfile
       args:
         - MASCOPE_RUNTIME
+        # Named as the published OpenAPI document's info.version.
+        - MASCOPE_VERSION
     depends_on:
       backend:
         condition: service_healthy
     environment:
       - MASCOPE_TIMEZONE
+      # Also a build arg above, but passed at run time as well: the entrypoint
+      # publishes it as /runtime-config.js so the app reads the config THIS
+      # stack is running on, not whatever the image was built against. Without
+      # it a deployment whose config layers are its own would render a UI the
+      # backend refuses. See server/frontend/docker-entrypoint.sh.
+      - MASCOPE_RUNTIME
     secrets:
       - ssl_certificate
       - ssl_secret_key
@@ -213,6 +232,8 @@ volumes:
 secrets:
   jwt_secret_key:
     file: .runtime/secrets/jwt_secret_key.txt
+  mfa_encryption_key:
+    file: .runtime/secrets/mfa_encryption_key.txt
   postgres_password:
     file: .runtime/secrets/postgres_password.txt
   server_owner_secret_key:

@@ -36,7 +36,24 @@ MATCH_ISOTOPE_VALUE_COLUMNS = [
     "sample_peak_mz",
     "sample_peak_tof",
     "match_score",
+    "signal_to_noise",
 ]
+
+
+def snr_columns_json_safe(df: pd.DataFrame) -> pd.DataFrame:
+    """Turn NaN in the SNR carrier columns into None before serialization.
+
+    ``signal_to_noise`` rides along on computed and DB-read isotope frames for
+    the v2 score and is NaN whenever a row has no signal-to-noise data (files
+    without noise data, reconstructed unmatched rows, and rows stored before
+    the column existed). NaN is not JSON - starlette refuses to serialize it -
+    so it must leave the frame as None.
+    """
+    df = df.copy()
+    for column in ("signal_to_noise", "is_satellite"):
+        if column in df.columns and df[column].isna().any():
+            df[column] = df[column].astype(object).where(df[column].notna(), None)
+    return df
 
 
 def reconstruct_full_isotope_frame(
@@ -82,9 +99,10 @@ def reconstruct_full_isotope_frame(
     expected_frames = []
     for sample in samples_df.itertuples(index=False):
         instrument = sample.instrument
-        resolution = "LOW" if get_instrument_type(sample.filename) == "tof" else "HIGH"
+        instrument_type = get_instrument_type(sample.filename)
+        resolution = "LOW" if instrument_type == "tof" else "HIGH"
         default_threshold = instrument_default_match_params(
-            instrument
+            instrument, instrument_type=instrument_type
         ).isotope_abundance_threshold
 
         applicable = targets_df[targets_df["resolution"] == resolution]

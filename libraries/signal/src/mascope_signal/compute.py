@@ -60,8 +60,7 @@ def get_scan_timestamps(
         case "tof_zarr" | "orbi_zarr":
             signal_path = m_name.filename_to_zarr_path(base_filename, "signal")
 
-            sync = m_io.get_zarr_synchronizer(signal_path)
-            z = zarr.open(signal_path, mode="r", synchronizer=sync)
+            z = m_io.open_zarr_store(signal_path)
             time_array = z["time"][:]
             if not time_array.size:
                 # Perhaps the coordinate is hiding in groups
@@ -332,10 +331,7 @@ def _write_cached_sum_signal(
     # DEBUG: purely informational cache write, fires on every cache miss
     runtime.logger.debug(f"Saving computed sum signal to {filename_sum_signal}")
 
-    synchronizer = m_io.get_zarr_synchronizer(filename_sum_signal)
-    write_lock = m_io.get_zarr_write_lock(filename_sum_signal)
-
-    with write_lock:
+    with m_io.zarr_write_lock(filename_sum_signal):
         cached_sum_signal = _try_get_cached_sum_signal(base_filename, cached_name)
         if cached_sum_signal is not None:
             # Check cache -> it's there -> return it instead of writing
@@ -345,7 +341,7 @@ def _write_cached_sum_signal(
             return cached_sum_signal
 
         try:
-            sum_signal.to_zarr(filename_sum_signal, synchronizer=synchronizer)
+            sum_signal.to_zarr(filename_sum_signal)
         except zarr.errors.ContainsGroupError:
             # Someone else created it just before/during open_group
             runtime.logger.debug(
@@ -509,8 +505,7 @@ def get_tic_per_scan(
             )
         case "tof_zarr" | "orbi_zarr":
             zarr_path = m_name.filename_to_zarr_path(base_filename, "signal")
-            sync = m_io.get_zarr_synchronizer(zarr_path)
-            z = zarr.open(zarr_path, mode="r", synchronizer=sync)
+            z = m_io.open_zarr_store(zarr_path)
 
             # Get sum of counts along mz coordinate for each time coordinate
             signal_array = da.from_zarr(z["signal"])
@@ -555,6 +550,52 @@ def get_tic_per_scan(
                 tic_time = tic_time[scan_indices]
 
     return tic_time, tic_per_scan
+
+
+def get_acquisition_window(
+    base_filename: str,
+    polarity: Literal["+", "-"] | None = None,
+) -> tuple[float, float]:
+    """First and last scan time [s] of an acquisition, across every scan type.
+
+    This is the window a sample item covers, and it deliberately does not come
+    from the TIC: :func:`get_tic_per_scan` reports MS1 scans, so on a file whose
+    MS2 scans are recorded as their own block -- a manual MS2 acquisition
+    records MS1 first and the fragmentation afterwards, rather than interleaving
+    them the way data-dependent acquisition does -- an MS1-derived window ends
+    before the first MS2 scan and excludes all of them. Spanning every scan type
+    is identical for interleaved files, where MS1 survey scans already bracket
+    the run.
+
+    :param base_filename: Sample file name (base, not full path).
+    :type base_filename: str
+    :param polarity: Polarity of the scans to span ('+' or '-'), optional.
+    :type polarity: Literal['+', '-'] | None, optional
+    :return: (t0, t1) in seconds.
+    :rtype: tuple[float, float]
+    :raises ValueError: When the file reports no scan times to span.
+    """
+    sample_type = m_name.get_sample_file_type(base_filename)
+    match sample_type:
+        case "orbi_raw":
+            datafile_path = m_name.filename_to_datafile_path(base_filename)
+            times = m_thermo.get_scan_timestamps(
+                datafile_path, polarity=polarity, scan_type=None
+            )
+        case _:
+            # No other reader has an MS2 scan type to leave out, so the scan
+            # time axis is the acquisition window.
+            times = get_scan_timestamps(base_filename, polarity=polarity)
+
+    # The raw readers raise rather than hand back an empty selection, but the
+    # zarr time axis can come back empty; say what is wrong rather than let
+    # numpy report a zero-size reduction.
+    if not len(times):
+        raise ValueError(
+            f"No scan times to span for '{base_filename}' (polarity={polarity!r})."
+        )
+
+    return float(np.min(times)), float(np.max(times))
 
 
 async def get_orbi_centroids(
@@ -683,8 +724,13 @@ async def get_orbi_ms2_centroids_by_parent(
     parent_peak_tolerance: float = 0.001,
     ppm: int = 1,
     average: bool = True,
-) -> dict[float, tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]]:
-    """Extract averaged MS2 centroids per parent peak from an Orbitrap raw file.
+    by_activation: bool = True,
+) -> dict[tuple[float, str], tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]]:
+    """Extract averaged MS2 centroids per (parent peak, activation) group.
+
+    Grouping includes the activation, so a stepped-energy acquisition returns
+    one averaged spectrum per collision energy. With ``by_activation`` False
+    each parent peak is one group instead, keyed with an empty activation.
 
     :param base_filename: Sample file name (base, not full path).
     :type base_filename: str
@@ -704,8 +750,12 @@ async def get_orbi_ms2_centroids_by_parent(
     :type ppm: int, optional
     :param average: If True, return averaged intensities, defaults to True.
     :type average: bool, optional
-    :return: Mapping of parent peak m/z to (masses, intensities, resolutions, signal_to_noise).
-    :rtype: dict[float, tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]]
+    :param by_activation: If True (the default), group by activation as well as
+                          parent peak; if False, one group per parent peak.
+    :type by_activation: bool, optional
+    :return: Mapping of (parent peak m/z, activation) to
+             (masses, intensities, resolutions, signal_to_noise).
+    :rtype: dict[tuple[float, str], tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]]
     """
     sample_type = m_name.get_sample_file_type(base_filename)
     match sample_type:
@@ -722,6 +772,7 @@ async def get_orbi_ms2_centroids_by_parent(
                 parent_peak_tolerance=parent_peak_tolerance,
                 ppm=ppm,
                 average=average,
+                by_activation=by_activation,
             )
             props = m_io.read_props(base_filename)
             calibration = props["mz_calibration"]
@@ -729,8 +780,8 @@ async def get_orbi_ms2_centroids_by_parent(
 
             if factor is not None:
                 mapped_ms2_centroids = {
-                    pp: (masses * factor, intensities, resolutions, signal_to_noise)
-                    for pp, (
+                    key: (masses * factor, intensities, resolutions, signal_to_noise)
+                    for key, (
                         masses,
                         intensities,
                         resolutions,
@@ -795,6 +846,7 @@ async def get_ms2_fragment_timeseries(
     noise_threshold: float = 10.0,
     parent_peak_tolerance: float = 0.001,
     normalize_by: Literal["tic"] | None = None,
+    activation: str | None = None,
 ) -> dict:
     """Compute fragment timeseries for a single MS2 parent peak.
 
@@ -819,6 +871,10 @@ async def get_ms2_fragment_timeseries(
     :param normalize_by: Normalization mode. ``"tic"`` normalizes by scan TIC,
         ``None`` returns raw intensities.
     :type normalize_by: Literal["tic"] | None, optional
+    :param activation: Restrict to one activation (e.g. ``"hcd40.00"``),
+        optional; defaults to every activation of the parent peak, which is what
+        makes the fragment timeseries of a stepped-energy run show the steps.
+    :type activation: str | None, optional
     :return: Dictionary with mz_values, time, and values arrays.
     :rtype: dict
     """
@@ -835,6 +891,7 @@ async def get_ms2_fragment_timeseries(
                 t_max=t_max,
                 polarity=polarity,
                 parent_peak_tolerance=parent_peak_tolerance,
+                activation=activation,
             )
         case _:
             raise NotImplementedError(
@@ -912,6 +969,103 @@ async def get_ms2_fragment_timeseries(
     }
 
 
+def _load_deduplicated_peak_data(base_filename: str, mzs_arr: np.ndarray) -> xr.Dataset:
+    """Load the peak dataset for the requested m/z values, without duplicates.
+
+    Synchronous and blocking (it opens the zarr store), so callers on the event
+    loop must hand it to a worker thread.
+
+    :param base_filename: Sample file filename
+    :param mzs_arr: Sorted unique target m/z values
+    :return: Peak dataset selected to the nearest m/z, duplicates dropped
+    """
+    peak_timeseries = m_io.load_peak_data(base_filename).sel(
+        mz=mzs_arr, method="nearest"
+    )
+    _, unique_idx = np.unique(peak_timeseries.mz.values, return_index=True)
+    return peak_timeseries.isel(mz=np.sort(unique_idx))
+
+
+class StalePeakStoreError(ValueError):
+    """A peak store whose scan axis the sample file no longer reads back.
+
+    A store is allocated against the scans of the acquisition and keeps that
+    axis for life, while the scans a reader selects are decided anew on every
+    read - a file whose first scan reads as a TIC outlier loses it, and that
+    rule has not always existed. A store written before it therefore describes
+    one more scan than the file now yields.
+
+    Re-running peak detection is the only thing that repairs such a store, and
+    it repairs it completely. Nothing downstream can: the store's per-peak
+    sums were measured over the scans it was allocated with, so they already
+    carry the intensity of the scan the reader now discards. Spreading a
+    recomputed timeseries over the scans that remain would move that intensity
+    onto them - the artifact the exclusion exists to drop would be smeared
+    across the good scans instead of sitting in its own, where it can still be
+    seen and skipped.
+
+    A ``ValueError`` so the API layer keeps mapping it to a client-class
+    failure with its own message rather than a generic 500.
+    """
+
+
+def check_stored_scan_axis(
+    live_time: np.ndarray,
+    stored_time: np.ndarray,
+) -> None:
+    """Refuse a peak store the sample file no longer reads back scan for scan.
+
+    Public because the disagreement is a property of the file, not of one
+    caller: anything that pairs a store's scan axis with values from a fresh
+    read (the per-scan peak export among them) has to answer it the same way.
+
+    :param live_time: Scan timestamps [s] just read from the sample file
+    :type live_time: np.ndarray
+    :param stored_time: Scan timestamps [s] the peak store was allocated with
+    :type stored_time: np.ndarray
+    :raises StalePeakStoreError: If the two axes describe different scans
+    :return: None
+    """
+    live = np.asarray(live_time, dtype=float)
+    stored = np.asarray(stored_time, dtype=float)
+
+    # The ordinary case, and the only one held to no further standard: the
+    # store is being read back exactly as it was written, so an axis that is
+    # degenerate by the rules below (a repeated timestamp, say) still reads
+    # the way it always has.
+    if live.shape == stored.shape and np.array_equal(live, stored):
+        return
+
+    def _stale(reason: str) -> StalePeakStoreError:
+        return StalePeakStoreError(
+            f"The peak store holds {stored.size} scan(s) and the sample file "
+            f"now reads back {live.size} ({reason}). Re-run peak detection "
+            "for this sample file to rebuild the store."
+        )
+
+    if not (live.size and stored.size):
+        raise _stale("one of them holds no scans")
+    if live.size != stored.size:
+        raise _stale("their scan counts differ")
+    # Every comparison below is against a timestamp, and a comparison with NaN
+    # is False - so a single non-finite scan time would pass each check rather
+    # than fail it, and a store nobody can vouch for would be accepted.
+    if not (np.isfinite(live).all() and np.isfinite(stored).all()):
+        raise _stale("some of the scan times are not finite")
+
+    # Same count, so only a real difference in the timestamps is a mismatch -
+    # not the last bit of a float that went to disk and came back. Half the
+    # tightest stored spacing is the widest a scan may be off by and still be
+    # unambiguously its own; a one-scan store has no spacing to halve, so it
+    # falls back to a float-noise bound. Both matter here: declaring a healthy
+    # store stale would queue peak detection for it on every read.
+    gaps = np.diff(stored)
+    noise = 8 * np.finfo(float).eps * max(np.abs(stored).max(), np.abs(live).max(), 1.0)
+    tolerance = max(0.5 * gaps.min(), noise) if gaps.size else noise
+    if np.any(np.abs(live - stored) > tolerance):
+        raise _stale("their scan times do not line up")
+
+
 async def load_peak_timeseries(
     base_filename: str,
     mzs: list[float],
@@ -928,18 +1082,17 @@ async def load_peak_timeseries(
     """
     # --- Load existing peak timeseries from the sample file ---
     mzs_arr = np.unique(np.asarray(mzs))
-    peak_timeseries = m_io.load_peak_data(base_filename).sel(
-        mz=mzs_arr, method="nearest"
+    peak_timeseries = await asyncio.to_thread(
+        _load_deduplicated_peak_data, base_filename, mzs_arr
     )
-    # Remove duplicate m/z values if any
-    _, unique_idx = np.unique(peak_timeseries.mz.values, return_index=True)
-    peak_timeseries = peak_timeseries.isel(mz=np.sort(unique_idx))
 
     runtime.logger.debug(
         f"Loading peak timeseries for {peak_timeseries.mz.size} m/z values from {base_filename}"
     )
 
-    is_computed = peak_timeseries.is_timeseries_computed.values
+    is_computed = await asyncio.to_thread(
+        lambda: peak_timeseries.is_timeseries_computed.values
+    )
     to_compute_mask = np.invert(is_computed)
 
     if not np.any(to_compute_mask):
@@ -953,56 +1106,70 @@ async def load_peak_timeseries(
     mzs_to_compute = mz_coords[to_compute_mask]
 
     # Load only the metadata we need (relatively small arrays)
-    sum_peak_heights = peak_timeseries.sum_peak_heights.sel(mz=mzs_to_compute).values
-    sum_peak_areas = peak_timeseries.sum_peak_areas.sel(mz=mzs_to_compute).values
-    time_coords = peak_timeseries.time.values
+    def _load_update_metadata():
+        return (
+            peak_timeseries.sum_peak_heights.sel(mz=mzs_to_compute).values,
+            peak_timeseries.sum_peak_areas.sel(mz=mzs_to_compute).values,
+            peak_timeseries.time.values,
+        )
+
+    sum_peak_heights, sum_peak_areas, time_coords = await asyncio.to_thread(
+        _load_update_metadata
+    )
 
     # Compute new timeseries (this is the heavy computation)
     new_peak_timeseries = await get_peak_timeseries(base_filename, mzs_to_compute)
 
-    # Normalize peak timeseries intensities to 1
-    timeseries_sum = new_peak_timeseries.sum(dim="time")
-    timeseries_sum = xr.where(timeseries_sum == 0, 1, timeseries_sum)
-    new_peak_timeseries_norm = (new_peak_timeseries / timeseries_sum).values
+    # The store is written scan-by-scan into a fixed-width axis, so the values
+    # have to span exactly the scans it was allocated with. Checked here, on
+    # the coordinates alone, so a store the file has outgrown is refused
+    # before any chunk is read - and refused rather than worked around: only
+    # peak detection can rebuild it, and the caller is expected to ask for
+    # that on the user's behalf.
+    check_stored_scan_axis(new_peak_timeseries.time.values, time_coords)
 
-    # Restore peak timeseries intensities
-    new_peak_areas = new_peak_timeseries_norm * sum_peak_areas[:, np.newaxis]
-    new_peak_heights = new_peak_timeseries_norm * sum_peak_heights[:, np.newaxis]
+    # Normalize, restore intensities and build the update dataset. Kept in one
+    # worker thread: new_peak_timeseries is dask-backed, so .values below is
+    # where the chunks are actually read.
+    def _build_update_dataset():
+        timeseries_sum = new_peak_timeseries.sum(dim="time")
+        timeseries_sum = xr.where(timeseries_sum == 0, 1, timeseries_sum)
+        new_peak_timeseries_norm = (new_peak_timeseries / timeseries_sum).values
 
-    # Determine sparsity: fraction of scans where peak_heights are not positive
-    # NaN values count as missing (sparse) because NaN > 0 is False
-    sparsity_values = (
-        np.sum(~(new_peak_heights > 0), axis=1) / new_peak_heights.shape[1]
-    )
+        # Restore peak timeseries intensities
+        new_peak_areas = new_peak_timeseries_norm * sum_peak_areas[:, np.newaxis]
+        new_peak_heights = new_peak_timeseries_norm * sum_peak_heights[:, np.newaxis]
 
-    # --- Create a dataset for the update ---
-    # This contains only the changed values, fully in memory
-    update_dataset = xr.Dataset(
-        data_vars={
-            "peak_areas": (["mz", "time"], new_peak_areas),
-            "peak_heights": (["mz", "time"], new_peak_heights),
-            "is_timeseries_computed": (
-                ["mz"],
-                np.ones(len(mzs_to_compute), dtype=bool),
-            ),
-            "sparsity": (["mz"], sparsity_values),
-        },
-        coords={
-            "mz": mzs_to_compute,
-            "time": time_coords,
-        },
-    )
+        # Determine sparsity: fraction of scans where peak_heights are not
+        # positive. NaN values count as missing (sparse) because NaN > 0 is False
+        sparsity_values = (
+            np.sum(~(new_peak_heights > 0), axis=1) / new_peak_heights.shape[1]
+        )
+
+        # This contains only the changed values, fully in memory
+        return xr.Dataset(
+            data_vars={
+                "peak_areas": (["mz", "time"], new_peak_areas),
+                "peak_heights": (["mz", "time"], new_peak_heights),
+                "is_timeseries_computed": (
+                    ["mz"],
+                    np.ones(len(mzs_to_compute), dtype=bool),
+                ),
+                "sparsity": (["mz"], sparsity_values),
+            },
+            coords={
+                "mz": mzs_to_compute,
+                "time": time_coords,
+            },
+        )
+
+    update_dataset = await asyncio.to_thread(_build_update_dataset)
 
     # --- Write the updates to disk ---
     await m_io.write_peaks(update_dataset, base_filename)
 
     # --- Return a clean lazy reference ---
-    peak_timeseries = m_io.load_peak_data(base_filename).sel(
-        mz=mzs_arr, method="nearest"
-    )
-    # Remove duplicate m/z values if any
-    _, unique_idx = np.unique(peak_timeseries.mz.values, return_index=True)
-    return peak_timeseries.isel(mz=np.sort(unique_idx))
+    return await asyncio.to_thread(_load_deduplicated_peak_data, base_filename, mzs_arr)
 
 
 async def get_peak_timeseries(

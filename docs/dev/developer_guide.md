@@ -299,6 +299,44 @@ If the target environment does not exist, you will be prompted to create it. Pas
 
 On transfer failure the staged dump is preserved in `.runtime/database/transfer/` for manual recovery. On success it is deleted and 7-day retention pruning runs automatically.
 
+#### Syncing only part of the filestore
+
+A full filestore can be far larger than the link between the two machines. `--from` and `--to` (both `YYYY-MM-DD`, both inclusive, either one optional) narrow the transfer to a window of acquisition dates:
+
+```bash
+# everything acquired since the start of the year
+mascope env sync user@192.168.1.100:bar prod baz prod --from 2026-01-01
+
+# one quarter, filestore only
+mascope env sync user@192.168.1.100:bar prod baz prod --from 2026-01-01 --to 2026-03-31 --skip-db
+```
+
+The filter is a path filter, not a database query: the filestore stores samples as `filestore/<instrument>/<YYYY.MM.DD>/<sample_name>/`, where the date directory comes from the acquisition timestamp in the sample filename. So the window selects on **acquisition date**, not on when a file was uploaded, reprocessed or last modified. The batch cache under `filestore/sample_batches/` has no date in its path and is always transferred; it is rebuildable, so dropping it would only cost recomputation.
+
+> [!IMPORTANT]
+> `--from` / `--to` filter the filestore only - **the database is never filtered**. A date-limited sync that also syncs the database leaves the target holding sample rows whose files were not transferred, and those samples fail to load. The command warns when you do this; add `--skip-db` to sync only the files.
+
+If no filestore data falls inside the window the sync fails rather than silently transferring nothing. When the source is on a **remote** host it also fails if the filestore cannot be listed in full - a mistyped env name, a missing filestore, an unreadable directory - rather than filtering against a partial listing and reporting success on an incomplete transfer.
+
+> [!NOTE]
+> Two cases still read as an empty window rather than as a failure. `find -L` skips a dangling symlink silently and exits 0, so a filestore whose data volume is not mounted looks empty; and a local source is listed with a glob that cannot report an error at all, so an unreadable directory there narrows the transfer without a word. Check the target after a sync that reports fewer dates than you expected.
+
+#### Ownership and permissions after sync
+
+rsync is run without `-o`/`-g`, so ownership is not carried across: every file lands owned by whoever runs the **receiving** side - the SSH login user for a push, the invoking user for a pull or a local sync. Mascope's containers run as the deployment's own uid (1000 by default; see `MASCOPE_UID` in `server/backend/Dockerfile`), so if those two differ the app cannot read or write what was just synced.
+
+The sync detects this by comparing the receiving uid against the owner of the target env directory, and prints the exact command to fix it:
+
+```
+sudo chown -R 1000:1000 /srv/mascope/.runtime/env/default
+```
+
+Pass `--chown` to have the sync attempt that itself. It uses `sudo -n` (non-interactive) on the receiving machine and falls back to printing the command when passwordless sudo is not available - the sync is not failed either way.
+
+If the filestore is a symlink to a data volume (see [Maintaining a deployment](../maintaining.md) → "The filestore on a data volume"), chown its target too: `chown -R` does not follow symlinks. `--chown` resolves the link and covers both paths.
+
+File modes are forced to `755` for directories and `644` for files - the same bits the backend writes under the default umask, so a synced tree is indistinguishable from a natively written one. Note that this also applies on a **re-sync**: modes hand-tightened on an existing target filestore are reset to `755`/`644`.
+
 ### Windows (Cygwin)
 
 To use `env sync` on Windows, [Cygwin](https://www.cygwin.com/) must be installed into the default location `C:\cygwin64`. During installation, select the `rsync` and `openssh` packages.
@@ -350,6 +388,10 @@ Running Mascope in `prod` mode requires the following "secrets" to be present in
 - `mascope.app.key`: SSL certificate private key
 - `mascope.app.pem`: SSL certificate
 - `server_owner_secret_key.txt`: First owner registration private key (arbitrary string)
+- `mfa_encryption_key.txt`: Encryption key for stored two-factor (TOTP) seeds
+  (arbitrary string; `mascope prod up` generates it when missing, once the release's CLI is installed — see
+  [maintaining.md](../maintaining.md#two-factor-authentication) before ever
+  replacing it, as a changed key voids every enrolled second factor)
 
 > [!NOTE]
 > `postgres_password.txt` is also required for dev mode. See [Secrets](#secrets-1) under Database for setup instructions.
@@ -580,6 +622,34 @@ Notes:
 - The same ports are exposed manually via `MASCOPE_API_PORT` / `MASCOPE_FRONTEND_PORT` (and the
   env via `MASCOPE_ENV`), so `eval "$(mascope instance show --export)"` in a shell activates an
   instance for tools other than `mascope dev run`.
+- Browser sessions are per instance. Cookies are not scoped by port, so every instance served
+  from one hostname would otherwise share a single `mascope_auth` cookie and sign the others out
+  (each signs its JWTs with its own secret). In dev the auth cookie is named for the env -
+  `mascope_auth_wt-my-feature` - so two instances open in one browser keep separate logins. Prod
+  keeps the bare `mascope_auth`. The backend logs the name it resolved (`Session cookie: ...`)
+  at startup, which is the quickest way to tell whether an instance is scoped.
+- That means one cookie per env rather than one per host, and cookies are not port-scoped in the
+  sending direction either, so every env's cookie rides along on every request to every instance.
+  Nothing removes a dead env's cookie - logging out clears only the instance you logged out of,
+  and `mascope instance rm` cannot reach a browser - so the dev cookie expires after a day
+  instead of the week a prod session gets. Envs follow worktrees and are short-lived; a day caps
+  the jar at about a day's worth of them. The cost is signing in again the next morning.
+- Mode is what decides the scoping, and it is read from the shared `.runtime/state.json`, which
+  any `mascope prod ...` invocation rewrites. If an instance comes up unscoped, that is why -
+  `MASCOPE_COOKIE_SCOPED=1` forces the env suffix on regardless of mode (and `=0` forces it off).
+- Migrations follow the worktree, not `MASCOPE_PATH`: a branch that adds a revision has it
+  applied to that instance's database on startup. Leave `MASCOPE_PATH` at the shared home -
+  it is deliberately not the source tree (see [Schema migrations](#schema-migrations)).
+- The backend test suite namespaces its databases the same way, so running it from two
+  checkouts at once against the shared Postgres is safe. Its ephemeral databases are named
+  `mascope_test_<env>_<category>`, where `<env>` is a label - `MASCOPE_ENV` if exported, else
+  `wt_<checkout directory name>` - plus a digest of the checkout's absolute path. The digest is
+  unconditional because, unlike `mascope instance`, there is no registry here to detect a clash
+  against: an exported `MASCOPE_ENV` follows the shell rather than the checkout, and two
+  checkouts can share a directory name. So a checkout that has never allocated an instance is
+  isolated too. Session teardown drops only the databases that run created. `MASCOPE_TEST_ENV`
+  replaces the segment outright, digest included - the escape hatch for two runs in the *same*
+  checkout, which still collide. See `server/backend/tests/README.md`.
 
 ### Runtime Config
 
@@ -618,17 +688,30 @@ The configuration includes:
 
 `[meta]` is also where cross-cutting feature flags live, because it is the one section
 serialized to **both** sides: the backend reads it from `runtime.meta`, and the frontend
-gets it in `MASCOPE_RUNTIME` at build time (`src/lib/runtime.js`). A flag added anywhere
+gets it in `MASCOPE_RUNTIME` (`src/lib/runtime.js`). A flag added anywhere
 else can only gate one half of a feature.
+
+Both sides read it at **start**, from the same resolved config. `MASCOPE_RUNTIME` is
+passed to the frontend container as an environment variable as well as a build arg;
+`docker-entrypoint.sh` publishes it as `/runtime-config.js`, and `runtime.js` prefers
+that over the copy compiled into the bundle. Baking alone was not enough: a deployment
+whose config layers are its own (`mascope init`, no source checkout) never rewrites
+them, while its images come from the registry built against the repo's - so bundle and
+backend could disagree, and the UI would offer what the API refused. Flipping a flag is
+now a stack restart, not an image rebuild.
 
 | Flag | Default | What it gates |
 |---|---|---|
-| `peak_assignment` | `false` | [Peak-centric assignment](peak_assignment_paradigm.md): assignment on sample ingest, the rescored composition search, the reworked Sample view, and the `/api/peak-assignments` write routes (403 while off; reads stay open). Env override: `MASCOPE_PEAK_ASSIGNMENT=1`. The frontend bakes the flag in at build time, so flipping it on a deployment requires a frontend rebuild. |
+| `peak_assignment` | `false` | [Peak-centric assignment](peak_assignment_paradigm.md): assignment on sample ingest, the rescored composition search, and the `/api/peak-assignments` write routes (403 while off; reads stay open). It **adds** the assignment views; the targeted workflow, the Match tab included, renders either way. `MASCOPE_PEAK_ASSIGNMENT=0`/`=1` overrides it **for the backend only**, and is not forwarded by the production compose file - a development knob, not a deployment switch. |
 
 Read it via `peak_assignment_enabled()`
 (`api/new/peak_assignments/config.py`) on the backend and `peakAssignmentEnabled`
 (`src/lib/features.js`) on the frontend rather than touching `runtime.meta` directly, so
-the env override and the default both apply in one place.
+the default applies in one place per half. Note the two halves are not symmetric: the
+backend helper consults `MASCOPE_PEAK_ASSIGNMENT` first, while `features.js` reads only
+the published `[meta]` value - the frontend has no env override and cannot have one, since
+it runs in a browser. Setting the variable alone therefore splits the two, which is why
+the toml is the deployment switch.
 
 ### Mode-Specific Defaults
 
@@ -859,6 +942,122 @@ Unit tests for the config handling are hermetic; run them with `uv run pytest` i
 
 > [!IMPORTANT]
 > Windows prevents applications from writing into `Program Files` directory. Therefore, when testing the agent with TofDaq Recorder, its data directory must be outside `Program Files`.
+
+### Signing the File Agent installer
+
+Release builds are Authenticode-signed through [Azure Artifact
+Signing](https://learn.microsoft.com/azure/artifact-signing) (the service
+formerly called Trusted Signing), so customers see the publisher name instead
+of an "unknown publisher" SmartScreen dialog.
+
+Signing is opt-in and gated on the `AZURE_SIGNING_ACCOUNT` repository
+variable. While it is empty, `build-file-agent` builds exactly as it always
+did and logs a warning that the installer is unsigned; setting it back to
+empty is the rollback if signing ever starts failing releases. The account
+name, certificate profile and regional endpoint live in the `AZURE_SIGNING_*`
+repository variables (`gh variable list`), so no signing identity is
+hardcoded in the repo. Only `AZURE_SIGNING_ACCOUNT` and
+`AZURE_SIGNING_PROFILE` have to be set; leave `AZURE_SIGNING_ENDPOINT` unset
+and `build.ps1` uses its default region.
+
+CI authenticates with OIDC federation - there is no Azure client secret to
+rotate. That is why the job declares `environment: release-signing`: without
+an environment the OIDC subject is `repo:<org>/<repo>:ref:refs/tags/<TAG>`, a
+different string on every release, and Entra matches federated-credential
+subjects exactly, with no wildcards.
+
+**Three files are signed per release, and the order is load-bearing:** the
+PyInstaller exe first, while it is still a standalone PE, then the uninstaller
+stub and the setup exe. Inno Setup stores the payload verbatim and
+Authenticode covers the whole PE, so once ISCC has embedded the exe those
+bytes are unreachable - signing it afterwards is impossible, and patching them
+would break the installer's own signature. The `signcheck` flag on the
+`[Files]` entry in `installer.iss` enforces this by aborting the compile if
+the payload arrives unsigned.
+
+> [!WARNING]
+> Never remove `signcheck`. Without it the failure is silent and it is the bad
+> kind: the installer is itself correctly signed, but drops an **unsigned exe**
+> onto the customer's machine, and nobody notices until someone inspects the
+> installed file.
+
+Timestamping is not defensive, it is mandatory. Artifact Signing certificates
+are valid for **72 hours**, so an installer signed without an RFC 3161
+countersignature stops verifying three days after the release is cut, in
+customers' hands. `build.ps1` fails the build on a signature that lacks one.
+
+#### Signing locally
+
+Only needed to rehearse the pipeline; ordinary development never signs.
+`./build.ps1` and `./build.ps1 -Installer` work unchanged with no Azure
+account and no signing tooling.
+
+You need the [Artifact Signing Client
+Tools](https://learn.microsoft.com/azure/artifact-signing/how-to-signing-integrations)
+(`winget install -e --id Microsoft.Azure.ArtifactSigningClientTools`), a
+Windows SDK `signtool.exe` of at least 10.0.22621.755, **Inno Setup 6.3 or
+newer** (older 6.x has no `signcheck` flag, and ISCC only rejects it after
+PyInstaller has run and the payload has burned a signature), and the
+**Artifact Signing Certificate Profile Signer** role on the profile you are
+signing with. Then:
+
+```powershell
+az login
+./build.ps1 -Version v0.0.0-rehearsal -Installer -Sign `
+    -SigningAccount <account> -SigningProfile <profile>-test `
+    -AllowTestCertificate
+```
+
+Two environment variables override discovery when the defaults do not fit:
+`MASCOPE_SIGNTOOL` and `MASCOPE_SIGNING_DLIB` (CI uses the latter to point at
+a pinned NuGet copy of the dlib).
+
+> [!IMPORTANT]
+> `az` must be on `PATH`. The dlib authenticates via `AzureCliCredential`,
+> which shells out to `az`; when it cannot find it, signing fails with
+> `SignerSign() failed (0x80004005)` - which reads like a permissions problem
+> and is not.
+
+Rehearse against the **Public Trust Test** profile, never the production one.
+Test certificates carry the Lifetime Signing EKU
+(`1.3.6.1.4.1.311.10.3.13`) and a `CN=...(TEST ONLY)` subject, and anything
+signed with one **expires after 72 hours no matter how well it is
+timestamped**.
+
+`build.ps1` detects that EKU and **fails the build** on it, which is why the
+rehearsal above passes `-AllowTestCertificate`. The release workflow never
+passes that switch, so an `AZURE_SIGNING_PROFILE` left pointing at a test
+profile stops the release instead of handing customers an installer that
+stops verifying three days later. With the switch, build.ps1 warns and skips
+chain validation - a test profile chains to an untrusted root by design, so
+`signtool verify /pa` can never pass on it. Full chain validation still
+applies to production certificates.
+
+One gotcha if you are testing `signcheck` itself: Inno signs the uninstaller
+stub *before* it processes `[Files]`, so a deliberately broken sign tool trips
+that check first and `signcheck` never runs. Use a working sign tool and an
+unsigned payload instead.
+
+#### Checking a released installer
+
+```powershell
+signtool verify /pa /v /all /tw Mascope-File-Agent-Setup.exe
+Get-AuthenticodeSignature Mascope-File-Agent-Setup.exe | Format-List
+```
+
+`Status: Valid` with a populated `TimeStamperCertificate` is what you want.
+Every release also records the certificate subject and issuing CA to the
+workflow run summary - check that first if someone reports a SmartScreen
+prompt on a correctly signed installer, because Artifact Signing rotates
+subscribers onto new intermediate CAs without notice and a fresh CA carries no
+reputation of its own.
+
+> [!NOTE]
+> Signing does not remove the SmartScreen dialog on day one. Reputation
+> accrues per file hash over weeks of downloads, EV certificates lost their
+> instant bypass in 2024, and Artifact Signing does not issue EV certificates
+> at all. What signing buys immediately is the publisher name and eligibility
+> for Smart App Control and WDAC/AppLocker publisher rules.
 
 ## 📡 Backend
 
@@ -1189,6 +1388,35 @@ When running `mascope dev run`, autogenerated OpenAPI docs are available:
 - **ReDoc**: Available at `localhost:8090/redoc`, this alternative interface provides a more structured, visually appealing API reference. It’s particularly useful for browsing the API’s capabilities in a hierarchical format.
 - **OpenAPI specification**: The raw OpenAPI JSON schema is available at `/openapi.json`, enabling integration with external tools and services for API exploration or client code generation.
 
+All three are dev-only: outside dev mode the backend serves none of them
+(`_docs_kwargs` in `app/fast.py`, pinned by
+`server/backend/tests/unit/api/app/test_docs_gating.py`; the pen-test suite's
+RECON-01/02 probe the same paths at a deployment's origin, where nginx does not
+forward them to the backend). A production deployment publishes a static copy
+of the document instead, next to the user docs at `/docs/openapi.json`, and the
+SDK docs page links to it. It is rendered when the frontend image is built (the
+`openapi-build` stage of `server/frontend/Dockerfile`) and by the "Docs strict
+build" CI job, both as `python -m mascope_backend openapi` in an environment
+holding only the backend, where the root project's `mascope-backend` script
+does not exist. From a checkout - `site/` is ignored, as it is the docs build's
+output:
+
+```sh
+uv run mascope-backend openapi --output site/openapi.json
+```
+
+The command imports the app in a child process, against a throwaway prod
+runtime home with placeholder secrets, and takes only the config layers from
+`MASCOPE_PATH`. Outside prod the session cookie is named per env, so rendering
+in your own runtime would describe your dev instance rather than a deployment;
+this way the document comes out the same on any machine and carries nothing of
+the one that rendered it. Its `info.version` is whatever `--version` names: the
+image build passes the version it builds (the `MASCOPE_VERSION` build arg that
+`mascope prod build` sets, a release tag or a build id), and a render without
+one, such as the CI job's, carries the placeholder `0.0.0`. The app takes the
+same value from `MASCOPE_VERSION` when it starts, so the dev schema names the
+version `GET /api/version` reports.
+
 > [!TIP]
 > For better development experience, use [Postman](https://www.postman.com/) to access API docs. The staging server docs are [also hosted online](https://documenter.getpostman.com/view/27329225/2sA3kSn2t9).
 
@@ -1421,7 +1649,9 @@ changing a model. Migration files are named by date, short revision hash, and a 
 ```
 
 **Dev** - migrations are applied automatically by `mascope dev run` before the application starts,
-or manually:
+or manually. The migration chain is read from the checkout you invoke `mascope` from, *not* from
+`MASCOPE_PATH`: a worktree adding a revision migrates its instance database to its **own** head,
+while the shared runtime home keeps holding only the database, secrets, and `.runtime`.
 
 ```bash
 mascope dev migrate status            # show current revision and pending migrations
@@ -1500,7 +1730,12 @@ mascope prod db script run <script_name>
 
 #### Maintenance scripts
 
-Scripts in `mascope_backend/db/scripts/` are auto-detected by the CLI via their `main()` callable.
+Scripts in `mascope_backend/db/scripts/` are auto-detected by the CLI. `mascope dev db script`
+scans the checkout for modules with a `main()` callable; `mascope prod db script` lists the
+package inside the backend container instead (every module that is not a subpackage or a
+`_private` helper), so it works on a server with only the operator CLI installed and always
+reflects the deployed image. Every module in the package is therefore an entry point: give it
+a `main()` and an `if __name__ == "__main__":` guard.
 `mascope dev/prod db script run <name>` always takes a backup before executing the script.
 Scripts must not use `input()` - they run non-interactively.
 
@@ -1909,7 +2144,10 @@ Without `mkdocs serve` running, `/docs/` responds with a hint page instead.
 Point the proxy elsewhere with `MASCOPE_DOCS_URL` (e.g. when port 8000 is
 taken). The help popover bodies sourced from `docs/user/_help/` snippets
 (help-content.json) are only rendered in the built image, not by
-`mkdocs serve` — in dev those cards fall back to their title.
+`mkdocs serve` — in dev those cards fall back to their title. The published
+OpenAPI document (`/docs/openapi.json`) likewise exists only in the built
+image; in dev the backend serves the live schema itself, at `/openapi.json` on
+the API port (`http://localhost:8090/openapi.json` by default).
 
 Math is written as LaTeX and rendered by KaTeX (`pymdownx.arithmatex` +
 the vendored bundle under `docs/user/assets/katex/`). A display equation must
@@ -2750,6 +2988,7 @@ The checked-out git tag selects the version (it sets `MASCOPE_VERSION`, which pi
 
 ```sh
 git checkout v1.0.0
+CFLAGS="-std=c17" uv tool install --force --reinstall --python 3.12 .   --with-executables-from mascope-cli   # CLI first: see hosting.md
 mascope prod docker pull && mascope prod up
 ```
 
@@ -2775,7 +3014,7 @@ Publishing then triggers two automations:
 - **Zenodo** archives the release and mints a new version DOI; the concept DOI (the README badge and the `doi:` in `CITATION.cff`) keeps resolving to the latest. The sync itself breaks silently (hook removed, the linked account's GitHub authorization lapsed, a repo rename not re-enabled on zenodo.org), so the `verify-zenodo` job in `build-release-images.yaml` polls the Zenodo API and **fails the release run** if the version has not appeared within 20 minutes. When it turns red: re-sync and re-enable the repository at <https://zenodo.org/account/settings/github/> (installs a fresh webhook), then re-fire the archive. A release Zenodo never *received* re-fires by flipping it to draft and publishing it again; one Zenodo lists as *errored* has to be deleted and recreated (same tag, original notes, `--latest=false` unless it is the newest) because Zenodo permanently refuses events for a release id it has already seen. Backfill oldest-first - the concept DOI resolves to the most recently *archived* version, not the highest.
 - The **`build-release-images`** workflow (`.github/workflows/build-release-images.yaml`) **builds** the images from the tag and pushes `ghcr.io/ultra-trace-systems/mascope/<service>:vX.Y.Z`. It rebuilds (rather than re-tagging) on purpose: on a tag checkout `parse_version()` resolves to the tag, so `vX.Y.Z` both tags the images and **bakes in** as the version the app reports.
 
-So the one version flows everywhere: git tag, GitHub Release, Zenodo DOI, the image tag, and the in-app version. To deploy a release, on the server `git checkout vX.Y.Z` (then `mascope prod docker pull && mascope prod up`) - `parse_version()` resolves the tag, so it pulls the `vX.Y.Z` images and the UI shows `vX.Y.Z`. A regular `master` checkout deploys/shows the build tag `{date}-{hash}` instead; `latest` keeps tracking master for dev/staging and the demo. (You can also pin explicitly with `MASCOPE_VERSION=vX.Y.Z`, which the CLI no longer overrides.)
+So the one version flows everywhere: git tag, GitHub Release, Zenodo DOI, the image tag, and the in-app version. To deploy a release, on the server `git checkout vX.Y.Z` (then reinstall the CLI from the checkout, then `mascope prod docker pull && mascope prod up`) - `parse_version()` resolves the tag, so it pulls the `vX.Y.Z` images and the UI shows `vX.Y.Z`. A regular `master` checkout deploys/shows the build tag `{date}-{hash}` instead; `latest` keeps tracking master for dev/staging and the demo. (You can also pin explicitly with `MASCOPE_VERSION=vX.Y.Z`, which the CLI no longer overrides.)
 
 > `release` events run the workflow from the repository's **default branch**, so `build-release-images.yaml` must be present there to fire.
 
@@ -2789,6 +3028,26 @@ So the one version flows everywhere: git tag, GitHub Release, Zenodo DOI, the im
 - a standing note about the installer assets: *"The two File Agent installers are identical — `Mascope-File-Agent-Setup.exe` is the fixed-name copy the in-app download button points at, `Mascope-File-Agent-Setup-vX.Y.Z.exe` the versioned copy for your records. Download either."* (Customers do notice the duplicate and wonder.)
 
 Citers reference the **DOI** on the Zenodo record (or the `vX.Y.Z` release); deployers pin `MASCOPE_VERSION=X.Y.Z` - neither needs the per-merge build tags.
+
+### Cutting a pre-release
+
+A **pre-release** is a release candidate you deploy somewhere real before committing the version to everyone: `vX.Y.Z-rc.1` (also `-rc1`, `-beta.2`, `-alpha3`). It is a first-class release tag - `parse_version()` resolves it, `_deploy_version()` selects it, `prod update --version` accepts it, and a successful update aligns the checkout to it - so a deployment runs and reports `v2.0.0-rc.1` exactly the way it would run `v2.0.0`.
+
+What separates it from a release is **who finds it**:
+
+- Mark it **"Set as a pre-release"** when publishing. GitHub then keeps `releases/latest` on the newest *non*-pre-release, which is what `mascope prod update --auto` reads - so an unattended deployment never wanders onto a candidate. Reaching it is opt-in: pin `MASCOPE_VERSION=vX.Y.Z-rc.N`, pass `--version`, or check the tag out. That checkbox is the whole opt-in story and it is one click, so `check-release-kind` fails the release run when the tag's suffix and the pre-release flag disagree - in either direction - before any image is pushed or any installer uploaded.
+- The same rule governs the **in-app File Agent download button**, which points at `releases/latest/download/Mascope-File-Agent-Setup.exe`. It keeps serving the last real release, so a site piloting the candidate installs the agent from the pre-release's own versioned asset instead.
+- The `verify-zenodo` job is **skipped** for a pre-release: the concept DOI resolves to the most recently archived version, so a candidate must not be archived or the README badge and `CITATION.cff` would start pointing at it. That guard only keeps the run green - the Zenodo bridge fires on its own webhook, so **disable the repository at <https://zenodo.org/account/settings/github/> before publishing** and re-enable it afterwards. (If one slips through, the recovery is the same as any bad archive above: delete the Zenodo record, then re-archive the real release so the concept DOI lands on it last.)
+
+Everything else runs exactly as for a release: `build-release-images` builds and pushes `ghcr.io/ultra-trace-systems/mascope/<service>:vX.Y.Z-rc.N`, uploads the release manifest, and builds the File Agent installer - **signed only where a release is** (every signing step is conditional on the `AZURE_SIGNING_ACCOUNT` repository variable, and the run logs `::warning::AZURE_SIGNING_ACCOUNT is not set - the installer will be UNSIGNED` when it is not). An unsigned installer means SmartScreen on the pilot site's instrument machines, so check that warning before pointing anyone at the asset.
+
+**Get `build-release-images.yaml` onto `master` first.** `release` events run the workflow from the default branch, so the file on `master` is the one that executes - and a candidate is by definition cut *before* the develop->master merge that would carry any change to it. Until it lands there, `check-release-kind` gates nothing and `verify-zenodo` polls for a DOI the candidate was never meant to get, ending the run red after 20 minutes. Carry the file across the way the installer-signing steps were carried (a small `ci/carry-...-to-master` branch merged to `master` on its own).
+
+The tag itself does **not** have to be on `master`. Tagging the candidate on `develop` leaves the rolling `latest` images - what the demo stack, CI and any unpinned deployment follow - on the current release, so the pilot changes nothing for anyone else. Cut the real `vX.Y.Z` afterwards the normal way, from `master`.
+
+Steps 1 and 3 of the release procedure change accordingly. In step 1, leave **both** halves alone: `CITATION.cff` is not bumped (a candidate is not citable) and the `CHANGELOG.md` section stays `[Unreleased]` - renaming it to `[X.Y.Z]` weeks before the release exists means every PR merged in between appends into a section already stamped as released, and because `CHANGELOG.md` merges by union no conflict is raised to tell you. In step 3, title the GitHub Release `vX.Y.Z-rc.N` with notes saying what the pilot is meant to exercise, and tick "Set as a pre-release".
+
+Do not reuse a candidate's number: `v2.0.0-rc.2` supersedes `v2.0.0-rc.1`, and the final `v2.0.0` is its own tag on its own commit.
 
 ## 📒 Notebooks
 

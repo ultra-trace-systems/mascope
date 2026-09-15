@@ -3,7 +3,7 @@
 import re
 import warnings
 from math import ceil, floor
-from typing import Iterator
+from typing import Iterator, Sequence
 
 import pandas as pd
 import polars as pl
@@ -38,10 +38,37 @@ def _is_notebook():
         return False
 
 
+def _other_candidate_formulas(
+    comp_results: list[dict], chosen_formula: str | None = None
+) -> str:
+    """Format a peak's runner-up compositions, never including the chosen one.
+
+    `other_candidates` is the shortlist an inspector shows beside a committed
+    assignment, so the composition that WON the peak must not appear in it. It
+    cannot be taken positionally: `comp_results` arrives in mass-error order,
+    while the winner is whatever survives `apply_heuristic_rules` and then ranks
+    first on `match_isotopic_pattern`'s isotope-pattern score - routinely not
+    `comp_results[0]`. Dropping index 0 therefore listed the winner as its own
+    alternative and hid the mass-closest composition, which is exactly the
+    runner-up worth seeing when the isotope pattern demoted it.
+
+    :param comp_results: Every composition found for the peak's mass.
+    :param chosen_formula: Formula that won the peak, excluded from the result;
+        ``None`` when no candidate survived, where all of them stay open.
+    :return: Comma-separated formulas, empty when there are no others.
+    """
+    return ", ".join(
+        result["formula"]
+        for result in comp_results
+        if result["formula"] != chosen_formula
+    )
+
+
 def assign_compositions(
     peaks: pd.DataFrame,
     config: CompositionSearchConfig,
     heuristics: HeuristicFilterConfig | None = None,
+    targets: Sequence[float] | None = None,
 ) -> tuple[pd.DataFrame, dict[float, list[str]]]:
     """Assign molecular compositions to a set of peaks.
 
@@ -51,6 +78,13 @@ def assign_compositions(
     :type config: CompositionSearchConfig
     :param heuristics: Optional heuristic filter configuration.
     :type heuristics: HeuristicFilterConfig, optional
+    :param targets: When given, only peaks whose m/z is in this list have
+        compositions enumerated for them; every peak in ``peaks`` still
+        serves as isotope-pattern context, and every peak still gets a row
+        in the result. Values must be the frame's own m/z values. This is
+        what lets a caller search a few peaks of a spectrum at the cost of
+        those few, with the pattern scored against the whole spectrum.
+    :type targets: Sequence[float], optional
     :return: A DataFrame with assigned compositions and related information.
     :rtype: tuple[pd.DataFrame, dict[float, list[str]]]
     """
@@ -74,6 +108,11 @@ def assign_compositions(
 
     peaks_to_match = peaks_to_match.sort("mz")
 
+    # Every peak above the threshold gets a row; the targets, when given, are
+    # what is enumerated, not what is reported.
+    reported_mzs = peaks_to_match["mz"].to_numpy()
+    if targets is not None:
+        peaks_to_match = peaks_to_match.filter(pl.col("mz").is_in(list(targets)))
     mzs = peaks_to_match["mz"].to_numpy()
     results_per_peak, assigned_mzs, mass_log_messages = [], set(), {}
 
@@ -82,11 +121,6 @@ def assign_compositions(
             continue
 
         comp_results = find_compositions(mz, config)
-        all_candidates = (
-            ", ".join([r["formula"] for r in comp_results[1:]])
-            if len(comp_results) > 1
-            else ""
-        )
 
         if comp_results:
             candidates, log_messages = apply_heuristic_rules(
@@ -105,7 +139,7 @@ def assign_compositions(
                         "formula": "---",
                         "ion": "---",
                         "mz": mz,
-                        "other_candidates": all_candidates,
+                        "other_candidates": _other_candidate_formulas(comp_results),
                         "isotope_label": "---",
                     }
                 )
@@ -113,7 +147,9 @@ def assign_compositions(
             main_candidate = candidates[0].copy()
             main_candidate["mz"] = mz
             main_candidate["formula"] = main_candidate.get("formula", "---")
-            main_candidate["other_candidates"] = all_candidates
+            main_candidate["other_candidates"] = _other_candidate_formulas(
+                comp_results, main_candidate["formula"]
+            )
 
             if all_matched_isotopes:
                 all_matched_isotopes = [
@@ -130,7 +166,7 @@ def assign_compositions(
                 results_per_peak.append(main_candidate)
                 assigned_mzs.add(main_candidate["mz"])
 
-    unmatched_peaks = set(mzs) - assigned_mzs
+    unmatched_peaks = set(reported_mzs) - assigned_mzs
     for mz in unmatched_peaks:
         results_per_peak.append(
             {
@@ -144,10 +180,16 @@ def assign_compositions(
 
     matches = pd.DataFrame(results_per_peak)
     # --- Format results --- #
-    sort_by = [c for c in ["mz", "mz_error_ppm"] if c in matches.columns]
+    # mz_error_ppm is signed, so rank on its magnitude: the duplicate kept below has
+    # to be the closest match, not the one furthest BELOW its prediction.
+    sort_by = [c for c in ["mz"] if c in matches.columns]
+    if "mz_error_ppm" in matches.columns:
+        matches = matches.assign(_mz_error_abs=matches["mz_error_ppm"].abs())
+        sort_by.append("_mz_error_abs")
     matches = matches.sort_values(by=sort_by)
-    # Drop duplicate m/z entries, keeping the one with the lowest mz_error_ppm
+    # Drop duplicate m/z entries, keeping the closest match
     matches = matches.drop_duplicates(subset=["mz"], keep="first")
+    matches = matches.drop(columns="_mz_error_abs", errors="ignore")
     matches = sort_matches_by_formula(matches)
     # Add isotope label to ion string
     matches = update_ion_with_isotope_label(matches)
@@ -202,7 +244,9 @@ def find_compositions(target_mz: float, config: CompositionSearchConfig) -> list
         if abs(required_neutral_mass) <= mz_tolerance_da:
             ion_charge = "+" if ionization_mechanism.charge > 0 else "-"
             ion_formula = ionization_mechanism.formula + ion_charge
-            compositions_error_ppm = abs(target_mz - ion_shift) / target_mz * 1e6
+            # Signed, relative to the prediction (see recursive_search); for an
+            # ionization peak the prediction is the adduct's own m/z, ion_shift.
+            compositions_error_ppm = (target_mz - ion_shift) / ion_shift * 1e6
             all_results.append(
                 Result(
                     formula="()",
@@ -234,7 +278,7 @@ def find_compositions(target_mz: float, config: CompositionSearchConfig) -> list
         for res in recursive_search(0, [], 0.0, target_mz, state, config):
             all_results.append(res)
 
-    all_results.sort(key=lambda r: r.composition_error_ppm)
+    all_results.sort(key=lambda r: abs(r.composition_error_ppm))
 
     return [r.to_dict() for r in all_results]
 
@@ -265,17 +309,23 @@ def process_isotopes(
     isotope_mz_errors = matched_isotopes["mass_errors_ppm"]
     isotope_intensity_errors = matched_isotopes["intensity_errors"]
     if isotope_mzs[0] != 0:
-        # Extract and process base peak (M0)
-        m0_mass = isotope_mzs[0]
-        main_candidate["mz"] = m0_mass
-        main_candidate["observed_mass"] = m0_mass
+        # Extract and process the base peak: the pattern's most abundant
+        # isotopologue, which is what IsoSpec orders first and what the pattern's
+        # intensities are relative to. It is not necessarily the monoisotopic
+        # one - for a bromine- or chlorine-rich ion they are different rows - so
+        # its label comes from its own configuration like every other
+        # isotopologue's. Exactly one configuration reads as `M0`, the one with
+        # every element at its lightest isotope, and it may be any index here.
+        base_mass = isotope_mzs[0]
+        main_candidate["mz"] = base_mass
+        main_candidate["observed_mass"] = base_mass
         main_candidate["predicted_mz"] = isotope_pred_mzs[0]
         main_candidate["predicted_intensity"] = isotope_pred_ints[0]
-        main_candidate["isotope_label"] = "M0"
+        main_candidate["isotope_label"] = isotope_labels[0]
         main_candidate["mz_error_ppm"] = isotope_mz_errors[0]
         main_candidate["intensity_error"] = isotope_intensity_errors[0]
         results_per_peak.append(main_candidate)
-        assigned_mzs.add(m0_mass)
+        assigned_mzs.add(base_mass)
 
         # Extract and process higher isotopes
         for idx in range(1, len(isotope_mzs)):
@@ -292,7 +342,9 @@ def process_isotopes(
             iso_result["predicted_intensity"] = isotope_pred_ints[idx]
             iso_result["mz_error_ppm"] = isotope_mz_errors[idx]
             iso_result["intensity_error"] = isotope_intensity_errors[idx]
-            iso_result["neutral_mass"] = iso_result["neutral_mass"] + (iso_mz - m0_mass)
+            iso_result["neutral_mass"] = iso_result["neutral_mass"] + (
+                iso_mz - base_mass
+            )
             results_per_peak.append(iso_result)
             assigned_mzs.add(iso_mz)
 
@@ -348,7 +400,11 @@ def recursive_search(
             ion_formula = utils.combine_formula_and_ionization(
                 formula, state.ionization_mechanism
             )
-            error_ppm = abs(ion_mz - target_mz) / target_mz * 1e6
+            # (observed - predicted)/predicted, signed: the targeted matcher's
+            # match_mz_error convention. Dividing by the PREDICTION (not by the
+            # observation) is what makes the consumers' recovery of the predicted
+            # m/z, observed / (1 + error/1e6), exact.
+            error_ppm = (target_mz - ion_mz) / ion_mz * 1e6
             yield Result(
                 formula=formula,
                 neutral_mass=current_mass,

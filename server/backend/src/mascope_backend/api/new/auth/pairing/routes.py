@@ -2,6 +2,7 @@ from fastapi import APIRouter, Body, Depends
 
 from mascope_backend.api.lib.rate_limit import rate_limit
 from mascope_backend.api.new.auth.dependencies import editor_user
+from mascope_backend.api.new.auth.mfa.reauth import require_recent_mfa
 from mascope_backend.api.new.auth.pairing.schemas import (
     PairingApproveRequest,
     PairingPollRequest,
@@ -36,6 +37,8 @@ async def pairing_start_route(
     return await start_pairing(
         service_name=pairing_start_request.service_name,
         machine_name=pairing_start_request.machine_name,
+        instrument=pairing_start_request.instrument,
+        agent_version=pairing_start_request.agent_version,
     )
 
 
@@ -63,5 +66,12 @@ async def pairing_approve_route(
     Approve a pairing code: creates a new access token for the approving
     user and the pairing's service, without revoking existing tokens.
     Requires the editor role or higher.
+
+    Like the regenerate route, this mints a year-long credential, so an account
+    with a second factor must have presented a code recently. Approving is the
+    one step in pairing that a person performs from a session, which makes it
+    the step where that check belongs.
     """
+    await require_recent_mfa(user)
+
     return await approve_pairing(user=user, user_code=pairing_approve_request.user_code)

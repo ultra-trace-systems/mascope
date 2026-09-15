@@ -1,0 +1,50 @@
+---
+# LOAD-BEARING: MASCOPE_PATH is how the CLI finds the deployment checkout, and
+# therefore how it resolves which release to run. `_deploy_version()` reads git
+# in MASCOPE_PATH rather than the process working directory, because systemd
+# starts units in "/" - off a checkout git resolves nothing and the version
+# falls back to the floating `latest` tag, silently swapping a pinned release
+# for an unreleased build on the next boot. This has happened in production:
+# a server rebooted after months of uptime and came back on an unreleased
+# build, which would have migrated the database had the build carried newer
+# migrations.
+#
+# All four units read this file (EnvironmentFile=/etc/environment): the boot
+# unit, the auto-update timer, the disk check and the assignment prune. The
+# installer writes the variable, but nothing asserted it afterwards - the same
+# shape as the missing daemon.json that left four servers' firewall rules
+# cosmetic for months.
+
+- name: Stat the intended deployment checkout
+  ansible.builtin.stat:
+    path: "{{ mascope_path }}/.git"
+  register: mascope_checkout
+
+# Validate before writing. A MASCOPE_PATH pointing somewhere that is not a
+# checkout fails exactly as silently as a missing one, so a wrong default must
+# not be able to repoint a live server.
+- name: The deployment checkout must exist before it is recorded
+  ansible.builtin.assert:
+    that:
+      - mascope_checkout.stat.exists
+    fail_msg: >-
+      {{ mascope_path }} is not a git checkout on {{ inventory_hostname }}.
+      Set `mascope_path` for this host in the inventory rather than letting the
+      default point the deployment somewhere it cannot resolve a release from.
+    success_msg: "{{ mascope_path }} is a checkout"
+
+# Unquoted, matching what tooling/ubuntu.sh writes - quoting the value here
+# would differ from the installed line and report changed on every run.
+- name: Record the deployment checkout in /etc/environment
+  ansible.builtin.lineinfile:
+    path: /etc/environment
+    regexp: '^MASCOPE_PATH='
+    line: "MASCOPE_PATH={{ mascope_path }}"
+    owner: root
+    group: root
+    mode: "0644"
+
+# No handler: EnvironmentFile is read when a unit starts, so a changed value
+# takes effect on the next start or reboot. Running units keep the old value
+# until restarted - which is the safe direction, but means a correction here is
+# not live until `systemctl restart mascope.service` or the next boot.

@@ -1,5 +1,5 @@
 <script setup>
-import { ref, inject, computed, watch, onBeforeUnmount } from 'vue'
+import { ref, computed, watch, onBeforeUnmount } from 'vue'
 
 import Button from 'primevue/button'
 import DataTable from 'primevue/datatable'
@@ -52,13 +52,13 @@ const breadcrumb = computed(() => {
   return {
     items: [
       {
-        icon: 'pi pi-tags',
+        icon: 'pi pi-hashtag',
         disabled: false,
         tooltip: 'Back to batch',
         action: () => app.data.sample.unfocus()
       },
       {
-        icon: app.data.sample.focused ? 'pi pi-tag' : 'pi pi-tags',
+        icon: app.data.sample.focused ? 'pi pi-tag' : 'pi pi-hashtag',
         label: `${prettyTrim(entityName, 25)}`,
         disabled: true,
         tooltip: app.data.sample.focused
@@ -209,8 +209,7 @@ const onKeyDown = (event) => {
   }
 }
 
-// --- Injection & Watchers ---
-const tableHeight = inject('match-table-height')
+// --- Watchers ---
 
 // Watch for table ref to become available and bind to scroller
 watch(
@@ -322,6 +321,8 @@ watch(
   <BaseTabbedPanel
     :breadcrumb="breadcrumb"
     :loading="app.data.match.ion.pending"
+    :error="app.data.match.ion.error"
+    :onRetry="() => app.data.match.ion.load('retry')"
     :pt="
       app.ui.help.right(
         `<h1>Match Browser: Ions</h1>
@@ -329,7 +330,8 @@ watch(
         Shows matched ions of the selected collection. Use column filters to search and filter results.
         </p>
         <p>
-        If a single sample is selected, shows match scores for each ion based on the sample data. Click on 
+        If a single sample is selected, shows match scores for each ion based on the sample data.
+        Click on
         the match icon <span class='pi ph ph-seal-question'></span> on a row to visualize the match in Match View,
         and see the individual isotope matches.
         </p>
@@ -376,7 +378,7 @@ watch(
       resizableColumns
       size="small"
       scrollable
-      :scrollHeight="`${tableHeight}px`"
+      scrollHeight="flex"
       :virtualScrollerOptions="{ itemSize: 35.74 }"
       sortField="match.match_score"
       :sortOrder="-1"
@@ -386,7 +388,11 @@ watch(
     >
       <template #empty>No match ions found.</template>
 
-      <!-- Expander Column -->
+      <!-- Expander Column. Two actions share it: with a sample focused it
+           visualizes that ion's match in the Match tab, without one it selects
+           the batch sample that matches best. Both render whatever the
+           peak_assignment flag says - the targeted workflow keeps its per-ion
+           view when assignment is on, since the two coexist. -->
       <Column expander style="width: 3rem">
         <template #body="{ data }">
           <Button

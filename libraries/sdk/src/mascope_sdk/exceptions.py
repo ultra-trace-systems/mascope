@@ -78,13 +78,18 @@ class ServerError(MascopeAPIError):
 
 
 class TusNotSupportedError(MascopeAPIError):
-    """Raised when the server has no token-accessible TUS upload endpoint.
+    """Raised when the server lacks an endpoint the agent asked for.
 
-    Raised only from the TUS upload *creation* request (a 404 means no TUS
-    route, a 401 means the route is not token-accessible - both indicate an
-    older Mascope release, though a 401 can also mean a genuinely bad
-    token). Callers use this as the signal to fall back to the legacy
-    upload endpoint; errors during chunk transfer keep their normal types.
+    Now raised only by device-token renewal, on a 404 from a server that
+    predates it: the agent keeps its current token and backs off instead of
+    treating the absence as a credential failure. Uploads no longer raise
+    it - every supported server accepts agent TUS uploads, so a refusal
+    there is a real error and keeps its own type.
+
+    The name outlived its original meaning and is kept only to avoid churn
+    across the SDK, the agent and their tests; it is not a top-level export
+    (`mascope_sdk.__all__` omits it), so renaming it costs nothing beyond
+    those call sites.
     """
 
     pass

@@ -25,10 +25,12 @@ import { ROLES } from '@/lib/roles'
 const app = useApp()
 const confirm = useConfirm()
 
-// Editing or deleting a mode has a global effect on every sample processed
-// under it, so those operations are restricted to admins. Creating stays at
-// editor level (the create form remains visible to all editors).
-const isAdmin = computed(() => app.auth.user.role_id >= ROLES.admin)
+// Editing and deleting a mode sit at editor level, the same bar as creating
+// one and as the rest of the shared reference data. An edit is retroactive - it
+// changes how samples already processed under the mode are calibrated and
+// matched - but that weight argues for the confirmation below, not for a global
+// role that also carries user administration.
+const canEdit = computed(() => app.auth.user.role_id >= ROLES.editor)
 
 const add = reactive({
   ionization_mode_name: '',
@@ -526,7 +528,7 @@ defineExpose({
                 @click="mode.save"
               />
             </template>
-            <template v-else-if="isAdmin">
+            <template v-else-if="canEdit">
               <Button
                 v-tooltip="{ value: 'Edit ionization mode', showDelay: 500 }"
                 icon="pi pi-pencil"
@@ -546,7 +548,10 @@ defineExpose({
               <i
                 class="pi pi-lock"
                 style="opacity: 0.4"
-                v-tooltip="{ value: 'Editing ionization modes requires admin access', showDelay: 500 }"
+                v-tooltip="{
+                  value: 'Editing ionization modes requires editor access',
+                  showDelay: 500
+                }"
               />
             </template>
           </div>

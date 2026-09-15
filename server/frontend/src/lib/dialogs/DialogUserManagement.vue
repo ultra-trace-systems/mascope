@@ -7,18 +7,26 @@ import DataTable from 'primevue/datatable'
 import Column from 'primevue/column'
 import Select from 'primevue/select'
 import InputText from 'primevue/inputtext'
-import Password from 'primevue/password'
 import FloatLabel from 'primevue/floatlabel'
 import Message from 'primevue/message'
 import { useConfirm } from 'primevue/useconfirm'
 
+import { api } from '@/api'
 import { useApp } from '@/stores'
 import { BaseCopyableField } from '@/lib/base'
-import { roles, prettyRoleName } from '@/lib/roles'
-import { passwordPolicyError } from '@/lib/password'
+import { roles, prettyRoleName, roleLevel, ROLES } from '@/lib/roles'
+
+import DialogMfaReauth from './DialogMfaReauth.vue'
+import { useMfaReauth } from './useMfaReauth'
 
 const app = useApp()
 const confirm = useConfirm()
+
+// Resetting another account's second factor is a step-up action: the server may
+// ask the admin/owner for a current code first. runWithReauth opens the prompt
+// and replays the reset once a code is accepted.
+const { reauthVisible, runWithReauth, onVerified } = useMfaReauth()
+const onReauthVerified = onVerified()
 
 const visible = defineModel('visible')
 
@@ -29,13 +37,45 @@ const close = () => {
 const edited = ref(null)
 const created = ref(null)
 const password = ref(null)
+// The temporary password the server generated for a new account, held until
+// the administrator has copied it. Shown once and unrecoverable afterwards -
+// same contract as a password reset.
+const createdPassword = ref(null)
+
+// The deployment's two-factor policy, read from the caller's own status route -
+// it reports the policy alongside the account state. Shown so an owner can see
+// what is in force without reading the server's config file; changing it is an
+// operator action on the host, deliberately not a control here.
+const mfaPolicy = ref(null)
+const loadMfaPolicy = async () => {
+  try {
+    mfaPolicy.value = await api.http.get('/auth/mfa/status', {
+      use: 'read',
+      type: 'read_mfa_status'
+    })
+  } catch {
+    // A policy we cannot read is not worth interrupting user management for;
+    // the line simply does not render.
+    mfaPolicy.value = null
+  }
+}
 
 const reset = () => {
   edited.value = null
   created.value = null
   password.value = null
+  createdPassword.value = null
 }
 const editing = ({ id }) => id == edited.value?.id
+
+// Whether the signed-in user may clear this account's second factor - the same
+// rule the server enforces, so the button is offered only where a click can
+// succeed: owners for anyone but themselves, admins for guests and editors.
+const canResetMfa = (target) =>
+  !!target.mfa_enabled &&
+  target.id != app.auth.user.id &&
+  (app.auth.user.role_name == 'owner' ||
+    (app.auth.user.role_name == 'admin' && roleLevel(target.role_name) < ROLES.admin))
 
 const user = {
   edit: ({ id, username, email, role_id }) => {
@@ -49,10 +89,10 @@ const user = {
   },
   create: () => {
     edited.value = null
+    createdPassword.value = null
     created.value = {
       username: null,
       email: null,
-      password: null,
       role_id: 100
     }
   },
@@ -60,11 +100,17 @@ const user = {
   save: async () => {
     if (edited.value) {
       await app.data.user.update(edited.value)
+      reset()
+      return
     }
     if (created.value) {
-      await app.data.user.create(created.value)
+      const response = await app.data.user.create(created.value)
+      // Clear the form but hold the view open on the password: resetting here
+      // would discard the one copy of it that exists.
+      created.value = null
+      createdPassword.value = response?.temporary_password ?? null
+      if (!createdPassword.value) reset()
     }
-    reset()
   },
   delete: (data) => {
     confirm.require({
@@ -89,6 +135,37 @@ const user = {
   resetPassword: async (data) => {
     password.value = (await app.data.user.resetPassword(data)).new_password
   },
+  resetMfa: (data) => {
+    confirm.require({
+      icon: 'pi pi-shield',
+      header: 'Reset two-factor authentication',
+      message:
+        `Clear two-factor authentication for ${data.username} (${data.email})? ` +
+        'They keep their password and set up a new authenticator themselves. If this ' +
+        'deployment requires a second factor for their role, they are held at the setup ' +
+        'screen until they do.',
+      accept: async () => {
+        // PrimeVue does not await this callback; a rejection would otherwise be
+        // unhandled. A reauth refusal opens the code prompt; any other error was
+        // already surfaced by the http layer.
+        try {
+          await runWithReauth(() => app.data.user.resetMfa(data))
+        } catch {
+          return
+        }
+      },
+      acceptProps: {
+        icon: 'pi pi-replay',
+        label: 'Reset two-factor',
+        severity: 'danger'
+      },
+      rejectProps: {
+        icon: 'pi pi-times',
+        label: 'Cancel',
+        severity: 'secondary'
+      }
+    })
+  },
   requirePasswordChange: () => {
     confirm.require({
       icon: 'pi pi-exclamation-triangle',
@@ -96,9 +173,12 @@ const user = {
       message:
         'Every Mascope account - including your own - will be asked to set a new password. ' +
         'Everyone keeps signing in with their current password until they change it. Once a ' +
-        'user changes theirs, their API access tokens (SDK, notebooks, instrument agents) stop ' +
-        'working and must be regenerated or re-paired. You will be asked to set yours ' +
-        'immediately. Only a server administrator can reverse this.',
+        'user changes theirs, their API access tokens (SDK, notebooks) stop working and must ' +
+        'be regenerated. Instrument agents listed under Paired machines are not affected, but ' +
+        'an agent still using a token issued to a person - a TOF agent, or one set up before ' +
+        'its machine was listed - stops uploading when that person changes their password, so ' +
+        're-pair those machines first. You will be asked to set yours immediately. Only a ' +
+        'server administrator can reverse this.',
       accept: async () => {
         // PrimeVue does not await this callback, so a rejection here would be
         // unhandled - and the dialog would sit open with nothing explaining
@@ -151,25 +231,17 @@ const invalidCreated = computed(() => {
     created.value?.email?.length < 5 ||
     !created.value?.email?.includes('@')
   const username = !created.value?.username || created.value?.username?.length < 5
-  // Mirror the backend password policy for instant feedback.
-  const passwordError = created.value?.password
-    ? passwordPolicyError(created.value.password, {
-        email: created.value.email,
-        username: created.value.username
-      })
-    : null
-  const password = !created.value?.password || !!passwordError
-  const form = email || username || password
   return {
     email,
     username,
-    password,
-    passwordError,
-    form
+    form: email || username
   }
 })
 
-watch(visible, reset)
+watch(visible, (open) => {
+  reset()
+  if (open) loadMfaPolicy()
+})
 </script>
 
 <template>
@@ -228,6 +300,38 @@ watch(visible, reset)
               </span>
             </div>
             <span v-else>{{ data.email }}</span>
+          </template>
+        </Column>
+        <Column header="Two-factor">
+          <template #body="{ data }">
+            <div class="row" style="gap: 0.35rem; align-items: center">
+              <span
+                :class="data.mfa_enabled ? 'pi pi-shield' : 'pi pi-minus'"
+                :style="{ opacity: data.mfa_enabled ? 1 : 0.35 }"
+                v-tooltip.bottom="
+                  data.mfa_enabled
+                    ? 'Two-factor authentication is on'
+                    : data.mfa_enrollment_required
+                      ? 'Required for this role, not set up yet'
+                      : 'Not set up'
+                "
+              />
+              <span v-if="data.mfa_enrollment_required" style="font-size: smaller; opacity: 0.7"
+                >pending</span
+              >
+              <!-- Hidden rather than disabled when there is nothing to clear,
+                   on the caller's own row (clearing your own factor would be a
+                   bypass, not a recovery), and on rows the caller's role cannot
+                   act on - so the button never offers a click the server 403s. -->
+              <Button
+                v-if="canResetMfa(data)"
+                v-tooltip.bottom="'Reset two-factor (they set it up again)'"
+                icon="pi pi-replay"
+                severity="secondary"
+                text
+                @click="() => user.resetMfa(data)"
+              />
+            </div>
           </template>
         </Column>
         <Column header="Role" field="role_name">
@@ -314,15 +418,6 @@ watch(visible, reset)
             />
             <label for="created-email">Email</label>
           </FloatLabel>
-          <FloatLabel>
-            <Password
-              id="created-password"
-              v-model="created.password"
-              :invalid="created.password && invalidCreated.password"
-              required
-            />
-            <label for="created-password">Password</label>
-          </FloatLabel>
           <Select
             v-model:modelValue="created.role_id"
             :options="selectableRoles"
@@ -348,20 +443,44 @@ watch(visible, reset)
             />
           </menu>
         </menu>
-        <Message
-          v-if="created.password && invalidCreated.passwordError"
-          icon="pi pi-exclamation-triangle"
-          severity="secondary"
-          style="margin-top: 0.5rem"
-        >
-          {{ invalidCreated.passwordError }}
-        </Message>
         <Message icon="pi pi-info-circle" severity="secondary" style="margin-top: 0.5rem">
-          The password you set here is temporary - the new user must choose their own at first sign
-          in.
+          A temporary password is generated when the account is created, and shown once. The new
+          user must choose their own at first sign in.
         </Message>
       </template>
+
+      <!-- The generated password, shown once. Kept in its own block rather than
+           a toast: it has to stay on screen long enough to be copied. -->
+      <template v-if="createdPassword">
+        <div class="col" style="gap: 0.25rem; align-items: flex-start; margin-top: 2rem">
+          <span style="font-size: smaller; opacity: 0.7">Temporary password:</span>
+          <BaseCopyableField :field="createdPassword" @copy="reset" />
+          <span class="temporary-password-note">
+            Share it with the new user - it is shown only once, and they must set their own password
+            at first sign in.
+          </span>
+        </div>
+      </template>
     </section>
+    <Message
+      v-if="mfaPolicy"
+      :icon="mfaPolicy.policy_min_role ? 'pi pi-shield' : 'pi pi-info-circle'"
+      severity="secondary"
+      style="margin-top: 1.5rem"
+    >
+      <template v-if="mfaPolicy.policy_min_role">
+        Two-factor authentication is required for
+        <strong>{{ mfaPolicy.policy_min_role }}</strong> accounts and above. Those accounts are held
+        at a setup screen until they enable it.
+      </template>
+      <template v-else-if="mfaPolicy.available">
+        Two-factor authentication is optional - anyone can enable it for their own account. To
+        require it, set <code>mfa_required_min_role</code> in the server configuration.
+      </template>
+      <template v-else>
+        Two-factor authentication is not configured on this server, so no account can enable it.
+      </template>
+    </Message>
     <menu style="justify-content: space-between; margin-top: 3rem">
       <Button icon="pi pi-user-plus" label="Add user" @click="user.create" :disabled="created" />
       <!-- Fully labelled and kept away from the per-row icon buttons: it acts
@@ -377,6 +496,7 @@ watch(visible, reset)
       <Button icon="pi pi-times" label="Close" @click="close" severity="secondary" />
     </menu>
   </Dialog>
+  <DialogMfaReauth v-model:visible="reauthVisible" @verified="onReauthVerified" />
 </template>
 
 <style scoped>

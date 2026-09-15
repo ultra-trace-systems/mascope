@@ -331,7 +331,7 @@ function install_mascope() {
     sudo systemctl enable --now mascope-disk-check.timer
     write_line "Disk monitor ENABLED (mascope-disk-check.timer, every 15 min). Set HEALTHCHECK_URL in /etc/mascope/disk-check.env to get alerted. See docs/maintaining.md."
     sudo systemctl enable --now mascope-assignment-prune.timer
-    write_line "Assignment-run retention ENABLED (mascope-assignment-prune.timer, nightly; keeps the newest 3 completed runs per sample). Tune in /etc/mascope/prune.env. See docs/maintaining.md."
+    write_line "Assignment-run retention ENABLED (mascope-assignment-prune.timer, nightly; keeps the newest 2 completed runs per sample). Tune in /etc/mascope/prune.env. See docs/maintaining.md."
     write_line "Auto-updates are INSTALLED but DISABLED. To turn them on: 'sudo systemctl enable --now mascope-update.timer' (no token needed). See docs/maintaining.md."
 }
 

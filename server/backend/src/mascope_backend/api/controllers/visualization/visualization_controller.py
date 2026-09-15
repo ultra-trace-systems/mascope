@@ -21,6 +21,26 @@ from mascope_signal.peak import filter_peaks, get_peaks
 
 # TODO_configuration shift traces color
 COLOR_OFFSET = 5
+
+
+def _css_rgb(color: tuple[float, float, float]) -> tuple[int, int, int]:
+    """Scale a colorcet colour to the 0-255 components CSS expects.
+
+    `colorcet.glasbey_hv` yields float triples in 0-1, which is not what an
+    `rgb()` string means: CSS reads the components as 0-255, so an unscaled
+    `rgb(0.188235,0.635294,0.854902)` is black. plotly.js used to paper over
+    this - TinyColor treated 0-1 fractions as fractions of 255 - but plotly.js
+    4 parses colours with culori, which follows the spec, so the scaling has to
+    happen here.
+
+    :param color: Colour as 0-1 floats, as colorcet supplies it
+    :type color: tuple[float, float, float]
+    :return: The same colour as 0-255 integer components
+    :rtype: tuple[int, int, int]
+    """
+    return tuple(round(component * 255) for component in color)
+
+
 DMZ_TOF = 0.5
 DMZ_ORBI = 0.01
 UNITS = "counts/s"
@@ -99,10 +119,10 @@ async def emit_isotope_visualization(
     isotopes against a sample.
 
     The isotope source is deliberately abstracted: `visualize_ion_focus` passes
-    the persisted target ion's matched isotopes, while the peak-centric engine
-    passes isotopes computed on the fly from an assigned composition (so an
-    untargeted assignment - which has no target_ion_id - can still be verified in
-    the Fit view). Each isotope must carry the attributes `_process_isotope`
+    the persisted target ion's matched isotopes, while the composition fit
+    endpoints pass isotopes computed on the fly from an assigned composition
+    (so an untargeted assignment - which has no target_ion_id - can still be
+    verified). Each isotope must carry the attributes `_process_isotope`
     reads: mz, relative_abundance, target_isotope_id, sample_peak_mz,
     sample_peak_intensity, match_score, match_mz_error, match_abundance_error.
     """
@@ -217,7 +237,13 @@ async def _load_peaks_and_averaged_signal(
     :rtype: tuple[xr.DataArray, xr.DataArray, xr.DataArray]
     """
 
-    instrument_type = get_instrument_type(sample.filename)
+    # Read the ORM attributes once, here on the event loop. Everything below
+    # hands work to a worker thread, and a detached instance must not have its
+    # attributes touched from there.
+    filename = sample.filename
+    t0, t1, polarity = sample.t0, sample.t1, sample.polarity
+
+    instrument_type = get_instrument_type(filename)
     match instrument_type:
         case "tof":
             peak_data_type = "area"
@@ -234,38 +260,50 @@ async def _load_peaks_and_averaged_signal(
     ]
     mz_min, mz_max = min(match_mzs) - dmz, max(match_mzs) + dmz
     # Reconstructed for display so the profile overlays the centroids.
-    averaged_signal = (
-        m_compute.get_sum_signal(
-            sample.filename,
-            sample.t0,
-            sample.t1,
-            polarity=sample.polarity,
-            average=True,
-            reconstruct=True,
+    # get_sum_signal returns a lazy dask array, so the .compute() has to be
+    # inside the thread too - offloading only the call would move nothing.
+    averaged_signal = await asyncio.to_thread(
+        lambda: (
+            m_compute.get_sum_signal(
+                filename,
+                t0,
+                t1,
+                polarity=polarity,
+                average=True,
+                reconstruct=True,
+            )
+            .sel(mz=slice(mz_min, mz_max))
+            .compute()
         )
-        .sel(mz=slice(mz_min, mz_max))
-        .compute()
     )
 
     # --- Load peak timeseries for peaks in target isotopes range --- #
-    mzs_to_load = (
-        m_io.load_peak_data(sample.filename).sel(mz=slice(mz_min, mz_max)).mz.values
+    mzs_to_load = await asyncio.to_thread(
+        lambda: m_io.load_peak_data(filename).sel(mz=slice(mz_min, mz_max)).mz.values
     )
-    peak_timeseries = await m_compute.load_peak_timeseries(sample.filename, mzs_to_load)
+    peak_timeseries = await m_compute.load_peak_timeseries(filename, mzs_to_load)
 
     # --- Get peak heights to plot isotope expected heights ---
-    scan_timestamps = m_compute.get_scan_timestamps(
-        sample.filename, t_min=sample.t0, t_max=sample.t1, polarity=sample.polarity
+    scan_timestamps = await asyncio.to_thread(
+        m_compute.get_scan_timestamps,
+        filename,
+        t_min=t0,
+        t_max=t1,
+        polarity=polarity,
     )
-    mean_peak_heights = (
-        peak_timeseries.peak_heights.sel(time=scan_timestamps, method="nearest")
-        .mean(dim="time")
-        .compute()
+    mean_peak_heights = await asyncio.to_thread(
+        lambda: (
+            peak_timeseries.peak_heights.sel(time=scan_timestamps, method="nearest")
+            .mean(dim="time")
+            .compute()
+        )
     )
 
     # --- Prepare peak timeseries with instrument-specific data type --- #
     # Leave instrument-specific peak data type in the timeseries
-    peak_timeseries = get_peaks(peak_timeseries, peak_data_type).compute()
+    peak_timeseries = await asyncio.to_thread(
+        lambda: get_peaks(peak_timeseries, peak_data_type).compute()
+    )
 
     # Set Nan for times not in timestamps to ensure gaps in timeseries
     # in case of several polarities within one sample file
@@ -278,7 +316,7 @@ async def _load_peaks_and_averaged_signal(
         peak_timeseries.values[..., signal_gap_mask] = np.nan
 
     # Attach sample file metadata to peak_data
-    props = m_io.read_props(sample.filename)
+    props = await asyncio.to_thread(m_io.read_props, filename)
     peak_timeseries.attrs.update({"props": props})
 
     return peak_timeseries, mean_peak_heights, averaged_signal
@@ -393,7 +431,7 @@ def _process_isotope(
         )
 
     # Add spectrum trace for the isotope
-    iso_color = colormap[ctx.index + ctx.color_offset]
+    iso_color = _css_rgb(colormap[ctx.index + ctx.color_offset])
     isotope_result.spectrum_traces.append(
         {
             "name": "{:d}".format(round(iso.mz)),
@@ -485,7 +523,7 @@ def _process_isotope(
         timeseries_time = match_timeseries.time.values.astype(np.float32)
         timeseries_y = match_timeseries.values.astype(np.float32)
 
-        timeseries_rgb = colormap[ctx.index + ctx.color_offset]
+        timeseries_rgb = _css_rgb(colormap[ctx.index + ctx.color_offset])
         timeseries_trace = {
             "name": "{:.6f}".format(iso.mz),
             "type": "scatter",

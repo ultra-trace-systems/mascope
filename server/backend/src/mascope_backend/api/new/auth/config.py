@@ -2,11 +2,14 @@
 Core authentication configuration including JWT, cookies, and access tokens settings.
 """
 
+import hashlib
 import os
+import re
 
 from pydantic import BaseModel
 
 from mascope_backend.api.new.auth.access_token.config import AccessTokenConfig
+from mascope_backend.api.new.auth.mfa.config import MfaConfig
 from mascope_backend.api.new.auth.secrets import jwt_secret_key
 from mascope_backend.roles import ROLE_ACCESS_LEVELS as _ROLE_ACCESS_LEVELS
 from mascope_backend.runtime import runtime
@@ -16,6 +19,7 @@ from mascope_backend.runtime import runtime
 # files. The derivation lives in mascope_backend.service_token - a leaf module
 # the file-converter process can import without the backend app's import graph.
 from mascope_backend.service_token import derive_token_secret as _derive_token_secret
+from mascope_runtime import RuntimeMode, is_valid_env_name
 
 
 def _resolve_cookie_secure() -> bool:
@@ -34,6 +38,140 @@ def _resolve_cookie_secure() -> bool:
     if override is not None:
         return override.strip().lower() in ("1", "true", "yes", "on")
     return runtime.mode == "prod"
+
+
+#: Suffix for a runtime whose env name is missing entirely. Anything is better
+#: than falling back to the bare name here: that is the prod name, and it is
+#: precisely the shared one every other unscoped stack - including a local demo
+#: stack, which runs in prod mode - already answers to.
+_UNKNOWN_ENV_SUFFIX = "unknown"
+
+
+def _resolve_cookie_scoped(mode: RuntimeMode) -> bool:
+    """
+    Whether cookie names carry the runtime env.
+
+    Defaults to ``True`` in dev and ``False`` in prod. Override with the
+    ``MASCOPE_COOKIE_SCOPED`` env var, which exists because ``mode`` is a
+    weaker signal than it looks: it is read from the shared
+    ``.runtime/state.json``, with no env var of its own, and every
+    ``mascope prod ...`` invocation writes ``mode.override`` there and never
+    clears it. A dev backend that starts after one of those reads "prod",
+    silently drops back to the shared cookie name, and the sessions start
+    clobbering each other again with nothing in the log to say why. The
+    override is the way out, and mirrors ``MASCOPE_COOKIE_SECURE`` above.
+
+    :param mode: The runtime mode ("dev" or "prod").
+    :return: ``True`` to append the env to the cookie names.
+    """
+    override = os.environ.get("MASCOPE_COOKIE_SCOPED")
+    if override is not None:
+        return override.strip().lower() in ("1", "true", "yes", "on")
+    return mode != "prod"
+
+
+#: How long a per-env session cookie lives. See _resolve_cookie_max_age.
+_SCOPED_COOKIE_MAX_AGE_SECONDS = 24 * 60 * 60
+
+
+def _resolve_cookie_max_age(mode: RuntimeMode, jwt_lifetime: int) -> int:
+    """
+    How long the session cookie lives.
+
+    An unscoped cookie matches the JWT's lifetime, so the browser stops sending
+    it exactly when the token it carries dies. That is the prod case, and it is
+    right there: one deployment, one hostname, one cookie.
+
+    A scoped cookie is capped well below that, because scoping trades one
+    cookie per host for one per env. Nothing ever removes an entry - logout
+    deletes only the cookie of the instance you logged out of, and
+    ``mascope instance rm`` cannot reach a browser - and cookies are not
+    port-scoped in the sending direction either, so every dead env's cookie
+    still rides on every request to every instance on the host. Dev envs follow
+    worktrees and are typically short-lived, so at a week each their cookies
+    outlive them many times over. A day caps the pile at about a day's worth.
+
+    Keyed on whether the name is scoped rather than on the mode directly: the
+    accumulation is caused by the scoping, so forcing that either way with
+    ``MASCOPE_COOKIE_SCOPED`` should carry the lifetime with it.
+
+    Shorter than the JWT is the safe direction - the browser stops presenting a
+    token that is still valid, so the cost is signing in again. Longer would
+    mean presenting dead tokens and collecting 401s.
+
+    :param mode: The runtime mode ("dev" or "prod").
+    :param jwt_lifetime: ``JWT_EXPIRATION_SECONDS``, the unscoped lifetime.
+    :return: The cookie's ``Max-Age`` in seconds.
+    """
+    if not _resolve_cookie_scoped(mode):
+        return jwt_lifetime
+    return _SCOPED_COOKIE_MAX_AGE_SECONDS
+
+
+def _env_cookie_suffix(env: str | None) -> str:
+    """
+    A cookie-safe suffix that is unique to ``env``.
+
+    A cookie name is an RFC 6265 token, which excludes separators such as "/"
+    and " ". Envs created through the CLI already match
+    ``mascope_runtime.ENV_NAME_PATTERN`` and are used verbatim, which is what
+    keeps the common name readable (``mascope_auth_wt-my-feature``).
+
+    ``MASCOPE_ENV`` is taken as given, though, so anything else has to be
+    encoded. Folding the offending characters onto "_" is not enough on its
+    own: it is not injective, so "wt a" and "wt_a" would land on one name and
+    re-create exactly the collision this scoping exists to remove - silently,
+    since nothing downstream can tell two envs apart once their cookies match.
+    The folded form is therefore disambiguated with a digest of the raw env.
+    ``blake2b`` rather than ``hash()``: this has to agree across processes and
+    restarts, and ``hash()`` is salted per process.
+
+    :param env: The active runtime env, e.g. "default" or "wt-my-feature".
+    :return: A non-empty RFC 6265 token unique to ``env``.
+    """
+    if is_valid_env_name(env):
+        return env
+    if not env:
+        return _UNKNOWN_ENV_SUFFIX
+    folded = re.sub(r"[^A-Za-z0-9_-]+", "_", env)
+    digest = hashlib.blake2b(env.encode("utf-8"), digest_size=4).hexdigest()
+    return f"{folded}-{digest}"
+
+
+def _resolve_cookie_name(base: str, mode: RuntimeMode, env: str | None) -> str:
+    """
+    Scope a cookie name to the runtime env, so dev instances on one hostname
+    stop clobbering each other's sessions.
+
+    Cookies are not port-scoped (RFC 6265) and ours are set host-only with
+    ``Path=/`` and no ``Domain``, so every stack served from one hostname
+    shares a single cookie jar: each worktree's dev instance on its own port,
+    plus any demo stack, would all read and write the same ``mascope_auth``.
+    Each instance signs its JWTs with its own secret, so signing into one
+    silently invalidates the session in the others - the app reports a
+    successful login and the next ``GET /api/users/me`` answers 401. Appending
+    the env name gives every instance a cookie of its own.
+
+    Prod keeps the bare name: renaming it there would sign every user out on
+    upgrade, and a deployment owns its hostname anyway. See
+    ``_resolve_cookie_scoped`` for how that is decided and how to override it.
+
+    Note that this prevents the collision rather than tolerating it. Should two
+    cookies of one name ever reach the server anyway, the last one in the header
+    wins - Starlette's cookie parser assigns into a dict per chunk - so a stale
+    cookie ordered after a valid one authenticates as neither, and reading past
+    it would mean replacing that parser and threading several candidate tokens
+    through fastapi-users. We only ever set host-only ``Path=/`` cookies, so a
+    browser has nothing to duplicate once the names differ.
+
+    :param base: The unsuffixed cookie name, used as-is in prod.
+    :param mode: The runtime mode ("dev" or "prod").
+    :param env: The active runtime env, e.g. "default" or "wt-my-feature".
+    :return: The cookie name to set and read.
+    """
+    if not _resolve_cookie_scoped(mode):
+        return base
+    return f"{base}_{_env_cookie_suffix(env)}"
 
 
 # HS256 signs with the raw secret bytes; RFC 7518 requires a key at least as long
@@ -70,9 +208,18 @@ class AuthConfig(BaseModel):
     )
 
     # Cookie settings for web-based JWT storage
-    COOKIE_NAME: str = "mascope_auth"  # Name of the authentication cookie
-    # Lifetime of the cookie - 7 days in seconds (matches JWT expiration)
-    COOKIE_MAX_AGE_SECONDS: int = 7 * 24 * 60 * 60
+    # Name of the authentication cookie. Suffixed with the runtime env in dev
+    # so several instances on one hostname keep separate sessions; the prod
+    # name stays exactly "mascope_auth" (see _resolve_cookie_name).
+    COOKIE_NAME: str = _resolve_cookie_name(
+        "mascope_auth", runtime.mode, runtime.env.name
+    )
+    # Lifetime of the cookie. Matches the JWT in prod; one day in dev, where
+    # scoping the name means one cookie per env rather than one per host (see
+    # _resolve_cookie_max_age).
+    COOKIE_MAX_AGE_SECONDS: int = _resolve_cookie_max_age(
+        runtime.mode, JWT_EXPIRATION_SECONDS
+    )
     COOKIE_SECURE: bool = (
         _resolve_cookie_secure()
     )  # send cookies only over HTTPS; prod default, override via MASCOPE_COOKIE_SECURE
@@ -103,6 +250,20 @@ class AuthConfig(BaseModel):
         "mascope-users:verify"  # Audience for email verification tokens
     )
 
+    # Signing secret for the token that carries a half-finished login between
+    # the password step and the code step. Derived per-deployment (see above).
+    # Safe to derive from the JWT secret, unlike the seed encryption key in
+    # mfa/secrets.py: these tokens live five minutes, so rotating the JWT secret
+    # costs at most an interrupted sign-in.
+    MFA_PENDING_TOKEN_SECRET: str = _derive_token_secret("mfa-pending")
+    # Cookie carrying that token. Separate name from COOKIE_NAME so
+    # get_enabled_backends, which selects the session backend on the presence of
+    # the auth cookie, can never mistake one for the other.
+    # Env-suffixed in dev alongside COOKIE_NAME, for the same reason.
+    MFA_PENDING_COOKIE_NAME: str = _resolve_cookie_name(
+        "mascope_mfa_pending", runtime.mode, runtime.env.name
+    )
+
     # Role access levels for RBAC
     # Role names correspond to the role_id values in the database (access_level)
     ROLE_ACCESS_LEVELS: dict = _ROLE_ACCESS_LEVELS  # see mascope_backend.roles
@@ -110,5 +271,17 @@ class AuthConfig(BaseModel):
     # Access token settings
     access_token: AccessTokenConfig = AccessTokenConfig()
 
+    # Second-factor settings
+    mfa: MfaConfig = MfaConfig()
+
 
 auth_settings = AuthConfig()
+
+
+# State the resolved name once at startup. Whether it is scoped depends on
+# runtime.mode, which comes from a state file any `mascope prod ...` invocation
+# rewrites (see _resolve_cookie_scoped), so an instance that fell back to the
+# shared name is otherwise invisible until two stacks begin signing each other
+# out - the failure this scoping exists to prevent, and one that looks like a
+# successful login followed by a 401 rather than like a configuration problem.
+runtime.logger.info(f"Session cookie: {auth_settings.COOKIE_NAME}")

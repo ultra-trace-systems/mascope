@@ -1,12 +1,23 @@
-import { describe, it, expect, beforeEach, vi } from 'vitest'
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { createPinia, setActivePinia } from 'pinia'
 
 // A mutable holder so the mocked useApp() returns whatever the test sets up.
-const { app } = vi.hoisted(() => ({ app: { current: null } }))
+const { app, flags } = vi.hoisted(() => ({
+  app: { current: null },
+  flags: { peakAssignment: false }
+}))
 vi.mock('@/stores', () => ({ useApp: () => app.current }))
 // The store registers a shared-link import hook on login; stub auth so the
 // real auth store (and its api/runtime imports) stay out of this unit test.
 vi.mock('@/stores/auth', () => ({ useAuth: () => ({ onLogin: vi.fn() }) }))
+// The visualization restore is deliberately NOT gated on the feature flag - the
+// Match tab coexists with assignment. A getter keeps the flag settable per test
+// so the restore can be exercised with it on as well as off.
+vi.mock('@/lib/features', () => ({
+  get peakAssignmentEnabled() {
+    return flags.peakAssignment
+  }
+}))
 
 import { useLocation } from '@/lib/location'
 
@@ -148,6 +159,38 @@ describe('useLocation.apply', () => {
     })
   })
 
+  it('restores the visualization with peak-centric assignment on too', () => {
+    // The two paradigms coexist, so the Match tab is rendered either way and a
+    // shared link carrying a visualized ion opens it either way. Gating this on
+    // the flag once made every such link degrade to a bare chain focus on an
+    // assignment deployment, which is what this pins against.
+    flags.peakAssignment = true
+    try {
+      app.current = makeApp()
+      const { data } = app.current
+      data.sample.focusedId = 's1'
+      data.match.collection.focusedId = 'c1'
+      data.match.ion.list = [{ target_ion_id: 'i2' }]
+
+      useLocation().apply({
+        samples: ['s1'],
+        collection: 'c1',
+        ions: ['i1', 'i2'],
+        visualizedIon: 'i2',
+        isotope: 'iso1'
+      })
+
+      expect(data.match.visualized.set).toHaveBeenCalledWith({
+        sampleId: 's1',
+        collectionId: 'c1',
+        ionId: 'i2',
+        isotopeId: 'iso1'
+      })
+    } finally {
+      flags.peakAssignment = false
+    }
+  })
+
   it('does not open a visualization when ions are only selected, not visualized', () => {
     app.current = makeApp()
     const { data } = app.current
@@ -169,5 +212,55 @@ describe('useLocation.apply', () => {
     app.current = makeApp()
     useLocation().apply({ tab: 'match' })
     expect(app.current.ui.tab.hydrate).not.toHaveBeenCalled()
+  })
+})
+
+// The share button copies a link to the current view. navigator.clipboard is
+// missing on a page served over plain HTTP from a network address, so the copy
+// has to fall back to the copy command and, when that fails too, hand the user
+// the link to copy by hand - the address bar no longer shows it.
+describe('useLocation.copyShareLink', () => {
+  const originalExecCommand = document.execCommand
+
+  beforeEach(() => {
+    setActivePinia(createPinia())
+    app.current = makeApp()
+    app.current.ui.notification = { push: vi.fn() }
+    app.current.data.batch.focusedId = 'b1'
+  })
+
+  afterEach(() => {
+    vi.unstubAllGlobals()
+    document.execCommand = originalExecCommand
+  })
+
+  it('copies through the copy command where there is no Clipboard API', async () => {
+    vi.stubGlobal('navigator', {})
+    let copied
+    document.execCommand = vi.fn(() => {
+      copied = document.querySelector('textarea')?.value
+      return true
+    })
+
+    const url = await useLocation().copyShareLink()
+
+    expect(url).toContain('b=b1')
+    expect(copied).toBe(url)
+    expect(app.current.ui.notification.push).toHaveBeenCalledTimes(1)
+    expect(app.current.ui.notification.push).toHaveBeenCalledWith(
+      expect.objectContaining({ status: 'success' })
+    )
+  })
+
+  it('says it failed, and shows the link, when nothing could copy it', async () => {
+    vi.stubGlobal('navigator', {})
+    document.execCommand = vi.fn(() => false)
+
+    const url = await useLocation().copyShareLink()
+
+    expect(app.current.ui.notification.push).toHaveBeenCalledTimes(1)
+    const [notification] = app.current.ui.notification.push.mock.calls[0]
+    expect(notification.status).toBe('warning')
+    expect(notification.message).toContain(url)
   })
 })

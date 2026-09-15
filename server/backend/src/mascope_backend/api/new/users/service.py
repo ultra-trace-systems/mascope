@@ -10,6 +10,7 @@ from typing import Optional, Union
 
 from sqlalchemy import asc, desc, func, select
 
+from mascope_backend.accounts import ACCOUNT_TYPE_MACHINE, refuse_machine_account
 from mascope_backend.api.lib.api_features import api_controller
 from mascope_backend.api.lib.exceptions.api_exceptions import NotFoundException
 from mascope_backend.api.new.auth.config import auth_settings
@@ -22,6 +23,9 @@ from mascope_backend.api.new.users.me.schemas import (
     UserUpdateMe,
     UserUpdateMeCredentials,
 )
+from mascope_backend.api.new.users.password.generate import (
+    generate_random_password,
+)
 from mascope_backend.api.new.users.schemas import (
     UserCreate,
     UserPublic,
@@ -30,8 +34,8 @@ from mascope_backend.api.new.users.schemas import (
 )
 from mascope_backend.api.new.users.user_manager.service import UserManager
 from mascope_backend.api.new.users.util import check_username_exists
-from mascope_backend.db import Role, User, Workspace, WorkspaceMember, async_session
-from mascope_backend.db.id import gen_id
+from mascope_backend.api.new.workspaces.system import add_to_system_workspaces
+from mascope_backend.db import Role, User, async_session
 
 
 @api_controller()
@@ -72,8 +76,14 @@ async def get_users(
             "Both 'page' and 'limit' must be provided together or both omitted."
         )
     async with async_session() as session:
-        # Step 1: Construct the base query with join to Role
-        query = select(User, Role.role_name).join(Role, Role.role_id == User.role_id)
+        # Step 1: Construct the base query with join to Role. Machine accounts
+        # are excluded: this list is the human user-management view, and a
+        # machine account is administered through Paired machines instead.
+        query = (
+            select(User, Role.role_name)
+            .join(Role, Role.role_id == User.role_id)
+            .where(User.account_type != ACCOUNT_TYPE_MACHINE)
+        )
 
         # Step 2: Apply filtering if specified
         if role_name_min or role_name_max:
@@ -195,16 +205,28 @@ async def register_user(
                 will be restricted during creation, defaults to True
     :type safe: bool
     :param require_password_change: Whether the account must replace its password
-                before it can use the application, defaults to True because an
-                administrator chose the password they are handing over.
+                before it can use the application, defaults to True because the
+                password is one someone else knows.
     :type require_password_change: bool
     :raises UsernameAlreadyExistsException: If the username already exists.
     :raises UserAlreadyExists: If a user with the same email already exists.
-    :return: The registered user's details.
+    :return: The registered user's details, and the generated temporary password
+             when the caller supplied none.
     :rtype: dict
     """
     # --- Check if the username already exists ---
     await check_username_exists(user_create.username)
+
+    # --- Generate the hand-over password when the caller supplied none ---
+    # Asking an administrator to invent one buys nothing: the holder must
+    # replace it at first sign-in regardless, so its only job is to survive
+    # being read out once. A generated one does that better than an invented
+    # one, and cannot be a password the administrator uses elsewhere. Returned
+    # exactly once, like a password reset; nothing can recover it afterwards.
+    generated_password = None
+    if not user_create.password:
+        generated_password = generate_random_password()
+        user_create.password = generated_password
 
     # --- Sync is_superuser with role_id (owner role requires superuser) ---
     user_create.is_superuser = (
@@ -227,26 +249,23 @@ async def register_user(
         ),
         "guest",
     )
-    async with async_session() as session:
-        result = await session.execute(
-            select(Workspace).where(Workspace.is_system.is_(True))
-        )
-        for ws in result.scalars().all():
-            member = WorkspaceMember(
-                workspace_member_id=gen_id(),
-                workspace_id=ws.workspace_id,
-                user_id=created_user.id,
-                workspace_role=role_name,
-                granted_by=None,
-            )
-            session.add(member)
-        await session.commit()
+    await add_to_system_workspaces(created_user.id, role_name)
 
     # --- Validate and return the registered user's details ---
     user = (await get_user(user_id=created_user.id))["data"]
+    if generated_password is None:
+        return {
+            "message": f"User '{user.username}' registered successfully.",
+            "data": user,
+        }
     return {
-        "message": f"User '{user.username}' registered successfully.",
+        "message": (
+            f"User '{user.username}' registered. Share the temporary password "
+            "with them - it is shown only once, and they must replace it at "
+            "first sign-in."
+        ),
         "data": user,
+        "temporary_password": generated_password,
     }
 
 
@@ -271,6 +290,9 @@ async def update_user(
     """
     # --- Retrieve the user ---
     user = await user_manager.get(user_id)
+
+    # --- Machine accounts are not managed here ---
+    refuse_machine_account(user)
 
     # --- Check owner role downgrade only for full UserUpdate schema ---
     if (
@@ -323,6 +345,10 @@ async def delete_user(user_id: int, user_manager: UserManager) -> dict:
     """
     # Step 1: Fetch the user
     user = await user_manager.get(user_id)
+
+    # A machine account is removed by revoking its device, not deleted here -
+    # deleting it would orphan the device and silently break the agent.
+    refuse_machine_account(user)
 
     # Step 2: Check if this would remove last owner
     await check_last_owner_deletion(user_id)

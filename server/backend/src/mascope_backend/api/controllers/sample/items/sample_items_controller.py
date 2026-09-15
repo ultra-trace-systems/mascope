@@ -1,3 +1,4 @@
+import asyncio
 from datetime import datetime, timezone
 from typing import cast
 
@@ -47,7 +48,7 @@ from mascope_backend.api.models.sample.items.sample_item_pydantic_model import (
     SampleItemRead,
     SampleItemUpdate,
 )
-from mascope_backend.api.new.temp.storage import user_temp_path
+from mascope_backend.api.new.temp.storage import download_name, user_temp_path
 from mascope_backend.db import (
     Sample,
     SampleFile,
@@ -257,14 +258,35 @@ async def create_sample_items(
             computed_tic = computed_t0 = computed_t1 = None
             if tic_computation_needed:
                 try:
-                    tic_time, tic_values = m_compute.get_tic_per_scan(
+                    # kwargs, not a lambda: sample_file is an attached ORM
+                    # instance inside a live session, so its attributes must
+                    # be read here on the loop, not in the worker thread.
+                    _, tic_values = await asyncio.to_thread(
+                        m_compute.get_tic_per_scan,
                         base_filename=sample_file.filename,
                         polarity=sample_item.polarity,  # sample_item polarity (+ or -)
                     )
                     computed_tic = float(np.sum(tic_values))
-                    computed_t0 = float(tic_time[0])
-                    computed_t1 = float(tic_time[-1])
-                except TypeError as e:
+                    # The window spans every scan type, not just the MS1 scans
+                    # the TIC is taken over: an acquisition that records its
+                    # MS2 scans as a block after the MS1 ones would otherwise
+                    # get a window that ends before the first of them, and its
+                    # MS2 data would be invisible to every endpoint that
+                    # selects within [t0, t1]. Worth the second read of the
+                    # file, which happens once per sample item created.
+                    computed_t0, computed_t1 = await asyncio.to_thread(
+                        m_compute.get_acquisition_window,
+                        base_filename=sample_file.filename,
+                        polarity=sample_item.polarity,
+                    )
+                except (TypeError, ValueError) as e:
+                    # One condition, three spellings: the TOF path raises
+                    # TypeError on an empty selection, the raw readers raise
+                    # NoScansFoundError for a polarity the file does not carry,
+                    # and get_acquisition_window raises a bare ValueError for a
+                    # zarr time axis that reads back empty. NoScansFoundError
+                    # subclasses ValueError, so the pair covers all three; each
+                    # means the file holds no scans matching this selection.
                     verbose_polarity = (
                         "positive" if sample_item.polarity == "+" else "negative"
                     )
@@ -784,6 +806,11 @@ async def sample_item_export_peaks(
     - sample_item_id: The ID of the sample item.
     - instrument: The type of the instrument used for the sample file.
 
+    Raises StalePeakStoreError for a sample file whose peak store was
+    allocated against scans it no longer reads back: every column above but
+    the TIC comes from that store, so an export built on it would be wrong
+    throughout.
+
     :param sample_item_id: ID of the sample item.
     :type sample_item_id: str
     :param independent_transaction: Flag to indicate if the operation should be treated as an independent transaction, defaults to False.
@@ -814,25 +841,34 @@ async def sample_item_export_peaks(
 
     await send_progress_user_notification(notification, 0.1)
 
-    try:
-        filename = sample.filename
-        instrument_type = get_instrument_type(filename)
+    # Nothing here is caught on the way out: an exception is logged with its
+    # traceback by the exception pipeline, and reported to the user by the
+    # background-task decorator, so there is nothing for this level to add.
+    filename = sample.filename
+    instrument_type = get_instrument_type(filename)
 
-        await send_progress_user_notification(notification, 0.1)
+    await send_progress_user_notification(notification, 0.1)
 
-        if instrument_type == "orbi":
-            peak_data_type = "peak_heights"
-        if instrument_type == "tof":
-            peak_data_type = "peak_areas"
+    if instrument_type == "orbi":
+        peak_data_type = "peak_heights"
+    elif instrument_type == "tof":
+        peak_data_type = "peak_areas"
+    else:
+        # get_instrument_type returns None when it cannot resolve one, and two
+        # independent ifs left peak_data_type unbound for that - an
+        # UnboundLocalError in place of a message naming the file.
+        raise ValueError(f"Unknown instrument type: {instrument_type}")
 
+    # dropna returns a lazy selection, so without the .compute() inside the
+    # thread the peak matrix would still be read on the loop - twice, once
+    # here and again at the .values below.
+    def _load_peak_data():
         sample_file = m_io.load_peak_data(filename)
-        sample_peak_data = sample_file[peak_data_type].dropna(dim="mz", how="all")
+        return sample_file[peak_data_type].dropna(dim="mz", how="all").compute()
 
-        await send_progress_user_notification(notification, 0.8)
-    except Exception as e:
-        # No log here: the re-raised exception is logged with its traceback by
-        # the exception pipeline
-        raise e
+    sample_peak_data = await asyncio.to_thread(_load_peak_data)
+
+    await send_progress_user_notification(notification, 0.8)
 
     # File creation timestamp
     base_datetime = sample.datetime
@@ -845,8 +881,17 @@ async def sample_item_export_peaks(
     # Get scan timestamps UTC
     base_datetime_utc = sample.datetime_utc
     scan_timestamps_utc = sample_peak_timedelta + pd.Timestamp(base_datetime_utc)
-    # Get ticks for each time scan
-    _, scan_tics = m_compute.get_tic_per_scan(filename)
+
+    # Get ticks for each time scan. Every other column of the frame comes from
+    # the peak store, and this one is read from the sample file - so the two
+    # are only pairable by position once the store's scan axis is known to be
+    # the one the file still reads back.
+    def _read_tic():
+        tic_time, tic_per_scan = m_compute.get_tic_per_scan(filename)
+        m_compute.check_stored_scan_axis(tic_time, sample_peak_time)
+        return tic_per_scan
+
+    scan_tics = await asyncio.to_thread(_read_tic)
 
     mz_values = sample_peak_data.mz.values
     intensities = sample_peak_data.values
@@ -888,8 +933,8 @@ async def sample_item_export_peaks(
     dt_str = datetime.now().isoformat().replace("-", "").replace(":", "").split(".")[0]
 
     # Save the peak data to a CSV file
-    peakfile_filename = "_".join(
-        [dt_str, "peak_data", sample.sample_item_name.replace(" ", "_") + ".csv"]
+    peakfile_filename = download_name(
+        dt_str, "peak_data", sample.sample_item_name, extension="csv"
     )
     runtime.logger.info(f"Writing peak data to file {peakfile_filename}")
     sample_peak_df.to_csv(

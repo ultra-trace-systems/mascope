@@ -1,5 +1,5 @@
 <script setup>
-import { ref, reactive, computed, watch, watchEffect, onMounted } from 'vue'
+import { ref, computed, watch, watchEffect, onMounted } from 'vue'
 import { watchDebounced } from '@vueuse/core'
 
 import FloatLabel from 'primevue/floatlabel'
@@ -17,8 +17,10 @@ import { BaseTierTag, BaseMatchTag } from '@/lib/base'
 import { PopoverTargetCompoundAdd } from '@/lib/dialogs'
 import { num } from '@/lib/formatters'
 import { peakAssignmentEnabled } from '@/lib/features'
+import { isFormulaRange, usePeakAssignParams } from '@/lib/peakAssignParams'
 
 import { usePreview } from './preview.js'
+import { canCurateHit, curationBodyForHit, hitKey } from './searchHit.js'
 
 // On-demand composition search for the focused peak. Lives in the Sample view's
 // bottom pane, shown in place of the time series while "Re-search" is active
@@ -28,7 +30,7 @@ import { usePreview } from './preview.js'
 const app = useApp()
 const preview = usePreview()
 
-defineProps({
+const props = defineProps({
   height: {
     type: Number,
     required: true
@@ -44,74 +46,117 @@ defineProps({
 
 const emit = defineEmits(['close'])
 
-const PARAMS_STORAGE_KEY = 'mascope.peakAssign.params'
-
-function loadStoredParams() {
-  try {
-    const stored = localStorage.getItem(PARAMS_STORAGE_KEY)
-    if (stored) return JSON.parse(stored)
-  } catch {}
-  return null
+// Root help card. The interaction wording differs between the legacy embedded
+// placement (a peak browser sits to the left) and the Re-search takeover of
+// the time-series pane; `embedded` never changes after mount.
+const rootHelp = {
+  message: `
+    <h1>Composition Search</h1>
+    <p>
+    Search candidate compositions for the selected peak from its m/z value, the
+    chosen ionization mechanisms and the allowed ranges of atom counts.
+    </p>
+    ${
+      props.embedded
+        ? `<p>
+          Select peaks by clicking rows in the peak browser to the left, or the
+          vertical peak lines in the spectrum chart.
+          </p>`
+        : `<p>
+          The search follows the focused peak: select peaks in the spectrum chart
+          or the Assignments ledger. Close the search to return to the time series.
+          </p>`
+    }`,
+  doc: app.ui.help.docUrl('how-it-works/peak-assignment/#the-two-stages')
 }
 
-function saveParams(mzPrecision, formulaRange) {
-  try {
-    localStorage.setItem(PARAMS_STORAGE_KEY, JSON.stringify({ mzPrecision, formulaRange }))
-  } catch {}
+// One card for the whole results table: the icon-only column headers and the
+// expandable isotope preview are the least guessable parts of the pane.
+const resultsHelp = {
+  message: `
+    <h1>Search Results</h1>
+    <p>
+    Candidate compositions whose ions land within the m/z window.
+    <b>DBE</b> is the degree of unsaturation.${
+      peakAssignmentEnabled
+        ? ` The seal column shows each
+    candidate's fit score and confidence tier, the atom column its chemical
+    plausibility, and a flask names a match in a public reference database.`
+        : ` The seal column shows each candidate's match score.`
+    }
+    A database icon marks formulas that already exist among your target compounds.
+    </p>
+    <p>
+    Expand a row to see the candidate's full theoretical isotope pattern, and
+    click an isotope row to preview it in the spectrum chart. The <b>+</b>
+    button adds a candidate to the open target collection.
+    </p>`,
+  doc: peakAssignmentEnabled
+    ? app.ui.help.docUrl('how-it-works/peak-assignment/#the-fit-score-a-pure-measurement')
+    : app.ui.help.docUrl('how-it-works/matching/')
 }
 
-// Fallback debounce for the search, used until /params answers. watchDebounced
-// evaluates the delay before the callback's own guards run -- including on the
-// immediate pass during setup, when chemConfig is still null.
-const DEFAULT_DEBOUNCE_DELAY_MS = 800
+// The hand button's own card, rendered from the shared docs snippet rather than
+// restated here: the same `_help/assignment-curation.md` is pulled into the
+// user manual, so the in-app text and the manual cannot drift apart the way two
+// hand-maintained copies of it did.
+//
+// Anchored on the column header, not on the button. Help cards register per
+// element and are never unregistered (see stores/ui/help.js), so a directive
+// inside a virtual-scrolled row body would leave one dead card behind for every
+// row the table ever rendered. The same rule is why the header's directive
+// hangs on a wrapper that outlives the glyph rather than on the glyph itself -
+// see the column header.
+const curationHelp = {
+  title: 'Assigning by Hand',
+  helpKey: 'assignment-curation',
+  doc: app.ui.help.docUrl('how-it-works/peak-assignment/#assigning-a-peak-yourself')
+}
 
-const chemConfig = ref(null)
+// The search parameters are the shared ones. m/z precision and formula range
+// mean the same thing here and in an assignment run's untargeted stage - the
+// backend derives both from one pair of constants - so this pane binds the same
+// persisted record the launcher dialogs bind, instead of keeping its own two
+// values under its own storage key. Tuning them against one peak here is what
+// the next run launches with, and a value set in a launcher is what this pane
+// searches with. The store also carries the search debounce and the bounds,
+// which used to be a second /params fetch from this component.
+const store = usePeakAssignParams()
+const params = store.params
+
 const ionMechs = ref([])
-const params = reactive({
-  mzPrecision: null,
-  formulaRange: null
-})
-const formulaRangeModel = ref('')
+const formulaRangeModel = ref(params.formula_ranges ?? '')
 const results = ref([])
+// Which peak the rows currently in `results` were found for. Kept beside the
+// rows themselves and updated only where they are, because the two must never
+// disagree: the write path below refuses to commit a hit against any other
+// peak. Null whenever the table holds nothing anyone searched for.
+const resultsPeakId = ref(null)
 const totalMatches = ref(0)
 const displayedMatches = ref(0)
 const loading = ref(false)
 const lastRequestParams = ref(null)
 
-// Regex pattern for formula range validation: "C0-100 H0-100 Cl0-10"
-const ELEMENT_PATTERN = '(?:[A-Z][a-z]?|\\^[A-Z][a-z]?|\\[\\d*[A-Z][a-z]?\\])'
-const RANGE_PATTERN = '\\d+-\\d+'
-const FORMULA_RANGE_PATTERN = new RegExp(
-  `^(${ELEMENT_PATTERN}${RANGE_PATTERN})(\\s+${ELEMENT_PATTERN}${RANGE_PATTERN})*$`
+// The range validates against the shared rule rather than a copy of it: the
+// launcher dialog binds the same field, so a string one surface would reject
+// must not be able to arrive from the other.
+const isFormulaRangeValid = computed(
+  () => !formulaRangeModel.value || isFormulaRange(formulaRangeModel.value)
 )
 
-const isFormulaRangeValid = computed(() => {
-  if (!formulaRangeModel.value) return true
-  return FORMULA_RANGE_PATTERN.test(formulaRangeModel.value.trim())
-})
-
-onMounted(() => {
-  api.http
-    .get('/params', { type: 'read_params' })
-    .then(({ data }) => {
-      chemConfig.value = data?.data?.params?.cheminfo_config
-      if (chemConfig.value) {
-        const stored = loadStoredParams()
-        params.mzPrecision = stored?.mzPrecision ?? chemConfig.value.DEFAULT_MZ_PRECISION
-        params.formulaRange = stored?.formulaRange ?? chemConfig.value.DEFAULT_FORMULA_RANGE
-        formulaRangeModel.value = params.formulaRange
-      }
-    })
-    .catch((err) => {
-      console.error('Error fetching params:', err)
-    })
-})
+onMounted(() => store.ensureLoaded())
 
 const updateFormulaRange = () => {
-  if (isFormulaRangeValid.value) {
-    params.formulaRange = formulaRangeModel.value.trim()
+  if (isFormulaRangeValid.value && formulaRangeModel.value) {
+    params.formula_ranges = formulaRangeModel.value.trim()
   }
 }
+
+// The reset control clears exactly the two fields this pane shows. The record
+// is shared, so resetting everything from here would silently discard a peak
+// ceiling or an alternatives count set in a launcher dialog - fields the user
+// cannot see from this pane and would have no reason to expect it to touch.
+const RESETTABLE = ['mz_precision_ppm', 'formula_ranges']
 
 app.ui.notification.on('match_compositions_by_mz', (payload) => {
   if (payload.status === 'error') {
@@ -129,6 +174,13 @@ app.ui.notification.on('match_compositions_by_mz', (payload) => {
       totalMatches.value = payload?.data?.total || 0
       displayedMatches.value = payload?.data?.results || 0
 
+      // The two checks above already established that this payload is the
+      // focused peak's, so this is the one place in the pane where a result set
+      // is tied to a peak. Stamped with `peak_id` rather than the m/z the
+      // payload carries: the ledger joins on peak_id, and it is the identity
+      // the write path has to match.
+      resultsPeakId.value = app.data.peak.focused?.peak_id ?? null
+
       results.value = payload.data.data.map((res) => {
         const existing = app.data.target.compound.list.filter(
           ({ target_compound_formula }) => target_compound_formula === res.target_compound_formula
@@ -140,26 +192,20 @@ app.ui.notification.on('match_compositions_by_mz', (payload) => {
   }
 })
 
+// Follow the store into the text box. This is no longer only the defaults
+// landing: the launcher dialog binds the same field and so does the reset
+// button, so the committed range can change while this pane is mounted.
 watch(
-  () => params.formulaRange,
+  () => params.formula_ranges,
   (newValue) => {
-    if (formulaRangeModel.value !== newValue) {
+    if (newValue != null && formulaRangeModel.value !== newValue) {
       formulaRangeModel.value = newValue
     }
   }
 )
 
-watch(
-  () => ({ mzPrecision: params.mzPrecision, formulaRange: params.formulaRange }),
-  ({ mzPrecision, formulaRange }) => {
-    if (mzPrecision != null && formulaRange && FORMULA_RANGE_PATTERN.test(formulaRange.trim())) {
-      saveParams(mzPrecision, formulaRange)
-    }
-  }
-)
-
 watchEffect(() => {
-  if (!chemConfig.value) return
+  if (!store.loaded) return
   if (!app.data.sample.focused) return
   const ionMode = app.data.ionization.mode.list.find(
     (im) => im.ionization_mode_id === app.data.sample.focused.ionization_mode_id
@@ -176,18 +222,19 @@ watchEffect(() => {
 // is focused and re-runs when the peak or parameters change.
 watchDebounced(
   () => {
-    if (!chemConfig.value) return {}
+    if (!store.loaded) return {}
     return {
       peakFocused: app.data.peak.focused ? app.data.peak.focused.mz : null,
       sampleId: app.data.sample.focusedId,
-      mzPrecision: params.mzPrecision,
-      formulaRange: params.formulaRange,
+      mzPrecision: params.mz_precision_ppm,
+      formulaRange: params.formula_ranges,
       ionMechanismIds: ionMechs.value.map((m) => m.ionization_mechanism_id).join(',')
     }
   },
   async (deps) => {
-    if (!chemConfig.value || !deps.peakFocused || !deps.mzPrecision || !deps.formulaRange) {
+    if (!store.loaded || !deps.peakFocused || !deps.mzPrecision || !deps.formulaRange) {
       results.value = []
+      resultsPeakId.value = null
       loading.value = false
       lastRequestParams.value = null
       return
@@ -200,6 +247,7 @@ watchDebounced(
 
     loading.value = true
     results.value = []
+    resultsPeakId.value = null
     totalMatches.value = 0
     displayedMatches.value = 0
 
@@ -222,7 +270,7 @@ watchDebounced(
     )
   },
   {
-    debounce: computed(() => chemConfig.value?.DEBOUNCE_DELAY_MS ?? DEFAULT_DEBOUNCE_DELAY_MS),
+    debounce: computed(() => store.debounceMs),
     deep: true,
     immediate: true
   }
@@ -240,7 +288,8 @@ function getIsotopeRows(data) {
     0
   return data.children.map((record) => ({
     ...record,
-    close: (Math.abs(record.mz - app.data.peak.focused?.mz) * 1e6) / record.mz < params.mzPrecision,
+    close:
+      (Math.abs(record.mz - app.data.peak.focused?.mz) * 1e6) / record.mz < params.mz_precision_ppm,
     abundance_reference: mainIsotopeAbundance,
     intensity_reference: mainIsotopeIntensity
   }))
@@ -269,6 +318,84 @@ const fitPercent = new Intl.NumberFormat('en-US', {
 })
 const formatFit = (value) =>
   value != null && !Number.isNaN(value) ? fitPercent.format(value) : '-'
+
+// --- Assign a search hit to the focused peak ------------------------------
+// The write path out of the search: a composition the user found here is
+// committed onto the peak's own ledger row, marked as a manual assignment,
+// instead of only being added to a target collection (which feeds the legacy
+// rematch pipeline and reaches the ledger only via a whole new run).
+
+// The row the assignment lands on. Every detected peak of a run has one - an
+// unexplained peak carries an `unassigned` placeholder - so this is null only
+// when no run covers the focused peak at all.
+const assignTarget = computed(() =>
+  app.data.peakAssignment.peak.forPeak(app.data.peak.focused?.peak_id)
+)
+
+const assigning = ref(null) // key of the hit being committed
+const assignDenied = ref(false) // 403: not an editor on this sample
+// A ledger derived from the batch peaks (run engine 'batch') has no rows to
+// commit a composition onto; the server answers 409, so the hand is withheld.
+const derivedRun = computed(() => app.data.peakAssignment.peak.run?.engine === 'batch')
+
+// The results outlive the peak they were found for, so the write has to be
+// pinned to that peak rather than to whatever is focused now. Focus moves the
+// instant a peak is clicked and `assignTarget` follows it synchronously, but
+// the table is only replaced when the debounced search callback finally runs -
+// DEBOUNCE_DELAY_MS later, 800 ms by default. For that whole window the rows on
+// screen belong to the previous peak while the hand button already aims at the
+// new peak's ledger row, and `set_assignment` commits the composition it is
+// given without ever comparing it to the peak's m/z. Unguarded, one click there
+// records a formula hundreds of daltons off on the newly focused peak, tiered
+// from the other peak's fit score, and demotes the satellites of the formula
+// that peak really had - silently, with a success toast.
+//
+// Compared against the target row's own peak, not against the focused peak:
+// the question is whether the row about to be written is the row the results
+// were found for, and answering it off the row itself does not depend on two
+// computeds agreeing about focus.
+const resultsMatchTarget = computed(
+  () =>
+    resultsPeakId.value != null &&
+    assignTarget.value != null &&
+    String(assignTarget.value.sample_peak_id) === String(resultsPeakId.value)
+)
+
+const assignTooltip = computed(() => {
+  if (!assignTarget.value) return 'No assignment run covers this peak yet - assign the sample first'
+  if (derivedRun.value) {
+    return 'This ledger is derived from the batch peaks - assign the sample to edit it'
+  }
+  if (!resultsMatchTarget.value)
+    return 'These results are for the previously selected peak - the search for this one is still coming'
+  return 'Assign this composition to the selected peak, as a manual assignment'
+})
+
+async function assignToPeak(hit) {
+  // Re-checked here and not only on the button: `disabled` lands on the next
+  // render, so a click can already be on its way when the focus changes.
+  if (!assignTarget.value || !resultsMatchTarget.value || !canCurateHit(hit)) return
+  if (assigning.value !== null) return
+  assigning.value = hitKey(hit)
+  try {
+    await app.data.peakAssignment.peak.curate(
+      assignTarget.value.peak_assignment_id,
+      curationBodyForHit(hit)
+    )
+  } catch (error) {
+    // The http layer already toasts; only 403 changes the UI (hide the control).
+    if (error?.response?.status === 403) assignDenied.value = true
+  } finally {
+    assigning.value = null
+  }
+}
+
+watch(
+  () => app.data.sample.focusedId,
+  () => {
+    assignDenied.value = false
+  }
+)
 </script>
 
 <template>
@@ -277,22 +404,7 @@ const formatFit = (value) =>
        so the pane is absent rather than showing a "No peak selected" card.
        As a takeover of the time-series pane it always renders, otherwise
        "Re-search" would open onto nothing with no way back. -->
-  <div
-    class="search-pane"
-    v-if="!embedded || app.data.peak.list.length > 0"
-    v-help.top="{
-      message: `
-        <h1>Peak Assignment</h1>
-        <p>
-        Assign a composition to the currently selected peak based on the m/z value,
-        ionization mechanisms and allowed ranges of atom counts.
-        </p>
-        <p>
-        Select peaks by clicking rows in the peak browser to the left, or by clicking
-        the vertical grey peak lines in the spectrum chart.
-        </p>`
-    }"
-  >
+  <div class="search-pane" v-if="!embedded || app.data.peak.list.length > 0" v-help.top="rootHelp">
     <header class="search-head">
       <div class="search-title">
         <span class="pi ph ph-magnifying-glass" />
@@ -314,11 +426,42 @@ const formatFit = (value) =>
       />
     </header>
     <menu class="topbar">
-      <FloatLabel style="flex: 0 0 80px">
-        <InputNumber v-model="params.mzPrecision" id="mzPrecision" :min="1" :max="100" fluid />
+      <FloatLabel
+        style="flex: 0 0 80px"
+        :pt="
+          app.ui.help.bottom(`
+            <h1>m/z Precision</h1>
+            <p>
+            The mass tolerance of the search, in ppm: a candidate is kept when a
+            theoretical isotope of its ion lands within this window of the peak's
+            m/z. Widening it finds more candidates, but more ambiguous ones.
+            </p>
+          `)
+        "
+      >
+        <InputNumber
+          v-model="params.mz_precision_ppm"
+          inputId="mzPrecision"
+          :min="1"
+          :max="store.limits.max_mz_precision_ppm"
+          fluid
+        />
         <label for="mzPrecision">m/z precision</label>
       </FloatLabel>
-      <FloatLabel style="flex-grow: 1">
+      <FloatLabel
+        style="flex-grow: 1"
+        :pt="
+          app.ui.help.bottom(`
+            <h1>Formula Range</h1>
+            <p>
+            Allowed element counts for candidate formulas, as space-separated
+            ranges &mdash; e.g. <code>C0-80 H0-160 [15N]0-1</code>, isotopes in
+            brackets. Narrowing the ranges makes the search faster and keeps
+            chemically irrelevant candidates out.
+            </p>
+          `)
+        "
+      >
         <InputText
           v-model="formulaRangeModel"
           id="formulaRange"
@@ -327,13 +470,28 @@ const formatFit = (value) =>
           @blur="updateFormulaRange"
           @keydown.enter="updateFormulaRange"
           v-tooltip.bottom="{
-            value: 'Format: Element + range, e.g. C0-100 H0-200 [15N]0-1 ^N0-1',
+            value: 'Format: Element + range, e.g. C0-80 H0-160 [15N]0-1 ^N0-1',
             showDelay: 500
           }"
         />
         <label for="formulaRange">formula range</label>
       </FloatLabel>
-      <FloatLabel style="min-width: 100px; max-width: 200px">
+      <FloatLabel
+        style="min-width: 100px; max-width: 200px"
+        :pt="
+          app.ui.help.bottom_end(
+            `
+            <h1>Ionization Mechanisms</h1>
+            <p>
+            Which charge-forming reactions (adducts) to consider when turning a
+            neutral formula into a detectable ion. Preselected from the sample's
+            ionization mode; narrow or widen the set to steer the search.
+            </p>
+          `,
+            { doc: app.ui.help.docUrl('concepts/#ionization-modes-and-mechanisms') }
+          )
+        "
+      >
         <MultiSelect
           id="ionmechs"
           v-model="ionMechs"
@@ -344,6 +502,21 @@ const formatFit = (value) =>
         />
         <label for="ionmechs">Ion. Mechanisms</label>
       </FloatLabel>
+      <!-- These two persist and are shared with the assignment launchers, so
+           the way back to the shipped defaults has to be reachable from here
+           too. Disabled while both are already at their default, which makes it
+           the answer to "have I changed these?" as well as the way to undo. -->
+      <Button
+        icon="pi ph ph-arrow-counter-clockwise"
+        size="small"
+        text
+        severity="secondary"
+        class="reset-params"
+        aria-label="Reset search parameters to defaults"
+        :disabled="store.isDefault(RESETTABLE)"
+        v-tooltip.bottom="'Reset m/z precision and formula range to defaults'"
+        @click="store.reset(RESETTABLE)"
+      />
     </menu>
     <DataTable
       v-if="!loading && results.length > 0"
@@ -356,6 +529,7 @@ const formatFit = (value) =>
       size="small"
       v-model:expandedRows="expanded"
       :virtualScrollerOptions="{ itemSize: 35.5 }"
+      :pt="app.ui.help.top(resultsHelp)"
     >
       <Column expander />
       <Column field="target_compound_formula" header="Formula" sortable />
@@ -369,11 +543,7 @@ const formatFit = (value) =>
           {{ num.mz.format(data.cheminfo.target_isotope_mz) }}
         </template>
       </Column>
-      <Column
-        field="cheminfo.ionization_mechanism.ionization_mechanism"
-        header="Mech."
-        sortable
-      />
+      <Column field="cheminfo.ionization_mechanism.ionization_mechanism" header="Mech." sortable />
       <Column field="cheminfo.target_isotope_mz_error_ppm" header="Error (ppm)" sortable>
         <template #body="{ data }">
           {{ num.mzError.format(data.cheminfo.target_isotope_mz_error_ppm) }}
@@ -387,7 +557,7 @@ const formatFit = (value) =>
           />
         </template>
         <template #body="{ data }">
-          <BaseTierTag :tier="data.tier" :fit-score="data.fit_score" :source="data.source" />
+          <BaseTierTag :tier="data.tier" :evidence="data.evidence" :source="data.source" />
         </template>
       </Column>
       <Column v-if="peakAssignmentEnabled" field="plausibility" sortable>
@@ -470,11 +640,56 @@ const formatFit = (value) =>
         </template>
       </Column>
       <Column>
+        <!-- Also the anchor for the curation help card, which is why the icon
+             follows the control it explains and goes with it for a viewer who
+             may not curate at all.
+             The card hangs on the wrapper and the meaning on the glyph inside
+             it, because the two have different lifetimes. `assignDenied` flips
+             when a write comes back 403, and a help card whose element goes
+             away is never unregistered (see stores/ui/help.js) - it would sit
+             in the store's list for the rest of the session holding a mouse
+             watcher on an element nobody can reach. The wrapper is gated on the
+             build-time feature flag alone, which cannot change after mount;
+             with the glyph gone it collapses to nothing, so a viewer who may
+             not curate still gets no control and no card. -->
+        <template #header>
+          <span v-if="peakAssignmentEnabled" class="curate-header" v-help.left="curationHelp">
+            <span
+              v-if="!assignDenied"
+              class="pi ph ph-hand-pointing"
+              v-tooltip.left="{ value: 'Assign to the selected peak', showDelay: 500 }"
+            />
+          </span>
+        </template>
         <template #body="{ data }">
-          <PopoverTargetCompoundAdd
-            :formula="data.target_compound_formula"
-            :formula-editable="false"
-          />
+          <div class="row-actions">
+            <!-- The Button is disabled when no run covers the peak, or while
+                 the rows on screen still belong to the previously focused one,
+                 and a disabled PrimeVue button receives no mouse events - so
+                 the tooltip explaining why has to hang on a wrapper. A hit with
+                 no adduct is a different case: there is no state in which it
+                 could be committed, so it gets no control at all rather than a
+                 permanently dead one. -->
+            <span
+              v-if="peakAssignmentEnabled && !assignDenied && canCurateHit(data)"
+              v-tooltip.left="{ value: assignTooltip, showDelay: 300 }"
+            >
+              <Button
+                icon="pi ph ph-hand-pointing"
+                size="small"
+                text
+                severity="secondary"
+                :disabled="!assignTarget || !resultsMatchTarget || assigning !== null || derivedRun"
+                :loading="assigning === hitKey(data)"
+                :aria-label="`Assign ${data.target_compound_formula} to the selected peak`"
+                @click="assignToPeak(data)"
+              />
+            </span>
+            <PopoverTargetCompoundAdd
+              :formula="data.target_compound_formula"
+              :formula-editable="false"
+            />
+          </div>
         </template>
       </Column>
       <template #expansion="{ data }">
@@ -538,10 +753,7 @@ const formatFit = (value) =>
         </i>
       </div>
     </div>
-    <div
-      v-else-if="!loading && results.length === 0"
-      class="center search-placeholder"
-    >
+    <div v-else-if="!loading && results.length === 0" class="center search-placeholder">
       <div class="col" style="gap: 1rem; max-width: 45ch; text-align: center">
         <strong> <span class="pi ph ph-info" /> No results found </strong>
         <i style="opacity: 0.6"> Consider broadening the m/z precision or formula range. </i>
@@ -588,6 +800,27 @@ const formatFit = (value) =>
   flex-flow: row nowrap;
   gap: 1rem;
   width: 100%;
+}
+
+/* Sits with the fields it resets rather than stretched to their height: the bar
+   stretches its children by default, and FloatLabel wraps each input in a box
+   as tall as the row. */
+.reset-params {
+  flex: 0 0 auto;
+  align-self: center;
+}
+/* The element the curation help card is registered on. It is a hook for the
+   directive and nothing else, so with its glyph gone it takes up no space -
+   which is what keeps a card that must not unmount from being reachable by a
+   viewer the control has been taken away from. */
+.curate-header {
+  display: inline-flex;
+}
+.row-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.15rem;
+  justify-content: flex-end;
 }
 .known-identity {
   display: inline-flex;

@@ -60,6 +60,17 @@ Run the suite that covers what you changed before finishing. Frontend unit tests
 the default place for new frontend tests; only reach for e2e when the behavior spans
 the real backend.
 
+**Concurrent backend runs from different checkouts are safe.** The suite's ephemeral
+databases are named `mascope_test_<env>_<category>`, where `<env>` is a label - `MASCOPE_ENV`
+if exported, else `wt_<checkout directory name>` - followed by a digest of the checkout's
+absolute path. The digest is what isolates: neither the directory name nor an exported
+`MASCOPE_ENV` is unique to a checkout on its own. Session teardown drops only what that run
+created. `MASCOPE_TEST_ENV` replaces the whole segment, digest included, so two runs can
+deliberately share one namespace - or a second run in the *same* checkout, which otherwise
+still collides, can be given its own. A long env is truncated with a digest to stay inside
+Postgres' 63-character limit, so read the real name off `psql -c "\l mascope_test_*"` rather
+than assembling it by hand.
+
 ### The e2e stack
 
 The hermetic e2e suite (`server/frontend/tests/e2e/`) targets the demo stack:
@@ -92,6 +103,24 @@ It comes preloaded with the published demo dataset and login `demo@mascope.app` 
 
 - Conventional Commits (`type(scope): description`); ASCII-only commit messages,
   no Co-Authored-By trailers.
+- **Rebase PR branches, never merge into them** - a PR should stay a linear
+  series of commits on top of `develop`. When a branch conflicts or falls
+  behind, `git fetch origin develop && git rebase origin/develop`, resolve the
+  conflicts, and force-push with `--force-with-lease`. Do not merge `develop`
+  into a PR branch - no "Merge branch 'develop' into ..." commits. If one was
+  already made, `git reset --hard <pre-merge-commit>` and rebase instead;
+  comparing `git rev-parse HEAD^{tree}` against the merge's tree confirms the
+  conflict resolution survived unchanged.
+- **CHANGELOG.md merges by union, so it does not conflict** - every PR appends
+  an entry to the same Unreleased section, so any two PRs in flight collided
+  there even when they touched nothing else. `.gitattributes` marks the file
+  `merge=union`, which keeps both sides instead of raising a conflict. That is
+  right for entries, which are whole blank-line-separated blocks and only ever
+  appended. It does mean no conflict is raised for you to review, so if you
+  **edit** an existing entry rather than adding one, read the merged result:
+  a concurrent edit to the same entry is kept twice rather than flagged.
+  Ordering within a section is not guaranteed either, so put an entry where it
+  reads best rather than assuming its position survives.
 - **Anonymize commit messages and PR descriptions** - this repository is public,
   so text pushed to GitHub must never contain real instrument names or IDs,
   customer names, internal or customer server hostnames, tailnet/LAN addresses,
@@ -102,6 +131,25 @@ It comes preloaded with the published demo dataset and login `demo@mascope.app` 
 - **Lint Python before committing** - CI's "Lint and format" job runs
   `ruff check .` and `ruff format --check .` and fails the PR on any violation.
   Run `uv run ruff check --fix . && uv run ruff format .` before you commit.
+- **Dependency licences are gated**, both ecosystems - CI fails if any package
+  declares a licence outside the allowlist in `tooling/check-licenses.py`,
+  including non-SPDX free text such as "SEE LICENSE IN LICENSE.md". It checks
+  whole lockfiles, not the PR's diff, so a pre-existing violation stays red
+  until it is dealt with. Run it locally:
+
+  ```sh
+  uv run python tooling/check-licenses.py       # npm + Python
+  ```
+
+  The npm half reads `server/frontend/package-lock.json` directly and needs no
+  install. The Python half reads the *installed* distributions, because
+  `uv.lock` records no licence metadata at all - so it needs
+  `uv sync --all-groups` first, and anything the lockfile names that is not
+  installed is reported rather than skipped. A nightly audit re-runs both
+  against develop and master, so a merge that skipped the gate still surfaces.
+  If it fails on something you added, read the actual licence - widening the
+  allowlist to get green is the one response that defeats the check.
 - CI (`.github/workflows/tests.yaml`) runs the "Lint and format" (ruff) job plus
-  backend pytest, library pytest, CLI pytest, frontend unit, and the demo-stack
-  e2e suite on every PR; releases are gated on `tooling/smoke-test.sh`.
+  backend pytest, library pytest, CLI pytest, frontend unit, the dependency
+  licence check, and the demo-stack e2e suite on every PR; releases are gated on
+  `tooling/smoke-test.sh`.

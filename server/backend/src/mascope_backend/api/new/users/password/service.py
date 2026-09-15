@@ -4,34 +4,16 @@ User password management service.
 This module handles admin/owner password management for other users.
 """
 
-import secrets
-import string
-
 from mascope_backend.api.lib.api_features import api_controller
+from mascope_backend.api.new.users.password.generate import generate_random_password
 from mascope_backend.api.new.users.schemas import UserUpdate
 from mascope_backend.api.new.users.service import update_user
 from mascope_backend.api.new.users.user_manager.service import UserManager
 
 
-def generate_random_password(length: int = 16) -> str:
-    """
-    Generates a random password containing uppercase, lowercase, and digits.
-
-    :param length: Length of the password.
-    :return: A random password string.
-    """
-    choices = [
-        secrets.choice(string.ascii_uppercase),
-        secrets.choice(string.ascii_lowercase),
-        secrets.choice(string.digits),
-    ]
-    characters = string.ascii_letters + string.digits
-    choices.extend(secrets.choice(characters) for _ in range(length - 3))
-
-    # Shuffle for randomness
-    secrets.SystemRandom().shuffle(choices)
-
-    return "".join(choices)
+# Re-exported: callers of this module have always reached the generator
+# through it.
+__all__ = ["generate_random_password", "reset_user_password"]
 
 
 @api_controller()

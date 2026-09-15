@@ -194,8 +194,16 @@ async def test_passes_instrument_year_and_user_to_get_acquisition_dataset():
 
 
 @pytest.mark.asyncio
-async def test_derives_year_from_datetime_utc():
-    """Year is derived from datetime_utc (preferred over datetime)."""
+async def test_derives_year_from_instrument_local_datetime():
+    """Year comes from the instrument's local clock, like the batch inside it.
+
+    This used to prefer `datetime_utc`, which put a file acquired just after
+    local New Year midnight into the previous year's dataset - while the daily
+    batch and the sample item inside that dataset were both named from the
+    local `datetime`. One instrument-local day then owned batches in two
+    year-datasets, which no uniqueness on (dataset, name, polarity) can merge.
+    The container now follows the same clock as its contents.
+    """
     from mascope_backend.api.controllers.sample.files.process.service import (
         auto_process_sample_file,
     )
@@ -205,7 +213,7 @@ async def test_derives_year_from_datetime_utc():
         datetime_local=datetime(2025, 1, 1, 0, 30, 0),
     )
     ion_mode = _make_ionization_mode()
-    dataset = _make_dataset(dataset_id="ds-2024")
+    dataset = _make_dataset(dataset_id="ds-2025")
     batch = _make_batch()
     sample_item = _make_sample_item()
 
@@ -231,10 +239,10 @@ async def test_derives_year_from_datetime_utc():
         process_id="proc-001",
     )
 
-    # datetime_utc year (2024) should be used, not datetime year (2025)
+    # Local datetime year (2025) is used, not the datetime_utc year (2024)
     mocks["get_acquisition_dataset"].assert_called_once_with(
         instrument="Orbion",
-        year=2024,
+        year=2025,
         user_id=42,
     )
 
@@ -587,8 +595,10 @@ async def test_retries_recoverable_error_then_succeeds():
 
     assert result == ok
     assert body.call_count == 2
-    # Partial sample items are cleaned up before the retry, not the first try.
-    cleanup.assert_called_once_with("sf-retry")
+    # Partial sample items are cleared before every attempt, the first included:
+    # the file may carry items from an earlier pipeline a restart cut short.
+    assert cleanup.call_count == 2
+    assert all(call.args == ("sf-retry",) for call in cleanup.call_args_list)
 
 
 @pytest.mark.asyncio
@@ -639,7 +649,8 @@ async def test_does_not_retry_non_recoverable_error():
 
     assert excinfo.value.status_code == 400
     assert body.call_count == 1
-    cleanup.assert_not_called()
+    # Cleared once, before the single attempt - not once per failure.
+    cleanup.assert_called_once_with("sf-bad")
 
 
 @pytest.mark.asyncio
@@ -701,3 +712,62 @@ async def test_concurrent_pipelines_are_bounded():
         )
 
     assert peak == service._AUTO_PROCESS_CONCURRENCY
+
+
+@pytest.mark.asyncio
+async def test_names_the_file_when_it_gives_up():
+    """
+    Exhausting the retries must name the file, not just the attempts.
+
+    A file whose pipeline never completes keeps its sample_file row and its
+    batch still settles `ready`, so without this the shortfall is only
+    visible by counting rows afterwards - the demo bundle shipped incomplete
+    goldens exactly that way (see the demo coverage guard).
+    """
+    from mascope_backend.api.controllers.sample.files.process import service
+    from mascope_backend.api.lib.exceptions.api_exceptions import ApiException
+
+    body = AsyncMock(side_effect=ApiException("busy", {}, 503))
+    logged: list[str] = []
+
+    with (
+        patch(f"{_SVC}._auto_process_sample_file", new=body),
+        patch(f"{_SVC}._delete_partial_acquisition_items", new=AsyncMock()),
+        patch.object(service, "_AUTO_PROCESS_RETRY_DELAYS_S", (0, 0, 0)),
+        patch.object(service.runtime.logger, "error", side_effect=logged.append),
+        patch(f"{_NOTIF}.handle_notifications", new_callable=AsyncMock),
+        patch(f"{_UTILS}.handle_reloads", new_callable=AsyncMock),
+    ):
+        with pytest.raises(ApiException):
+            await service.auto_process_sample_file(
+                sample_file_id="sf-gaveup", independent_transaction=False
+            )
+
+    assert any("sf-gaveup" in line for line in logged), logged
+    assert any("gave up" in line for line in logged), logged
+
+
+@pytest.mark.asyncio
+async def test_names_the_file_on_a_non_recoverable_error():
+    """The give-up log covers the no-retry path too, not just exhaustion."""
+    from mascope_backend.api.controllers.sample.files.process import service
+    from mascope_backend.api.lib.exceptions.api_exceptions import ApiException
+
+    body = AsyncMock(side_effect=ApiException("corrupt", {}, 400))
+    logged: list[str] = []
+
+    with (
+        patch(f"{_SVC}._auto_process_sample_file", new=body),
+        patch(f"{_SVC}._delete_partial_acquisition_items", new=AsyncMock()),
+        patch.object(service, "_AUTO_PROCESS_RETRY_DELAYS_S", (0, 0, 0)),
+        patch.object(service.runtime.logger, "error", side_effect=logged.append),
+        patch(f"{_NOTIF}.handle_notifications", new_callable=AsyncMock),
+        patch(f"{_UTILS}.handle_reloads", new_callable=AsyncMock),
+    ):
+        with pytest.raises(ApiException):
+            await service.auto_process_sample_file(
+                sample_file_id="sf-corrupt", independent_transaction=False
+            )
+
+    assert any("sf-corrupt" in line for line in logged), logged
+    assert body.call_count == 1  # not retried

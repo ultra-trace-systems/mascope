@@ -15,6 +15,14 @@ export const useAuth = defineStore('app.auth', () => {
   const mustChangePassword = computed(() => !!user.value?.must_change_password)
   const passwordChangeReason = computed(() => user.value?.password_change_reason ?? null)
 
+  // The deployment requires a second factor at this account's role and it has
+  // none yet. Authenticated but not yet "in" the app, like the password gate,
+  // and ordered after it: the server enforces the same order, so an account
+  // owing both is shown the password screen first.
+  const mustEnrollMfa = computed(
+    () => !mustChangePassword.value && !!user.value?.mfa_enrollment_required
+  )
+
   // One-shot latch for the "you need a new password" notice, so a burst of
   // store syncs all being refused at once yields one message rather than
   // twenty.
@@ -68,18 +76,79 @@ export const useAuth = defineStore('app.auth', () => {
     return first
   }
 
+  /**
+   * React to an API call refused because the account owes an enrolment.
+   *
+   * Shares the in-flight profile re-read with the password gate: a sweep
+   * refuses every open store sync at once, and one re-read serves them all.
+   * No notice latch - unlike a password change, which can be imposed
+   * mid-session, this state is visible from the moment the account signs in,
+   * so a toast would only repeat the screen the user is already looking at.
+   */
+  const requireMfaEnrollment = () => {
+    if (!gateIdentify) {
+      gateIdentify = identify()
+        .catch(() => {})
+        .finally(() => {
+          gateIdentify = null
+        })
+    }
+  }
+
+  // A sign-in that passed the password step and owes a verification code. The
+  // server holds the half-finished attempt in its own short-lived cookie, so
+  // nothing about it is tracked here beyond which screen to show.
+  const mfaPending = ref(false)
+
   const login = async ({ email, password }) => {
     const params = new URLSearchParams()
     params.append('grant_type', 'password')
     params.append('username', email)
     params.append('password', password)
 
-    await api.http.post('/auth/login', params, {
+    const result = await api.http.post('/auth/login', params, {
       headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
       type: 'user_sign_in',
       use: 'auth'
     })
+    if (result?.mfaRequired) {
+      mfaPending.value = true
+      return
+    }
+    mfaPending.value = false
     await identify()
+  }
+
+  /**
+   * Complete a sign-in by submitting a verification or recovery code.
+   *
+   * Errors are rendered by the caller, so they are re-thrown rather than
+   * notified. A 401 means the half-finished attempt is gone (expired, or spent
+   * by too many wrong codes), which is the one case that returns to the
+   * credentials step - a wrong code is a 400 and leaves the user where they are.
+   *
+   * @param {string} code Verification code or recovery code.
+   */
+  const verifyMfa = async (code) => {
+    try {
+      await api.http.post(
+        '/auth/mfa/verify',
+        { code },
+        { type: 'user_sign_in', use: 'auth', errors: 'inline' }
+      )
+    } catch (error) {
+      if (error?.response?.status === 401) {
+        mfaPending.value = false
+      }
+      throw error
+    }
+    mfaPending.value = false
+    await identify()
+  }
+
+  /** Abandon a half-finished sign-in and return to the credentials step. */
+  const cancelMfa = () => {
+    mfaPending.value = false
   }
 
   const logout = async () => {
@@ -123,12 +192,15 @@ export const useAuth = defineStore('app.auth', () => {
     handlers.value.push({ callback })
   }
 
-  // The ID of a user who may actually use the app. A user held behind the
-  // mandatory password change is authenticated but gated, so their stores must
-  // not load behind the password screen - and must load exactly once when it
-  // clears.
+  // The ID of a user who may actually use the app. A user held behind either
+  // gate - the mandatory password change or the enrolment requirement - is
+  // authenticated but gated, so their stores must not load behind that screen,
+  // and must load exactly once when it clears.
   const sessionId = (candidate) =>
-    candidate && typeof candidate === 'object' && !candidate.must_change_password
+    candidate &&
+    typeof candidate === 'object' &&
+    !candidate.must_change_password &&
+    !candidate.mfa_enrollment_required
       ? candidate.id
       : null
 
@@ -172,9 +244,14 @@ export const useAuth = defineStore('app.auth', () => {
     requiresOwner,
     mustChangePassword,
     passwordChangeReason,
+    mustEnrollMfa,
     identify,
     requirePasswordChange,
+    requireMfaEnrollment,
     login,
+    mfaPending,
+    verifyMfa,
+    cancelMfa,
     logout,
     checkFirstOwner,
     signupFirstOwner,

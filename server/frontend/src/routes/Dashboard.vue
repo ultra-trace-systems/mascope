@@ -61,7 +61,11 @@ const tabs = computed(() => [
         dragging instead. Chart tools are available at top-right. Double click to reset zoom.
       </p>  
 
-      <p>Click on a data point to visualize the corresponding Match.</p>
+      ${
+        peakAssignmentEnabled
+          ? '<p>The <b>Targets</b> / <b>Assignments</b> switch above the browser decides what this chart plots: target matches, or the batch peaks you select in the ledger.</p>'
+          : '<p>Click on a data point to visualize the corresponding Match.</p>'
+      }
 
       <p>
         Chart settings (top-left) allow you to select the x-axis dimension, y-axis scaling etc.
@@ -72,27 +76,40 @@ const tabs = computed(() => [
     label: 'Sample',
     icon: 'pi pi-chart-bar',
     disabled: !app.data.sample.focused,
-    doc: app.ui.help.docUrl('how-it-works/peak-detection/'),
+    doc: app.ui.help.docUrl(
+      peakAssignmentEnabled ? 'how-it-works/peak-assignment/' : 'how-it-works/peak-detection/'
+    ),
     help: `
       <h1>Sample View</h1>
 
       <p>Visualize the selected sample's spectrum and peaks.</p>
 
-      <p>Assign elemental composition to detected peaks and add them to a target collection.</p>
+      ${
+        peakAssignmentEnabled
+          ? "<p>Inspect each peak's committed assignment, verify it, and re-search compositions on demand.</p>"
+          : '<p>Assign elemental composition to detected peaks and add them to a target collection.</p>'
+      }
     `
   },
+  // The Match tab renders whatever the peak_assignment flag says: the two
+  // paradigms coexist rather than one replacing the other, so turning
+  // assignment on must not take the targeted workflow's per-ion view away with
+  // it. It is the only home of the match-parameter drawer and the Rate Match
+  // action, which the Sample view does not carry - retiring it would have
+  // removed both from every deployment (it previously did; see
+  // docs/dev/peak_assignment_frontend.md, F6 / issue #1736). The tab stays
+  // enabled only once an ion is visualized, so it costs an assignment-first
+  // user nothing.
   {
-    // Renamed to "Fit" only where peak-centric assignment is on: there the
-    // Sample view owns assignment and this tab is purely fit verification.
-    // Without the feature it is the long-standing Match tab.
-    label: peakAssignmentEnabled ? 'Fit' : 'Match',
-    // Internal tab value stays 'match' so existing app.ui.tab.active === 'match'
-    // callers and the TabPanel value keep working; only the label is renamed.
+    label: 'Match',
+    // Internal tab value stays 'match' to match the TabPanel value and
+    // the existing app.ui.tab.active === 'match' callers.
     value: 'match',
     icon: 'pi pi-verified',
     disabled: !app.data.match.visualized.ion,
-    // Card body comes from the shared docs snippet (docs/user/_help/matching.md)
-    // rather than inline prose -- the docs are the single source of truth.
+    // Card body comes from the shared docs snippet
+    // (docs/user/_help/matching.md) rather than inline prose -- the docs
+    // are the single source of truth.
     title: 'Match view',
     helpKey: 'matching',
     doc: app.ui.help.docUrl('how-it-works/matching/')
@@ -207,9 +224,7 @@ article {
   gap: 0.25rem;
 }
 #charts {
-  grid-area: charts;
   border: none;
-  height: calc(100% -10rem);
 }
 
 #charts :deep(.p-panel-header) {

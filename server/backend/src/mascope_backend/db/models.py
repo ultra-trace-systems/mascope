@@ -17,15 +17,19 @@ from fastapi_users_db_sqlalchemy.access_token import (
 )
 from sqlalchemy import (
     JSON,
+    REAL,
     TIMESTAMP,
+    BigInteger,
     Boolean,
     Float,
     ForeignKey,
     Index,
     Integer,
     MetaData,
+    SmallInteger,
     String,
     Text,
+    TypeDecorator,
     UniqueConstraint,
     event,
     func,
@@ -203,6 +207,14 @@ class User(SQLAlchemyBaseUserTable[int], Base):
     username: Mapped[str] = mapped_column(
         String(length=100), unique=True, nullable=False
     )
+    # Whether this account is a person or an instrument agent's machine identity
+    # ("person" | "machine", see mascope_backend.accounts). A machine account
+    # never signs in interactively, has no usable password, and is exempt from
+    # the human-only password-change and MFA requirements; it is created by
+    # pairing approval and vouched for by a sponsor recorded on its device.
+    account_type: Mapped[str] = mapped_column(
+        String(16), default="person", server_default=text("'person'"), nullable=False
+    )
     role_id: Mapped[Optional[int]] = mapped_column(
         Integer, ForeignKey("role.role_id", ondelete="SET NULL"), nullable=True
     )
@@ -230,10 +242,31 @@ class User(SQLAlchemyBaseUserTable[int], Base):
         TIMESTAMP(timezone=True), nullable=True
     )
 
+    # TOTP seed, encrypted at rest with the deployment's MFA key (see
+    # api/new/auth/mfa/secrets.py). NULL when the account has never begun
+    # enrollment. Present but with mfa_enabled False means enrollment was
+    # started and never confirmed, which must not gate a login.
+    mfa_secret: Mapped[Optional[str]] = mapped_column(String(length=512), nullable=True)
+    # Whether a confirmed second factor gates this account's interactive logins.
+    mfa_enabled: Mapped[bool] = mapped_column(
+        Boolean, default=False, server_default=text("false"), nullable=False
+    )
+    mfa_confirmed_at: Mapped[Optional[dt]] = mapped_column(
+        TIMESTAMP(timezone=True), nullable=True
+    )
+    # Counter of the last accepted TOTP code. Verification tolerates clock drift
+    # by accepting a window of counters, which leaves a code usable for about 90
+    # seconds - long enough to replay if it is observed. Accepting only counters
+    # strictly greater than this one closes that window at first use.
+    mfa_last_timestep: Mapped[Optional[int]] = mapped_column(BigInteger, nullable=True)
+
     # Relationships
     role = relationship("Role", back_populates="user")
     access_token = relationship(
         "AccessToken", back_populates="user", cascade="all, delete, delete-orphan"
+    )
+    recovery_code = relationship(
+        "UserRecoveryCode", back_populates="user", cascade="all, delete, delete-orphan"
     )
     workspace_memberships = relationship(
         "WorkspaceMember",
@@ -293,6 +326,14 @@ class AccessToken(SQLAlchemyBaseAccessTokenTable[int], Base):
     service_name: Mapped[Optional[str]] = mapped_column(String(50), nullable=True)
     # Optional label, e.g. the paired machine's hostname (set by device pairing)
     description: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
+    # The paired machine holding this token. NULL for personal tokens
+    # (mascope_sdk) and for agent tokens issued before the device registry;
+    # the require_device_tokens deployment flag refuses the latter.
+    device_id: Mapped[Optional[int]] = mapped_column(
+        ForeignKey("agent_device.device_id", ondelete="CASCADE"),
+        nullable=True,
+        index=True,
+    )
     created_at: Mapped[dt] = mapped_column(
         TIMESTAMP(timezone=True),
         index=True,
@@ -302,6 +343,7 @@ class AccessToken(SQLAlchemyBaseAccessTokenTable[int], Base):
 
     # Relationships
     user = relationship("User", back_populates="access_token")
+    device = relationship("AgentDevice", back_populates="access_tokens")
 
     @classmethod
     async def clean_invalid_tokens(cls, session) -> int:
@@ -333,6 +375,114 @@ class AccessToken(SQLAlchemyBaseAccessTokenTable[int], Base):
 
         # Return number of deleted tokens
         return len(invalid_tokens)
+
+
+class UserRecoveryCode(Base):
+    """
+    Single-use codes that stand in for a TOTP code when the authenticator is
+    lost.
+
+    Stored as a plain SHA-256 digest rather than a password hash: these are
+    high-entropy values the server generates, so there is no brute-force margin
+    a slow KDF would buy, and a digest makes redemption an indexed lookup
+    instead of a hash comparison against every unused row.
+
+    Rows are kept after redemption (``used_at`` set) so a code cannot be
+    re-issued into the same slot, and so an operator can see that recovery
+    happened.
+    """
+
+    __tablename__ = "user_recovery_code"
+    __table_args__ = (
+        UniqueConstraint("user_id", "code_hash", name="uq_recovery_code_user_hash"),
+        Index("ix_user_recovery_code_user_id", "user_id"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    user_id: Mapped[int] = mapped_column(
+        ForeignKey("user.id", ondelete="CASCADE"), nullable=False
+    )
+    code_hash: Mapped[str] = mapped_column(String(length=64), nullable=False)
+    created_at: Mapped[dt] = mapped_column(
+        TIMESTAMP(timezone=True),
+        nullable=False,
+        default=lambda: dt.now(timezone.utc),
+    )
+    used_at: Mapped[Optional[dt]] = mapped_column(
+        TIMESTAMP(timezone=True), nullable=True
+    )
+
+    # Relationships
+    user = relationship("User", back_populates="recovery_code")
+
+
+class AgentDevice(Base):
+    """
+    A machine paired to hold an agent credential (e.g. the File Agent on an
+    instrument PC).
+
+    Each row is one paired machine: created when a pairing is approved, named
+    after the hostname the agent reported (renameable), and sponsored by the
+    approving user. The sponsor vouches for the machine; ``ON DELETE SET
+    NULL`` keeps the device (and the attribution of everything it uploaded)
+    when the sponsor's account is removed, mirroring
+    ``workspace_member.granted_by``.
+
+    Revocation deletes the device's access tokens and sets ``revoked_at``;
+    the row itself is kept so uploads attributed to the device stay
+    explainable. Deleting a device row cascades to its tokens (fail closed:
+    a credential must never outlive its device record).
+    """
+
+    __tablename__ = "agent_device"
+
+    device_id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    name: Mapped[str] = mapped_column(String(100), nullable=False)
+    service_name: Mapped[str] = mapped_column(String(50), nullable=False)
+    # The instrument the agent reports it watches: from the pairing request,
+    # or from the first upload carrying one when the device was paired before
+    # the server knew the field. Reported, not verified, and not read by
+    # routing, which still takes an upload's instrument from the file name.
+    instrument: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+    # The person who approved the pairing and vouches for this machine.
+    sponsor_user_id: Mapped[Optional[int]] = mapped_column(
+        ForeignKey("user.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    # The machine account this device authenticates as (the subject of its
+    # tokens). SET NULL rather than CASCADE: deleting the account must not
+    # erase the device row, which is attribution history.
+    machine_user_id: Mapped[Optional[int]] = mapped_column(
+        ForeignKey("user.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    created_at: Mapped[dt] = mapped_column(
+        TIMESTAMP(timezone=True),
+        nullable=False,
+        default=lambda: dt.now(timezone.utc),
+    )
+    # Updated on authenticated use, throttled in SQL so a busy agent costs one
+    # write per throttle window, not one per request.
+    last_seen_at: Mapped[Optional[dt]] = mapped_column(
+        TIMESTAMP(timezone=True), nullable=True
+    )
+    # The agent release last seen on this device, from the X-Agent-Version
+    # header, written together with last_seen_at; set at approval from the
+    # pairing request. NULL while the agent reports none.
+    last_seen_version: Mapped[Optional[str]] = mapped_column(String(32), nullable=True)
+    revoked_at: Mapped[Optional[dt]] = mapped_column(
+        TIMESTAMP(timezone=True), nullable=True
+    )
+
+    # Relationships. Two FKs point at user (sponsor, machine account), so each
+    # names its own column.
+    sponsor = relationship("User", foreign_keys=[sponsor_user_id])
+    machine_user = relationship("User", foreign_keys=[machine_user_id])
+    # passive_deletes=True: the DB's ON DELETE CASCADE removes the tokens.
+    access_tokens = relationship(
+        "AccessToken",
+        back_populates="device",
+        cascade="all, delete, delete-orphan",
+        passive_deletes=True,
+    )
 
 
 class Dataset(Base):
@@ -375,8 +525,8 @@ class Dataset(Base):
         # year) by a read-then-write get-or-create that can race under
         # concurrent ingest; constrain the natural key so the race fails
         # loudly (and is recovered in get_acquisition_dataset) instead of
-        # inserting duplicates. Partial: user-created dataset types have no
-        # naming invariant.
+        # inserting duplicates. Partial: the other dataset types are keyed on
+        # (workspace, name) instead, by the complementary index below.
         Index(
             "uq_dataset_acquisition_natural_key",
             "workspace_id",
@@ -384,6 +534,37 @@ class Dataset(Base):
             "dataset_name",
             unique=True,
             postgresql_where=text("dataset_type = 'ACQUISITION'"),
+        ),
+        # A dataset name is unique within its workspace, compared under the
+        # canonical key `lower(btrim(dataset_name))` - two datasets differing
+        # only in case or in surrounding padding read as one entry in the
+        # workspace list, which is the bug. Backs the `_assert_name_available`
+        # check in the dataset controller, whose read-then-write cannot close
+        # the race on its own.
+        #
+        # That key is THE definition of "same name" and it is evaluated by
+        # Postgres in all three places that need it: here, in
+        # `_assert_name_available`, and in the migration that introduced the
+        # index. Python's `str.lower()` is not the same function as Postgres
+        # `lower()` (they disagree on 35 BMP codepoints, and Python alone
+        # applies the Greek final-sigma rule), so a Python-side key would let
+        # the check pass on a name the index then rejects - a 500 for input
+        # the user cannot see anything wrong with.
+        #
+        # Partial, and it has to stay partial. ACQUISITION datasets are named
+        # after the calendar year and auto-created per (workspace, instrument,
+        # year) by get_acquisition_dataset, which recovers from a duplicate-key
+        # insert only by re-finding an ACQUISITION row. Covering every type
+        # here would let a user-created dataset named e.g. "2027" in an
+        # instrument workspace turn that year's rollover into an
+        # IntegrityError nothing can recover from, stopping auto-processing
+        # for the instrument.
+        Index(
+            "uq_dataset_workspace_name_ci",
+            "workspace_id",
+            func.lower(func.btrim(dataset_name)),
+            unique=True,
+            postgresql_where=text("dataset_type <> 'ACQUISITION'"),
         ),
     )
 
@@ -437,6 +618,39 @@ class SampleBatch(Base):
         cascade="all, delete, delete-orphan",
         passive_deletes=True,
     )
+    batch_peak = relationship(
+        "BatchPeak",
+        back_populates="sample_batch",
+        cascade="all, delete, delete-orphan",
+        passive_deletes=True,
+    )
+
+    __table_args__ = (
+        # Daily ACQUISITION batches are auto-created per (dataset, day,
+        # ionization mode) by a read-then-write get-or-create that races under
+        # concurrent ingest - three files of one watcher scan share a day and a
+        # mode, so they resolve to one batch name. Constrain the natural key so
+        # the race fails loudly and is recovered in
+        # get_or_create_acquisition_batch instead of inserting duplicates that
+        # split the day's samples across two batches.
+        #
+        # `polarity` is in the key because the name alone does not identify the
+        # mode: it embeds `ionization_mode_name`, which carries no uniqueness
+        # (only `ionization_mode_token` does), so an admin who names the
+        # positive and negative variant alike renders one name for both. Two
+        # modes sharing a name AND a polarity still collapse onto one batch -
+        # separating those needs the mode id on the batch.
+        #
+        # Partial: ANALYSIS batches are user-named and have no such invariant.
+        Index(
+            "uq_sample_batch_acquisition_natural_key",
+            "dataset_id",
+            "sample_batch_name",
+            "polarity",
+            unique=True,
+            postgresql_where=text("sample_batch_type = 'ACQUISITION'"),
+        ),
+    )
 
 
 @event.listens_for(SampleBatch, "after_insert")
@@ -460,6 +674,20 @@ def update_dataset_on_sample_batch_change(mapper, connection, target):
 def update_modified_timestamp(mapper, connection, target):
     """Automatically update modification timestamp when SampleBatch is updated."""
     target.sample_batch_utc_modified = dt.now(timezone.utc)
+
+
+def _instrument_type_from_name(context) -> str | None:
+    """The instrument class by the old name rule, for a row created without one.
+
+    The converter records the class it read the file with; this default only
+    covers rows inserted through the ORM without it, which is test fixtures.
+    A name the rule cannot read yields None and the NOT NULL refuses the row,
+    which is the right outcome: nothing should be filing a class-less row.
+    """
+    from mascope_file.name import resolve_instrument_type  # noqa: PLC0415
+
+    instrument = context.get_current_parameters().get("instrument") or ""
+    return resolve_instrument_type(instrument, throw=False)
 
 
 class SampleFile(Base):
@@ -496,10 +724,44 @@ class SampleFile(Base):
     range: Mapped[list] = mapped_column(JSON)
     mz_calibration: Mapped[Optional[dict]] = mapped_column(JSON)
     polarity: Mapped[str] = mapped_column(String(4))
+    # Attribution, recorded at creation. NULL on rows that predate these
+    # columns; SET NULL keeps the file when the account or device goes away.
+    uploaded_by_user_id: Mapped[Optional[int]] = mapped_column(
+        ForeignKey("user.id", ondelete="SET NULL"), nullable=True
+    )
+    uploaded_by_device_id: Mapped[Optional[int]] = mapped_column(
+        ForeignKey("agent_device.device_id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+    # How datetime_utc was derived from the instrument-local datetime:
+    # the IANA zone the uploading agent reported (NULL when none was sent),
+    # and which source determined the applied offset - "file" (an offset
+    # embedded in the raw file), "agent" (the reported zone), or "guess"
+    # (the converter host's own clock, the legacy fallback).
+    acquisition_timezone: Mapped[Optional[str]] = mapped_column(
+        String(64), nullable=True
+    )
+    utc_offset_source: Mapped[Optional[str]] = mapped_column(String(8), nullable=True)
+    # The instrument class, "orbi" or "tof", decided by the reader that
+    # converted the file. Recorded rather than parsed from the name, so an
+    # instrument's name need not say which class it is. The default is the
+    # old name rule, for rows created without one - test fixtures, mostly;
+    # the converter always records it.
+    instrument_type: Mapped[str] = mapped_column(
+        String(8), nullable=False, default=_instrument_type_from_name
+    )
+    # The file's name on the uploading machine, before the server filed it
+    # under the instrument the agent reported. NULL when nothing renamed it.
+    source_filename: Mapped[Optional[str]] = mapped_column(String(256), nullable=True)
 
     # Relationships
     instrument_function = relationship(
         "InstrumentFunction", back_populates="sample_file"
+    )
+    uploaded_by_user = relationship("User", foreign_keys=[uploaded_by_user_id])
+    uploaded_by_device = relationship(
+        "AgentDevice", foreign_keys=[uploaded_by_device_id]
     )
     sample_items = relationship(
         "SampleItem", back_populates="sample_file", cascade="all, delete, delete-orphan"
@@ -605,6 +867,12 @@ class SampleItem(Base):
     )
     peak_assignment = relationship(
         "PeakAssignment",
+        back_populates="sample_item",
+        cascade="all, delete, delete-orphan",
+        passive_deletes=True,
+    )
+    batch_peak_occurrence = relationship(
+        "BatchPeakOccurrence",
         back_populates="sample_item",
         cascade="all, delete, delete-orphan",
         passive_deletes=True,
@@ -725,6 +993,32 @@ class TargetCompound(Base):
     """Target compound definition."""
 
     __tablename__ = "target_compound"
+
+    # Mass-based compounds (a bare number instead of a composition) were retired
+    # with the molmass fork - ions and isotopes are computed from the formula, so
+    # a mass alone can never yield an isotope pattern. The Pydantic models
+    # already refuse them, but only for requests arriving over HTTP: a db
+    # script, hand-written SQL or a restored dump bypasses them entirely, so
+    # the rule lives here too. Mirrors _NUMERIC_MASS in the request model; note
+    # it is a regex and not a float() parse because "NaN" is sodium nitride, a
+    # formula that must keep working. Added NOT VALID by migration
+    # e2d4a91c7b06, so legacy rows survive an upgrade while no new one lands.
+    # Bracket isotope notation is rejected alongside it: isotopes are always
+    # generated from the formula, so pinning one on the compound asks for a
+    # monoisotopic species where a full pattern gets computed anyway. Caret
+    # isotopes ('^N') stay allowed - those name a labelled reagent, a different
+    # substance, and are in active production use.
+    __table_args__ = (
+        CheckConstraint(
+            r"target_compound_formula !~ "
+            r"'^[+-]?([0-9]+\.?[0-9]*|\.[0-9]+)([eE][+-]?[0-9]+)?$'",
+            name="formula_not_a_mass",
+        ),
+        CheckConstraint(
+            r"target_compound_formula !~ '\[[0-9]+[A-Za-z]|[A-Za-z]\[[0-9]+\]'",
+            name="formula_no_bracket_isotope",
+        ),
+    )
 
     target_compound_id: Mapped[str] = mapped_column(String(16), primary_key=True)
     target_compound_name: Mapped[Optional[str]] = mapped_column(Text)
@@ -1104,6 +1398,11 @@ class MatchIsotope(Base):
     match_abundance_error: Mapped[float] = mapped_column(Float)
     match_mz_error: Mapped[float] = mapped_column(Float)
     match_score: Mapped[float] = mapped_column(Float)
+    # Per-peak signal-to-noise of the matched sample peak, when the sample file
+    # carries noise data. NULL means "no SNR for this row" (files without noise
+    # data, sentinel rows, and every row stored before the column existed); the
+    # v2 fit score then falls back to its no-SNR mode for that row.
+    signal_to_noise: Mapped[Optional[float]] = mapped_column(Float)
     match_isotope_utc_created: Mapped[Optional[dt]] = mapped_column(
         TIMESTAMP(timezone=True)
     )
@@ -1129,14 +1428,22 @@ class MatchIsotope(Base):
 class PeakAssignmentRun(Base):
     """One peak-centric assignment run over a sample.
 
-    Stores the engine version and the full configuration (search ranges,
+    Stores the producing engine and the full configuration (search ranges,
     heuristics, ppm tolerances, stage toggles) so runs are reproducible and
     comparable. PeakAssignment rows belong to exactly one run.
 
-    status values: 'pending', 'running', 'completed', 'failed', 'cancelled'.
-    'cancelled' is terminal like 'failed' - the read model serves only
-    'completed' runs, and retention reclaims both after the failed grace - but
-    kept distinct so an interrupted run is not reported as an engine error.
+    status values: 'pending', 'running', 'importing', 'completed', 'failed',
+    'cancelled'. 'cancelled' is terminal like 'failed' - the read model serves
+    only 'completed' runs, and retention reclaims both after the failed grace -
+    but kept distinct so an interrupted run is not reported as an engine error.
+    'importing' is the non-terminal state an externally computed run assembles
+    under while its rows arrive over several requests: unlike 'running' no
+    server task owns it, which is why the startup reaper leaves it alone and
+    retention holds it under its own grace instead.
+
+    A run is either computed in-app or imported, and ``engine`` is what says
+    which. It is never NULL - existing rows were backfilled to the in-app
+    identity - so every consumer can compare it without handling a sentinel.
     """
 
     __tablename__ = "peak_assignment_run"
@@ -1147,9 +1454,41 @@ class PeakAssignmentRun(Base):
         ForeignKey("sample_item.sample_item_id", ondelete="CASCADE"),
         index=True,
     )
+    # Which engine produced this run: the in-app engine ('mascope', reserved
+    # from client payloads) or an external one that imported its ledger.
+    engine: Mapped[str] = mapped_column(String(64), server_default=text("'mascope'"))
     engine_version: Mapped[str] = mapped_column(String(64))
     status: Mapped[str] = mapped_column(String(20), server_default=text("'pending'"))
     config: Mapped[Optional[dict]] = mapped_column(JSON)
+    # The assigned/candidate fit-score thresholds this run tiered with. Its
+    # own column, not a key in the opaque config, because every row's tier is
+    # validated against it. NULL for runs predating the column; an in-app run
+    # stamps the thresholds from its config.
+    tier_bands: Mapped[Optional[dict]] = mapped_column(JSON)
+    # The producing engine's calibration state, disclosed at import time. An
+    # import bypasses the server-side m/z verification gate because it
+    # calibrates client-side, so this is what a reader judges its mass accuracy
+    # by. NULL for in-app runs, whose calibration state is the sample's own.
+    calibration: Mapped[Optional[dict]] = mapped_column(JSON)
+    # The confidence calibration this run's P(correct) values were read off:
+    # the instrument class, whether the curve is provisional, and what it was
+    # fit from. One value per run - the engine loads one curve per run - so it
+    # lives here rather than repeated in every database-sourced row's
+    # provenance, where it cost 90 bytes a row for nothing a reader could not
+    # get from the run. SQL NULL when the run was not calibrated (no curve for
+    # the instrument) and for imported runs, whose rows carry no P(correct).
+    # The detail read folds it back into each row's provenance as
+    # `calibrated` / `calibration`, so the row shape the inspector and the SDK
+    # see is unchanged.
+    confidence_calibration: Mapped[Optional[dict]] = mapped_column(
+        JSON(none_as_null=True)
+    )
+    # The importing client's own id for the logical import. What makes the
+    # request that *creates* a run idempotent: the row-offset check covers every
+    # later chunk, but the first one has no run id yet to be idempotent about,
+    # so a retried create would otherwise mint a second run. NULL for in-app
+    # runs and for imports that supplied none.
+    import_key: Mapped[Optional[str]] = mapped_column(String(64))
     error: Mapped[Optional[str]] = mapped_column(Text)
     peak_assignment_run_utc_created: Mapped[Optional[dt]] = mapped_column(
         TIMESTAMP(timezone=True)
@@ -1167,6 +1506,153 @@ class PeakAssignmentRun(Base):
         passive_deletes=True,
     )
 
+    __table_args__ = (
+        # Admission asks "does this sample have a non-terminal run" before every
+        # import and every in-app assign, which is exactly this lookup.
+        Index(
+            "ix_peak_assignment_run_sample_item_id_status",
+            "sample_item_id",
+            "status",
+        ),
+        # One run per client-supplied import id, so a retried create resolves to
+        # the run it already made instead of a second one. Postgres treats NULLs
+        # here as distinct, so the runs that carry no key are unconstrained.
+        UniqueConstraint(
+            "sample_item_id",
+            "import_key",
+            name="uq_peak_assignment_run_sample_item_id_import_key",
+        ),
+    )
+
+
+# The keys of a formula-only alternative - the untargeted finder's shortlist
+# entry - and the source it names. Exactly these three keys, nothing more: a
+# scored contender carries a fit and an adduct, a displaced winner a mechanism,
+# and an imported entry whatever its engine chose to say, and every one of
+# those stays a dict.
+_FORMULA_ONLY_KEYS = frozenset({"assigned_formula", "plausibility", "source"})
+_FORMULA_ONLY_SOURCE = "untargeted"
+
+
+def _is_plausibility(value) -> bool:
+    """Whether a value is a chemical plausibility: a JSON number, or null.
+
+    ``bool`` is excluded although it is an ``int`` in Python, so that a stored
+    ``true`` never reads back as a plausibility of 1.
+    """
+    return value is None or (
+        isinstance(value, (int, float)) and not isinstance(value, bool)
+    )
+
+
+def pack_alternative(entry):
+    """Store a formula-only alternative as ``[formula, plausibility]``.
+
+    Stage B's ``other_candidates`` shortlist reaches a row as entries carrying
+    a formula, a chemical plausibility and ``"source": "untargeted"`` - 99 % of
+    every stored entry, at about 70 bytes each for 16 bytes of payload.
+    Positionally they are a fifth of that. Anything else is stored as the dict
+    it is.
+
+    The value types are checked, not just the keys, so that the packed form is
+    exactly the domain :func:`unpack_alternative` claims: a two-element list of
+    a string and a number-or-null. Without that the two are not inverses, and
+    an entry could come back out of the column as something it never was.
+
+    :param entry: One element of a row's ``alternatives`` list.
+    :return: The two-element list, or ``entry`` itself when it is not the
+        finder's shape.
+    """
+    if (
+        isinstance(entry, dict)
+        and set(entry) == _FORMULA_ONLY_KEYS
+        and entry["source"] == _FORMULA_ONLY_SOURCE
+        and isinstance(entry["assigned_formula"], str)
+        and _is_plausibility(entry["plausibility"])
+    ):
+        return [entry["assigned_formula"], entry["plausibility"]]
+    return entry
+
+
+def unpack_alternative(entry):
+    """The stored form back to the dict every reader expects.
+
+    Claims exactly what :func:`pack_alternative` produces and nothing else.
+    ``alternatives`` is unvalidated JSON on an imported row - "whatever the
+    publishing client sent" - so a stored entry can be a list this column never
+    wrote; anything but a string paired with a number or null is left alone
+    rather than read as chemistry the client did not state. An entry that *is*
+    that pair is indistinguishable from a packed one and is expanded, which
+    costs nothing: it round-trips back to the same two elements on the next
+    write.
+
+    :param entry: One stored element of a row's ``alternatives`` list.
+    :return: The formula-only dict for a packed entry; anything else as it is.
+    """
+    if (
+        isinstance(entry, list)
+        and len(entry) == 2
+        and isinstance(entry[0], str)
+        and _is_plausibility(entry[1])
+    ):
+        return {
+            "assigned_formula": entry[0],
+            "plausibility": entry[1],
+            "source": _FORMULA_ONLY_SOURCE,
+        }
+    return entry
+
+
+class CompactAlternatives(TypeDecorator):
+    """``PeakAssignment.alternatives``: a JSON list whose formula-only entries are
+    stored positionally and expanded on read.
+
+    Every writer (the engine's bulk insert, an import's, curation's attribute
+    writes) and every reader goes through the column type, so the rest of the
+    code keeps seeing dicts. The read side accepts both forms, since a row
+    written before the packing holds dicts until a migration rewrites it.
+
+    A ``TypeDecorator`` inherits the *behaviour* of its impl but not these
+    three flags, so each is restated. Left at the values ``TypeEngine`` supplies
+    they are all silently wrong for a JSON column:
+
+    - ``should_evaluate_none``: :class:`~sqlalchemy.types.JSON` declares it as a
+      property over ``none_as_null``, which the plain class attribute on
+      ``TypeEngine`` shadows. At the inherited ``False`` a ``None`` is not "a
+      value this type handles" but an absent one, so the ORM omits the column
+      from the INSERT entirely - storing SQL NULL where every other blob on the
+      row stores the JSON literal ``null``, and, because a bulk insert batches
+      only rows that name the same columns, splitting the ledger's single
+      ``executemany`` into one statement per run of rows that agree.
+    - ``hashable``: ``JSON`` sets it ``False`` because its values are lists and
+      dicts. At the inherited ``True``, uniquing a result that selects this
+      column raises a bare ``TypeError: unhashable type`` instead of the error
+      that names the column and the type.
+    - ``coerce_compared_value``: without it an indexed comparison
+      (``alternatives[0] == x``) coerces the right-hand side to *this* type
+      rather than the string an index key is, JSON-encoding it and casting it
+      ``::JSON`` - for which Postgres has no equality operator, so the query
+      fails at execution rather than at review.
+    """
+
+    impl = JSON
+    cache_ok = True
+    should_evaluate_none = True
+    hashable = False
+
+    def coerce_compared_value(self, op, value):
+        return self.impl.coerce_compared_value(op, value)
+
+    def process_bind_param(self, value, dialect):
+        if not isinstance(value, list):
+            return value
+        return [pack_alternative(entry) for entry in value]
+
+    def process_result_value(self, value, dialect):
+        if not isinstance(value, list):
+            return value
+        return [unpack_alternative(entry) for entry in value]
+
 
 class PeakAssignment(Base):
     """Per-peak assignment result for one observed sample peak in a run.
@@ -1181,44 +1667,52 @@ class PeakAssignment(Base):
 
     role values: 'M0', 'iso_child', 'reagent', 'artifact', 'unassigned'.
     source values: 'database', 'untargeted' (NULL when unassigned).
-    tier values: 'identified', 'candidate', 'below_assignability', 'unassigned'.
+    tier values: 'assigned', 'candidate', 'below_assignability', 'unassigned'.
     """
 
     __tablename__ = "peak_assignment"
 
     peak_assignment_id: Mapped[str] = mapped_column(String(32), primary_key=True)
+    # No index of its own: the (run, peak) unique constraint below leads with
+    # this column, so every lookup by run - the ledger read, the batch fold,
+    # the run-delete cascade - already has one. A second index here cost
+    # 1.5 MB per 200k rows for nothing.
     peak_assignment_run_id: Mapped[str] = mapped_column(
         String(16),
         ForeignKey(
             "peak_assignment_run.peak_assignment_run_id",
             ondelete="CASCADE",
         ),
-        index=True,
     )
     sample_item_id: Mapped[str] = mapped_column(
         String(16),
         ForeignKey("sample_item.sample_item_id", ondelete="CASCADE"),
         index=True,
     )
-    sample_peak_id: Mapped[str] = mapped_column(String(20), index=True)
+    # Not indexed on its own either. Nothing queries the ledger by a bare peak
+    # id - verification identity, occurrence and import lookups filter other
+    # tables or go through the run-scoped constraint - and an index over a
+    # 20-char random string on every row was the third-largest structure on
+    # the table.
+    sample_peak_id: Mapped[str] = mapped_column(String(20))
     sample_peak_mz: Mapped[float] = mapped_column(Float)
     sample_peak_intensity: Mapped[float] = mapped_column(Float)
     sample_peak_tof: Mapped[Optional[float]] = mapped_column(Float)
     role: Mapped[str] = mapped_column(String(16), server_default=text("'unassigned'"))
     assigned_formula: Mapped[Optional[str]] = mapped_column(String(256))
     ion_formula: Mapped[Optional[str]] = mapped_column(String(4096))
+    # Indexed only where set - see the partial indexes in __table_args__.
     ionization_mechanism_id: Mapped[Optional[str]] = mapped_column(
         String(16),
         ForeignKey(
             "ionization_mechanism.ionization_mechanism_id",
             ondelete="SET NULL",
         ),
-        index=True,
     )
     isotope_label: Mapped[Optional[str]] = mapped_column(String(64))
     # Full isotopologue formula of the matched isotope (e.g. "[15N]CH5BrNO+"),
     # from which the UI renders the compact substitution label ("[15N]").
-    # NULL for untargeted satellites without a predicted formula and for
+    # NULL for untargeted isotopologues without a predicted formula and for
     # unassigned peaks. Mirrors target_isotope.target_isotope_formula.
     isotope_formula: Mapped[Optional[str]] = mapped_column(String(256))
     source: Mapped[Optional[str]] = mapped_column(String(16))
@@ -1227,25 +1721,52 @@ class PeakAssignment(Base):
     # unassigned peak. Named `fit_score` (not match/probability) deliberately -- it
     # is a measurement, not an identification confidence. See fit_score.md.
     fit_score: Mapped[Optional[float]] = mapped_column(Float)
+    # Signed m/z error in ppm, (observed - predicted)/predicted * 1e6, in BOTH
+    # stages (targeted match_mz_error and the untargeted finder's composition /
+    # isotope m/z error share this convention). Consumers recover the predicted
+    # m/z as observed_mz / (1 + mz_error_ppm/1e6) - keep it signed.
     mz_error_ppm: Mapped[Optional[float]] = mapped_column(Float)
+    # Signed relative abundance error, observed/predicted - 1, in BOTH stages
+    # (targeted match_abundance_error and the untargeted finder's intensity
+    # error share this convention). Consumers recover the predicted relative
+    # abundance as observed_rel / (1 + abundance_error) - keep it signed.
     abundance_error: Mapped[Optional[float]] = mapped_column(Float)
     tier: Mapped[str] = mapped_column(String(24), server_default=text("'unassigned'"))
+    # The tier the ENGINE that produced this row concluded, when that is a
+    # different judgement from `tier`. `tier` is always this server's banding of
+    # the row's evidence against the run's declared thresholds - an import is
+    # refused if it disagrees - which is what makes tiers comparable between
+    # engines but leaves an engine that tiers some other way (peaky arbitrates
+    # on window uniqueness, corroboration and mass degeneracy, any of which can
+    # demote a peak below what its evidence earns) with nowhere to say so.
+    # Exempt from the coherence check and read by NO roll-up: consensus and
+    # TIER_RANK stay on `tier`, so a foreign notion of confidence can never
+    # outrank a Mascope-derived one. NULL means the engine stated no tier here,
+    # which is the in-app case (its tier IS `tier`) and the usual case for the
+    # rows an external engine leaves untiered.
+    engine_tier: Mapped[Optional[str]] = mapped_column(String(24))
+    # The three below are indexed only where set - see __table_args__.
     target_compound_id: Mapped[Optional[str]] = mapped_column(
         String(16),
         ForeignKey("target_compound.target_compound_id", ondelete="SET NULL"),
-        index=True,
     )
     target_ion_id: Mapped[Optional[str]] = mapped_column(
         String(16),
         ForeignKey("target_ion.target_ion_id", ondelete="SET NULL"),
-        index=True,
     )
     owner_peak_assignment_id: Mapped[Optional[str]] = mapped_column(
         String(32),
         ForeignKey("peak_assignment.peak_assignment_id", ondelete="SET NULL"),
-        index=True,
     )
-    alternatives: Mapped[Optional[list]] = mapped_column(JSON)
+    # The owner reference as an imported row expressed it: the owning row's
+    # sample_peak_id, which identifies it uniquely within a run. A client cannot
+    # supply owner_peak_assignment_id - the server mints those - and an import
+    # arrives over several requests, so the reference is staged here and
+    # resolved into owner_peak_assignment_id when the import finalizes. NULL for
+    # in-app runs, which build the owner link directly.
+    owner_sample_peak_id: Mapped[Optional[str]] = mapped_column(String(20))
+    # Packed on the way in, expanded on the way out - see CompactAlternatives.
+    alternatives: Mapped[Optional[list]] = mapped_column(CompactAlternatives)
     provenance: Mapped[Optional[dict]] = mapped_column(JSON)
 
     # Relationships
@@ -1263,6 +1784,256 @@ class PeakAssignment(Base):
         CheckConstraint(
             "fit_score IS NULL OR fit_score BETWEEN 0 AND 1",
             name="fit_score_range",
+        ),
+        # The four nullable references, indexed only where they are set. They
+        # exist for the foreign keys' SET NULL actions and the family/target
+        # lookups, none of which ever asks for a NULL - while most of a
+        # ledger's rows carry one (every unassigned peak, every peak that is
+        # not an isotopologue), so indexing the NULLs too made each index two
+        # to six times the size for entries no query can use. A strict
+        # `col = $1` implies `col IS NOT NULL`, so the planner - and the
+        # referential-action queries - still reach these.
+        Index(
+            "ix_peak_assignment_ionization_mechanism_id",
+            "ionization_mechanism_id",
+            postgresql_where=text("ionization_mechanism_id IS NOT NULL"),
+        ),
+        Index(
+            "ix_peak_assignment_target_compound_id",
+            "target_compound_id",
+            postgresql_where=text("target_compound_id IS NOT NULL"),
+        ),
+        Index(
+            "ix_peak_assignment_target_ion_id",
+            "target_ion_id",
+            postgresql_where=text("target_ion_id IS NOT NULL"),
+        ),
+        Index(
+            "ix_peak_assignment_owner_peak_assignment_id",
+            "owner_peak_assignment_id",
+            postgresql_where=text("owner_peak_assignment_id IS NOT NULL"),
+        ),
+    )
+
+
+class BatchPeak(Base):
+    """A cross-sample "batch peak": a frozen m/z anchor that gives an assigned
+    species one stable identity across a sample batch, so the batch overview can
+    draw one trace per species (the peak-centric replacement for the target-ion
+    identity of the legacy targeted overview).
+
+    Identity is m/z, not formula: every observed peak in the batch -- assigned or
+    not -- folds into exactly one batch peak, so unassigned m/z still get a
+    batch-level trend. The anchor ``mz`` is FROZEN at creation and its membership
+    tolerance (resolution-adaptive, stored as ``mz_tol_ppm``) never widens, so
+    ``batch_peak_id`` stays a stable identity under incremental sample arrival.
+    Formula and tier are an EVIDENCE-WEIGHTED CONSENSUS of the member peaks'
+    per-sample ``PeakAssignment`` rows (never a fresh assignment of a synthetic
+    consensus spectrum, which cannot be scored honestly).
+
+    Batch peaks are partitioned per ionization mode (the m/z axis and intensity
+    units differ between modes/instruments). Design:
+    ``docs/dev/peak_assignment_batch.md``.
+
+    consensus_tier values mirror ``PeakAssignment.tier``:
+    'assigned' | 'candidate' | 'below_assignability' | 'unassigned'.
+    """
+
+    __tablename__ = "batch_peak"
+
+    batch_peak_id: Mapped[str] = mapped_column(String(16), primary_key=True)
+    sample_batch_id: Mapped[str] = mapped_column(
+        String(16),
+        ForeignKey("sample_batch.sample_batch_id", ondelete="CASCADE"),
+        index=True,
+    )
+    ionization_mode_id: Mapped[Optional[str]] = mapped_column(
+        String(16),
+        ForeignKey("ionization_mode.ionization_mode_id", ondelete="SET NULL"),
+        index=True,
+    )
+    # Frozen anchor centre (m/z) and the resolution-adaptive half-window (ppm)
+    # captured when the anchor was created. Membership never re-widens, so a
+    # later sample's peak cannot silently redraw this bin.
+    mz: Mapped[float] = mapped_column(Float)
+    mz_tol_ppm: Mapped[float] = mapped_column(Float)
+    intensity_variable: Mapped[Optional[str]] = mapped_column(String(32))
+    # Evidence-weighted consensus over DETECTED members (see batch_peaks engine).
+    consensus_formula: Mapped[Optional[str]] = mapped_column(String(256))
+    consensus_ion_formula: Mapped[Optional[str]] = mapped_column(String(4096))
+    ionization_mechanism_id: Mapped[Optional[str]] = mapped_column(
+        String(16),
+        ForeignKey("ionization_mechanism.ionization_mechanism_id", ondelete="SET NULL"),
+        index=True,
+    )
+    consensus_tier: Mapped[str] = mapped_column(
+        String(24), server_default=text("'unassigned'")
+    )
+    best_fit_score: Mapped[Optional[float]] = mapped_column(Float)
+    # Fraction of DETECTED members whose assignment agrees with consensus_formula.
+    support_fraction: Mapped[Optional[float]] = mapped_column(Float)
+    # Prevalence: number of samples in which this batch peak is observed. Kept
+    # SEPARATE from confidence -- an absent sample is a gap in the trace, never
+    # evidence against the formula.
+    n_present: Mapped[int] = mapped_column(Integer, server_default=text("'0'"))
+    # 1 when the top consensus candidates are within a tie tolerance, or the
+    # member disagreement looks like a co-eluting blend.
+    is_ambiguous: Mapped[int] = mapped_column(Integer, server_default=text("'0'"))
+    # Brightest member: the largest occurrence intensity, in the unit
+    # ``intensity_variable`` names. A member aggregate materialized here for the
+    # same reason ``n_present`` is -- the ledger reads batch peaks alone and
+    # never joins the occurrence table.
+    max_intensity: Mapped[Optional[float]] = mapped_column(Float)
+    # The batch peak this one is an isotopologue of, derived from the
+    # members' per-sample ``PeakAssignment`` family links (see
+    # ``resolve_isotopologue_of``). NULL for an M0 anchor, for an unassigned one,
+    # and whenever the members do not agree that this is an isotopologue. One hop
+    # only: a chain is left for the reader to flatten.
+    isotopologue_of: Mapped[Optional[str]] = mapped_column(
+        String(16),
+        ForeignKey("batch_peak.batch_peak_id", ondelete="SET NULL"),
+        index=True,
+    )
+    # The anchor's registry of the assignment identities its members have
+    # carried: ``[{formula, ion_formula, ionization_mechanism_id}, ...]`` in the
+    # order they were first seen. A member names its own identity by index
+    # (``BatchPeakOccurrence.candidate``), so the list is APPEND-ONLY - an entry
+    # is never removed or reordered while a member may point at it. NULL on an
+    # anchor written before the registry existed and never re-folded since.
+    candidates: Mapped[Optional[list]] = mapped_column(JSON)
+    alternatives: Mapped[Optional[list]] = mapped_column(JSON)
+    provenance: Mapped[Optional[dict]] = mapped_column(JSON)
+    batch_peak_utc_created: Mapped[Optional[dt]] = mapped_column(
+        TIMESTAMP(timezone=True)
+    )
+    batch_peak_utc_modified: Mapped[Optional[dt]] = mapped_column(
+        TIMESTAMP(timezone=True)
+    )
+
+    # Relationships
+    sample_batch = relationship("SampleBatch", back_populates="batch_peak")
+    batch_peak_occurrence = relationship(
+        "BatchPeakOccurrence",
+        back_populates="batch_peak",
+        # Two foreign keys point here from the occurrence (membership and the
+        # family link); this relationship is the membership.
+        foreign_keys="[BatchPeakOccurrence.batch_peak_id]",
+        cascade="all, delete, delete-orphan",
+        passive_deletes=True,
+    )
+
+    __table_args__ = (
+        # Range-scan support for the fold-in hot path: scope to a batch + mode,
+        # then binary-search the anchor m/z axis.
+        Index(
+            "ix_batch_peak_sample_batch_id_mz",
+            "sample_batch_id",
+            "ionization_mode_id",
+            "mz",
+        ),
+        CheckConstraint(
+            "best_fit_score IS NULL OR best_fit_score BETWEEN 0 AND 1",
+            name="best_fit_score_range",
+        ),
+    )
+
+
+class BatchPeakOccurrence(Base):
+    """One observed sample peak folded into a batch peak -- the sparse per-sample
+    matrix behind the batch overview (batch peak x sample -> intensity/tier).
+
+    Membership is captured append-only at fold-in time. ``sample_peak_id`` equals
+    ``PeakAssignment.sample_peak_id``, so a member's per-sample assignment joins
+    for free (``peak_assignment_id`` records the specific row folded in). Keyed
+    on (batch_peak_id, sample_item_id) - a member's identity, and the only key
+    the row needs: a batch peak has at most one member per sample, one y-value
+    per trace per sample, and nothing addresses an occurrence any other way.
+
+    A member carries everything the consensus reads - formula, tier, fit,
+    intensity, P(correct), its per-sample role, the anchor its owner folded into
+    when it is an isotopologue, and an index into its anchor's candidate
+    registry for the ion formula and mechanism - so the batch ledger stands
+    without the ledger rows it was folded from. ``peak_assignment_id`` is a
+    back-reference for a reader that wants the row, not something the batch
+    level depends on: a run pruned or deleted afterwards leaves it NULL and
+    changes no consensus. Design: ``docs/dev/peak_assignment_batch_primary.md``.
+    """
+
+    __tablename__ = "batch_peak_occurrence"
+
+    # A composite key rather than a surrogate: a 32-char random id cost a
+    # primary-key index the size of the unique constraint it duplicated plus
+    # 33 bytes on every row, and nothing ever read it. Leading with the anchor,
+    # the key also serves the series fan-out (batch_peak_id -> points), which
+    # used to need an index of its own.
+    batch_peak_id: Mapped[str] = mapped_column(
+        String(16),
+        ForeignKey("batch_peak.batch_peak_id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    sample_item_id: Mapped[str] = mapped_column(
+        String(16),
+        ForeignKey("sample_item.sample_item_id", ondelete="CASCADE"),
+        primary_key=True,
+        index=True,
+    )
+    sample_peak_id: Mapped[str] = mapped_column(String(20))
+    # The ledger row this member was folded from, when one exists: a member
+    # folded at ingest without a run links to none, so the index is partial.
+    peak_assignment_id: Mapped[Optional[str]] = mapped_column(
+        String(32),
+        ForeignKey("peak_assignment.peak_assignment_id", ondelete="SET NULL"),
+    )
+    # The member's own fields, in the smallest type that holds each: the row is
+    # written once per detected peak per sample, so its bytes are the batch
+    # ledger's cost. The peak's m/z is stored as its offset from the anchor's
+    # frozen m/z in ppm (``batch_peaks.mz_from_delta`` recovers it), the
+    # intensity (the chart y-value), fit and probability in single precision,
+    # and the tier and role as codes (``batch_peaks.TIER_CODES`` - the tier's
+    # rank - and ``ROLE_CODES``). The formula is not copied: ``candidate``
+    # names it in the anchor's registry.
+    mz_delta_ppm: Mapped[Optional[float]] = mapped_column(REAL)
+    intensity: Mapped[Optional[float]] = mapped_column(REAL)
+    tier: Mapped[Optional[int]] = mapped_column(SmallInteger)
+    fit_score: Mapped[Optional[float]] = mapped_column(REAL)
+    # Which entry of the anchor's ``candidates`` this member's assignment is;
+    # NULL for an unassigned member.
+    candidate: Mapped[Optional[int]] = mapped_column(SmallInteger)
+    # The member's per-sample role and, for an isotopologue, the anchor its
+    # owning peak folded into in the same sample. NULL when the owner is unknown
+    # or folded nowhere, in which case the member abstains from the family vote;
+    # SET NULL when the owner anchor goes.
+    role: Mapped[Optional[int]] = mapped_column(SmallInteger)
+    owner_batch_peak_id: Mapped[Optional[str]] = mapped_column(
+        String(16),
+        ForeignKey("batch_peak.batch_peak_id", ondelete="SET NULL"),
+    )
+    # The member's calibrated probability, as its assignment's provenance
+    # recorded it; NULL when uncalibrated.
+    p_correct: Mapped[Optional[float]] = mapped_column(REAL)
+
+    # Relationships. Two foreign keys point at batch_peak (membership and the
+    # family link), so the membership relationship names its own.
+    batch_peak = relationship(
+        "BatchPeak",
+        back_populates="batch_peak_occurrence",
+        foreign_keys="[BatchPeakOccurrence.batch_peak_id]",
+    )
+    sample_item = relationship("SampleItem", back_populates="batch_peak_occurrence")
+
+    __table_args__ = (
+        # Partial, as the ledger's nullable references are: most members are
+        # not isotopologues, and the SET NULL action is served by `= $1`, which
+        # implies IS NOT NULL.
+        Index(
+            "ix_batch_peak_occurrence_owner_batch_peak_id",
+            "owner_batch_peak_id",
+            postgresql_where=text("owner_batch_peak_id IS NOT NULL"),
+        ),
+        Index(
+            "ix_batch_peak_occurrence_peak_assignment_id",
+            "peak_assignment_id",
+            postgresql_where=text("peak_assignment_id IS NOT NULL"),
         ),
     )
 
@@ -1422,13 +2193,185 @@ class AssignmentCalibration(Base):
     )
 
 
+class BatchPeakRun(Base):
+    """One batch-level operation that rewrote a batch's ledger - a rebuild, an
+    untargeted search with its parameters, an import - or, implicitly, the folds
+    that built it. The batch counterpart of :class:`PeakAssignmentRun`.
+
+    Exactly one run per batch is ``is_current``: the one whose state the live
+    anchors and members hold. When a new run starts, the current run's state is
+    captured into :class:`BatchPeakRunAnchor` and the new run becomes current on
+    completion; a failed run never does. Older runs beyond the batch's keep are
+    pruned with their snapshots when a run completes (``batch_runs.py``).
+    """
+
+    __tablename__ = "batch_peak_run"
+
+    batch_peak_run_id: Mapped[str] = mapped_column(String(16), primary_key=True)
+    sample_batch_id: Mapped[str] = mapped_column(
+        String(16),
+        ForeignKey("sample_batch.sample_batch_id", ondelete="CASCADE"),
+        index=True,
+    )
+    action: Mapped[str] = mapped_column(String(32))
+    engine: Mapped[str] = mapped_column(String(64), server_default=text("'mascope'"))
+    engine_version: Mapped[str] = mapped_column(String(64))
+    status: Mapped[str] = mapped_column(String(20), server_default=text("'running'"))
+    is_current: Mapped[int] = mapped_column(Integer, server_default=text("'0'"))
+    config: Mapped[Optional[dict]] = mapped_column(JSON)
+    summary: Mapped[Optional[dict]] = mapped_column(JSON)
+    error: Mapped[Optional[str]] = mapped_column(Text)
+    created_by: Mapped[Optional[int]] = mapped_column(
+        Integer, ForeignKey("user.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    batch_peak_run_utc_created: Mapped[dt] = mapped_column(
+        TIMESTAMP(timezone=True), default=lambda: dt.now(timezone.utc)
+    )
+    batch_peak_run_utc_completed: Mapped[Optional[dt]] = mapped_column(
+        TIMESTAMP(timezone=True), nullable=True
+    )
+    #: When this run's ledger state was captured - set as the next run started.
+    snapshot_utc: Mapped[Optional[dt]] = mapped_column(
+        TIMESTAMP(timezone=True), nullable=True
+    )
+
+    __table_args__ = (
+        CheckConstraint(
+            "action IN ('fold', 'rebuild', 'search_untargeted', 'import')",
+            name="action_valid",
+        ),
+        CheckConstraint(
+            "status IN ('running', 'completed', 'failed')", name="status_valid"
+        ),
+        Index("ix_batch_peak_run_batch_current", "sample_batch_id", "is_current"),
+    )
+
+
+class BatchPeakRunAnchor(Base):
+    """One anchor of a batch run's snapshot: its consensus as the run left it,
+    the registry it resolved its members with, and the members themselves as
+    parallel arrays (``batch_runs.MEMBER_FIELDS``) - columnar, because a
+    snapshot is written once and read whole, and the arrays cost a small
+    fraction of a row per member. ``batch_peak_id`` carries no foreign key: the
+    anchor may be deleted by a later re-fold, and the snapshot is exactly what
+    should outlive that.
+    """
+
+    __tablename__ = "batch_peak_run_anchor"
+
+    batch_peak_run_id: Mapped[str] = mapped_column(
+        String(16),
+        ForeignKey("batch_peak_run.batch_peak_run_id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    batch_peak_id: Mapped[str] = mapped_column(String(16), primary_key=True)
+    mz: Mapped[float] = mapped_column(Float)
+    ionization_mode_id: Mapped[Optional[str]] = mapped_column(String(16))
+    consensus_formula: Mapped[Optional[str]] = mapped_column(String(256))
+    consensus_ion_formula: Mapped[Optional[str]] = mapped_column(String(4096))
+    ionization_mechanism_id: Mapped[Optional[str]] = mapped_column(String(16))
+    consensus_tier: Mapped[str] = mapped_column(String(24))
+    best_fit_score: Mapped[Optional[float]] = mapped_column(Float)
+    support_fraction: Mapped[Optional[float]] = mapped_column(Float)
+    n_present: Mapped[int] = mapped_column(Integer)
+    is_ambiguous: Mapped[int] = mapped_column(Integer, server_default=text("'0'"))
+    intensity_variable: Mapped[Optional[str]] = mapped_column(String(32))
+    max_intensity: Mapped[Optional[float]] = mapped_column(Float)
+    isotopologue_of: Mapped[Optional[str]] = mapped_column(String(16))
+    curated: Mapped[int] = mapped_column(Integer, server_default=text("'0'"))
+    candidates: Mapped[Optional[list]] = mapped_column(JSON)
+    members: Mapped[Optional[dict]] = mapped_column(JSON)
+
+
+class BatchPeakVerification(Base):
+    """A user's verdict on a batch peak's species claim - one per anchor, batch-wide.
+
+    The anchor-scoped counterpart of :class:`AssignmentVerification`
+    (``docs/dev/peak_assignment_continuity.md`` section 4): judging the consensus formula of
+    one batch peak covers every sample in the batch whose peak folded into that anchor and
+    that carries no verdict of its own. Append-only with the current row marked, exactly as
+    the per-sample table: one live row per ``(batch_peak_id, assigned_formula,
+    ionization_mechanism_id)`` (``superseded_utc IS NULL``, NULLS NOT DISTINCT), stamped in
+    the same transaction that records its successor; a retract is a stamp with no successor.
+
+    Keyed to the anchor id **without a foreign key**: a re-fold that leaves an anchor
+    memberless deletes it, and anchor ids are minted once and never reused, so a dangling id
+    can never re-attach to a different species and the verdict outlives the machine lifecycle
+    of the anchor it judged. The claim is pinned: if the consensus later flips from F to G
+    the verdict stays live about F and reads as stale, because a machine recompute never
+    supersedes a human label. ``context`` snapshots the consensus the human saw.
+
+    **Structurally outside the calibration label pool.** The pool selects from
+    ``assignment_verification`` alone. An anchor has no honest score to pair with a label
+    (``best_fit_score`` and the consensus probability are maxima over the members backing the
+    claim), and fanning one verdict out over ``n_present`` samples would flood the pool with
+    correlated labels - so this is a separate table on purpose, and a refactor that unified
+    the two would reopen exactly that.
+    """
+
+    __tablename__ = "batch_peak_verification"
+
+    batch_peak_verification_id: Mapped[str] = mapped_column(
+        String(32), primary_key=True
+    )
+    sample_batch_id: Mapped[str] = mapped_column(
+        String(16),
+        ForeignKey("sample_batch.sample_batch_id", ondelete="CASCADE"),
+        index=True,
+    )
+    # No ForeignKey, deliberately - see the docstring.
+    batch_peak_id: Mapped[str] = mapped_column(String(16), index=True)
+    assigned_formula: Mapped[str] = mapped_column(String(256))
+    ionization_mechanism_id: Mapped[Optional[str]] = mapped_column(String(16))
+    verdict: Mapped[str] = mapped_column(String(16))
+    evidence_level: Mapped[Optional[str]] = mapped_column(String(24), nullable=True)
+    note: Mapped[Optional[str]] = mapped_column(Text)
+    context: Mapped[Optional[dict]] = mapped_column(JSON)
+    verified_by: Mapped[Optional[int]] = mapped_column(
+        Integer, ForeignKey("user.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    verified_utc: Mapped[dt] = mapped_column(
+        TIMESTAMP(timezone=True), default=lambda: dt.now(timezone.utc)
+    )
+    superseded_utc: Mapped[Optional[dt]] = mapped_column(
+        TIMESTAMP(timezone=True), nullable=True
+    )
+
+    __table_args__ = (
+        CheckConstraint(
+            "verdict IN ('confirmed', 'rejected', 'unsure')", name="verdict_valid"
+        ),
+        CheckConstraint(
+            "evidence_level IS NULL OR evidence_level IN "
+            "('reference_standard', 'msms', 'orthogonal', 'pattern', 'visual')",
+            name="evidence_level_valid",
+        ),
+        # One live verdict per claim at an anchor; NULLS NOT DISTINCT so a null
+        # mechanism is one claim, not infinitely many - as on the per-sample table.
+        Index(
+            "uq_batch_peak_verification_current",
+            "batch_peak_id",
+            "assigned_formula",
+            "ionization_mechanism_id",
+            unique=True,
+            postgresql_where=text("superseded_utc IS NULL"),
+            postgresql_nulls_not_distinct=True,
+        ),
+    )
+
+
 class AssignmentVerification(Base):
     """A user's verdict on a peak-centric assignment (verification-calibration loop, V1).
 
     Human-in-the-loop confirmation/rejection of an identification: the honest source of the
     labelled golden set that later refits the confidence calibration
-    (``docs/dev/verification_calibration_loop.md``). Append-only (keep every verdict for audit;
-    the current one is the latest by ``verified_utc``).
+    (``docs/dev/verification_calibration_loop.md``). Append-only -- every verdict is kept for
+    audit, and the score snapshot on an earlier one stays a valid calibration pair -- but the
+    **current** verdict is marked rather than re-derived: exactly one row per identity has
+    ``superseded_utc IS NULL``, and recording a new verdict stamps the one it replaces in the same
+    transaction. The partial unique index below enforces that invariant in the database, so a
+    reader filters ``superseded_utc IS NULL`` instead of taking a max by ``verified_utc``, and no
+    consumer can silently count a retracted verdict.
 
     Keyed to the **stable identity** of what was judged -- ``sample_item_id`` + ``sample_peak_id``
     (an observed-peak id, stable across assignment runs) + ``assigned_formula`` +
@@ -1439,6 +2382,11 @@ class AssignmentVerification(Base):
 
     ``evidence_level`` records *why* the user is confident (the guardrail against a
     confirmation-bias loop): a reference-standard confirmation is weighted far above a visual guess.
+
+    The calibration label pool selects from this table **alone**. A batch-level verdict on a
+    batch peak lives in :class:`BatchPeakVerification` and never lands here - not even as one
+    fabricated per-sample row per member sample - so one judgment fanned out over a batch
+    cannot flood the pool with correlated labels. Keep the two tables apart.
     """
 
     __tablename__ = "assignment_verification"
@@ -1479,6 +2427,11 @@ class AssignmentVerification(Base):
     verified_utc: Mapped[dt] = mapped_column(
         TIMESTAMP(timezone=True), default=lambda: dt.now(timezone.utc)
     )
+    # NULL on the one live verdict per identity; on a replaced verdict, the moment it was
+    # replaced (the successor's verified_utc). Never cleared -- a superseded row is history.
+    superseded_utc: Mapped[Optional[dt]] = mapped_column(
+        TIMESTAMP(timezone=True), nullable=True
+    )
 
     __table_args__ = (
         CheckConstraint(
@@ -1494,16 +2447,36 @@ class AssignmentVerification(Base):
             "sample_item_id",
             "sample_peak_id",
         ),
+        # One live verdict per stable identity. NULLS NOT DISTINCT because both
+        # assigned_formula and ionization_mechanism_id are nullable, and under the default
+        # NULLS DISTINCT two live verdicts on a formula-less peak would both be accepted --
+        # exactly the case this index exists to reject. Partial, so superseded history is
+        # unconstrained and a peak can accumulate any number of past verdicts.
+        Index(
+            "uq_assignment_verification_current",
+            "sample_item_id",
+            "sample_peak_id",
+            "assigned_formula",
+            "ionization_mechanism_id",
+            unique=True,
+            postgresql_where=text("superseded_utc IS NULL"),
+            postgresql_nulls_not_distinct=True,
+        ),
     )
 
 
 __all__ = [
     "Base",
+    "CompactAlternatives",
+    "pack_alternative",
+    "unpack_alternative",
     "Workspace",
     "WorkspaceMember",
     "User",
     "Role",
     "AccessToken",
+    "UserRecoveryCode",
+    "AgentDevice",
     "Dataset",
     "SampleBatch",
     "SampleFile",
@@ -1524,6 +2497,11 @@ __all__ = [
     "MatchRating",
     "PeakAssignmentRun",
     "PeakAssignment",
+    "BatchPeak",
+    "BatchPeakOccurrence",
+    "BatchPeakVerification",
+    "BatchPeakRun",
+    "BatchPeakRunAnchor",
     "AttributeTemplate",
     "InstrumentFunction",
     "ReferenceSource",

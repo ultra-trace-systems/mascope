@@ -68,6 +68,9 @@ const onStatusAction = (batch) => {
         : `Batches (${app.data.batch.list?.length})`
     "
     icon="pi pi-folder-open"
+    :loading="app.data.batch.pending"
+    :error="app.data.batch.error"
+    :onRetry="() => app.data.batch.load('retry')"
     :contextMenu="contextMenu"
     :pt="
       app.ui.help.right(`

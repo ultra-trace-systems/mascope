@@ -48,8 +48,16 @@ const show = (severity, message) => {
   }, 3500)
 }
 
-async function process() {
-  let text = await navigator.clipboard.readText()
+// A browser's paste event carries what was pasted, in any context and without
+// asking for clipboard permission - unlike the async Clipboard API, which a page
+// served over plain HTTP does not have. The data can be read only while the
+// event is being dispatched, so it is taken before anything is awaited.
+function process(event) {
+  const text = event.clipboardData?.getData('text/plain')
+  if (text === undefined) {
+    show('error', 'Could not read what was pasted')
+    return
+  }
   let result
   try {
     result = props.parse(text)

@@ -32,9 +32,15 @@ from mascope_backend.db import PeakAssignmentRun
 from mascope_backend.db.admin.peak_assignments import prune_runs
 from mascope_backend.db.admin.peak_assignments.prune_runs import (
     DEFAULT_KEEP_FAILED_HOURS,
+    DEFAULT_KEEP_IMPORTING_HOURS,
+    DEFAULT_KEEP_PER_SAMPLE,
+    DEFAULT_KEEP_PER_SAMPLE_TOTAL,
     DEFAULT_KEEP_RUNNING_HOURS,
+    IMPORTING_STATUS,
     IN_FLIGHT_STATUSES,
+    MIN_KEEP_IMPORTING_HOURS,
     MIN_KEEP_RUNNING_HOURS,
+    NON_TERMINAL_STATUSES,
     _chunked,
     _completed_runs_statement,
     _select_prunable_run_ids,
@@ -42,6 +48,11 @@ from mascope_backend.db.admin.peak_assignments.prune_runs import (
     prune_peak_assignment_runs,
 )
 from mascope_backend.db.scripts import prune_peak_assignment_runs as prune_script
+
+
+#: The engine the in-app assignment path stamps on the runs it creates. Runs
+#: are ranked per (sample, engine), so most tests here name it explicitly.
+IN_APP = "mascope"
 
 
 def _session(completed_rows, stale_ids):
@@ -66,12 +77,12 @@ async def test_keeps_the_newest_n_completed_per_sample():
     """Only runs past the keep window are prunable, and per sample."""
     rows = [
         # si1, newest first (as the query orders them)
-        ("s1-new", "si1"),
-        ("s1-mid", "si1"),
-        ("s1-old", "si1"),
-        ("s1-older", "si1"),
+        ("s1-new", "si1", IN_APP),
+        ("s1-mid", "si1", IN_APP),
+        ("s1-old", "si1", IN_APP),
+        ("s1-older", "si1", IN_APP),
         # si2 has fewer than the keep count
-        ("s2-only", "si2"),
+        ("s2-only", "si2", IN_APP),
     ]
     session = _session(rows, [])
 
@@ -85,7 +96,12 @@ async def test_keeps_the_newest_n_completed_per_sample():
 @pytest.mark.asyncio
 async def test_keep_window_is_per_sample_not_global():
     """A sample with few runs is never pruned because another sample has many."""
-    rows = [("a1", "si1"), ("a2", "si1"), ("a3", "si1"), ("b1", "si2")]
+    rows = [
+        ("a1", "si1", IN_APP),
+        ("a2", "si1", IN_APP),
+        ("a3", "si1", IN_APP),
+        ("b1", "si2", IN_APP),
+    ]
     session = _session(rows, [])
 
     prunable = await _select_prunable_run_ids(
@@ -99,7 +115,7 @@ async def test_keep_window_is_per_sample_not_global():
 @pytest.mark.asyncio
 async def test_stale_non_completed_runs_are_added():
     """Failed/interrupted runs past the grace period are prunable too."""
-    session = _session([("keep", "si1")], ["failed-1", "failed-2"])
+    session = _session([("keep", "si1", IN_APP)], ["failed-1", "failed-2"])
 
     prunable = await _select_prunable_run_ids(
         session, keep_per_sample=3, keep_failed_hours=24
@@ -111,7 +127,7 @@ async def test_stale_non_completed_runs_are_added():
 @pytest.mark.asyncio
 async def test_result_is_deduplicated_and_order_stable():
     """The same run never appears twice, and order is preserved for dry runs."""
-    rows = [("r1", "si1"), ("r2", "si1"), ("r3", "si1")]
+    rows = [("r1", "si1", IN_APP), ("r2", "si1", IN_APP), ("r3", "si1", IN_APP)]
     session = _session(rows, ["r3", "r4"])
 
     prunable = await _select_prunable_run_ids(
@@ -124,7 +140,7 @@ async def test_result_is_deduplicated_and_order_stable():
 
 @pytest.mark.asyncio
 async def test_nothing_prunable_returns_empty():
-    session = _session([("only", "si1")], [])
+    session = _session([("only", "si1", IN_APP)], [])
 
     assert (
         await _select_prunable_run_ids(session, keep_per_sample=3, keep_failed_hours=24)
@@ -132,16 +148,220 @@ async def test_nothing_prunable_returns_empty():
     )
 
 
+class TestTheTotalBoundsTheEngineQuotas:
+    """The per-engine quota needs an outer bound, because `engine` is client input.
+
+    Nothing constrains what an importing client puts in `engine`, so one naming
+    itself per build or per release mints a fresh keep_per_sample quota on every
+    import and the table grows without limit - defeating the pass entirely. The
+    per-sample total caps the sum. The in-app engine is exempt from it, or a
+    burst of imports would fill the total and start evicting exactly the history
+    the per-engine quota exists to protect.
+    """
+
+    @pytest.mark.asyncio
+    async def test_a_client_cycling_engine_names_cannot_grow_without_limit(self):
+        """Five engines at the per-engine quota, over a total of six."""
+        rows = [
+            (f"{engine}-{index}", "si1", engine)
+            for engine in ("e1", "e2", "e3", "e4", "e5")
+            for index in range(2)
+        ]
+        session = _session(rows, [])
+
+        prunable = await _select_prunable_run_ids(
+            session, keep_per_sample=2, keep_failed_hours=24, keep_per_sample_total=6
+        )
+
+        # Six kept, the rest reclaimed - where the per-engine quota alone would
+        # have kept all ten.
+        assert len(rows) - len(prunable) == 6
+
+    @pytest.mark.asyncio
+    async def test_the_in_app_engine_is_exempt_from_the_total(self):
+        """Imports fill the total; the in-app run behind them still survives.
+
+        Ordered newest-first within the sample, so every import is newer than
+        the in-app run - the arrangement that would evict it if the total
+        applied to every engine alike.
+        """
+        rows = [(f"import-{index}", "si1", "peaky") for index in range(4)]
+        rows += [("in-app-1", "si1", IN_APP)]
+        session = _session(rows, [])
+
+        prunable = await _select_prunable_run_ids(
+            session, keep_per_sample=4, keep_failed_hours=24, keep_per_sample_total=4
+        )
+
+        assert "in-app-1" not in prunable
+        assert prunable == []
+
+    @pytest.mark.asyncio
+    async def test_the_in_app_engine_is_still_bounded_by_its_own_quota(self):
+        """Exempt from the total is not exempt from everything."""
+        rows = [(f"in-app-{index}", "si1", IN_APP) for index in range(5)]
+        session = _session(rows, [])
+
+        prunable = await _select_prunable_run_ids(
+            session, keep_per_sample=2, keep_failed_hours=24, keep_per_sample_total=2
+        )
+
+        assert prunable == ["in-app-2", "in-app-3", "in-app-4"]
+
+    @pytest.mark.asyncio
+    async def test_a_condemned_run_does_not_consume_a_slot_in_the_total(self):
+        """The total counts runs kept, not runs seen.
+
+        Otherwise runs already over their engine's quota would eat the total's
+        budget on the way past and evict runs that are within theirs.
+        """
+        rows = [(f"peaky-{index}", "si1", "peaky") for index in range(5)]
+        rows += [("other-1", "si1", "other")]
+        session = _session(rows, [])
+
+        prunable = await _select_prunable_run_ids(
+            session, keep_per_sample=2, keep_failed_hours=24, keep_per_sample_total=3
+        )
+
+        assert "other-1" not in prunable
+
+    @pytest.mark.asyncio
+    async def test_a_total_below_the_per_engine_quota_is_refused(self):
+        """It would evict runs the per-engine budget promises to keep."""
+        with pytest.raises(ValueError, match="keep_per_sample_total"):
+            await prune_peak_assignment_runs(
+                dry_run=True, keep_per_sample=3, keep_per_sample_total=2
+            )
+
+    def test_the_default_total_leaves_room_for_several_engines(self):
+        """A deployment with a couple of real engines never meets the cap."""
+        assert DEFAULT_KEEP_PER_SAMPLE_TOTAL >= 4 * DEFAULT_KEEP_PER_SAMPLE
+
+
+class TestBudgetIsPerSampleAndEngine:
+    """Imported runs and in-app runs must not compete for one sample's quota.
+
+    A run can be computed here or published from an external engine, and the
+    read model serves whichever completed last. On a shared budget that makes
+    publishing destructive: republishing an import ``keep_per_sample`` times
+    would evict every in-app run for that sample, its whole ledger cascading
+    with it - the exact opposite of what "an import only ever appends" promises
+    a reader. Separate quotas are what make that promise true.
+    """
+
+    @pytest.mark.asyncio
+    async def test_imports_cannot_evict_a_samples_in_app_runs(self):
+        """The case the shared budget got wrong: three imports, one in-app run."""
+        rows = [
+            ("import-3", "si1", "peaky"),
+            ("import-2", "si1", "peaky"),
+            ("import-1", "si1", "peaky"),
+            ("in-app-1", "si1", IN_APP),
+        ]
+        session = _session(rows, [])
+
+        prunable = await _select_prunable_run_ids(
+            session, keep_per_sample=3, keep_failed_hours=24
+        )
+
+        assert prunable == []
+
+    @pytest.mark.asyncio
+    async def test_each_engine_ages_out_of_its_own_quota(self):
+        """Over budget on one engine never reaches the other's runs."""
+        rows = [
+            ("import-new", "si1", "peaky"),
+            ("import-old", "si1", "peaky"),
+            ("in-app-new", "si1", IN_APP),
+            ("in-app-old", "si1", IN_APP),
+        ]
+        session = _session(rows, [])
+
+        prunable = await _select_prunable_run_ids(
+            session, keep_per_sample=1, keep_failed_hours=24
+        )
+
+        assert sorted(prunable) == ["import-old", "in-app-old"]
+
+    @pytest.mark.asyncio
+    async def test_the_same_engine_on_another_sample_is_untouched(self):
+        """Grouping is by the pair, not by engine alone."""
+        rows = [
+            ("a-new", "si1", "peaky"),
+            ("a-old", "si1", "peaky"),
+            ("b-only", "si2", "peaky"),
+        ]
+        session = _session(rows, [])
+
+        prunable = await _select_prunable_run_ids(
+            session, keep_per_sample=1, keep_failed_hours=24
+        )
+
+        assert prunable == ["a-old"]
+
+    def test_the_scan_orders_by_recency_within_a_sample(self):
+        """Per-sample recency, which is what both budgets are ranked over.
+
+        The scan used to group by engine as well, and this asserted that. It no
+        longer does: a second budget - the per-sample total - has to be ranked
+        over the same single pass, and only a per-sample ordering serves both.
+        It serves the per-engine quota too, because an ordering that is
+        newest-first within a sample is also newest-first within any engine's
+        subset of it; the reverse does not hold, which is why this is the order
+        that survived.
+        """
+        sql = str(_completed_runs_statement().compile(dialect=postgresql.dialect()))
+        order_by = sql.split("ORDER BY", 1)[1]
+
+        assert order_by.index("sample_item_id") < order_by.index(
+            "peak_assignment_run_utc_created"
+        )
+        assert "engine" not in order_by
+
+    @pytest.mark.asyncio
+    async def test_the_per_engine_quota_holds_when_engines_interleave(self):
+        """The behaviour dropping `engine` from the ORDER BY could have broken.
+
+        Runs arrive newest-first across the whole sample, so the two engines
+        alternate rather than arriving in contiguous blocks. Each engine's
+        quota still has to be counted over its own subset.
+        """
+        rows = [
+            ("peaky-3", "si1", "peaky"),
+            ("in-app-3", "si1", IN_APP),
+            ("peaky-2", "si1", "peaky"),
+            ("in-app-2", "si1", IN_APP),
+            ("peaky-1", "si1", "peaky"),
+            ("in-app-1", "si1", IN_APP),
+        ]
+        session = _session(rows, [])
+
+        prunable = await _select_prunable_run_ids(
+            session, keep_per_sample=2, keep_failed_hours=24
+        )
+
+        # The third of each engine, not the last two rows of the scan.
+        assert sorted(prunable) == ["in-app-1", "peaky-1"]
+
+
 def _hours_ago(hours: float) -> datetime:
     """A UTC timestamp ``hours`` in the past."""
     return datetime.now(timezone.utc) - timedelta(hours=hours)
 
 
-def _run(run_id: str, status: str, sample: str = "si1", created=None, completed=None):
+def _run(
+    run_id: str,
+    status: str,
+    sample: str = "si1",
+    created=None,
+    completed=None,
+    engine: str = IN_APP,
+):
     """One `peak_assignment_run` row, with only the columns these tests read."""
     return {
         "peak_assignment_run_id": run_id,
         "sample_item_id": sample,
+        "engine": engine,
         "engine_version": "test",
         "status": status,
         "peak_assignment_run_utc_created": created,
@@ -171,12 +391,15 @@ def _seed(engine, rows):
         connection.execute(sa.insert(PeakAssignmentRun), rows)
 
 
-def _stale_ids(engine, keep_failed_hours=24, keep_running_hours=72):
+def _stale_ids(
+    engine, keep_failed_hours=24, keep_running_hours=72, keep_importing_hours=24
+):
     """Run the stale-run statement for real and return the ids it selects."""
     now = datetime.now(timezone.utc)
     statement = _stale_runs_statement(
         failed_cutoff=now - timedelta(hours=keep_failed_hours),
         running_cutoff=now - timedelta(hours=keep_running_hours),
+        importing_cutoff=now - timedelta(hours=keep_importing_hours),
     )
     with engine.connect() as connection:
         return list(connection.execute(statement).scalars())
@@ -213,7 +436,7 @@ class TestCompletedScanOrdering:
         with run_table.connect() as connection:
             ordered = list(connection.execute(_completed_runs_statement()))
 
-        assert [run_id for run_id, _ in ordered] == ["newest", "older", "no-timestamp"]
+        assert [row[0] for row in ordered] == ["newest", "older", "no-timestamp"]
 
     @pytest.mark.asyncio
     async def test_the_live_run_survives_a_null_timestamped_sibling(self, run_table):
@@ -297,6 +520,66 @@ class TestInFlightRunsAreProtected:
         _seed(run_table, [_run("just-failed", "failed", completed=_hours_ago(1))])
 
         assert _stale_ids(run_table, keep_failed_hours=24) == []
+
+
+class TestImportsHaveTheirOwnGrace:
+    """An assembling import is non-terminal, but nothing is executing it.
+
+    It must not be swept by the failed grace (it has not failed), nor held by
+    the in-flight grace (no worker is writing into it, and it blocks new work on
+    its sample while it sits there), so it gets a grace of its own.
+    """
+
+    def test_importing_is_not_reclaimed_by_the_failed_grace(self, run_table):
+        """The trap of treating any non-terminal status as terminal.
+
+        The import grace is held wide open so the only rule that could select
+        this row is the terminal one - which is exactly what must not reach it.
+        """
+        _seed(run_table, [_run("uploading", IMPORTING_STATUS, created=_hours_ago(48))])
+
+        assert _stale_ids(run_table, keep_failed_hours=1, keep_importing_hours=96) == []
+
+    def test_a_live_upload_is_not_reclaimed(self, run_table):
+        """A recent import is a client still sending chunks."""
+        _seed(run_table, [_run("uploading", IMPORTING_STATUS, created=_hours_ago(1))])
+
+        assert _stale_ids(run_table, keep_importing_hours=24) == []
+
+    def test_an_abandoned_upload_is_reclaimed_on_its_own_grace(self, run_table):
+        """Otherwise it blocks every later run for its sample indefinitely."""
+        _seed(run_table, [_run("abandoned", IMPORTING_STATUS, created=_hours_ago(48))])
+
+        assert _stale_ids(run_table, keep_importing_hours=24) == ["abandoned"]
+
+    def test_the_import_grace_is_independent_of_the_in_flight_one(self, run_table):
+        """Each non-terminal kind answers only to its own knob."""
+        _seed(
+            run_table,
+            [
+                _run("uploading", IMPORTING_STATUS, created=_hours_ago(48)),
+                _run("computing", "running", created=_hours_ago(48)),
+            ],
+        )
+
+        assert _stale_ids(
+            run_table, keep_running_hours=12, keep_importing_hours=96
+        ) == ["computing"]
+        assert _stale_ids(
+            run_table, keep_running_hours=96, keep_importing_hours=12
+        ) == ["uploading"]
+
+    def test_importing_is_non_terminal_but_not_in_flight(self):
+        """The two sets differ, which is what gives it a separate grace."""
+        assert IMPORTING_STATUS not in IN_FLIGHT_STATUSES
+        assert IMPORTING_STATUS in NON_TERMINAL_STATUSES
+        assert set(IN_FLIGHT_STATUSES) < set(NON_TERMINAL_STATUSES)
+
+    def test_an_importing_run_without_timestamps_is_not_ancient(self, run_table):
+        """Same reasoning as an in-flight run: unknown age reads as 'new'."""
+        _seed(run_table, [_run("uploading", IMPORTING_STATUS)])
+
+        assert _stale_ids(run_table) == []
 
 
 def _in_clause_ids(statement):
@@ -425,6 +708,8 @@ class TestPruneGuards:
             {"keep_failed_hours": -1},
             {"keep_running_hours": 0},
             {"keep_running_hours": MIN_KEEP_RUNNING_HOURS - 1},
+            {"keep_importing_hours": 0},
+            {"keep_importing_hours": MIN_KEEP_IMPORTING_HOURS - 1},
             {"batch_size": 0},
         ],
     )
@@ -432,6 +717,18 @@ class TestPruneGuards:
         """keep_per_sample=0 would delete every run of every sample."""
         with pytest.raises(ValueError):
             await prune_peak_assignment_runs(**kwargs)
+
+    def test_the_import_floor_is_shorter_than_the_in_flight_one(self):
+        """Deliberate: the two protect against different losses.
+
+        Deleting an in-flight run loses a ledger a worker is still computing.
+        Deleting an assembling import loses staged rows the client still holds
+        and can send again - and leaving it there blocks the sample - so the
+        import floor can be much shorter without risking anything comparable.
+        """
+        assert MIN_KEEP_IMPORTING_HOURS < MIN_KEEP_RUNNING_HOURS
+        assert MIN_KEEP_IMPORTING_HOURS >= 1
+        assert DEFAULT_KEEP_IMPORTING_HOURS >= MIN_KEEP_IMPORTING_HOURS
 
 
 class TestEnvOverrides:
@@ -464,10 +761,85 @@ class TestEnvOverrides:
 
         assert prune_script._int_env("MASCOPE_PRUNE_KEEP_PER_SAMPLE", 3, minimum=1) == 3
 
+    def test_a_non_integer_falls_back_to_a_floored_default(self, monkeypatch):
+        """The typo path is floored too, or it reopens the abort by another door.
+
+        A mistyped total is exactly when an operator most needs the pass to keep
+        running: they get a warning in the log and the documented policy, not a
+        timer that fails every night.
+        """
+        monkeypatch.setenv("MASCOPE_PRUNE_KEEP_PER_SAMPLE_TOTAL", "twelve")
+
+        assert (
+            prune_script._int_env(
+                "MASCOPE_PRUNE_KEEP_PER_SAMPLE_TOTAL",
+                DEFAULT_KEEP_PER_SAMPLE_TOTAL,
+                minimum=DEFAULT_KEEP_PER_SAMPLE_TOTAL + 8,
+            )
+            == DEFAULT_KEEP_PER_SAMPLE_TOTAL + 8
+        )
+
     def test_an_unset_variable_uses_the_default(self, monkeypatch):
         monkeypatch.delenv("MASCOPE_PRUNE_KEEP_PER_SAMPLE", raising=False)
 
         assert prune_script._int_env("MASCOPE_PRUNE_KEEP_PER_SAMPLE", 3, minimum=1) == 3
+
+    def test_an_unset_variable_is_floored_too(self, monkeypatch):
+        """A default below the floor is still below the floor.
+
+        `keep_per_sample_total`'s floor is whatever `keep_per_sample` resolved
+        to, so an operator who raises only the per-engine quota past the total's
+        default would otherwise produce a pair the prune rejects outright - and
+        the fix would be the very variable they did not set.
+        """
+        monkeypatch.delenv("MASCOPE_PRUNE_KEEP_PER_SAMPLE_TOTAL", raising=False)
+
+        assert (
+            prune_script._int_env(
+                "MASCOPE_PRUNE_KEEP_PER_SAMPLE_TOTAL",
+                DEFAULT_KEEP_PER_SAMPLE_TOTAL,
+                minimum=DEFAULT_KEEP_PER_SAMPLE_TOTAL + 8,
+            )
+            == DEFAULT_KEEP_PER_SAMPLE_TOTAL + 8
+        )
+
+    @pytest.mark.asyncio
+    async def test_raising_the_per_engine_quota_alone_does_not_abort_the_pass(
+        self, monkeypatch
+    ):
+        """The whole point of flooring the default: the nightly pass survives.
+
+        `prune.env.example` ships the total commented out, so "raise
+        MASCOPE_PRUNE_KEEP_PER_SAMPLE" is the single change an operator is most
+        likely to make. Before the floor it produced keep_per_sample=20 against
+        a total of 12, which `prune_peak_assignment_runs` refuses - failing
+        every firing of the timer rather than keeping more runs.
+        """
+        monkeypatch.setenv("MASCOPE_PRUNE_KEEP_PER_SAMPLE", "20")
+        monkeypatch.delenv("MASCOPE_PRUNE_KEEP_PER_SAMPLE_TOTAL", raising=False)
+
+        keep_per_sample = prune_script._int_env(
+            "MASCOPE_PRUNE_KEEP_PER_SAMPLE", DEFAULT_KEEP_PER_SAMPLE, minimum=1
+        )
+        keep_per_sample_total = prune_script._int_env(
+            "MASCOPE_PRUNE_KEEP_PER_SAMPLE_TOTAL",
+            DEFAULT_KEEP_PER_SAMPLE_TOTAL,
+            minimum=keep_per_sample,
+        )
+
+        assert keep_per_sample_total >= keep_per_sample
+        # And the pair the script would pass is one the prune accepts: it gets
+        # past the guards to the empty selection rather than raising.
+        session = _session([], [])
+        assert (
+            await _select_prunable_run_ids(
+                session,
+                keep_per_sample,
+                DEFAULT_KEEP_FAILED_HOURS,
+                keep_per_sample_total=keep_per_sample_total,
+            )
+            == []
+        )
 
 
 def test_grace_defaults_hold_the_intended_order():
@@ -477,6 +849,71 @@ def test_grace_defaults_hold_the_intended_order():
     assert DEFAULT_KEEP_FAILED_HOURS > 0
     assert DEFAULT_KEEP_RUNNING_HOURS >= MIN_KEEP_RUNNING_HOURS
     assert DEFAULT_KEEP_RUNNING_HOURS > DEFAULT_KEEP_FAILED_HOURS
+
+
+class TestReaperLeavesImportsAlone:
+    """The reaper's premise covers the states a server task owns, and no others.
+
+    It fails every 'pending' and 'running' row at startup, correctly, because
+    startup happens before any worker is spawned: a run waiting for a background
+    task that will never come is as stranded as one whose engine died mid-way,
+    and both block their sample against new work until reclaimed. An import is
+    neither - it is a client sending chunks at its own pace, with no server task
+    attached - so a routine deploy under a "not terminal" reading would fail a
+    live upload, and the client's next chunk would land on a 'failed' run. The
+    statement is executed for real here rather than compared as text, so widening
+    the filter to 'importing' fails this test.
+    """
+
+    @pytest.mark.asyncio
+    async def test_only_task_owned_rows_are_failed(self, run_table, monkeypatch):
+        from mascope_backend.db.admin.peak_assignments import reset_running_runs
+
+        _seed(
+            run_table,
+            [
+                _run("computing", "running", created=_hours_ago(1)),
+                _run("uploading", IMPORTING_STATUS, created=_hours_ago(1)),
+                _run("queued", "pending", created=_hours_ago(1)),
+                _run("done", "completed", created=_hours_ago(1)),
+            ],
+        )
+
+        captured = []
+
+        class _CapturingSession:
+            async def execute(self, statement):
+                captured.append(statement)
+                with run_table.begin() as connection:
+                    return connection.execute(statement)
+
+            async def commit(self):
+                return None
+
+        monkeypatch.setattr(
+            reset_running_runs,
+            "async_session",
+            _session_factory(_CapturingSession()),
+        )
+
+        await reset_running_runs.reset_running_peak_assignment_runs()
+
+        assert len(captured) == 1
+        with run_table.connect() as connection:
+            statuses = dict(
+                connection.execute(
+                    sa.select(
+                        PeakAssignmentRun.peak_assignment_run_id,
+                        PeakAssignmentRun.status,
+                    )
+                ).all()
+            )
+
+        assert statuses["computing"] == "failed"
+        # A run the assign request created but no task ever adopted.
+        assert statuses["queued"] == "failed"
+        assert statuses["uploading"] == IMPORTING_STATUS
+        assert statuses["done"] == "completed"
 
 
 class TestReaperResilience:

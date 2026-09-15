@@ -42,10 +42,13 @@ import jwt
 import pytest
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
+from test_utils import gen_test_id
 
+from mascope_backend.api.new.auth.access_token.service import create_access_token
 from mascope_backend.api.new.auth.config import auth_settings
+from mascope_backend.api.new.auth.devices.machine_account import create_machine_account
 from mascope_backend.app.fast import fast
-from mascope_backend.db import Role, User
+from mascope_backend.db import AgentDevice, Role, User
 
 
 @pytest_asyncio.fixture(scope="session")
@@ -237,14 +240,68 @@ async def owner_client(test_users, create_jwt_auth_token):
 
 
 @pytest.fixture
+def provision_device(async_session_factory):
+    """Factory: pair a device, exactly as approving a pairing request does.
+
+    Creates the ``AgentDevice`` row, the machine account it authenticates as
+    (enrolled in the sponsor's acquisition workspaces), and a device-bound
+    ``file-agent`` token - the three rows that always exist together in
+    production, committed in one transaction like the real flow.
+
+    Shared here because several suites need a paired device as a starting
+    point: token renewal, strict mode, and upload attribution all begin with
+    one, and a per-file copy would let them drift apart from the real pairing
+    flow independently.
+
+    :param async_session_factory: Session factory for the integration database
+    :return: Async callable ``(sponsor_id, machine_name) ->
+        (device_id, machine_user, device_bound_token)``
+    :rtype: Callable
+    """
+
+    async def _provision(sponsor_id: int, machine_name: str = "ORBI-PC"):
+        async with async_session_factory() as session:
+            device = AgentDevice(
+                name=machine_name,
+                service_name="file-agent",
+                sponsor_user_id=sponsor_id,
+            )
+            session.add(device)
+            await session.flush()
+            machine = await create_machine_account(
+                session,
+                machine_name=machine_name,
+                device_id=device.device_id,
+                sponsor_user_id=sponsor_id,
+            )
+            device.machine_user_id = machine.id
+            await session.commit()
+            device_id = device.device_id
+
+        token = await create_access_token(
+            user=machine,
+            service_name="file-agent",
+            description=f"Paired: {machine_name}",
+            device_id=device_id,
+        )
+        return device_id, machine, token
+
+    return _provision
+
+
+@pytest.fixture
 def dataset_create_data():
     """Sample data for dataset creation requests.
+
+    The name is uniquified per test: dataset names are unique per workspace,
+    and `test_workspace` is session-scoped, so a fixed literal would make the
+    second test that posts this payload fail with a 409.
 
     :return: Dictionary with dataset creation data
     :rtype: dict
     """
     return {
-        "dataset_name": "New Test Dataset",
+        "dataset_name": f"New Test Dataset {gen_test_id(8)}",
         "dataset_description": "Created during integration test",
         "dataset_type": "ANALYSIS",
     }
@@ -254,11 +311,14 @@ def dataset_create_data():
 def dataset_update_data():
     """Sample data for dataset update requests.
 
+    Uniquified for the same reason as `dataset_create_data`: renamed datasets
+    are left behind in the session-scoped workspace.
+
     :return: Dictionary with dataset update data
     :rtype: dict
     """
     return {
-        "dataset_name": "Updated Test Dataset",
+        "dataset_name": f"Updated Test Dataset {gen_test_id(8)}",
         "dataset_description": "Updated during integration test",
     }
 

@@ -62,6 +62,43 @@ Breaking changes are marked with `!` after the type/scope.
 
 Use the issue templates. For questions and open-ended discussion, join our [Discord community](https://discord.gg/R5kEKJcKe8).
 
-## Certifying your contributions
+## Contributor License Agreement
 
-By submitting a contribution, you certify that you have the right to do so, and you agree that your contribution is licensed to the project under [Apache-2.0](LICENSE) - the same license as the project itself.
+Before we can merge your first pull request, we ask you to accept the
+[Ultra Trace Systems Individual Contributor License Agreement](https://github.com/ultra-trace-systems/cla/blob/main/ICLA.md)
+(ICLA). It is a one-time step, and one acceptance covers Mascope,
+[Peaky](https://github.com/ultra-trace-systems/peaky), and our other open-source
+projects.
+
+In short: you keep the copyright to your work and may use it however you like;
+you license it to Ultra Trace Systems so we can distribute Mascope under
+Apache-2.0 and, where we need to, under other terms (for example to customers of
+the managed service); and you confirm that you are entitled to contribute it.
+Mascope itself stays Apache-2.0. The agreement is based on the
+[Harmony](https://www.harmonyagreements.org) individual agreement.
+
+**How to accept.** When you open your first pull request, the CLA assistant posts
+a comment asking you to sign. Reply on the pull request with exactly
+
+    I have read the CLA Document and I hereby sign the CLA
+
+and the check passes on its next run (push a commit, or comment `recheck`, if it
+has not updated by itself). Your GitHub username, the pull request, and the time
+are recorded in the public
+[signature register](https://github.com/ultra-trace-systems/cla). Every commit
+author on the pull request has to have accepted, and commits must be authored
+with an email address linked to a GitHub account so the assistant can tell who
+wrote them. Ultra Trace's own developers and the bots are exempt: their work is
+the company's already, and they are in the workflow's allowlist.
+
+**If your contribution includes work that is not yours** - code adapted from
+another project, a vendored file, data, images - keep it in its own commit or
+file, say in the pull request where it comes from and under which licence, add
+the attribution to [NOTICE](NOTICE), and make sure the licence is compatible with
+Apache-2.0 (the allowlist in `tooling/check-licenses.py` is the reference). The
+agreement asks you to confirm you have done this.
+
+**If you contribute as part of your job**, make sure your employer agrees; the
+agreement asks you to confirm that too. If your employer needs a corporate
+agreement instead, or for any other question about the agreement, write to
+support@ultratrace.eu.

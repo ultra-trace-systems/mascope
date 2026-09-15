@@ -11,11 +11,13 @@ import Ripple from 'primevue/ripple'
 import 'primeicons/primeicons.css'
 import '@phosphor-icons/web/regular'
 // Self-hosted IBM Plex Sans (brand-guideline weights: 400 body, 500 labels,
-// 700 headings); fonts must not be fetched from third-party CDNs (GDPR: IP
-// disclosure to Google)
+// 700 headings) and Plex Mono (400, the only weight the guidelines set codes
+// and index labels in); fonts must not be fetched from third-party CDNs
+// (GDPR: IP disclosure to Google)
 import '@fontsource/ibm-plex-sans/400.css'
 import '@fontsource/ibm-plex-sans/500.css'
 import '@fontsource/ibm-plex-sans/700.css'
+import '@fontsource/ibm-plex-mono/400.css'
 
 import App from './App.vue'
 import router from './routes'

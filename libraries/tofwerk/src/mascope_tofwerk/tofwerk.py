@@ -11,6 +11,46 @@ import xarray as xr
 DEFAULT_NONSENSE_MZ = 10.0  # m/z values below this are considered nonsense
 
 
+class NoScansRecordedError(ValueError):
+    """A TofDaq file whose ``BufTimes`` holds no recorded scan at all."""
+
+
+def recorded_scan_times(buf_times) -> np.ndarray:
+    """
+    Scan start times actually recorded, with the unwritten tail trimmed off.
+
+    TofDaq pre-allocates ``TimingData/BufTimes`` as (writes x bufs) and fills
+    it as the run proceeds, so an aborted acquisition leaves a tail of unwritten
+    slots - often whole rows of them. The recorded scans are everything up to
+    the last written entry *anywhere* in the array, not just in the last row: a
+    run that stopped mid-block still recorded every scan before it.
+
+    An unwritten slot reads as 0.0, and on some writers as NaN, so both are
+    what the tail is trimmed against. Index 0 is deliberately kept: buf times
+    are relative to acquisition start, so the first scan legitimately reads 0.0
+    and is indistinguishable from an unwritten slot by value alone - which is
+    why a file whose every timestamp is unwritten is reported as holding no
+    scans rather than as one scan at t=0.
+
+    Every reader below trims the same way, so they agree on which scans the
+    file holds; the ingestion path adds the further conditions it needs to
+    measure a time axis (see ``H5Processor._recorded_scan_times``).
+
+    :param buf_times: The ``TimingData/BufTimes`` dataset.
+    :return: 1-D array of recorded scan start times.
+    :rtype: numpy.ndarray
+    :raises NoScansRecordedError: When no entry was ever written.
+    """
+    times = np.asarray(buf_times[:]).reshape(-1)
+    written = np.where(np.isfinite(times) & (times != 0))[0]
+    if written.size == 0:
+        raise NoScansRecordedError(
+            "The file's TimingData/BufTimes holds no recorded scan; "
+            "the acquisition is empty or was aborted."
+        )
+    return times[: written[-1] + 1]
+
+
 @contextmanager
 def open_h5_file(datafile_path: str):
     """Context manager for safely opening and closing Tofwerk h5-files.
@@ -124,11 +164,8 @@ def get_signal(
         # Get m/z scale
         all_mzs = h5_file["FullSpectra"]["MassAxis"][:]
 
-        # Get time scale
-        scan_time = h5_file["TimingData"]["BufTimes"][:].reshape(-1)
-        last_non_zero_scan = np.where(scan_time != 0)[0][-1]
-        # Cut out zero scans
-        scan_time = scan_time[: last_non_zero_scan + 1]
+        # Get time scale, without the unwritten tail of an aborted run
+        scan_time = recorded_scan_times(h5_file["TimingData"]["BufTimes"])
         # Total number of scans
         n_scans = scan_time.size
 
@@ -156,9 +193,7 @@ def get_signal(
             # Slice the signal between mz_start_ind and mz_end_ind
             signal_array = signal_ref[:, :, :, mz_start_ind : mz_end_ind + 1]
             # Reshape the signal array to 2D
-            signal_array = signal_array.reshape(-1, signal_array.shape[-1])[
-                : last_non_zero_scan + 1, :
-            ]
+            signal_array = signal_array.reshape(-1, signal_array.shape[-1])[:n_scans, :]
             # Convert to dask array
             signal_dask = da.from_array(signal_array, chunks="auto")
             signal = xr.Dataset(
@@ -241,11 +276,8 @@ def compute_sum_signal(
         # Get m/z scale
         all_mzs = h5_file["FullSpectra"]["MassAxis"][:]
 
-        # Get time scale
-        scan_time = h5_file["TimingData"]["BufTimes"][:].reshape(-1)
-        last_non_zero_scan = np.where(scan_time != 0)[0][-1]
-        # Cut out zero scans
-        scan_time = scan_time[: last_non_zero_scan + 1]
+        # Get time scale, without the unwritten tail of an aborted run
+        scan_time = recorded_scan_times(h5_file["TimingData"]["BufTimes"])
         # Total number of scans
         n_scans = scan_time.size
 
@@ -307,12 +339,10 @@ def get_tic_per_scan(
     with open_h5_file(datafile_path) as h5_file:
         # Get signal HDF5 dataset reference
         signal_ref = h5_file["FullSpectra"]["TofData"]
-        # Get time scale
-        scan_timestamp = h5_file["TimingData"]["BufTimes"][:].reshape(-1)
-        # Total number of non-zero scans
-        n_scans = np.where(scan_timestamp != 0)[0][-1] + 1
-        # Cut out zero scans
-        scan_timestamp = scan_timestamp[:n_scans]
+        # Get time scale, without the unwritten tail of an aborted run
+        scan_timestamp = recorded_scan_times(h5_file["TimingData"]["BufTimes"])
+        # Total number of recorded scans
+        n_scans = scan_timestamp.size
 
         # 1. flatten n_writes, n_bufs, n_segments dimensions
         # 2. group dimension coordinates
@@ -364,12 +394,8 @@ def get_scan_timestamps(
     :rtype: np.ndarray
     """
     with open_h5_file(datafile_path) as h5_file:
-        # Get time scale
-        scan_timestamp = h5_file["TimingData"]["BufTimes"][:].reshape(-1)
-        # Total number of non-zero scans
-        n_scans = np.where(scan_timestamp != 0)[0][-1] + 1
-        # Cut out zero scans
-        scan_timestamp = scan_timestamp[:n_scans]
+        # Get time scale, without the unwritten tail of an aborted run
+        scan_timestamp = recorded_scan_times(h5_file["TimingData"]["BufTimes"])
 
         # Apply time filtering if t_min or t_max is provided
         if t_min is not None:
@@ -406,9 +432,7 @@ def get_peak_timeseries(
         # Make sure mzs are numpy array
         mzs = np.asarray(mzs)
         # Get full time range
-        scan_time = h5_file["TimingData"]["BufTimes"][:].reshape(-1)
-        last_non_zero_scan = np.where(scan_time != 0)[0][-1]
-        scan_time = scan_time[: last_non_zero_scan + 1]
+        scan_time = recorded_scan_times(h5_file["TimingData"]["BufTimes"])
 
         # Coefficient to convert signal intensity from [mV] -> [ions/sec]
         conv_coeff = get_conversion_coefficient(h5_file)

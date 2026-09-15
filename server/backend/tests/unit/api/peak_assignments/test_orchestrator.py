@@ -54,7 +54,7 @@ def _scalar_session(value):
 
 
 def _peaks_df(peak_specs: list[tuple[str, float, float]]) -> pd.DataFrame:
-    """Build the frame ``_load_sample_peaks`` returns: id, m/z, intensity."""
+    """Build the frame ``load_sample_peaks`` returns: id, m/z, intensity."""
     return pd.DataFrame(
         [
             {"sample_peak_id": pid, "mz": mz, "intensity": intensity}
@@ -79,10 +79,12 @@ def _sample() -> MagicMock:
 
 
 class _Recorder:
-    """Captures the rows the orchestrator bulk-inserts."""
+    """Captures the rows the orchestrator bulk-inserts, and the statements it
+    issues alongside them."""
 
     def __init__(self):
         self.rows: list[dict] = []
+        self.statements: list = []
         self.finalized: list[tuple[str, str]] = []
 
     def session_factory(self):
@@ -91,6 +93,8 @@ class _Recorder:
         async def execute(statement, params=None):
             if isinstance(params, list):
                 self.rows.extend(params)
+            else:
+                self.statements.append(statement)
             return MagicMock()
 
         session.execute = AsyncMock(side_effect=execute)
@@ -98,6 +102,20 @@ class _Recorder:
         ctx.__aenter__ = AsyncMock(return_value=session)
         ctx.__aexit__ = AsyncMock(return_value=False)
         return ctx
+
+    def recorded_calibrations(self) -> list:
+        """The `confidence_calibration` values written on the run, in order.
+
+        Read off the compiled statements rather than a mocked helper, because
+        what the test is pinning is that the curve is committed in the same
+        transaction as the ledger - not merely that some function was called.
+        """
+        values = []
+        for statement in self.statements:
+            params = statement.compile().params
+            if "confidence_calibration" in params:
+                values.append(params["confidence_calibration"])
+        return values
 
 
 def _patches(
@@ -128,7 +146,7 @@ def _patches(
             f"{_MOD}._create_run", new_callable=AsyncMock, return_value=run
         ),
         "finalize": patch(f"{_MOD}._finalize_run", new_callable=AsyncMock),
-        "load_peaks": patch(f"{_MOD}._load_sample_peaks", return_value=peaks),
+        "load_peaks": patch(f"{_MOD}.load_sample_peaks", return_value=peaks),
         "known": patch(
             f"{_MOD}._fetch_known_target_isotopes",
             new_callable=AsyncMock,
@@ -155,7 +173,7 @@ def _patches(
             f"{_MOD}.load_calibration", new_callable=AsyncMock, return_value=None
         ),
         "mechanisms": patch(
-            f"{_MOD}._fetch_sample_mechanisms",
+            f"{_MOD}.fetch_sample_mechanisms",
             new_callable=AsyncMock,
             return_value=(["im-1"], [MagicMock()]),
         ),
@@ -394,6 +412,48 @@ class TestRunFinalization:
 
         mocks["finalize"].assert_awaited_once()
         assert mocks["finalize"].await_args.args[:2] == ("run-1", "completed")
+        # No curve was loaded (the store mock returns None), so the run records none.
+        assert recorder.recorded_calibrations() == [None]
+
+    @pytest.mark.asyncio
+    async def test_the_curve_the_run_applied_is_recorded_on_it(self):
+        """The calibration record is written once, on the run, in the same
+        transaction as the ledger - the rows carry only the P(correct) values
+        read off it.
+
+        Committed with the rows rather than at finalize because a run that is
+        interrupted in between keeps its ledger: the startup reaper marks it
+        failed and a read that names it by id still serves those rows, so a
+        curve recorded only on the completed path would be missing from exactly
+        the ledgers that outlived their run.
+        """
+        from mascope_backend.api.new.peak_assignments.config import (
+            PeakAssignmentConfig,
+        )
+        from mascope_tools.composition.calibration import Calibration
+
+        peaks = _peaks_df([("p1", 181.0707, 10000.0), ("p2", 182.0741, 660.0)])
+        recorder = _Recorder()
+        mocks = _start(_patches(recorder, peaks, _stage_a_rows()))
+        mocks["calibration"].return_value = Calibration(
+            a=5.74, b=-3.36, instrument="orbi", provisional=True, source="unit test"
+        )
+
+        await _run(PeakAssignmentConfig(run_untargeted=False))
+
+        assert recorder.recorded_calibrations() == [
+            {
+                "instrument": "orbi",
+                "provisional": True,
+                "source": "unit test",
+            }
+        ]
+        # Finalize is left with nothing to say about the curve.
+        assert "confidence_calibration" not in mocks["finalize"].await_args.kwargs
+        for row in recorder.rows:
+            provenance = row.get("provenance") or {}
+            assert "calibration" not in provenance
+            assert "calibrated" not in provenance
 
     @pytest.mark.asyncio
     async def test_failing_stage_finalizes_the_run_failed(self):
@@ -627,7 +687,9 @@ class TestSampleAdmissionControl:
             patch(f"{_MOD}.fetch_sample", AsyncMock(return_value=self._sample())),
             patch(f"{_MOD}._run_sample_assignment", side_effect=_slow_run),
             patch(f"{_MOD}.assignment_claim", _claim_stub()),
-            patch(f"{_MOD}.async_session", side_effect=lambda: _scalar_session(None)),
+            # No durable run in the way: the refusal under test is the
+            # in-flight set, one worker deep.
+            patch(f"{_MOD}.in_flight_run_id", AsyncMock(return_value=None)),
         ):
             first = asyncio.create_task(
                 assign_sample_peaks(
@@ -649,6 +711,41 @@ class TestSampleAdmissionControl:
 
         assert second["status"] == "skipped"
         assert "already running" in second["message"]
+
+    @pytest.mark.asyncio
+    async def test_a_durable_non_terminal_run_is_refused_before_the_engine_starts(self):
+        """The check that lets an import and an in-app assign refuse each other.
+
+        The advisory claim cannot see an import: it belongs to one process, and
+        an import assembles across several requests at a remote client's pace.
+        So admission also asks the database whether this sample already has a
+        run that has not reached an outcome - and here it does, even though the
+        claim was free.
+        """
+        from mascope_backend.api.new.peak_assignments.service import (
+            assign_sample_peaks,
+        )
+
+        engine = AsyncMock()
+        with (
+            patch(f"{_MOD}.fetch_sample", AsyncMock(return_value=self._sample())),
+            patch(f"{_MOD}._run_sample_assignment", engine),
+            patch(f"{_MOD}.assignment_claim", _claim_stub(acquired=True)),
+            patch(
+                f"{_MOD}.in_flight_run_id",
+                AsyncMock(return_value="import-in-progress"),
+            ),
+        ):
+            result = await assign_sample_peaks(
+                sample_item_id="si-1",
+                independent_transaction=True,
+                user_id=None,
+                process_id="proc-1",
+            )
+
+        engine.assert_not_called()
+        assert result["status"] == "skipped"
+        assert result["data"]["peak_assignment_run_id"] == "import-in-progress"
 
     @pytest.mark.asyncio
     async def test_the_claim_is_released_when_a_run_fails(self):
@@ -725,7 +822,8 @@ class TestSampleAdmissionControl:
         The in-flight set only sees this worker; the cross-process claim
         extends the refusal across workers, and the refusal reports the
         in-flight run it can see so the client can follow the run actually
-        producing the ledger.
+        producing the ledger. Which run that is comes from durable run state,
+        so that is the seam this stubs.
         """
         from mascope_backend.api.new.peak_assignments.service import (
             assign_sample_peaks,
@@ -737,8 +835,8 @@ class TestSampleAdmissionControl:
             patch(f"{_MOD}._run_sample_assignment", engine),
             patch(f"{_MOD}.assignment_claim", _claim_stub(acquired=False)),
             patch(
-                f"{_MOD}.async_session",
-                side_effect=lambda: _scalar_session("run-elsewhere"),
+                f"{_MOD}.in_flight_run_id",
+                AsyncMock(return_value="run-elsewhere"),
             ),
         ):
             result = await assign_sample_peaks(

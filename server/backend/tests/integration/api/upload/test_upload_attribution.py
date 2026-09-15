@@ -1,0 +1,539 @@
+"""
+Integration tests: who, and which machine, an upload is attributed to.
+
+``POST /api/sample/files`` stamps two attributions on the row it creates, and
+they are decided in opposite ways. The user comes from the authenticated
+request and never from the body. The device *is* carried in the body - the
+converter writes this record back on its own token, long after the agent's
+request ended, so it cannot be derived from the caller's binding - and is
+therefore honoured only when the caller is the machine account that device
+authenticates as.
+
+That last condition is the whole forgery guard, and a guard that quietly stops
+guarding looks exactly like one that works: without it any editor could stamp a
+file with another site's instrument, and every existing test would still pass.
+So both halves are pinned over real HTTP here, together with the rule that
+makes the guard safe to have at all - a device id the caller does not own, or
+one that names no device, degrades to unattributed and still creates the file.
+Attribution must never fail an ingest.
+
+Each test uses its own instrument name so that the acquisition workspace one
+test's upload creates cannot decide the next test's ACL.
+"""
+
+from types import SimpleNamespace
+from unittest.mock import AsyncMock
+
+import pytest
+import pytest_asyncio
+from httpx import ASGITransport, AsyncClient
+from sqlalchemy import delete, func, select
+
+from mascope_backend.accounts import ACCOUNT_TYPE_MACHINE
+from mascope_backend.api.controllers.sample.files import sample_files_controller
+from mascope_backend.api.controllers.sample.files.process import (
+    service as process_service,
+)
+from mascope_backend.api.new.auth.access_token.service import create_access_token
+from mascope_backend.api.routes.sample.files import (
+    sample_files_routes as files_routes,
+)
+from mascope_backend.app.fast import fast
+from mascope_backend.db import AgentDevice, SampleFile, User
+
+
+#: One instrument per test. They must satisfy ``validate_instrument_name``
+#: (letters, digits and hyphens only) and resolve to a known instrument type,
+#: which is what the "orbi" fragment is for.
+INSTRUMENT_AGENT = "attrib-orbi-agent"
+INSTRUMENT_FORGED = "attrib-orbi-forged"
+INSTRUMENT_GHOST = "attrib-orbi-ghost"
+
+ALL_INSTRUMENTS = (INSTRUMENT_AGENT, INSTRUMENT_FORGED, INSTRUMENT_GHOST)
+
+#: The machines these tests pair, one per test for the same reason the
+#: instruments are one per test. Bound to names here so the teardown deletes
+#: exactly them - a literal at the call site could drift out of that set and
+#: leave a device behind in the shared database.
+MACHINE_AGENT = "ORBI-ATTRIB"
+MACHINE_FORGED = "ORBI-FORGED"
+MACHINE_GHOST = "ORBI-GHOST"
+
+ALL_MACHINES = (MACHINE_AGENT, MACHINE_FORGED, MACHINE_GHOST)
+
+
+@pytest_asyncio.fixture(autouse=True)
+async def clean_state(async_session_factory):
+    """Remove what these tests create, so the suite's shared database is unchanged.
+
+    Deleting the machine accounts cascades to their access tokens
+    (``access_token.user_id`` is ``ON DELETE CASCADE``), and the device rows go
+    last because everything pointing at them is ``ON DELETE SET NULL`` - which
+    is also why the accounts are selected through the devices while those rows
+    still carry the link.
+
+    Scoped to this module's own devices rather than to every machine account
+    and every file-agent device in the database. The integration database is
+    shared for the whole session, so a blanket sweep running after each of
+    these tests would reach into whatever another module had paired - the same
+    reason each test here uses an instrument of its own.
+    """
+    yield
+    async with async_session_factory() as session:
+        await session.execute(
+            delete(SampleFile).where(SampleFile.instrument.in_(ALL_INSTRUMENTS))
+        )
+        await session.execute(
+            delete(User).where(
+                User.account_type == ACCOUNT_TYPE_MACHINE,
+                User.id.in_(
+                    select(AgentDevice.machine_user_id).where(
+                        AgentDevice.name.in_(ALL_MACHINES)
+                    )
+                ),
+            )
+        )
+        await session.execute(
+            delete(AgentDevice).where(AgentDevice.name.in_(ALL_MACHINES))
+        )
+        await session.commit()
+
+
+@pytest.fixture(autouse=True)
+def _no_post_create_work(monkeypatch):
+    """Stub the two things creation kicks off after the row is written.
+
+    Neither is under test here, and both would otherwise decide whether these
+    tests pass for reasons that have nothing to do with attribution:
+
+    * ``spawn_auto_process_sample_file`` is queued as a BackgroundTask, which
+      ASGITransport runs to completion before the response is handed back - so
+      the real one would try to convert a file that was never uploaded.
+    * ``create_acquisition_datasets`` runs whenever the instrument is new, and
+      it iterates over *every* instrument that has sample files, validating
+      each name. One session-scoped fixture elsewhere in this suite commits a
+      file whose instrument is ``" Test-Orbion "`` (with the spaces), which
+      fails that validation - so leaving this unstubbed makes these tests pass
+      or fail on collection order.
+
+    Both are patched on the module attribute the controller reads: the
+    auto-process import is function-local and resolves at call time, and
+    ``create_acquisition_datasets`` is bound on ``sample_files_controller``.
+    """
+    monkeypatch.setattr(
+        process_service, "spawn_auto_process_sample_file", AsyncMock(return_value=None)
+    )
+    monkeypatch.setattr(
+        sample_files_controller,
+        "create_acquisition_datasets",
+        AsyncMock(return_value={"results": 0, "data": []}),
+    )
+
+
+def _bearer_client(token: str, service: str) -> AsyncClient:
+    return AsyncClient(
+        transport=ASGITransport(app=fast),
+        base_url="http://test",
+        headers={"Authorization": f"Bearer {token}", "X-Service-Name": service},
+    )
+
+
+def _payload(
+    instrument: str, device_id: int | None, forged_user_id: int | None = None
+) -> dict:
+    """The body the converter posts back once a file has been converted.
+
+    A subset of what ``file_converter/api.py`` sends - the omitted fields
+    (method_file, mz_calibration, instrument_function_id, acquisition_timezone,
+    utc_offset_source) are all optional and irrelevant to attribution.
+    """
+    body = {
+        "filename": f"{instrument}_20260101_0000_.raw",
+        "instrument": instrument,
+        "datetime": "2026-01-01T00:00:00",
+        "datetime_utc": "2026-01-01T00:00:00Z",
+        "length": 60.0,
+        "range": [0, 500],
+        "polarity": "+",
+    }
+    if device_id is not None:
+        body["uploaded_by_device_id"] = device_id
+    if forged_user_id is not None:
+        # Not a field of SampleFileCreate today, so pydantic drops it. Sent
+        # anyway: the day someone adds it to the schema the way
+        # uploaded_by_device_id was added, this is what notices.
+        body["uploaded_by_user_id"] = forged_user_id
+    return body
+
+
+async def _stored(async_session_factory, filename: str) -> SampleFile:
+    async with async_session_factory() as session:
+        return (
+            await session.execute(
+                select(SampleFile).where(SampleFile.filename == filename)
+            )
+        ).scalar_one()
+
+
+@pytest.mark.asyncio
+async def test_agent_upload_records_its_device_and_machine_account(
+    async_session_factory, test_users, provision_device
+):
+    """The round trip: a paired machine's upload is attributed to both.
+
+    This is the only path that ends with a non-NULL ``uploaded_by_device_id``,
+    so if the column stops being written nothing else in the suite notices.
+    """
+    device_id, machine, _agent_token = await provision_device(
+        test_users["editor"].id, machine_name=MACHINE_AGENT
+    )
+    # The converter authenticates as the machine account on its own unbound
+    # file-converter token - this is the credential that writes the record.
+    converter_token = await create_access_token(
+        user=machine, service_name="file-converter"
+    )
+
+    body = _payload(INSTRUMENT_AGENT, device_id)
+    async with _bearer_client(converter_token, "file-converter") as client:
+        resp = await client.post("/api/sample/files", json=body)
+    assert resp.status_code == 201, resp.text
+
+    stored = await _stored(async_session_factory, body["filename"])
+    assert stored.uploaded_by_device_id == device_id
+    assert stored.uploaded_by_user_id == machine.id
+
+    # The response reports the same attribution the row holds, so a client
+    # cannot be told one thing while the database records another.
+    data = resp.json()["data"]
+    assert data["uploaded_by_device_id"] == device_id
+    assert data["uploaded_by_user_id"] == machine.id
+
+
+@pytest.mark.asyncio
+async def test_a_user_cannot_claim_a_device_they_do_not_authenticate_as(
+    async_session_factory, test_users, provision_device, editor_client
+):
+    """The forgery guard: a real device id, claimed by someone else, is dropped.
+
+    The editor here is even the device's *sponsor* - the person who approved
+    the pairing - and still may not stamp a file with it. Attribution names the
+    machine that produced the file; anything weaker would let any editor
+    attribute an upload to another site's instrument.
+
+    The body also names the machine account as the uploading user, which is the
+    other half of the rule: the user is taken from the authenticated request,
+    never from the body.
+    """
+    device_id, machine, _agent_token = await provision_device(
+        test_users["editor"].id, machine_name=MACHINE_FORGED
+    )
+    assert machine.id != test_users["editor"].id  # the claim really is someone else's
+
+    body = _payload(INSTRUMENT_FORGED, device_id, forged_user_id=machine.id)
+    resp = await editor_client.post("/api/sample/files", json=body)
+
+    # Refused attribution, not a refused upload - and the user is the
+    # authenticated caller, never the one the body named.
+    assert resp.status_code == 201, resp.text
+    stored = await _stored(async_session_factory, body["filename"])
+    assert stored.uploaded_by_device_id is None
+    assert stored.uploaded_by_user_id == test_users["editor"].id
+
+
+@pytest.mark.asyncio
+async def test_an_unknown_device_id_degrades_to_unattributed(
+    async_session_factory, test_users, provision_device
+):
+    """A device id naming no row stores NULL and still creates the file.
+
+    The real case is a pairing revoked and its device deleted between the
+    upload and the converter writing the record back. Without the lookup the
+    insert would hit the foreign key and the ingest would be lost to a 500 -
+    the file is on disk by then and nothing re-posts it.
+    """
+    _device_id, machine, _agent_token = await provision_device(
+        test_users["editor"].id, machine_name=MACHINE_GHOST
+    )
+    converter_token = await create_access_token(
+        user=machine, service_name="file-converter"
+    )
+
+    async with async_session_factory() as session:
+        highest = (
+            await session.execute(select(func.max(AgentDevice.device_id)))
+        ).scalar()
+    missing_device_id = (highest or 0) + 1000
+
+    body = _payload(INSTRUMENT_GHOST, missing_device_id)
+    async with _bearer_client(converter_token, "file-converter") as client:
+        resp = await client.post("/api/sample/files", json=body)
+    assert resp.status_code == 201, resp.text
+
+    stored = await _stored(async_session_factory, body["filename"])
+    assert stored.uploaded_by_device_id is None
+    assert stored.uploaded_by_user_id == machine.id
+
+
+@pytest.mark.asyncio
+async def test_a_tus_upload_reports_its_instrument_under_that_key(monkeypatch):
+    """The one spelling the agent and the server have to agree on.
+
+    The agent writes ``instrument`` into the upload's tus metadata and the
+    server reads it back out by name; nothing else makes the two agree, and a
+    rename on either side would silently stop a machine reporting what it
+    watches. This pins the server's half - the SDK's half is pinned by its own
+    metadata test - along with the device the report is attributed to.
+    """
+    recorded = {}
+
+    async def fake_record(device_id, instrument):
+        recorded.update(device_id=device_id, instrument=instrument)
+
+    async def noop(*args, **kwargs):
+        return None
+
+    monkeypatch.setattr(files_routes, "record_reported_instrument", fake_record)
+    monkeypatch.setattr(files_routes, "check_instrument_workspace_access", noop)
+    monkeypatch.setattr(files_routes, "get_access_token", noop)
+    monkeypatch.setattr(files_routes, "upload_sample_file", noop)
+    monkeypatch.setattr(files_routes.shutil, "move", lambda src, dst: None)
+
+    request = SimpleNamespace(state=SimpleNamespace(token_device_id=7))
+    handler = files_routes.get_upload_handler(request=request, user=object())
+
+    await handler(
+        "/tmp/tus-upload-body",
+        {"filename": "Orbi-Lab2_2026.09.03-10h12m01s.raw", "instrument": "Orbi-Lab2"},
+    )
+
+    assert recorded == {"device_id": 7, "instrument": "Orbi-Lab2"}
+
+
+def _handler_probe(monkeypatch):
+    """A tus completion handler with its side effects captured, not run."""
+    seen = {}
+
+    async def fake_access(instrument, user, role, allow_new=False):
+        seen["instrument"] = instrument
+
+    async def fake_upload(dest_path, **kwargs):
+        seen["dest_path"] = dest_path
+        seen["source_filename"] = kwargs.get("source_filename")
+
+    async def noop(*args, **kwargs):
+        return None
+
+    monkeypatch.setattr(files_routes, "record_reported_instrument", noop)
+    monkeypatch.setattr(files_routes, "check_instrument_workspace_access", fake_access)
+    monkeypatch.setattr(files_routes, "get_access_token", noop)
+    monkeypatch.setattr(files_routes, "upload_sample_file", fake_upload)
+    monkeypatch.setattr(
+        files_routes.shutil, "move", lambda src, dst: seen.update(moved_to=dst)
+    )
+    request = SimpleNamespace(state=SimpleNamespace(token_device_id=7))
+    return files_routes.get_upload_handler(request=request, user=object()), seen
+
+
+@pytest.mark.asyncio
+async def test_a_tus_upload_is_filed_under_the_instrument_it_reports(monkeypatch):
+    """The file name no longer has to carry the instrument.
+
+    An agent that reports what it watches gets its upload stored under a name
+    that starts with it, checked against that instrument's workspace, and the
+    converter is told the name the file had on the instrument PC.
+    """
+    handler, seen = _handler_probe(monkeypatch)
+
+    await handler(
+        "/tmp/tus/upload-body",
+        {
+            "filename": "ambient_2026.09.05-10h12m01s.raw",
+            "source_filename": "ambient_2026.09.05-10h12m01s.raw",
+            "instrument": "Test",
+        },
+    )
+
+    assert seen["instrument"] == "Test"
+    assert (
+        seen["moved_to"]
+        .replace("\\", "/")
+        .endswith("/tmp/tus/Test_ambient_2026.09.05-10h12m01s.raw")
+    )
+    assert seen["source_filename"] == "ambient_2026.09.05-10h12m01s.raw"
+
+
+@pytest.mark.asyncio
+async def test_a_tus_upload_without_a_report_is_filed_by_its_name(monkeypatch):
+    handler, seen = _handler_probe(monkeypatch)
+
+    await handler(
+        "/tmp/tus/upload-body", {"filename": "Orbi-Lab2_2026.09.05-10h12m01s.raw"}
+    )
+
+    assert seen["instrument"] == "Orbi-Lab2"
+    assert (
+        seen["moved_to"]
+        .replace("\\", "/")
+        .endswith("/tmp/tus/Orbi-Lab2_2026.09.05-10h12m01s.raw")
+    )
+    # Nothing renamed it, so the on-disk name is the uploaded one.
+    assert seen["source_filename"] == "Orbi-Lab2_2026.09.05-10h12m01s.raw"
+
+
+@pytest.mark.asyncio
+async def test_a_tus_upload_already_prefixed_by_the_agent_is_not_prefixed_again(
+    monkeypatch,
+):
+    handler, seen = _handler_probe(monkeypatch)
+
+    await handler(
+        "/tmp/tus/upload-body",
+        {
+            "filename": "Test_ambient_2026.09.05-10h12m01s.raw",
+            "source_filename": "ambient_2026.09.05-10h12m01s.raw",
+            "instrument": "Test",
+        },
+    )
+
+    assert seen["instrument"] == "Test"
+    assert (
+        seen["moved_to"]
+        .replace("\\", "/")
+        .endswith("/tmp/tus/Test_ambient_2026.09.05-10h12m01s.raw")
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_failure_to_record_the_instrument_does_not_fail_the_upload(monkeypatch):
+    """Attribution never fails an ingest: the file is already stored."""
+    uploaded = []
+
+    async def exploding_record(device_id, instrument):
+        raise RuntimeError("database is having a moment")
+
+    async def noop(*args, **kwargs):
+        return None
+
+    async def record_upload(*args, **kwargs):
+        uploaded.append(True)
+
+    monkeypatch.setattr(files_routes, "record_reported_instrument", exploding_record)
+    monkeypatch.setattr(files_routes, "check_instrument_workspace_access", noop)
+    monkeypatch.setattr(files_routes, "get_access_token", noop)
+    monkeypatch.setattr(files_routes, "upload_sample_file", record_upload)
+    monkeypatch.setattr(files_routes.shutil, "move", lambda src, dst: None)
+
+    request = SimpleNamespace(state=SimpleNamespace(token_device_id=7))
+    handler = files_routes.get_upload_handler(request=request, user=object())
+
+    await handler(
+        "/tmp/tus-upload-body",
+        {"filename": "Orbi-Lab2_2026.09.03-10h12m01s.raw", "instrument": "Orbi-Lab2"},
+    )
+
+    assert uploaded == [True]
+
+
+@pytest.mark.asyncio
+async def test_a_name_that_names_no_instrument_is_refused_rather_than_filed(
+    monkeypatch,
+):
+    """A file name alone still has to name an instrument the server can place.
+
+    An agent that reports its instrument may call it anything. An upload that
+    reports nothing is filed under the first segment of its name, and that
+    segment has to be an instrument the server already holds files for, or a
+    name that says its own class - otherwise every stray file name would bring
+    an instrument, a workspace and a year's dataset into being.
+    """
+    handler, seen = _handler_probe(monkeypatch)
+
+    async def unknown_instrument(instrument):
+        return None
+
+    monkeypatch.setattr(files_routes, "instrument_type_of", unknown_instrument)
+
+    with pytest.raises(ValueError, match="Cannot tell what instrument 'ambient' is"):
+        await handler(
+            "/tmp/tus/upload-body",
+            {"filename": "ambient_2026.09.05-10h12m01s.raw"},
+        )
+
+    assert "moved_to" not in seen
+
+
+@pytest.mark.asyncio
+async def test_a_name_the_server_already_files_under_is_accepted(monkeypatch):
+    """The free-named instruments an agent created stay reachable by name.
+
+    A browser upload cannot report an instrument, so a file named for one the
+    server already holds files for has to be filed under it - otherwise the
+    instruments this release lets an agent create could never be uploaded to
+    from the web app.
+    """
+    handler, seen = _handler_probe(monkeypatch)
+
+    async def known_instrument(instrument):
+        assert instrument == "Test"
+        return "orbi"
+
+    monkeypatch.setattr(files_routes, "instrument_type_of", known_instrument)
+
+    await handler("/tmp/tus/upload-body", {"filename": "Test_2026.09.05-10h12m01s.raw"})
+
+    assert seen["instrument"] == "Test"
+    assert (
+        seen["moved_to"]
+        .replace("\\", "/")
+        .endswith("/tmp/tus/Test_2026.09.05-10h12m01s.raw")
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_file_of_the_other_class_is_refused_for_that_instrument(monkeypatch):
+    """One instrument records one kind of file.
+
+    A name that held both a .raw and a .h5 would have no class at all - the
+    instrument list, the match defaults, the isotope resolution and the
+    spectrum window each pick one, with nothing making them agree - so the
+    second kind is refused at the door rather than reconciled afterwards.
+    """
+    handler, seen = _handler_probe(monkeypatch)
+
+    async def already_a_tof(instrument):
+        return "tof"
+
+    monkeypatch.setattr(files_routes, "recorded_instrument_type", already_a_tof)
+
+    with pytest.raises(ValueError, match="is a tof instrument"):
+        await handler(
+            "/tmp/tus/upload-body",
+            {
+                "filename": "ambient_2026.09.06-10h12m01s.raw",
+                "instrument": "Lab-1",
+            },
+        )
+
+    assert "moved_to" not in seen
+
+
+@pytest.mark.asyncio
+async def test_the_first_file_settles_an_instrument_with_no_class_yet(monkeypatch):
+    handler, seen = _handler_probe(monkeypatch)
+
+    async def no_files_yet(instrument):
+        return None
+
+    monkeypatch.setattr(files_routes, "recorded_instrument_type", no_files_yet)
+
+    await handler(
+        "/tmp/tus/upload-body",
+        {"filename": "ambient_2026.09.06-10h12m01s.raw", "instrument": "Lab-1"},
+    )
+
+    assert seen["instrument"] == "Lab-1"
+    assert (
+        seen["moved_to"]
+        .replace("\\", "/")
+        .endswith("/tmp/tus/Lab-1_ambient_2026.09.06-10h12m01s.raw")
+    )

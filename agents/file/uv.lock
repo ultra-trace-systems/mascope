@@ -131,6 +131,7 @@ dependencies = [
     { name = "mascope-runtime" },
     { name = "mascope-sdk" },
     { name = "requests" },
+    { name = "tzlocal" },
     { name = "watchdog" },
 ]
 
@@ -145,6 +146,7 @@ requires-dist = [
     { name = "mascope-runtime", editable = "../../libraries/runtime" },
     { name = "mascope-sdk", editable = "../../libraries/sdk" },
     { name = "requests", specifier = ">=2.34.2,<3" },
+    { name = "tzlocal", specifier = ">=5.4.4" },
     { name = "watchdog", specifier = "~=4.0" },
 ]
 
@@ -156,7 +158,7 @@ dev = [
 
 [[package]]
 name = "mascope-runtime"
-version = "2026.7.28"
+version = "2026.9.15"
 source = { editable = "../../libraries/runtime" }
 dependencies = [
     { name = "loguru" },
@@ -169,14 +171,15 @@ requires-dist = [
     { name = "duckdb", marker = "extra == 'logs'", specifier = ">=1.5.5,<2" },
     { name = "loguru", specifier = ">=0.7.2,<0.8" },
     { name = "pydantic", specifier = ">=2.13.4,<3" },
+    { name = "pytz", marker = "extra == 'logs'", specifier = ">=2024.1" },
     { name = "rich", specifier = ">=15.0.0,<16" },
-    { name = "sentry-sdk", marker = "extra == 'sentry'", specifier = ">=2,<3" },
+    { name = "sentry-sdk", marker = "extra == 'sentry'", specifier = ">=2.68.0,<3" },
 ]
 provides-extras = ["logs", "sentry"]
 
 [[package]]
 name = "mascope-sdk"
-version = "2026.7.7"
+version = "2026.9.15"
 source = { editable = "../../libraries/sdk" }
 dependencies = [
     { name = "loguru" },
@@ -188,12 +191,19 @@ dependencies = [
 
 [package.metadata]
 requires-dist = [
+    { name = "ipykernel", marker = "extra == 'examples'", specifier = ">=7.3.0" },
     { name = "loguru", specifier = ">=0.7.3" },
+    { name = "matplotlib", marker = "extra == 'examples'", specifier = ">=3.8.0" },
+    { name = "nbformat", marker = "extra == 'examples'", specifier = ">=5.11.0" },
+    { name = "numpy", marker = "extra == 'examples'", specifier = ">=1.24.0" },
     { name = "pandas", specifier = ">=2.0.0" },
+    { name = "plotly", marker = "extra == 'examples'", specifier = ">=5.18.0" },
     { name = "python-dotenv", specifier = ">=1.0.0" },
     { name = "requests", specifier = ">=2.34.2,<3" },
-    { name = "tqdm", specifier = ">=4.69.0" },
+    { name = "scipy", marker = "extra == 'examples'", specifier = ">=1.11.0" },
+    { name = "tqdm", specifier = ">=4.70.0" },
 ]
+provides-extras = ["examples"]
 
 [[package]]
 name = "mdurl"
@@ -460,14 +470,14 @@ wheels = [
 
 [[package]]
 name = "tqdm"
-version = "4.69.0"
+version = "4.70.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "colorama", marker = "sys_platform == 'win32'" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/8c/69/40407dfc835517f058b603dbf37a6df094d8582b015a51eddc988febbcb7/tqdm-4.69.0.tar.gz", hash = "sha256:700c5e85dcd5f009dd6222588a29180a193a748247a5d855b4d67db93d79a53b", size = 792569, upload-time = "2026-07-17T18:09:06.2Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/21/3b/6c24bec5be5e743ffd99576daa5cc077722fc7d5bbc00bd133fa0c698dc6/tqdm-4.70.0.tar.gz", hash = "sha256:55b0b0dbd97462d06ebee91e4dac24ed4d4702be82b24f07e6c1d27e08cea220", size = 795438, upload-time = "2026-07-27T11:33:15.271Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/fe/21/99a0cdaf54eb35e77623c41b5a2c9472ee4404bba687052791fe2aba6773/tqdm-4.69.0-py3-none-any.whl", hash = "sha256:9979978912be667a6ef21fd5d8abf54e324e63d82f7f43c360792ebc2bc4e622", size = 676680, upload-time = "2026-07-17T18:09:04.172Z" },
+    { url = "https://files.pythonhosted.org/packages/f9/1c/01bfd571a64e7f270e6bab5e33777debe0edc56759233ce84f27dec92d14/tqdm-4.70.0-py3-none-any.whl", hash = "sha256:7f585706bfddbdebf89daac705b2dfcc16890130727d3197ca62c732b4310953", size = 80184, upload-time = "2026-07-27T11:33:13.167Z" },
 ]
 
 [[package]]
@@ -498,6 +508,18 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/ba/19/1b9b0e29f30c6d35cb345486df41110984ea67ae69dddbc0e8a100999493/tzdata-2026.2.tar.gz", hash = "sha256:9173fde7d80d9018e02a662e168e5a2d04f87c41ea174b139fbef642eda62d10", size = 198254, upload-time = "2026-04-24T15:22:08.651Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/ce/e4/dccd7f47c4b64213ac01ef921a1337ee6e30e8c6466046018326977efd95/tzdata-2026.2-py2.py3-none-any.whl", hash = "sha256:bbe9af844f658da81a5f95019480da3a89415801f6cc966806612cc7169bffe7", size = 349321, upload-time = "2026-04-24T15:22:05.876Z" },
+]
+
+[[package]]
+name = "tzlocal"
+version = "5.4.4"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "tzdata", marker = "sys_platform == 'win32'" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/81/5b/879b2f932adfa7a053c360d50bc896c977fa6426109185f7c12ebdd0cb9d/tzlocal-5.4.4.tar.gz", hash = "sha256:8dbb8660838688a7b6ba4fed31d18dedf842afb4d47ca050d6d891c2c15f3be4", size = 31170, upload-time = "2026-06-29T08:03:40.026Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/9e/a4/017a7a6cbe387d961a688ec31364ae60a5c4e22c96ae9921b79a947c855d/tzlocal-5.4.4-py3-none-any.whl", hash = "sha256:aae09f0126a8a86fa736be266eb4a471380d26a0de3bc14844e7821fee3e2a15", size = 18115, upload-time = "2026-06-29T08:03:38.666Z" },
 ]
 
 [[package]]

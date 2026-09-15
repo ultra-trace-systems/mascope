@@ -3,6 +3,8 @@
 import re
 from typing import Any
 
+import pandas as pd
+
 from mascope_backend.api.new.peak_assignments.config import (
     peak_assignment_enabled as _peak_assignment_enabled,
 )
@@ -141,3 +143,24 @@ async def handle_reloads(
             runtime.logger.exception(
                 f"{context}: Failed to emit '{record_type}_reload'"
             )
+
+
+def strings_json_safe(df: pd.DataFrame) -> pd.DataFrame:
+    """Turn missing values in string columns into None before serialization.
+
+    pandas 3 infers its Arrow-backed ``str`` dtype for text columns, and that
+    dtype's only missing sentinel is NaN - so a SQL NULL that used to survive
+    as ``None`` through an object column now arrives as a float NaN. NaN is not
+    JSON and starlette refuses to serialize it (``allow_nan=False``), so it has
+    to leave the frame as None or the whole response 500s.
+
+    Only columns pandas actually typed ``str`` are touched, which leaves object
+    columns carrying lists or dicts alone. Under pandas 2 nothing has that
+    dtype and this is a no-op, which is correct - there ``None`` survives on
+    its own.
+    """
+    df = df.copy()
+    for column in df.columns:
+        if str(df[column].dtype) == "str" and df[column].isna().any():
+            df[column] = df[column].astype(object).where(df[column].notna(), None)
+    return df

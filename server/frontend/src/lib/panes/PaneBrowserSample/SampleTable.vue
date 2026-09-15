@@ -12,13 +12,15 @@ import { FilterMatchMode } from '@primevue/core/api'
 
 import { BaseTabbedPanel, BaseMatchTag, BaseCopyableField } from '@/lib/base'
 import { DialogSampleOp, DialogCalibration } from '@/lib/dialogs'
+import { assignmentStatus } from '@/lib/assignmentStatus'
 import { calibrationStatus } from '@/lib/calibrationStatus'
-import { clone } from '@/lib/utils'
+import { peakAssignmentEnabled } from '@/lib/features'
 import { num } from '@/lib/formatters'
 import { useApp } from '@/stores'
 
 import SampleTableCustomizer from './SampleTableCustomizer.vue'
 import SampleContextMenu from './SampleContextMenu.vue'
+import { reorderColumns } from './columnOrder.js'
 import {
   useBatchStatus,
   useCustomizerPopover,
@@ -27,11 +29,35 @@ import {
 } from './stores'
 
 const app = useApp()
+
+// The sample's peak-assignment badge: a run of its own, served from the batch
+// ledger, or nothing yet. One status read per batch, one record per row.
+const assignmentBadge = (sample) =>
+  assignmentStatus(app.data.batchPeakSampleStatus?.forSample(sample.sample_item_id))
 const sampleTable = ref(null)
 const scroller = useSampleScroller()
 
 const customizer = useCustomizerPopover()
 const contextMenu = useSampleContextMenu()
+
+// The match and calibration badges stay in front of the configurable columns,
+// so PrimeVue's drag and drop indices, which count every displayed column, run
+// this many ahead of the customizer's list.
+const LEADING_COLUMNS = 2
+
+// A header drag lands in the customizer's list, which is the one column order
+// there is. The table keeps a private order of its own from the drop and would
+// apply it on top of ours - and keep applying it, appending any column the
+// customizer adds later at the end - so it is cleared once the list has moved.
+function onColumnReorder({ dragIndex, dropIndex }) {
+  customizer.config.columns = reorderColumns(
+    customizer.config.columns,
+    dragIndex,
+    dropIndex,
+    LEADING_COLUMNS
+  )
+  if (sampleTable.value) sampleTable.value.d_columnOrder = null
+}
 
 const batch = computed(() => app.data.batch.focused)
 const samples = computed(
@@ -135,6 +161,8 @@ const openCalibration = (sample) => {
         : `Samples (${samples.length})`
     "
     icon="pi pi-tags"
+    :error="app.data.sample.error"
+    :onRetry="() => app.data.sample.load('retry')"
     :clear="app.data.batch.unfocus"
     :back-label="'Back to batches'"
     :contextMenu="contextMenu"
@@ -200,21 +228,27 @@ const openCalibration = (sample) => {
           customizer.config.sortOrder = sortOrder
         }
       "
-      @column-reorder="
-        ({ dragIndex, dropIndex }) => {
-          let columns = clone(customizer.config.columns)
-          const column = columns.splice(dragIndex - 1, 1)[0]
-          columns.splice(dropIndex - 1, 0, column)
-          customizer.config.columns = columns
-        }
-      "
+      @column-reorder="onColumnReorder"
       size="small"
       scrollable
       :scrollHeight="`${tableHeight}px`"
       :virtualScrollerOptions="{ itemSize: 35.74 }"
       :pt="{ bodyRow: ({ context }) => ({ id: samples[context.index]?.sample_item_id }) }"
     >
-      <Column sortable sortField="match.match_score" class="match-column">
+      <!-- Every column carries a key of its own. PrimeVue matches the dragged
+           and the dropped column by `columnKey`, falling back to `field`, and
+           the custom-attribute columns below share one field while these badge
+           columns have none - without keys a drop maps several columns onto
+           one, and the table renders duplicates. The two badges are fixed in
+           front of the configurable columns; a drop in front of them lands in
+           the first configurable slot (see onColumnReorder). -->
+      <Column
+        sortable
+        sortField="match.match_score"
+        columnKey="match"
+        :reorderableColumn="false"
+        class="match-column"
+      >
         <template #header>
           <span class="pi ph ph-seal-percent" />
         </template>
@@ -232,7 +266,7 @@ const openCalibration = (sample) => {
         </template>
       </Column>
 
-      <Column class="calibration-column">
+      <Column columnKey="calibration" :reorderableColumn="false" class="calibration-column">
         <template #header>
           <span class="pi ph ph-scales" v-tooltip.top="'m/z calibration status'" />
         </template>
@@ -254,16 +288,60 @@ const openCalibration = (sample) => {
       </Column>
 
       <template v-for="{ field, label, kind } in customizer.config.columns" :key="field">
-        <Column v-if="kind == 'standard'" :field="field" :header="label" sortable>
+        <Column
+          v-if="kind == 'standard'"
+          :field="field"
+          :columnKey="field"
+          :header="label"
+          sortable
+        >
           <template #body="{ data }">
             <span class="field">
               <BaseCopyableField :field="data[field]" />
             </span>
           </template>
         </Column>
-        <Column v-if="kind == 'custom'" field="sample_item_attributes" :header="label" sortable>
+        <Column
+          v-if="kind == 'custom'"
+          field="sample_item_attributes"
+          :columnKey="`custom:${field}`"
+          :header="label"
+          sortable
+        >
           <template #body="{ data }">
             <BaseCopyableField :field="data.sample_item_attributes[field]" />
+          </template>
+        </Column>
+        <!-- Which samples have been assigned: solid for a run of the sample's
+             own, dimmed for one served from the batch ledger, faint for nothing
+             yet. A configurable column like the others - after the sample name
+             by default (columnOrder.js), movable and hideable from the cog -
+             and only where peak assignment is on. -->
+        <Column
+          v-if="kind == 'status' && peakAssignmentEnabled"
+          :columnKey="field"
+          class="assignment-column"
+        >
+          <template #header>
+            <span
+              class="pi ph ph-tag"
+              v-tooltip.top="'Peak assignment status'"
+              v-help.top="{
+                title: 'Assignment Status',
+                helpKey: 'assignment-status',
+                doc: app.ui.help.docUrl('how-it-works/peak-assignment/#assignment-runs')
+              }"
+            />
+          </template>
+          <template #body="{ data }">
+            <span
+              :class="[
+                'pi',
+                assignmentBadge(data).icon,
+                `assignment-${assignmentBadge(data).state}`
+              ]"
+              v-tooltip="{ value: assignmentBadge(data).tooltip, showDelay: 500 }"
+            />
           </template>
         </Column>
       </template>

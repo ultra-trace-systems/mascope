@@ -4,3 +4,11 @@
 # Windows batch files must keep CRLF - broken if converted to LF on Windows
 *.bat text eol=crlf
 *.cmd text eol=crlf
+
+# Every PR appends its own entry to the Unreleased section, so two PRs in
+# flight always collide there even though they touch different lines. "union"
+# keeps both sides instead of raising a conflict. Safe because entries are
+# whole blank-line-separated blocks that are only ever appended - if you need
+# to EDIT an existing entry, check the result, since a concurrent edit to the
+# same entry will be kept twice rather than flagged.
+CHANGELOG.md merge=union

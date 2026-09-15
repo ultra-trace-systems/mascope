@@ -56,12 +56,28 @@ and the checkout.
    head -c 32 /dev/urandom | xxd -p -c 32 > .runtime/secrets/postgres_password.txt
    head -c 32 /dev/urandom | xxd -p -c 32 > .runtime/secrets/jwt_secret_key.txt
    head -c 32 /dev/urandom | xxd -p -c 32 > .runtime/secrets/server_owner_secret_key.txt
+   head -c 32 /dev/urandom | xxd -p -c 32 > .runtime/secrets/mfa_encryption_key.txt
    ```
+
+   `mascope prod up` generates a missing *newly introduced* secret on its own
+   (today that is `mfa_encryption_key.txt`) - the CLI does that, so an existing
+   deployment picks the secret up on its next start only once the CLI has been
+   reinstalled from the new release (see "Update to a new release" below). The
+   three long-standing secrets are never generated
+   automatically: on an existing deployment a missing one is a problem to
+   investigate, and a fresh random value would break against the existing
+   database or end every session.
 
    `jwt_secret_key` is shared by the backend and the file-converter service (the
    converter derives its service-authentication token from it), so if you ever
    rotate it, restart both containers - a converter running with the old secret
    is refused until restarted.
+
+   `mfa_encryption_key.txt` encrypts stored two-factor seeds. Back it up with
+   the others and **do not rotate it casually**: replacing it makes every
+   enrolled account's seed undecryptable, and each of those users has to sign in
+   with a recovery code and enroll again. Unlike `jwt_secret_key.txt`, which can
+   be rotated freely at the cost of ending open sessions.
 
 4. **Set up TLS** - pick the option that fits your audience:
    - **Self-signed** (`mascope cert gen` writes `mascope.app.pem`/`.key` into
@@ -128,7 +144,9 @@ and the checkout.
 
    The deployment serves the user documentation from the same host at
    `https://<host>/docs/` - it is bundled into the frontend image, so no extra
-   setup is needed.
+   setup is needed. The API's OpenAPI document comes with it, at
+   `https://<host>/docs/openapi.json`, for API clients and client generators;
+   the backend itself does not serve its schema in production.
 
 #### Update to a new release
 
@@ -136,6 +154,12 @@ and the checkout.
 cd mascope
 git fetch --tags
 git checkout v1.1.0          # the new release tag
+
+# Reinstall the CLI before touching the stack: the checkout above brought in
+# the release's docker-compose.yaml, and a secret a release adds there is
+# provisioned only by the matching CLI.
+CFLAGS="-std=c17" uv tool install --force --reinstall --python 3.12 .   --with-executables-from mascope-cli
+
 mascope prod docker pull     # pulls the v1.1.0 images
 mascope prod up              # recreates the containers
 ```

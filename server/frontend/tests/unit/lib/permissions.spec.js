@@ -1,0 +1,191 @@
+import { describe, it, expect } from 'vitest'
+
+import {
+  batchInstruments,
+  canCalibrateInstrument,
+  canCalibrateInstruments,
+  canEditWorkspace,
+  instrumentWorkspace,
+  myLevel
+} from '@/lib/permissions'
+
+// Shape of a record from GET /api/workspaces: the backend names the instrument
+// on the record, and the workspace name it derived that from is still there.
+const acq = (instrument, my_role) => ({
+  workspace_id: `ws-${instrument}`,
+  workspace_name: `Acquisitions ${instrument}`,
+  instrument,
+  is_system: true,
+  my_role
+})
+
+// A record from a backend that predates the `instrument` field.
+const legacyAcq = (instrument, my_role) => {
+  const { instrument: _dropped, ...rest } = acq(instrument, my_role)
+  return rest
+}
+
+const guest = { role_id: 100 }
+const editor = { role_id: 200 }
+const admin = { role_id: 300 }
+
+describe('instrumentWorkspace', () => {
+  it('finds the system workspace for an instrument', () => {
+    const workspaces = [acq('orbion', 'admin')]
+    expect(instrumentWorkspace(workspaces, 'orbion')?.workspace_id).toBe('ws-orbion')
+  })
+
+  it('matches case-insensitively, staying looser than the backend lookup', () => {
+    const workspaces = [acq('OrbiHel', 'admin')]
+    expect(instrumentWorkspace(workspaces, 'orbihel')?.workspace_id).toBe('ws-OrbiHel')
+  })
+
+  it('falls back to the workspace name when no instrument field is present', () => {
+    const workspaces = [legacyAcq('OrbiHel', 'admin')]
+    expect(instrumentWorkspace(workspaces, 'orbihel')?.workspace_id).toBe('ws-OrbiHel')
+  })
+
+  it('prefers the instrument field over the derived name', () => {
+    // A renamed workspace still governs the instrument it holds files for.
+    const renamed = { ...acq('orbion', 'admin'), workspace_name: 'Lab 2 intake' }
+    expect(instrumentWorkspace([renamed], 'orbion')?.workspace_id).toBe('ws-orbion')
+  })
+
+  it('ignores a non-system workspace with a colliding name', () => {
+    const workspaces = [
+      { workspace_id: 'decoy', workspace_name: 'Acquisitions orbion', is_system: false }
+    ]
+    expect(instrumentWorkspace(workspaces, 'orbion')).toBeUndefined()
+  })
+
+  it('returns undefined for an unknown instrument or missing input', () => {
+    expect(instrumentWorkspace([acq('orbion', 'admin')], 'other')).toBeUndefined()
+    expect(instrumentWorkspace(undefined, 'orbion')).toBeUndefined()
+    expect(instrumentWorkspace([acq('orbion', 'admin')], undefined)).toBeUndefined()
+  })
+})
+
+describe('myLevel', () => {
+  it('reads my_role as a numeric level', () => {
+    expect(myLevel({ my_role: 'admin' })).toBe(300)
+    expect(myLevel({ my_role: 'editor' })).toBe(200)
+  })
+
+  it('is zero when not a member or the workspace is missing', () => {
+    expect(myLevel({ my_role: null })).toBe(0)
+    expect(myLevel(undefined)).toBe(0)
+  })
+})
+
+describe('canEditWorkspace', () => {
+  const ws = (my_role) => ({ workspace_id: 'ws-1', workspace_name: 'Project', my_role })
+
+  it('allows an editor and above', () => {
+    expect(canEditWorkspace(ws('editor'), guest)).toBe(true)
+    expect(canEditWorkspace(ws('admin'), guest)).toBe(true)
+    expect(canEditWorkspace(ws('owner'), guest)).toBe(true)
+  })
+
+  it('refuses a guest, and a non-member', () => {
+    expect(canEditWorkspace(ws('guest'), admin)).toBe(false)
+    expect(canEditWorkspace(ws(null), admin)).toBe(false)
+  })
+
+  it('refuses a global admin who is not a member, as the backend does', () => {
+    // Deliberately unlike the instrument helpers: the workspace ACL bypasses
+    // for superusers only, so offering an admin the control here would earn a
+    // 403 rather than the action.
+    expect(canEditWorkspace(ws('guest'), { role_id: 300 })).toBe(false)
+  })
+
+  it('allows a superuser with no membership at all', () => {
+    expect(canEditWorkspace(ws(null), { role_id: 400, is_superuser: true })).toBe(true)
+  })
+
+  it('stays enabled while the account or the workspace is still loading', () => {
+    expect(canEditWorkspace(ws('guest'), undefined)).toBe(true)
+    expect(canEditWorkspace(null, guest)).toBe(true)
+  })
+})
+
+describe('canCalibrateInstrument', () => {
+  it('allows an instrument-workspace admin who is only a global editor', () => {
+    // The whole point of moving calibration off the global role.
+    expect(canCalibrateInstrument([acq('orbion', 'admin')], editor, 'orbion')).toBe(true)
+  })
+
+  it('refuses an instrument-workspace editor', () => {
+    expect(canCalibrateInstrument([acq('orbion', 'editor')], editor, 'orbion')).toBe(false)
+  })
+
+  it('refuses a non-member of the instrument workspace', () => {
+    expect(canCalibrateInstrument([acq('other', 'owner')], editor, 'orbion')).toBe(false)
+  })
+
+  it('allows a global admin with no membership at all', () => {
+    // Backend bypasses the instrument checks for global admins, including on
+    // workspaces created before they were promoted.
+    expect(canCalibrateInstrument([], admin, 'orbion')).toBe(true)
+  })
+
+  it('refuses a global guest who is not an instrument-workspace admin', () => {
+    expect(canCalibrateInstrument([acq('orbion', 'guest')], guest, 'orbion')).toBe(false)
+  })
+
+  it('allows a global guest who IS an instrument-workspace admin', () => {
+    // The layers are independent; the global role does not cap workspace roles.
+    expect(canCalibrateInstrument([acq('orbion', 'admin')], guest, 'orbion')).toBe(true)
+  })
+
+  it('stays enabled when the instrument is unknown', () => {
+    expect(canCalibrateInstrument([], editor, undefined)).toBe(true)
+  })
+
+  it('stays enabled while the workspace list is still loading', () => {
+    // The store starts at [], which is not evidence of a missing membership.
+    // Reading it as one would disable the control for the instrument admin the
+    // whole feature exists for, in the window before the first sync lands.
+    expect(canCalibrateInstrument([], editor, 'orbion')).toBe(true)
+    expect(canCalibrateInstrument(undefined, editor, 'orbion')).toBe(true)
+  })
+
+  it('stays enabled while the account is still loading', () => {
+    expect(canCalibrateInstrument([acq('orbion', 'editor')], undefined, 'orbion')).toBe(true)
+  })
+})
+
+describe('canCalibrateInstruments', () => {
+  const workspaces = [acq('orbion', 'admin'), acq('tofwerk', 'editor')]
+
+  it('requires every instrument to pass', () => {
+    expect(canCalibrateInstruments(workspaces, editor, ['orbion'])).toBe(true)
+    expect(canCalibrateInstruments(workspaces, editor, ['orbion', 'tofwerk'])).toBe(false)
+  })
+
+  it('stays enabled while the workspace list is still loading', () => {
+    expect(canCalibrateInstruments([], editor, ['orbion', 'tofwerk'])).toBe(true)
+  })
+
+  it('stays enabled when no instruments are known', () => {
+    expect(canCalibrateInstruments(workspaces, editor, [])).toBe(true)
+    expect(canCalibrateInstruments(workspaces, editor, undefined)).toBe(true)
+  })
+})
+
+describe('batchInstruments', () => {
+  const samples = [
+    { sample_batch_id: 'b1', instrument: 'orbion' },
+    { sample_batch_id: 'b1', instrument: 'orbion' },
+    { sample_batch_id: 'b1', instrument: 'tofwerk' },
+    { sample_batch_id: 'b2', instrument: 'other' }
+  ]
+
+  it('returns the distinct instruments for one batch', () => {
+    expect(batchInstruments(samples, 'b1').sort()).toEqual(['orbion', 'tofwerk'])
+  })
+
+  it('returns an empty list when nothing is loaded for the batch', () => {
+    expect(batchInstruments(samples, 'b3')).toEqual([])
+    expect(batchInstruments(undefined, 'b1')).toEqual([])
+  })
+})

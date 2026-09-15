@@ -19,6 +19,7 @@ export const useNotification = defineStore('app.ui.notification', () => {
 
   /**
    * Central handler for incoming notifications. Decides whether to display, log, or track a notification based on its properties.
+   * A `silent` notification only ends the progress of the process it belongs to.
    * @param {Object} notification - The notification object received from the server
    */
   function handleNotification(notification) {
@@ -27,6 +28,19 @@ export const useNotification = defineStore('app.ui.notification', () => {
       id,
       timestamp: new Date(),
       ...notification
+    }
+
+    // A `silent` packet carries nothing for the user to read: the server
+    // suppressed the user-facing copy of this warning because a parent handler
+    // reports it, and sends this one only so the progress entry the process
+    // already opened ends now instead of waiting out its fallback timeout.
+    // It is never logged, counted on the badge, or displayed.
+    if (notification.silent) {
+      const tracked = state.progress.find((proc) => proc.process_id === notification.process_id)
+      if (tracked) {
+        updateProcess(tracked, newNotification)
+      }
+      return
     }
 
     // Increments recentWarnings or recentErrors counters based on notification status.
@@ -188,8 +202,29 @@ export const useNotification = defineStore('app.ui.notification', () => {
   }
 
   /**
+   * Empties the notification log, and the unread badge with it.
+   *
+   * The badge counts warnings and errors from the rows this call just
+   * deleted, so it goes with them: the drawer's own reset only fires when the
+   * notifications tab is opened, not while it stays open, which is exactly
+   * when this button is reachable.
+   *
+   * Nothing beyond those two. `progress` tracks live processes whose removal
+   * timeouts are still pending, and `latest` drives the registered watchers
+   * -- emptying the feed is not a request to cancel either. Toasts already on
+   * screen keep their own dismissal timers and go on their own.
+   */
+  function clearLog() {
+    state.log = []
+    clearRecentBadge()
+  }
+
+  /**
    * Resets the recentWarnings and recentErrors counters to zero.
-   * Typically called when the notification drawer is opened, indicating the user has seen the notifications.
+   *
+   * Called from two places: the watchEffect that fires when the drawer is
+   * opened onto the notifications tab (the user has seen them), and
+   * `clearLog`, which deletes the rows the counters were counting.
    */
   function clearRecentBadge() {
     state.recentWarnings = 0
@@ -246,6 +281,7 @@ export const useNotification = defineStore('app.ui.notification', () => {
     on,
     push: handleNotification,
     clearLatest,
+    clearLog,
     clearRecentBadge,
     latest: computed(() => state.latest),
     log: computed(() => state.log),

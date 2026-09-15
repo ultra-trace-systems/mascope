@@ -1,29 +1,39 @@
 """How many database connections one service-token validation holds.
 
-``validate_service_access_token`` runs on every Socket.IO service-token path -
-the handshake and each file-converter event - and on the liveness probe every
-upload takes before storing anything. It takes no admission-control permit -
-``db_semaphore`` in :mod:`mascope_backend.db` guards only the
-dependency-injected session path - so nothing bounds how many of these run at
-once. Its per-call connection cost is therefore part of what decides whether a
-bulk upload saturates the pool.
+``validate_service_access_token`` authenticates Socket.IO events - the
+converter emits them throughout an upload - and re-checks a token in
+``access_token.service``. It is *not* the HTTP bearer path: an
+``Authorization`` + ``X-Service-Name`` request is authenticated by
+``get_enabled_backends`` in ``api/new/auth/backend.py``. The two share the
+token lookup itself (``util.resolve_token_context``) and nothing else. Both are
+ungated: the semaphore in ``mascope_backend.db`` guards only the
+dependency-injected session path, so nothing bounds how many run at once, and
+the per-call connection cost is what decides whether load saturates the pool.
 
-It did. Under a converter upload run this path held three connections per call,
-every waiter then blocked for ``pool_timeout``, and the worker stopped serving
-anything at all for a minute - including unrelated requests, which failed with
-``QueuePool limit ... reached``. The 401s that reached error monitoring were
-this: the token lookup could not get a connection, so a valid token was
-reported as a validation failure.
+It did. Under a converter upload run this path held three connections per
+call; every waiter then blocked for ``pool_timeout`` (120 s) and the worker
+stopped serving anything at all for a minute. Thirty-five of the thirty-nine
+``QueuePool limit ... reached`` failures in that window were this function
+failing to get a connection for itself.
 
-Backported from #1928, minus its assertions about a semaphore-sizing refactor
-that is not on this line, and minus its validation cache. These tests are about
-connection accounting, not auth behaviour.
+The property these tests hold it to is not "few connections" but **never hold
+one while needing another**: a caller that does can block on a connection only
+it could release, which is the deadlock ``mascope_backend.db`` documents and
+sizes its semaphore to prevent. Peak 2 was not good enough; peak 1 is the
+invariant.
+
+These tests are about connection accounting, not auth behaviour; the
+behaviour is pinned in :mod:`test_service_token_validation_behaviour`.
 """
+
+from datetime import datetime, timedelta, timezone
 
 import pytest
 
+from mascope_backend.api.new.auth.access_token import cache as token_cache
 from mascope_backend.api.new.auth.access_token import util as token_util
 from mascope_backend.api.new.auth.access_token import validation as validation_mod
+from mascope_backend.api.new.auth.exceptions import InvalidTokenException
 from mascope_backend.api.new.auth.strategies import database as strategy_mod
 from mascope_backend.api.new.users.user_manager import util as user_mgr_mod
 
@@ -32,22 +42,15 @@ SERVICE = "file-converter"
 TOKEN = "tok-abc"
 
 
-class _Row:
-    """A token row, readable the way both the old and new queries read it."""
-
-    def __init__(self, token, service_name):
-        self.token = token
-        self.service_name = service_name
-
-
 class SessionLedger:
-    """Counts sessions opened, and how many were open at once."""
+    """Counts sessions opened, how many were open at once, and queries run."""
 
     def __init__(self, row):
         self.row = row
         self.open = 0
         self.peak = 0
         self.total = 0
+        self.queries = 0
 
     def __call__(self):
         return _FakeSessionContext(self)
@@ -61,7 +64,7 @@ class _FakeSessionContext:
         self._ledger.open += 1
         self._ledger.total += 1
         self._ledger.peak = max(self._ledger.peak, self._ledger.open)
-        return _FakeSession(self._ledger.row)
+        return _FakeSession(self._ledger)
 
     async def __aexit__(self, *exc):
         self._ledger.open -= 1
@@ -69,63 +72,49 @@ class _FakeSessionContext:
 
 
 class _FakeSession:
-    def __init__(self, row):
-        self._row = row
+    def __init__(self, ledger):
+        self._ledger = ledger
 
-    async def execute(self, statement):
-        return _FakeResult(self._row, statement)
+    async def execute(self, _statement):
+        self._ledger.queries += 1
+        return _FakeResult(self._ledger.row)
 
     async def commit(self):
         return None
 
 
 class _FakeResult:
-    """Answers a select the way the real one would, per selected column.
-
-    The pre-fix path made two different single-column selects - the whole
-    entity, to check the row exists, and the service name - and read both with
-    ``scalar_one_or_none``. Returning one value for both would make a token
-    with a NULL service name look like a token that does not exist, and this
-    suite would report a behaviour change that is purely an artefact of the
-    double. So the selected columns decide the answer.
-    """
-
-    def __init__(self, row, statement=None):
+    def __init__(self, row):
         self._row = row
-        self._statement = statement
-
-    def _selected(self):
-        try:
-            return [d.get("name") for d in self._statement.column_descriptions]
-        except Exception:
-            return []
 
     def one_or_none(self):
         return self._row
 
     def scalar_one_or_none(self):
-        if self._row is None:
-            return None
-        # select(AccessToken) - the existence check - yields the row itself.
-        if self._selected() == ["AccessToken"]:
-            return self._row
-        # select(AccessToken.service_name) yields just that column.
-        return self._row.service_name
+        # The single-column selects this path used to make returned just the
+        # service name. Modelling both shapes keeps these tests meaningful
+        # against the pre-collapse code as well, so they can show that the
+        # outcomes did not change.
+        return None if self._row is None else self._row[0]
+
+
+@pytest.fixture(autouse=True)
+def _no_cached_validations():
+    """Measure the cold path: a cached hit does no database work at all."""
+    token_cache.clear()
+    yield
+    token_cache.clear()
 
 
 @pytest.fixture
 def ledger(monkeypatch):
     """Count every ``async_session()`` the validation path opens."""
-    led = SessionLedger(row=_Row(TOKEN, SERVICE))
+    created = datetime.now(timezone.utc) - timedelta(minutes=1)
+    led = SessionLedger(row=(SERVICE, None, created))
 
     # Every module on this path resolves async_session from its own namespace.
-    #
-    # raising=False on purpose: the pre-fix code did not open a session in
-    # validation itself, so insisting the name is already there would make
-    # these tests error out against it instead of failing an assertion - and a
-    # negative control that cannot run proves nothing.
     for module in (validation_mod, token_util, strategy_mod, user_mgr_mod):
-        monkeypatch.setattr(module, "async_session", led, raising=False)
+        monkeypatch.setattr(module, "async_session", led, raising=True)
 
     # fastapi-users internals are not what these tests are about: the user
     # lookup is stubbed so only our own session handling is measured.
@@ -140,23 +129,35 @@ def ledger(monkeypatch):
 
 class TestConnectionCost:
     @pytest.mark.asyncio
-    async def test_one_validation_holds_one_connection(self, ledger):
-        # The strategy, the user manager and the service-name lookup all run on
-        # one session. It was three held at once: a session each, plus the
-        # lookup nested inside both - a caller holding a connection and then
-        # needing another can block on one only it could release.
+    async def test_it_never_holds_one_connection_while_needing_another(self, ledger):
+        # The invariant, not merely a smaller number. A call that holds a
+        # connection and then checks out a second can, with enough concurrent
+        # callers, block forever on a connection only it could release - the
+        # deadlock mascope_backend.db sizes db_semaphore to prevent, on a path
+        # that takes no permit. Peak 1 is the only value that removes it.
         await validation_mod.validate_service_access_token(TOKEN, SERVICE)
 
         assert ledger.peak == 1
 
     @pytest.mark.asyncio
-    async def test_it_opens_no_more_sessions_than_it_holds(self, ledger):
-        # Four were opened before: two held, plus an existence check and a
-        # service-name query - two round trips for one row that a single query
-        # already returns.
+    async def test_it_opens_a_single_session(self, ledger):
+        # Five were opened before: two held, plus an existence check, a service
+        # name query and the token-context lookup - three round trips for one
+        # row that a single query already returns.
         await validation_mod.validate_service_access_token(TOKEN, SERVICE)
 
         assert ledger.total == 1
+
+    @pytest.mark.asyncio
+    async def test_it_reads_the_token_row_once(self, ledger):
+        # Sessions are the pool cost, but the count of reads is what said this
+        # path was doing avoidable work: one session holding four queries would
+        # satisfy the assertion above and still be the bug. read_token is
+        # stubbed out by the fixture, so what is counted here is the context
+        # lookup alone.
+        await validation_mod.validate_service_access_token(TOKEN, SERVICE)
+
+        assert ledger.queries == 1
 
     @pytest.mark.asyncio
     async def test_every_session_is_released(self, ledger):
@@ -169,7 +170,7 @@ class TestConnectionCost:
         # A leaked connection on the rejection path would starve the pool
         # faster than the success path ever could: a wrong-service token is
         # retried, and each retry would cost a connection permanently.
-        with pytest.raises(Exception):
+        with pytest.raises(InvalidTokenException):
             await validation_mod.validate_service_access_token(
                 TOKEN, "some-other-service"
             )
@@ -177,42 +178,65 @@ class TestConnectionCost:
         assert ledger.open == 0
 
 
-class TestOutcomesAreUnchanged:
-    """The collapse must not change which tokens are accepted or why."""
+class TestAdmissionControlAssumption:
+    """Why the cost above matters at all.
+
+    ``db_semaphore`` bounds concurrency on ``get_async_session`` only. The
+    auth path reaches the database through ``async_session()``, which takes no
+    permit - so its per-call cost is multiplied by however many bearer
+    requests happen to be in flight, with nothing to cap it.
+    """
+
+    def test_only_the_injected_session_path_takes_a_permit(self):
+        import inspect
+
+        from mascope_backend import db
+
+        assert "db_semaphore" in inspect.getsource(db.get_async_session)
+        assert "db_semaphore" not in inspect.getsource(db.async_session)
+
+    def test_the_permit_count_cannot_exceed_the_overflow(self):
+        # Sizing admissions above max_overflow deadlocks a worker: every
+        # holder takes its own connection, then blocks on the nested checkout
+        # that the overflow was meant to serve. See the note in mascope_backend.db.
+        from mascope_backend import db
+
+        assert db._DB_SEMAPHORE_PERMITS <= db.db_cfg.max_overflow
+        assert db._DB_SEMAPHORE_PERMITS <= db.db_cfg.pool_size
+
+
+class TestCachedValidationCostsNothing:
+    @pytest.mark.asyncio
+    async def test_a_repeat_validation_opens_no_session(self, ledger):
+        # The reason the cache exists: an upload revalidates the same token
+        # once per chunk, and every repeat used to pay the full cost.
+        await validation_mod.validate_service_access_token(TOKEN, SERVICE)
+        first = ledger.total
+
+        await validation_mod.validate_service_access_token(TOKEN, SERVICE)
+
+        assert ledger.total == first
 
     @pytest.mark.asyncio
-    async def test_a_matching_service_token_is_accepted(self, ledger):
-        assert await validation_mod.validate_service_access_token(TOKEN, SERVICE)
-
-    @pytest.mark.asyncio
-    async def test_an_unknown_token_is_refused(self, monkeypatch, ledger):
-        ledger.row = None
-
-        with pytest.raises(Exception, match="Invalid access token"):
-            await validation_mod.validate_service_access_token(TOKEN, SERVICE)
-
-    @pytest.mark.asyncio
-    async def test_a_token_with_no_service_name_is_refused(self, ledger):
-        ledger.row = _Row(TOKEN, None)
-
-        with pytest.raises(Exception, match="No service name for the token"):
-            await validation_mod.validate_service_access_token(TOKEN, SERVICE)
-
-    @pytest.mark.asyncio
-    async def test_a_wrong_service_token_is_refused(self, ledger):
-        with pytest.raises(Exception, match="not authorized for"):
-            await validation_mod.validate_service_access_token(TOKEN, "other-service")
-
-
-class TestEveryCallPaysTheSameCost:
-    @pytest.mark.asyncio
-    async def test_repeats_are_not_reused(self, ledger):
-        # Nothing is cached: each validation reads the database again. Stated
-        # as a test because it is the property a cache would remove, and the
-        # trade that would come with it - a revoked token still authenticating
-        # for the length of the window - is not one this release line takes.
+    async def test_a_burst_of_repeats_costs_one_validation(self, ledger):
         for _ in range(20):
             await validation_mod.validate_service_access_token(TOKEN, SERVICE)
 
-        assert ledger.total == 20
-        assert ledger.peak == 1
+        assert ledger.total == 1
+
+    @pytest.mark.asyncio
+    async def test_a_second_service_reuses_the_row_this_path_already_read(self, ledger):
+        # The user cache is keyed per service, so a token presented for a
+        # second service misses it and validates again - but the row it needs
+        # is the same row, and the shared context lookup is what stops that
+        # from being a second read. Counted rather than assumed: this is the
+        # assertion that fails if this path stops going through the cache.
+        await validation_mod.validate_service_access_token(TOKEN, SERVICE)
+        first = ledger.queries
+
+        with pytest.raises(InvalidTokenException):
+            await validation_mod.validate_service_access_token(
+                TOKEN, "some-other-service"
+            )
+
+        assert ledger.queries == first

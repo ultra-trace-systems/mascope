@@ -3,8 +3,11 @@
  *
  * The backend persists the outcome in `sample_file.mz_calibration`:
  * - `null` - calibration was never attempted (blank file, or the ionization
- *   mode has no calibration collection); shown as a muted "not calibrated"
- *   badge so the column reads as an explicit state, not a missing value.
+ *   mode has no calibration collection); shown as a muted badge so the column
+ *   reads as an explicit state, not a missing value. Its tooltip is fixed
+ *   product copy and reads wider than that - an attempt that ran and found
+ *   nothing to fit against records a `failed` marker rather than leaving this
+ *   NULL.
  * - `{status: "failed", ...}` - the automatic pipeline gave up; the sample is
  *   uncalibrated and its matches are skipped until it is recalibrated.
  * - `{status: "ok"/verified: true, ...}` - an applied fit, optionally with a
@@ -30,8 +33,8 @@ export function calibrationStatus(mzCalibration) {
       severity: 'secondary',
       clickable: false,
       tooltip:
-        'Not calibrated: the ionization mode has no calibration collection, ' +
-        'or the file is a blank.'
+        'No calibration collection defined for the ionization mode, ' +
+        'or no matching peaks found.'
     }
   }
 

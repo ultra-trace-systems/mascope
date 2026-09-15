@@ -9,7 +9,7 @@ import { peakAssignmentEnabled } from '@/lib/features'
 // Peak coloring by confidence tier for the annotated spectrum. One Plotly trace
 // per tier; role reagent/artifact is grouped separately (orthogonal to tier).
 const TIER_TRACES = [
-  { key: 'identified', name: 'Identified', color: '#1f9d63' },
+  { key: 'assigned', name: 'Assigned', color: '#1f9d63' },
   { key: 'candidate', name: 'Candidate', color: '#d99a2b' },
   { key: 'below_assignability', name: 'Below assignability', color: '#8a94a6' },
   { key: 'reagent', name: 'Reagent / artifact', color: '#8a5ed0' },
@@ -22,7 +22,7 @@ function bucketOf(assignments, peak) {
   if (!assignment) return 'unassigned'
   if (assignment.role === 'reagent' || assignment.role === 'artifact') return 'reagent'
   const tier = assignment.tier
-  return tier === 'identified' || tier === 'candidate' || tier === 'below_assignability'
+  return tier === 'assigned' || tier === 'candidate' || tier === 'below_assignability'
     ? tier
     : 'unassigned'
 }

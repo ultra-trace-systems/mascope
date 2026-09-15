@@ -9,6 +9,7 @@ so drift becomes a weekly diff instead of a months-later incident:
 | `firewall` | ufw policies, tailnet SSH rule, Cloudflare-only 443, the canonical `MASCOPE NAT` masquerade block |
 | `docker_daemon` | `/etc/docker/daemon.json` with `iptables: false` (load-bearing: with stock Docker, published ports bypass ufw) |
 | `unattended_upgrades` | unattended security updates enabled |
+| `deploy_env` | `MASCOPE_PATH` in `/etc/environment` (load-bearing: it is how the CLI finds the checkout, and so which release a unit starts) |
 
 The monitoring box is deliberately **not** in the fleet group — it
 runs a different network model (stock Docker + `DOCKER-USER` rules).
@@ -123,13 +124,20 @@ ansible-playbook site.yml --check --diff -K --limit <host>
 `site.yml` owns host *configuration*; `update.yml` performs the recurring
 *operation* of deploying a release — one server at a time, verifying each with
 `mascope prod doctor` and stopping the rollout on the first failure. It also
-reinstalls the `mascope` CLI so it cannot drift behind the checkout. No sudo
+reinstalls the `mascope` CLI, before the stack update, so it cannot drift
+behind the checkout - and so a release that adds a compose secret is
+provisioned by the CLI that knows about it. No sudo
 (and therefore no vault password) is needed:
 
 ```sh
 ansible-playbook update.yml -e mascope_version=vX.Y.Z --limit <canary-host>
 ansible-playbook update.yml -e mascope_version=vX.Y.Z    # rest of the fleet
 ```
+
+Servers already on the release — checkout *and* running stack — are skipped
+with a one-line verdict, so a rollout that failed partway through the fleet
+can simply be re-run without restarting the servers that finished. Pass
+`-e force=true` to redeploy such a server anyway.
 
 The manual per-server equivalent (and its verification checklist) is in
 `docs/maintaining.md` → "Rolling out a release across several servers".
@@ -153,7 +161,10 @@ Per server it skips anything without `/var/run/reboot-required`, refuses to
 proceed while a backup is in flight, reboots, then gates on four checks: the
 backend container reports healthy, the running release is the same one the
 server went down with, the origin API answers `422`, and `mascope prod doctor`
-passes. Any failure stops the batch before the next server is touched.
+passes. Any failure stops the batch before the next server is touched. The
+transcript states a one-line verdict per server - naming the packages that
+requested the reboot - and, after the reboot, the kernel change it activated,
+so a justified reboot is distinguishable from a skip at a glance.
 
 Two things worth knowing before scheduling a window:
 

@@ -40,11 +40,17 @@ Name files as:
 <instrument>_<timestamp>_<ionization-token>...<.raw|.h5>
 ```
 
-- **Instrument** — the first segment, before the first underscore. It must
-  identify the instrument type: names containing `orbi` are treated as Orbitrap,
-  and names containing `tof` or `api` as TOF. The instrument type must match the
-  extension (`orbi…` with `.raw`, `tof…` with `.h5`). Use only letters, digits,
-  and hyphens in this segment.
+- **Instrument** — the first segment, before the first underscore. Use only
+  letters, digits, and hyphens in this segment. Whether the file is an
+  Orbitrap or a TOF acquisition is decided by the file itself when it is
+  converted, not by the name, so the instrument can be called anything. A
+  paired **File Agent** that names its instrument in its configuration files
+  every upload under that name, and its file names need not carry the
+  instrument at all: the server puts `<instrument>_` in front of the stored
+  name. For files uploaded from the browser the name is the only source, so
+  there it still has to start with the instrument - either one Mascope
+  already holds files for, or a name that says its own class (containing
+  `orbi`, `tof` or `api`) for an instrument it has never seen.
 - **Timestamp** — an acquisition date/time somewhere in the name, in one of the
   recognised forms (for example `20240115_1430`, `20240115143000`, or
   `2024.01.15-14h30m00s`). Mascope uses it to place and order the file.
@@ -191,14 +197,17 @@ the copy flow above for routine work.
 2. In the **Raw files** tab, select the raw files to process. Select files of
    a single polarity, or pick a polarity from the dropdown if a file contains both.
 3. Click **Process selected**:
-   - **One file** opens a dialog to create a single sample from it.
+   - **One file** opens a dialog to create a single sample from it. Its
+     **Ionization Mode** is preselected from the token in the filename; when the
+     filename carries no configured token, choose the mode the file was acquired
+     in — the list offers every mode of the sample's polarity.
    - **Several files** opens the batch-import dialog, where you paste per-sample
      metadata (sample **name** and **type** are required; a **filter ID** and any
      extra attributes are optional) from a spreadsheet or autosampler report. The
-     dialog previews the samples and flags any issues before you confirm.
+     dialog previews the samples and flags any issues before you confirm. Here
+     every filename does need a recognised ionization token.
 4. Confirm. Mascope processes the files — you will see progress in the batch — and
-   the new samples appear in the batch, tagged with the ionization mode read from
-   each filename.
+   the new samples appear in the batch, tagged with their ionization mode.
 
 ## What happens next
 
@@ -220,6 +229,8 @@ batch has samples, you can go straight to analysis:
 - **The filename token isn't recognised.** Confirm an ionization mode with that
   exact token exists in **Edit ionizations → Ionization Modes**, and that the
   token field is filled in (a mode with no token cannot match a filename).
+  Processing a single file by hand does not depend on the token — pick the
+  ionization mode in the dialog instead — but upload and batch import do.
 - **"Paste samples" doesn't appear in the menu.** Copy samples first, then make
   sure your own batch is open — the paste goes into the batch whose *Samples*
   pane you right-click.

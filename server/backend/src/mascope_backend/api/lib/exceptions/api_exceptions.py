@@ -1,4 +1,5 @@
 import uuid
+from typing import Any
 
 import httpx
 from fastapi import HTTPException, status
@@ -6,6 +7,7 @@ from fastapi.encoders import jsonable_encoder
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from fastapi_users.exceptions import InvalidPasswordException
+from pydantic import BaseModel, Field
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.exc import TimeoutError as SQLAlchemyTimeoutError
 
@@ -39,6 +41,23 @@ class CodedHTTPException(HTTPException):
     """
 
     error_code: str = ""
+
+
+class ClientFacingDetail:
+    """
+    Marker: this exception's ``detail`` is written for the caller and must
+    survive the 401 genericization below.
+
+    A 401 normally answers "please sign in", which is right for a browser
+    whose session lapsed and useless to an unattended agent, which has no
+    session and cannot sign in. A refusal that carries remediation the caller
+    can actually act on mixes this in to keep its own wording. That wording
+    reaches the response body, so it must stay a fixed, internals-free string
+    - never interpolated from a token, an account or a path.
+
+    Declared here for the same reason as CodedHTTPException above: the auth
+    package imports this module, so the dependency only runs one way.
+    """
 
 
 #: Context prefixes added by the wrapping layers (api_controller,
@@ -88,6 +107,43 @@ class DuplicateException(HTTPException):
         super().__init__(status_code=status.HTTP_409_CONFLICT, detail=detail)
 
 
+def is_expected_client_error(e: Exception, status_code: int) -> bool:
+    """
+    Whether a failure is a routine client-class outcome rather than a fault.
+
+    This is the predicate that decides the level a failure is logged at, and
+    the level is what decides whether it becomes an error-monitoring event:
+    ``mascope_runtime.logging`` exports every record at WARNING or above, so
+    only INFO and below are free. A bad request, a lapsed session, an id that
+    names nothing, a duplicate, a partial-success warning - all of these are
+    normal operation and nothing an operator can act on, so they stay at
+    INFO. Anything mapped to a 5xx, and the 4xx-mapped exception types that
+    still signal a server-side fault (``SQLAlchemyError``, ``AttributeError``
+    and the unlisted default), are faults and log at ERROR with a traceback.
+
+    Split out of :func:`process_exception` so that a caller which handles a
+    failure itself - and therefore logs it itself - can classify it on
+    exactly these terms instead of growing a second, drifting taxonomy.
+
+    :param e: The exception being reported.
+    :type e: Exception
+    :param status_code: The HTTP status that exception maps to.
+    :type status_code: int
+    :return: True when the failure is routine and belongs at INFO.
+    :rtype: bool
+    """
+    return status_code < 500 and isinstance(
+        e,
+        (
+            ApiException,
+            HTTPException,
+            InvalidPasswordException,
+            RequestValidationError,
+            ValueError,
+        ),
+    )
+
+
 def process_exception(e: Exception, context_message: str) -> ApiException:
     error_message = f"{context_message}. {str(e)}."
     # Opaque reference for correlating a client-visible error with the
@@ -112,10 +168,15 @@ def process_exception(e: Exception, context_message: str) -> ApiException:
             status_code = 503  # Service Unavailable
 
         case SQLAlchemyError():
+            # A database failure is this server's problem, not a malformed
+            # request, and callers act on that distinction: an agent treats a
+            # 4xx as final and sets the file aside, while a 5xx is worth
+            # retrying. Reported as 400 it made a transient database fault
+            # look like a file the server would never accept.
             user_message = (
                 f"{context_message}. Database operation failed (ref: {error_id[:8]})."
             )
-            status_code = 400  # Bad Request
+            status_code = 500  # Internal Server Error
 
         case ApiException():
             user_message = e.user_message
@@ -144,6 +205,11 @@ def process_exception(e: Exception, context_message: str) -> ApiException:
                 tech_message = {"code": e.error_code, "error_id": error_id}
 
             match e:
+                case ClientFacingDetail() if (
+                    e.status_code == status.HTTP_401_UNAUTHORIZED and e.detail
+                ):
+                    # The refusal wrote remediation for whoever hit it; keep it.
+                    user_message = compose_user_message(context_message, e.detail)
                 case _ if e.status_code == status.HTTP_401_UNAUTHORIZED:
                     user_message = f"{context_message}. Please sign in to the Mascope."
                 case _ if (
@@ -201,8 +267,10 @@ def process_exception(e: Exception, context_message: str) -> ApiException:
         case AttributeError():
             # str(e) can name internal attributes/objects; keep it out of the
             # client response (the full message is still logged server-side).
+            # 500 like RuntimeError below: an attribute the code did not expect
+            # is a fault here, and nothing the caller sent can fix it.
             user_message = f"{context_message}. Unexpected error (ref: {error_id[:8]})."
-            status_code = 400  # Bad Request
+            status_code = 500  # Internal Server Error
 
         case RuntimeError():
             # RuntimeError messages often embed internal paths/state; do not
@@ -225,16 +293,7 @@ def process_exception(e: Exception, context_message: str) -> ApiException:
     # with its traceback. RequestValidationError is always INFO and its
     # message redacted: its str()/traceback render the offending request
     # "input" values, which can be credentials.
-    expected_client_error = status_code < 500 and isinstance(
-        e,
-        (
-            ApiException,
-            HTTPException,
-            InvalidPasswordException,
-            RequestValidationError,
-            ValueError,
-        ),
-    )
+    expected_client_error = is_expected_client_error(e, status_code)
     with runtime.logger.contextualize(status_code=status_code, error_id=error_id):
         if expected_client_error:
             runtime.logger.info(error_message)
@@ -242,6 +301,24 @@ def process_exception(e: Exception, context_message: str) -> ApiException:
             runtime.logger.exception(error_message)
 
     return ApiException(user_message, tech_message, status_code)
+
+
+class ApiErrorBody(BaseModel):
+    """
+    The body of every error response, as ``api_e_response_json`` writes it.
+
+    Declared for the OpenAPI document (``app/fast.py``): every handler that
+    answers an error - validation, HTTP, ``ApiException`` or unhandled - goes
+    through ``handle_exception`` or ``api_e_response_json``, so no route answers
+    an error in another shape.
+    """
+
+    error: str = Field(description="What went wrong, written for a person.")
+    detail: dict[str, Any] = Field(
+        description="What identifies it: an `error_id` to quote when reporting "
+        "the error, and a stable `code` where a client is expected to react to "
+        "the condition."
+    )
 
 
 def api_e_response_json(e: ApiException):

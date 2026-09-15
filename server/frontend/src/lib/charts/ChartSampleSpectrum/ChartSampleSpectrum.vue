@@ -4,13 +4,45 @@ import { ref, reactive, computed, toRaw, watch, watchEffect, nextTick } from 'vu
 import { useApp } from '@/stores'
 import { usePreview } from '@/lib/panes'
 import { ToolbarIntensityScale } from '@/lib/toolbars'
-import { instrumentType as getInstrumentType } from '@/lib/utils'
+import { sampleInstrumentType } from '@/lib/utils'
+import { peakAssignmentEnabled } from '@/lib/features'
 
 import BaseChartPlotly from '../BaseChartPlotly.vue'
 import { useChartData } from './data.js'
 
 const app = useApp()
 const data = useChartData()
+
+// Help card for the whole chart. The tier colors deliberately have no on-chart
+// legend (showlegend: false below), so this card is where they are named.
+const spectrumHelp = peakAssignmentEnabled
+  ? {
+      message: `
+        <h1>Sum Spectrum</h1>
+        <p>
+        The sample's spectrum: the continuous signal in green, with every
+        detected peak drawn as a vertical line. Once the sample has an
+        assignment run, the peak lines are colored by confidence tier &mdash;
+        green assigned, amber candidate, grey-blue below assignability,
+        purple reagent / artifact, grey unassigned.
+        </p>
+        <p>
+        Click a peak to focus it: the view zooms in, the inspector shows its
+        assignment, and the predicted isotope pattern is drawn in crimson with
+        circles at the expected peak heights.
+        </p>`,
+      doc: app.ui.help.docUrl('how-it-works/peak-assignment/#confidence-tiers')
+    }
+  : {
+      message: `
+        <h1>Sum Spectrum</h1>
+        <p>
+        The sample's spectrum: the continuous signal in green, with every
+        detected peak drawn as a vertical grey line. Click a peak to select it
+        and assign a composition below.
+        </p>`,
+      doc: app.ui.help.docUrl('how-it-works/peak-detection/')
+    }
 
 const plot = ref({})
 const preview = usePreview()
@@ -38,7 +70,7 @@ const sampleLength = computed(() => app.data.sample.focused.length) // duration 
 // peaks are far narrower than TOF, so a tight window keeps the selected
 // isotopologue centered instead of showing a wide, mostly-empty span.
 const mzHalfWindow = computed(() =>
-  getInstrumentType(app.data.sample.focused?.instrument) === 'tof' ? 0.3 : 0.05
+  sampleInstrumentType(app.data.sample.focused) === 'tof' ? 0.3 : 0.05
 )
 
 const traces = computed(() =>
@@ -150,6 +182,7 @@ const config = {
     id="ChartSampleSpectrum"
     ref="plot"
     title="Sum spectrum"
+    v-help.bottom="spectrumHelp"
     :data="traces"
     :layout="layout"
     :config="config"

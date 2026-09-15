@@ -10,15 +10,17 @@ from mascope_backend.api.new.auth.exceptions import (
     ForbiddenAccessException,
     PasswordChangeRequiredException,
 )
+from mascope_backend.api.new.auth.mfa import policy
+from mascope_backend.api.new.auth.mfa.exceptions import MfaEnrollmentRequiredException
 from mascope_backend.api.new.roles.exceptions import InvalidRoleException
 from mascope_backend.db import User
 
 
 # Raw FastAPI Users dependencies. Private on purpose: they resolve an identity
-# but do not enforce the forced password change, so a route binding one directly
-# would stay reachable by an account that owes a new password. Everything
-# outside this module goes through the gated wrappers below, which is what makes
-# a route added later gated by default.
+# but enforce neither the forced password change nor the enrolment requirement,
+# so a route binding one directly would stay reachable by an account that owes
+# either. Everything outside this module goes through the gated wrappers below,
+# which is what makes a route added later gated by default.
 _authenticated_active_user = fastapi_users.current_user(
     active=True, get_enabled_backends=get_enabled_backends
 )
@@ -51,18 +53,49 @@ def _enforce_password_change(request: Request, user: User) -> User:
     return user
 
 
+def _enforce_mfa_enrolment(request: Request, user: User) -> User:
+    """
+    Close the API to an account the deployment requires to hold a second factor
+    and which does not hold one yet.
+
+    Scoped to the interactive browser session for the same reason as the
+    password gate, and keyed on the same cookie so the two cannot drift apart:
+    a bearer-token holder has no way to render an enrolment screen, and its
+    credential was already minted under whatever rules applied at the time.
+
+    Applied after the password gate, never before. An account can owe both, and
+    an enrolment screen shown to someone holding a password an administrator
+    chose would enrol the wrong person's phone against it.
+
+    :param request: The incoming request, inspected for the auth cookie.
+    :param user: The authenticated user.
+    :raises MfaEnrollmentRequiredException: If the account owes an enrolment.
+    :return: The user object when the account may proceed.
+    """
+    if not request.cookies.get(auth_settings.COOKIE_NAME):
+        return user
+    if policy.enrollment_required(user.role_id, user.mfa_enabled):
+        raise MfaEnrollmentRequiredException()
+    return user
+
+
+def _enforce_gates(request: Request, user: User) -> User:
+    """Both interactive gates, in the order they have to be satisfied."""
+    return _enforce_mfa_enrolment(request, _enforce_password_change(request, user))
+
+
 async def current_active_user(
     request: Request, user: User = Depends(_authenticated_active_user)
 ) -> User:
-    """Active user, refused while a forced password change is pending."""
-    return _enforce_password_change(request, user)
+    """Active user, refused while a password change or enrolment is pending."""
+    return _enforce_gates(request, user)
 
 
 async def current_superuser(
     request: Request, user: User = Depends(_authenticated_superuser)
 ) -> User:
-    """Active superuser, refused while a forced password change is pending."""
-    return _enforce_password_change(request, user)
+    """Active superuser, refused while a password change or enrolment is pending."""
+    return _enforce_gates(request, user)
 
 
 # Role-based access dependencies
@@ -82,16 +115,16 @@ async def owner_user(user: User = Depends(current_superuser)) -> User:
     return await role_based_access(user, "owner")
 
 
-# Dependencies that stay reachable while a forced password change is pending.
-# The set is deliberately tiny: an account behind the gate must be able to see
-# that it is behind the gate, and to get out. Anything else waits.
+# Dependencies that stay reachable while a gate is pending. The set is
+# deliberately tiny: an account behind a gate must be able to see that it is
+# behind one, and to get out. Anything else waits.
 async def password_gate_exempt_active_user(
     user: User = Depends(_authenticated_active_user),
 ) -> User:
     """
-    Identity for ``GET /api/users/me``, which answers while a change is pending.
+    Identity for ``GET /api/users/me``, which answers while either gate holds.
 
-    The frontend discovers the pending change from this route, and treats any
+    The frontend discovers both pending states from this route, and treats any
     response that is neither 200 nor 401 as "not signed in" - so gating it would
     bounce the user to the sign-in screen, where signing in would gate them
     again. Skips ``role_based_access`` deliberately: the route needs an identity,
@@ -103,8 +136,26 @@ async def password_gate_exempt_active_user(
 async def password_gate_exempt_guest_user(
     user: User = Depends(_authenticated_active_user),
 ) -> User:
-    """Guest-level access for ``PATCH /api/users/me/creds`` - the way out."""
+    """Guest-level access for ``PATCH /api/users/me/creds`` - the way out.
+
+    Exempt from the enrolment gate too, not only the password one: an account
+    can owe both, and the password has to be replaced first (see
+    ``_enforce_mfa_enrolment``), so this route must answer while an enrolment is
+    still outstanding.
+    """
     return await role_based_access(user, "guest")
+
+
+async def mfa_gate_exempt_guest_user(
+    request: Request, user: User = Depends(_authenticated_active_user)
+) -> User:
+    """Guest-level access for the enrolment routes - the way out of that gate.
+
+    Still behind the password gate, which is the ordering the enrolment gate
+    itself relies on: someone holding a password an administrator chose must
+    replace it before binding an authenticator to the account.
+    """
+    return await role_based_access(_enforce_password_change(request, user), "guest")
 
 
 async def role_based_access(user: User, access: str) -> User:

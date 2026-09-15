@@ -14,9 +14,10 @@ import re
 import tomllib
 import typing
 from pathlib import Path
-from typing import Literal
+from typing import Literal, Optional
+from urllib.parse import urlsplit
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, ValidationInfo, field_validator
 
 
 if typing.TYPE_CHECKING:
@@ -33,6 +34,36 @@ type LogLevel = Literal[
     "trace", "debug", "info", "success", "warning", "error", "critical"
 ]
 
+# A `%` that does not start an escape: fine for a browser's URL parser, fatal
+# for decoding the address back out of a mailto: link.
+_STRAY_PERCENT = re.compile(r"%(?![0-9A-Fa-f]{2})")
+
+
+def _link_problem(url: str) -> str | None:
+    """
+    Why ``url``, already known to carry an allowed scheme, is no usable link.
+
+    The web app parses the value with the browser's URL parser and hides a link
+    it cannot read, so anything that parser would refuse - no host, a broken
+    port or IPv6 literal - has to be refused at load instead, where the setting
+    can be named. Whitespace and stray ``%`` signs are refused too: a browser
+    would repair some of them, but they are typos, not what anyone meant.
+
+    :return: A short reason, or ``None`` when the link is usable.
+    """
+    if re.search(r"[\s\x00-\x1f\x7f]", url):
+        return "it contains whitespace or a control character"
+    if _STRAY_PERCENT.search(url):
+        return "a % that is not followed by two hex digits"
+    if url.lower().startswith("mailto:"):
+        return None if url[len("mailto:") :].split("?")[0] else "no address"
+    try:
+        parts = urlsplit(url)
+        parts.port  # raises on a port that is not a number in range
+    except ValueError as error:
+        return str(error)
+    return None if parts.hostname else "no host"
+
 
 class MetaConfig(BaseModel):
     """
@@ -44,10 +75,87 @@ class MetaConfig(BaseModel):
     api_port: int = 8090  # API port
     filestore: str = r"./filestore"  # filestore path
     # Peak-centric assignment (docs/dev/peak_assignment_paradigm.md). Off by
-    # default so the targeted workflow stays exactly as it was; the backend
-    # reads it via `peak_assignment_enabled()` and the frontend via
-    # `runtime.meta`, so one switch gates both sides.
+    # default: a deployment opts in, and targeted matching is unaffected either
+    # way - it coexists rather than being replaced. The backend reads it via
+    # `peak_assignment_enabled()` and the frontend via `runtime.meta`, so one
+    # switch gates both sides. Off means the pre-assignment behaviour: no
+    # assignment at sample ingest, no assignment views, and the API write routes
+    # answering 403.
     peak_assignment: bool = False
+    # Whether a newly processed sample is assigned as it arrives (the database
+    # stage only). Subordinate to `peak_assignment`: with the feature off nothing
+    # assigns at ingest whatever this says. Off, the feature stays available -
+    # views, on-demand runs, imports - without the per-sample cost of assigning
+    # everything the instrument acquires: one ledger row and one batch-peak
+    # occurrence per detected peak, about 1 KB per peak, which the retention
+    # pass never reclaims. Read by the backend via `peak_assignment_on_ingest()`.
+    peak_assignment_on_ingest: bool = True
+    # Ceiling on the detected-peak count of a sample assigned at ingest. A
+    # denser sample is logged and left for an explicit run: at about 1 KB per
+    # peak, one very dense acquisition is hundreds of megabytes of ledger
+    # written unasked. 0 disables the ceiling. Read by the backend via
+    # `peak_assignment_ingest_max_peaks()`.
+    peak_assignment_ingest_max_peaks: int = Field(default=100_000, ge=0)
+    # Which ledger an ingest-time assignment writes. "batch" (the default) folds
+    # the sample into the batch peaks and writes no per-sample run: one member
+    # row of some 200 bytes per detected peak, and the Sample view is served
+    # from the batch ledger. "sample" writes a per-sample run as well and folds
+    # it - about a kilobyte per detected peak, most of it placeholders for
+    # peaks nothing assigned - which is what an explicit run on a sample
+    # writes anyway. Read by the backend via `peak_assignment_ingest_ledger()`.
+    peak_assignment_ingest_ledger: Literal["sample", "batch"] = "batch"
+    # Size cap (in gigabytes) for a single resumable (tus) upload, advertised
+    # to clients as Tus-Max-Size and enforced at upload creation. Applies per
+    # upload: it does not limit how many files a client may transfer, only how
+    # large each one may be. Lives here rather than in [backend] because both
+    # sides need it - the backend enforces it, and the web uploader sizes its
+    # own client-side restriction from it via `runtime.meta` (a cap only the
+    # backend knew about meant a browser refusing files the server would have
+    # accepted). Must be at least 1: a zero or negative cap rejects every
+    # upload. A value still under [backend] is promoted by
+    # `migrate_legacy_options()`.
+    tus_max_upload_gb: int = Field(default=5, ge=1)
+    # Legal and support links the web app shows on the sign-in screen and in
+    # its About tab. Configuration rather than constants, because the
+    # documents are published outside this repository and a deployment someone
+    # else operates has its own privacy notice and support desk. Only the web
+    # app reads them, via `runtime.meta` (src/lib/about.js, which repeats these
+    # defaults for a runtime published by an older CLI). An empty string hides
+    # the link; no terms of service are published yet, hence no default.
+    privacy_notice_url: str = "https://ultratrace.eu/mascope/privacy"
+    terms_url: str = ""
+    support_url: str = "mailto:support@ultratrace.eu"
+
+    @field_validator("privacy_notice_url", "terms_url", "support_url")
+    @classmethod
+    def _link_scheme(cls, value: str, info: ValidationInfo) -> str:
+        """
+        Refuse anything but a web URL (or, for support, a mail address).
+
+        The value lands in an ``href`` on the sign-in screen, where a
+        ``javascript:`` URL would run in the app's own origin, and a bare
+        ``example.org/privacy`` would quietly resolve against the app instead
+        of leaving it. A value with the right scheme that the browser still
+        cannot parse, such as ``https://`` alone, would silently hide the link.
+        Failing at load names the setting instead.
+        """
+        value = value.strip()
+        if not value:
+            return value
+        schemes = ["https://", "http://"]
+        if info.field_name == "support_url":
+            schemes.append("mailto:")
+        if not value.lower().startswith(tuple(schemes)):
+            raise ValueError(
+                f"{info.field_name} must start with {', '.join(schemes)} "
+                f"or be empty to hide the link, not {value!r}"
+            )
+        problem = _link_problem(value)
+        if problem:
+            raise ValueError(
+                f"{info.field_name} is not a usable link ({problem}): {value!r}"
+            )
+        return value
 
 
 class DatabaseConfig(BaseModel):
@@ -300,11 +408,83 @@ class BackendConfig(ModuleConfig):
     filestreams: str = r"./filestreams"  # path to the file streams folder
     redis: RedisConfig = RedisConfig()
     workers: Literal["auto"] | int = "auto"  # uvicorn workers, auto -  half cpu cores
-    # Size cap (in gigabytes) for a single resumable (tus) upload, advertised
-    # to clients as Tus-Max-Size. Applies per upload: it does not limit how
-    # many files a client may upload, only how large each one may be. Must be
-    # at least 1: a zero or negative cap rejects every upload.
-    tus_max_upload_gb: int = Field(default=5, ge=1)
+    # Free space (in gigabytes) that must remain on the tus spool's filesystem
+    # once a resumable upload is admitted. `meta.tus_max_upload_gb` bounds one
+    # transfer; it does not bound N concurrent ones, so admission also refuses
+    # a creation that would eat into this reserve. Backend-only (the browser
+    # never needs it), and the default matches MIN_FREE_GB in
+    # tooling/disk-check.sh so uploads start being refused around the point the
+    # disk monitor already alerts. 0 disables the check.
+    tus_min_free_disk_gb: int = Field(default=10, ge=0)
+    # Lowest role required to hold a second authentication factor, by name
+    # ("guest" covers everyone, "admin" only admins and owners). Unset means no
+    # account is required to enrol. Validated by the backend at startup, which
+    # refuses to start on a name that is not a role - see
+    # api/new/auth/mfa/policy.py. Typed loosely here because this library must
+    # not depend on the backend's role table.
+    mfa_required_min_role: Optional[str] = None
+    # Refuse bearer tokens for the pairable agent services (file-agent,
+    # tof-agent, export-agent) unless the token is bound to a registered
+    # device. Off by default: tokens issued before the device registry keep
+    # working until the deployment has (re-)paired every agent machine and
+    # turns this on. Pairing binds new tokens to a device automatically.
+    require_device_tokens: bool = False
+    # Allowlist of per-record reference licences the peak-assignment database
+    # stage (Stage A) may match against. The reference mirror carries a
+    # licence per record from ingest through to results, and some sources
+    # (HMDB) permit academic use only - this is what stops a commercial
+    # deployment matching against them.
+    #
+    # MATCHED AS AN EXACT STRING, so a tag left out of the list is dropped
+    # with nothing in a result to say why. All six, with the sources carrying
+    # each: public-domain (comptox, pubchem), CC-BY-4.0 (chebi, lipidmaps),
+    # CC0 (coconut), open (norman), hmdb-attribution (hmdb), custom
+    # (hand-authored rows with no licence of their own). Write the allowlist
+    # by starting from that whole vocabulary and deleting what you decline,
+    # e.g. to decline HMDB only:
+    #     reference_licenses = ["public-domain", "CC-BY-4.0", "CC0", "open", "custom"]
+    # base.mascope.toml and docs/maintaining.md say the same, and `mascope
+    # reference status` prints it from the adapter registry on a monorepo
+    # checkout. A written-out list also freezes the vocabulary: a source added
+    # by a later release brings a tag the list does not name, so re-check it
+    # after an upgrade.
+    #
+    # UNSET IS THE DEFAULT AND MEANS NO GATING: every active source is matched,
+    # exactly as before this setting existed. That is deliberate. Narrowing the
+    # gate shrinks what Stage A can find without saying so anywhere in the UI,
+    # so it must be an operator's explicit decision, never a default they
+    # inherit on upgrade. `mascope reference status` reports the effective set,
+    # and every run records it on `PeakAssignmentRun.config`.
+    #
+    # Backend-only: it bounds a server-side query, and putting it in [meta]
+    # would ship it to the browser (where it is unused) and bake it into the
+    # frontend image at build time. It is deliberately NOT a field on the
+    # request's PeakAssignmentConfig either - a client must not be able to
+    # widen it.
+    reference_licenses: Optional[list[str]] = None
+
+    @field_validator("reference_licenses")
+    @classmethod
+    def _clean_reference_licenses(cls, value: list[str] | None) -> list[str] | None:
+        """Normalize the allowlist, and refuse an empty one.
+
+        Sorted and deduplicated so the set recorded on a run and folded into
+        the reference-isotope cache key does not depend on the order the
+        operator happened to type. An empty list is rejected rather than
+        honoured: `reference_licenses = []` reads as "no restriction" but would
+        gate out every record, silently emptying the known set - delete the
+        line to disable gating.
+        """
+        if value is None:
+            return None
+        cleaned = sorted({entry.strip() for entry in value if entry.strip()})
+        if not cleaned:
+            raise ValueError(
+                "backend.reference_licenses is empty, which would stop peak "
+                "assignment matching against any reference record. Remove the "
+                "line entirely to allow every licence."
+            )
+        return cleaned
 
     def get_worker_count(self) -> int:
         """
@@ -376,6 +556,20 @@ class FileAgentConfig(ModuleConfig):
     timeout: int = 10  # timeout (s) for a file transfer operation
     source: str  # folder to monitor in the instrument machine
     recursive: bool = False  # also watch subfolders of source
+    # Verify the server's TLS certificate. On by default; a self-signed or
+    # plain-HTTP dev deployment turns it off.
+    verify_tls: bool = True
+    # IANA timezone of this instrument PC, reported with each upload so the
+    # converter can turn the instrument-local acquisition time into UTC.
+    # Empty means auto-detect from the operating system. Set it explicitly when
+    # detection picks the wrong zone: Windows names a group of zones rather
+    # than a city, so a machine can resolve to a neighbouring city whose
+    # historical DST rules differ.
+    timezone: str = ""
+    # Name of the instrument this machine watches, reported at pairing and
+    # with each upload. Letters, digits and hyphens. Empty means unset: the
+    # server then keeps reading the instrument from the file name.
+    instrument: str = ""
     host: str  # URL of the backend
     access_token: str  # API access token
     filename_prefix: str | None = (
@@ -509,6 +703,44 @@ class RuntimeConfig(BaseModel):
     sdk_lib: SdkLibConfig | None = None
 
 
+def migrate_legacy_options(raw: dict, logger=None) -> dict:
+    """
+    Lift settings that moved between config sections in an earlier release.
+
+    An env toml written for an older Mascope keeps working: the value is moved
+    into its new home before validation, with a warning naming the move. The
+    models ignore unknown keys, so without this an operator's override would
+    silently revert to the default - a deployment that raised
+    `tus_max_upload_gb` for a large-file instrument would drop back to 5 GB on
+    upgrade without saying so.
+
+    :param raw: The merged but unvalidated config dictionary, modified in place
+    :type raw: dict
+    :param logger: Optional logger for the migration warnings
+    :return: The same dictionary, with legacy settings moved
+    :rtype: dict
+    """
+    backend = raw.get("backend")
+    if isinstance(backend, dict) and "tus_max_upload_gb" in backend:
+        legacy = backend.pop("tus_max_upload_gb")
+        meta = raw.setdefault("meta", {})
+        if "tus_max_upload_gb" in meta:
+            if logger:
+                logger.warning(
+                    "Ignoring [backend] tus_max_upload_gb: the setting moved to "
+                    "[meta], which already sets it. Remove the [backend] line."
+                )
+        else:
+            meta["tus_max_upload_gb"] = legacy
+            if logger:
+                logger.warning(
+                    "[backend] tus_max_upload_gb has moved to [meta]; using the "
+                    f"legacy value ({legacy}). Move it to the [meta] section of "
+                    "your env config toml - the web uploader reads it from there."
+                )
+    return raw
+
+
 class RuntimeConfigLoader:
     """
     Helper class to facilitate loading the configuration of
@@ -536,12 +768,15 @@ class RuntimeConfigLoader:
             - base.mascope.toml - Shared defaults for all modes
             - {mode}.mascope.toml (runtime lib) - Mode-specific defaults
             - {mode}.mascope.toml (env dir, optional) - Env-specific overrides
-        2. Resolve relative paths into absolute paths, using the
+        2. Move settings that changed section in an earlier release into
+           their new home, so an older env toml keeps working (see
+           `migrate_legacy_options`).
+        3. Resolve relative paths into absolute paths, using the
            runtime environment path (except for package paths,
            which resolve relative to the Mascope root path).
-        3. Resolve log level for each module, using CLI arguments,
+        4. Resolve log level for each module, using CLI arguments,
            toml settings and defaults.
-        4. Validate the resulting dictionary using the Pydantic
+        5. Validate the resulting dictionary using the Pydantic
             model for the configuration.
 
         :param runtime: The parent runtime
@@ -550,6 +785,7 @@ class RuntimeConfigLoader:
         self._runtime = runtime
 
         config = self._load_tomls()
+        config = migrate_legacy_options(config, self.runtime.logger)
         config = self._resolve_paths(config)
         config = self._resolve_loglevels(config)
         config = self._resolve_env_ports(config)

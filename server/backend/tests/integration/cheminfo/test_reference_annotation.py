@@ -124,15 +124,19 @@ def reference_in_play(monkeypatch):
     The mirror is only consulted when it is in play - either the caller asked for
     the suspect-screening prior (``known_only``) or the deployment enabled peak
     assignment. A search that does neither must keep the pre-feature response, which
-    `test_annotation_is_gated_off_by_default` pins.
+    `test_annotation_is_gated_off_when_disabled` pins.
     """
     monkeypatch.setenv("MASCOPE_PEAK_ASSIGNMENT", "1")
 
 
 @pytest.mark.asyncio
-async def test_annotation_is_gated_off_by_default(seeded, monkeypatch):
-    """With the feature off and no known_only, the response is left untouched."""
-    monkeypatch.delenv("MASCOPE_PEAK_ASSIGNMENT", raising=False)
+async def test_annotation_is_gated_off_when_disabled(seeded, monkeypatch):
+    """With the feature off and no known_only, the response is left untouched.
+
+    "Off" is set explicitly rather than left to the flag's own default, so the
+    test keeps ruling out the annotated path whatever that default is.
+    """
+    monkeypatch.setenv("MASCOPE_PEAK_ASSIGNMENT", "0")
     resp = await retrieve_compositions_by_mz(
         mz=_ASPIRIN_MZ,
         ionization_mechanism_ids=[seeded],

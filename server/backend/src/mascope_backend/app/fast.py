@@ -16,8 +16,14 @@ from fastapi import FastAPI, HTTPException, Request, status
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+from fastapi.routing import iter_route_contexts
 
-from mascope_backend.api.lib.exceptions.api_exceptions import handle_exception
+from mascope_backend.api.lib.exceptions.api_exceptions import (
+    ApiErrorBody,
+    ApiException,
+    api_e_response_json,
+    handle_exception,
+)
 from mascope_backend.api.lib.rate_limit import client_ip
 from mascope_backend.api.routes import routers
 from mascope_backend.db import init_db
@@ -45,6 +51,8 @@ async def lifespan(app: FastAPI):
     - Connect to Redis for cross-worker session storage
 
     Worker shutdown tasks:
+    - Drain detached auto-processing pipelines (waits, then cancels what
+      overruns, so a truncated pipeline still names its file)
     - Disconnect Redis client
 
     :param app: FastAPI application instance
@@ -79,6 +87,18 @@ async def lifespan(app: FastAPI):
     yield
 
     # --- SHUTDOWN TASKS ---
+    # Auto-processing runs detached from the request that scheduled it, so uvicorn
+    # does not wait on it the way it waits on connection tasks. Drain it here or a
+    # deploy truncates in-flight pipelines mid-file (#1844).
+    from mascope_backend.api.controllers.sample.files.process.service import (
+        drain_auto_process_tasks,
+    )
+
+    runtime.logger.info(
+        f"Fast App shutdown: draining background tasks [Worker {worker_pid}]"
+    )
+    await drain_auto_process_tasks()
+
     runtime.logger.info(
         f"Fast App shutdown: closing Redis storage client [Worker {worker_pid}]"
     )
@@ -89,9 +109,12 @@ def _docs_kwargs(mode: str) -> dict[str, str | None]:
     """
     FastAPI docs kwargs for the given runtime mode.
 
-    The interactive API docs and the OpenAPI schema are dev-only: they expose
-    the full API surface and are never proxied to users, so they stay off in
-    prod to remove needless recon value for a directly-reachable backend.
+    The interactive API docs and the live OpenAPI schema are dev-only. A
+    deployment describes its API with the static copy it publishes next to the
+    user docs (``/docs/openapi.json``, rendered by mascope_backend.openapi when
+    the image is built), so the backend has no reason to serve a second copy,
+    or an interactive console to drive the API, to anyone who reaches it
+    directly - nginx does not forward these paths to it either.
     ``openapi_url=None`` also disables ``/docs`` and ``/redoc``, which depend
     on it, but all three are set explicitly for clarity.
 
@@ -107,8 +130,108 @@ def _docs_kwargs(mode: str) -> dict[str, str | None]:
     return {"docs_url": None, "redoc_url": None, "openapi_url": None}
 
 
-# Initialize FastAPI with the lifespan.
-fast = FastAPI(lifespan=lifespan, **_docs_kwargs(runtime.mode))
+#: Heads the OpenAPI document: the one dev mode serves, and the static copy a
+#: production deployment publishes with its docs (mascope_backend.openapi).
+_API_DESCRIPTION = """\
+The HTTP API behind the Mascope web app and the Python SDK. Paths are relative
+to the deployment's own address.
+
+Each operation lists the credentials it accepts:
+
+- `APIKeyCookie`, the web app's session cookie. `POST /api/auth/login` sets it,
+  unless the account holds a second factor: the login then answers
+  `{"mfa_required": true}`, and `POST /api/auth/mfa/verify` sets the cookie
+  once the code is accepted.
+- `APIToken` with `ServiceName`, as the SDK authenticates: an API token
+  generated in the web app's settings, sent as `Authorization: Bearer <token>`
+  together with an `X-Service-Name` header naming the service the token was
+  generated for - `mascope_sdk` for a Jupyter Notebooks token. Without that
+  header, or on an operation that does not list it, a token is refused with
+  401.
+"""
+
+# Initialize FastAPI with the lifespan. The document names the version the
+# runtime was started with (MASCOPE_VERSION), as GET /api/version reports it -
+# for the published copy, the version its image was built for - and the
+# workspace's placeholder when the runtime was started without one.
+fast = FastAPI(
+    lifespan=lifespan,
+    title="Mascope API",
+    description=_API_DESCRIPTION,
+    version=runtime.version or "0.0.0",
+    **_docs_kwargs(runtime.mode),
+)
+
+
+#: The scheme fastapi-users declares for its bearer transport: an OAuth2
+#: password flow, although a token is generated in the web app rather than
+#: exchanged for a password, and its tokenUrl names no route.
+_BEARER_TRANSPORT_SCHEME = "OAuth2PasswordBearer"
+
+#: What the document declares for an API token instead. Both are required
+#: together: get_enabled_backends refuses a token whose X-Service-Name does not
+#: name the service it was generated for.
+_TOKEN_SECURITY_SCHEMES = {
+    "APIToken": {
+        "type": "http",
+        "scheme": "bearer",
+        "description": "An API token generated in the web app's settings.",
+    },
+    "ServiceName": {
+        "type": "apiKey",
+        "in": "header",
+        "name": "X-Service-Name",
+        "description": "The service the token was generated for: `mascope_sdk` "
+        "for a Jupyter Notebooks token.",
+    },
+}
+
+
+def _openapi() -> dict:
+    """
+    The OpenAPI document, declaring token access where the backend grants it.
+
+    fastapi-users attaches every auth backend's scheme to every authenticated
+    route, so FastAPI alone would offer the bearer transport on all of them.
+    ``get_enabled_backends`` accepts a token only on an endpoint marked
+    ``token_access`` (``api_route``), so the token requirement is restated from
+    that same attribute - as a bearer token plus its ``X-Service-Name`` header -
+    and dropped from every other operation, which keeps its session cookie.
+
+    Installed as ``fast.openapi``, and cached on the app the way FastAPI's own
+    method caches, so the dev schema and the published copy
+    (mascope_backend.openapi) both carry it.
+
+    :return: The OpenAPI document.
+    """
+    if fast.openapi_schema is not None:
+        return fast.openapi_schema
+    document = FastAPI.openapi(fast)
+    schemes = document.get("components", {}).get("securitySchemes", {})
+    if schemes.pop(_BEARER_TRANSPORT_SCHEME, None) is None:
+        return document
+    schemes.update(_TOKEN_SECURITY_SCHEMES)
+
+    # iter_route_contexts, not fast.routes: included routers stay nested there.
+    token_operations = {
+        (route.path_format, method.lower())
+        for route in iter_route_contexts(fast.routes)
+        if getattr(route.endpoint, "token_access", False)
+        for method in route.methods or ()
+    }
+    for path, operations in document.get("paths", {}).items():
+        for method, operation in operations.items():
+            security = operation.get("security")
+            if not security:
+                continue
+            kept = [each for each in security if _BEARER_TRANSPORT_SCHEME not in each]
+            if len(kept) < len(security) and (path, method) in token_operations:
+                kept.append({name: [] for name in _TOKEN_SECURITY_SCHEMES})
+            operation["security"] = kept
+    return document
+
+
+fast.openapi = _openapi
 
 
 #: Methods a cross-site page could use to change state with the victim's
@@ -247,9 +370,17 @@ if runtime.mode == "dev":
         ],
     )
 
+#: Every error response carries ApiErrorBody, whichever handler below answers
+#: it. Declaring the ranges also replaces the 422 schema FastAPI would add on
+#: its own, which describes FastAPI's validation body rather than this one.
+_ERROR_RESPONSES = {
+    "4XX": {"model": ApiErrorBody},
+    "5XX": {"model": ApiErrorBody},
+}
+
 # Routing
 for router in routers:
-    fast.include_router(router)
+    fast.include_router(router, responses=_ERROR_RESPONSES)
 
 
 # Exception handlers
@@ -308,6 +439,41 @@ async def http_exception_handler(request: Request, exc: HTTPException) -> JSONRe
         # internal "HTTPException on METHOD /path" wording.
         context_message = "Request failed"
     return handle_exception(exc, context_message, response_type="http")
+
+
+@fast.exception_handler(ApiException)
+async def api_exception_handler(request: Request, exc: ApiException) -> JSONResponse:
+    """
+    Return an ApiException that escaped a route as its own JSON response.
+
+    ``@api_route`` already converts ApiException into a response itself, so
+    this handler covers the routes Mascope does not own - the tus upload
+    routes in particular, plus the undecorated auth routes (login, logout,
+    mfa/verify, pairing, access-token regenerate). The tus routes reach
+    ``@api_controller``-decorated code that *raises* ApiException, but
+    tuspyserver generates the routes themselves, so they cannot carry
+    ``@api_route`` and nothing converted it. Without a handler for the type,
+    the exception fell through to ``global_exception_handler``, and
+    Starlette's ServerErrorMiddleware re-raises after that handler responds -
+    so a routine 401 (an upload token expiring mid-transfer) was captured by
+    error monitoring as an unhandled server fault.
+
+    The routes are attached with ``include_router``, not ``mount``: a mounted
+    sub-application carries its own ExceptionMiddleware and would not be
+    covered by a handler registered here.
+
+    The exception carries its own status code and user message, and is
+    serialized exactly as ``@api_route`` serializes one. Every ApiException
+    that can reach this handler today is built by ``process_exception``, which
+    logs it at its proper level; one raised directly would arrive unlogged, so
+    keep that in mind before raising ApiException from an undecorated route.
+
+    :param request: The incoming request.
+    :param exc: The escaped ApiException.
+    :return: The exception's structured JSON response.
+    :rtype: JSONResponse
+    """
+    return api_e_response_json(exc)
 
 
 @fast.exception_handler(Exception)

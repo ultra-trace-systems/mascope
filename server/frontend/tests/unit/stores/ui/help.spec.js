@@ -52,3 +52,45 @@ describe('help resolveMessage', () => {
     expect(store.resolveMessage(null)).toBe('')
   })
 })
+
+describe('help directive', () => {
+  let store
+
+  beforeEach(() => {
+    setActivePinia(createPinia())
+    global.fetch = vi.fn().mockResolvedValue({ ok: true, json: async () => ({}) })
+    store = useHelp()
+  })
+
+  const mount = (layer, value, modifiers) => {
+    const element = document.createElement('div')
+    document.body.appendChild(element)
+    store.directive(layer).mounted(element, { value, modifiers })
+    return store.cards.at(-1)
+  }
+
+  it('passes docs-sourced card options through from plain elements', () => {
+    const card = mount(
+      'dialog_peak_assign',
+      { title: 'Confidence Tiers', helpKey: 'assignment-tiers', doc: '/docs/x/' },
+      { right: true }
+    )
+    expect(card).toMatchObject({
+      title: 'Confidence Tiers',
+      helpKey: 'assignment-tiers',
+      doc: '/docs/x/',
+      placement: 'right',
+      layer: 'dialog_peak_assign'
+    })
+  })
+
+  it('still registers a bare string as an inline message on the default layer', () => {
+    const card = mount(undefined, '<h1>Inline</h1>', { top: true })
+    expect(card).toMatchObject({ message: '<h1>Inline</h1>', placement: 'top', layer: 'default' })
+  })
+
+  it('does not let a card override its directive layer', () => {
+    const card = mount('sidebar_x', { message: 'm', layer: 'other' }, { bottom: true })
+    expect(card.layer).toBe('sidebar_x')
+  })
+})

@@ -10,13 +10,18 @@ import { useToast } from 'primevue/usetoast'
 import { api } from '@/api'
 import { runtime } from '@/lib/runtime.js'
 import { beautifySnakeCase } from '@/lib/utils'
-import { BaseBrandLogo } from '@/lib/base'
+import { BaseBrandLogo, BaseLegalFooter } from '@/lib/base'
 import BaseUpdateBanner from '@/lib/base/BaseUpdateBanner.vue'
 import { useApp } from '@/stores'
 import { useLocation } from '@/lib/location'
 import { useUpdate } from '@/lib/update'
 import { createToaster } from '@/lib/toaster'
-import { PaneLogin, PaneOwnerSignup, PanePasswordChangeRequired } from '@/lib/panes'
+import {
+  PaneLogin,
+  PaneOwnerSignup,
+  PanePasswordChangeRequired,
+  PaneMfaEnrollmentRequired
+} from '@/lib/panes'
 
 const { connected } = api
 
@@ -73,6 +78,17 @@ app.ui.notification.on('*', (notification) => {
       <PanePasswordChangeRequired />
     </Panel>
   </div>
+  <!-- Mandatory enrolment - authenticated, past the password gate, but the
+       deployment requires a second factor this account does not have yet.
+       Ordered after the password branch, matching the server: an account owing
+       both replaces its password first. -->
+  <div v-else-if="app.auth.mustEnrollMfa" class="center" style="min-height: 80vh">
+    <Panel style="width: 500px">
+      <BaseBrandLogo />
+      <div style="margin-top: 2rem" />
+      <PaneMfaEnrollmentRequired />
+    </Panel>
+  </div>
   <!-- App Routes - Authenticated user -->
   <RouterView v-else-if="app.auth.user" />
   <!-- Login / Owner Setup Screen - No authenticated user  -->
@@ -86,6 +102,7 @@ app.ui.notification.on('*', (notification) => {
       <div style="margin-top: 2rem" />
       <PaneOwnerSignup v-if="app.auth.requiresOwner" />
       <PaneLogin v-else />
+      <BaseLegalFooter />
     </Panel>
   </div>
 

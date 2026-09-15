@@ -1,6 +1,7 @@
+import math
 from typing import List, Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from mascope_backend.api.models.base_pydantic_model import QueryParamsModel
 from mascope_backend.api.models.match.match_pydantic_model import (
@@ -30,6 +31,24 @@ class MatchIsotopeBase(BaseModel):
         ..., description="Mass-to-charge ratio error of the match"
     )
     match_score: float = Field(..., description="Score of the match")
+    signal_to_noise: Optional[float] = Field(
+        None,
+        description=(
+            "Per-peak signal-to-noise of the matched sample peak; None when the "
+            "sample file carries no noise data (the v2 fit score then uses its "
+            "no-SNR fallback for this row)"
+        ),
+    )
+
+    @field_validator("signal_to_noise", mode="before")
+    @classmethod
+    def _nan_to_none(cls, value: object) -> object:
+        """Coerce NaN to None: the compute frame carries NaN for "no SNR for
+        this row", but the persisted (and JSON) representation of that is
+        NULL/None - NaN is not JSON and must not reach the database."""
+        if isinstance(value, float) and math.isnan(value):
+            return None
+        return value
 
 
 class GetMatchesQueryParams(QueryParamsModel):

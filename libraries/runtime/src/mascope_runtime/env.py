@@ -8,6 +8,29 @@ if typing.TYPE_CHECKING:
     from mascope_runtime import Runtime
 
 import os
+import re
+
+
+#: The characters a runtime env name may contain. An env name travels into a
+#: filesystem path, an SSH command line, a Postgres database name and - in dev -
+#: an HTTP cookie name, so the alphabet is the intersection of what all of those
+#: accept: ASCII letters, digits, underscore and hyphen. It lives here, beside
+#: the env itself, so every consumer agrees on one rule instead of restating it
+#: and drifting.
+ENV_NAME_PATTERN = re.compile(r"[A-Za-z0-9_-]+")
+
+
+def is_valid_env_name(name: str | None) -> bool:
+    """
+    Whether ``name`` is usable as a runtime env name.
+
+    :param name: Proposed env name.
+    :type name: str, Optional
+    :return: ``True`` if the name is non-empty and matches
+        :data:`ENV_NAME_PATTERN`.
+    :rtype: bool
+    """
+    return bool(name) and ENV_NAME_PATTERN.fullmatch(name) is not None
 
 
 class RuntimeEnv:

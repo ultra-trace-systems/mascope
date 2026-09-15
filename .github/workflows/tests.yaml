@@ -1,9 +1,9 @@
 name: Mascope Tests
-run-name: Running tests for PR to develop or master
+run-name: Running tests for PR to develop, master or an epic branch
 
 on:
   pull_request:
-    branches: [develop, master]
+    branches: [develop, master, "epic/**"]
     types: [opened, synchronize, reopened]
 
 # Least privilege: this workflow only checks out code and runs tests.
@@ -27,12 +27,22 @@ jobs:
           persist-credentials: false
 
       - name: Install uv
-        uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+        uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4 # v10.1.0
         with:
           version: "0.11.2"
 
       - name: Check the lockfile is in sync with pyproject.toml
         run: uv lock --check
+
+      - name: Check the agent lockfile is in sync with pyproject.toml
+        # Agents are deliberately their own uv projects rather than workspace
+        # members, so PyInstaller does not have to compile the whole workspace
+        # into each distributable (developer guide, "Agents"). That also puts
+        # them outside the workspace check above: editing a library's
+        # pyproject refreshes the root lock and silently leaves
+        # agents/file/uv.lock stale, because nothing resolves it. Add each new
+        # agent project here - `uv lock --check` only ever looks at one.
+        run: uv lock --check --directory agents/file
 
       - name: Install the lint group
         run: uv sync --only-group lint --no-install-project
@@ -71,6 +81,37 @@ jobs:
       - name: Validate nginx configs with nginx -t
         run: bash tooling/validate-nginx-config.sh
 
+  licences:
+    name: Dependency licences
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # Reads the licence field the lockfile already records - no install, no
+      # network. Catches a dependency that relicenses to something we cannot
+      # ship, which is how primeicons 8 slipped in as a routine major bump.
+      - name: Check npm dependency licences against the allowlist
+        run: python3 tooling/check-licenses.py npm
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4 # v10.1.0
+        with:
+          version: "0.11.2"
+
+      - name: Install every dependency group
+        # uv.lock records no licence metadata at all, so the Python half reads
+        # the installed distributions instead. --all-groups because the lockfile
+        # spans every group: anything it names that is not installed cannot be
+        # read, and comes back as a finding rather than a silent pass.
+        run: uv sync --all-groups
+
+      - name: Check Python dependency licences against the allowlist
+        run: uv run --no-sync python tooling/check-licenses.py python
+
   docs:
     name: Docs strict build
     runs-on: ubuntu-latest
@@ -82,7 +123,7 @@ jobs:
           persist-credentials: false
 
       - name: Install uv
-        uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+        uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4 # v10.1.0
         with:
           version: "0.11.2"
 
@@ -95,6 +136,17 @@ jobs:
       - name: Render the in-app help snippets
         # The same step the image runs; catches a broken help snippet here.
         run: uv run --only-group docs python tooling/docs/build_help_content.py
+
+      - name: Render the OpenAPI document
+        # The same render the image runs (its openapi-build stage), so a route
+        # or model that breaks schema generation fails here, not in the image
+        # build. --package installs just the backend and what it imports, as
+        # that stage does, and --exact removes the docs group the steps above
+        # installed, so an import the backend does not declare fails here too;
+        # the config layers are read from MASCOPE_PATH.
+        env:
+          MASCOPE_PATH: ${{ github.workspace }}
+        run: uv run --frozen --exact --no-dev --package mascope_backend python -m mascope_backend openapi --output site/openapi.json
 
   frontend-unit:
     name: Frontend unit tests
@@ -133,7 +185,7 @@ jobs:
           persist-credentials: false
 
       - name: Install uv
-        uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+        uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4 # v10.1.0
         with:
           version: "0.11.2"
 
@@ -149,6 +201,42 @@ jobs:
           MASCOPE_PATH: ${{ github.workspace }}
         run: uv run pytest libraries/ -v
 
+  pentest-selftest:
+    name: Pen-test suite selftests
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4 # v10.1.0
+        with:
+          version: "0.11.2"
+
+      - name: Install dependencies
+        run: uv sync --group dev
+
+      - name: Run the pen-test suite's selftests
+        # These assess the suite itself, not a deployment: the report and
+        # baseline logic, and the closed-world check that every control is
+        # either covered by a mutation or listed as uncovered with a reason.
+        # They need no target and no credentials, which is why they can run on
+        # every PR while the assessment itself cannot.
+        #
+        # The guarantee is worth nothing if nobody runs it: a control added with
+        # neither a mutation nor an uncovered entry is exactly the "nobody knows
+        # whether it can fail" state the mutation guard exists to prevent, and
+        # until this job existed the check ran only when someone remembered.
+        working-directory: security/pentest
+        env:
+          # A closed port, so the session-start build probe fails immediately
+          # instead of waiting out a timeout against a target that is not there.
+          MASCOPE_PENTEST_TARGET: http://127.0.0.1:9
+        run: uv run --no-sync pytest selftest/ -v
+
   file-agent:
     name: File Agent tests
     runs-on: ubuntu-latest
@@ -160,7 +248,7 @@ jobs:
           persist-credentials: false
 
       - name: Install uv
-        uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+        uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4 # v10.1.0
         with:
           version: "0.11.2"
 
@@ -182,7 +270,7 @@ jobs:
           persist-credentials: false
 
       - name: Install uv
-        uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+        uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4 # v10.1.0
         with:
           version: "0.11.2"
 
@@ -207,7 +295,7 @@ jobs:
           persist-credentials: false
 
       - name: Install uv
-        uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+        uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4 # v10.1.0
         with:
           version: "0.11.2"
 
@@ -255,7 +343,7 @@ jobs:
           persist-credentials: false
 
       - name: Install uv
-        uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+        uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4 # v10.1.0
         with:
           version: "0.11.2"
 
@@ -291,6 +379,7 @@ jobs:
           npx playwright install --with-deps chromium
 
       - name: Wait for the stack to come up
+        id: wait-stack
         run: |
           # demo_init downloads and restores the demo bundle on first start,
           # so allow generous time before the frontend answers.
@@ -326,6 +415,10 @@ jobs:
         run: npm run test:e2e
 
       - name: Run SDK contract tests
+        # Independent signal from the Playwright suite: run whenever the
+        # stack came up, even if an e2e step failed, so an unrelated frontend
+        # failure does not hide an SDK/API contract break on the same PR.
+        if: ${{ !cancelled() && steps.wait-stack.outcome == 'success' }}
         env:
           MASCOPE_SDK_CONTRACT: "1"
           MASCOPE_PATH: ${{ github.workspace }}
@@ -383,7 +476,7 @@ jobs:
           persist-credentials: false
 
       - name: Install uv
-        uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+        uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4 # v10.1.0
         with:
           version: "0.11.2"
 
@@ -416,7 +509,6 @@ jobs:
 
       - name: Run tests
         env:
-          SKIP_CALIBRATION_FITTING_TEST: 1
           # Test database connection — matches the postgres service container above.
           # TEST_DB_HOST/PORT/USER mirror DatabaseConfig defaults (localhost:5432/mascope_user).
           TEST_DB_HOST: localhost

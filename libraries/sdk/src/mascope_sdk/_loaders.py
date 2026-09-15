@@ -85,6 +85,53 @@ def _confirm_sample_count(count: int, threshold: int) -> None:
         )
 
 
+def _resolve_batches(
+    client: MascopeClient,
+    dataset: "str | re.Pattern",
+    batches: "str | re.Pattern | None" = None,
+    *,
+    exact: bool = False,
+) -> "tuple[pd.DataFrame | None, str]":
+    """Resolve a dataset and the batches in it the filter keeps.
+
+    :param client: The MascopeClient instance.
+    :param dataset: Dataset name or literal substring (or ID); pass a compiled
+      ``re.Pattern`` to match by regex.
+    :param batches: Optional case-insensitive filter on batch names. A string is
+      a literal substring (or full-name match when ``exact`` is True); a
+      compiled ``re.Pattern`` is used as a regex. See :func:`_name_mask`.
+    :param exact: Require the filter to match the whole name instead of a substring.
+    :return: The batches kept (None when the dataset has none, or none match)
+      and the dataset id.
+    :raises ValueError: If the dataset cannot be resolved.
+    """
+    from ._resolve import resolve_id
+
+    datasets = client.datasets.list()
+    dataset_id = resolve_id(
+        dataset,
+        datasets,
+        id_column="dataset_id",
+        name_column="dataset_name",
+        entity_label="dataset",
+    )
+    logger.info("Loading dataset '{}'", dataset)
+    all_batches = client.batches._list_by_id(dataset_id)
+    if all_batches is None or all_batches.empty:
+        logger.info("No batches found in dataset")
+        return None, dataset_id
+    if batches is not None:
+        all_batches = all_batches[
+            _name_mask(all_batches["sample_batch_name"], batches, exact=exact)
+        ]
+        if all_batches.empty:
+            logger.info("No batches matching '{}'", batches)
+            return None, dataset_id
+    batch_names = all_batches["sample_batch_name"].tolist()
+    logger.info("Found {} batch(es): {}", len(all_batches), batch_names)
+    return all_batches, dataset_id
+
+
 def _collect_sample_tasks(
     client: MascopeClient,
     dataset: "str | re.Pattern",
@@ -107,33 +154,9 @@ def _collect_sample_tasks(
     :return: Tuple of (sample_tasks, dataset_id).
     :raises ValueError: If dataset or batches cannot be resolved.
     """
-    from ._resolve import resolve_id
-
-    datasets = client.datasets.list()
-    dataset_id = resolve_id(
-        dataset,
-        datasets,
-        id_column="dataset_id",
-        name_column="dataset_name",
-        entity_label="dataset",
-    )
-    logger.info("Loading dataset '{}'", dataset)
-
-    all_batches = client.batches._list_by_id(dataset_id)
-    if all_batches is None or all_batches.empty:
-        logger.info("No batches found in dataset")
+    all_batches, dataset_id = _resolve_batches(client, dataset, batches, exact=exact)
+    if all_batches is None:
         return [], dataset_id
-
-    if batches is not None:
-        all_batches = all_batches[
-            _name_mask(all_batches["sample_batch_name"], batches, exact=exact)
-        ]
-        if all_batches.empty:
-            logger.info("No batches matching '{}'", batches)
-            return [], dataset_id
-
-    batch_names = all_batches["sample_batch_name"].tolist()
-    logger.info("Found {} batch(es): {}", len(all_batches), batch_names)
 
     sample_tasks: list[tuple[Any, str]] = []
     for _, batch_row in all_batches.iterrows():
@@ -312,6 +335,160 @@ def load_peaks(
     frames = [f.dropna(axis=1, how="all") for f in frames]
     result = pd.concat(frames, ignore_index=True)
     logger.info("Loaded {} peaks total", len(result))
+    return result
+
+
+def load_assignments(
+    client: MascopeClient,
+    dataset: "str | re.Pattern",
+    batches: "str | re.Pattern | None" = None,
+    *,
+    samples: "str | re.Pattern | None" = None,
+    exact: bool = False,
+    run: str = "latest",
+    tier: str | None = None,
+    source: str | None = None,
+    confirm_above: int | None = 100,
+    max_workers: int = 8,
+) -> pd.DataFrame | None:
+    """Load peak assignments for all samples across one or more batches.
+
+    The peak-assignment counterpart of :func:`load_peaks`: resolves the
+    dataset/batch/sample selection, reads each sample's latest completed peak
+    assignment run, and concatenates everything into a single DataFrame
+    enriched with batch and sample metadata.
+
+    Read-only: samples without a completed assignment run contribute nothing
+    (and are logged) rather than being assigned on the fly. Each per-sample
+    fetch pages the run internally and pulls core rows only - the per-peak
+    ``alternatives``/``provenance`` JSON stays behind
+    :meth:`~mascope_sdk.resources.peak_assignments.PeakAssignmentsResource.detail`.
+
+    :param client: The MascopeClient instance.
+    :type client: MascopeClient
+    :param dataset: Dataset name or literal substring (or dataset ID); pass a
+                    compiled ``re.Pattern`` to match by regex.
+    :type dataset: str | re.Pattern
+    :param batches: Optional case-insensitive filter on batch names. A string
+                    is a literal substring; pass a compiled ``re.Pattern`` to
+                    match by regex. If not provided, all batches in the
+                    dataset are loaded.
+    :type batches: str | re.Pattern, optional
+    :param samples: Optional case-insensitive filter on sample names, same
+                    semantics as ``batches``.
+    :type samples: str | re.Pattern, optional
+    :param exact: Match a string ``batches`` / ``samples`` against the whole
+                  name instead of as a substring. Not valid with a compiled
+                  pattern. Defaults to False.
+    :type exact: bool
+    :param run: Which run to read per sample. Only ``"latest"`` (the latest
+                completed run of each sample) is supported; run IDs are
+                per-sample and cannot be given across samples.
+    :type run: str
+    :param tier: Filter by confidence tier.
+    :type tier: str, optional
+    :param source: Filter by assignment source (``database``/``untargeted``/
+                   ``manual`` - the last being rows a person assigned by hand).
+                   A curated row leaves the two engine sources, so reading a
+                   batch as ``database`` plus ``untargeted`` drops it.
+    :type source: str, optional
+    :param confirm_above: If the number of samples exceeds this threshold,
+                          an interactive confirmation prompt is shown before
+                          loading starts. Set to ``None`` to disable.
+                          Defaults to 100.
+    :type confirm_above: int | None
+    :param max_workers: Maximum number of concurrent requests. Defaults to 8.
+    :type max_workers: int
+    :return: A DataFrame containing all assignments enriched with columns:
+
+             - ``sample_batch_name``: Name of the batch the sample belongs to
+             - ``sample_item_name``: Name of the sample
+             - ``datetime_utc``: Measurement start timestamp (UTC)
+
+             Plus all columns from
+             :meth:`~mascope_sdk.resources.peak_assignments.PeakAssignmentsResource.get`
+             (one row per observed peak).
+
+             Returns None if no assignments are found.
+    :rtype: pd.DataFrame | None
+    :raises ValueError: If the dataset or batches cannot be resolved, or
+                        ``run`` is not ``"latest"``.
+    :raises KeyboardInterrupt: If the user declines the confirmation prompt.
+
+    Example::
+
+        assignments = load_assignments(
+            mascope, dataset="My Dataset", batches="Uronium"
+        )
+        assignments.groupby("sample_item_name")["tier"].value_counts()
+    """
+    if run != "latest":
+        raise ValueError(
+            "Only run='latest' is supported: assignment run IDs are "
+            "per-sample, so a single run ID cannot select runs across "
+            "samples. Use peak_assignments.get(sample_id, run_id=...) to "
+            "read a specific run of one sample."
+        )
+
+    sample_tasks, _ = _collect_sample_tasks(
+        client, dataset, batches, samples=samples, exact=exact
+    )
+    if not sample_tasks:
+        logger.info("No samples found")
+        return None
+
+    if confirm_above is not None and len(sample_tasks) > confirm_above:
+        _confirm_sample_count(len(sample_tasks), confirm_above)
+
+    # Load assignments concurrently with progress bar
+    def _fetch_assignments(sample_row: Any, batch_name: str) -> pd.DataFrame | None:
+        sample_id = sample_row["sample_item_id"]
+        assignments = client.peak_assignments.get(sample_id, tier=tier, source=source)
+        if assignments is None or assignments.empty:
+            logger.info(
+                "Sample '{}': no assignments (no completed run, or filters "
+                "matched nothing), skipping",
+                sample_row["sample_item_name"],
+            )
+            return None
+
+        # Enrich with batch and sample context (rows already carry
+        # sample_item_id from the API)
+        assignments.insert(0, "sample_batch_name", batch_name)
+        assignments.insert(
+            assignments.columns.get_loc("sample_item_id") + 1,
+            "sample_item_name",
+            sample_row["sample_item_name"],
+        )
+        if "datetime_utc" in sample_row.index:
+            assignments.insert(
+                assignments.columns.get_loc("sample_item_name") + 1,
+                "datetime_utc",
+                sample_row["datetime_utc"],
+            )
+        return assignments
+
+    frames: list[pd.DataFrame] = run_concurrent(
+        _fetch_assignments,
+        sample_tasks,
+        max_workers=max_workers,
+        desc="Loading assignments",
+        unit="sample",
+    )
+
+    if not frames:
+        logger.info("No assignments found")
+        return None
+
+    skipped = len(sample_tasks) - len(frames)
+    if skipped:
+        logger.info("{} sample(s) contributed no assignments", skipped)
+
+    # Drop all-NA columns per frame to avoid FutureWarning on concat
+    # with mixed empty/populated columns.
+    frames = [f.dropna(axis=1, how="all") for f in frames]
+    result = pd.concat(frames, ignore_index=True)
+    logger.info("Loaded {} assignments total", len(result))
     return result
 
 
@@ -695,4 +872,78 @@ def load_peak_timeseries(
     frames = [f.dropna(axis=1, how="all") for f in frames]
     result = pd.concat(frames, ignore_index=True)
     logger.info("Loaded {} timeseries points total", len(result))
+    return result
+
+
+def load_batch_ledger(
+    client: MascopeClient,
+    dataset: "str | re.Pattern",
+    batches: "str | re.Pattern | None" = None,
+    *,
+    exact: bool = False,
+    members: bool = True,
+) -> pd.DataFrame | None:
+    """Load the batch ledger of one or more batches into a single DataFrame.
+
+    The batch-primary counterpart of :func:`load_assignments`: resolves the
+    dataset/batch selection and reads each batch's ledger - its batch peaks
+    (one per species across the batch) and, by default, their members (one
+    per sample the species was seen in, the anchor's consensus beside the
+    sample's own reading) - concatenated with ``sample_batch_name`` prepended.
+
+    :param client: The MascopeClient instance.
+    :type client: MascopeClient
+    :param dataset: Dataset name or literal substring (or dataset ID); pass a
+                    compiled ``re.Pattern`` to match by regex.
+    :type dataset: str | re.Pattern
+    :param batches: Optional case-insensitive filter on batch names.
+    :type batches: str | re.Pattern, optional
+    :param exact: Match a string ``batches`` against the whole name.
+    :type exact: bool
+    :param members: Return the member rows (default) rather than the species
+                    table. With members, the species table rides on
+                    ``df.attrs["batch_peaks"]``.
+    :type members: bool
+    :return: The ledger rows of every batch that has one, or None.
+    :rtype: pd.DataFrame | None
+    :raises ValueError: If the dataset cannot be resolved.
+
+    Example::
+
+        ledger = load_batch_ledger(mascope, dataset="My Dataset", batches="Uronium")
+        ledger.to_csv("ledger.csv", index=False)
+        ledger.attrs["batch_peaks"]  # one row per batch peak
+    """
+    all_batches, _ = _resolve_batches(client, dataset, batches, exact=exact)
+    if all_batches is None:
+        return None
+    frames: list[pd.DataFrame] = []
+    species_frames: list[pd.DataFrame] = []
+    for _, batch_row in all_batches.iterrows():
+        batch_id = batch_row["sample_batch_id"]
+        batch_name = batch_row["sample_batch_name"]
+        species = client.batch_peaks.list(batch_id)
+        if species is None:
+            logger.info("Batch '{}': no batch ledger yet, skipping", batch_name)
+            continue
+        species = species.copy()
+        species.insert(0, "sample_batch_name", batch_name)
+        if not members:
+            frames.append(species)
+            continue
+        rows = client.batch_peaks.members(batch_id)
+        if rows is None:
+            logger.info("Batch '{}': a ledger with no members, skipping", batch_name)
+            continue
+        rows = rows.copy()
+        rows.insert(0, "sample_batch_name", batch_name)
+        frames.append(rows)
+        species_frames.append(species)
+    if not frames:
+        logger.info("No batch ledger found")
+        return None
+    result = pd.concat(frames, ignore_index=True)
+    if members:
+        result.attrs["batch_peaks"] = pd.concat(species_frames, ignore_index=True)
+    logger.info("Loaded {} ledger row(s) from {} batch(es)", len(result), len(frames))
     return result

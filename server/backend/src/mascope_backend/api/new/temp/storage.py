@@ -9,6 +9,7 @@ close off path traversal.
 """
 
 import os
+import re
 
 from mascope_backend.runtime import runtime
 
@@ -58,3 +59,38 @@ def user_temp_path(user_id: int, filename: str, *, create: bool = True) -> str:
     if not os.path.realpath(path).startswith(os.path.realpath(base) + os.sep):
         raise ValueError(f"Unsafe temp filename: {filename!r}")
     return path
+
+
+#: What no file system or browser accepts in a file name - the path separators
+#: first among them - and the control characters.
+_UNSAFE_NAME_CHARS = re.compile(r'[\\/:*?"<>|\x00-\x1f]+')
+
+#: Longest stem a download name is given: well inside every file system's
+#: 255-byte limit once the timestamp and the extension are added.
+MAX_DOWNLOAD_STEM = 120
+
+
+def download_name(*parts: str, extension: str) -> str:
+    """A temp download's file name, built from parts a user may have typed.
+
+    A batch or a sample is named by its owner, and a name with a ``/`` in it
+    is a directory to the file system and a path to the download route -
+    :func:`user_temp_path` reduces it to its basename, so the file is written
+    under one name and requested under another, and the download fails. Every
+    export names its file through this, so a name is a name: unsafe characters
+    become ``_``, runs of whitespace one ``_``, and the stem is capped.
+
+    :param parts: The stem's pieces (a timestamp, a kind, a user-typed name),
+        joined with ``_``; empty pieces are dropped.
+    :param extension: The extension, without the dot.
+    :return: A single path segment ending in ``.<extension>``.
+    """
+    pieces = []
+    for part in parts:
+        text = "_".join(str(part).split())
+        text = _UNSAFE_NAME_CHARS.sub("_", text)
+        text = re.sub(r"_+", "_", text).strip("._ ")
+        if text:
+            pieces.append(text)
+    stem = "_".join(pieces)[:MAX_DOWNLOAD_STEM].rstrip("._ ") or "download"
+    return f"{stem}.{extension.lstrip('.')}"

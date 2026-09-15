@@ -15,10 +15,13 @@ class Ms2Dashboard:
         self._compositions = compositions
         self._half_iso = data.isolation_width / 2
 
-        # Build dropdown options
+        # Build dropdown options. One entry per group, not per precursor: a
+        # stepped-energy acquisition measures one precursor at several
+        # collision energies, and each is its own spectrum.
         self._parent_peak_options = {
-            f"{pp:.4f} m/z (HCD {','.join(str(v) for v in data.hcd_energy_map[pp])}V)": pp
-            for pp in data.parent_peaks
+            f"{group} (HCD "
+            f"{','.join(str(v) for v in data.hcd_energy_map[group])}V)": group
+            for group in data.groups
         }
 
         # Figures
@@ -118,7 +121,8 @@ class Ms2Dashboard:
         return traces
 
     def _update(self, change=None):
-        pp = self._parent_dropdown.value
+        group = self._parent_dropdown.value
+        pp = group.parent_peak_mz
         d = self._data
         half_iso = self._half_iso
 
@@ -128,8 +132,8 @@ class Ms2Dashboard:
         )
 
         # --- Composition data (needed by both MS1 and MS2 charts) ---
-        ms2_spec = d.ms2_spectra[pp]
-        comp_df = self._compositions.matches.get(pp, pd.DataFrame())
+        ms2_spec = d.ms2_spectra[group]
+        comp_df = self._compositions.matches.get(group, pd.DataFrame())
         comp_mzs = (
             comp_df["mz"].values
             if not comp_df.empty and "mz" in comp_df.columns
@@ -189,7 +193,7 @@ class Ms2Dashboard:
                         )
                     )
                 self._fig_survey.update_layout(yaxis_range=[0, ms1_y_max * 1.15])
-            self._fig_survey.update_layout(uirevision=str(pp))
+            self._fig_survey.update_layout(uirevision=group.key)
 
         # --- Fragment spectrum (MS2) ---
 
@@ -228,7 +232,7 @@ class Ms2Dashboard:
                             )
                         )
                 self._fig_fragments.update_layout(yaxis_range=[0, ms2_y_max * 1.15])
-            self._fig_fragments.update_layout(uirevision=str(pp))
+            self._fig_fragments.update_layout(uirevision=group.key)
 
     def show_timeseries(self, n_fragments: int = 3, normalize_by: str | None = "tic"):
         """Display an interactive timeseries dashboard for MS2 fragments.
@@ -264,20 +268,22 @@ class Ms2Dashboard:
         compositions = self._compositions
 
         def _on_parent_change(change=None):
-            pp = ts_dropdown.value
+            group = ts_dropdown.value
+            pp = group.parent_peak_mz
 
-            # Lazy fetch: request timeseries for this single parent peak
+            # Lazy fetch: request the timeseries for this single group
             ts_data = d._ms2.get_timeseries(
-                parent_peak_mz=float(pp),
+                parent_peak_mz=pp,
                 noise_threshold=d.params.get("noise_threshold", 10.0),
                 parent_peak_tolerance=d.params.get("parent_peak_tolerance", 0.001),
                 normalize_by=normalize_by,
+                activation=group.activation or None,
             )
 
             with fig_ts.batch_update():
                 fig_ts.data = []
                 if ts_data is None or not ts_data.get("mz_values"):
-                    fig_ts.update_layout(uirevision=str(pp))
+                    fig_ts.update_layout(uirevision=group.key)
                     return
 
                 ts_df = pd.DataFrame(
@@ -287,14 +293,14 @@ class Ms2Dashboard:
                 )
 
                 if ts_df.empty:
-                    fig_ts.update_layout(uirevision=str(pp))
+                    fig_ts.update_layout(uirevision=group.key)
                     return
 
                 # Select top N fragments by total intensity
                 totals = ts_df.sum(axis=1).sort_values(ascending=False)
                 top_mzs = totals.head(n_fragments).index
 
-                comp_df = compositions.matches.get(pp, pd.DataFrame())
+                comp_df = compositions.matches.get(group, pd.DataFrame())
 
                 for i, frag_mz in enumerate(top_mzs):
                     row = ts_df.loc[frag_mz]
@@ -330,7 +336,7 @@ class Ms2Dashboard:
                         )
                     )
 
-                fig_ts.update_layout(uirevision=str(pp))
+                fig_ts.update_layout(uirevision=group.key)
 
         ts_dropdown.observe(_on_parent_change, names="value")
         _on_parent_change()

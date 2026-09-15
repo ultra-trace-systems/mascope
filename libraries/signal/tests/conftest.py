@@ -60,6 +60,57 @@ def sample_file_path(temp_filestore):
 
 
 @pytest.fixture
+def write_peak_store(sample_file_path):
+    """Factory writing a peak_timeseries.zarr for the test sample file.
+
+    Mirrors what peak detection allocates: a store carrying the scan axis of
+    the acquisition, per-peak summed intensities, and every timeseries still
+    uncomputed - the state `load_peak_timeseries` is asked to fill in.
+    """
+
+    def _write(
+        scan_times: np.ndarray,
+        mz_values: np.ndarray,
+        sum_peak_areas: np.ndarray,
+        sum_peak_heights: np.ndarray,
+    ) -> str:
+        n_mz = len(mz_values)
+        n_time = len(scan_times)
+        store = xr.Dataset(
+            data_vars={
+                "is_satellite": (["mz"], np.zeros(n_mz, dtype=bool)),
+                "is_weak": (["mz"], np.zeros(n_mz, dtype=bool)),
+                "is_timeseries_computed": (["mz"], np.zeros(n_mz, dtype=bool)),
+                "sparsity": (["mz"], np.zeros(n_mz, dtype=np.float64)),
+                "peak_areas": (["mz", "time"], np.full((n_mz, n_time), np.nan)),
+                "peak_heights": (["mz", "time"], np.full((n_mz, n_time), np.nan)),
+                "sum_peak_areas": (["mz"], np.asarray(sum_peak_areas, dtype=float)),
+                "sum_peak_heights": (["mz"], np.asarray(sum_peak_heights, dtype=float)),
+                "signal_to_noise": (["mz"], np.full(n_mz, 50.0)),
+                "polarity": (["mz"], np.array(["-"] * n_mz, dtype="<U1")),
+            },
+            coords={
+                "mz": np.asarray(mz_values, dtype=float),
+                "time": np.asarray(scan_times, dtype=float),
+                "tof": (["mz"], np.linspace(10.0, 50.0, n_mz)),
+                "peak_id": (["mz"], [f"peak_{i:04d}" for i in range(n_mz)]),
+            },
+        )
+        path = os.path.join(sample_file_path, "peak_timeseries.zarr")
+        store.to_zarr(
+            path,
+            mode="w",
+            encoding={
+                "peak_areas": {"chunks": (n_mz, n_time)},
+                "peak_heights": {"chunks": (n_mz, n_time)},
+            },
+        )
+        return path
+
+    return _write
+
+
+@pytest.fixture
 def signal_dataset():
     time_values = np.array([0.0, 1.0, 2.0], dtype=np.float64)
     mz_values = np.array([100.0, 101.0, 102.0], dtype=np.float64)

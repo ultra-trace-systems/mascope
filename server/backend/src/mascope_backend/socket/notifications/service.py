@@ -105,8 +105,8 @@ async def send_progress_user_notification(
         _room_ids: List of room IDs to emit to
         _total_samples: Total items for progress calculation
         _item_index: Current item index
-        _batch_weight: Weight for batch progress
-        _batch_index: Current batch index
+        _batch_weight: This batch's share of the progress bar
+        _batch_base: Share of the bar already filled by earlier batches
 
     :param notification: UserNotification with progress data
     :param increment: Progress increment value
@@ -120,7 +120,7 @@ async def send_progress_user_notification(
     total_samples = notification_copy.data.pop("_total_samples", None)
     item_index = notification_copy.data.pop("_item_index", None)
     batch_weight = notification_copy.data.pop("_batch_weight", None)
-    batch_index = notification_copy.data.pop("_batch_index", None)
+    batch_base = notification_copy.data.pop("_batch_base", None)
 
     # Clear any remaining internal keys (start with underscore)
     keys_to_remove = [
@@ -173,7 +173,10 @@ async def send_progress_user_notification(
             )
 
     if notification_copy.type == "rematch_batches":
-        notification_copy.progress = (batch_index - 1 + increment) * batch_weight * 100
+        # One bar across the whole run: the batches before this one have
+        # filled `batch_base` of it, and this batch fills its own share as it
+        # goes. Weighting per batch alone would restart the bar every time.
+        notification_copy.progress = (batch_base + increment * batch_weight) * 100
 
     if notification_copy.type == "sample_batch_export_peaks":
         if total_samples is not None and item_index is not None:
@@ -213,6 +216,31 @@ async def send_progress_user_notification(
                 f"Assigning peaks, processing sample {item_index + 1}/{total_samples}"
             )
 
+    # A batch-peak backfill folds the batch's samples one at a time, and the
+    # message it arrives with already names which one - so only the bar is
+    # computed here. Two ticks per sample:
+    # increment is None before the fold and 1.0 after it, stepping the bar from
+    # item_index/N to (item_index + 1)/N. Guarded on a non-zero N rather than
+    # merely a present one: a batch with no samples emits nothing today, and
+    # that is not a reason for the arithmetic here to be divisible by it.
+    if notification_copy.type == "compute_batch_peaks":
+        if total_samples and item_index is not None:
+            inc = increment if increment is not None else 0.0
+            notification_copy.progress = ((item_index + inc) / total_samples) * 100
+    # The per-anchor untargeted search reports per sample too, over its two
+    # passes (the search, then the seeded re-score), with the message naming
+    # the pass - so, as for the backfill, only the bar is computed here.
+    if notification_copy.type == "search_batch_untargeted":
+        if total_samples and item_index is not None:
+            inc = increment if increment is not None else 0.0
+            notification_copy.progress = ((item_index + inc) / total_samples) * 100
+    # A batch peak's manual curation measures the pinned identity in every
+    # sample holding the peak, one message per sample - the bar only, again.
+    if notification_copy.type == "curate_batch_peak":
+        if total_samples and item_index is not None:
+            inc = increment if increment is not None else 0.0
+            notification_copy.progress = ((item_index + inc) / total_samples) * 100
+
     # Emit to all specified rooms with optional smart routing
     for room_id in room_ids:
         await emit_user_notification(
@@ -239,6 +267,12 @@ async def handle_notifications(
     Extraction priority:
         room_id: kwargs[key] → result[key] → result['data'][key] → result['_notification_data'][key]
         user_id: kwargs['user_id'] → result['_notification_data']['user_id']
+
+    When neither resolves there is nobody to send to. For an ordinary
+    notification that is an actionable fault - a message meant for a user was
+    lost - and is logged at WARNING. For a ``silent`` one it is not: that
+    packet only ends a progress bar in a browser, and with no audience there
+    is no bar, so it is dropped at DEBUG.
 
     :param rooms: List of room keys (e.g., ["sample_batch_id", "user_id"])
     :type rooms: list[str]
@@ -276,7 +310,26 @@ async def handle_notifications(
         if room_key == "user_id" or not room_id:
             if user_id is not None:
                 await emit_user_notification(notification, user_id=user_id)
+            elif notification.silent:
+                # A silent packet carries nothing to read: it exists only to
+                # end the progress bar the process opened in a browser. With
+                # no room and no user there is no browser and no bar, so
+                # nothing is lost by not sending it - and nothing is wrong,
+                # which is why this is not a warning. A pipeline that runs
+                # without a user (tests, background reprocessing) suppresses
+                # one such packet per nested warning per retry - up to
+                # fourteen for a single sample that will not calibrate - and
+                # every WARNING record is exported to error monitoring
+                # (mascope_runtime.logging._SENTRY_LEVELS), which would turn
+                # a routine no-op into fourteen monitoring events.
+                runtime.logger.debug(
+                    f"Skipping silent notification with no audience: no room_id for "
+                    f"'{room_key}', no user_id available. "
+                    f"Notification type: {notification.type}, status: {notification.status}"
+                )
             else:
+                # Not silent: a message the user was meant to read was lost.
+                # That is an actionable operator signal and stays at WARNING.
                 runtime.logger.warning(
                     f"Cannot emit notification: no room_id for '{room_key}', no user_id available. "
                     f"Notification type: {notification.type}, status: {notification.status}"

@@ -5,6 +5,7 @@ failure cause (rejected token, connection error, server message) but returned
 ``None``, leaving callers with nothing better than a generic "upload failed".
 """
 
+import base64
 import json
 
 import pytest
@@ -57,6 +58,57 @@ def test_rejected_token_raises_authentication_error(monkeypatch, upload_file):
     # The server's message and the token hint both reach the caller.
     assert "Authorization failed" in str(exc_info.value)
     assert "API token" in str(exc_info.value)
+
+
+def test_renew_agent_token_returns_new_token_and_lifetime(monkeypatch):
+    monkeypatch.setattr(
+        _agents.requests,
+        "post",
+        lambda *a, **k: _fake_response(
+            200, {"data": {"access_token": "fresh", "expires_in": 2592000}}
+        ),
+    )
+    token, expires_in = _agents.api_renew_agent_token("http://testserver", "current")
+    assert token == "fresh"
+    assert expires_in == 2592000
+
+
+def test_renew_agent_token_uses_configured_tls_verification(monkeypatch):
+    import mascope_sdk
+
+    captured = {}
+
+    def fake_post(url, headers, verify, timeout):
+        captured["verify"] = verify
+        return _fake_response(200, {"data": {"access_token": "fresh", "expires_in": 1}})
+
+    monkeypatch.setattr(_agents.requests, "post", fake_post)
+    # The agent sets TLS verification at the package level (mascope_sdk.VERIFY_TLS),
+    # which _get_verify() reads per request.
+    monkeypatch.setattr(mascope_sdk, "VERIFY_TLS", False)
+    _agents.api_renew_agent_token("http://testserver", "current")
+    assert captured["verify"] is False
+
+
+def test_renew_agent_token_missing_endpoint_signals_fallback(monkeypatch):
+    # A 404 means the server has no renewal endpoint (older release); the agent
+    # keeps its current token and backs off instead of ending the loop.
+    monkeypatch.setattr(
+        _agents.requests, "post", lambda *a, **k: _fake_response(404, {})
+    )
+    with pytest.raises(TusNotSupportedError):
+        _agents.api_renew_agent_token("http://testserver", "current")
+
+
+def test_renew_agent_token_rejected_token_raises_auth_error(monkeypatch):
+    # A 401 means the token is expired or revoked - the machine must re-pair.
+    monkeypatch.setattr(
+        _agents.requests,
+        "post",
+        lambda *a, **k: _fake_response(401, {"error": "expired"}),
+    )
+    with pytest.raises(AuthenticationError):
+        _agents.api_renew_agent_token("http://testserver", "current")
 
 
 def test_server_error_carries_backend_message(monkeypatch, upload_file):
@@ -152,6 +204,112 @@ def test_tus_upload_chunks_whole_file(monkeypatch, upload_file):
     # the 9-byte file went out in 4-byte chunks with advancing offsets
     assert [offset for offset, _ in chunks] == ["0", "4", "8"]
     assert b"".join(data for _, data in chunks) == b"raw-bytes"
+
+
+def _decode_metadata(header: str) -> dict:
+    out = {}
+    for item in header.split(","):
+        key, value = item.split(" ", 1)
+        out[key] = base64.b64decode(value).decode()
+    return out
+
+
+def test_tus_upload_reports_the_source_name_and_instrument(monkeypatch, upload_file):
+    created: dict = {}
+    monkeypatch.setattr(_agents.requests, "post", _fake_create(created))
+    monkeypatch.setattr(_agents.requests, "patch", lambda *a, **k: _fake_response(204))
+
+    _agents.api_post_file_tus(
+        "http://testserver",
+        "tok",
+        upload_file,
+        upload_filename="Orbi-Lab2_sample.raw",
+        instrument="Orbi-Lab2",
+    )
+
+    meta = _decode_metadata(created["headers"]["Upload-Metadata"])
+    # The name the server files today, the name on disk before the prefix,
+    # and the instrument the agent is configured for - the last two are what
+    # a later server routes on instead of the file name.
+    assert meta["filename"] == "Orbi-Lab2_sample.raw"
+    assert meta["source_filename"] == "sample.raw"
+    assert meta["instrument"] == "Orbi-Lab2"
+
+
+def test_tus_upload_omits_the_instrument_when_unset(monkeypatch, upload_file):
+    created: dict = {}
+    monkeypatch.setattr(_agents.requests, "post", _fake_create(created))
+    monkeypatch.setattr(_agents.requests, "patch", lambda *a, **k: _fake_response(204))
+
+    _agents.api_post_file_tus("http://testserver", "tok", upload_file)
+
+    meta = _decode_metadata(created["headers"]["Upload-Metadata"])
+    assert meta["source_filename"] == "sample.raw"
+    assert "instrument" not in meta
+
+
+def test_agent_version_header_rides_on_every_request(monkeypatch, upload_file):
+    import mascope_sdk
+
+    # Agents set the version at the package level, like SERVICE_NAME.
+    monkeypatch.setattr(mascope_sdk, "AGENT_VERSION", "v9.9.9")
+    created: dict = {}
+    monkeypatch.setattr(_agents.requests, "post", _fake_create(created))
+    monkeypatch.setattr(_agents.requests, "patch", lambda *a, **k: _fake_response(204))
+
+    _agents.api_post_file_tus("http://testserver", "tok", upload_file)
+    assert created["headers"]["X-Agent-Version"] == "v9.9.9"
+
+    renew: dict = {}
+
+    def fake_renew(url, headers, verify, timeout):
+        renew.update(headers=headers)
+        return _fake_response(200, {"data": {"access_token": "fresh", "expires_in": 1}})
+
+    monkeypatch.setattr(_agents.requests, "post", fake_renew)
+    _agents.api_renew_agent_token("http://testserver", "current")
+    assert renew["headers"]["X-Agent-Version"] == "v9.9.9"
+
+    # The third caller: the legacy single-request upload route. Named "every
+    # request", so every builder of authenticated headers belongs here.
+    legacy: dict = {}
+
+    def fake_legacy_post(url, headers, files, data, verify, timeout):
+        legacy.update(headers=headers)
+        return _fake_response(200, {"data": {}})
+
+    monkeypatch.setattr(_agents.requests, "post", fake_legacy_post)
+    _agents.api_post_file(
+        "http://testserver", "sample/files/upload", "tok", upload_file
+    )
+    assert legacy["headers"]["X-Agent-Version"] == "v9.9.9"
+    assert legacy["headers"]["X-Service-Name"] == _agents._get_service_name()
+
+
+def test_pairing_headers_carry_the_version_without_a_credential(monkeypatch):
+    import mascope_sdk
+
+    # Pairing has no token yet, so the builder has to work without one - and
+    # it must not invent an Authorization header out of an empty string.
+    monkeypatch.setattr(mascope_sdk, "AGENT_VERSION", "v9.9.9")
+    headers = _agents.agent_headers()
+    assert headers == {"X-Agent-Version": "v9.9.9"}
+
+
+def test_no_version_header_without_a_version(monkeypatch):
+    import mascope_sdk
+
+    # The SDK's own default: a notebook client is not an agent and sends none.
+    monkeypatch.setattr(mascope_sdk, "AGENT_VERSION", None)
+    captured: dict = {}
+
+    def fake_post(url, headers, verify, timeout):
+        captured.update(headers=headers)
+        return _fake_response(200, {"data": {"access_token": "fresh", "expires_in": 1}})
+
+    monkeypatch.setattr(_agents.requests, "post", fake_post)
+    _agents.api_renew_agent_token("http://testserver", "current")
+    assert "X-Agent-Version" not in captured["headers"]
 
 
 def test_tus_upload_addresses_chunks_via_own_base_url(monkeypatch, upload_file):
@@ -264,25 +422,30 @@ def test_tus_upload_does_not_retry_client_errors(monkeypatch, upload_file):
     assert attempts["n"] == 1  # a rejected request cannot heal by waiting
 
 
-@pytest.mark.parametrize("status", [404, 401])
-def test_tus_create_failure_signals_fallback(monkeypatch, upload_file, status):
-    # The File Agent falls back to the legacy endpoint on this: a 404
-    # means no TUS route (old server), a 401 means the route is not
-    # token-accessible (old server) or a genuinely bad token.
+@pytest.mark.parametrize(
+    "status, expected",
+    [(404, NotFoundError), (401, AuthenticationError)],
+)
+def test_tus_create_failure_keeps_its_type(monkeypatch, upload_file, status, expected):
+    # Creation errors are reported as themselves. A 401 here is a rejected
+    # credential - a revoked device, a device token that expired while the
+    # agent was offline, or a deployment that accepts only paired
+    # credentials - and was previously reported as a server too old for
+    # token-accessible TUS, which sent the agent to the capped legacy
+    # endpoint and named the wrong cause.
     monkeypatch.setattr(
         _agents.requests, "post", lambda *a, **k: _fake_response(status)
     )
 
-    with pytest.raises(TusNotSupportedError) as exc_info:
+    with pytest.raises(expected) as exc_info:
         _agents.api_post_file_tus("http://testserver", "tok", upload_file)
 
     assert exc_info.value.status_code == status
 
 
-def test_tus_mid_transfer_404_is_not_a_fallback_signal(monkeypatch, upload_file):
+def test_tus_mid_transfer_404_keeps_its_type(monkeypatch, upload_file):
     # An upload vanishing mid-transfer (e.g. backend restart clearing the
-    # temp dir) must keep its normal type: TusNotSupportedError would
-    # latch the agent onto the 100 MB legacy path for its lifetime.
+    # temp dir) is retryable by the caller and must stay a NotFoundError.
     monkeypatch.setattr(_agents.requests, "post", _fake_create({}))
     monkeypatch.setattr(_agents.requests, "patch", lambda *a, **k: _fake_response(404))
 
@@ -346,3 +509,88 @@ def test_tus_upload_rejects_filename_with_path(monkeypatch, upload_file):
         _agents.api_post_file_tus(
             "http://testserver", "tok", upload_file, upload_filename="a/b.raw"
         )
+
+
+def test_post_file_sends_the_timezone_as_a_form_field(monkeypatch, upload_file):
+    """The converter reads it as the ``timezone`` form field on the legacy path."""
+    captured = {}
+
+    def capture(*args, **kwargs):
+        captured.update(kwargs)
+        return _fake_response(201, {"message": "ok"})
+
+    monkeypatch.setattr(_agents.requests, "post", capture)
+
+    _agents.api_post_file(
+        url="http://server",
+        path="sample/files/upload",
+        access_token="t",
+        filepath=upload_file,
+        timezone="Europe/Helsinki",
+    )
+
+    assert captured["data"] == {"timezone": "Europe/Helsinki"}
+
+
+def test_post_file_omits_the_timezone_when_unknown(monkeypatch, upload_file):
+    """A machine that cannot name its zone sends no field at all."""
+    captured = {}
+
+    def capture(*args, **kwargs):
+        captured.update(kwargs)
+        return _fake_response(201, {"message": "ok"})
+
+    monkeypatch.setattr(_agents.requests, "post", capture)
+
+    _agents.api_post_file(
+        url="http://server",
+        path="sample/files/upload",
+        access_token="t",
+        filepath=upload_file,
+    )
+
+    assert captured["data"] is None
+
+
+def test_tus_create_carries_the_timezone_in_upload_metadata(monkeypatch, upload_file):
+    """The resumable path carries it as a base64 Upload-Metadata pair."""
+    captured = {}
+
+    def capture(*args, **kwargs):
+        captured.update(kwargs)
+        # Fail the creation immediately; the metadata header is the assertion.
+        return _fake_response(404)
+
+    monkeypatch.setattr(_agents.requests, "post", capture)
+
+    with pytest.raises(NotFoundError):
+        _agents.api_post_file_tus(
+            url="http://server",
+            access_token="t",
+            filepath=upload_file,
+            timezone="Europe/Helsinki",
+        )
+
+    metadata = captured["headers"]["Upload-Metadata"]
+    pairs = dict(part.split(" ", 1) for part in metadata.split(","))
+    # source_filename always rides along: the on-disk name before any prefix.
+    assert set(pairs) == {"filename", "filetype", "timezone", "source_filename"}
+    assert base64.b64decode(pairs["timezone"]).decode() == "Europe/Helsinki"
+
+
+def test_tus_create_omits_the_timezone_when_unknown(monkeypatch, upload_file):
+    captured = {}
+
+    def capture(*args, **kwargs):
+        captured.update(kwargs)
+        return _fake_response(404)
+
+    monkeypatch.setattr(_agents.requests, "post", capture)
+
+    with pytest.raises(NotFoundError):
+        _agents.api_post_file_tus(
+            url="http://server", access_token="t", filepath=upload_file
+        )
+
+    metadata = captured["headers"]["Upload-Metadata"]
+    assert "timezone" not in metadata

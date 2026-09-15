@@ -1,5 +1,10 @@
 <script setup>
+import { ref } from 'vue'
+
 import Button from 'primevue/button'
+
+import { copyText } from '@/lib/clipboard'
+import { useApp } from '@/stores'
 
 const { field, tooltip } = defineProps({
   field: {
@@ -13,17 +18,27 @@ const { field, tooltip } = defineProps({
 
 const emit = defineEmits(['copy'])
 
+// Used inside dialogs and drawers, whose focus trap would pull focus back out of
+// a temporary text field on <body>: the fallback copy puts its field in here.
+const root = ref()
+
+// A copy that fails has to say so: the button looks the same either way, and a
+// one-time value such as a generated password is shown only once.
 async function copyField(text) {
-  try {
-    await navigator.clipboard.writeText(text)
-  } catch (err) {
-    console.warn(err)
+  const copied = await copyText(String(text), root.value)
+  if (!copied) {
+    useApp().ui.notification.push({
+      type: 'copy_to_clipboard',
+      status: 'warning',
+      message: 'Could not copy to the clipboard'
+    })
   }
+  return copied
 }
 </script>
 
 <template>
-  <span class="field">
+  <span ref="root" class="field">
     <span v-tooltip.top="tooltip">{{ field }}</span>
     <Button
       v-if="field && String(field).length > 0"
@@ -33,10 +48,12 @@ async function copyField(text) {
       text
       size="small"
       @click="
-        (event) => {
+        async (event) => {
           event.stopPropagation()
-          copyField(field)
-          emit('copy')
+          // Only signal 'copy' once the clipboard write actually succeeded: a
+          // listener may discard the value on copy (a one-time password), and a
+          // failed write in a non-secure context must not throw it away unread.
+          if (await copyField(field)) emit('copy')
         }
       "
     />

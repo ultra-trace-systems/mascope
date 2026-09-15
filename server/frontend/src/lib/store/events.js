@@ -6,14 +6,14 @@ import { useAuth } from '@/stores/auth'
  *
  * @param {string} name - Store name
  * @param {string} key - Primary key field
- * @param {Object} refs - Reactive references { records, selection, detailed }
+ * @param {Object} refs - Reactive references { records, error, selection, detailed }
  * @param {Object} methods - Methods { sync, reloadRecord }
  * @param {Array<string>} events - Cross-store reload events (e.g., ['match_reload'])
  * @param {Object} logger - Logger instance
  * @returns {Function} cleanup - Unregister socket listeners
  */
 export const useEvents = (name, key, refs, methods, events, logger, deps = null) => {
-  const { records, selection, detailed } = refs
+  const { records, error, selection, detailed } = refs
   const { sync, reloadRecord } = methods
 
   // Event deduplication cache with TTL
@@ -48,6 +48,21 @@ export const useEvents = (name, key, refs, methods, events, logger, deps = null)
       return
     }
     processedEvents.set(event_id, Date.now())
+
+    // The last load failed, so these rows are known-stale: patching one record
+    // into them would neither make the list truthful nor lift the error the
+    // pane is showing in place of it. Re-sync instead - that either clears the
+    // error with a whole fresh list, or leaves it standing. Gated like every
+    // other fetch from an event: a signed-out tab must not ask.
+    if (error?.value) {
+      if (noUsableSession()) {
+        logger.debug('ignoring event while signed out or awaiting a password change')
+        return
+      }
+      logger.debug(`re-syncing rather than patching ${record_id} into a list that failed to load`)
+      sync({ context: 'socket event', event: operation })
+      return
+    }
 
     // Type-safe comparison - int IDs (user/role) and varchar IDs (other tables)
     const index = records.value.findIndex((r) => String(r[key]) === String(record_id))
@@ -165,18 +180,29 @@ export const useEvents = (name, key, refs, methods, events, logger, deps = null)
     }
   }
 
-  const handleReload = async (event) => {
-    // Reload broadcasts reach every connected socket, and the socket connects
-    // before login - so this fires in tabs that are signed out or held at the
-    // password gate. Fetching from those would 401/403 and surface a "session
-    // expired" notice on a screen that never had a session; they resync
-    // through the login callbacks when they become able to use the app.
+  // Whether this tab has no session it could fetch with.
+  //
+  // Record broadcasts reach every connected socket, and the socket connects
+  // before login - so they fire in tabs that are signed out or held at the
+  // password gate. Fetching from those would 401/403 and surface a "session
+  // expired" notice on a screen that never had a session; they resync through
+  // the login callbacks when they become able to use the app. Every path here
+  // that fetches has to ask, so it is named once rather than inlined.
+  const noUsableSession = () => {
     const auth = useAuth()
-    if (!auth.user || typeof auth.user !== 'object' || auth.user.must_change_password) {
+    return !auth.user || typeof auth.user !== 'object' || auth.user.must_change_password
+  }
+
+  const handleReload = async (event) => {
+    if (noUsableSession()) {
       logger.debug('ignoring reload while signed out or awaiting a password change')
       return
     }
-    await sync({ context: 'socket event', event })
+    const outcome = await sync({ context: 'socket event', event })
+    // A failed sync used to reject and take the reload down with it. Now that it
+    // resolves, skip the reload explicitly: it would ask the same endpoint that
+    // just refused, and toast the same failure a second time.
+    if (outcome?.error) return
     await reloadRecord()
   }
 

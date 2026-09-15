@@ -13,6 +13,14 @@ class FileContext:
     username: str
     role_id: int
     access_token: str
+    # The paired device behind the upload (None for web uploads and for
+    # agents predating the device registry), and the IANA timezone the
+    # uploading machine reported (None when it sent none).
+    device_id: Optional[int] = None
+    instrument_timezone: Optional[str] = None
+    # The file's name on the uploading machine, before the server filed it
+    # under the instrument the agent reported (None when nothing renamed it).
+    source_filename: Optional[str] = None
 
 
 class FileContextManager:

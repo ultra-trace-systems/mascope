@@ -1,3 +1,5 @@
+import os
+from pathlib import Path
 from typing import Annotated
 
 import typer
@@ -40,6 +42,48 @@ def run(
             run_file_converter()
         case _:
             raise ValueError(f"Unknown service: {service}")
+
+
+@backend_app.command()
+def openapi(
+    output: Annotated[
+        Path,
+        typer.Option("--output", "-o", help="File to write the document to (JSON)."),
+    ],
+    version: Annotated[
+        str,
+        typer.Option(
+            "--version",
+            help="The Mascope version the document describes, as its "
+            "info.version. Without it the document carries 0.0.0.",
+        ),
+    ] = "",
+):
+    """
+    Render the OpenAPI document production deployments publish
+
+    The backend serves its schema in dev mode only, so a deployment publishes a
+    static copy at /docs/openapi.json, rendered with this command when the
+    frontend image is built, for the version that image is built for. The
+    render runs in a throwaway prod runtime with placeholder secrets and takes
+    only the config layers from MASCOPE_PATH, so the document for a version
+    comes out the same on any machine.
+    """
+    from mascope_backend.openapi import OpenApiRenderError, render
+
+    mascope_path = os.environ.get("MASCOPE_PATH")
+    if not mascope_path:
+        typer.echo(
+            "MASCOPE_PATH is not set; the config layers are read from it", err=True
+        )
+        raise typer.Exit(1)
+    try:
+        document = render(output, Path(mascope_path), version=version or None)
+    except OpenApiRenderError as e:
+        typer.echo(str(e), err=True)
+        raise typer.Exit(1)
+    # stderr, so the line cannot interleave with a document written to stdout.
+    typer.echo(f"Wrote {output} ({len(document['paths'])} paths)", err=True)
 
 
 def exec():

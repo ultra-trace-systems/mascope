@@ -9,6 +9,7 @@ dependencies = [
     "mascope_runtime",
     "mascope_sdk",
     "requests>=2.34.2,<3",
+    "tzlocal>=5.4.4",
     "watchdog~=4.0",
 ]
 

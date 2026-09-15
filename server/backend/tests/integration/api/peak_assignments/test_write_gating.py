@@ -40,19 +40,6 @@ async def test_assign_rejected_when_feature_disabled(
 
 
 @pytest.mark.asyncio
-async def test_batch_assign_rejected_when_feature_disabled(
-    editor_client, pa_test_data, feature_disabled
-):
-    response = await editor_client.post(
-        f"/api/peak-assignments/batch/{pa_test_data['sample_batch_id']}/assign"
-    )
-    # The app's exception handler sanitizes error bodies to an error_id;
-    # the feature-gate origin of the 403 is proven by the flag-on tests below,
-    # which succeed for the same client with only the env override changed.
-    assert response.status_code == 403
-
-
-@pytest.mark.asyncio
 async def test_verify_rejected_when_feature_disabled(
     editor_client, pa_test_data, feature_disabled
 ):
@@ -84,6 +71,51 @@ async def test_recalibrate_rejected_when_feature_disabled(
 
 
 @pytest.mark.asyncio
+async def test_batch_peak_backfill_rejected_when_feature_disabled(
+    editor_client, pa_test_data, feature_disabled
+):
+    """The backfill computes and persists batch peaks, so it is a gated write."""
+    response = await editor_client.post(
+        f"/api/batch-peaks/batch/{pa_test_data['sample_batch_id']}/backfill"
+    )
+    # The app's exception handler sanitizes error bodies to an error_id;
+    # the feature-gate origin of the 403 is proven by the flag-on test below,
+    # which succeeds for the same client with only the env override changed.
+    assert response.status_code == 403
+
+
+@pytest.mark.asyncio
+async def test_batch_peak_backfill_accepted_when_feature_enabled(
+    editor_client, pa_test_data, feature_enabled, monkeypatch
+):
+    async def _noop_compute(**kwargs):
+        return None
+
+    # Stub the controller entry point: the gate under test sits in the route.
+    monkeypatch.setattr(
+        "mascope_backend.api.new.peak_assignments.batch_peaks_routes"
+        ".compute_batch_peaks",
+        _noop_compute,
+    )
+    response = await editor_client.post(
+        f"/api/batch-peaks/batch/{pa_test_data['sample_batch_id']}/backfill"
+    )
+    assert response.status_code == 202
+    assert response.headers["Process-ID"]
+
+
+@pytest.mark.asyncio
+async def test_batch_peak_reads_stay_open_when_feature_disabled(
+    guest_client, pa_test_data, feature_disabled
+):
+    """The batch-peak ledger stays readable after opt-out, like the run ledger."""
+    response = await guest_client.get(
+        f"/api/batch-peaks/batch/{pa_test_data['sample_batch_id']}"
+    )
+    assert response.status_code == 200
+
+
+@pytest.mark.asyncio
 async def test_reads_stay_open_when_feature_disabled(
     guest_client, pa_test_data, feature_disabled
 ):
@@ -96,45 +128,21 @@ async def test_reads_stay_open_when_feature_disabled(
 
 
 @pytest.mark.asyncio
-async def test_assign_accepted_when_feature_enabled(
-    editor_client, pa_test_data, feature_enabled, monkeypatch
+async def test_assign_passes_the_gate_when_feature_enabled(
+    editor_client, pa_test_data, feature_enabled
 ):
-    """Opting in opens the gate: the run is queued and acknowledged."""
+    """Opting in opens the gate: the request is then answered on its own merits.
 
-    async def _noop_assign(**kwargs):
-        return None
-
-    # Stub the engine entry point: the gate under test sits in the route, and
-    # the fixture's zarr filename points at no real file.
-    monkeypatch.setattr(
-        "mascope_backend.api.new.peak_assignments.routes.assign_sample_peaks",
-        _noop_assign,
-    )
+    Those merits are a refusal here - the fixture sample is a blank, which the
+    endpoint now decides synchronously - and that is the distinction under test:
+    a 422 is a verdict on the request, a 403 is a verdict on the deployment. The
+    outcomes themselves are covered in test_assign_outcomes.py.
+    """
     response = await editor_client.post(
         f"/api/peak-assignments/sample/{pa_test_data['sample_item_id']}/assign"
     )
-    assert response.status_code == 202
-    # api_route moves process_id from the body into the Process-ID header.
-    assert response.headers["Process-ID"]
-
-
-@pytest.mark.asyncio
-async def test_batch_assign_accepted_when_feature_enabled(
-    editor_client, pa_test_data, feature_enabled, monkeypatch
-):
-    async def _noop_assign(**kwargs):
-        return None
-
-    monkeypatch.setattr(
-        "mascope_backend.api.new.peak_assignments.routes.assign_sample_batch_peaks",
-        _noop_assign,
-    )
-    response = await editor_client.post(
-        f"/api/peak-assignments/batch/{pa_test_data['sample_batch_id']}/assign"
-    )
-    assert response.status_code == 202
-    # api_route moves process_id from the body into the Process-ID header.
-    assert response.headers["Process-ID"]
+    assert response.status_code == 422
+    assert response.json()["detail"]["reason"] == "blank sample (no peaks)"
 
 
 @pytest.mark.asyncio
@@ -152,3 +160,26 @@ async def test_verify_accepted_when_feature_enabled(
     assert response.status_code == 201
     body = response.json()
     assert body["data"][0]["verdict"] == "rejected"
+
+
+@pytest.mark.asyncio
+async def test_batch_peak_counterpart_stays_open_when_feature_disabled(
+    guest_client, pa_test_data, feature_disabled
+):
+    """The counterpart read is a read, so opting out does not close it.
+
+    A batch folded while the feature was on stays navigable afterwards, the
+    same promise the ledger read makes.
+    """
+    sample_item_id = pa_test_data["sample_item_id"]
+
+    response = await guest_client.get(
+        "/api/batch-peaks/records/counterpart",
+        params={
+            "sample_item_id": sample_item_id,
+            "sample_peak_id": "A1",
+            "target_sample_item_id": sample_item_id,
+        },
+    )
+
+    assert response.status_code == 200

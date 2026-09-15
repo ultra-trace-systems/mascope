@@ -59,16 +59,17 @@ export const useHelp = defineStore('app.ui.help', () => {
   }
 
   // hook into HTML elmenents:
-  // v-help accepts either a string (the message) or an object
-  //   { message, doc } where `doc` is an optional URL the popover links to
-  //   ("Learn more"). Keep popover text short and put longer explanations in
-  //   the docs site, linked via `doc`.
+  // v-help accepts either a string (the message) or an object: { message, doc }
+  //   for an inline card, or { title, helpKey, doc } for a docs-sourced card
+  //   whose body is the snippet named by helpKey (see resolveMessage) -- the
+  //   same shapes the pt API takes. `doc` is an optional URL the popover links
+  //   to ("Learn more"). Keep popover text short and put longer explanations
+  //   in the docs site, linked via `doc`.
   const directive = (layer = 'default') => ({
     mounted: (element, { value, modifiers }) => {
       const [placement] = Object.keys(modifiers)
-      const { message, doc } =
-        value && typeof value === 'object' ? value : { message: value, doc: null }
-      register(element, { placement, message, doc, layer })
+      const args = value && typeof value === 'object' ? value : { message: value }
+      register(element, { ...args, placement, layer })
     }
   })
   // hook into components:

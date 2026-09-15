@@ -1,6 +1,6 @@
 import logging
 import os
-from datetime import datetime, timezone
+from datetime import datetime
 
 from mascope_backend.api.new.instrument_configs.schemas import (
     InstrumentConfigFitParams,
@@ -12,8 +12,13 @@ from mascope_backend.file_converter.base_processor import (
     SampleFileProps,
     with_file_context,
 )
+from mascope_backend.file_converter.errors import (
+    EMPTY_ACQUISITION_MESSAGE,
+    NO_MS1_SCANS_MESSAGE,
+    EmptyAcquisitionError,
+)
 from mascope_thermo.backend import open_backend
-from mascope_thermo.thermo import get_polarity_options
+from mascope_thermo.thermo import NoScansFoundError, get_polarity_options
 
 
 _log = logging.getLogger(__name__)
@@ -83,11 +88,19 @@ class RawProcessor(BaseFileProcessor):
     def length(self) -> float:
         """Length of the sample file in seconds
 
+        No filters are applied, so a reader that finds nothing here is
+        reporting a file with no scans at all. It says so with
+        ``NoScansFoundError``, which ``_get_sample_file_props`` names as an
+        empty acquisition for the extraction as a whole.
+
         :return: Sample length [s]
         :rtype: float
+        :raises NoScansFoundError: When the file holds no scans.
         """
         times = self.file_handle.scan_times(ms_type=None)  # all scans, seconds
-        return float(times.max()) if times.size else 0.0  # [s]
+        # No `if times.size` guard: scan selection raises rather than handing
+        # back an empty array, so max() always has something to take.
+        return float(times.max())  # [s]
 
     @property
     @with_file_context
@@ -104,6 +117,19 @@ class RawProcessor(BaseFileProcessor):
         """
         try:
             return self.file_handle.acquisition_parameters()
+        except NoScansFoundError:
+            # A scanless file has no per-scan trailer to sample, and neither
+            # has one whose scans are all MS2. Either way it is a property of
+            # the data, so it must not reach the generic handler below: that
+            # logs a traceback at WARNING, the level the error-monitoring sink
+            # subscribes to, and this property is read before the one that
+            # fails the file - so an empty acquisition would be reported as a
+            # fault before the extraction could fail it as data.
+            _log.info(
+                "No scans to sample acquisition parameters from for %s",
+                self.file_to_process,
+            )
+            return {}
         except Exception:
             _log.warning(
                 "Could not read acquisition parameters for %s",
@@ -111,6 +137,65 @@ class RawProcessor(BaseFileProcessor):
                 exc_info=True,
             )
             return {}
+
+    @property
+    @with_file_context
+    def _records_ms1_scans(self) -> bool:
+        """Whether the acquisition recorded any MS1 scans.
+
+        Peak detection and the instrument-function fit both read MS1, so an
+        acquisition of fragmentation scans alone reaches the fit with nothing
+        to run on. Asking here is what lets that be reported as a property of
+        the data: left to the fit, it surfaces as the reader's own
+        ``NoScansFoundError`` from inside a traceback, which reads as a fault
+        in Mascope and wakes error monitoring.
+
+        A file holding no scans at all must keep being named the empty
+        acquisition it is rather than the narrower MS1-less condition, so the
+        two are told apart -- but only once the MS1 selection has already come
+        back empty, and by the scan count, which the reader knows without
+        walking the file. Selecting every scan up front to answer the same
+        question would put a second whole-file sweep on every import.
+
+        :return: True when at least one MS1 scan was recorded
+        :rtype: bool
+        :raises NoScansFoundError: When the file holds no scans at all.
+        """
+        try:
+            self.file_handle.scan_indices(ms_type="Ms")
+        except NoScansFoundError:
+            if not self.file_handle.num_scans():
+                raise
+            return False
+        return True
+
+    def _get_sample_file_props(self) -> SampleFileProps:
+        """Extract the sample file properties, naming as data what is data.
+
+        Every property that asks the reader for scans raises
+        ``NoScansFoundError`` when the file recorded none, and which property
+        gets there first is decided by the order of the schema fields. Naming
+        the condition once, around the whole walk, is what keeps that ordering
+        from mattering: no property has to carry its own arm, a property added
+        later is covered by construction, and both reader backends are covered
+        by the same one.
+
+        A file with scans but no MS1 scan among them is the other condition
+        the walk cannot see: every property it reads is answerable from the
+        MS2 scans, so extraction succeeds and the file fails later, inside the
+        instrument-function fit. It is checked up front instead.
+
+        :return: The properties extracted from the file
+        :rtype: SampleFileProps
+        :raises EmptyAcquisitionError: When the file recorded no scans, or none
+            that peak detection can run on.
+        """
+        try:
+            if not self._records_ms1_scans:
+                raise EmptyAcquisitionError(NO_MS1_SCANS_MESSAGE)
+            return super()._get_sample_file_props()
+        except NoScansFoundError as e:
+            raise EmptyAcquisitionError(EMPTY_ACQUISITION_MESSAGE) from e
 
     @property
     def method_file(self) -> str:
@@ -194,19 +279,64 @@ class RawProcessor(BaseFileProcessor):
             )
         return created.isoformat()
 
+    def _resolve_utc_offset(self) -> tuple[int, str]:
+        """Resolve the UTC offset for this file's local timestamp.
+
+        Raw files embed no offset of their own, so the order is: the zone
+        the uploading machine reported, evaluated at the file's own
+        timestamp ("agent"); else the converter host's zone at that
+        timestamp ("guess") - the legacy fallback, wrong whenever the
+        instrument PC and the converter host disagree on timezone or DST.
+
+        Both readings go through ``_wall_time_offset``, which resolves the
+        daylight-saving hours a bare wall clock cannot name on its own - the
+        repeated one and the skipped one - deliberately, and warns when it
+        had to, so a timestamp on the wrong side of a transition can be
+        explained rather than merely being wrong.
+
+        Cached for the file being processed. ``utc_offset`` and
+        ``utc_offset_source`` are separate schema fields, so the props
+        collector asks for both and would otherwise resolve twice - reopening
+        the raw file through ``self.timestamp`` each time, and reporting any
+        DST anomaly twice for one acquisition. The cache is emptied as each
+        file is picked up, so it cannot outlive the file it describes.
+
+        :return: UTC offset [s] and its source ("agent" or "guess")
+        :rtype: tuple[int, str]
+        """
+        cached = self._per_file_cache.get("utc_offset")
+        if cached is not None:
+            return cached
+
+        local_dt = datetime.fromisoformat(self.timestamp)
+        zone = self._context_timezone()
+        # zone=None reads it in the converter host's own zone, which is what
+        # the "guess" fallback means; total_seconds() keeps west-of-UTC
+        # offsets negative.
+        resolved = (
+            self._wall_time_offset(local_dt, zone),
+            "agent" if zone is not None else "guess",
+        )
+        self._per_file_cache["utc_offset"] = resolved
+        return resolved
+
     @property
     def utc_offset(self) -> int:
-        """UTC offset in seconds
-
-        # TODO: Currently there is no way to get the UTC offset from the raw file.
-        # This implementation assumes local timezone.
+        """UTC offset in seconds applied to the local timestamp
 
         :return: UTC offset [s]
         :rtype: int
         """
-        now = datetime.now()
-        utc_offset = (now - now.astimezone(timezone.utc).replace(tzinfo=None)).seconds
-        return utc_offset
+        return self._resolve_utc_offset()[0]
+
+    @property
+    def utc_offset_source(self) -> str:
+        """What determined utc_offset: "agent" or "guess"
+
+        :return: Offset source
+        :rtype: str
+        """
+        return self._resolve_utc_offset()[1]
 
     @staticmethod
     def _file_context_manager(file_path: str):

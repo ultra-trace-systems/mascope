@@ -26,3 +26,9 @@ tofdaq
 
 # MkDocs build output
 /site/
+
+# Python third-party attributions (tooling/third-party-notices.py). The backend
+# serves them from its runtime home (MASCOPE_PATH), which is this checkout only
+# where MASCOPE_PATH points at it; the images generate their own at build time
+/THIRD_PARTY_NOTICES.txt
+/DOCS_THIRD_PARTY_NOTICES.txt

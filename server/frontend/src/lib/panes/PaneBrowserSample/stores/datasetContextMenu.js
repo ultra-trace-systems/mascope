@@ -1,12 +1,15 @@
 import { ref, reactive, computed } from 'vue'
 import { defineStore } from 'pinia'
 
+import { useConfirm } from 'primevue/useconfirm'
+
 import { useApp } from '@/stores'
 
 import { useClipboard } from './clipboard.js'
 
 export const useDatasetContextMenu = defineStore('browser.sample.datasetCtxMenu', () => {
   const app = useApp()
+  const confirm = useConfirm()
 
   // local deps
   const clipboard = useClipboard()
@@ -97,6 +100,47 @@ export const useDatasetContextMenu = defineStore('browser.sample.datasetCtxMenu'
       command: () => {
         dialog.op = 'delete'
       }
+    },
+    { separator: true, visible: row.value !== null },
+    {
+      label: 'Process',
+      icon: 'pi ph ph-hourglass-medium',
+      visible: row.value !== null,
+      items: [
+        {
+          label: 'Refresh matches',
+          icon: 'pi ph ph-arrow-counter-clockwise',
+          visible: row.value !== null,
+          // The batch-level refresh for every batch in the dataset at once,
+          // which is what saves the clicking this exists for. It runs one
+          // batch at a time and cannot be stopped once started, so - unlike
+          // the single-batch entry - it asks first.
+          command: () => {
+            const dataset = row.value
+            confirm.require({
+              icon: 'pi pi-info-circle',
+              header: 'Refresh dataset matches',
+              message:
+                `Refresh matches for every batch in dataset ` +
+                `"${dataset.dataset_name}"? Batches are processed one at a ` +
+                `time and batches that are already up to date are skipped, ` +
+                `so this can take a while on a large dataset.`,
+              accept: () => {
+                app.data.dataset.rematch({ dataset_id: dataset.dataset_id })
+              },
+              acceptProps: {
+                icon: 'pi ph ph-arrow-counter-clockwise',
+                label: 'Refresh'
+              },
+              rejectProps: {
+                icon: 'pi pi-times',
+                label: 'Cancel',
+                severity: 'secondary'
+              }
+            })
+          }
+        }
+      ]
     }
   ])
 

@@ -89,6 +89,10 @@ class MascopeClient:
     :vartype matching: MatchingResource
     :ivar cheminfo: Resource for chemical information queries.
     :vartype cheminfo: ChemInfoResource
+    :ivar peak_assignments: Resource for reading peak-centric assignment results.
+    :vartype peak_assignments: PeakAssignmentsResource
+    :ivar batch_peaks: Resource for reading a batch's batch ledger.
+    :vartype batch_peaks: BatchPeaksResource
 
     Example::
 
@@ -248,6 +252,8 @@ class MascopeClient:
         self._matching: Any = None
         self._cheminfo: Any = None
         self._ionization: Any = None
+        self._peak_assignments: Any = None
+        self._batch_peaks: Any = None
 
         # Resolve workspace (fetch list, then resolve or auto-select)
         self._workspace_id, self._workspace_name = self._resolve_workspace(workspace)
@@ -334,6 +340,25 @@ class MascopeClient:
 
             self._ionization = IonizationResource(self)
         return self._ionization
+
+    @property
+    def peak_assignments(self) -> "PeakAssignmentsResource":
+        """Resource for reading peak-centric assignment results."""
+        if self._peak_assignments is None:
+            from .resources.peak_assignments import PeakAssignmentsResource
+
+            self._peak_assignments = PeakAssignmentsResource(self)
+        return self._peak_assignments
+
+    @property
+    def batch_peaks(self) -> "BatchPeaksResource":
+        """Resource for reading a batch's batch ledger: its batch peaks and
+        their members."""
+        if self._batch_peaks is None:
+            from .resources.batch_peaks import BatchPeaksResource
+
+            self._batch_peaks = BatchPeaksResource(self)
+        return self._batch_peaks
 
     def _resolve_workspace(self, workspace: str | None) -> tuple[str, str]:
         """Resolve workspace argument to a workspace ID and name.
@@ -662,6 +687,182 @@ class MascopeClient:
             max_workers=max_workers,
         )
 
+    def load_batch_ledger(
+        self,
+        dataset: "str | re.Pattern",
+        batches: "str | re.Pattern | None" = None,
+        *,
+        exact: bool = False,
+        members: bool = True,
+    ) -> pd.DataFrame | None:
+        """Load the batch ledger of one or more batches into a single DataFrame.
+
+        The batch-primary counterpart of :meth:`load_assignments`: rather than
+        one run per sample, a batch's assignment lives in its **batch ledger** -
+        one batch peak per species across the batch's samples, with the
+        consensus formula and tier the samples vote for, and one member per
+        sample the species was seen in. Every processed sample folds in as it
+        arrives, so the ledger is the complete record of a batch.
+
+        With ``members`` (the default) the result is the whole ledger as flat
+        rows - one per member, the anchor's consensus beside the member's own
+        reading - which is one line from CSV or any other format, and the
+        species table (one row per batch peak) rides on
+        ``df.attrs["batch_peaks"]``. With ``members=False`` the result is the
+        species table alone.
+
+        :param dataset: Dataset name or literal substring (or ID); pass a
+                        compiled ``re.Pattern`` to match by regex.
+        :type dataset: str | re.Pattern
+        :param batches: Optional case-insensitive filter on batch names. A
+                        string is a literal substring; pass a compiled
+                        ``re.Pattern`` to match by regex. If not provided, all
+                        batches in the dataset are loaded.
+        :type batches: str | re.Pattern, optional
+        :param exact: Match a string ``batches`` against the whole name instead
+                      of as a substring. Defaults to False.
+        :type exact: bool
+        :param members: Return the member rows (default) rather than the
+                        species table.
+        :type members: bool
+        :return: A DataFrame with ``sample_batch_name`` first, then the columns
+                 of :meth:`~mascope_sdk.resources.batch_peaks.BatchPeaksResource.members`
+                 (or of
+                 :meth:`~mascope_sdk.resources.batch_peaks.BatchPeaksResource.list`
+                 with ``members=False``). Returns None if no batch has a ledger.
+        :rtype: pd.DataFrame | None
+        :raises ValueError: If the dataset cannot be resolved.
+
+        Example::
+
+            ledger = mascope.load_batch_ledger(dataset="My Dataset", batches="Uronium")
+            ledger.to_csv("ledger.csv", index=False)
+
+            # The species table, one row per batch peak
+            species = ledger.attrs["batch_peaks"]
+            species.groupby("sample_batch_name")["consensus_tier"].value_counts()
+        """
+        from ._loaders import load_batch_ledger
+
+        return load_batch_ledger(self, dataset, batches, exact=exact, members=members)
+
+    def load_assignments(
+        self,
+        dataset: "str | re.Pattern",
+        batches: "str | re.Pattern | None" = None,
+        *,
+        samples: "str | re.Pattern | None" = None,
+        exact: bool = False,
+        run: str = "latest",
+        tier: str | None = None,
+        source: str | None = None,
+        confirm_above: int | None = 100,
+        max_workers: int = 8,
+    ) -> pd.DataFrame | None:
+        """Load peak assignments for all samples across one or more batches.
+
+        The peak-assignment counterpart of :meth:`load_peaks`: resolves the
+        dataset/batch/sample selection, reads each sample's latest completed
+        peak assignment run via
+        :meth:`~mascope_sdk.resources.peak_assignments.PeakAssignmentsResource.get`,
+        and concatenates everything into a single DataFrame enriched with batch
+        and sample metadata.
+
+        Read-only: it returns whatever runs already exist. Samples without a
+        completed assignment run contribute nothing (and are logged) rather
+        than being assigned on the fly - launch runs from the Mascope app.
+
+        Requests are made concurrently for better performance. A progress bar
+        is displayed during loading.
+
+        :param dataset: Dataset name or literal substring (or ID); pass a
+                        compiled ``re.Pattern`` to match by regex.
+        :type dataset: str | re.Pattern
+        :param batches: Optional case-insensitive filter on batch names. A
+                        string is a literal substring and may select several
+                        batches at once; pass a compiled ``re.Pattern`` to
+                        match by regex. If not provided, all batches in the
+                        dataset are loaded.
+        :type batches: str | re.Pattern, optional
+        :param samples: Optional case-insensitive filter on sample names, same
+                        semantics as ``batches``.
+        :type samples: str | re.Pattern, optional
+        :param exact: Match a string ``batches`` / ``samples`` against the
+                      whole name instead of as a substring. Not valid with a
+                      compiled pattern. Defaults to False.
+        :type exact: bool
+        :param run: Which run to read per sample. Only ``"latest"`` (the
+                    latest completed run of each sample) is supported; run IDs
+                    are per-sample and cannot be given across samples.
+        :type run: str
+        :param tier: Filter by confidence tier: ``assigned`` | ``candidate``
+                     | ``below_assignability`` | ``unassigned``. The server
+                     still accepts the legacy spelling ``identified`` for
+                     ``assigned``.
+        :type tier: str, optional
+        :param source: Filter by assignment source: ``database`` (Stage A) |
+                       ``untargeted`` (Stage B) | ``manual`` (a person assigned
+                       this row by hand). A curated row leaves the two engine
+                       sources rather than joining them, so ``database`` plus
+                       ``untargeted`` no longer covers every assigned peak.
+        :type source: str, optional
+        :param confirm_above: If the number of samples exceeds this threshold,
+                              an interactive confirmation prompt is shown
+                              before loading starts. Set to ``None`` to
+                              disable. Defaults to 100.
+        :type confirm_above: int | None
+        :param max_workers: Maximum number of concurrent requests. Defaults to 8.
+        :type max_workers: int
+        :return: A DataFrame containing all assignments enriched with columns:
+
+            - ``sample_batch_name``: Name of the batch the sample belongs to
+            - ``sample_item_name``: Name of the sample
+            - ``datetime_utc``: Measurement start timestamp (UTC)
+
+            Plus all columns from
+            :meth:`~mascope_sdk.resources.peak_assignments.PeakAssignmentsResource.get`
+            (one row per observed peak; core rows only - fetch
+            ``alternatives`` / ``provenance`` per assignment with
+            :meth:`~mascope_sdk.resources.peak_assignments.PeakAssignmentsResource.detail`).
+
+            Returns None if no assignments are found.
+        :rtype: pd.DataFrame | None
+        :raises ValueError: If the dataset or batches cannot be resolved, or
+                            ``run`` is not ``"latest"``.
+        :raises KeyboardInterrupt: If the user declines the confirmation prompt.
+
+        Example::
+
+            mascope = MascopeClient()
+
+            # Assignments of every sample in matching batches
+            assignments = mascope.load_assignments(
+                dataset="My Dataset",
+                batches="Uronium",
+            )
+
+            # Assigned, untargeted-sourced peaks only
+            assignments = mascope.load_assignments(
+                dataset="My Dataset",
+                tier="assigned",
+                source="untargeted",
+            )
+        """
+        from ._loaders import load_assignments as _load_assignments
+
+        return _load_assignments(
+            self,
+            dataset,
+            batches,
+            samples=samples,
+            exact=exact,
+            run=run,
+            tier=tier,
+            source=source,
+            confirm_above=confirm_above,
+            max_workers=max_workers,
+        )
+
     def clear_cache(self) -> None:
         """Clear the metadata cache.
 
@@ -683,10 +884,12 @@ from typing import TYPE_CHECKING  # noqa: E402
 
 
 if TYPE_CHECKING:
+    from .resources.batch_peaks import BatchPeaksResource
     from .resources.batches import BatchesResource
     from .resources.cheminfo import ChemInfoResource
     from .resources.datasets import DatasetsResource
     from .resources.ionization import IonizationResource
     from .resources.matching import MatchingResource
+    from .resources.peak_assignments import PeakAssignmentsResource
     from .resources.samples import SamplesResource
     from .resources.workspaces import WorkspacesResource

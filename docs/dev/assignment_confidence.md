@@ -32,7 +32,7 @@ peak-centric engine's scoring, per the epic's "coexist, don't replace" principle
 not a silent flip of the legacy default.
 
 Coexistence is enforced by a feature flag rather than left to discipline: the whole
-peak-centric feature is **off by default** (`peak_assignment` in the runtime `[meta]`
+peak-centric feature stays behind one switch, `peak_assignment` in the runtime `[meta]`
 config; see [`peak_assignment_paradigm.md`](peak_assignment_paradigm.md) §5.1 for what it
 gates and why). Two consequences for the confidence layers specifically:
 
@@ -290,9 +290,60 @@ no backend or DB, only `mascope_tools` + tests.
   now selects a peak's winner by **evidence = fit × plausibility** (not fit alone), so a
   chemically implausible formula cannot win a peak on mass fit, and stores the winner's
   arbitration **confidence**, **plausibility** and an **is_tie** flag in the assignment's
-  `provenance` (no schema change; the `fit_score` column stays the pure measurement and the
-  tier stays on the fit scale). Unit-tested (the over-saturated `C6H17NO4` loses its peak to
-  glucose). Re-ran on the live demo dataset so the stored assignments reflect it.
+  `provenance` (no schema change; the `fit_score` column stays the pure measurement).
+  Unit-tested (the over-saturated `C6H17NO4` loses its peak to glucose). Re-ran on the live
+  demo dataset so the stored assignments reflect it.
+- **The tier is banded on that same evidence.** Winner selection and tiering now read *one*
+  quantity, which is precisely the fix: while the tier sat on the fit scale, a chemically
+  implausible formula could win its peak on evidence and then be tiered as though it had fit
+  cleanly — the ledger's strongest word contradicting the arbitration that produced it. The
+  `fit_score` column is untouched by this and still stored and displayed as the pure
+  measurement; it is simply no longer what buckets the row. Banding on evidence is only
+  coherent if *nothing* still bands on the fit, so every derivation site moved together:
+  both engine stages, manual curation and its demote-restore fallback, the copy service's
+  re-tier, the composition-search preview, and the import tier-coherence check. They share
+  two helpers — `engine.tier_for_evidence(evidence, *, candidate_threshold,
+  assigned_threshold)` (renamed from `tier_for_score`, with the bands now **keyword-only**,
+  because they read in the opposite order to their names and a positional call written in
+  band order silently inverted them) and `engine.evidence_for(fit_score, formula)` for the
+  callers that hold a stored row rather than a live scoring frame. `evidence_for`
+  **recomputes** the plausibility from the formula instead of reading it off a payload — it
+  is a pure function of the formula, so there is nothing to gain from trusting an asserted
+  number — and fails open to the bare fit when the formula is absent or unparseable, since
+  plausibility must never decide whether a write happens. `PEAK_ASSIGNMENT_ENGINE_VERSION`
+  is `0.3.0`.
+- **The bands themselves, measured (0.75 / 0.45).** Plausibility is ≤ 1, so folding it in can
+  only move a row down; leaving the bands at the fit-scale 0.8/0.5 would have tiered every
+  run stricter than before under an unchanged-looking config. How far to lower them was
+  settled by sweeping the pair over a real ledger — all 161 demo samples assigned, 213,146
+  rows, 77,911 of them tiered — rather than by taste. Plausibility turns out not to be a
+  broad downshift but a **spike at 1.0 with a thin tail**: 92.8% of tiered rows score exactly
+  1.0 (Stage A 98.3%, Stage B 88.4%), so only 7.2% of rows move at all, and the bands need
+  far less taken off them than "evidence ≤ fit" suggests.
+
+  | tiering | assigned | candidate | below_assignability |
+  |---|---|---|---|
+  | fit at 0.8 / 0.5 (old) | 84.08% | 12.41% | 3.51% |
+  | **evidence at 0.75 / 0.45** | **85.38%** | **11.73%** | **2.89%** |
+
+  6.93% of tiered rows change tier, and in **both directions** (2,717 up, 1,710 down) rather
+  than draining one band — 0.75/0.45 was the closest pair in the sweep to the split it
+  replaces. The config keys are unchanged (`assigned_threshold`, `candidate_threshold`) and a
+  run still records the pair it tiered with in `tier_bands`; only the scale those numbers sit
+  on moved. They are **directional, not calibrated truth** — a defensible starting point that
+  keeps the tier histogram close to what it was while letting the chemistry demote the
+  implausible. Binding the tier to a calibrated **P(correct)** remains the documented end
+  state, still gated on universal calibration coverage (untargeted + all instruments) and
+  still deferred; this is a step toward it, not its arrival — but the tier and that eventual
+  probability are now read off the same number, since evidence is what the calibration maps
+  *from*.
+- **One pair of bands for both stages, knowingly.** Stage A's fit is `ion_score_v2`; Stage
+  B's is `score_pattern` (v1, no per-peak SNR), so a single band means slightly different
+  things to each — on the same sweep, holding the upper band at 0.80 would cost Stage B 5.3%
+  of its assigned rows and Stage A only 0.5%. Per-stage bands would fit the data better and
+  are deliberately **not** introduced: the heterogeneity **predates this binding** (it was
+  equally true while the tier sat on the fit) and a second pair of knobs is more apparatus
+  than a directional threshold is worth. Documented, not solved.
 - **Confidence calibration landed (pipeline; data provisional).**
   `mascope_tools.composition.calibration` turns the arbitration evidence into a calibrated
   **P(correct)** via Platt scaling ([Platt 1999][platt]): `P = sigmoid(a·evidence + b)`, a
@@ -306,8 +357,8 @@ no backend or DB, only `mascope_tools` + tests.
      yet" becomes *metadata*, not hidden risk.
   2. **Never fabricate a probability we can't back up.** `calibration_for(instrument)`
      returns `None` when an instrument has no calibration (**TOF today**); the engine then
-     stores `p_correct = null`, `calibrated = false` so the UI shows *uncalibrated* rather
-     than a borrowed Orbitrap number. `fit_calibration` refuses to fit on too little /
+     stores `p_correct = null` and the run records no curve, so the UI shows *uncalibrated*
+     rather than a borrowed Orbitrap number. `fit_calibration` refuses to fit on too little /
      single-class data (`InsufficientCalibrationData`).
 
   **The label sourcing — why this is tied to the reference dataset.** The positives are
@@ -326,13 +377,30 @@ no backend or DB, only `mascope_tools` + tests.
   **Status.** One **provisional Orbitrap** curve, fit from the demo bundle via
   `arbitration_eval.py --fit-calibration` (scratch, untracked — like the harness above;
   evidence → P(correct) over all candidates, true vs decoy). It is a placeholder pending a curated dataset; no TOF curve exists.
-  `invert_matches_to_peak_assignments` stores `p_correct` / `calibrated` / `calibration`
-  in the assignment `provenance`. Unit-tested (`test_calibration_layer.py`, engine tests).
+  `invert_matches_to_peak_assignments` stores `p_correct` in the assignment `provenance`;
+  which curve produced it is recorded once per run (`PeakAssignmentRun.confidence_calibration`,
+  via `engine.calibration_meta`) and the detail read folds it back into the row as
+  `calibrated` / `calibration`, so readers see the pair they always did. Unit-tested
+  (`test_calibration_layer.py`, engine tests).
 
 - **Remaining P2 / next:** replace the provisional Orbitrap curve with a curated fit and add
   a TOF curve once a TOF golden set exists; the **persisted, user-refittable per-instrument
-  store** (a DB table — deferred); then Stage B arbitration once its candidates carry
-  comparable per-candidate fits.
+  store** (a DB table — deferred); then Stage B's confidence. Stage B already *tiers* on
+  evidence — its contenders carry a fit and a plausibility and it records
+  `provenance.evidence` for its winner, so the untargeted stage is not blind to chemistry.
+  It also already *competes* the candidates that land on one observed peak: they are
+  ranked by evidence, closest mass, then formula, and the losers are kept as
+  `alternatives` each with its own fit. What is still deferred is the **confidence** —
+  the winner's share among the peak's full scored candidate set — because the finder's
+  `other_candidates` shortlist is formula names only, with no per-candidate fit to take a
+  share of (the plausibility shown against those entries is computed here from the
+  formula, not carried by the finder). The inspector *can* now measure that shortlist for
+  one peak on request (`alternatives_scoring.py`), but that does not close this gap: a
+  confidence is a property of the run, and the reason the run does not measure the
+  shortlist is precisely that doing it for every peak of a sample is an isotope-envelope
+  match per candidate. Confidence stays deferred until the run itself can afford one. A
+  P(correct) there would additionally mean applying the Stage A curve across the v1/v2 fit
+  gap, which is the fabricated probability the calibration layer exists to refuse.
 
 ### P3 progress
 
@@ -346,7 +414,7 @@ no backend or DB, only `mascope_tools` + tests.
   0.75 for three …). Cross-peak but **competitor-blind within a compound** — it reads only
   *which* adducts were assigned, never the fit score, so it stays a separate, inspectable
   layer (design rule §3). Unit-tested (`test_corroboration.py`).
-- **Validated on the refreshed demo** (read-only): of the confident (identified/candidate)
+- **Validated on the refreshed demo** (read-only): of the confident (assigned/candidate)
   compound-instances, **~66% are seen via ≥2 adducts** (2,108 via two, 3,017 via three;
   2,620 lone) — the signal is both abundant and discriminating.
 - **Weighting the corroboration — measured (offset-decoy benchmark).** The first attempt, on the

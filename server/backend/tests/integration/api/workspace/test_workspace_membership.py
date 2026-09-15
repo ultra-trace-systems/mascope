@@ -1,4 +1,8 @@
+from unittest.mock import AsyncMock
+
 import pytest
+
+from mascope_backend.api.new.workspaces import service as workspaces_service
 
 
 """
@@ -311,3 +315,89 @@ async def test_remove_nonexistent_member(admin_client, ws_alpha):
         _members_url(ws_alpha["workspace_id"], 999999),
     )
     assert resp.status_code == 404
+
+
+# ============= Record reload =============
+#
+# The members dialog refreshes its roster on the workspace record-reload
+# broadcast, and only when a single broadcast both reaches a room the tab has
+# joined and names the workspace on screen in ``record_id``. Adding a member
+# was already pinned by test_registration_membership.py; a role edit and a
+# removal are pinned here, because dropping ``record_id`` from either one left
+# the whole suite green while silently killing the dialog's live refresh.
+
+
+def _reload_targets(emit):
+    """``(record_id, room)`` of every workspace record-reload the mock recorded.
+
+    Pairing the two per call is the point: read off the list of calls
+    separately, an implementation emitting the room on one call and the
+    ``record_id`` on another would satisfy both checks and refresh nothing.
+    """
+    return [
+        (call.kwargs.get("record_id"), call.kwargs.get("room"))
+        for call in emit.await_args_list
+        if call.kwargs.get("record_type") == "workspace"
+    ]
+
+
+@pytest.mark.asyncio
+async def test_update_member_announces_the_workspace_it_changed(
+    admin_client, outsider_user, ws_alpha, monkeypatch
+):
+    """A role edit broadcasts to the workspace room, naming that workspace.
+
+    Without the ``record_id`` the dialog drops the broadcast, and an
+    administrator watching the roster keeps seeing the member's old role.
+    """
+    workspace_id = ws_alpha["workspace_id"]
+    await admin_client.post(
+        _members_url(workspace_id),
+        json={"user_id": outsider_user.id, "workspace_role": "guest"},
+    )
+
+    # Recording starts only after the setup addition, which emits a broadcast
+    # of its own - otherwise the assertion below could be satisfied by the
+    # addition and could never fail on the update.
+    emit = AsyncMock()
+    monkeypatch.setattr(workspaces_service, "emit_record_reload", emit)
+
+    resp = await admin_client.patch(
+        _members_url(workspace_id, outsider_user.id),
+        json={"workspace_role": "editor"},
+    )
+    assert resp.status_code == 200
+
+    assert (workspace_id, workspace_id) in _reload_targets(emit)
+
+    # Clean up
+    await admin_client.delete(_members_url(workspace_id, outsider_user.id))
+
+
+@pytest.mark.asyncio
+async def test_remove_member_announces_the_workspace_it_changed(
+    admin_client, outsider_user, ws_alpha, monkeypatch
+):
+    """A removal broadcasts to the workspace and the removed user, naming it.
+
+    Without the ``record_id`` the dialog drops the broadcast and goes on
+    listing the member who has just been removed.
+    """
+    workspace_id = ws_alpha["workspace_id"]
+    await admin_client.post(
+        _members_url(workspace_id),
+        json={"user_id": outsider_user.id, "workspace_role": "guest"},
+    )
+
+    # The addition emits the very same room list this removal does, so the
+    # recording has to start after it or the assertion could never fail.
+    emit = AsyncMock()
+    monkeypatch.setattr(workspaces_service, "emit_record_reload", emit)
+
+    resp = await admin_client.delete(_members_url(workspace_id, outsider_user.id))
+    assert resp.status_code == 200
+
+    assert (
+        workspace_id,
+        [workspace_id, f"user-{outsider_user.id}"],
+    ) in _reload_targets(emit)

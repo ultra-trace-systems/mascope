@@ -12,18 +12,26 @@ body is written. They also pin the per-upload size cap: OPTIONS advertises
 it as Tus-Max-Size, a creation declaring a larger Upload-Length is refused
 with 413, and a deferred-length creation is refused with 411.
 
+The other two admission checks are pinned here too: the free-space floor,
+which refuses a creation with 507 when admitting it would leave the spool's
+filesystem below the reserve, and the sweep of abandoned partials that runs
+alongside it.
+
 The upload is never completed here (chunks stop short of Upload-Length),
 so the file-processing pipeline behind the completion hook stays out of
 scope.
 """
 
 import base64
+import os
+import time
 from unittest.mock import AsyncMock
 
 import pytest
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy import delete
+from test_utils import gen_test_id
 
 from mascope_backend.api.controllers.sample.files import sample_files_controller
 from mascope_backend.api.routes.sample.files import sample_files_routes
@@ -32,6 +40,30 @@ from mascope_backend.db import AccessToken
 
 
 TUS_URL = "/api/sample/files/upload/tus/"
+
+#: Distinguishes this run's scratch partials from a concurrent run's.
+_RUN_ID = gen_test_id(8)
+
+
+def _spool_path(name: str) -> str:
+    """Path to a scratch partial in the tus spool, unique to this run.
+
+    The spool is `runtime.env.path("temp", "tus")` - under the shared
+    `MASCOPE_PATH`, not the checkout - so two backend runs at once see one
+    directory. Under a fixed name the two sweep tests below fight over it: one
+    run's `finally` deletes the partial the other is still asserting on, and the
+    failure surfaces in whichever run got there second. The test databases are
+    scoped per checkout (see the naming note in `test_utils.py`); this is the
+    same problem one layer up, on the filesystem.
+
+    :param name: Role of the partial within a test (`stale`, `fresh`, `live`)
+    :type name: str
+    :return: Absolute path inside the tus spool
+    :rtype: str
+    """
+    return os.path.join(
+        sample_files_routes._tus_files_dir, f"sweep-test-{_RUN_ID}-{name}"
+    )
 
 
 @pytest.fixture(autouse=True)
@@ -48,12 +80,30 @@ def _converter_connected(monkeypatch):
     )
 
 
+@pytest.fixture(autouse=True)
+def _disk_floor_disabled(monkeypatch):
+    """Take the machine's real free space out of the picture.
+
+    The floor defaults to 10 GB, so on a small CI disk every creation below
+    would answer 507 for a reason that has nothing to do with what the test
+    pins. The disk tests set the floor back to a value they control.
+    """
+    monkeypatch.setattr(sample_files_routes, "_tus_min_free_bytes", 0)
+
+
 def _b64(value: str) -> str:
     return base64.b64encode(value.encode()).decode()
 
 
+#: Every tus request except OPTIONS must declare the protocol version. The
+#: server answers 412 without it, before any of the checks these tests pin, so
+#: HEAD and DELETE carry it as well as creation and chunk transfer. The real
+#: clients always send it: the SDK stamps it on every agent request
+#: (`_tus_headers`), and tus-js-client does the same from the browser.
+TUS_HEADERS = {"Tus-Resumable": "1.0.0"}
+
 CREATE_HEADERS = {
-    "Tus-Resumable": "1.0.0",
+    **TUS_HEADERS,
     "Upload-Length": "8",
     "Upload-Metadata": (
         f"filename {_b64('orbi1_20260801_pos.raw')},"
@@ -159,14 +209,14 @@ async def test_agent_token_can_inspect_and_terminate_upload(file_agent_token):
         assert resp.status_code == 201, resp.text
         upload_id = resp.headers["location"].rstrip("/").rsplit("/", 1)[-1]
 
-        head = await client.head(f"{TUS_URL}{upload_id}")
+        head = await client.head(f"{TUS_URL}{upload_id}", headers=TUS_HEADERS)
         assert head.status_code == 200, head.text
         assert head.headers["upload-offset"] == "0"
 
-        terminate = await client.delete(f"{TUS_URL}{upload_id}")
+        terminate = await client.delete(f"{TUS_URL}{upload_id}", headers=TUS_HEADERS)
         assert terminate.status_code == 204, terminate.text
 
-        head_after = await client.head(f"{TUS_URL}{upload_id}")
+        head_after = await client.head(f"{TUS_URL}{upload_id}", headers=TUS_HEADERS)
         assert head_after.status_code == 404
 
 
@@ -222,6 +272,132 @@ async def test_oversized_upload_is_rejected_at_creation(file_agent_token, monkey
         # CREATE_HEADERS declares Upload-Length: 8 > the patched 4-byte cap.
         resp = await client.post(TUS_URL, headers=CREATE_HEADERS)
     assert resp.status_code == 413
+
+
+def _agent_headers(token: str) -> dict:
+    return {"Authorization": f"Bearer {token}", "X-Service-Name": "file-agent"}
+
+
+async def _create_and_terminate(client) -> int:
+    """POST a creation and clean up the upload it leaves in the spool."""
+    resp = await client.post(TUS_URL, headers=CREATE_HEADERS)
+    if resp.status_code == 201:
+        upload_id = resp.headers["location"].rstrip("/").rsplit("/", 1)[-1]
+        await client.delete(f"{TUS_URL}{upload_id}", headers=TUS_HEADERS)
+    return resp.status_code
+
+
+@pytest.mark.asyncio
+async def test_creation_is_refused_when_the_disk_is_nearly_full(
+    file_agent_token, monkeypatch
+):
+    """A creation that would eat into the free-space reserve is refused.
+
+    507 rather than 413: the request is fine, the server has nowhere to put
+    it, and the condition clears when space is freed - so clients retry it
+    instead of setting an irreplaceable raw file aside.
+    """
+    monkeypatch.setattr(sample_files_routes, "_free_disk_bytes", lambda: 8)
+    monkeypatch.setattr(sample_files_routes, "_tus_min_free_bytes", 1024)
+    async with _client(_agent_headers(file_agent_token)) as client:
+        # CREATE_HEADERS declares Upload-Length: 8, so 8 - 8 = 0 free after.
+        resp = await client.post(TUS_URL, headers=CREATE_HEADERS)
+    assert resp.status_code == 507, resp.text
+    # The refusal must say what is wrong, not just that something is.
+    assert "disk space" in resp.text
+
+
+@pytest.mark.asyncio
+async def test_creation_is_allowed_when_the_disk_has_room(
+    file_agent_token, monkeypatch
+):
+    monkeypatch.setattr(sample_files_routes, "_free_disk_bytes", lambda: 10 * 1024**3)
+    monkeypatch.setattr(sample_files_routes, "_tus_min_free_bytes", 1024)
+    async with _client(_agent_headers(file_agent_token)) as client:
+        status_code = await _create_and_terminate(client)
+    assert status_code == 201
+
+
+@pytest.mark.asyncio
+async def test_unmeasurable_disk_does_not_block_creation(file_agent_token, monkeypatch):
+    """A disk we cannot measure must never refuse an upload.
+
+    Same rule the CLI's update guard applies: an unreadable filesystem is a
+    reason to stop guarding, not a reason to stop working.
+    """
+    monkeypatch.setattr(sample_files_routes, "_free_disk_bytes", lambda: None)
+    monkeypatch.setattr(sample_files_routes, "_tus_min_free_bytes", 1024**4)
+    async with _client(_agent_headers(file_agent_token)) as client:
+        status_code = await _create_and_terminate(client)
+    assert status_code == 201
+
+
+@pytest.mark.asyncio
+async def test_disk_check_is_disabled_by_a_zero_floor(file_agent_token, monkeypatch):
+    """`tus_min_free_disk_gb = 0` is the documented way to turn the check off."""
+    monkeypatch.setattr(sample_files_routes, "_free_disk_bytes", lambda: 0)
+    monkeypatch.setattr(sample_files_routes, "_tus_min_free_bytes", 0)
+    async with _client(_agent_headers(file_agent_token)) as client:
+        status_code = await _create_and_terminate(client)
+    assert status_code == 201
+
+
+@pytest.mark.asyncio
+async def test_abandoned_partials_are_swept_at_creation(file_agent_token):
+    """A partial nobody came back for is reclaimed when the space is needed.
+
+    tuspyserver leaves both the data file and its .info sidecar behind, and
+    nothing else reaps temp/tus between restarts, so on a long-lived server
+    they accumulate until the free-space floor refuses everything.
+    """
+    stale = _spool_path("stale")
+    stale_info = f"{stale}.info"
+    fresh = _spool_path("fresh")
+    try:
+        for path in (stale, stale_info, fresh):
+            with open(path, "wb") as file:
+                file.write(b"partial")
+        old = time.time() - 2 * sample_files_routes._TUS_PARTIAL_MAX_AGE_S
+        os.utime(stale, (old, old))
+        os.utime(stale_info, (old, old))
+
+        async with _client(_agent_headers(file_agent_token)) as client:
+            status_code = await _create_and_terminate(client)
+
+        assert status_code == 201
+        assert not os.path.exists(stale)
+        assert not os.path.exists(stale_info)
+        assert os.path.exists(fresh)
+    finally:
+        for path in (stale, stale_info, fresh):
+            if os.path.exists(path):
+                os.remove(path)
+
+
+@pytest.mark.asyncio
+async def test_a_live_partial_is_not_swept(file_agent_token):
+    """A transfer that is still making progress survives the sweep.
+
+    The age is read from the modification time, which every PATCH refreshes -
+    not from the access time, and not from the creation-time expiry
+    tuspyserver records, either of which would reap a slow multi-hour upload
+    out from under a live client.
+    """
+    live = _spool_path("live")
+    try:
+        with open(live, "wb") as file:
+            file.write(b"partial")
+        old = time.time() - 2 * sample_files_routes._TUS_PARTIAL_MAX_AGE_S
+        os.utime(live, (old, time.time() - 60))
+
+        async with _client(_agent_headers(file_agent_token)) as client:
+            status_code = await _create_and_terminate(client)
+
+        assert status_code == 201
+        assert os.path.exists(live)
+    finally:
+        if os.path.exists(live):
+            os.remove(live)
 
 
 @pytest.mark.asyncio

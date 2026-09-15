@@ -66,7 +66,12 @@ def _match_names(series: "pd.Series", pattern: "str | re.Pattern") -> "pd.Series
         return mask
     try:
         legacy = series.str.contains(pattern, case=False, na=False, regex=True)
-    except re.error:
+    except (re.error, ValueError):
+        # Which exception you get depends on the column's string dtype: an
+        # object-dtype column goes through Python's re and raises re.error,
+        # while pandas 3's Arrow-backed str dtype raises pyarrow's ArrowInvalid,
+        # a ValueError. Either way the string is not a usable regex, so the
+        # literal-substring result stands.
         return mask
     if legacy.any():
         warnings.warn(

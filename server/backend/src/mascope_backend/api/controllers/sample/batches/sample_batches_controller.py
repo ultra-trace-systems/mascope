@@ -1,3 +1,4 @@
+import asyncio
 from datetime import datetime, timezone
 
 import numpy as np
@@ -11,6 +12,7 @@ from sqlalchemy import (
     func,
     select,
 )
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import joinedload
 
 import mascope_file.name as m_name
@@ -74,7 +76,7 @@ from mascope_backend.api.models.sample.items.sample_item_pydantic_model import (
 from mascope_backend.api.new.ionization.modes.util import (
     resolve_ionization_modes_by_tokens,
 )
-from mascope_backend.api.new.temp.storage import user_temp_path
+from mascope_backend.api.new.temp.storage import download_name, user_temp_path
 from mascope_backend.db import (
     Dataset,
     SampleBatch,
@@ -298,29 +300,26 @@ async def get_batch_targets(sample_batch_id: str, deduplicate: bool = False) -> 
     }
 
 
-@api_controller()
-async def create_sample_batch(
+async def _insert_sample_batch(
     sample_batch: SampleBatchCreate,
     independent_transaction: bool = False,
 ) -> dict:
-    """
-    Creates a new sample batch with the specified details.
-    Validates constraints for ACQUISITION batches.
+    """Validate and insert one sample batch, letting ``IntegrityError`` through.
 
-    Steps:
-    - Validate batch constraints:
-        - dataset type constraints for ACQUISITION batches
-        - target collection type constraints for the sample batch type
-        - ionization mechanism polarity compatibility
-    - Construct a new SampleBatch object with the provided details and a generated unique ID.
-    - Associate the new sample batch with target collections if any are provided in the request.
-    - Commit the transaction to persist the new sample batch in the database.
-    - Return the details of the created sample batch as a dictionary.
+    Split out of :func:`create_sample_batch` so a caller that recovers from a
+    natural-key collision - :func:`get_or_create_acquisition_batch` - can still
+    see the ``IntegrityError``. The ``@api_controller`` decorator on the public
+    entry point rewrites every exception into an ``ApiException`` (a
+    ``SQLAlchemyError`` becomes a generic 500), which erases the distinction
+    between "another worker already created this row" and a real database
+    fault, and 500 is not in ``_RECOVERABLE_STATUS_CODES`` either.
 
     :param sample_batch: Data for creating the sample batch.
     :type sample_batch: SampleBatchCreate
-    :param independent_transaction: Flag indicating if the operation is an independent transaction, defaults to False.
+    :param independent_transaction: Whether to emit the creation event here.
     :type independent_transaction: bool, optional
+    :raises IntegrityError: When the insert violates a constraint - notably
+        ``uq_sample_batch_acquisition_natural_key`` on a concurrent create.
     :return: The created sample batch data.
     :rtype: dict
     """
@@ -391,6 +390,161 @@ async def create_sample_batch(
     return {
         "message": f"Sample batch '{new_sample_batch.sample_batch_name}' was created.",
         "data": batch_data,
+    }
+
+
+@api_controller()
+async def create_sample_batch(
+    sample_batch: SampleBatchCreate,
+    independent_transaction: bool = False,
+) -> dict:
+    """
+    Creates a new sample batch with the specified details.
+    Validates constraints for ACQUISITION batches.
+
+    Steps:
+    - Validate batch constraints:
+        - dataset type constraints for ACQUISITION batches
+        - target collection type constraints for the sample batch type
+        - ionization mechanism polarity compatibility
+    - Construct a new SampleBatch object with the provided details and a generated unique ID.
+    - Associate the new sample batch with target collections if any are provided in the request.
+    - Commit the transaction to persist the new sample batch in the database.
+    - Return the details of the created sample batch as a dictionary.
+
+    :param sample_batch: Data for creating the sample batch.
+    :type sample_batch: SampleBatchCreate
+    :param independent_transaction: Flag indicating if the operation is an independent transaction, defaults to False.
+    :type independent_transaction: bool, optional
+    :return: The created sample batch data.
+    :rtype: dict
+    """
+    return await _insert_sample_batch(
+        sample_batch=sample_batch,
+        independent_transaction=independent_transaction,
+    )
+
+
+async def _find_acquisition_batch(
+    dataset_id: str, sample_batch_name: str, polarity: str
+) -> dict | None:
+    """Look up the daily ACQUISITION batch for one dataset, name and polarity.
+
+    Duplicate-tolerant: databases that predate
+    ``uq_sample_batch_acquisition_natural_key`` can hold duplicate daily
+    batches from get-or-create races, so return the oldest and break ties on
+    the primary key. Without that tiebreaker two workers recovering from the
+    same race can pick *different* rows - equal ``sample_batch_utc_created``
+    values are the likely case, since the duplicates were inserted racing the
+    same read - and the day's samples keep splitting instead of converging.
+
+    Polarity is part of the lookup because ``ionization_mode_name`` carries no
+    uniqueness (only ``ionization_mode_token`` does), so an admin who names the
+    positive and negative variant of a mode alike renders one batch name for
+    both. Matching on it too keeps the two polarities in their own batches
+    rather than filing the second one under the first one's polarity and
+    target collections. Two modes that share a name *and* a polarity still
+    collapse - fixing that needs the mode on the batch, not just its name.
+
+    :param dataset_id: ID of the ACQUISITION dataset the batch belongs to.
+    :type dataset_id: str
+    :param sample_batch_name: Generated daily batch name.
+    :type sample_batch_name: str
+    :param polarity: Ionization mode polarity the batch was created for.
+    :type polarity: str
+    :return: The matching batch, or None.
+    :rtype: dict | None
+    """
+    async with async_session() as session:
+        batches = (
+            (
+                await session.execute(
+                    select(SampleBatch)
+                    .where(
+                        SampleBatch.dataset_id == dataset_id,
+                        SampleBatch.sample_batch_type == "ACQUISITION",
+                        SampleBatch.sample_batch_name == sample_batch_name,
+                        SampleBatch.polarity == polarity,
+                    )
+                    .order_by(
+                        SampleBatch.sample_batch_utc_created.asc().nulls_last(),
+                        SampleBatch.sample_batch_id.asc(),
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+
+    if len(batches) > 1:
+        # Recovered data anomaly: worth one grouped warning issue
+        runtime.logger.warning(
+            f"{len(batches)} duplicate ACQUISITION batches found for "
+            f"'{sample_batch_name}' ({polarity}) in dataset {dataset_id}, "
+            "using the oldest"
+        )
+    return SampleBatchRead.model_validate(batches[0]).model_dump() if batches else None
+
+
+@api_controller()
+async def get_or_create_acquisition_batch(sample_batch: SampleBatchCreate) -> dict:
+    """Get or create the daily ACQUISITION batch for one dataset and mode.
+
+    Concurrent ingest of files that share a day and an ionization mode resolves
+    to a single batch name, so a plain read-then-write lets several callers
+    read "absent" and all create. The recovery is the same shape as
+    :func:`~mascope_backend.api.controllers.dataset.acquisition.service.get_acquisition_dataset`
+    one call frame up: insert, and on the natural-key collision fetch the row
+    the winner committed. It holds across processes, which matters because
+    production runs several uvicorn workers (``workers = "auto"``) and each
+    converted file arrives as its own load-balanced request - so the files of
+    one watcher scan routinely land on *different* workers, where an
+    in-process lock is several unrelated objects.
+
+    :param sample_batch: Data for creating the batch if it does not exist.
+    :type sample_batch: SampleBatchCreate
+    :raises ValueError: When called with a non-ACQUISITION batch type.
+    :return: dict with ``"data"`` holding the batch and ``"created"`` saying
+        whether this call is the one that inserted it.
+    :rtype: dict
+    """
+    if sample_batch.sample_batch_type != "ACQUISITION":
+        raise ValueError(
+            "get_or_create_acquisition_batch only handles ACQUISITION batches; "
+            f"got '{sample_batch.sample_batch_type}'"
+        )
+
+    key = {
+        "dataset_id": sample_batch.dataset_id,
+        "sample_batch_name": sample_batch.sample_batch_name,
+        "polarity": sample_batch.polarity,
+    }
+
+    existing = await _find_acquisition_batch(**key)
+    if existing is None:
+        try:
+            return {
+                **await _insert_sample_batch(
+                    sample_batch=sample_batch, independent_transaction=True
+                ),
+                "created": True,
+            }
+        except IntegrityError:
+            # Another worker committed the same natural key first - adopt its
+            # row. A None here is not that collision (e.g. a foreign-key
+            # violation), so surface the original error instead of masking it.
+            existing = await _find_acquisition_batch(**key)
+            if existing is None:
+                raise
+            runtime.logger.debug(
+                f"ACQUISITION batch '{sample_batch.sample_batch_name}' created "
+                f"concurrently, reusing {existing['sample_batch_id']}"
+            )
+
+    return {
+        "message": f"Sample batch '{sample_batch.sample_batch_name}' already exists.",
+        "data": existing,
+        "created": False,
     }
 
 
@@ -565,7 +719,8 @@ async def delete_sample_batch(
         await session.commit()
 
     # --- Cleanup batch cache ---
-    m_io.delete_batch_cache(sample_batch_id)
+    # After the async_session block above, so no DB work crosses the thread.
+    await asyncio.to_thread(m_io.delete_batch_cache, sample_batch_id)
 
     # --- Emit deletion event if independent transaction ---
     if independent_transaction:
@@ -913,8 +1068,14 @@ async def sample_batch_export_peaks(
 
             await send_progress_user_notification(notification, 0.9)
 
-            sample_file = m_io.load_peak_data(filename)
-            peak_data_item = get_peaks(sample_file, unit).sum(dim="time").compute()
+            # One hop: the dataset is lazy, so the read lands on .compute().
+            peak_data_item = await asyncio.to_thread(
+                lambda: (
+                    get_peaks(m_io.load_peak_data(filename), unit)
+                    .sum(dim="time")
+                    .compute()
+                )
+            )
 
             await send_progress_user_notification(notification, 1)
         except Exception:
@@ -945,9 +1106,7 @@ async def sample_batch_export_peaks(
 
     dt_str = datetime.now().isoformat().replace("-", "").replace(":", "").split(".")[0]
 
-    peakfile_name = "_".join(
-        [dt_str, "peaks", sample_batch_name.replace(" ", "_") + ".csv"]
-    )
+    peakfile_name = download_name(dt_str, "peaks", sample_batch_name, extension="csv")
     runtime.logger.info(f"Writing peak data to file {peakfile_name}")
     # Save peak data to dataframe and then to csv file
     batch_peak_df = pd.DataFrame(peak_data)
@@ -1015,7 +1174,9 @@ async def get_sample_batch_peaks(
 
     # --- Try to load batch peak cache --- #
     try:
-        batch_data_response = load_existing_batch_cache(sample_batch)
+        batch_data_response = await asyncio.to_thread(
+            load_existing_batch_cache, sample_batch
+        )
         runtime.logger.info("Loaded existing batch peaks.")
         return batch_data_response
     except FileNotFoundError:
@@ -1036,8 +1197,10 @@ async def get_sample_batch_peaks(
     for ion_mode, specs in spectra.items():
         peak_collection = Spectra(specs, timestamps=np.arange(len(specs)))
 
-        aligned_peak_sum, vlm_min_mz, vlm_max_mz = m_compute.sum_peak_collection(
-            peak_collection
+        # GIL-bound pure-Python clustering, so this yields the loop in slices
+        # rather than freeing it entirely - still worth taking off the loop.
+        aligned_peak_sum, vlm_min_mz, vlm_max_mz = await asyncio.to_thread(
+            m_compute.sum_peak_collection, peak_collection
         )
         peak_per_mode[ion_mode] = aligned_peak_sum
         vlm_min_mzs.add(vlm_min_mz)
@@ -1079,7 +1242,9 @@ async def get_sample_batch_peaks(
             "intensity_variable": intensity_variable,
         },
     )
-    m_io.write_batch_cache(sample_batch_id, "peaks", batch_peaks)
+    await asyncio.to_thread(
+        m_io.write_batch_cache, sample_batch_id, "peaks", batch_peaks
+    )
     runtime.logger.debug("Batch peaks cache saved.")
 
     # --- Return aggregated peak data --- #

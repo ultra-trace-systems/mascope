@@ -8,7 +8,7 @@ import ProgressSpinner from 'primevue/progressspinner'
 import TabMenu from 'primevue/tabmenu'
 
 import { num } from '@/lib/formatters'
-import { BaseTierTag } from '@/lib/base'
+import { BaseLoadError, BaseTierTag } from '@/lib/base'
 import { peakAssignmentEnabled } from '@/lib/features'
 import { useApp } from '@/stores'
 import { usePeakScroller } from './stores'
@@ -123,8 +123,8 @@ onBeforeUnmount(() => {
         >{{ matchedCount }}/{{ app.data.peak.list.length }} peaks matched
       </span>
       <span v-else-if="hasRun" class="tier-summary">
-        <span class="tier-stat identified" v-tooltip.bottom="'Identified'">
-          {{ tierCounts.identified }}
+        <span class="tier-stat assigned" v-tooltip.bottom="'Assigned'">
+          {{ tierCounts.assigned }}
         </span>
         <span class="tier-stat candidate" v-tooltip.bottom="'Candidate'">
           {{ tierCounts.candidate }}
@@ -139,7 +139,7 @@ onBeforeUnmount(() => {
       <span v-else style="opacity: 0.5">{{ app.data.peak.list.length }} peaks &middot; no run</span>
     </template>
     <DataTable
-      v-if="!app.data.peak.pending"
+      v-if="!app.data.peak.pending && !app.data.peak.error"
       ref="peakTable"
       :value="app.data.peak.list"
       dataKey="peak_id"
@@ -181,7 +181,10 @@ onBeforeUnmount(() => {
           {{ num.peakIntensity.format(data.area) }}
         </template>
       </Column>
-      <Column v-if="!peakAssignmentEnabled" field="match" header="formula" sortable style="height: 20px">
+      <!-- The matched isotope buttons are a peak's route into the Match tab,
+           so this column follows that tab rather than the flag: it was hidden
+           while the tab was retired, and comes back with it. -->
+      <Column field="match" header="formula" sortable style="height: 20px">
         <template #body="{ data }">
           <div class="formula-buttons">
             <Button
@@ -219,7 +222,11 @@ onBeforeUnmount(() => {
           </div>
         </template>
       </Column>
-      <Column v-if="peakAssignmentEnabled" header="assignment" style="height: 20px; min-width: 9rem">
+      <Column
+        v-if="peakAssignmentEnabled"
+        header="assignment"
+        style="height: 20px; min-width: 9rem"
+      >
         <template #body="{ data }">
           <div v-if="assignmentFor(data)" class="assignment-cell">
             <span class="formula" v-if="assignmentFor(data).assigned_formula">
@@ -233,7 +240,7 @@ onBeforeUnmount(() => {
             </span>
             <BaseTierTag
               :tier="assignmentFor(data).tier"
-              :fit-score="assignmentFor(data).fit_score"
+              :evidence="assignmentFor(data).evidence"
               :role="assignmentFor(data).role"
               :source="assignmentFor(data).source"
             />
@@ -242,11 +249,18 @@ onBeforeUnmount(() => {
         </template>
       </Column>
     </DataTable>
-    <div v-else class="center" style="width: 100%; height: 220px">
+    <div v-else-if="app.data.peak.pending" class="center" style="width: 100%; height: 220px">
       <div class="col">
         <ProgressSpinner />
       </div>
     </div>
+    <BaseLoadError
+      v-else
+      :error="app.data.peak.error"
+      fallback="Could not load the peaks for this sample."
+      :onRetry="() => app.data.peak.load('retry')"
+      style="height: 220px"
+    />
   </Panel>
 </template>
 
@@ -305,13 +319,13 @@ onBeforeUnmount(() => {
   font-variant-numeric: tabular-nums;
   font-weight: 600;
 }
-.tier-stat.identified {
-  color: var(--p-green-600, #1f9d63);
-  background: color-mix(in srgb, var(--p-green-500, #22c55e) 15%, transparent);
+.tier-stat.assigned {
+  color: var(--state-success);
+  background: color-mix(in srgb, var(--state-success) 15%, transparent);
 }
 .tier-stat.candidate {
-  color: var(--p-amber-600, #c9861f);
-  background: color-mix(in srgb, var(--p-amber-500, #f59e0b) 15%, transparent);
+  color: var(--state-warning);
+  background: color-mix(in srgb, var(--state-warning) 15%, transparent);
 }
 .tier-stat.below {
   color: var(--p-surface-500, #6f7889);

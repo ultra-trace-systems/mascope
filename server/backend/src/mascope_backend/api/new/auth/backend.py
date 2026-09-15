@@ -12,7 +12,16 @@ from fastapi_users.authentication import (
 )
 from rich.pretty import pretty_repr
 
-from mascope_backend.api.new.auth.access_token.util import get_token_service
+from mascope_backend.api.new.auth.access_token.util import (
+    resolve_token_context,
+)
+from mascope_backend.api.new.auth.access_token.validation import (
+    agent_version_from_header,
+    ensure_device_bound,
+    ensure_device_token_fresh,
+    touch_device_last_seen,
+)
+from mascope_backend.api.new.auth.config import auth_settings
 from mascope_backend.api.new.auth.strategies import (
     get_database_strategy,
     get_jwt_strategy,
@@ -44,8 +53,9 @@ async def get_enabled_backends(request: Request) -> list[AuthenticationBackend]:
     Determines the appropriate authentication backend to use based on the request's credentials.
 
     Authentication options:
-    - Cookie-based JWT: Used for the Mascope web application. If the `mascope_auth` cookie is present, this backend is selected.
-    - Access token-based authentication: Intended for Jupyter server or external API access. Enabled if an 'Authorization' header with a Bearer token is found, but the 'mascope_auth' cookie is absent.
+    - Cookie-based JWT: Used for the Mascope web application. If the auth cookie
+      (`auth_settings.COOKIE_NAME`) is present, this backend is selected.
+    - Access token-based authentication: Intended for Jupyter server or external API access. Enabled if an 'Authorization' header with a Bearer token is found, but the auth cookie is absent.
 
     If neither of these conditions is met:
     - Logs an error and defaults to the cookie-based JWT backend.
@@ -59,7 +69,7 @@ async def get_enabled_backends(request: Request) -> list[AuthenticationBackend]:
     runtime.logger.trace(f"Request scope:\n{pretty_repr(request.scope)}")
     runtime.logger.trace(f"Request headers:\n{pretty_repr(dict(request.headers))}")
 
-    cookie_auth = request.cookies.get("mascope_auth")
+    cookie_auth = request.cookies.get(auth_settings.COOKIE_NAME)
     auth_header = request.headers.get("authorization")
     request_service_name = request.headers.get("x-service-name")
 
@@ -84,7 +94,21 @@ async def get_enabled_backends(request: Request) -> list[AuthenticationBackend]:
                 detail="Unauthorized: Missing access token",
             ) from e
 
-        token_service_name = await get_token_service(token)
+        # One row read per token per cache window instead of per request. The
+        # converter issues several bearer requests per file and one per upload
+        # chunk, and this lookup takes no admission-control permit (see
+        # mascope_backend.db), so it was unbounded concurrent database work on
+        # the hottest path in the system.
+        #
+        # Caching it defers no revocation: the auth backend selected below
+        # still reads the token row and its expiry on every request, so a
+        # deleted or expired token is refused now, as before. See
+        # access_token.cache.get_auth_context.
+        (
+            token_service_name,
+            token_device_id,
+            token_created_at,
+        ) = await resolve_token_context(token, auth_settings.access_token)
 
         if token_service_name != request_service_name:
             runtime.logger.info(
@@ -98,6 +122,27 @@ async def get_enabled_backends(request: Request) -> list[AuthenticationBackend]:
                     "Please try to refresh the token."
                 ),
             )
+
+        # Device policy for agent tokens: refuse unbound ones when the
+        # deployment requires paired devices, refuse a device token past its
+        # short lifetime, and record when a bound device was last seen. All
+        # no-ops for non-agent services.
+        ensure_device_bound(token_service_name, token_device_id)
+        ensure_device_token_fresh(token_service_name, token_device_id, token_created_at)
+        if token_device_id is not None:
+            await touch_device_last_seen(
+                token_device_id,
+                agent_version=agent_version_from_header(
+                    request.headers.get("x-agent-version")
+                ),
+            )
+
+        # The authenticated device binding, for routes that attribute an action
+        # to the machine behind it. Recorded here so they read the value this
+        # layer already validated rather than re-parsing the header: only the
+        # bearer path sets it, so a cookie-authenticated request carrying a
+        # stray Authorization header stays unattributed.
+        request.state.token_device_id = token_device_id
 
         # Check if the endpoint allows for token access
         if hasattr(route_func, "token_access") and route_func.token_access:

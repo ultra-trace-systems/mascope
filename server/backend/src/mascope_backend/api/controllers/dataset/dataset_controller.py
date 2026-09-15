@@ -2,9 +2,14 @@ from datetime import datetime, timezone
 
 from fastapi import HTTPException, status
 from sqlalchemy import asc, desc, func, select
+from sqlalchemy.exc import IntegrityError
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from mascope_backend.api.lib.api_features import api_controller
-from mascope_backend.api.lib.exceptions.api_exceptions import NotFoundException
+from mascope_backend.api.lib.exceptions.api_exceptions import (
+    DuplicateException,
+    NotFoundException,
+)
 from mascope_backend.api.models.dataset.config import dataset_config
 from mascope_backend.api.models.dataset.dataset_pydantic_model import (
     DatasetCreate,
@@ -22,6 +27,132 @@ from mascope_backend.socket.records import (
     emit_record_reload,
     emit_record_updated,
 )
+
+
+async def _assert_name_available(
+    session: AsyncSession,
+    workspace_id: str,
+    dataset_name: str,
+    exclude_dataset_id: str | None = None,
+) -> None:
+    """Refuse a dataset name that is already taken in this workspace.
+
+    Two names are the same name when they share the canonical key
+    `lower(btrim(name))` - so case and surrounding padding do not distinguish
+    them. Two such datasets read as the same row in the workspace list, which
+    is the bug; this mirrors the workspace name check in
+    `api/new/workspaces/service.py`.
+
+    Both sides of that comparison are canonicalised **by Postgres**: the bound
+    parameter is the raw name and `lower(btrim(...))` is applied to it in SQL,
+    never in Python. This is not a style choice. Python's `str.lower()` and
+    Postgres `lower()` are different functions - they disagree on 35 BMP
+    codepoints, and Python alone applies the Greek final-sigma rule, so
+    `'IS'` in Greek capitals folds together with its lowercase form in
+    Postgres but not in Python. Canonicalising the input here would make this
+    check pass on names `uq_dataset_workspace_name_ci` then rejects, turning
+    a would-be 409 into a 500 that no re-check could classify.
+
+    The check is a read followed by a write in a separate statement, so two
+    concurrent writers can both pass it. The loser is caught by the database:
+    `uq_dataset_workspace_name_ci` is unique on (workspace_id,
+    lower(btrim(dataset_name))) for non-ACQUISITION rows, and
+    `_commit_or_conflict` turns the IntegrityError it raises back into the
+    same DuplicateException this function would have raised.
+
+    A workspace can still hold two datasets sharing a name, so callers have to
+    stay usable in that state rather than assume it away: ACQUISITION rows are
+    inserted without coming through here at all, and rows predating the index
+    survive until its migration renames them.
+
+    Note this check is deliberately *stricter* than the index: it considers
+    every dataset in the workspace, while the index skips ACQUISITION rows
+    (see the model's `__table_args__` for why those must stay unconstrained
+    by name). Handing out a name the workspace list already shows would help
+    nobody, so an ACQUISITION dataset's name is refused here even though the
+    database would accept it.
+
+    :param session: The session the caller is about to write through.
+    :type session: AsyncSession
+    :param workspace_id: The workspace the name must be unique within.
+    :type workspace_id: str
+    :param dataset_name: The proposed name.
+    :type dataset_name: str
+    :param exclude_dataset_id: Dataset to ignore when matching, defaults to
+                               None. A guard rather than a requirement for
+                               today's callers: `update_dataset` skips this
+                               call entirely when the submitted name is the
+                               dataset's own, and `move_dataset` searches a
+                               workspace the dataset is not in yet, so
+                               neither can match itself even without it.
+    :type exclude_dataset_id: str | None, optional
+    :raises DuplicateException: If another dataset in the workspace already
+                                carries the name.
+    """
+    # `func.btrim(dataset_name)` renders the name as a bound parameter and
+    # canonicalises it in SQL - both sides therefore go through the exact
+    # function the index uses. Stripping or lowering the parameter in Python
+    # first is the bug this shape exists to rule out.
+    stmt = select(Dataset.dataset_id).where(
+        Dataset.workspace_id == workspace_id,
+        func.lower(func.btrim(Dataset.dataset_name))
+        == func.lower(func.btrim(dataset_name)),
+    )
+    if exclude_dataset_id is not None:
+        stmt = stmt.where(Dataset.dataset_id != exclude_dataset_id)
+
+    if (await session.execute(stmt)).first() is not None:
+        # Echoed as submitted; DatasetCreate/DatasetUpdate already strip the
+        # name on the way in, and normalising it a second time here would be
+        # another private definition of the same thing.
+        raise DuplicateException(
+            f"A dataset named '{dataset_name}' already exists in this workspace."
+        )
+
+
+async def _commit_or_conflict(
+    session: AsyncSession,
+    workspace_id: str,
+    dataset_name: str,
+    exclude_dataset_id: str | None = None,
+) -> None:
+    """Commit a name change, reporting a lost race as a conflict, not a fault.
+
+    `_assert_name_available` runs before the write and in a separate statement,
+    so a concurrent writer can take the name in between. That writer's row is
+    already committed when ours reaches the database, and
+    `uq_dataset_workspace_name_ci` rejects it. Left alone the IntegrityError is
+    a SQLAlchemyError and `process_exception` reports it as 500; the caller did
+    nothing wrong and deserves the same 409 the pre-write check gives.
+
+    The re-check is what distinguishes the two cases: if the name really is
+    taken now, the collision was ours and DuplicateException is the honest
+    answer. If it is not, the IntegrityError came from something else (a
+    foreign key, `uq_dataset_acquisition_natural_key`) and is re-raised
+    untouched rather than mislabelled as a duplicate name.
+
+    :param session: The session holding the pending change.
+    :type session: AsyncSession
+    :param workspace_id: The workspace the name has to be unique within.
+    :type workspace_id: str
+    :param dataset_name: The name that was being written.
+    :type dataset_name: str
+    :param exclude_dataset_id: Dataset to ignore when re-checking, defaults to
+                               None.
+    :type exclude_dataset_id: str | None, optional
+    :raises DuplicateException: If the name was taken by a concurrent writer.
+    :raises IntegrityError: If the violated constraint was a different one.
+    """
+    try:
+        await session.commit()
+    except IntegrityError:
+        # The transaction is aborted; the session needs the rollback before it
+        # can run the re-check query.
+        await session.rollback()
+        await _assert_name_available(
+            session, workspace_id, dataset_name, exclude_dataset_id
+        )
+        raise
 
 
 @api_controller()
@@ -84,7 +215,18 @@ async def get_datasets(
 
         # Step 1: Filter by provided parameters
         if dataset_name:
-            stmt = stmt.filter(Dataset.dataset_name == dataset_name)
+            # Matched on the same canonical key as the uniqueness check and
+            # `uq_dataset_workspace_name_ci`. An exact comparison would miss
+            # rows written before names were stripped on the way in, and those
+            # are exactly the rows a client cannot reach any other way: the
+            # validator strips this filter's value, and `DatasetRead` strips
+            # the name it renders, so the padded stored form is not something
+            # a caller can send back. Two names that read alike in the
+            # workspace list are one name here too.
+            stmt = stmt.filter(
+                func.lower(func.btrim(Dataset.dataset_name))
+                == func.lower(func.btrim(dataset_name))
+            )
 
         if dataset_type:
             stmt = stmt.filter(Dataset.dataset_type.in_(dataset_type))
@@ -167,10 +309,12 @@ async def create_dataset(
     Creates a new dataset with the specified details.
 
     Steps:
-    1. Create a new Dataset object with the provided details and the generated ID.
-    2. Add the new dataset to the session and commit the changes to the database.
-    3. Emit a signal to inform clients about the creation of the new dataset.
-    4. Return the details of the created dataset.
+    1. Refuse a name another dataset in the workspace already carries.
+    2. Create a new Dataset object with the provided details and the generated ID.
+    3. Add the new dataset to the session and commit the changes to the database,
+       reporting a name a concurrent create took first as a conflict.
+    4. Emit a signal to inform clients about the creation of the new dataset.
+    5. Return the details of the created dataset.
 
     :param workspace_id: The ID of the workspace to which the dataset belongs.
     :type workspace_id: str
@@ -179,11 +323,18 @@ async def create_dataset(
     :param independent_transaction: Flag to indicate if the operation should be treated
                                     as an independent transaction, defaults to False.
     :type independent_transaction: bool, optional
+    :raises DuplicateException: If the workspace already has a dataset with
+                                this name (ignoring case and surrounding
+                                spaces), whether that was so before the insert
+                                or a concurrent create won the name in between.
     :return: The created dataset's details.
     :rtype: dict
     """
     async with async_session() as session:
-        # Step 1: Generate unique ID and create new dataset
+        # Step 1: Refuse a name already used in this workspace
+        await _assert_name_available(session, workspace_id, dataset.dataset_name)
+
+        # Step 2: Generate unique ID and create new dataset
         new_dataset = Dataset(
             dataset_id=gen_id(16),
             workspace_id=workspace_id,
@@ -197,12 +348,12 @@ async def create_dataset(
             dataset_utc_created=datetime.now(timezone.utc),
         )
 
-        # Step 2: Add to session and commit
+        # Step 3: Add to session and commit, reporting a lost race as a 409
         session.add(new_dataset)
-        await session.commit()
+        await _commit_or_conflict(session, workspace_id, dataset.dataset_name)
         await session.refresh(new_dataset)
 
-    # Step 3: Emit creation event to all clients
+    # Step 4: Emit creation event to all clients
     dataset_data = DatasetRead.model_validate(new_dataset).model_dump()
     if independent_transaction:
         await emit_record_created(
@@ -212,7 +363,7 @@ async def create_dataset(
             room=workspace_id,
         )
 
-    # Step 4: Return the new dataset details
+    # Step 5: Return the new dataset details
     return {
         "message": f"Dataset '{new_dataset.dataset_name}' created successfully.",
         "data": dataset_data,
@@ -232,10 +383,12 @@ async def update_dataset(
 
     Steps:
     1. Fetch the existing dataset by its ID from the database.
-    2. If the dataset is found, update its properties with the new data provided.
-    3. Set the dataset's modification timestamp to the current UTC time.
-    4. Commit the updated dataset to the database.
-    5. Emit socket.io events to inform clients about the dataset update.
+    2. Refuse a rename onto a name the workspace already uses. A name equal to
+       the dataset's own is not a rename and is not checked.
+    3. If the dataset is found, update its properties with the new data provided.
+    4. Set the dataset's modification timestamp to the current UTC time.
+    5. Commit the updated dataset to the database.
+    6. Emit socket.io events to inform clients about the dataset update.
 
     :param dataset_id: The unique identifier of the dataset to update.
     :type dataset_id: str
@@ -248,6 +401,9 @@ async def update_dataset(
                                     transaction, defaults to False.
     :type independent_transaction: bool, optional
     :raises NotFoundException: If no dataset is found with the provided ID.
+    :raises DuplicateException: If the rename would collide with another
+                                dataset in the same workspace, including one a
+                                concurrent write created in between.
     :return: The updated dataset data as a dictionary.
     :rtype: dict
     """
@@ -270,6 +426,32 @@ async def update_dataset(
                 "Acquisition dataset names are managed by the system and cannot be renamed."
             )
 
+        # Step 2b: Refuse a rename onto a name already used in this workspace.
+        # Only a name that actually changes is checked. The edit dialog always
+        # submits the name field, and a workspace can already hold two datasets
+        # sharing a name (ACQUISITION rows, or rows predating the index), so
+        # querying on an unchanged name would refuse a description-only edit,
+        # naming a field the user never touched.
+        #
+        # That comparison is Python's, and it only decides whether to run the
+        # early check - never whether the write is safe. Where Python and
+        # Postgres fold differently it can call a changed name unchanged, so
+        # the commit below still goes through `_commit_or_conflict` whenever a
+        # name was submitted: correctness rests on the index, not on this.
+        current_name_key = existing_dataset.dataset_name.strip().lower()
+        new_name = update_data.get("dataset_name")
+        # Read out of `existing_dataset` now: a rollback inside the commit
+        # below expires its attributes, and an expired attribute cannot be
+        # re-loaded outside an await.
+        owning_workspace_id = existing_dataset.workspace_id
+        if new_name is not None and new_name.strip().lower() != current_name_key:
+            await _assert_name_available(
+                session,
+                owning_workspace_id,
+                new_name,
+                exclude_dataset_id=dataset_id,
+            )
+
         # Step 3: Update the dataset properties
         for key, value in update_data.items():
             setattr(existing_dataset, key, value)
@@ -277,8 +459,15 @@ async def update_dataset(
         # Step 4: Update modification timestamp
         existing_dataset.dataset_utc_modified = datetime.now(timezone.utc)
 
-        # Step 5: Commit the updates
-        await session.commit()
+        # Step 5: Commit the updates. Only a rename can lose the name race, so
+        # only a rename gets the conflict translation - an unrelated update
+        # that trips a constraint must keep reporting what actually happened.
+        if new_name is not None:
+            await _commit_or_conflict(
+                session, owning_workspace_id, new_name, exclude_dataset_id=dataset_id
+            )
+        else:
+            await session.commit()
         await session.refresh(existing_dataset)
 
     # Step 6: Emit update event to all clients
@@ -367,6 +556,7 @@ async def move_dataset(
     - Reject ACQUISITION datasets, which are auto-managed across workspaces.
     - Reject a no-op move where the target equals the source.
     - Validate the target workspace exists, is non-system and active.
+    - Reject a move whose name is already taken in the target workspace.
     - Reassign workspace_id, bump the modified timestamp and commit.
     - Broadcast a dataset reload so clients re-fetch their workspace list.
 
@@ -383,6 +573,9 @@ async def move_dataset(
     :raises NotFoundException: If the dataset is missing or no longer in the
                                source workspace.
     :raises WorkspaceNotFoundException: If the target workspace does not exist.
+    :raises DuplicateException: If the target workspace already has a dataset
+                                with this name, including one a concurrent
+                                write created in between.
     :raises HTTPException: 400 for ACQUISITION datasets, no-op moves, or an
                            inactive target; 403 for a system target.
     :return: The moved dataset's details.
@@ -423,10 +616,28 @@ async def move_dataset(
                 detail="Cannot move datasets into an archived workspace.",
             )
 
+        # --- Refuse a move that would duplicate a name in the target ---
+        # Held in a local: a rollback in the commit below expires the
+        # instance's attributes, and reading one back outside an await raises.
+        dataset_name = dataset.dataset_name
+        await _assert_name_available(
+            session,
+            target_workspace_id,
+            dataset_name,
+            exclude_dataset_id=dataset_id,
+        )
+
         # --- Reassign workspace and bump modification timestamp ---
         dataset.workspace_id = target_workspace_id
         dataset.dataset_utc_modified = datetime.now(timezone.utc)
-        await session.commit()
+        # A move is a rename in the target's namespace and races the same way:
+        # a create in the target can take the name after the check above.
+        await _commit_or_conflict(
+            session,
+            target_workspace_id,
+            dataset_name,
+            exclude_dataset_id=dataset_id,
+        )
         await session.refresh(dataset)
 
     # --- Reload so both source and target workspace lists re-fetch updated data ---

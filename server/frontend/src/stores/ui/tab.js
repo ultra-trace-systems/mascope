@@ -21,7 +21,9 @@ export const useTab = defineStore('app.ui.tab', () => {
 
   const data = useData()
 
-  // When visualized ion unfocused, return to 'batch' if batch exists, else default
+  // When visualized ion unfocused, return to 'batch' if batch exists, else default.
+  // Runs whatever the peak_assignment flag says: the Match tab is always
+  // rendered, so visualizing an ion always has somewhere to go.
   watch(
     () => data.match.visualized.ion,
     (visualized) => {

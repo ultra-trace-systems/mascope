@@ -24,13 +24,14 @@ General calibration workflow:
    rewriting relevant m/z coordinates in the sample file.
 """
 
+import asyncio
 import math
+import os
 from abc import abstractmethod
 from itertools import combinations
 
 import numpy as np
 import pandas as pd
-from zarr.errors import PathNotFoundError
 
 import mascope_file.io as m_io
 import mascope_file.name as m_name
@@ -84,6 +85,21 @@ LARGE_SAMPLE_SIZE_THRESHOLD = 5
 ORBI_DOMINANCE_WINDOW_PPM = 100.0
 ORBI_DOMINANCE_RATIO = 10.0
 
+#: Warnings for a calibration that has nothing to calibrate against. Reported
+#: the same way as "The sample file has no peaks.": no fit, no stats, nothing
+#: written, and the controller turns the warning into an API warning.
+EMPTY_CALIBRATION_COLLECTION_WARNING = (
+    "Calibration collection is empty - nothing to calibrate against."
+)
+#: Both causes belong in the text: the isotopes are selected by the mode's
+#: mechanisms *and* by the resolution the instrument dictates, so a collection
+#: that only carries HIGH-resolution isotopes fails on a TOF sample for a
+#: reason that has nothing to do with the ionization mode.
+NO_CALIBRATION_ISOTOPES_WARNING = (
+    "Calibration collection has no isotopes for this ionization mode at the "
+    "instrument's resolution - nothing to calibrate against."
+)
+
 
 class BaseCalibrationHandler:
     #: Local-dominance guard (see ORBI_DOMINANCE_WINDOW_PPM). Disabled here
@@ -106,14 +122,78 @@ class BaseCalibrationHandler:
         self.error = None
         self.warning = None
 
-    async def _match_calibration_compounds(self) -> tuple[pd.DataFrame, pd.DataFrame]:
-        """Match calibration compounds in the sample file."""
+    def _calibration_lock_path(self) -> str:
+        """Path naming the lock that guards a whole ``apply`` for this sample.
+
+        Not a store - only the name a lock file is derived from. It sits beside
+        the sample's stores and is deliberately distinct from any of them, so
+        taking it does not collide with the per-array locks the writes inside
+        ``_apply_sync`` take for themselves.
+        """
+        return os.path.join(
+            m_name.parse_path_from_item_filename(self.filename), "mz_calibration"
+        )
+
+    def _guarded_apply(self, fit: dict):
+        """Run ``_apply_sync`` under a lock covering the whole recalibration.
+
+        ``_apply_sync`` reads the stored calibration, rewrites several m/z
+        axes, and only then records the new one - an unguarded
+        read-modify-write. It used to be serialised for free: the body ran on
+        the event loop with no await in it, so no other coroutine in the worker
+        could interleave. Offloading it to a thread gives that up, and gives it
+        up more completely than a yield point would, because two callers get
+        two pool threads and run at the same time. On the Orbitrap path the
+        factor is cumulative, so two applies admitted past
+        ``_is_calibration_already_applied`` scale the axis twice while the
+        properties record one application.
+
+        The per-array ``zarr_write_lock`` inside does not cover this: it is
+        released between arrays and keyed per store. This one is keyed on the
+        sample and held across the lot, and being the same inter-process lock
+        the writes use, it also excludes a sibling worker or the file
+        converter - which the event loop never did.
+        """
+        with m_io.zarr_write_lock(self._calibration_lock_path()):
+            return self._apply_sync(fit)
+
+    def _nothing_to_calibrate_against(self, warning: str) -> None:
+        """Record a calibration that never got as far as matching.
+
+        Leaves the handler in the same state as the no-peaks path: no fit and
+        no stats, so nothing is applied and nothing is written, while
+        ``calibration_mz_fit`` turns the warning into an API warning for the
+        caller (dialog message for a manual run, failure marker for the
+        automatic pipeline).
+        """
+        self.fit_result = None
+        self.stats = None
+        self.warning = warning
+
+    async def _resolve_calibration_isotopes(self) -> pd.DataFrame | None:
+        """Target isotopes of the configured calibration collection.
+
+        Returns ``None`` - having recorded the matching warning - when there is
+        nothing to calibrate against, either because the collection holds no
+        compounds or because none of them has an isotope for this ionization
+        mode and instrument resolution. Both cases must stop here: an empty
+        compound list used to be dropped from the isotope query as falsy, which
+        fitted the sample against *every* target isotope in the database,
+        across all collections and workspaces; an empty isotope result then
+        built a column-less DataFrame and crashed the request.
+
+        :return: Isotopes to calibrate against, or None when there are none.
+        :rtype: pd.DataFrame | None
+        """
         target_compounds_result = await get_target_compound_in_target_collection(
             target_collection_id=self.params.calibration_collection_id,
         )
         target_compound_ids = [
             item["target_compound_id"] for item in target_compounds_result["data"]
         ]
+        if not target_compound_ids:
+            self._nothing_to_calibrate_against(EMPTY_CALIBRATION_COLLECTION_WARNING)
+            return None
 
         instrument_type = m_name.get_instrument_type(self.filename)
         match instrument_type:
@@ -128,7 +208,21 @@ class BaseCalibrationHandler:
             resolution=isotope_resolution,
         )
         target_isotopes_df = pd.DataFrame(target_isotopes_result["data"])
+        if target_isotopes_df.empty:
+            self._nothing_to_calibrate_against(NO_CALIBRATION_ISOTOPES_WARNING)
+            return None
+        return target_isotopes_df
 
+    async def _match_calibration_compounds(
+        self,
+        target_isotopes_df: pd.DataFrame,
+    ) -> tuple[pd.DataFrame, pd.DataFrame]:
+        """Match calibration compounds in the sample file.
+
+        :param target_isotopes_df: Non-empty isotopes of the calibration
+            collection, as resolved by :meth:`_resolve_calibration_isotopes`.
+        :type target_isotopes_df: pd.DataFrame
+        """
         peaks = await self._load_and_filter_peaks(
             target_mzs=target_isotopes_df.mz,
         )
@@ -145,12 +239,15 @@ class BaseCalibrationHandler:
             matched_peak_idx=np.nan,
         )
 
-        averaged_peaks = peaks.mean(dim="time")
-        averaged_peaks_dict = {
-            "mz": averaged_peaks.mz.values,
-            "tof": averaged_peaks.tof.values,
-            "intensity": averaged_peaks.values,
-        }
+        def _averaged_peaks_dict():
+            averaged_peaks = peaks.mean(dim="time").compute()
+            return {
+                "mz": averaged_peaks.mz.values,
+                "tof": averaged_peaks.tof.values,
+                "intensity": averaged_peaks.values,
+            }
+
+        averaged_peaks_dict = await asyncio.to_thread(_averaged_peaks_dict)
         match_df = match_df.apply(
             self._match_max_in_range,
             args=(averaged_peaks_dict,),
@@ -220,20 +317,37 @@ class BaseCalibrationHandler:
         :return: DataArray containing detected peaks with their m/z, intensity, and time information.
         :rtype: xarray.DataArray
         """
-        peak_data = m_io.load_peak_data(self.filename)
-
-        candidate_mzs = self._filter_mzs_by_polarity_and_snr(peak_data)
-        candidate_mzs = self._filter_mzs_by_refine_window(
-            candidate_mzs,
-            np.asarray(target_mzs),
+        # Offloaded through the filters, not just the load. `load_peak_data`
+        # returns a dask-backed dataset, so the store reads happen where its
+        # variables are evaluated - `signal_to_noise.values` in the SNR filter
+        # and `sum_peak_heights.values` in the dominance filter, plus that
+        # filter's per-candidate searchsorted loop. Wrapping only the loader
+        # would move the metadata into the thread and leave every chunk read
+        # on the event loop.
+        candidate_mzs = await asyncio.to_thread(
+            self._sync_load_and_filter_peaks, np.asarray(target_mzs)
         )
-        candidate_mzs = self._filter_dominated_peaks(candidate_mzs, peak_data)
+        # Stays on the loop: it awaits the instrument config.
         candidate_mzs = await self._filter_overlapping_peaks(candidate_mzs)
 
         peak_timeseries = await self._load_peak_timeseries(candidate_mzs)
-        peak_timeseries = self._drop_empty_peak_timeseries(peak_timeseries)
+        peak_timeseries = await asyncio.to_thread(
+            self._drop_empty_peak_timeseries, peak_timeseries
+        )
 
         return self._extract_intensity(peak_timeseries)
+
+    def _sync_load_and_filter_peaks(self, target_mzs: np.ndarray) -> np.ndarray:
+        """Synchronous body of :meth:`_load_and_filter_peaks` up to the awaits.
+
+        One unit so the lazy dataset is both opened and evaluated in the worker
+        thread. See the call site for why the split matters.
+        """
+        peak_data = m_io.load_peak_data(self.filename)
+
+        candidate_mzs = self._filter_mzs_by_polarity_and_snr(peak_data)
+        candidate_mzs = self._filter_mzs_by_refine_window(candidate_mzs, target_mzs)
+        return self._filter_dominated_peaks(candidate_mzs, peak_data)
 
     def _filter_mzs_by_polarity_and_snr(self, peak_data) -> np.ndarray:
         """Filter m/z values based on polarity and signal-to-noise ratio (SNR) thresholds."""
@@ -334,7 +448,8 @@ class BaseCalibrationHandler:
 
     async def _load_peak_timeseries(self, peak_mzs: np.ndarray):
         """Load peak timeseries for the given m/z values and filter to scan timestamps."""
-        scan_timestamps = m_compute.get_scan_timestamps(
+        scan_timestamps = await asyncio.to_thread(
+            m_compute.get_scan_timestamps,
             self.filename,
             polarity=self.params.polarity,
         )
@@ -628,18 +743,26 @@ class TofCalibrationHandler(BaseCalibrationHandler):
         """Fit the m/z calibration for a TOF instrument."""
         await self._send_progress(0.25)
 
-        if not self._has_peaks:
+        if not await asyncio.to_thread(lambda: self._has_peaks):
             self.fit_result = None
             self.stats = None
             self.warning = "The sample file has no peaks."
             return
 
-        _, tic_per_scan = m_compute.get_tic_per_scan(self.filename)
+        target_isotopes_df = await self._resolve_calibration_isotopes()
+        if target_isotopes_df is None:
+            return
+
+        _, tic_per_scan = await asyncio.to_thread(
+            m_compute.get_tic_per_scan, self.filename
+        )
         tic = np.sum(tic_per_scan)
 
         await self._send_progress(0.35)
 
-        match_isotope_df, good_matches_df = await self._match_calibration_compounds()
+        match_isotope_df, good_matches_df = await self._match_calibration_compounds(
+            target_isotopes_df
+        )
 
         n_relevant_isotopes = len(
             match_isotope_df[
@@ -716,6 +839,16 @@ class TofCalibrationHandler(BaseCalibrationHandler):
         """Applies the m/z calibration fit to the sample file.
         NOTE: fit is passed externally since fit() and apply() used in different controllers
         and the instance of TofCalibrationHandler is not passed between them."""
+        # Offloaded as one unit rather than per zarr call: the body recalibrates
+        # several arrays, and a reader must not see signal.zarr on the new m/z
+        # axis while peak_timeseries.zarr is still on the old one. Running it in
+        # a thread is what makes that possible without blocking the loop, but a
+        # thread is not on its own exclusive - see _guarded_apply for the lock
+        # that keeps the recalibration one unit.
+        return await asyncio.to_thread(self._guarded_apply, fit)
+
+    def _apply_sync(self, fit: dict):
+        """Synchronous body of :meth:`apply`. See there for why it is one unit."""
         fit_mode = fit["mode"]
         fit_parameters = fit["par"]
 
@@ -742,16 +875,21 @@ class TofCalibrationHandler(BaseCalibrationHandler):
                     self.filename, sum_signal_var, "mz", new_mz_axis
                 )
 
+        # Only the lookup may legitimately be absent - a sample file with no
+        # peaks yet. The write stays outside, so a genuine I/O failure there
+        # propagates instead of being reported as "no peak_timeseries" while
+        # the file is already flagged as calibrated.
         try:
             peak_tofs = m_io.load_coord(self.filename, "peak_timeseries", "tof")
-            new_peak_mz = tof_to_mass(peak_tofs, fit_mode, fit_parameters)
-            m_io.update_zarr_array_coord(
-                self.filename, "peak_timeseries", "mz", new_peak_mz
-            )
-        except PathNotFoundError:
+        except FileNotFoundError:
             runtime.logger.warning(
                 f"peak_timeseries not found in {self.filename}, "
                 "thus their m/z coordinates were not updated."
+            )
+        else:
+            new_peak_mz = tof_to_mass(peak_tofs, fit_mode, fit_parameters)
+            m_io.update_zarr_array_coord(
+                self.filename, "peak_timeseries", "mz", new_peak_mz
             )
         return new_mz_axis
 
@@ -803,13 +941,19 @@ class OrbiCalibrationHandler(BaseCalibrationHandler):
         """Fit the m/z calibration for an Orbitrap instrument."""
         await self._send_progress(0.25)
 
-        if not self._has_peaks:
+        if not await asyncio.to_thread(lambda: self._has_peaks):
             self.fit_result = None
             self.stats = None
             self.warning = "The sample file has no peaks."
             return
 
-        match_isotope_df, good_matches_df = await self._match_calibration_compounds()
+        target_isotopes_df = await self._resolve_calibration_isotopes()
+        if target_isotopes_df is None:
+            return
+
+        match_isotope_df, good_matches_df = await self._match_calibration_compounds(
+            target_isotopes_df
+        )
 
         await self._send_progress(0.75)
 
@@ -817,7 +961,9 @@ class OrbiCalibrationHandler(BaseCalibrationHandler):
             self.warning = "No calibration peaks found"
             return
 
-        _, tic_per_scan = m_compute.get_tic_per_scan(self.filename)
+        _, tic_per_scan = await asyncio.to_thread(
+            m_compute.get_tic_per_scan, self.filename
+        )
         tic = np.sum(tic_per_scan)
         calibrant_signal_intensity = good_matches_df["sample_peak_intensity"]
         calibrant_to_tic = calibrant_signal_intensity / tic
@@ -855,6 +1001,14 @@ class OrbiCalibrationHandler(BaseCalibrationHandler):
         A new calibration factor is stored for new sum signals and
         signals to be generated later.
         """
+        # Offloaded as one unit, for the same reason as the TOF handler - and
+        # the lock matters more here: this calibration is cumulative, so a
+        # second apply admitted past the _is_calibration_already_applied guard
+        # below would double-apply old_factor_scaling.
+        return await asyncio.to_thread(self._guarded_apply, fit)
+
+    def _apply_sync(self, fit: dict):
+        """Synchronous body of :meth:`apply`. See there for why it is one unit."""
         fit_parameters = fit["par"]
         old_factor_scaling = fit_parameters["old_factor_scaling"]
         if self._is_calibration_already_applied(fit):
@@ -880,18 +1034,17 @@ class OrbiCalibrationHandler(BaseCalibrationHandler):
                 m_io.load_array(self.filename, "signal").mz.values * old_factor_scaling
             )
             m_io.update_zarr_array_coord(self.filename, "signal", "mz", new_signal_mz)
+        # Only the lookup may legitimately be absent; see the Tof handler.
         try:
-            new_peak_mz = (
-                m_io.load_coord(self.filename, "peak_timeseries", "mz")
-                * old_factor_scaling
-            )
-            m_io.update_zarr_array_coord(
-                self.filename, "peak_timeseries", "mz", new_peak_mz
-            )
-        except PathNotFoundError:
+            peak_mz = m_io.load_coord(self.filename, "peak_timeseries", "mz")
+        except FileNotFoundError:
             runtime.logger.warning(
                 f"Peak_areas/heights not found in {self.filename}, "
                 "thus their m/z coordinates were not updated."
+            )
+        else:
+            m_io.update_zarr_array_coord(
+                self.filename, "peak_timeseries", "mz", peak_mz * old_factor_scaling
             )
 
         # Remove excessive items

@@ -13,7 +13,7 @@ from mascope_tools.composition.corroboration import (
 )
 
 
-def _rec(compound, adduct, tier="identified"):
+def _rec(compound, adduct, tier="assigned"):
     return {
         "target_compound_id": compound,
         "ionization_mechanism_id": adduct,
@@ -57,13 +57,13 @@ def test_untargeted_and_unassigned_rows_are_skipped():
 
 def test_accept_predicate_filters_low_confidence():
     recs = [
-        _rec("c", "H+", tier="identified"),
+        _rec("c", "H+", tier="assigned"),
         _rec("c", "NH4+", tier="below_assignability"),
     ]
     accepted = adduct_corroboration(
-        recs, accept=lambda r: r["tier"] in {"identified", "candidate"}
+        recs, accept=lambda r: r["tier"] in {"assigned", "candidate"}
     )
-    # only the identified adduct counts -> lone adduct -> no corroboration
+    # only the assigned adduct counts -> lone adduct -> no corroboration
     assert accepted["c"].n_adducts == 1
     assert accepted["c"].corroboration == 0.0
     # without the filter, both count

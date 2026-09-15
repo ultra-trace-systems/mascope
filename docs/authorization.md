@@ -15,16 +15,45 @@ Four roles are available, listed from least to most privileged:
 
 Each higher role inherits all permissions of the roles below it.
 
+The two layers are independent, and a global role does not cap the workspace roles an account may hold. An account with the global **guest** role that is an **editor** or **admin** of some workspace can create and modify data there, and the descriptions above should be read as instance-wide capability rather than as a ceiling. When auditing who can do what, read both layers — demoting someone's global role does not withdraw what their workspace memberships grant.
+
 ## Global role
 
 Every user account has a single global role (guest, editor, admin, or owner) set at registration. The global role controls:
 
 - **Who can log in and access the application** — all roles can.
 - **User management** — admins can register and manage guests and editors; owners can manage all users including other admins and owners.
-- **Shared reference data** — instrument configurations, ionization modes, target compounds, and other system-wide resources. Guests can read; editors and above can create and modify.
-- **Calibration** — all users can view calibration state; only admins can run calibrations (they affect data across workspaces).
+- **Shared reference data** — instrument configurations, ionization modes, target compounds, and other system-wide resources. Guests can read; editors and above can create and modify. Note that editing shared reference data is retroactive and instance-wide: changing an ionization mode changes how samples already processed under it are calibrated and matched, and flags every affected batch for recalibration or rematching — in every workspace, not only the editor's own.
+
+  Because a mode is read instance-wide, the calibration and diagnostic collections it names must be readable by the editor setting them, and a collection an ionization mode uses cannot afterwards be narrowed into a single workspace. Otherwise one workspace's private collection would end up governing how every other workspace's samples are matched.
+- **Calibration** — all users can view calibration state. Running one is governed by the instrument workspace, not the global role; see below.
 
 Global admins and owners also receive automatic membership in all instrument workspaces (see below).
+
+## Two-factor authentication
+
+Any account can turn on two-factor authentication (TOTP) from its settings: scan
+a QR code with an authenticator app, then enter a code to confirm. Ten
+single-use recovery codes are shown once at that point - they are the only way
+back in if the phone is lost, and are not recoverable afterwards.
+
+A deployment can also require it. Setting `mfa_required_min_role` under
+`[backend]` in the config TOML names the lowest role it applies to (`admin`
+covers admins and owners, `guest` covers everyone); unset, the default, requires
+it of nobody. An account covered by the requirement is held at an enrolment
+screen after signing in until it sets a factor up, and cannot turn it off again.
+
+Two actions ask for a current code even in an open session: generating an API
+access token, and approving an agent pairing. Both hand out credentials valid
+for a year that are not tied to the browser session, so a session on its own is
+not enough to obtain one. Signing in or enrolling counts as presenting a code
+for the next five minutes, so this rarely means entering one twice.
+
+**If an authenticator is lost together with its recovery codes**, an
+administrator clears the factor for guests and editors, and an owner for anyone
+but themselves; the account then enrols again. If nobody who could do that can
+sign in, the deployment operator runs `mascope prod mfa reset <email>` on the
+host. Clearing a factor never reveals or changes a password.
 
 ## Workspaces
 
@@ -35,6 +64,8 @@ Workspace → Dataset → Sample Batch → Sample Item
 ```
 
 Each workspace has its own member list. A user's **workspace role** (guest, editor, admin, or owner) in a given workspace determines what they can do with the data inside it.
+
+`GET /api/workspaces` reports this as `my_role` on each workspace, so the app can disable an action rather than offer one that would be refused. It describes membership only: a global admin also bypasses the instrument-workspace checks on raw files without holding a membership, so a check on a file-level action reads `my_role` *or* the global role. Acquisition workspaces additionally report `instrument`, naming the instrument whose raw files they hold, so a client does not have to rebuild the workspace name from a prefix to find them.
 
 ### What each workspace role can do
 
@@ -82,7 +113,14 @@ Access to sample files (the raw measurement data uploaded from instruments) is c
 
 - **Viewing file lists**: a user sees files from instruments whose workspace they belong to, plus any files linked to samples in their other workspaces.
 - **Uploading files**: requires at least **editor** in the instrument workspace (or the upload creates the workspace and the user becomes owner).
-- **Deleting / reprocessing files**: requires at least **admin** in the instrument workspace.
+- **Deleting / reprocessing files**: requires at least **admin** in the instrument workspace, *or* admin in a workspace holding a sample item that references the file.
+- **Running an m/z calibration**: requires at least **admin** in the instrument workspace, for the same reason as reprocessing — a calibration is written onto the file, so every sample item referencing it, in any workspace, sees the change.
+
+The instrument role authorises the write and says nothing about the workspace the addressed batch or sample sits in, so a calibration can reach an object the caller could not have listed. The confirmation the route returns therefore names that batch or sample only when a guest-level read would have returned the name; otherwise it is left out. Note that the progress notifications the background job emits to the caller are not filtered this way.
+
+Calibration takes that rule in its **strict** form: unlike deleting or reprocessing, there is no fallback through the workspace an item happens to sit in. Membership of the workspace holding the sample is not sufficient and does not grant a calibration. (The fallback on delete and reprocess is long-standing and is documented here as it behaves, not as an endorsement; the two paths are worth reconciling separately.)
+
+Fitting a calibration is separate and lighter: `POST /api/calibration/mz_fit` computes a fit and returns it without writing anything, so it needs only **editor** in the workspace holding the sample — or **admin** in that file's instrument workspace, since a caller who may write the calibration outright must be able to preview what it is about to write. Writing the fit to the file is the `mz_apply` step, which takes the instrument-workspace admin rule above.
 
 ## User-created workspaces
 
@@ -117,5 +155,5 @@ Each user can generate a personal **access token** for programmatic access (e.g.
 | Delete a workspace                           | Owner of that workspace                             |
 | Register new user accounts                   | Global admin (guests/editors) or owner (any role)   |
 | Manage instrument configs / ionization modes | Global editor role or higher                        |
-| Run calibration                              | Global admin role or higher                         |
+| Run calibration                              | Admin in the instrument's workspace                 |
 | Access data via Jupyter / SDK                | Access token + same permissions as the user account |

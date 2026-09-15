@@ -20,6 +20,7 @@ from mascope_backend.api.lib.exceptions.api_exceptions import NotFoundException
 from mascope_backend.api.lib.rate_limit import clear_login_rate_limit
 from mascope_backend.api.new.auth.access_token.service import regenerate_access_token
 from mascope_backend.api.new.auth.config import auth_settings
+from mascope_backend.api.new.auth.transports.cookie import session_token_from_response
 from mascope_backend.api.new.users import exceptions
 from mascope_backend.api.new.users.access_token.service import delete_user_access_tokens
 from mascope_backend.api.new.users.schemas import UserCreate, UserRead, UserUpdate
@@ -407,8 +408,18 @@ class UserManager(IntegerIDMixin, BaseUserManager[User, int]):
                     )
                     return
 
-                cookie = response.headers["set-cookie"]
-                jwt_token = cookie.split("mascope_auth=")[1].split(";")[0]
+                jwt_token = session_token_from_response(response)
+                if not jwt_token:
+                    # The response set cookies but none of them the session:
+                    # nothing to authenticate the socket with, and saying so
+                    # beats an IndexError landing in the catch-all below as an
+                    # "unexpected error".
+                    runtime.logger.warning(
+                        f"Login response carried no '{auth_settings.COOKIE_NAME}' "
+                        f"cookie, so the socket was left unauthenticated "
+                        f"[Worker {worker_pid}]"
+                    )
+                    return
 
                 # Authenticate the socket connection
                 await authenticate_socket_connection(
@@ -447,8 +458,11 @@ class UserManager(IntegerIDMixin, BaseUserManager[User, int]):
             # Uploads need the file-converter token, and it is otherwise only
             # minted at login or on promotion to editor, so the wipe above would
             # leave editor+ users unable to upload until their next sign-in. SDK
-            # and instrument-agent tokens stay revoked on purpose: those are
-            # handed out explicitly and their holders re-pair.
+            # tokens stay revoked on purpose: those are handed out explicitly
+            # and their holders regenerate them. A paired agent is untouched
+            # either way - its token belongs to the device's machine account,
+            # not to this user - except for a pre-registry token still issued to
+            # the person, which is revoked with the rest.
             editor_level = auth_settings.ROLE_ACCESS_LEVELS.get("editor")
             if user.role_id is not None and user.role_id >= editor_level:
                 await regenerate_access_token(user=user, service_name="file-converter")

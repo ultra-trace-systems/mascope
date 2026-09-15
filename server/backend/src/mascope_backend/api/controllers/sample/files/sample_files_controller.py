@@ -1,3 +1,4 @@
+import asyncio
 import math
 import os
 import shutil
@@ -38,6 +39,7 @@ from mascope_backend.api.models.sample.files.sample_file_pydantic_model import (
 )
 from mascope_backend.api.new.instruments import get_instruments
 from mascope_backend.db import (
+    AgentDevice,
     Dataset,
     SampleBatch,
     SampleFile,
@@ -60,7 +62,12 @@ from mascope_backend.socket.records.service import (
 )
 from mascope_backend.socket.storage.services import is_service_connected
 from mascope_file.io import load_peak_data
-from mascope_file.name import parse_path_from_item_filename
+from mascope_file.name import (
+    forget_instrument_type,
+    get_instrument_name,
+    parse_path_from_item_filename,
+    validate_instrument_name,
+)
 from mascope_signal.peak import get_peaks
 
 
@@ -81,10 +88,69 @@ async def ensure_converter_available() -> None:
         )
 
 
+def file_upload_name(
+    uploaded_name: str, reported_instrument: str | None
+) -> tuple[str, str]:
+    """The name an upload is stored under, and the instrument it is filed under.
+
+    The instrument is the first underscore-separated segment of a stored
+    name, and everything that files, reads or lists a sample relies on that.
+    An agent that reports the instrument it watches therefore gets its
+    uploads stored under ``<instrument>_<name>``, unless the name already
+    starts with that instrument - the agent's own upload prefix, or an
+    acquisition setup that names files that way - in which case nothing is
+    added. Without a reported instrument the name is stored as it arrived,
+    and its first segment is the instrument, as before.
+
+    :param uploaded_name: The file's name as uploaded (base name only)
+    :type uploaded_name: str
+    :param reported_instrument: The instrument the uploader reported, cleaned,
+        or None
+    :type reported_instrument: str | None
+    :return: The stored name and the instrument it is filed under
+    :rtype: tuple[str, str]
+    """
+    if not reported_instrument:
+        return uploaded_name, get_instrument_name(uploaded_name)
+    if get_instrument_name(uploaded_name) == reported_instrument:
+        return uploaded_name, reported_instrument
+    return f"{reported_instrument}_{uploaded_name}", reported_instrument
+
+
+def reported_instrument_or_none(value: str | None) -> str | None:
+    """A reported instrument name the server can file under, or None.
+
+    The agent validates the name before it starts, so a bad one here is a
+    bug on the far side rather than a user error - and the upload has already
+    been accepted, so it is filed by its name as before, with a warning, rather
+    than dropped.
+
+    :param value: The instrument named in the upload's metadata, if any
+    :type value: str | None
+    :return: The cleaned name, or None
+    :rtype: str | None
+    """
+    instrument = (value or "").strip()
+    if not instrument:
+        return None
+    try:
+        validate_instrument_name(instrument)
+    except ValueError as e:
+        runtime.logger.warning(
+            f"Ignoring the instrument reported with an upload and filing the "
+            f"file by its name instead: {e}"
+        )
+        return None
+    return instrument
+
+
 async def _register_file_with_converter(
     filename: str,
     user: User,
     access_token: str,
+    device_id: int | None,
+    instrument_timezone: str | None,
+    source_filename: str | None = None,
 ) -> None:
     """Tell the converter who uploaded a file, before the file is stored.
 
@@ -108,6 +174,13 @@ async def _register_file_with_converter(
     :type user: User
     :param access_token: Pre-validated access token for the converter.
     :type access_token: str
+    :param device_id: The paired device behind the upload, for attribution.
+    :type device_id: int | None
+    :param instrument_timezone: IANA timezone the uploading machine reported.
+    :type instrument_timezone: str | None
+    :param source_filename: The file's name on the uploading machine, when the
+        server stores it under another.
+    :type source_filename: str | None
     """
     await event_emitter.emit(
         "file-converter.auth",
@@ -117,8 +190,79 @@ async def _register_file_with_converter(
             "username": user.username,
             "role_id": user.role_id,
             "access_token": access_token,
+            "device_id": device_id,
+            "instrument_timezone": instrument_timezone,
+            "source_filename": source_filename,
         },
     )
+
+
+async def request_peak_detection(
+    sample_file_id: str,
+    filename: str,
+    user: User,
+    access_token: str,
+    process_id: str | None = None,
+) -> None:
+    """Ask the file converter to rebuild a sample file's peak data.
+
+    The request is queued, not performed: the converter's socket handler
+    enqueues it (rejecting a duplicate for a file already in flight), a pool of
+    worker threads runs the detection, and on completion the worker rematches
+    every sample item of the file. So a caller asks and must not wait - the
+    samples repair themselves and come back matched on their own.
+
+    Callers gate on :func:`ensure_converter_available` first; with no converter
+    connected the request would be stranded.
+
+    :param sample_file_id: The sample file whose peaks are to be rebuilt.
+    :type sample_file_id: str
+    :param filename: That file's filename, as the converter addresses it.
+    :type filename: str
+    :param user: The user the work is done on behalf of; the converter calls
+        back into this API as them.
+    :type user: User
+    :param access_token: That user's file-converter access token.
+    :type access_token: str
+    :param process_id: Process identifier the progress is reported under.
+    :type process_id: str | None
+    :return: None
+    """
+    (
+        affected_sample_item_ids,
+        _,
+        *_,
+    ) = await fetch_affected_sample_data(sample_file_ids=[sample_file_id])
+
+    # --- Emit peak detection request to file converter service via Socket.IO event ---
+    await event_emitter.emit(
+        "file-converter.peak_detection_request",
+        {
+            "filename": filename,
+            "sample_file_id": sample_file_id,
+            "affected_sample_item_ids": affected_sample_item_ids,
+            "process_id": process_id,
+            "user_id": user.id,
+            "username": user.username,
+            "role_id": user.role_id,
+            "access_token": access_token,
+        },
+    )
+
+    # Send an immediate "pending" notification so the UI shows a progress
+    # bar as soon as the request is accepted.
+    pending_notification = UserNotification(
+        process_id=process_id,
+        type="compute_sample_file_peaks",
+        status="pending",
+        message=f"Peak detection queued for '{filename}'...",
+        data={
+            "filename": filename,
+            "sample_file_id": sample_file_id,
+        },
+        progress=5,  # Start with 5% to indicate it's in progress
+    )
+    await emit_user_notification(notification=pending_notification, user_id=user.id)
 
 
 # TODO_configuration Default sample file upload params
@@ -306,9 +450,39 @@ async def create_sample_file(
         instruments = instruments_response["data"]
         initial_instruments = [i["instrument"] for i in instruments]
 
-        # Step 2: Construct new sample file
+        # The device travels in the body because the converter writes this
+        # record back on its own (unbound) token, long after the agent's
+        # request ended - so it cannot be derived from the caller's binding.
+        # It is therefore only honoured when the caller IS the machine account
+        # that device authenticates as; anything else would let any editor
+        # stamp a file with another site's instrument. Attribution must never
+        # fail an ingest, so a rejected or vanished id degrades to
+        # unattributed rather than raising.
+        device_id = sample_file_create.uploaded_by_device_id
+        if device_id is not None:
+            device = await session.get(AgentDevice, device_id)
+            if device is None:
+                runtime.logger.warning(
+                    f"Upload of '{sample_file_create.filename}' referenced "
+                    f"unknown device {device_id}; storing without device "
+                    "attribution"
+                )
+                device_id = None
+            elif device.machine_user_id != user_id:
+                runtime.logger.warning(
+                    f"Upload of '{sample_file_create.filename}' claimed device "
+                    f"{device_id}, which user {user_id} does not authenticate "
+                    "as; storing without device attribution"
+                )
+                device_id = None
+
+        # Step 2: Construct new sample file. The uploading user comes from
+        # the authenticated request (user_id), not from the request body.
         new_sample_file = SampleFile(
-            sample_file_id=gen_id(16), **sample_file_create.model_dump()
+            sample_file_id=gen_id(16),
+            **sample_file_create.model_dump(exclude={"uploaded_by_device_id"}),
+            uploaded_by_device_id=device_id,
+            uploaded_by_user_id=user_id,
         )
         session.add(new_sample_file)
 
@@ -332,14 +506,14 @@ async def create_sample_file(
 
         # Step 6: Trigger automatic processing of the sample file
         from mascope_backend.api.controllers.sample.files.process.service import (
-            auto_process_sample_file,
+            spawn_auto_process_sample_file,
         )
 
         #  TODO Most likely can be moved to module imports after removing circular import
         # with process_instrument_config https://github.com/ultra-trace-systems/mascope/issues/1248
 
         background_tasks.add_task(
-            auto_process_sample_file,
+            spawn_auto_process_sample_file,
             sample_file_id=new_sample_file.sample_file_id,
             independent_transaction=True,
             user_id=user_id,
@@ -429,7 +603,11 @@ async def delete_sample_file_from_filestore(filename: str) -> dict[str, str]:
 
     # Step 3: Remove the directory
     try:
-        shutil.rmtree(filestore_path)
+        # Deleting a sample directory means unlinking every zarr chunk in it,
+        # which is thousands of syscalls for a large file.
+        await asyncio.to_thread(shutil.rmtree, filestore_path)
+        # The props went with the directory, and the name is free again.
+        forget_instrument_type(filename)
         runtime.logger.info(f"Deleted filestore directory: {filestore_path}")
         return {
             "status": "success",
@@ -786,6 +964,8 @@ async def upload_sample_files(
     files: list[UploadFile],
     user: User,
     access_token: str,
+    device_id: int | None = None,
+    instrument_timezone: str | None = None,
 ) -> dict:
     """
     Handles upload of multiple sample files to the `filestreams` directory.
@@ -798,8 +978,10 @@ async def upload_sample_files(
     :type user: User
     :param access_token: Pre-validated user's access token for file converter service.
     :type access_token: str
-    :param user_id: Current user triggered operation (for user notifications)
-    :type user_id: int | None, optional
+    :param device_id: The paired device behind the upload, for attribution.
+    :type device_id: int | None, optional
+    :param instrument_timezone: IANA timezone the uploading machine reported.
+    :type instrument_timezone: str | None, optional
     :return: Dictionary with files upload results.
     :rtype: dict
     """
@@ -841,6 +1023,9 @@ async def upload_sample_files(
                 filename=filename,
                 user=user,
                 access_token=access_token,
+                device_id=device_id,
+                instrument_timezone=instrument_timezone,
+                source_filename=filename,
             )
 
             tmp_path = f"{file_path}.{uuid4().hex}.part"
@@ -929,6 +1114,9 @@ async def upload_sample_file(
     file_path: str,
     user: User,
     access_token: str,
+    device_id: int | None = None,
+    instrument_timezone: str | None = None,
+    source_filename: str | None = None,
 ) -> dict:
     """
     Handles upload of a single sample file from a given file path to the `filestreams` directory.
@@ -942,6 +1130,13 @@ async def upload_sample_file(
     :type user: User
     :param access_token: Pre-validated user's access token for file converter service.
     :type access_token: str
+    :param device_id: The paired device behind the upload, for attribution.
+    :type device_id: int | None, optional
+    :param instrument_timezone: IANA timezone the uploading machine reported.
+    :type instrument_timezone: str | None, optional
+    :param source_filename: The file's name on the uploading machine, when
+        the server stores it under another (see :func:`file_upload_name`).
+    :type source_filename: str | None, optional
     :return: Dictionary with file upload result.
     :rtype: dict
     """
@@ -995,6 +1190,9 @@ async def upload_sample_file(
             filename=filename,
             user=user,
             access_token=access_token,
+            device_id=device_id,
+            instrument_timezone=instrument_timezone,
+            source_filename=source_filename,
         )
 
         # A cross-filesystem move degrades to a non-atomic copy, which the
@@ -1062,6 +1260,101 @@ def finite_or_none(values: list) -> list:
     return [v if v is None or math.isfinite(v) else None for v in values]
 
 
+def _sync_load_sample_file_peaks(
+    filename: str, areas: bool, heights: bool, average: bool
+) -> dict:
+    """Load a sample file's peaks and materialize them into plain lists.
+
+    Kept as one synchronous unit so the caller can hand the whole thing to a
+    worker thread. Splitting it would not help: ``load_peak_data`` returns a
+    dask-backed dataset, so the store reads happen at the ``.tolist()`` calls
+    here rather than at the load.
+
+    :param filename: Sample file filename
+    :param areas: Include peak areas
+    :param heights: Include peak heights
+    :param average: Average over time instead of summing
+    :raises FileNotFoundError: No such sample file, or it is unprocessed
+    :return: Response payload with mz, and area/height/sparsity as requested
+    """
+    sample_file_data = load_peak_data(filename)
+    response_data = {}
+
+    if areas:
+        peak_areas = get_peaks(sample_file_data, "area")
+        peak_areas = (
+            peak_areas.mean(dim="time") if average else peak_areas.sum(dim="time")
+        )
+        response_data["mz"] = peak_areas.mz.values.tolist()
+        response_data["area"] = peak_areas.values.tolist()
+
+    if heights:
+        peak_heights = get_peaks(sample_file_data, "height")
+        peak_heights = (
+            peak_heights.mean(dim="time") if average else peak_heights.sum(dim="time")
+        )
+        # If 'mz' was not populated from areas, populate it from heights
+        if "mz" not in response_data:
+            response_data["mz"] = peak_heights.mz.values.tolist()
+        response_data["height"] = peak_heights.values.tolist()
+
+    # Include sparsity aligned to the same mz coordinate as the response
+    if "mz" not in response_data:
+        response_data["mz"] = sample_file_data.mz.values.tolist()
+        response_data["sparsity"] = sample_file_data.sparsity.values.tolist()
+    else:
+        filtered_mz = peak_areas.mz if areas else peak_heights.mz
+        response_data["sparsity"] = sample_file_data.sparsity.sel(
+            mz=filtered_mz
+        ).values.tolist()
+
+    return response_data
+
+
+def _sync_load_peak_timeseries(filename: str, peak_mz: float):
+    """Load one peak's timeseries and materialize it.
+
+    Same reasoning as :func:`_sync_load_sample_file_peaks`: the ``.compute()``
+    has to sit inside the offloaded unit, not after it.
+
+    :param filename: Sample file filename
+    :param peak_mz: m/z of the peak to select, nearest match
+    :raises FileNotFoundError: No such sample file, or it is unprocessed
+    :return: Computed peak timeseries for the nearest m/z
+    """
+    sample_file = load_peak_data(filename)
+    peaks = get_peaks(sample_file, "height")
+    return peaks.sel(mz=peak_mz, method="nearest").compute()
+
+
+def _sync_get_sum_spectrum(
+    filename: str,
+    t_min: float | None,
+    t_max: float | None,
+    mz_min: float | None,
+    mz_max: float | None,
+) -> tuple[list, list]:
+    """Compute the summed spectrum and materialize it into plain lists.
+
+    This is the path that takes the cross-process zarr write lock on a cache
+    miss (``mascope_signal.compute._write_cached_sum_signal``), so it is the
+    one that most needs to be off the event loop.
+
+    :param filename: Sample file filename
+    :param t_min: Start of the time window
+    :param t_max: End of the time window
+    :param mz_min: Start of the m/z window, or None for all
+    :param mz_max: End of the m/z window, or None for all
+    :return: (mz values, intensity values) as plain lists
+    """
+    spectrum = m_compute.get_sum_signal(
+        filename, t_min, t_max, average=True, reconstruct=True
+    )
+    if mz_min is not None and mz_max is not None:
+        spectrum = spectrum.sel(mz=slice(mz_min, mz_max)).compute()
+    return spectrum.mz.values.tolist(), spectrum.values.tolist()
+
+
 @api_controller()
 async def get_sample_file_peaks(
     sample_file_id: str, areas: bool, heights: bool, average: bool = True
@@ -1097,45 +1390,17 @@ async def get_sample_file_peaks(
     sample_file_data = await get_sample_file(sample_file_id)
     filename = sample_file_data.get("data").get("filename")
 
-    # Step 2: Load peak data
+    # Step 2-4: Load and format the peak data in one worker thread. The whole
+    # block has to be offloaded together, not just load_peak_data: the dataset
+    # is dask-backed, so the chunk reads happen at the .tolist() calls below.
     try:
-        sample_file_data = load_peak_data(filename)
+        response_data = await asyncio.to_thread(
+            _sync_load_sample_file_peaks, filename, areas, heights, average
+        )
     except FileNotFoundError as e:
         raise NotFoundException(
             f"Sample file with name '{filename}' was not found or has not been processed"
         ) from e
-
-    # Step 3: Prepare the data structure for response
-    response_data = {}
-
-    # Step 4: Extract and format the data
-    if areas:
-        peak_areas = get_peaks(sample_file_data, "area")
-        peak_areas = (
-            peak_areas.mean(dim="time") if average else peak_areas.sum(dim="time")
-        )
-        response_data["mz"] = peak_areas.mz.values.tolist()
-        response_data["area"] = peak_areas.values.tolist()
-
-    if heights:
-        peak_heights = get_peaks(sample_file_data, "height")
-        peak_heights = (
-            peak_heights.mean(dim="time") if average else peak_heights.sum(dim="time")
-        )
-        # If 'mz' was not populated from areas, populate it from heights
-        if "mz" not in response_data:
-            response_data["mz"] = peak_heights.mz.values.tolist()
-        response_data["height"] = peak_heights.values.tolist()
-
-    # Include sparsity aligned to the same mz coordinate as the response
-    if "mz" not in response_data:
-        response_data["mz"] = sample_file_data.mz.values.tolist()
-        response_data["sparsity"] = sample_file_data.sparsity.values.tolist()
-    else:
-        filtered_mz = peak_areas.mz if areas else peak_heights.mz
-        response_data["sparsity"] = sample_file_data.sparsity.sel(
-            mz=filtered_mz
-        ).values.tolist()
 
     # Step 5: Format the response for the case where no peaks were detected
     if not response_data["mz"]:
@@ -1219,41 +1484,13 @@ async def compute_sample_file_peaks(
     # --- Check if File Converter service is connected ---
     await ensure_converter_available()
 
-    (
-        affected_sample_item_ids,
-        _,
-        *_,
-    ) = await fetch_affected_sample_data(sample_file_ids=[sample_file_id])
-
-    # --- Emit peak detection request to file converter service via Socket.IO event ---
-    await event_emitter.emit(
-        "file-converter.peak_detection_request",
-        {
-            "filename": filename,
-            "sample_file_id": sample_file_id,
-            "affected_sample_item_ids": affected_sample_item_ids,
-            "process_id": process_id,
-            "user_id": user.id,
-            "username": user.username,
-            "role_id": user.role_id,
-            "access_token": access_token,
-        },
-    )
-
-    # Send an immediate "pending" notification so the UI shows a progress
-    # bar as soon as the request is accepted.
-    pending_notification = UserNotification(
+    await request_peak_detection(
+        sample_file_id=sample_file_id,
+        filename=filename,
+        user=user,
+        access_token=access_token,
         process_id=process_id,
-        type="compute_sample_file_peaks",
-        status="pending",
-        message=f"Peak detection queued for '{filename}'...",
-        data={
-            "filename": filename,
-            "sample_file_id": sample_file_id,
-        },
-        progress=5,  # Start with 5% to indicate it's in progress
     )
-    await emit_user_notification(notification=pending_notification, user_id=user.id)
 
     return {
         "message": f"Peak detection requested for sample file '{filename}'",
@@ -1300,15 +1537,14 @@ async def get_sample_file_peak_timeseries(
     # Step 1: Fetch the sample file details using the provided ID.
     sample_file_data = await get_sample_file(sample_file_id)
     filename = sample_file_data.get("data").get("filename")
-    # Step 2: Load the sample file
+    # Step 2-3: Load the sample file and select the nearest peak, in one
+    # worker thread - the dataset is lazy, so the read lands on .compute().
     try:
-        sample_file = load_peak_data(filename)
-        peaks = get_peaks(sample_file, "height")
+        peak_timeseries = await asyncio.to_thread(
+            _sync_load_peak_timeseries, filename, peak_mz
+        )
     except FileNotFoundError:
         raise NotFoundException(f"Sample file with name '{filename}' not found")
-
-    # Step 3: From sample file peaks, select nearest to requested peak m/z
-    peak_timeseries = peaks.sel(mz=peak_mz, method="nearest").compute()
     peak_mz_data = peak_timeseries.mz.item()
     # Calculate difference of the sample peak m/z to requested peak m/z
     mz_diff = peak_mz_data - peak_mz  # [Th]
@@ -1379,19 +1615,13 @@ async def get_sample_file_spectrum(
     filename = sample_file_data.get("data").get("filename")
     intensity_unit = "counts/s"
 
-    # Step 2: Compute averaged spectrum in the time range (reconstructed for
-    # display so it overlays the centroids).
-    spectrum = m_compute.get_sum_signal(
-        filename, t_min, t_max, average=True, reconstruct=True
+    # Step 2-4: Compute the averaged spectrum (reconstructed for display so it
+    # overlays the centroids), filter it and materialize it, all in one worker
+    # thread. This is the path that takes the cross-process zarr write lock on
+    # a cache miss.
+    mz_values, intensity_values = await asyncio.to_thread(
+        _sync_get_sum_spectrum, filename, t_min, t_max, mz_min, mz_max
     )
-
-    # Step 3: Filter by m/z range if provided
-    if mz_min is not None and mz_max is not None:
-        spectrum = spectrum.sel(mz=slice(mz_min, mz_max)).compute()
-
-    # Step 4: Extract m/z values and intensities
-    mz_values = spectrum.mz.values.tolist()
-    intensity_values = spectrum.values.tolist()
 
     # Step 5: Return the total count, optional spectrum count, and data
     message = f"Retrieved spectrum data with {len(mz_values)} m/z points from sample file '{filename}'."
@@ -1442,7 +1672,7 @@ async def get_sample_file_metadata(sample_file_id: str) -> dict:
         ) from e
 
     # Step 3: Convert metadata to dict
-    metadata_dict = metadata.to_dict()
+    metadata_dict = await asyncio.to_thread(metadata.to_dict)
 
     return {
         "message": f"Metadata for sample file '{filename}' retrieved successfully.",

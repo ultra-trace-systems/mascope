@@ -1,6 +1,7 @@
 <script setup>
 import { reactive, computed, watchEffect } from 'vue'
 
+import Button from 'primevue/button'
 import ScrollPanel from 'primevue/scrollpanel'
 import Message from 'primevue/message'
 import IconField from 'primevue/iconfield'
@@ -45,11 +46,24 @@ const vHelpLayer = app.ui.help.directive(layer)
         Notifications are shown as toasts in the bottom right corner in real time.
         Here you can view a log of past notifications.
       </p>
+      <p>Clearing empties this list and the unread badge; nothing is deleted on the server.</p>
       `
     "
     style="min-height: calc(100vh - 300px)"
   >
-    <h2>Notifications</h2>
+    <div class="row" style="align-items: center">
+      <h2>Notifications</h2>
+      <Button
+        icon="pi pi-trash"
+        severity="secondary"
+        text
+        rounded
+        aria-label="Clear notifications"
+        v-tooltip.bottom="'Clear notifications'"
+        :disabled="app.ui.notification.log.length === 0"
+        @click="app.ui.notification.clearLog()"
+      />
+    </div>
     <IconField style="width: 100%">
       <InputIcon>
         <i class="pi pi-search" />
@@ -58,11 +72,11 @@ const vHelpLayer = app.ui.help.directive(layer)
     </IconField>
     <ScrollPanel>
       <Message
-        v-for="{ process_id, type, status, message, timestamp } in app.ui.notification.log.filter(
+        v-for="{ id, type, status, message, timestamp } in app.ui.notification.log.filter(
           ({ type, status, message }) =>
             `${beautifySnakeCase(type)} ${status} ${message}`.includes(log.query)
         )"
-        :key="process_id"
+        :key="id"
         :severity="
           {
             warning: 'warn'
@@ -73,7 +87,18 @@ const vHelpLayer = app.ui.help.directive(layer)
         <div class="col" style="gap: 0.5rem">
           <ScrollPanel style="width: 250px">
             <h4 style="margin: 0.5rem 0">{{ beautifySnakeCase(type) }} {{ status }}</h4>
-            <p style="margin: 0">
+            <!-- A batch operation composes its message as one line per item
+                 (the samples it could not calibrate, the batches it could not
+                 rematch). `pre-line` is what keeps those breaks: without it the
+                 entries render as one run-on paragraph with nothing between
+                 them, since the reasons carry no trailing punctuation. It still
+                 wraps on width, so a line longer than the pane reflows, and a
+                 one-line message is unchanged. `overflow-wrap: anywhere` breaks
+                 a single word wider than the pane - a link to copy by hand -
+                 instead of letting it run off the side. The toast surface does
+                 both already, from PrimeVue's own `.p-toast` stylesheet
+                 (`pre-line` and `word-break: break-word`). -->
+            <p style="margin: 0; white-space: pre-line; overflow-wrap: anywhere">
               {{ message }}
             </p>
           </ScrollPanel>

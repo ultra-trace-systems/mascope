@@ -8,6 +8,12 @@
   </head>
   <body>
     <div id="app"></div>
+    <!-- The runtime config the container writes at start (see
+         docker-entrypoint.sh). A classic, non-deferred script so it has already
+         set window.__MASCOPE_RUNTIME__ by the time the module bundle evaluates
+         - src/lib/runtime.js reads it synchronously at import time, and every
+         feature flag derived from it is a module-level const. -->
+    <script src="/runtime-config.js"></script>
     <script type="module" src="/src/main.js"></script>
   </body>
 </html>

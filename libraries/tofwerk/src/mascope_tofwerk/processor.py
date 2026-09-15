@@ -3,7 +3,6 @@ from datetime import datetime, timedelta, timezone
 
 import numpy as np
 from scipy.signal import find_peaks
-from scipy.stats import median_abs_deviation
 
 import mascope_signal.compute as m_compute
 from mascope_backend.api.new.instrument_configs.schemas import (
@@ -16,7 +15,35 @@ from mascope_backend.file_converter.base_processor import (
     SampleFileProps,
     with_file_context,
 )
-from mascope_tofwerk.tofwerk import open_h5_file
+from mascope_backend.file_converter.errors import (
+    EMPTY_ACQUISITION_MESSAGE,
+    SINGLE_SCAN_MESSAGE,
+    UNUSABLE_SCAN_TIMES_MESSAGE,
+    EmptyAcquisitionError,
+)
+from mascope_file.name import timestamp_from_filename
+from mascope_signal.noise import max_peak_snr
+from mascope_tofwerk.tofwerk import (
+    NoScansRecordedError,
+    open_h5_file,
+    recorded_scan_times,
+)
+
+
+def _mean_interval(recorded: np.ndarray) -> float:
+    """
+    Mean spacing between consecutive recorded scans.
+
+    One definition, used both for the reported interval and for the term that
+    extends the sample length past the start of its last scan, so the two can
+    never come to disagree about what an interval is.
+
+    :param recorded: Recorded scan start times, at least two long.
+    :type recorded: numpy.ndarray
+    :return: Mean measurement interval [s]
+    :rtype: float
+    """
+    return float(np.mean(np.diff(recorded)))
 
 
 # Threshold factor for determining blank measurements based on noise level
@@ -47,8 +74,51 @@ class H5Processor(BaseFileProcessor):
 
     @property
     def filename(self) -> str:
-        """Get the processed filename."""
-        return self._strip_filepath(self.file_to_process)
+        """The stored file name: the on-disk stem, with the acquisition time
+        put after the instrument segment when the stem does not carry one.
+
+        The filestore files a sample under the date in its name, so the name
+        has to carry the acquisition time. The Thermo processor always injects
+        it; here it is injected only when missing, since TOF acquisition
+        software usually stamps its files already and a second stamp would
+        change every existing name.
+
+        Settled once per file. The answer reaches the reader - and so can fail
+        - while the filestore directory is already laid down under the earlier
+        answer, and a name that changed under it would leave that directory
+        orphaned and the retry hitting it. Cleared with the rest of the
+        per-file cache as the next file is picked up.
+        """
+        cached = self._per_file_cache.get("filename")
+        if cached is not None:
+            return cached
+        return self._per_file_cache.setdefault("filename", self._stored_filename())
+
+    def _stored_filename(self) -> str:
+        """Work out the stored name; see :attr:`filename`, which keeps it.
+
+        :return: The name this file is stored under
+        :rtype: str
+        """
+        stem = self._strip_filepath(self.file_to_process)
+        try:
+            timestamp_from_filename(stem)
+            return stem
+        except ValueError:
+            pass
+        try:
+            stamp = datetime.fromisoformat(self.timestamp).strftime(
+                "%Y.%m.%d-%Hh%Mm%Ss"
+            )
+        except Exception:  # noqa: BLE001  (the reader's own error types vary)
+            # The time could not be read off the file. The name goes out as it
+            # is, and the filestore step reports the missing time exactly as it
+            # did before this injection existed - rather than a name lookup
+            # failing on a file that has not been opened for anything else.
+            return stem
+        if "_" in stem:
+            return stem.replace("_", f"_{stamp}_", 1)
+        return f"{stem}_{stamp}"
 
     @property
     def acquisition_params(self) -> dict:
@@ -73,59 +143,105 @@ class H5Processor(BaseFileProcessor):
         maximum peak height to the noise level (signal to noise ratio).
         If the maximum peak to noise ratio is below a defined threshold,
         the measurement is classified as blank.
+
+        The measurement comes from ``max_peak_snr``, shared with the
+        ambient-spectrum detection in ``mascope_signal.instrument_func.fit``
+        so the two cannot come to disagree about what the noise level is. It
+        answers the two degenerate spectra specially - no peaks at all, and no
+        measurable noise floor - and both are blank measurements here.
         """
         # Get the sum signal and find potential peaks
         sum_signal = m_compute.get_sum_signal(self.filename).values
         peak_indices, _ = find_peaks(sum_signal)
         peak_heights = sum_signal[peak_indices]
 
-        # Compute noise level
-        noise_mad = median_abs_deviation(peak_heights, scale="normal")
-        if noise_mad == 0:
-            # Only one peak, or the signal is saturated, or it's truly empty
+        max_signal_to_noise = max_peak_snr(peak_heights, NOISE_THRESHOLD_FACTOR)
+        if max_signal_to_noise is None:
+            # No noise floor to measure against - a single peak, or a saturated
+            # signal whose peaks are all the same height. Nothing stands out
+            # from the rest, so the measurement is blank. A signal with no
+            # peaks at all is scored 0.0 instead and reaches the same answer
+            # below; the shared measure is what keeps the empty array away from
+            # the np.max() that used to raise on it here.
             return True
-        noise_std = 1.4826 * noise_mad
-        noise_threshold = noise_std * NOISE_THRESHOLD_FACTOR
 
-        max_signal_to_noise = np.max(peak_heights) / noise_threshold
+        # bool(), not the numpy bool the comparison yields: the property is
+        # annotated bool and the other returns are real bools, so without it
+        # the answer's type would depend on which branch produced it.
+        return bool(max_signal_to_noise < BLANK_SNR_THRESHOLD)
 
-        return max_signal_to_noise < BLANK_SNR_THRESHOLD
+    @with_file_context
+    def _read_recorded_scan_times(self) -> np.ndarray:
+        """
+        Read the recorded scan times and refuse what cannot be measured.
+
+        The reader decides which scans the file holds; this adds the two
+        further conditions ingestion needs, because a sample is stored with an
+        interval and a length and neither can be derived without them. Both are
+        refusals rather than repairs: a fabricated time axis would be stored
+        and believed.
+
+        :return: Recorded scan start times, at least two long and all finite
+        :rtype: numpy.ndarray
+        :raises EmptyAcquisitionError: When no measurable time axis was
+            recorded.
+        """
+        try:
+            recorded = recorded_scan_times(self.file_handle["TimingData"]["BufTimes"])
+        except NoScansRecordedError as e:
+            raise EmptyAcquisitionError(EMPTY_ACQUISITION_MESSAGE) from e
+        if recorded.size < 2:
+            # One scan gives no inter-scan spacing to average; the mean of an
+            # empty diff is NaN, which pydantic accepts, so it would be stored
+            # as the sample's interval and length and only surface later, when
+            # serializing the sample to JSON rejects a non-compliant float.
+            raise EmptyAcquisitionError(SINGLE_SCAN_MESSAGE)
+        if not np.isfinite(recorded).all():
+            # The same NaN, reached the other way: an unwritten slot before the
+            # last recorded scan rather than after it. The reader trims the
+            # tail, so what is left here is a hole in the middle of the axis.
+            raise EmptyAcquisitionError(UNUSABLE_SCAN_TIMES_MESSAGE)
+        return recorded
+
+    def _recorded_scan_times(self) -> np.ndarray:
+        """
+        Recorded scan start times for the file being processed.
+
+        Cached: ``interval`` and ``length`` are separate schema fields, so the
+        props collector asks for both and would otherwise open the h5 file
+        twice and read all of ``BufTimes`` twice for one answer. The cache is
+        emptied as each file is picked up, so it cannot outlive the file it
+        describes.
+
+        :return: Recorded scan start times
+        :rtype: numpy.ndarray
+        """
+        cached = self._per_file_cache.get("recorded_scan_times")
+        if cached is None:
+            cached = self._read_recorded_scan_times()
+            self._per_file_cache["recorded_scan_times"] = cached
+        return cached
 
     @property
-    @with_file_context
     def interval(self) -> float:
         """Mean measurement interval in seconds, i.e. length of one spectrum in the sample
 
         :return: Measurement interval [s]
         :rtype: float
         """
-        timestamps = self.file_handle["TimingData"]["BufTimes"][:].flatten()
-        non_zero_indices = np.where(timestamps != 0)[0]
-
-        # Trim trailing zeros
-        timestamps = timestamps[: non_zero_indices[-1] + 1]
-
-        # Calculate the mean difference between consecutive datapoints
-        differences = np.diff(timestamps)
-        return float(np.mean(differences))  # [s]
+        return _mean_interval(self._recorded_scan_times())  # [s]
 
     @property
-    @with_file_context
     def length(self) -> float:
         """Length of the sample file in seconds
 
         :return: Sample length [s]
         :rtype: float
         """
-        # Get timestamp reference and retrieve first and last values
-        timestamps = self.file_handle["TimingData"]["BufTimes"]
-        t_first = timestamps[0, 0]
-        # Last write may contain zero bufs, exclude them
-        t_last_bufs = timestamps[-1]
-        t_last = t_last_bufs[t_last_bufs != 0][-1]
+        recorded = self._recorded_scan_times()
         # Total length of the sample file is the difference between
         # starts of the first and the last scan + mean interval between scans
-        return float(t_last - t_first) + self.interval  # [s]
+        return float(recorded[-1] - recorded[0]) + _mean_interval(recorded)  # [s]
 
     @property
     @with_file_context
@@ -254,30 +370,81 @@ class H5Processor(BaseFileProcessor):
         python_datetime = python_datetime.replace(microsecond=0)
         return python_datetime.isoformat()
 
+    def _acquisition_instant_utc(self) -> datetime:
+        """Acquisition start as an aware UTC instant.
+
+        Requires an open file handle (call under ``with_file_context``).
+
+        :return: Acquisition start in UTC
+        :rtype: datetime
+        """
+        try:
+            filetime = float(
+                self.file_handle["TimingData"].attrs["AcquisitionTimeZero"][0]
+            )
+        except IndexError:
+            filetime = float(
+                self.file_handle["TimingData"].attrs["AcquisitionTimeZero"]
+            )
+        # Windows FILETIME ticks: 100-nanosecond intervals since 1601-01-01 UTC
+        epoch = datetime(1601, 1, 1, tzinfo=timezone.utc)
+        return epoch + timedelta(microseconds=filetime // 10)
+
+    def _resolve_utc_offset(self) -> tuple[float, str]:
+        """Resolve the UTC offset, preferring what the file itself declares.
+
+        Order: the LocalTimeOffsetToUTC attribute the acquisition software
+        wrote ("file"); else the zone the uploading machine reported,
+        evaluated at the acquisition instant ("agent"); else the converter
+        host's zone at that instant ("guess") - the legacy fallback, wrong
+        whenever the instrument PC and the converter host disagree on
+        timezone or DST. Requires an open file handle.
+
+        :return: UTC offset [s] and its source ("file", "agent" or "guess")
+        :rtype: tuple[float, str]
+        """
+        try:
+            try:
+                hours = float(
+                    self.file_handle["TimingData"].attrs["LocalTimeOffsetToUTC"][0]
+                )
+            except IndexError:
+                hours = float(
+                    self.file_handle["TimingData"].attrs["LocalTimeOffsetToUTC"]
+                )
+            return hours * 3600.0, "file"
+        except KeyError:
+            pass
+
+        acquired_utc = self._acquisition_instant_utc()
+        zone = self._context_timezone()
+        if zone is not None:
+            offset = acquired_utc.astimezone(zone).utcoffset()
+            return offset.total_seconds(), "agent"
+        # astimezone() with no argument attaches the host's zone at that
+        # instant; total_seconds() keeps west-of-UTC offsets negative.
+        offset = acquired_utc.astimezone().utcoffset()
+        return offset.total_seconds(), "guess"
+
     @property
     @with_file_context
     def utc_offset(self) -> float:
-        """UTC offset in seconds
+        """UTC offset in seconds applied to the local timestamp
 
         :return: UTC offset in seconds
         :rtype: float
         """
-        try:
-            utc_offset = (
-                float(self.file_handle["TimingData"].attrs["LocalTimeOffsetToUTC"][0])
-                * 3600.0
-            )
-        except IndexError:
-            utc_offset = float(
-                self.file_handle["TimingData"].attrs["LocalTimeOffsetToUTC"] * 3600.0
-            )
-        except KeyError:
-            # Fallback to local timezone offset
-            now = datetime.now()
-            utc_offset = (
-                now - now.astimezone(timezone.utc).replace(tzinfo=None)
-            ).seconds
-        return utc_offset
+        return self._resolve_utc_offset()[0]
+
+    @property
+    @with_file_context
+    def utc_offset_source(self) -> str:
+        """What determined utc_offset: "file", "agent" or "guess"
+
+        :return: Offset source
+        :rtype: str
+        """
+        return self._resolve_utc_offset()[1]
 
     @staticmethod
     def _file_context_manager(file_path: str):

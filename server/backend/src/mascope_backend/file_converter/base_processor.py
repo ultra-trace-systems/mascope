@@ -4,13 +4,18 @@
 import os
 import shutil
 from abc import ABC, ABCMeta, abstractmethod
+from datetime import datetime as dt
+from datetime import timedelta, timezone
 from pathlib import Path
 from queue import Empty, Queue
 from threading import Event, Thread
+from typing import NamedTuple
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import mascope_sdk
 from mascope_file.io import write_props
 from mascope_file.name import (
+    INSTRUMENT_TYPE_BY_EXTENSION,
     get_instrument_name,
     parse_path_from_item_filename,
 )
@@ -23,7 +28,7 @@ from .api import (
     create_sample_file_db_record,
     delete_sample_file_by_filename,
 )
-from .errors import describe_exception
+from .errors import describe_exception, is_routine_file_failure
 from .peak_guard import PeakDetectionGuard
 from .runtime import runtime
 from .schema import SampleFileProps
@@ -51,6 +56,88 @@ def with_file_context(prop_getter) -> callable:
         return prop
 
     return wrapper
+
+
+#: A wall clock that occurs twice: the clocks went back over it, so the same
+#: reading names two instants an offset-change apart.
+WALL_TIME_AMBIGUOUS = "ambiguous"
+#: A wall clock that never occurred: the clocks jumped forward over it, so the
+#: reading names no instant at all.
+WALL_TIME_NONEXISTENT = "nonexistent"
+
+
+class WallTimeOffset(NamedTuple):
+    """The offset chosen for a wall clock, and what was uncertain about it."""
+
+    #: UTC offset in seconds, negative west of UTC.
+    seconds: int
+    #: ``WALL_TIME_AMBIGUOUS``, ``WALL_TIME_NONEXISTENT``, or None when the
+    #: wall clock names exactly one instant.
+    anomaly: str | None
+    #: The offset the other reading would have given, None when unambiguous.
+    #: The stored UTC time is wrong by this difference if the choice was wrong.
+    alternative_seconds: int | None
+
+
+def resolve_wall_time_offset(
+    local_dt: dt, zone: ZoneInfo | None = None
+) -> WallTimeOffset:
+    """
+    Resolve an instrument-local wall clock to a UTC offset.
+
+    Vendors like Thermo record the acquisition time as the instrument PC's wall
+    clock with no offset in the file, and a wall clock is not a point in time:
+    around a daylight-saving transition it either names two instants (the hour
+    the clocks repeat) or none (the hour they skip). No amount of care recovers
+    the missing information from the file, so this resolves it deliberately and
+    says when it had to.
+
+    The choice is ``fold=0`` in both cases - the reading as the pre-transition
+    rule would have produced it. For the repeated hour that is the first of the
+    two passes; for the skipped hour it maps the reading through the offset the
+    instrument's clock still had, which is what a machine that has not yet
+    applied the jump would have written. This matches Python's default and the
+    common convention, and being deterministic matters more than the coin-flip
+    it stands in for: the alternative is reported so the error is bounded and
+    explainable rather than invisible.
+
+    :param local_dt: Naive wall clock as the instrument recorded it.
+    :type local_dt: datetime
+    :param zone: Zone to read it in; None uses the converter host's own, the
+        last-resort fallback for uploads that carry no zone.
+    :type zone: ZoneInfo | None
+    :return: The chosen offset and any anomaly.
+    :rtype: WallTimeOffset
+    """
+
+    def _at(fold: int) -> timedelta:
+        """The offset that maps this wall clock to UTC under ``fold``.
+
+        Derived from the resolved instant rather than read off the aware
+        datetime, because the two are not the same quantity inside a skipped
+        hour: ``utcoffset()`` on a naive ``astimezone()`` reports the offset of
+        the instant the reading landed on, which is on the far side of the
+        transition, while ``replace(tzinfo=...)`` reports the offset used to
+        get there. Reading them off directly makes the host branch classify
+        gaps backwards; subtracting the UTC instant asks both branches the same
+        question.
+        """
+        moment = local_dt.replace(fold=fold)
+        aware = moment.replace(tzinfo=zone) if zone is not None else moment.astimezone()
+        as_utc = aware.astimezone(timezone.utc).replace(tzinfo=None)
+        return moment - as_utc
+
+    first, second = _at(0), _at(1)
+    if first == second:
+        return WallTimeOffset(int(first.total_seconds()), None, None)
+
+    # The offsets differ, so a transition sits on this wall clock. Which kind
+    # follows from the direction: clocks going back (the offset shrinks)
+    # repeat an hour, clocks going forward (it grows) skip one.
+    anomaly = WALL_TIME_AMBIGUOUS if first > second else WALL_TIME_NONEXISTENT
+    return WallTimeOffset(
+        int(first.total_seconds()), anomaly, int(second.total_seconds())
+    )
 
 
 class FileProcessorMeta(ABCMeta):
@@ -121,6 +208,12 @@ class BaseFileProcessor(Thread, ABC, metaclass=FileProcessorMeta):
         self.peak_guard = peak_guard
 
         self.file_to_process = None  # Path to the file to process
+        # Values derived from the file currently being processed, cached so a
+        # property read twice (utc_offset and utc_offset_source are separate
+        # schema fields) costs one resolution. Cleared as each file is picked
+        # up: the filestreams path repeats across acquisitions, so keying on it
+        # would let one file's answer carry into the next.
+        self._per_file_cache: dict = {}
         self.file_handle = None  # Abstract file reference, managed by context manager
 
     # Additional abstract properties not in SampleFileProps
@@ -252,6 +345,8 @@ class BaseFileProcessor(Thread, ABC, metaclass=FileProcessorMeta):
                 sample_file_props,
                 instrument_function_id,
                 access_token=file_context.access_token,
+                device_id=getattr(file_context, "device_id", None),
+                source_filename=getattr(file_context, "source_filename", None),
             )
 
         except Exception as e:
@@ -347,6 +442,78 @@ class BaseFileProcessor(Thread, ABC, metaclass=FileProcessorMeta):
                 f"File {base_filename} not registered in file converter service"
             )
         return file_context
+
+    def _wall_time_offset(self, local_dt: dt, zone: ZoneInfo | None) -> int:
+        """The UTC offset for this file's wall-clock acquisition time.
+
+        Resolves through :func:`resolve_wall_time_offset` and reports a DST
+        anomaly against the file being processed, so a timestamp that lands on
+        the wrong side of a transition is explainable afterwards instead of
+        merely wrong.
+
+        :param local_dt: The instrument-local acquisition time, naive.
+        :type local_dt: datetime
+        :param zone: The zone to read it in, or None for the converter host's.
+        :type zone: ZoneInfo | None
+        :return: UTC offset in seconds.
+        :rtype: int
+        """
+        resolved = resolve_wall_time_offset(local_dt, zone)
+        if resolved.anomaly is not None:
+            zone_name = zone.key if zone is not None else "the converter host's zone"
+            runtime.logger.warning(
+                f"Acquisition time {local_dt.isoformat()} is {resolved.anomaly} "
+                f"in {zone_name} for "
+                f"{os.path.basename(self.file_to_process)}: the file records a "
+                "wall clock and carries no offset, so the instant cannot be "
+                f"recovered exactly. Using {resolved.seconds} s "
+                f"(the alternative is {resolved.alternative_seconds} s); the "
+                "stored UTC time may be off by the difference."
+            )
+        return resolved.seconds
+
+    def _context_timezone(self) -> ZoneInfo | None:
+        """The uploading machine's timezone, resolved from the file context.
+
+        None when no socket client or context is registered, the agent
+        reported no zone, or the reported name is not a known IANA zone
+        (logged; the offset then falls back to the processor's own
+        resolution order).
+        """
+        context_manager = getattr(self.socket_client, "context_manager", None)
+        if context_manager is None:
+            return None
+        base_filename = os.path.basename(self.file_to_process)
+        context = context_manager.get_context(base_filename)
+        zone_name = getattr(context, "instrument_timezone", None) if context else None
+        if not zone_name:
+            return None
+        try:
+            return ZoneInfo(zone_name)
+        except (ZoneInfoNotFoundError, ValueError, KeyError):
+            runtime.logger.warning(
+                f"Uploader reported unknown timezone '{zone_name}' for "
+                f"{base_filename}; falling back for the UTC offset"
+            )
+            return None
+
+    @property
+    def acquisition_timezone(self) -> str | None:
+        """IANA timezone of the uploading machine, when it reported a valid one."""
+        zone = self._context_timezone()
+        return zone.key if zone is not None else None
+
+    @property
+    def instrument_type(self) -> str:
+        """The instrument class, from the reader that opened the file.
+
+        Each processor reads one file type, and the watcher routes files to
+        processors by extension, so the extension names the reader and the
+        reader names the class. Recorded in the props and on the database row
+        rather than parsed from the file name, which lets an instrument be
+        called what its operator calls it.
+        """
+        return INSTRUMENT_TYPE_BY_EXTENSION[self.file_extension]
 
     def _get_sample_file_props(self) -> SampleFileProps:
         """Extract sample file properties from the opened file.
@@ -490,6 +657,41 @@ class BaseFileProcessor(Thread, ABC, metaclass=FileProcessorMeta):
         """Strip path and file extension"""
         return os.path.splitext(os.path.basename(filepath))[0]
 
+    def requeue_inflight(self) -> str | None:
+        """Offer the file this thread was converting back to the queue.
+
+        Called by the service's supervisor once this thread has died, so the
+        replacement picks the file up. It is the only way back for a file that
+        was already dequeued: the watcher computes new work as a difference
+        against its previous walk, so a file still sitting in the streams
+        folder is never offered again.
+
+        The marker is cleared as the file is handed over, so a slot whose
+        replacement could not be built does not offer the same path again on
+        its next attempt. A file that is no longer in the streams folder was
+        already converted or moved aside, and re-queueing it would fail a
+        second time and report that failure to the user for an upload that
+        actually succeeded.
+
+        :return: The path handed back, or None if there was nothing to hand back
+        :rtype: str | None
+        """
+        path = self.file_to_process
+        if path is None:
+            return None
+        self.file_to_process = None
+        if not os.path.exists(path):
+            # The marker outlived the work: nothing left to retry. Say so, so
+            # that a file which is missing for some other reason - an unmounted
+            # streams share, say - is not dropped without a word.
+            runtime.logger.warning(
+                f"{self.__class__.__name__} ({self.name}) died holding {path}, "
+                f"which is no longer in the streams folder; not re-queued"
+            )
+            return None
+        self.file_queue.put(path)
+        return path
+
     def run(self):
         """Main processing loop."""
         runtime.logger.info(f"Running {self.__class__.__name__} ({self.name})")
@@ -500,6 +702,7 @@ class BaseFileProcessor(Thread, ABC, metaclass=FileProcessorMeta):
                 file_basename = None
                 instrument = None
                 self.file_to_process = self.file_queue.get(timeout=0.1)
+                self._per_file_cache = {}
                 file_basename = os.path.basename(self.file_to_process)
                 instrument = get_instrument_name(file_basename)
 
@@ -537,9 +740,19 @@ class BaseFileProcessor(Thread, ABC, metaclass=FileProcessorMeta):
 
                 except Exception as e:
                     error_msg = describe_exception(e)
-                    if isinstance(e, FileExistsError):
-                        # Routine duplicate upload: one warning, no traceback
-                        runtime.logger.warning(
+                    if is_routine_file_failure(e):
+                        # Routine data-side outcomes - a duplicate upload, or
+                        # an acquisition that recorded no scans. The file
+                        # still fails and the user is still notified over the
+                        # socket, but neither is a fault in Mascope.
+                        #
+                        # INFO, not WARNING: the error-monitoring sink
+                        # subscribes at WARNING (see mascope_runtime.logging),
+                        # so a warning here would still mint an event - and,
+                        # carrying no exception, it would be captured as a
+                        # message keyed on text that includes the filename,
+                        # turning one grouped issue into one issue per file.
+                        runtime.logger.info(
                             f"Failed to process file {Path(self.file_to_process).name}: {e}"
                         )
                     else:
@@ -564,29 +777,59 @@ class BaseFileProcessor(Thread, ABC, metaclass=FileProcessorMeta):
                     self.socket_client.context_manager.clear_context(file_basename)
                     self._handle_failed_file(self.file_to_process)
 
+                # Handled either way: the file has been deleted or moved
+                # aside, so it is no longer in flight. Clearing the marker
+                # is what stops a later death from offering an already
+                # converted file back to the queue.
+                self.file_to_process = None
+
             except Empty:
                 # No file to process, continue
                 continue
             except Exception as e:
-                # Catch any unexpected errors
-                runtime.logger.exception(
-                    f"Unexpected error in {self.__class__.__name__}"
-                )
-                if self.file_to_process is not None and file_basename is not None:
-                    # Ensure finalize is called before emission
-                    self._finalize()
-
-                    self.socket_client.emit(
-                        "file_processing_error",
-                        {
-                            "filename": file_basename,
-                            "instrument": instrument or "unknown",
-                            "error": describe_exception(e),
-                        },
+                # The recovery itself talks to the socket and the filesystem, so it
+                # can fail too - and an exception raised HERE escapes the while loop
+                # and kills the thread for good, which is how the converter used to
+                # stop processing every subsequent upload until restart (#1350).
+                # Recovery is best-effort by definition: log and keep serving. The
+                # reporting call is inside the guard as well, so that reporting the
+                # failure can never itself become the failure.
+                try:
+                    # Catch any unexpected errors
+                    runtime.logger.exception(
+                        f"Unexpected error in {self.__class__.__name__}"
                     )
+                    if self.file_to_process is not None and file_basename is not None:
+                        # Ensure finalize is called before emission
+                        self._finalize()
 
-                    # Clear context after emission
-                    self.socket_client.context_manager.clear_context(file_basename)
+                        self.socket_client.emit(
+                            "file_processing_error",
+                            {
+                                "filename": file_basename,
+                                "instrument": instrument or "unknown",
+                                "error": describe_exception(e),
+                            },
+                        )
+
+                        # Clear context after emission
+                        self.socket_client.context_manager.clear_context(file_basename)
+
+                        # Move the file aside exactly as the inner handler does.
+                        # Surviving the error is only half the job: without this
+                        # the file stays in the streams folder, where the
+                        # watcher's previous-walk baseline never offers it again
+                        # and nobody goes looking for it.
+                        self._handle_failed_file(self.file_to_process)
+                        self.file_to_process = None
+                except Exception:
+                    # Leave the in-flight marker set: the file is still wherever
+                    # it was, so if this thread does die later the supervisor
+                    # should still offer it back to the queue.
+                    runtime.logger.exception(
+                        f"{self.__class__.__name__} ({self.name}) could not report a "
+                        f"failed file; continuing so later files still process"
+                    )
 
         # Out of main loop
         runtime.logger.info(f"Exiting {self.__class__.__name__} ({self.name})")

@@ -2,10 +2,19 @@ from datetime import datetime
 from typing import Optional
 
 from fastapi_users import schemas
-from pydantic import BaseModel, EmailStr, Field, field_validator, model_validator
+from pydantic import (
+    BaseModel,
+    EmailStr,
+    Field,
+    computed_field,
+    field_validator,
+    model_validator,
+)
 
+from mascope_backend.accounts import ACCOUNT_TYPE_MACHINE, ACCOUNT_TYPE_PERSON
 from mascope_backend.api.models.base_pydantic_model import QueryParamsModel
 from mascope_backend.api.new.auth.config import auth_settings
+from mascope_backend.api.new.auth.mfa import policy
 from mascope_backend.api.new.users.exceptions import InvalidFieldsException
 
 
@@ -60,9 +69,46 @@ class UserRead(schemas.BaseUser[int]):
         ),
     )
 
+    mfa_enabled: bool = Field(
+        False,
+        description=(
+            "True when the account holds a confirmed second authentication "
+            "factor. Read-only: armed and cleared through the two-factor routes "
+            "and the administrative reset, never by a request body."
+        ),
+    )
+
+    account_type: str = Field(
+        ACCOUNT_TYPE_PERSON,
+        description=(
+            "Whether this is a person or a machine (instrument agent) account. "
+            "Machine accounts never sign in interactively and are managed "
+            "through Paired machines, not user management."
+        ),
+    )
+
     model_config = {
         "from_attributes": True  # Allows Pydantic to work with SQLAlchemy models
     }
+
+    @computed_field
+    @property
+    def mfa_enrollment_required(self) -> bool:
+        """
+        Whether this account is held out of the application until it enrols.
+
+        Derived rather than stored: it is a function of the deployment's policy
+        and the account's role, both of which change without touching the row.
+        Computed here so every response carrying a user gets it, instead of at
+        each of the three places that build this schema - one of which would
+        eventually be missed, and the miss would read as "no enrolment owed".
+
+        Always false for a machine account: it never renders an enrolment
+        screen and its credential does not depend on a second factor.
+        """
+        if self.account_type == ACCOUNT_TYPE_MACHINE:
+            return False
+        return policy.enrollment_required(self.role_id, self.mfa_enabled)
 
     @field_validator("role_name")
     @classmethod
@@ -97,9 +143,15 @@ class UserCreate(schemas.BaseUserCreate):
         ...,
         description="User's email address. This will be used as the login credential.",
     )
-    password: str = Field(
-        ...,
-        description="User's password for authentication. Will be hashed upon creation.",
+    password: Optional[str] = Field(
+        None,
+        description=(
+            "Optional. Omit it and the server generates a temporary password and "
+            "returns it once in the response, which is how administrators create "
+            "accounts: the holder must replace it at first sign-in either way, so "
+            "a password chosen here is only ever a hand-over secret. Required "
+            "where the account holder is choosing their own - see FirstOwnerCreate."
+        ),
     )
     is_active: Optional[bool] = Field(
         default=True,

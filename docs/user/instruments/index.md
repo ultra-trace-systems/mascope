@@ -26,8 +26,37 @@ uploads them to your Mascope server automatically.
 
 3. When the agent first starts, a guided setup runs in the console window.
    It asks for the **Mascope server address** (for example
-   `mascope.example.com`), then connects the agent to your account —
-   choose **pairing** (the default):
+   `mascope.example.com`) and whether to verify the server's TLS
+   certificate (answer *no* only for a self-signed test server), then for
+   the **folder to watch** for new data files (any folder on the PC — where
+   the agent is installed does not matter), whether to **also watch its
+   subfolders**, and the **file pattern** to upload (default `*.raw`).
+
+4. Next it asks for the **instrument name** this machine watches, for
+   example `Orbi-Lab2` (letters, digits and hyphens). The agent reports it
+   when pairing and with every upload, so the server can file uploads under
+   it. If the watched folder already holds files, the name the server files
+   them under is offered as the default; setup looks at a sample of the
+   newest files, at most two folders deep, and takes at most a few seconds
+   whatever the size of the folder. The name is required: the server files
+   this machine's uploads under it, and the agent refuses to start without
+   one.
+
+   A server that files uploads under the reported instrument name (any
+   release from this one on) needs nothing more: the file names can stay
+   exactly as the acquisition software writes them, and setup says so once
+   it has paired. If a `filename_prefix` is configured, setup offers to
+   remove it — that server has no use for it, and a prefix left from an
+   earlier instrument name would have every upload stored under both.
+   Against an older server, which reads the instrument off
+   the start of each file name, setup then checks what those uploads would
+   be filed under as things stand — taking any `filename_prefix` already
+   configured into account — and offers to put `<instrument>_` in front of
+   every uploaded name when the server could not read the current one. If
+   the folder is still empty it asks for one example file name rather than
+   guessing.
+
+5. Finally the setup pairs the agent with your account:
    1. The agent shows a short pairing code, for example `BCD-234`.
    2. Log in to Mascope in your browser (*editor* role or higher), open
       the **Home menu** (house icon, top-left) **Settings** tab, and under
@@ -35,20 +64,30 @@ uploads them to your Mascope server automatically.
    3. Enter the code and approve — the agent picks up its access token
       automatically within a few seconds.
 
-   (Alternatively, choose manual entry and paste a **File Agent** access
-   token generated under **API Access Tokens**.)
-
-4. Finally the setup asks for the **folder to watch** for new data files
-   (any folder on the PC — where the agent is installed does not matter),
-   whether to **also watch its subfolders**, and the **file pattern** to
-   upload (default `*.raw`).
-
 The setup checks the server connection and the token immediately, so a typo
 is caught before any data acquisition depends on it. After setup completes,
 the agent starts watching the folder right away.
 
 Each paired machine gets its own token, so pairing a new instrument PC
-never disconnects an existing one.
+never disconnects an existing one. The token is **short-lived and the agent
+renews it automatically** in the background — you never copy or paste one,
+and there is nothing to rotate by hand. If an instrument PC is left off for
+long enough that its token lapses, just start the agent: it checks with the
+server as it starts, and offers to pair again when the credential is no
+longer accepted. It makes the same offer if a credential is refused while it
+is running.
+
+Under **Paired machines** (Home menu → Settings → API Access Tokens) each
+machine shows the instrument its agent reports watching and the agent release
+it last connected with, next to when it was last seen — so an upgrade across
+several instrument PCs can be followed from the web app. A machine paired by an
+older agent shows neither until it runs one that reports them. Both follow
+what the agent reports now, so changing `instrument` in a machine's
+configuration and restarting it updates the list on its next upload.
+
+Setup also asks whether to **verify the server's TLS certificate**. Leave
+this on for a normal Mascope server; answer No only for a self-signed or
+development server (recorded as `verify_tls` in the configuration).
 
 Leave the console window open while acquiring — closing it stops the agent
 until the next sign-in (or until you start it again from the Start Menu).
@@ -64,9 +103,12 @@ All settings live in one file on the instrument PC:
 | Setting           | Meaning                                                            |
 | ----------------- | ------------------------------------------------------------------ |
 | `host`            | Mascope server address, e.g. `mascope.example.com`                 |
-| `access_token`    | API access token (filled automatically when pairing)               |
+| `access_token`    | Device token (filled by pairing, renewed automatically)            |
 | `source`          | Full path of the folder watched for new data files                 |
 | `recursive`       | `true` to also watch subfolders of `source` (default `false`)      |
+| `verify_tls`      | `true` to verify the server's TLS certificate (default `true`)     |
+| `timezone`        | IANA timezone of this machine, e.g. `Europe/Helsinki` (auto-detected when empty) |
+| `instrument`      | Name of the instrument this machine watches, e.g. `Orbi-Lab2` (letters, digits and hyphens); reported when pairing and with each upload. The agent refuses to start on a name the server would not accept |
 | `mask`            | Pattern of the files to upload, e.g. `*.raw`                       |
 | `timeout`         | Seconds a file must be idle before it is uploaded                  |
 | `filename_prefix` | Optional prefix added to the filename on upload                    |
@@ -75,12 +117,28 @@ All settings live in one file on the instrument PC:
 Restart the agent after editing the file (close its console window, then
 start it again from the Start Menu). Alternatively, run the guided setup
 again — it walks through all the settings above, offering the current
-values as defaults — by starting the agent with the `--setup` flag from a
-terminal:
+values as defaults — by starting the agent with the `--setup` flag:
 
 ```
 %LocalAppData%\Programs\Mascope File Agent\Mascope-File-Agent.exe --setup
 ```
+
+!!! tip "When acquisition times look shifted by an hour"
+
+    Raw files record the acquisition time in this machine's local time, so the
+    agent reports its timezone with every upload and the server converts from
+    it. Detection reads the Windows setting, which names a *group* of zones
+    rather than a city — a machine in Helsinki can resolve to another city in
+    the same group, and the two can disagree about historical daylight-saving
+    changes. If timestamps look wrong, set the zone exactly:
+
+    ```toml
+    [file-agent]
+    timezone = 'Europe/Helsinki'
+    ```
+
+    The agent logs the zone it reports at startup, so the console shows which
+    one is in use.
 
 ### Stopping or disabling the agent
 
@@ -109,20 +167,34 @@ The agent prints its version when it starts, and uninstalling (Windows
   token), copy the file back into the watched folder to retry. The
   `failed_uploads` folder itself is never watched, even with `recursive`
   enabled.
-- *"The server rejected the access token"*: re-run the agent with
-  `--setup` and pair it again (or generate a new **File Agent** token in
-  the web app and update `access_token` in the configuration). Note that
-  the **Regenerate** button removes all of your existing File Agent
-  tokens — including those of machines you paired earlier, which then
-  need re-pairing; pairing itself never affects other machines.
+- *"Failed to get instrument type"* or *"Invalid instrument name"*: the
+  server could not tell which instrument the file belongs to. A current
+  server files each upload under the instrument named in the agent's
+  configuration, so set `instrument` (or run `--setup`) and the file names
+  can be anything. An older server takes the instrument from the start of
+  the name, up to the first underscore — `Orbion_2026.05.03…` is instrument
+  `Orbion` — and needs it to contain `orbi` or `tof`; either name the files
+  that way in the acquisition software, or set `filename_prefix` in the
+  configuration to add it, including the underscore
+  (`filename_prefix = 'Orbion_'`), which the guided setup offers to do for
+  you. The agent does not retry these: the server has understood the name
+  and refused it, so the file is set aside in `failed_uploads` immediately.
+- *"The server rejected the access token"* or *"This agent credential has
+  expired"*: the machine's token has lapsed or its device was revoked.
+  Answer the prompt the agent shows in its window, or close it and start
+  the agent again — it offers to pair on start. Pairing a machine never
+  affects the others. (The agent renews its token on its own while it
+  is running, so this only happens after a long offline period or a
+  deliberate revocation.)
 - *Uploads fail with HTTP 404*: the configured `host` is answering but is
   not the Mascope API. In a production deployment, use the normal Mascope
   web app address. In a development setup, use the backend address (e.g.
   `http://localhost:8090`) — the frontend dev server (port 5173) cannot
   receive uploads.
 - The agent uploads files of any size in resumable chunks, so a network
-  drop mid-file costs at most one chunk. Older agent versions instead
-  upload each file in a single request capped at 100 MB - larger files
+  drop mid-file costs at most one chunk. Agent versions older than the
+  device-pairing release instead upload each file in a single request
+  capped at 100 MB - larger files
   are rejected, logged and copied to `failed_uploads`. Download the
   newest installer to remove the limit.
 

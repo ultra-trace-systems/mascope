@@ -82,15 +82,35 @@ async def get_workspaces(
 
     Regular users see only workspaces they are a member of.
     Superusers see all workspaces, annotated with ``is_member``.
+
+    Every record carries ``my_role``: the caller's own role in that workspace,
+    so a client can gate an action on what the backend will enforce instead of
+    offering it and letting the request come back 403. Superusers report
+    ``owner`` everywhere, which is what ``_enforce`` grants them regardless of
+    membership. It is ``None`` only for a workspace the caller is not a member
+    of, which only a superuser ever sees listed.
+
+    Records also carry ``instrument``: the instrument an acquisition workspace
+    holds the raw files for, or ``None`` for every other workspace. It saves a
+    client rebuilding ``ACQUISITION_NAME_PREFIX`` to work out which workspace
+    governs a given instrument's files.
+
+    ``my_role`` describes workspace membership and nothing else. A global admin
+    additionally bypasses the instrument-workspace checks on raw files without
+    holding a membership, so a client gating a file-level action wants
+    ``my_role`` *or* the global role - see ``docs/authorization.md``.
     """
+    from mascope_backend.api.models.dataset.config import dataset_config
+
+    acquisition_prefix = f"{dataset_config.ACQUISITION_NAME_PREFIX} "
+
     async with async_session() as session:
         query = select(Workspace)
-
-        if workspace_status:
-            query = query.where(Workspace.workspace_status == workspace_status)
+        member_ids = None
 
         if user.is_superuser:
-            # Superusers see everything; annotate membership
+            # Superusers see every workspace and no join filters them, so their
+            # memberships have to be read separately to annotate ``is_member``.
             member_result = await session.execute(
                 select(WorkspaceMember.workspace_id).where(
                     WorkspaceMember.user_id == user.id
@@ -98,21 +118,44 @@ async def get_workspaces(
             )
             member_ids = set(member_result.scalars().all())
         else:
-            # Regular users see only their workspaces
-            query = query.join(WorkspaceMember).where(
-                WorkspaceMember.user_id == user.id
+            # Regular users see only their workspaces, and the join that does
+            # the filtering already carries the role - reading it off that join
+            # keeps the endpoint at the one query it issued before ``my_role``
+            # existed.
+            query = (
+                query.add_columns(WorkspaceMember.workspace_role)
+                .join(
+                    WorkspaceMember,
+                    WorkspaceMember.workspace_id == Workspace.workspace_id,
+                )
+                .where(WorkspaceMember.user_id == user.id)
             )
-            member_ids = None
+
+        if workspace_status:
+            query = query.where(Workspace.workspace_status == workspace_status)
 
         query = query.order_by(asc(Workspace.workspace_name))
         result = await session.execute(query)
-        workspaces = result.scalars().all()
+
+        if user.is_superuser:
+            rows = [(ws, "owner") for ws in result.scalars().all()]
+        else:
+            rows = list(result.all())
 
         data = []
-        for ws in workspaces:
+        for ws, my_role in rows:
             record = ws.to_dict()
             if member_ids is not None:
                 record["is_member"] = ws.workspace_id in member_ids
+            record["my_role"] = my_role
+            # The instrument an acquisition workspace holds the raw files for,
+            # so a client gating a file-level action can match on it instead of
+            # rebuilding this name from a prefix of its own.
+            record["instrument"] = (
+                ws.workspace_name.removeprefix(acquisition_prefix)
+                if ws.is_system and ws.workspace_name.startswith(acquisition_prefix)
+                else None
+            )
             data.append(record)
 
         return {
@@ -329,6 +372,7 @@ async def add_workspace_member(
 
     await emit_record_reload(
         record_type="workspace",
+        record_id=workspace_id,
         room=[workspace_id, f"user-{user_id}"],
     )
     return {"data": member.to_dict()}
@@ -378,7 +422,9 @@ async def update_workspace_member(
         member.workspace_role = workspace_role
         await session.commit()
 
-    await emit_record_reload(record_type="workspace", room=workspace_id)
+    await emit_record_reload(
+        record_type="workspace", record_id=workspace_id, room=workspace_id
+    )
     return {"data": member.to_dict()}
 
 
@@ -423,6 +469,7 @@ async def remove_workspace_member(
 
     await emit_record_reload(
         record_type="workspace",
+        record_id=workspace_id,
         room=[workspace_id, f"user-{user_id}"],
     )
     return {"data": {"workspace_id": workspace_id, "user_id": user_id, "removed": True}}

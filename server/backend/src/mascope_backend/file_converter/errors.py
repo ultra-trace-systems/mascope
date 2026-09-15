@@ -1,4 +1,4 @@
-"""Helpers for turning exceptions into user-notification error strings."""
+"""Exception types and helpers for file-conversion failures."""
 
 
 def describe_exception(e: BaseException) -> str:
@@ -23,3 +23,70 @@ def describe_exception(e: BaseException) -> str:
     ):
         return f"{type(e).__name__}: {message}"
     return message
+
+
+#: The file recorded nothing at all - the run was aborted before its first
+#: scan, or the acquisition software wrote the file and never filled it.
+EMPTY_ACQUISITION_MESSAGE = (
+    "The file contains no scans; the acquisition is empty or was aborted."
+)
+
+#: Exactly one scan: there is a spectrum but no second one to measure the
+#: spacing against, so neither an interval nor a length can be derived.
+SINGLE_SCAN_MESSAGE = (
+    "The file contains only one scan; the acquisition was aborted before a "
+    "measurable time axis was recorded."
+)
+
+#: Scans were recorded but their timestamps are not a usable axis - a partly
+#: written or corrupted timing block leaves entries that are not finite.
+UNUSABLE_SCAN_TIMES_MESSAGE = (
+    "The file's scan timestamps are incomplete, so the acquisition has no "
+    "measurable time axis."
+)
+
+#: The acquisition recorded only fragmentation scans. Peak detection and the
+#: instrument-function fit both read MS1, so a file without a single MS1 scan
+#: carries nothing either of them can run on - the MS2 scans are real data, but
+#: Mascope has no survey spectrum to anchor them to.
+NO_MS1_SCANS_MESSAGE = (
+    "The file contains no MS1 scans; Mascope detects peaks in MS1, so an "
+    "acquisition of fragmentation scans alone cannot be processed."
+)
+
+
+class EmptyAcquisitionError(Exception):
+    """A raw file that carries nothing Mascope can ingest.
+
+    Raised by a processor when the reader reports an empty acquisition - a run
+    that was aborted, or that wrote a file before recording a single scan -
+    when what was recorded yields no measurable time axis, such as a single
+    scan, and when the scans that are there are all fragmentation scans, which
+    leaves peak detection nothing to run on. Nothing downstream can be derived
+    from such a file, so it still fails and lands in ``failed_files``; the
+    distinct type marks it as a property of the data rather than a fault in
+    Mascope, so ``BaseFileProcessor.run`` logs it at INFO without a traceback
+    and error monitoring stays quiet.
+
+    The raise site picks which of the messages above applies, because only it
+    knows which case it found; the wording lives here because it reaches the
+    user's notification verbatim through ``describe_exception`` and both
+    reader paths must say the same thing about the same condition.
+    """
+
+
+def is_routine_file_failure(e: BaseException) -> bool:
+    """
+    Whether a processing failure is a property of the data, not a fault.
+
+    These still fail the file and still notify the user; what they skip is the
+    traceback and, with it, the error-monitoring event. A duplicate upload and
+    an empty acquisition are both things the world does to us routinely -
+    reporting them as faults buries the failures that are ours to fix.
+
+    :param e: The exception that failed the file.
+    :return: True when the run loop should log a bare INFO line instead of an
+        exception with its traceback.
+    :rtype: bool
+    """
+    return isinstance(e, (FileExistsError, EmptyAcquisitionError))

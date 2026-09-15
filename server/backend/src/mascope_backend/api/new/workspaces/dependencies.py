@@ -19,21 +19,28 @@ acquisition/instrument routes):
 - ``check_batch_access``:     sample_batch_id from request body / other source
 - ``check_batch_access_bulk``:  list of sample_batch_ids (single query)
 - ``check_sample_access``:      sample_item_id from request body / other source
+- ``check_sample_or_file_instrument_access``: sample workspace *or* its file's instrument
 - ``check_sample_access_bulk``: list of sample_item_ids (single query)
 - ``check_workspace_access``:     workspace_id from request body / other source
 - ``check_sample_file_access_bulk``: list of sample_file_ids via items (single query)
 - ``check_sample_file_instrument_access``: sample_file_id via instrument → workspace
 - ``check_sample_file_instrument_access_bulk``: list of sample_file_ids via instruments
+- ``check_sample_item_file_instrument_access``: sample_item_id → its file's instrument
+- ``check_sample_batch_file_instrument_access``: sample_batch_id → its files' instruments
+- ``check_filename_file_instrument_access``: filename → that file's instrument
 - ``check_instrument_workspace_access``: instrument name → workspace
 - ``accessible_acquisition_instruments``: set of instruments user can access
 - ``check_target_collection_access``:  target_collection_id → workspace_id
 - ``accessible_workspace_ids_for_user``: set of workspace_ids user is a member of
+- ``access_granted``: run any of the above and report pass/fail as a bool
 
 All return ``WorkspaceMember`` on success or raise ``ForbiddenAccessException``.
 """
 
+from collections.abc import Awaitable
+
 from fastapi import Depends, Path, Query
-from sqlalchemy import select
+from sqlalchemy import func, select
 
 from mascope_backend.api.new.auth.config import auth_settings
 from mascope_backend.api.new.auth.dependencies import current_active_user
@@ -127,14 +134,29 @@ async def _get_workspace_id_from_collection(target_collection_id: str) -> str | 
 
 
 async def _get_workspace_id_from_instrument(instrument: str) -> str | None:
-    """Resolve an instrument name to its system acquisition workspace ID."""
+    """Resolve an instrument name to its system acquisition workspace ID.
+
+    Matched case-insensitively and on the trimmed name, because
+    ``SampleFile.instrument`` is not normalised: the same physical instrument
+    is recorded with inconsistent case and stray whitespace, and one workspace
+    serves every variant. Both the migration that created these workspaces and
+    the acquisition service that creates new ones normalise the same way, and
+    ``ix_workspace_name_ci`` is unique on ``lower(workspace_name)``, so at most
+    one row can match.
+
+    Matching exact-case here would miss the workspace for any file whose
+    recorded spelling differs from the variant that happened to name it, and
+    the callers read that miss as "no such workspace" and refuse.
+    """
     from mascope_backend.api.models.dataset.config import dataset_config
 
-    workspace_name = f"{dataset_config.ACQUISITION_NAME_PREFIX} {instrument}"
+    workspace_name = (
+        f"{dataset_config.ACQUISITION_NAME_PREFIX} {instrument.strip()}".lower()
+    )
     async with async_session() as session:
         result = await session.execute(
             select(Workspace.workspace_id).where(
-                Workspace.workspace_name == workspace_name,
+                func.lower(Workspace.workspace_name) == workspace_name,
                 Workspace.is_system.is_(True),
             )
         )
@@ -207,6 +229,24 @@ async def _enforce(
 # ---------------------------------------------------------------------------
 # Public: explicit check (for body-param routes)
 # ---------------------------------------------------------------------------
+
+
+async def access_granted(check: Awaitable[object]) -> bool:
+    """Report whether an access check passes instead of raising when it does not.
+
+    For the few places that need to *vary* a response on access rather than
+    refuse the request outright - naming an object in a message only to a
+    caller who could have read that name anyway. Everything that gates an
+    action awaits the check directly and lets it raise.
+
+    :param check: An un-awaited call to one of the check functions here.
+    :return: ``True`` if the check passed, ``False`` if it refused.
+    """
+    try:
+        await check
+    except ForbiddenAccessException:
+        return False
+    return True
 
 
 async def accessible_acquisition_instruments(user: User) -> set[str] | None:
@@ -340,6 +380,153 @@ async def check_sample_file_instrument_access_bulk(
         if workspace_id is None:
             raise ForbiddenAccessException()
         await _enforce(workspace_id, user, min_level)
+
+
+def _bypasses_instrument_acl(user: User) -> bool:
+    """Whether *user* clears every instrument-workspace check without membership.
+
+    Superusers bypass the workspace layer outright, and global admins and owners
+    receive automatic membership in every instrument workspace (see
+    ``docs/authorization.md``), which is why every instrument check in this
+    module lets both through before it reads anything.
+    """
+    return user.is_superuser or (
+        user.role_id is not None and user.role_id >= _role_levels["admin"]
+    )
+
+
+async def _check_resolved_file_instrument_access(
+    sample_file_id: str | None,
+    user: User,
+    min_role: str,
+) -> None:
+    """Shared tail of the two single-file resolvers below.
+
+    The bypass is tested before the ``None`` case on purpose. A caller who
+    clears every instrument workspace anyway learns nothing from a 403 on an id
+    that simply does not exist, and hiding the miss behind one only stops the
+    route's own lookup from answering 404 - which is what it means. For everyone
+    else an unresolvable id still fails closed, so the check never confirms
+    which raw files exist to a caller who could not touch them.
+
+    :param sample_file_id: The resolved file, or ``None`` if it did not resolve.
+    :param user: The authenticated user.
+    :param min_role: Minimum role required in the instrument's workspace.
+    :raises ForbiddenAccessException: If the id did not resolve, or its
+        instrument workspace denies access.
+    """
+    if _bypasses_instrument_acl(user):
+        return
+
+    if sample_file_id is None:
+        raise ForbiddenAccessException()
+
+    await check_sample_file_instrument_access_bulk([sample_file_id], user, min_role)
+
+
+async def check_sample_item_file_instrument_access(
+    sample_item_id: str,
+    user: User,
+    min_role: str,
+) -> None:
+    """Check the instrument-workspace ACL for the raw file behind a sample item.
+
+    For operations that write to the underlying ``SampleFile`` rather than to
+    the item itself - m/z calibration is the case this exists for. Such a write
+    is not confined to the item's own workspace: every sample item referencing
+    the same file, in any workspace, sees the change. The instrument workspace
+    is what bounds that blast radius, so that is where the caller must hold a
+    role.
+
+    Note that this is the strict form: unlike
+    ``check_sample_file_instrument_access``, membership of a workspace holding
+    an item that references the file does not stand in for the instrument role.
+
+    :param sample_item_id: The sample item whose file is being written.
+    :param user: The authenticated user.
+    :param min_role: Minimum role required in the instrument's workspace.
+    :raises ForbiddenAccessException: If the item does not exist, or its
+        instrument workspace denies access.
+    """
+    async with async_session() as session:
+        sample_file_id = (
+            await session.execute(
+                select(SampleItem.sample_file_id).where(
+                    SampleItem.sample_item_id == sample_item_id
+                )
+            )
+        ).scalar_one_or_none()
+
+    await _check_resolved_file_instrument_access(sample_file_id, user, min_role)
+
+
+async def check_sample_batch_file_instrument_access(
+    sample_batch_id: str,
+    user: User,
+    min_role: str,
+) -> None:
+    """Check the instrument-workspace ACL for every raw file behind a batch.
+
+    The batch-wide counterpart of
+    ``check_sample_item_file_instrument_access``. A batch may draw on files
+    from more than one instrument, so every instrument involved is checked and
+    the caller needs the role in all of them. The instruments are read straight
+    off the join rather than by collecting file ids and resolving them again -
+    a batch can carry thousands of items and only ever a handful of instruments.
+
+    A batch with no items - including one that does not exist - resolves to an
+    empty instrument list and is refused. That is deliberate: nothing there can
+    be calibrated anyway, and refusing is the fail-closed answer.
+
+    :param sample_batch_id: The batch whose files are being written.
+    :param user: The authenticated user.
+    :param min_role: Minimum role required in each instrument's workspace.
+    :raises ForbiddenAccessException: If the batch has no items, or any
+        instrument workspace denies access.
+    """
+    if _bypasses_instrument_acl(user):
+        return
+
+    async with async_session() as session:
+        result = await session.execute(
+            select(SampleFile.instrument)
+            .distinct()
+            .join(SampleItem, SampleItem.sample_file_id == SampleFile.sample_file_id)
+            .where(SampleItem.sample_batch_id == sample_batch_id)
+        )
+        instruments = list(result.scalars().all())
+
+    if not instruments:
+        raise ForbiddenAccessException()
+
+    for instrument in instruments:
+        await check_instrument_workspace_access(instrument, user, min_role)
+
+
+async def check_filename_file_instrument_access(
+    filename: str,
+    user: User,
+    min_role: str,
+) -> None:
+    """Check the instrument-workspace ACL for a raw file named by its filename.
+
+    ``SampleFile.filename`` is unique, so it identifies a file as precisely as
+    its ID does; the m/z apply route happens to take the name.
+
+    :param filename: The raw file being written.
+    :param user: The authenticated user.
+    :param min_role: Minimum role required in the instrument's workspace.
+    :raises ForbiddenAccessException: If no such file exists, or its instrument
+        workspace denies access.
+    """
+    async with async_session() as session:
+        sample_file_id = (
+            await session.execute(
+                select(SampleFile.sample_file_id).where(SampleFile.filename == filename)
+            )
+        ).scalar_one_or_none()
+
+    await _check_resolved_file_instrument_access(sample_file_id, user, min_role)
 
 
 async def check_instrument_workspace_access(
@@ -487,6 +674,36 @@ async def check_sample_access(
     """
     workspace_id = await _get_workspace_id_from_sample(sample_item_id)
     return await _enforce(workspace_id, user, _role_levels[min_role])
+
+
+async def check_sample_or_file_instrument_access(
+    sample_item_id: str,
+    user: User,
+    min_role: str,
+    instrument_min_role: str,
+) -> None:
+    """Grant access through the sample's own workspace *or* its file's instrument.
+
+    For per-sample operations that both layers legitimately reach. The m/z fit
+    is the case this exists for: it computes over one sample and writes nothing,
+    so ``min_role`` in the workspace holding it is the natural bar - but an
+    admin of the file's instrument workspace may write a calibration onto that
+    file outright, and refusing them the preview of what they are about to write
+    would leave the calibration dialog unusable for exactly the operator the
+    write was scoped to.
+
+    :param sample_item_id: The sample being computed over.
+    :param user: The authenticated user.
+    :param min_role: Minimum role in the workspace holding the sample.
+    :param instrument_min_role: Minimum role in the file's instrument workspace.
+    :raises ForbiddenAccessException: If neither path grants access.
+    """
+    try:
+        await check_sample_access(sample_item_id, user, min_role)
+    except ForbiddenAccessException:
+        await check_sample_item_file_instrument_access(
+            sample_item_id, user, instrument_min_role
+        )
 
 
 async def check_sample_access_bulk(

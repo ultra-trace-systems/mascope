@@ -90,31 +90,43 @@ class ClusterClassifier:
         sign = "+" if self._mechanism.charge > 0 else "-"
         return self._mechanism.formula + sign
 
-    @property
-    def declustering_parents(self) -> np.ndarray:
+    def _groups_of_type(self, frag_type: str) -> list:
+        """The MS2 groups classified as ``frag_type``.
+
+        Groups, not parent m/z values: classification runs per group, and one
+        precursor's steps can classify differently -- a low collision energy
+        declustering where a high one shows proton transfer. Returning m/z
+        would put that precursor in two categories at once and pull all of its
+        steps into both.
+        """
         df = self._classification
-        return df.loc[df["type"] == "Declustering", "mz"].values
+        if df.empty:
+            return []
+        return list(df.loc[df["type"] == frag_type, "group"])
 
     @property
-    def proton_transfer_parents(self) -> np.ndarray:
-        df = self._classification
-        return df.loc[df["type"] == "Proton transfer", "mz"].values
+    def declustering_groups(self) -> list:
+        return self._groups_of_type("Declustering")
 
     @property
-    def undetermined_parents(self) -> np.ndarray:
-        df = self._classification
-        return df.loc[df["type"] == "Undetermined", "mz"].values
+    def proton_transfer_groups(self) -> list:
+        return self._groups_of_type("Proton transfer")
+
+    @property
+    def undetermined_groups(self) -> list:
+        return self._groups_of_type("Undetermined")
 
     def _classify(self) -> pd.DataFrame:
         rows: list[dict] = []
 
-        for pp in self._data.parent_peaks:
-            ms2 = self._data.ms2_spectra[pp]
-            tic = self._data.ms2_tic[pp]
+        for group in self._data.groups:
+            pp = group.parent_peak_mz
+            ms2 = self._data.ms2_spectra[group]
+            tic = self._data.ms2_tic[group]
             if ms2.mz.size == 0 or tic <= 0:
                 continue
 
-            comp_df = self._compositions.matches.get(pp, pd.DataFrame())
+            comp_df = self._compositions.matches.get(group, pd.DataFrame())
 
             # --- Reagent ion intensity ---
             reagent_int = self._find_reagent_intensity(ms2, comp_df)
@@ -137,6 +149,7 @@ class ClusterClassifier:
 
             rows.append(
                 {
+                    "group": group,
                     "mz": pp,
                     "type": frag_type,
                     "reagent_intensity": reagent_int,

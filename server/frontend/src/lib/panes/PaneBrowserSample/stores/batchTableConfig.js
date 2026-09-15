@@ -27,17 +27,22 @@ export const useBatchTableConfig = defineStore('browser.sample.batchTable', () =
   }
 
   const isDefault = computed(() => JSON.stringify(config.value) === JSON.stringify(defaultConfig))
-  const isInitialized = computed(() => JSON.stringify(config.value) !== '{}')
 
   // local storage persistence
 
   const storageKey = computed(() => `sample-browser-dataset[${app.data.dataset.focusedId}]`)
 
-  // write to local storage
+  // write to local storage - or clear the key when the config is back to its
+  // default. Skipping the write for a default config used to leave whatever was
+  // stored earlier behind, so sorting back to the default order kept restoring
+  // the previous, non-default one on the next load.
   function writeConfig() {
-    if (isInitialized.value && !isDefault.value) {
-      const newState = JSON.stringify(config.value)
-      localStorage.setItem(storageKey.value, newState)
+    if (!app.data.dataset.focusedId) return
+
+    if (isDefault.value) {
+      localStorage.removeItem(storageKey.value)
+    } else {
+      localStorage.setItem(storageKey.value, JSON.stringify(config.value))
     }
   }
 

@@ -9,8 +9,8 @@ dependencies = [
     "colorcet~=3.2",
     "datashader>=0.19.1,<0.20",
     "h5py~=3.11",
-    "numpy~=1.26",
-    "pandas~=2.2",
+    "numpy~=2.5",
+    "pandas~=3.0",
     "pillow~=12.1",
     "xarray>=2025.06.1",
 ]

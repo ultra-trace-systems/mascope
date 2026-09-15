@@ -137,6 +137,11 @@ const derived = computed(() => ({
     {
       displaylogo: false,
       displayModeBar: true,
+      // plotly.js 4 turns its "Share Chart" button on by default and points it
+      // at cloud.plotly.com. Every chart here draws customer measurements, so
+      // a one-click upload to a third party is not something to inherit from a
+      // library default - keep it off explicitly.
+      showSendToCloud: false,
       responsive: true,
       modeBarButtonsToRemove: ['autoScale', 'resetScale2d', 'pan2d', 'zoomIn2d', 'zoomOut2d'],
       toImageButtonOptions: {

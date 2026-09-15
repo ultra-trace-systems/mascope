@@ -202,19 +202,21 @@ def test_profile_matches_thermo(monkeypatch, path):
 
 
 @pytest.mark.parametrize("path", RAW_FILES, ids=lambda p: p.name)
-def test_ms2_precursor_matches_thermo(monkeypatch, path):
-    """OpenTFRaw's MS2 precursor m/z must match Thermo's.
+def test_ms2_events_match_thermo(monkeypatch, path):
+    """OpenTFRaw's MS2 precursor m/z and activation must match Thermo's.
 
-    Both backends parse the precursor from the rendered scan-filter string; on
-    Exploris this relies on opentfraw's scan-event decoding. Skips
-    files with no MS2 scans.
+    Both backends parse the event from the rendered scan-filter string; on
+    Exploris this relies on opentfraw's scan-event decoding. The activation is
+    what separates the steps of a stepped-energy acquisition, so a backend that
+    rendered it differently would group scans differently. Skips files with no
+    MS2 scans.
     """
     path = str(path)
 
     monkeypatch.setenv("MASCOPE_THERMO_BACKEND", "thermo")
     try:
         with open_backend(path) as backend:
-            th = backend.ms2_precursor_by_scan()
+            th = backend.ms2_events_by_scan()
     except m_thermo.NoScansFoundError:
         pytest.skip("no MS2 scans")
     if not th:
@@ -222,18 +224,23 @@ def test_ms2_precursor_matches_thermo(monkeypatch, path):
 
     monkeypatch.setenv("MASCOPE_THERMO_BACKEND", "opentfraw")
     with open_backend(path) as backend:
-        ot = backend.ms2_precursor_by_scan()
+        ot = backend.ms2_events_by_scan()
 
-    # The precursor is parsed from the rendered scan-filter string. If OpenTFRaw
+    # The event is parsed from the rendered scan-filter string. If OpenTFRaw
     # resolves none for this file, skip rather than fail; any it does resolve
     # must match Thermo exactly.
     if not ot:
         pytest.skip("no MS2 precursor resolved by OpenTFRaw for this file")
 
     assert set(ot) == set(th), "MS2 scan set with a resolvable precursor differs"
-    for scan_number, mz_thermo in th.items():
-        assert ot[scan_number] == pytest.approx(mz_thermo, abs=1e-3), (
-            f"scan {scan_number}: OpenTFRaw {ot[scan_number]} vs Thermo {mz_thermo}"
+    for scan_number, (mz_thermo, activation_thermo) in th.items():
+        mz_otf, activation_otf = ot[scan_number]
+        assert mz_otf == pytest.approx(mz_thermo, abs=1e-3), (
+            f"scan {scan_number}: OpenTFRaw {mz_otf} vs Thermo {mz_thermo}"
+        )
+        assert activation_otf == activation_thermo, (
+            f"scan {scan_number}: activation {activation_otf!r} "
+            f"vs Thermo {activation_thermo!r}"
         )
 
 

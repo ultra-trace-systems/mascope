@@ -20,6 +20,7 @@ from mascope_backend.api.lib.api_features import api_controller
 from mascope_backend.api.lib.exceptions.api_exceptions import (
     NotFoundException,
 )
+from mascope_backend.api.lib.utils import strings_json_safe
 from mascope_backend.api.models.match.ions.match_ion_pydantic_model import (
     MatchIonBase,
 )
@@ -35,7 +36,6 @@ from mascope_backend.db import (
     async_session,
 )
 from mascope_backend.runtime import runtime
-from mascope_file.name import resolve_instrument_type
 
 
 @api_controller()
@@ -129,7 +129,7 @@ async def get_match_ions(
             ).where(Sample.sample_batch_id == sample_batch_id)
 
         if sample_batch_id or sample_item_id:
-            query = query.add_columns(Sample.instrument)
+            query = query.add_columns(Sample.instrument, Sample.instrument_type)
 
         # Step 4: Join TargetIon if requested
         if (
@@ -233,7 +233,7 @@ async def get_match_ions(
 
         try:
             # Resolve correct intensity units based on the instrument type of the sample
-            instrument_type = resolve_instrument_type(row.instrument)
+            instrument_type = row.instrument_type
             if instrument_type == "tof":
                 unit = "ions"
             else:
@@ -263,7 +263,9 @@ async def get_match_ions(
         data_df = deduplicate_match_df(
             data_df, id_keys=("target_ion_id", "sample_item_id")
         )
-        data = data_df.to_dict(orient="records")
+        # Nullable label columns come back as NaN under pandas 3's str dtype,
+        # which starlette cannot serialize.
+        data = strings_json_safe(data_df).to_dict(orient="records")
         # Update total after deduplication
         total = len(data)
 

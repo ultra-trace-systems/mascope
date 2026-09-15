@@ -1,5 +1,6 @@
 import os
 import shutil
+import time
 from datetime import datetime, timedelta, timezone
 
 from fastapi import (
@@ -7,14 +8,20 @@ from fastapi import (
     BackgroundTasks,
     Depends,
     File,
+    Form,
     HTTPException,
+    Request,
     UploadFile,
 )
 from tuspyserver import create_tus_router
 
+from mascope_backend.api.controllers.dataset.acquisition.service import (
+    instrument_type_of,
+    recorded_instrument_type,
+)
 from mascope_backend.api.controllers.sample.files.process.service import (
-    auto_process_sample_file,
     re_process_sample_files,
+    spawn_auto_process_sample_file,
 )
 from mascope_backend.api.controllers.sample.files.sample_files_controller import (
     compute_sample_file_peaks,
@@ -22,12 +29,14 @@ from mascope_backend.api.controllers.sample.files.sample_files_controller import
     delete_sample_file,
     delete_sample_files,
     ensure_converter_available,
+    file_upload_name,
     get_sample_file,
     get_sample_file_metadata,
     get_sample_file_peak_timeseries,
     get_sample_file_peaks,
     get_sample_file_spectrum,
     get_sample_files,
+    reported_instrument_or_none,
     update_sample_file,
     upload_sample_file,
     upload_sample_files,
@@ -47,6 +56,7 @@ from mascope_backend.api.models.sample.files.sample_file_pydantic_model import (
 )
 from mascope_backend.api.new.auth.access_token.service import get_access_token
 from mascope_backend.api.new.auth.dependencies import current_active_user
+from mascope_backend.api.new.auth.devices.service import record_reported_instrument
 from mascope_backend.api.new.workspaces.dependencies import (
     accessible_acquisition_instruments,
     check_instrument_workspace_access,
@@ -55,7 +65,12 @@ from mascope_backend.api.new.workspaces.dependencies import (
 )
 from mascope_backend.db.id import gen_id
 from mascope_backend.runtime import runtime
-from mascope_file.name import get_instrument_name, validate_instrument_name
+from mascope_file.name import (
+    INSTRUMENT_TYPE_BY_EXTENSION,
+    get_instrument_name,
+    resolve_instrument_type,
+    validate_instrument_name,
+)
 
 
 sample_files_router = APIRouter(prefix="/api/sample/files", tags=["Sample Files"])
@@ -172,6 +187,15 @@ async def update_sample_file_route(
     :return: Updated details of the sample file.
     """
     await check_sample_file_instrument_access(sample_file_id, user, "admin")
+
+    # Before the workspace check, so a malformed name is answered as the client
+    # error it is rather than as "no permission on that workspace". Unconditional
+    # because the field is required: the guard below only skips an empty string,
+    # which is exactly a name that must not reach the column. A row whose
+    # instrument the name rules reject is not merely untidy - every later
+    # instrument sweep validates each stored name, so one such row makes
+    # acquisition-dataset creation fail for the whole deployment.
+    validate_instrument_name(sample_file.instrument)
 
     # If the instrument is being changed, also require admin on the target
     if sample_file.instrument:
@@ -357,7 +381,7 @@ async def process_sample_item_route(
     process_id = gen_id(8)
 
     background_tasks.add_task(
-        auto_process_sample_file,
+        spawn_auto_process_sample_file,
         sample_file_id=sample_file_id,
         independent_transaction=True,
         user_id=user.id,
@@ -403,10 +427,103 @@ async def reprocess_sample_files_route(
     }
 
 
+def _request_device_id(request: Request) -> int | None:
+    """The paired device behind the request's bearer token, if any.
+
+    Read from the value the auth layer resolved and validated for this request
+    (see auth/backend.py), not from the raw header: one derivation, one
+    lookup, and the same answer authentication acted on. Cookie-authenticated
+    (web) requests and unbound tokens yield None; the upload is then
+    attributed to the user alone.
+
+    :param request: The incoming request.
+    :return: The bound device id, or None when the request has none.
+    :rtype: int | None
+    """
+    return getattr(request.state, "token_device_id", None)
+
+
+async def check_instrument_taken_from_a_file_name(instrument: str) -> None:
+    """Refuse an upload whose file name names no instrument the server knows.
+
+    An instrument's name no longer has to say whether it is an Orbitrap or a
+    TOF - the reader records that when it converts the file. But that only
+    helps an upload that says which instrument it is *for*: a File Agent
+    reports one, and the server files under it. An upload that carries only a
+    file name has nothing else to go on, so its first segment still has to
+    resolve - to an instrument the server already has files for, or to a name
+    that says its own class. Otherwise a file called ``ambient_....raw``
+    would quietly bring an instrument called "ambient" into being, with a
+    workspace and a year's dataset behind it.
+
+    :param instrument: The instrument read off the uploaded file name.
+    :type instrument: str
+    :raises ValueError: The name is not one the server can file under.
+    """
+    validate_instrument_name(instrument)
+    if resolve_instrument_type(instrument, throw=False) is not None:
+        # The name says its own class, as every name had to until now. No
+        # lookup needed, and none of the existing sites pays for one.
+        return
+    if await instrument_type_of(instrument) is None:
+        raise ValueError(
+            f"Cannot tell what instrument '{instrument}' is. A file uploaded "
+            "without a reported instrument is filed under the first segment of "
+            "its name, which has to be an instrument this server already holds "
+            "files for, or a name that says its own class (one containing "
+            "'orbi', 'tof' or 'api'). Name the file for the instrument it came "
+            "from, or upload it from a File Agent configured with the "
+            "instrument it watches."
+        )
+
+
+async def check_upload_matches_the_instrument_class(
+    instrument: str, uploaded_name: str
+) -> None:
+    """Refuse a file the other reader would have to open.
+
+    An instrument is one kind of thing, and its class is its acquisition
+    files': a ``.raw`` is an Orbitrap acquisition and a ``.h5`` a TOF one.
+    Filing both under one name would leave that name with no class at all -
+    the instrument list, the match defaults, the isotope resolution and the
+    spectrum window each pick one, and they would not have to pick the same
+    one. Refusing the second kind at the door is what keeps the question from
+    arising, and it is the upload that is wrong: whoever pointed an agent at
+    this instrument named someone else's.
+
+    :param instrument: The instrument the upload is filed under.
+    :type instrument: str
+    :param uploaded_name: The uploaded file's name, extension included.
+    :type uploaded_name: str
+    :raises ValueError: The file's class contradicts the instrument's own.
+    """
+    extension = os.path.splitext(uploaded_name)[1].lower()
+    uploaded_class = INSTRUMENT_TYPE_BY_EXTENSION.get(extension)
+    if uploaded_class is None:
+        # Not a source data file. Which extensions may be uploaded at all is
+        # SampleFilesUpload's question, and it has already been asked.
+        return
+    recorded = await recorded_instrument_type(instrument)
+    if recorded is not None and recorded != uploaded_class:
+        raise ValueError(
+            f"Instrument '{instrument}' is a {recorded} instrument, and "
+            f"'{uploaded_name}' is a {uploaded_class} acquisition. One "
+            "instrument records one kind of file, so this upload belongs "
+            "under another instrument - check which one the uploading agent "
+            "is configured to watch."
+        )
+
+
 @sample_files_router.post("/upload")
 @api_route(status_code=201, token_access=True)
 async def upload_sample_files_route(
+    request: Request,
     files: list[UploadFile] = File(..., description="Multiple files to upload"),
+    instrument_timezone: str | None = Form(
+        None,
+        alias="timezone",
+        description="IANA timezone of the uploading machine (agents send this)",
+    ),
     user=Depends(current_active_user),
 ) -> dict:
     """
@@ -415,7 +532,9 @@ async def upload_sample_files_route(
     Checks that the user has editor access to each file's instrument workspace
     before uploading.  The instrument is derived from the filename prefix.
 
+    :param request: The incoming request (for upload attribution).
     :param files: List of files to be uploaded via multipart form data
+    :param instrument_timezone: IANA timezone reported by the uploading machine
     :param user: The authenticated user
     :return: A dict response with sample files upload results
     """
@@ -426,7 +545,8 @@ async def upload_sample_files_route(
         # Normalize to basename to prevent path traversal
         f.filename = os.path.basename(f.filename)
         instrument = get_instrument_name(f.filename)
-        validate_instrument_name(instrument)
+        await check_instrument_taken_from_a_file_name(instrument)
+        await check_upload_matches_the_instrument_class(instrument, f.filename)
         await check_instrument_workspace_access(
             instrument, user, "editor", allow_new=True
         )
@@ -441,10 +561,13 @@ async def upload_sample_files_route(
         files=validated_files.files,
         user=user,
         access_token=access_token,
+        device_id=_request_device_id(request),
+        instrument_timezone=instrument_timezone,
     )
 
 
 def get_upload_handler(
+    request: Request,
     user=Depends(current_active_user),
 ):
     """Get the upload handler for TUS file uploads.
@@ -452,23 +575,38 @@ def get_upload_handler(
     Checks that the user has editor access to the instrument workspace
     derived from the uploaded filename before processing.
 
+    :param request: The incoming request (for upload attribution).
     :param user: The current authenticated user.
     :return: A callable that handles the file upload.
     """
 
     async def handler(file_path: str, metadata: dict):
-        # Sanitize filename to prevent path traversal
-        safe_filename = os.path.basename(metadata["filename"])
+        # Sanitize filenames to prevent path traversal
+        uploaded_name = os.path.basename(metadata["filename"])
+        source_filename = os.path.basename(
+            metadata.get("source_filename") or uploaded_name
+        )
 
-        # Check per-instrument access
-        instrument = get_instrument_name(safe_filename)
-        validate_instrument_name(instrument)
+        # The upload is filed under the instrument the agent reports with it,
+        # and stored under a name that starts with it; without one, under the
+        # first segment of its name, as before (see file_upload_name).
+        reported = reported_instrument_or_none(metadata.get("instrument"))
+        stored_name, instrument = file_upload_name(uploaded_name, reported)
+
+        # Check per-instrument access. A reported instrument is the agent's to
+        # name, whatever it is called; one read off the file name has to be one
+        # the server can already place.
+        if reported:
+            validate_instrument_name(instrument)
+        else:
+            await check_instrument_taken_from_a_file_name(instrument)
+        await check_upload_matches_the_instrument_class(instrument, uploaded_name)
         await check_instrument_workspace_access(
             instrument, user, "editor", allow_new=True
         )
 
-        # Rename file from temporary name back to original
-        dest_path = os.path.join(os.path.dirname(file_path), safe_filename)
+        # Rename file from temporary name to the name it is stored under
+        dest_path = os.path.join(os.path.dirname(file_path), stored_name)
         shutil.move(file_path, dest_path)
 
         # Single token validation for the entire upload process
@@ -478,7 +616,21 @@ def get_upload_handler(
             dest_path,
             user=user,
             access_token=access_token,
+            device_id=_request_device_id(request),
+            instrument_timezone=metadata.get("timezone"),
+            source_filename=source_filename,
         )
+        # The instrument the agent says it watches, kept on its device row so
+        # Paired machines shows where its data goes. Attribution must never
+        # fail an ingest, so a failure here is logged, not raised.
+        try:
+            await record_reported_instrument(
+                _request_device_id(request), metadata.get("instrument")
+            )
+        except Exception:
+            runtime.logger.exception(
+                "Could not record the instrument reported by the uploading device"
+            )
 
     return handler
 
@@ -497,8 +649,70 @@ os.makedirs(_tus_files_dir, exist_ok=True)
 # is per upload - it does not bound how many files a client may transfer -
 # and exists so one runaway transfer cannot fill the disk. nginx only bounds
 # individual PATCH chunk bodies, so the accumulated upload size must be
-# enforced here.
-_tus_max_upload_bytes = runtime.config.tus_max_upload_gb * 1024**3
+# enforced here. It lives in [meta] rather than [backend] because the web
+# uploader sizes its own client-side restriction from the same value.
+_tus_max_upload_bytes = runtime.meta.tus_max_upload_gb * 1024**3
+
+# Free space that must remain on the spool's filesystem once an upload is
+# admitted. The cap above bounds one transfer; it does not bound N concurrent
+# ones, which is how a disk fills with entirely legitimate uploads. Same house
+# pattern as the update guard's MASCOPE_UPDATE_MIN_FREE_GB (the CLI's
+# auto_update) and MIN_FREE_GB in tooling/disk-check.sh - the default matches
+# the latter, so uploads start being refused around the point the disk monitor
+# already alerts.
+_tus_min_free_bytes = runtime.config.tus_min_free_disk_gb * 1024**3
+
+# How long a tus spool entry may go untouched before it is treated as
+# abandoned. Keyed on mtime, not on the creation-time expiry tuspyserver
+# writes into <uid>.info: a PATCH rewrites the data file, so a slow but live
+# multi-hour transfer can never be swept, while tuspyserver's own expiry is
+# fixed at creation and would reap it.
+_TUS_PARTIAL_MAX_AGE_S = 24 * 60 * 60
+
+
+def _free_disk_bytes() -> int | None:
+    """Free bytes on the tus spool's filesystem, or None if unmeasurable.
+
+    An unmeasurable disk must never block an upload - the same rule the CLI's
+    update guard applies before an update.
+    """
+    try:
+        return shutil.disk_usage(_tus_files_dir).free
+    except OSError as error:
+        runtime.logger.warning(
+            f"Could not measure free disk space at {_tus_files_dir}: {error}"
+        )
+        return None
+
+
+def _sweep_abandoned_partials() -> None:
+    """Delete spool entries untouched for `_TUS_PARTIAL_MAX_AGE_S`.
+
+    A client that starts an upload and never comes back leaves a partial (and
+    its .info sidecar) behind. tuspyserver ships a gc for them but nothing
+    calls it, and temp/ is otherwise cleared only by the startup reset, so on a
+    long-lived deployment partials accumulate until the free-space floor below
+    starts refusing everything. Swept at admission rather than on a timer: it
+    is the moment the space is about to be needed, it needs no scheduler, and
+    upload traffic throttles it naturally.
+    """
+    cutoff = time.time() - _TUS_PARTIAL_MAX_AGE_S
+    try:
+        entries = list(os.scandir(_tus_files_dir))
+    except OSError as error:
+        runtime.logger.warning(f"Could not sweep {_tus_files_dir}: {error}")
+        return
+    for entry in entries:
+        try:
+            if not entry.is_file() or entry.stat().st_mtime >= cutoff:
+                continue
+            os.remove(entry.path)
+        except FileNotFoundError:
+            continue  # another worker swept it first
+        except OSError as error:
+            runtime.logger.warning(f"Could not remove {entry.path}: {error}")
+        else:
+            runtime.logger.info(f"Removed abandoned tus partial: {entry.name}")
 
 
 def _reject_oversized_upload(metadata: dict, upload_info: dict) -> None:
@@ -528,18 +742,63 @@ def _reject_oversized_upload(metadata: dict, upload_info: dict) -> None:
         )
 
 
+def _reject_when_disk_is_low(upload_info: dict) -> None:
+    """Refuse a creation that cannot fit alongside the free-space floor.
+
+    Call after `_reject_oversized_upload`, which guarantees a declared size.
+    The floor is checked per admission, not held as a reservation: several
+    creations racing each other all see the same free space. That is
+    deliberate - a cross-worker reservation ledger would need Redis - and it
+    stays safe because the floor is comfortably larger than the per-upload cap
+    by default, and free space does fall as chunks land, so a sustained burst
+    starts being refused on its own.
+
+    The refusal is 507 rather than 413: the request is fine, the server has
+    nowhere to put it, and the condition clears when space is freed. Clients
+    treat 5xx as retryable, so an instrument agent keeps trying rather than
+    setting an irreplaceable raw file aside.
+    """
+    if _tus_min_free_bytes <= 0:
+        return
+    free = _free_disk_bytes()
+    if free is None:
+        return
+    size = upload_info.get("size") or 0
+    if free - size >= _tus_min_free_bytes:
+        return
+    runtime.logger.warning(
+        f"Refusing a {size / 1024**3:.1f} GB upload: only "
+        f"{free / 1024**3:.1f} GB free at {_tus_files_dir}, "
+        f"{_tus_min_free_bytes / 1024**3:.1f} GB must stay free"
+    )
+    raise HTTPException(
+        status_code=507,
+        detail=(
+            f"Not enough free disk space for this upload: "
+            f"{free / 1024**3:.1f} GB free, the upload needs "
+            f"{size / 1024**3:.1f} GB and "
+            f"{_tus_min_free_bytes / 1024**3:.1f} GB must remain free. "
+            "Retry once space has been freed."
+        ),
+    )
+
+
 async def _tus_pre_create_hook(metadata: dict, upload_info: dict) -> None:
     """Refuse a tus upload at creation, before any bytes are transferred.
 
     tuspyserver marks an upload complete once its final chunk is written and
     only then runs the completion hook, so a refusal at completion cannot
     un-accept the transfer: the client reads the recreated file's offset as done
-    and reports success while the bytes are stranded. Both admission checks
-    therefore run here, at creation - the per-upload size cap, and converter
-    availability, so an upload started while no converter is connected is turned
-    away up front instead of transferred in full and then dropped.
+    and reports success while the bytes are stranded. Every admission check
+    therefore runs here, at creation - the per-upload size cap, the free-space
+    floor (with a sweep of abandoned partials first, so reclaimed space counts
+    toward it), and converter availability, so an upload started while no
+    converter is connected is turned away up front instead of transferred in
+    full and then dropped.
     """
     _reject_oversized_upload(metadata, upload_info)
+    _sweep_abandoned_partials()
+    _reject_when_disk_is_low(upload_info)
     await ensure_converter_available()
 
 

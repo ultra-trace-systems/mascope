@@ -39,9 +39,14 @@ def assert_cheminfo_result_row_format(result: dict):
 @pytest.mark.parametrize(
     "mz, expected_formula, formula_ranges_addition",
     [
+        # An m/z here is an ION mass, not the neutral monoisotopic mass: the
+        # electron is 8.7 ppm at m/z 63, so a neutral mass written here is a
+        # test that passes only while the default tolerance is loose enough to
+        # swallow the difference. The first two were exactly that until the
+        # default came down to 3 ppm.
         # Basic test cases
-        (62.99564, "HNO3", ""),
-        (90.03169, "C3H6O3", ""),
+        (62.99619, "HNO3", ""),
+        (90.03224, "C3H6O3", ""),
         (124.9244, "CH2O2", ""),
         (168.9506, "C3H6O3", ""),
         # Extended test cases, covering non-default parameters

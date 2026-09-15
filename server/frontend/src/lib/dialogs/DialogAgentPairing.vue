@@ -8,6 +8,10 @@ import Button from 'primevue/button'
 import Message from 'primevue/message'
 
 import { api } from '@/api'
+import { needsMfaReauth } from '@/api/utils'
+
+import DialogMfaReauth from './DialogMfaReauth.vue'
+import { useMfaReauth } from './useMfaReauth'
 
 const SERVICE_LABELS = {
   'tof-agent': 'TOF Agent',
@@ -21,18 +25,31 @@ const code = ref(null)
 const busy = ref(false)
 const error = ref(null)
 const approved = ref(null)
+// Approving mints a year-long agent credential, so the server may ask for a
+// current code first. runWithReauth opens the prompt (inside this dialog, since
+// approving is the only call here that can be refused that way) and replays the
+// approval once a code is accepted.
+const { reauthVisible, runWithReauth, onVerified } = useMfaReauth()
 
 watch(visible, () => {
   code.value = null
   busy.value = false
   error.value = null
   approved.value = null
+  reauthVisible.value = false
 })
 
 // Codes look like ABC-123; accept letters/digits with optional dash
-const invalidCode = computed(() => !code.value || code.value.replace(/[^a-zA-Z0-9]/g, '').length < 6)
+const invalidCode = computed(
+  () => !code.value || code.value.replace(/[^a-zA-Z0-9]/g, '').length < 6
+)
 
-const approve = async () => {
+const showApprovalError = (e) => {
+  error.value =
+    e?.response?.data?.detail || e?.response?.data?.error || e?.message || 'Approval failed.'
+}
+
+const doApprove = async () => {
   busy.value = true
   error.value = null
   try {
@@ -41,12 +58,17 @@ const approve = async () => {
     })
     approved.value = response?.data
   } catch (e) {
-    error.value =
-      e?.response?.data?.detail || e?.response?.data?.error || e?.message || 'Approval failed.'
+    if (needsMfaReauth(e)) throw e
+    showApprovalError(e)
   } finally {
     busy.value = false
   }
 }
+
+const approve = () => runWithReauth(doApprove)
+// The retry surfaces a refusal as an error rather than another prompt: the code
+// was just accepted, so a second refusal is a real failure.
+const onReauthVerified = onVerified(showApprovalError)
 </script>
 
 <template>
@@ -70,8 +92,9 @@ const approve = async () => {
     <section v-else>
       <Message icon="pi pi-check-circle" severity="success">
         Paired {{ SERVICE_LABELS[approved.service_name] || approved.service_name
-        }}<template v-if="approved.machine_name"> on {{ approved.machine_name }}</template>. The
-        agent will receive its token within a few seconds.
+        }}<template v-if="approved.machine_name"> on {{ approved.machine_name }}</template
+        ><template v-if="approved.instrument">, watching {{ approved.instrument }}</template
+        >. The agent will receive its token within a few seconds.
       </Message>
     </section>
     <menu style="margin-top: 2rem">
@@ -85,4 +108,5 @@ const approve = async () => {
       <Button v-else label="Done" @click="visible = false" />
     </menu>
   </Dialog>
+  <DialogMfaReauth v-model:visible="reauthVisible" @verified="onReauthVerified" />
 </template>

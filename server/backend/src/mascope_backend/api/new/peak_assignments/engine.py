@@ -19,9 +19,15 @@ from mascope_backend.api.controllers.match.lib.match_score_v2 import (
     ion_score_v2,
     sample_noise_floor,
 )
+from mascope_backend.api.new.peak_assignments.tiers import (
+    TIER_ASSIGNED,
+    TIER_BELOW_ASSIGNABILITY,
+    TIER_CANDIDATE,
+    TIER_UNASSIGNED,
+)
 from mascope_backend.db.id import gen_id
 from mascope_backend.runtime import runtime
-from mascope_tools.composition.arbitration import DEFAULT_TIE_TOL
+from mascope_tools.composition.arbitration import arbitrate_candidates
 from mascope_tools.composition.calibration import (
     Calibration,
     apply_calibration,
@@ -30,6 +36,7 @@ from mascope_tools.composition.calibration import (
 )
 from mascope_tools.composition.heuristic_filter import (
     SCORE_VERSION,
+    element_counts,
     formula_plausibility,
 )
 
@@ -39,12 +46,6 @@ from mascope_tools.composition.heuristic_filter import (
 _CALIBRATION_UNSET = object()
 
 
-# Confidence tiers (a richer replacement for match_category 0/1/2)
-TIER_IDENTIFIED = "identified"
-TIER_CANDIDATE = "candidate"
-TIER_BELOW_ASSIGNABILITY = "below_assignability"
-TIER_UNASSIGNED = "unassigned"
-
 # Peak roles within an assignment run
 ROLE_M0 = "M0"
 ROLE_ISO_CHILD = "iso_child"
@@ -53,6 +54,10 @@ ROLE_UNASSIGNED = "unassigned"
 # Which stage won the peak
 SOURCE_DATABASE = "database"
 SOURCE_UNTARGETED = "untargeted"
+# ...or, when no stage did, the person who decided it instead. A manually
+# curated row is not the output of a stage, and saying 'database' or
+# 'untargeted' on it would credit an engine with a choice a human made.
+SOURCE_MANUAL = "manual"
 
 # Carried DataFrame column: reference-database identities (a list of dicts) for
 # isotope rows that came from the reference mirror rather than the curated target
@@ -69,19 +74,102 @@ UNTARGETED_NO_MATCH = "---"
 UNTARGETED_IONIZATION = "()"
 
 
-def tier_for_score(
-    score: float | None,
-    possible_threshold: float,
-    probable_threshold: float,
+def tier_for_evidence(
+    evidence: float | None,
+    *,
+    candidate_threshold: float,
+    assigned_threshold: float,
 ) -> str:
-    """Map a match score onto a confidence tier."""
-    if score is None or not np.isfinite(score) or score <= 0:
+    """Map a peak's evidence onto a confidence tier.
+
+    Evidence is ``fit x plausibility`` -- the measurement of how well the formula
+    explains the observed isotope envelope, weighted by how chemically plausible
+    that formula is at all. Tiering on the product rather than on the fit alone is
+    what stops a chemically implausible formula from holding the ledger's
+    strongest word on mass accuracy: it is already the currency both stages
+    arbitrate a contested peak in, so the tier now agrees with the quantity that
+    picked the winner in the first place.
+
+    ``fit_score`` remains stored and displayed as the pure measurement; it is just
+    no longer what buckets the row.
+
+    The bands are keyword-only. They were positional, in the opposite order to
+    their names, and every caller needed a comment saying so - a positional call
+    written in band order silently inverted them and tiered a whole run wrong.
+
+    :param evidence: The row's evidence, or None when it has none.
+    :param candidate_threshold: Evidence at or above which a row is 'candidate'.
+    :param assigned_threshold: Evidence at or above which a row is 'assigned'.
+    :return: The tier this evidence earns under these bands.
+    """
+    if evidence is None or not np.isfinite(evidence) or evidence <= 0:
         return TIER_BELOW_ASSIGNABILITY
-    if score >= probable_threshold:
-        return TIER_IDENTIFIED
-    if score >= possible_threshold:
+    if evidence >= assigned_threshold:
+        return TIER_ASSIGNED
+    if evidence >= candidate_threshold:
         return TIER_CANDIDATE
     return TIER_BELOW_ASSIGNABILITY
+
+
+def evidence_for(fit_score: float | None, formula: str | None) -> float | None:
+    """Evidence for a committed formula: ``fit x plausibility``.
+
+    The one place the product is spelled out for callers that hold a stored row
+    rather than a live scoring frame - manual curation, the batch propagation, the
+    import check. Both engine stages compute it inline instead, because they
+    already carry the plausibility they arbitrated with and re-deriving it from
+    the formula string would be a second, divergeable source of the same number.
+
+    Plausibility is recomputed from the formula rather than read off whatever the
+    row carries: it is a pure function of the formula (Seven Golden Rules), so
+    there is nothing to gain from trusting a number a caller could have made up,
+    and an imported row can then be checked without asking its author to declare
+    one. It never decides whether a write happens, so a formula that cannot be
+    parsed fails open at plausibility 1.0 and the evidence is the fit alone.
+
+    :param fit_score: The row's fit score, or None.
+    :param formula: The committed neutral formula, or None.
+    :return: The evidence, or None when there is no fit score to weigh.
+    """
+    fit = _score_or_none(fit_score)
+    if fit is None:
+        return None
+    if not formula:
+        return fit
+    try:
+        return round(fit * float(formula_plausibility(formula)), 4)
+    except Exception:  # plausibility must never decide whether a write happens
+        return fit
+
+
+def plausibility_for(formula: str | None) -> float | None:
+    """This server's chemical plausibility for a committed formula, for storing.
+
+    The other half of the product :func:`evidence_for` returns, spelled out for
+    the same callers and for the same reason: manual curation and the import
+    path both write it into ``provenance.plausibility``, which the peak
+    inspector renders as this server's reading of the chemistry.
+
+    Answers ``None`` where there is nothing this server can honestly claim - no
+    formula, or one it could not parse. That second case needs stating, because
+    ``formula_plausibility`` does not raise on it: it fails open to 1.0, which
+    is the right answer for *weighing* a fit (an unreadable formula must not
+    demote a row) and the wrong one for *displaying*, where it would assert
+    perfect chemistry for a string nothing could read. Evidence therefore still
+    comes out as the bare fit while the plausibility beside it reads as a dash,
+    which is the honest rendering of "could not read it".
+
+    :param formula: The row's committed neutral formula, or None.
+    :return: The plausibility, or None when there is none to state.
+    """
+    if not formula:
+        return None
+    try:
+        if element_counts(formula) is None:
+            return None
+        return round(float(formula_plausibility(formula)), 4)
+    except Exception:  # chemistry must never decide whether a row is stored
+        return None
 
 
 def _float_or_none(value) -> float | None:
@@ -111,13 +199,50 @@ def _str_or_none(value) -> str | None:
 
 
 def _isotope_offset_label(iso_mz: float, main_mz: float | None) -> str | None:
-    """Label an isotopologue by its nominal mass offset from the ion's M0."""
+    """Label an isotopologue by its nominal mass offset from the ion's M0, the
+    monoisotopic isotopologue: ``M+1``, ``M+2`` ... and, for an element whose
+    most abundant isotope is not its lightest (iron), ``M-2``."""
     if main_mz is None or not np.isfinite(main_mz):
         return None
     offset = int(round(iso_mz - main_mz))
     if offset == 0:
         return "M0"
     return f"M+{offset}" if offset > 0 else f"M{offset}"
+
+
+def is_monoisotopic_formula(formula) -> bool:
+    """Whether an isotopologue formula names the ion's monoisotopic isotopologue.
+
+    The generator writes a substituted isotope in brackets (``C5[13C]H13O6+``,
+    ``[81Br]Br2-``) and the monoisotopic isotopologue - every element at its
+    most abundant isotope - without (``C6H13O6+``, ``Br3-``).
+    """
+    return isinstance(formula, str) and bool(formula) and "[" not in formula
+
+
+def monoisotopic_row(ion_rows: pd.DataFrame) -> pd.Series:
+    """The row of an ion's monoisotopic isotopologue: the M0 every role and
+    offset label counts from, the way an isotope table counts - which for a
+    bromine- or chlorine-rich ion is the lightest peak of the cluster, not the
+    tallest. The lightest row stands in when no formula carries the isotope
+    marker that tells the two apart, and is the same row wherever an element's
+    most abundant isotope is also its lightest.
+
+    Positionally off a sort rather than ``.loc[idxmin()]``: a frame that has
+    been through a gate and a scorer can carry a duplicated index, and that
+    lookup would then hand back a frame where every caller expects one row.
+
+    :param ion_rows: One ion's rows of an isotope frame (``mz``, and
+        ``target_isotope_formula`` where the frame has it).
+    """
+    ordered = ion_rows.sort_values("mz")
+    if "target_isotope_formula" in ordered.columns:
+        mono = ordered[
+            ordered["target_isotope_formula"].map(is_monoisotopic_formula).astype(bool)
+        ]
+        if not mono.empty:
+            return mono.iloc[0]
+    return ordered.iloc[0]
 
 
 # Columns the ion-level fit score needs on the isotope frame. Absent (e.g. a lighter
@@ -154,21 +279,21 @@ def score_ions_by_fit(match_isotope_df: pd.DataFrame) -> pd.DataFrame:
     pairings - a within-tolerance pairing it rejected on the intensity floor keeps
     its intensity - so without this the ownership guard in
     `invert_matches_to_peak_assignments` would let a pairing this function counted
-    as ABSENT claim its peak anyway, carrying the ion's (possibly "identified") fit
+    as ABSENT claim its peak anyway, carrying the ion's (possibly "assigned") fit
     score and blocking Stage B from explaining that peak. One gating decision, one
     frame.
 
     Real per-peak ``signal_to_noise`` (carried from the filestore by
-    `compute_match_isotopes`) makes this the full v2 fit; without it `ion_score_v2`
-    falls back to its intensity-derived proxy SNR. No-op (returns the frame
+    `compute_match_isotopes`) makes this the full v2 fit; rows without it are
+    scored in `ion_score_v2`'s no-SNR mode. No-op (returns the frame
     unchanged) when empty or missing the required columns.
 
-    NOTE: the confidence-tier bands sit on the fit scale --
-    identified/candidate = 0.8/0.5 on `PeakAssignmentConfig` (config.py), the v2
-    estimates rather than the legacy `match_params` 0.8/0.7, because a lone
-    mass-only match scores low by design on this scale. Per-instrument
-    recalibration of the bands is a follow-up once verification labels
-    accumulate.
+    NOTE: what this computes is the fit, which is NOT what the tier is read off.
+    The confidence-tier bands sit on the EVIDENCE scale (fit x plausibility) --
+    assigned/candidate = 0.75/0.45 on `PeakAssignmentConfig` (config.py). The fit
+    is half of that product and stays the pure measurement; see
+    `tier_for_evidence`. Per-instrument recalibration of the bands is a follow-up
+    once verification labels accumulate.
     """
     if match_isotope_df.empty or not _FIT_SCORE_COLS.issubset(match_isotope_df.columns):
         return match_isotope_df
@@ -205,18 +330,63 @@ def _row_reference_identities(row) -> list | None:
     return value if isinstance(value, list) and value else None
 
 
-def _alternative_dict(row, reference_identities_by_formula: dict) -> dict:
+def calibration_meta(calibration) -> dict | None:
+    """What a run records about the confidence calibration it applied.
+
+    The instrument class, whether the curve is provisional, and what it was fit
+    from - the three fields every database-sourced row used to repeat in its
+    provenance, now recorded once per run (``PeakAssignmentRun.confidence_calibration``)
+    and folded back into each row by the detail read. ``None`` when the run was
+    uncalibrated, which is what a reader takes to mean "no curve".
+
+    :param calibration: The calibration the run applied, or None.
+    :return: The record for the run row, or None.
+    """
+    if calibration is None:
+        return None
+    return {
+        "instrument": calibration.instrument,
+        "provisional": calibration.provisional,
+        "source": calibration.source,
+    }
+
+
+def _alternative_dict(
+    row,
+    reference_identities_by_formula: dict,
+    main_isotope_ids: set | frozenset = frozenset(),
+    main_mz_by_ion: dict | None = None,
+) -> dict:
     """Build one runner-up candidate dict for a peak's ``alternatives`` list.
 
     Null the target FKs when the runner-up is itself a reference row, and attach
     the formula's reference identities (if any) so a runner-up known compound is
     still named.
+
+    The isotopologue label is recorded the same way the winner's is. A runner-up
+    is a target *isotope* that also landed on this peak, and it is just as free
+    as the winner to be one of its ion's satellites rather than the main one -
+    so without the label, promoting such a candidate by hand would enter a
+    compound's M+1 into the ledger as the compound's main peak.
     """
     is_reference_row = _row_reference_identities(row) is not None
     formula = _str_or_none(row.get("target_compound_formula"))
+    ion_id = _str_or_none(row.get("target_ion_id"))
+    isotope_label = (
+        "M0"
+        if row.get("target_isotope_id") in main_isotope_ids
+        else _isotope_offset_label(row["mz"], (main_mz_by_ion or {}).get(ion_id))
+    )
     alternative = {
         "assigned_formula": formula,
         "ion_formula": _str_or_none(row.get("target_ion_formula")),
+        "isotope_label": isotope_label,
+        # The adduct the runner-up was scored under. A formula is only half an
+        # assignment - without the mechanism a promoted runner-up would land on
+        # the ledger as an adductless claim, and a verification's identity
+        # (peak + formula + mechanism) would be incomplete. Older rows predate
+        # this key; curation falls back to the target ion's mechanism there.
+        "ionization_mechanism_id": _str_or_none(row.get("ionization_mechanism_id")),
         "target_compound_id": (
             None if is_reference_row else _str_or_none(row.get("target_compound_id"))
         ),
@@ -234,12 +404,46 @@ def _alternative_dict(row, reference_identities_by_formula: dict) -> dict:
     return alternative
 
 
+def _restates_winner(contenders: "pd.DataFrame", winner) -> "pd.Series":
+    """Mask of contender rows that restate the winner's own hypothesis.
+
+    Same formula through the same ionization mechanism is one explanation of the
+    peak, however many rows carried it into the frame - the reference mirror sits
+    in the same frame as the curated targets, so a compound that is both a target
+    and a known reference contributes two rows, and two targets can share a
+    formula outright. Excluding the winner by position alone left those twins in
+    `alternatives`, where the inspector rendered them exactly like the committed
+    assignment: the peak's own answer offered back as a close alternative.
+
+    The isotope label adds nothing to that identity. Within one ion the matcher
+    already forbids two isotopes from holding the same peak - `_match_assign`
+    keeps a per-ion set of claimed peaks and awards a contested one to the higher
+    relative abundance - so the winner's own ion is represented here exactly once.
+    Two ions that share a formula and a mechanism can still claim one peak through
+    different isotopologues, and that row is dropped as well: an alternative
+    carries no isotope label, so it would render as the bare committed formula,
+    which is the duplicate this screen exists to remove.
+
+    :param contenders: The peak's rows other than the winning one.
+    :param winner: The row that won the peak.
+    :return: Boolean mask, True where the row is the winner's hypothesis again.
+    """
+    same = contenders["target_compound_formula"].astype(str) == str(
+        winner.get("target_compound_formula")
+    )
+    if "ionization_mechanism_id" in contenders.columns:
+        same &= contenders["ionization_mechanism_id"].astype(str) == str(
+            winner.get("ionization_mechanism_id")
+        )
+    return same
+
+
 def invert_matches_to_peak_assignments(
     match_isotope_df: pd.DataFrame,
     sample_item_id: str,
     peak_assignment_run_id: str,
-    possible_threshold: float,
-    probable_threshold: float,
+    candidate_threshold: float,
+    assigned_threshold: float,
     max_alternatives: int = 5,
     instrument: str | None = None,
     calibration: "Calibration | None | object" = _CALIBRATION_UNSET,
@@ -252,17 +456,19 @@ def invert_matches_to_peak_assignments(
     smaller m/z error), and keeps the runners-up as alternatives - the
     single-owner-per-peak invariant.
 
-    Roles: the winner is 'M0' when it is its ion's reference (most abundant)
-    isotope, otherwise 'iso_child' pointing at the assignment that holds the
-    ion's M0 peak (when that peak was also won by the same ion).
+    Roles: the winner is 'M0' when it is its ion's monoisotopic isotopologue -
+    the M0 an isotope table counts from, the lightest peak of a bromine-rich
+    cluster rather than the tallest - otherwise 'iso_child' pointing at the
+    assignment that holds the ion's M0 peak (when that peak was also won by the
+    same ion).
 
     :param match_isotope_df: Output of compute_match_isotopes enriched with
         target metadata columns (target_compound_id, target_compound_formula,
         target_ion_formula, ionization_mechanism_id).
     :param sample_item_id: Sample the peaks belong to.
     :param peak_assignment_run_id: Run the assignments belong to.
-    :param possible_threshold: Score threshold for the 'candidate' tier.
-    :param probable_threshold: Score threshold for the 'identified' tier.
+    :param candidate_threshold: Evidence threshold for the 'candidate' tier.
+    :param assigned_threshold: Evidence threshold for the 'assigned' tier.
     :param max_alternatives: Cap on stored runner-up candidates per peak.
     :param instrument: Instrument class; selects the in-code calibration when ``calibration``
         is not passed. ``None`` -> uncalibrated.
@@ -312,18 +518,27 @@ def invert_matches_to_peak_assignments(
                 REFERENCE_IDENTITIES_COL
             ]
 
-    # Reference (most abundant) isotope per ion, used for role attribution
-    # and isotope labelling. Computed over the full target set so an ion
-    # whose M0 went unmatched still labels its children correctly.
-    main_idx = match_isotope_df.groupby("target_ion_id")["relative_abundance"].idxmax()
-    main_isotopes = match_isotope_df.loc[main_idx]
-    main_isotope_ids = set(main_isotopes["target_isotope_id"])
-    main_mz_by_ion = main_isotopes.set_index("target_ion_id")["mz"].to_dict()
+    # Reference isotope per ion - the monoisotopic isotopologue, the M0 an isotope
+    # table counts from - used for role attribution and isotope labelling. For a
+    # bromine- or chlorine-rich ion that is the lightest peak of the cluster, not
+    # the most intense one. Computed over the full target set so an ion whose M0
+    # went unmatched still labels its children correctly.
+    references = [
+        monoisotopic_row(group)
+        for _, group in match_isotope_df.groupby("target_ion_id", sort=False)
+    ]
+    main_isotope_ids = {reference["target_isotope_id"] for reference in references}
+    main_mz_by_ion = {
+        str(reference["target_ion_id"]): float(reference["mz"])
+        for reference in references
+    }
 
     # Arbitration (P2): rank a peak's competing candidates by evidence =
     # fit x chemical plausibility, not fit alone, so a chemically implausible formula
-    # cannot win a peak on mass fit. The stored fit_score stays the pure measurement;
-    # evidence only drives the winner selection and the reported confidence.
+    # cannot win a peak on mass fit. The stored fit_score stays the pure measurement,
+    # but evidence now decides the winner, the reported confidence AND the tier - the
+    # three used to disagree, and a formula that won a peak on evidence could then be
+    # banded as though it had fit cleanly.
     formulas = matched["target_compound_formula"].astype(str)
     plaus_by_formula = {f: formula_plausibility(f) for f in formulas.unique()}
     matched["_plaus"] = formulas.map(plaus_by_formula)
@@ -338,15 +553,15 @@ def invert_matches_to_peak_assignments(
     matched["_evidence"] = matched["_fit"] * matched["_plaus"]
     matched["_abs_mz_error"] = matched["match_mz_error"].abs()
     matched["_formula_key"] = formulas
-    # The ranking mirrors `arbitration.arbitrate_candidates` (evidence first, formula last
-    # for a stable order) but is not delegated to it: that helper competes bare
-    # (formula, fit) candidates and returns a dataclass, while a peak's winner here has to
-    # keep the whole match row - target FKs, reference identities, isotope role, mass and
-    # abundance errors - which the dataclass cannot carry. Mass error is the extra middle
-    # key, and it is the domain-meaningful one: between two equally plausible formulas that
-    # fit equally well, the closer mass is the better assignment. The formula key is last
-    # so two candidates equal on all three still resolve by the data rather than by whatever
-    # order the matcher happened to emit them in.
+    # This row sort selects the winning ROW only; confidence and ties are delegated
+    # to `arbitration.arbitrate_candidates` per peak below. The selection cannot be
+    # delegated because the winner has to keep the whole match row - target FKs,
+    # reference identities, isotope role, mass and abundance errors - which the
+    # library's (formula, fit) view cannot carry, and because mass error is the
+    # domain-meaningful middle key: between two equally plausible formulas that fit
+    # equally well, the closer mass is the better assignment. The formula key is last
+    # so two candidates equal on all three still resolve by the data rather than by
+    # whatever order the matcher happened to emit them in.
     matched = matched.sort_values(
         ["sample_peak_id", "_evidence", "_abs_mz_error", "_formula_key"],
         ascending=[True, False, True, True],
@@ -361,47 +576,61 @@ def invert_matches_to_peak_assignments(
 
     for sample_peak_id, group in matched.groupby("sample_peak_id", sort=False):
         winner = group.iloc[0]
+        # The winner is never its own alternative. Dropping the rows that merely
+        # restate it BEFORE the cap matters twice over: the duplicate never
+        # reaches the inspector, and it does not burn one of the `max_alternatives`
+        # slots that a genuinely different formula could have had.
+        contenders = group.iloc[1:]
         runners = (
-            group.iloc[1 : 1 + max_alternatives]
+            contenders[~_restates_winner(contenders, winner)].iloc[:max_alternatives]
             if max_alternatives
-            else group.iloc[1:1]
+            else contenders.iloc[:0]
         )
 
-        # Arbitration confidence for the chosen winner: its share of the peak's total
-        # evidence, plus an honest tie flag when a runner-up is within tie_tol.
+        # Arbitration confidence and the tie flag come from the shared
+        # `arbitrate_candidates`, not an inline copy - one implementation, so a fix
+        # in the library reaches the engine (issue #1731). Delegating buys the two
+        # behaviours the inline copy had lost: duplicate formulas are COLLAPSED
+        # before normalisation (the same formula arriving via two adducts is one
+        # hypothesis, not two competitors splitting their own confidence into a
+        # self-tie), and the tie gap is RELATIVE to the best evidence with an
+        # absolute floor, instead of one absolute gap that called nearly
+        # everything below 0.1 apart a tie.
         #
-        # Confidence answers "which of this peak's candidates", NOT "how good is this
-        # assignment" - an uncontested peak scores 1.0 however poorly its single candidate
-        # fits, because there was nothing to lose to. That is the same normalisation
-        # `arbitrate_candidates` reports and the UI already reads, so it is kept rather than
-        # redefined; `n_candidates` is recorded alongside it so a 1.0 earned against
-        # competitors is distinguishable from a 1.0 that was uncontested. The question
-        # "how good" is `p_correct` (the calibrated evidence), which does not divide by the
+        # Confidence answers "which of this peak's candidates", NOT "how good is
+        # this assignment" - an uncontested peak scores 1.0 however poorly its
+        # single candidate fits, because there was nothing to lose to.
+        # `n_candidates` is recorded alongside it so a 1.0 earned against
+        # competitors is distinguishable from a 1.0 won by default; "how good" is
+        # `p_correct` (the calibrated evidence), which does not divide by the
         # field and does fall for a poor lone candidate.
-        evid = group["_evidence"].to_numpy(dtype=float)
-        total_evidence = float(evid.sum())
-        confidence = float(evid[0] / total_evidence) if total_evidence > 0 else 0.0
-        if total_evidence <= 0:
-            is_tie = len(group) > 1
-        else:
-            # bool() so provenance stays JSON-serializable (evid is a numpy array,
-            # whose comparisons yield numpy.bool_, which the JSON column rejects).
-            is_tie = bool(len(group) > 1 and (evid[0] - evid[1]) <= DEFAULT_TIE_TOL)
+        arbitrated = arbitrate_candidates(
+            zip(group["_formula_key"], group["_fit"], strict=True)
+        )
+        winner_arbitrated = next(
+            c for c in arbitrated if c.formula == str(winner["_formula_key"])
+        )
+        confidence = winner_arbitrated.confidence
+        is_tie = winner_arbitrated.is_tie
 
-        # Calibrated P(correct) for the winner's evidence — only when this instrument
+        # The winner's evidence, rounded once here and used for both the tier and
+        # the provenance the ledger displays. Two roundings of one quantity is how
+        # a row ends up in the band below the percentage its own chip shows.
+        evidence = round(float(winner["_evidence"]), 4)
+
+        # Calibrated P(correct) for the winner's evidence - only when this instrument
         # has a calibration; otherwise the assignment is honestly left uncalibrated.
-        if calibration is not None:
-            p_correct = round(float(apply_calibration(evid[0], calibration)), 4)
-            calibration_meta = {
-                "instrument": calibration.instrument,
-                "provisional": calibration.provisional,
-                "source": calibration.source,
-            }
-        else:
-            p_correct = None
-            calibration_meta = None
+        # Which curve it was is the run's to record (`calibration_meta`), not each
+        # row's: one curve serves a whole run.
+        p_correct = (
+            round(float(apply_calibration(float(winner["_evidence"]), calibration)), 4)
+            if calibration is not None
+            else None
+        )
         alternatives = [
-            _alternative_dict(row, reference_identities_by_formula)
+            _alternative_dict(
+                row, reference_identities_by_formula, main_isotope_ids, main_mz_by_ion
+            )
             for _, row in runners.iterrows()
         ]
 
@@ -439,10 +668,19 @@ def invert_matches_to_peak_assignments(
             "fit_score": _score_or_none(winner["match_score"]),
             "mz_error_ppm": _float_or_none(winner["match_mz_error"]),
             "abundance_error": _float_or_none(winner["match_abundance_error"]),
-            "tier": tier_for_score(
-                _score_or_none(winner["match_score"]),
-                possible_threshold,
-                probable_threshold,
+            # Tiered on the evidence this peak was WON with, not on the fit alone:
+            # the same product that beat the runners-up above decides which band
+            # the winner lands in, so a formula that only won because nothing more
+            # plausible competed cannot also claim the top tier on mass fit.
+            #
+            # The ROUNDED value, which is also what provenance records and the
+            # ledger shows beside the tier. Tiering the full-precision product
+            # instead would put a row reading 0.7499996 into the band below the
+            # 75% its own chip displays.
+            "tier": tier_for_evidence(
+                evidence,
+                candidate_threshold=candidate_threshold,
+                assigned_threshold=assigned_threshold,
             ),
             "target_compound_id": _str_or_none(winner.get("target_compound_id")),
             # A reference-row winner carries only a synthetic ion id (for in-run
@@ -452,11 +690,12 @@ def invert_matches_to_peak_assignments(
             "alternatives": alternatives or None,
             "provenance": {
                 "confidence": round(confidence, 4),
-                # How many candidates the confidence was normalised across; 1 means the
-                # peak was uncontested and the 1.0 above was won by default.
-                "n_candidates": int(len(group)),
+                # How many DISTINCT formulas the confidence was normalised across
+                # (duplicate arrivals of one formula collapse); 1 means the peak
+                # was uncontested and the 1.0 above was won by default.
+                "n_candidates": int(len(arbitrated)),
                 "plausibility": round(float(winner["_plaus"]), 4),
-                "evidence": round(float(winner["_evidence"]), 4),
+                "evidence": evidence,
                 "is_tie": is_tie,
                 # The fit-score generation this evidence is on. Snapshotted here because
                 # a verification label is only interpretable against the scoring that
@@ -464,9 +703,9 @@ def invert_matches_to_peak_assignments(
                 "score_version": SCORE_VERSION,
                 # P(correct) is the calibrated probability; null when uncalibrated,
                 # so the UI can show "uncalibrated" instead of a fabricated number.
+                # The curve it was read off is on the run; the detail read folds
+                # it back in here as `calibrated` / `calibration`.
                 "p_correct": p_correct,
-                "calibrated": calibration is not None,
-                "calibration": calibration_meta,
                 # One-to-many known-compound identities for a database-sourced peak
                 # whose formula is in the reference mirror (name/source/license),
                 # attached whether the target library or the reference set won it.
@@ -508,14 +747,14 @@ def _fold_adduct_corroboration(
 
     A compound assigned via several confident adducts corroborates each of them: for each winner
     we add the measured log-odds of the OTHER adducts its compound was seen via (see
-    ``apply_corroboration``). Only confident (identified/candidate) winners count toward the
+    ``apply_corroboration``). Only confident (assigned/candidate) winners count toward the
     co-occurrence set, so a low-confidence sibling can't manufacture corroboration. No-op when the
     calibration carries no weights. Records the co-occurrence + boost in provenance for the UI."""
     if not weights or not m0_items:
         return
     adducts_by_compound: dict[str, set[str]] = {}
     for assignment, compound_id, notation in m0_items:
-        if assignment["tier"] in (TIER_IDENTIFIED, TIER_CANDIDATE):
+        if assignment["tier"] in (TIER_ASSIGNED, TIER_CANDIDATE):
             adducts_by_compound.setdefault(compound_id, set()).add(notation)
     for assignment, compound_id, notation in m0_items:
         all_adducts = adducts_by_compound.get(compound_id, set())
@@ -611,8 +850,8 @@ def untargeted_matches_to_peak_assignments(
     peaks_df: pd.DataFrame,
     sample_item_id: str,
     peak_assignment_run_id: str,
-    possible_threshold: float,
-    probable_threshold: float,
+    candidate_threshold: float,
+    assigned_threshold: float,
     mechanism_id_by_notation: dict[str, str] | None = None,
     formula_formatter=None,
     max_alternatives: int = 5,
@@ -744,10 +983,24 @@ def untargeted_matches_to_peak_assignments(
         # finder's other_candidates are formula names only (no per-candidate fit or mass
         # error), but chemical plausibility is computable from the formula itself, so the
         # inspector can still rank them.
+        #
+        # Both sources are screened against the winner, because neither can be trusted to
+        # have left it out. A loser reaching the same formula through the same mechanism is
+        # the winner's own hypothesis arriving twice; and the finder's shortlist is frozen
+        # before the heuristic filter and the isotope-pattern ranking pick the winner, so
+        # older results still name the winning formula among the "other" candidates. Both
+        # would render as the committed assignment listed among its own close alternatives.
+        # Screening happens before the cap so a duplicate cannot displace a real rival.
         alternatives = [
             {
                 "assigned_formula": format_formula(loser["formula"]),
                 "ion_formula": _str_or_none(loser["row"].get("ion")),
+                # As in Stage A: the adduct the runner-up was scored under, so
+                # promoting it by hand yields a complete assignment rather than
+                # a formula with no mechanism.
+                "ionization_mechanism_id": mechanism_id_by_notation.get(
+                    _str_or_none(loser["row"].get("ionization_mechanism"))
+                ),
                 "isotope_label": loser["isotope_label"],
                 "fit_score": _score_or_none(loser["score"]),
                 "mz_error_ppm": loser["mz_error_ppm"],
@@ -755,9 +1008,16 @@ def untargeted_matches_to_peak_assignments(
                 "source": SOURCE_UNTARGETED,
             }
             for loser in losers
+            if (
+                loser["formula"],
+                _str_or_none(loser["row"].get("ionization_mechanism")),
+            )
+            != (formula, notation)
         ]
         other_candidates = _str_or_none(row.get("other_candidates"))
         if other_candidates:
+            # Formula-only entries, all drawn from this peak's own composition search:
+            # one naming the winning formula IS the winner, not a rival mechanism.
             alternatives.extend(
                 {
                     "assigned_formula": format_formula(alt.strip()),
@@ -765,7 +1025,7 @@ def untargeted_matches_to_peak_assignments(
                     "source": SOURCE_UNTARGETED,
                 }
                 for alt in other_candidates.split(",")
-                if alt.strip()
+                if alt.strip() and alt.strip() != formula
             )
         alternatives = alternatives[: max_alternatives or 0] or None
 
@@ -785,9 +1045,10 @@ def untargeted_matches_to_peak_assignments(
         # score_pattern (v1 -- no per-peak SNR, no penalty for an absent isotopologue), a
         # different scale from the ion_score_v2 the curve was fit on. Borrowing it across
         # scales is the fabricated probability the calibration layer exists to refuse.
+        evidence = round(winner["fit"] * winner["plausibility"], 4)
         provenance = {
             "plausibility": winner["plausibility"],
-            "evidence": round(winner["fit"] * winner["plausibility"], 4),
+            "evidence": evidence,
             "score_version": SCORE_VERSION,
         }
         for key in ("neutral_mass", "unsaturation"):
@@ -813,8 +1074,15 @@ def untargeted_matches_to_peak_assignments(
             "fit_score": _score_or_none(winner["score"]),
             "mz_error_ppm": winner["mz_error_ppm"],
             "abundance_error": winner["abundance_error"],
-            "tier": tier_for_score(
-                winner["score"], possible_threshold, probable_threshold
+            # The same evidence the contest above was settled on, so the tier and
+            # the arbitration agree. Note the stage heterogeneity this inherits:
+            # Stage B's fit is score_pattern (v1), Stage A's is ion_score_v2, so
+            # the two stages' evidence is not strictly on one scale - true under
+            # fit-tiering as well, and unchanged by this binding.
+            "tier": tier_for_evidence(
+                evidence,
+                candidate_threshold=candidate_threshold,
+                assigned_threshold=assigned_threshold,
             ),
             "target_compound_id": None,
             "target_ion_id": None,

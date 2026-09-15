@@ -82,7 +82,10 @@ Questions, help, and discussion happen on Discord - come say hello:
 
 ## License
 
-[Apache-2.0](LICENSE). See [NOTICE](NOTICE) for attributions.
+[Apache-2.0](LICENSE). See [NOTICE](NOTICE) for attributions. Contributions are
+accepted under the
+[Individual Contributor License Agreement](https://github.com/ultra-trace-systems/cla/blob/main/ICLA.md)
+(see [CONTRIBUTING.md](CONTRIBUTING.md#contributor-license-agreement)).
 
 ## Citation
 

@@ -8,12 +8,16 @@ import FloatLabel from 'primevue/floatlabel'
 import Dialog from 'primevue/dialog'
 import Message from 'primevue/message'
 
-import { instrumentType } from '@/lib/utils'
 import DialogIonizationOp from './DialogIonizationOp.vue'
 
 import { useApp } from '@/stores'
+import { useInstrument } from '@/stores/data/modules/instrument'
 
 const app = useApp()
+// The class of an instrument by name: recorded for its files where the
+// server knows it, the name rule otherwise. The same answer the server
+// files by, so what this dialog offers is what it will accept.
+const instrumentClass = useInstrument().typeOf
 
 const props = defineProps({
   files: {
@@ -55,7 +59,7 @@ const processed = computed(() => {
   props.files.forEach((file) => {
     // parse filename
     const prefix = file.name.split('_')[0]
-    const prefixType = instrumentType(prefix)
+    const prefixType = instrumentClass(prefix)
     const ext = file.name.split('.').slice(-1)[0].toLowerCase()
     // check filename validity
     let validInstrumentName = true
@@ -87,16 +91,15 @@ const count = computed(() => ({
   total: props.files.length
 }))
 
-const validInstrumentName = (name) => {
-  const re = new RegExp('^[a-zA-Z]+[0-9]*$')
-  return re.test(name)
-}
+// The server's rule for an instrument name: letters, digits and hyphens,
+// up to 64 of them. Underscores are the separator and cannot be part of it.
+const validInstrumentName = (name) => /^[A-Za-z0-9-]{1,64}$/.test(name)
 
 const invalid = computed(() => {
   const invalidOrbi =
-    processed.value.invalid.orbi.length > 0 && instrumentType(instrument.orbi) !== 'orbi'
+    processed.value.invalid.orbi.length > 0 && instrumentClass(instrument.orbi) !== 'orbi'
   const invalidTof =
-    processed.value.invalid.tof.length > 0 && instrumentType(instrument.tof) !== 'tof'
+    processed.value.invalid.tof.length > 0 && instrumentClass(instrument.tof) !== 'tof'
   const invalidInstrumentName =
     !validInstrumentName(instrument.tof) || !validInstrumentName(instrument.orbi)
   const invalidIonization =
@@ -217,8 +220,9 @@ const cancel = () => {
       </ul>
       <p>
         <i>
-          Valid TOF instrument names must include the word TOF or API (in lower or upper case),
-          separated from the rest of the filename by an underscore.
+          A file name must start with the instrument it belongs to, separated from the rest by an
+          underscore. Pick a TOF instrument below, or type the name of one whose own name says it is
+          a TOF (it contains TOF or API, in lower or upper case).
         </i>
       </p>
       <p>Please select or enter an instrument to assign these files to:</p>
@@ -229,7 +233,7 @@ const cancel = () => {
             v-model="instrument.tof"
             :options="
               app.data.instrument.list.filter(
-                ({ instrument }) => instrumentType(instrument) == 'tof'
+                ({ instrument, type }) => (type ?? instrumentClass(instrument)) == 'tof'
               )
             "
             dataKey="instrument"
@@ -245,7 +249,7 @@ const cancel = () => {
           icon="pi pi-exclamation-triangle"
           v-if="
             instrument.tof &&
-            (instrumentType(instrument.tof) !== 'tof' || !validInstrumentName(instrument.tof))
+            (instrumentClass(instrument.tof) !== 'tof' || !validInstrumentName(instrument.tof))
           "
           style="margin-bottom: 2rem"
         >
@@ -267,8 +271,9 @@ const cancel = () => {
       </ul>
       <p>
         <i>
-          Valid Orbitrap instrument names must include the word ORBI (in lower or upper case),
-          separated from the rest of the filename by an underscore.
+          A file name must start with the instrument it belongs to, separated from the rest by an
+          underscore. Pick an Orbitrap instrument below, or type the name of one whose own name says
+          it is an Orbitrap (it contains ORBI, in lower or upper case).
         </i>
       </p>
       <p>Please select or enter an instrument to assign these files to:</p>
@@ -279,7 +284,7 @@ const cancel = () => {
             v-model="instrument.orbi"
             :options="
               app.data.instrument.list.filter(
-                ({ instrument }) => instrumentType(instrument) == 'orbi'
+                ({ instrument, type }) => (type ?? instrumentClass(instrument)) == 'orbi'
               )
             "
             dataKey="instrument"
@@ -295,7 +300,7 @@ const cancel = () => {
           icon="pi pi-exclamation-triangle"
           v-if="
             instrument.orbi &&
-            (instrumentType(instrument.orbi) !== 'orbi' || !validInstrumentName(instrument.orbi))
+            (instrumentClass(instrument.orbi) !== 'orbi' || !validInstrumentName(instrument.orbi))
           "
           style="margin-bottom: 2rem"
         >

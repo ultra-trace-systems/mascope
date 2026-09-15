@@ -7,7 +7,7 @@ creating the corresponding migration.
 
 Fixtures `alembic_config` and `alembic_engine` are provided in
 `conftest.py` and point pytest-alembic at the dedicated drift database
-(`mascope_test_migrations_drift`).
+(`DRIFT_DB_NAME`, `mascope_test_<env>_migrations_drift`).
 
 Re-exports pytest-alembic's `test_model_definitions_match_ddl`. See
 `server/backend/tests/README.md` (Migration tests) for rationale and the relationship

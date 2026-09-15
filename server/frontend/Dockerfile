@@ -7,13 +7,17 @@ FROM node:22-alpine AS frontend-build
 
 ARG MASCOPE_RUNTIME
 
-WORKDIR /app
+# Mirror the repository layout: the legal plugin (scripts/vite-plugin-legal.js)
+# bakes the repo-root NOTICE and LICENSE into the bundle, next to the
+# third-party notices it generates, and looks for them two levels up.
+WORKDIR /src/server/frontend
 
 # Bake the runtime name in before the copy so a build-context .env.production
 # (a developer's local override) still wins, matching the previous behaviour.
 RUN echo "MASCOPE_RUNTIME='${MASCOPE_RUNTIME}'" >> .env.production
 
 # build frontend
+COPY NOTICE LICENSE /src/
 COPY server/frontend/ ./
 RUN npm install
 RUN npm run build
@@ -43,6 +47,54 @@ RUN mkdocs build --strict && \
     # /docs/help-content.json for the in-app help popovers
     python build_help_content.py
 
+# Attributions for what the site ships that is not ours: the theme, scripts and
+# styles the docs packages copy into it, read out of the environment that just
+# built it, and the KaTeX, mermaid and font files vendored under
+# docs/user/assets, by the licence files kept beside them. Served beside the
+# web app's own notices at /legal/, where the About tab reads them.
+COPY tooling/third-party-notices.py tooling/check-licenses.py ./tooling/
+RUN python tooling/third-party-notices.py --for docs --vendored docs/user/assets \
+    -o DOCS_THIRD_PARTY_NOTICES.txt
+
+# OPENAPI BUILDER
+# Render the API's OpenAPI document, which nginx serves next to the docs at
+# /docs/openapi.json. The backend serves its schema in dev mode only, so a
+# deployment publishes this static copy instead: rendered from the same sources
+# and locked dependencies as the backend image, in a throwaway prod runtime with
+# placeholder secrets (server/backend/src/mascope_backend/openapi.py), so it is
+# the same for every build of a commit and version and carries nothing of the
+# build beyond the version it names.
+FROM python:3.12-slim-bookworm AS openapi-build
+
+# Same uv version as CI (.github/workflows/tests.yaml), on the image's own
+# Python rather than one uv would download.
+COPY --from=ghcr.io/astral-sh/uv:0.11.2 /uv /usr/local/bin/uv
+ENV UV_PYTHON_DOWNLOADS=never
+
+WORKDIR /src
+
+# Third-party dependencies first, from the lockfile alone, so editing the
+# sources below does not reinstall them. Only the backend and what it imports:
+# --package leaves the rest of the workspace out. Two of them ship as sdists
+# only, but both are pure Python, so no compiler is needed.
+COPY pyproject.toml uv.lock ./
+RUN uv sync --frozen --no-dev --package mascope_backend --no-install-workspace
+
+# Then the workspace members it installs - the backend and the libraries - and
+# the config layers the render copies into its throwaway runtime home. With
+# --frozen uv reads no other member, so the rest of the workspace stays out.
+COPY base.mascope.toml prod.mascope.toml ./
+COPY libraries ./libraries
+COPY server/backend ./server/backend
+RUN uv sync --frozen --no-dev --package mascope_backend
+
+# The version this image is built for (compose passes MASCOPE_VERSION), which
+# the document names as its info.version. Declared here rather than at the top
+# of the stage, so a new version reruns the render but not the installs above.
+ARG MASCOPE_VERSION
+RUN MASCOPE_PATH=/src uv run --no-sync python -m mascope_backend openapi \
+        --version "${MASCOPE_VERSION}" --output /openapi.json
+
 # RUNTIME
 FROM nginx:1.27-alpine
 
@@ -55,10 +107,13 @@ WORKDIR /app
 ENV MASCOPE_PATH=/app
 
 # copy build outputs
-COPY --from=frontend-build /app/dist /app/frontend/
+COPY --from=frontend-build /src/server/frontend/dist /app/frontend/
 
-# the rendered docs site, served by nginx at /docs/
+# the rendered docs site, served by nginx at /docs/, and the API's OpenAPI
+# document beside it at /docs/openapi.json
 COPY --from=docs-build /docs-src/site /app/docs/
+COPY --from=openapi-build /openapi.json /app/docs/openapi.json
+COPY --from=docs-build /docs-src/DOCS_THIRD_PARTY_NOTICES.txt /app/frontend/legal/
 
 # stage both nginx configs; the entrypoint picks one based on MASCOPE_TLS
 COPY server/frontend/nginx.conf /etc/nginx/mascope/nginx.conf

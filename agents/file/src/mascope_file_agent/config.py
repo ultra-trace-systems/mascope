@@ -9,12 +9,26 @@ users never need to touch it, and schema changes are absorbed by the merge
 instead of requiring a config reset.
 """
 
+import contextlib
 import os
+import re
+import tempfile
+import time
 import tomllib
 from urllib.parse import urlsplit
 
 
 CONFIG_FILENAME = "config.toml"
+
+#: What the server accepts as an instrument name: letters, digits and hyphens,
+#: at most 64 of them. The name is the first underscore-separated segment of
+#: an uploaded file name, so an underscore would end it early.
+INSTRUMENT_RE = re.compile(r"^[A-Za-z0-9-]{1,64}$")
+
+#: Windows keeps a file locked while another process has it open, so the
+#: atomic replace in write_user_config retries briefly before giving up.
+_REPLACE_ATTEMPTS = 5
+_REPLACE_RETRY_DELAY_S = 0.2
 
 #: Settings the agent cannot run without.
 REQUIRED_SETTINGS = ("host", "access_token", "source")
@@ -24,6 +38,18 @@ DEFAULT_SETTINGS = {
     "mask": "*.raw",
     "timeout": 3,
     "recursive": False,
+    # TLS verification is on by default; a self-signed or plain-HTTP dev
+    # deployment turns it off. Kept as a real boolean so False survives the
+    # merge (an empty string would fall back to the default).
+    "verify_tls": True,
+    # IANA timezone of this instrument PC, sent with each upload so the
+    # converter can resolve the acquisition time to UTC. Empty means
+    # auto-detect from the operating system.
+    "timezone": "",
+    # Name of the instrument this machine watches, reported when pairing and
+    # with each upload so the server can file uploads under it without
+    # reading it from the file name. Empty means unset.
+    "instrument": "",
     "filename_prefix": "",
     "filename_suffix": "",
 }
@@ -32,14 +58,31 @@ USER_CONFIG_HEADER = """\
 # Mascope File Agent configuration
 #
 #   host         - Mascope server address, e.g. "mascope.example.com"
-#   access_token - API access token. To create one: log in to Mascope in the
-#                  browser, click your profile icon to open the sidebar, and
-#                  under "API Access Tokens" generate a "File Agent" token
-#                  (editor role or higher required).
+#   access_token - this machine's credential, obtained by pairing during
+#                  setup and renewed automatically. Do not edit it by hand;
+#                  to pair again (after revoking the machine, or if the
+#                  credential expired while the agent was offline) just
+#                  start the agent - it checks with the server and offers
+#                  to pair when the credential is no longer accepted.
 #   source       - full path of the folder to watch for new data files
 #   mask         - pattern of the files to upload, e.g. "*.raw"
 #   recursive    - true to also watch subfolders of source (the agent's own
 #                  failed_uploads folder is always excluded)
+#   verify_tls   - true to verify the server's TLS certificate (the default);
+#                  set false only for a self-signed or plain-HTTP dev server
+#   timezone     - IANA timezone of this machine, e.g. "Europe/Helsinki",
+#                  reported with each upload so acquisition times are stored
+#                  in UTC correctly. Leave empty to detect it automatically;
+#                  set it when detection is wrong, which happens because
+#                  Windows names a group of zones rather than a city
+#   instrument   - name of the instrument this machine watches, e.g.
+#                  "Orbi-Lab2" (letters, digits and hyphens). Reported when
+#                  pairing and with each upload. Leave empty to keep the
+#                  server reading the instrument from the file name alone
+#   filename_prefix / filename_suffix
+#                - optional text added to each file name on upload; the
+#                  guided setup offers a prefix when the file names do not
+#                  start with an instrument name the server can read
 #
 # Restart the agent after changing this file. To re-run the guided setup,
 # start the agent with the --setup flag.
@@ -68,6 +111,17 @@ def toml_str(value: str) -> str:
     for char, escape in (("\n", "\\n"), ("\r", "\\r"), ("\t", "\\t")):
         escaped = escaped.replace(char, escape)
     return f'"{escaped}"'
+
+
+def is_valid_instrument(value: str) -> bool:
+    """Whether ``value`` is an instrument name the server will accept.
+
+    :param value: The candidate name
+    :type value: str
+    :return: True for letters, digits and hyphens only, up to 64 characters
+    :rtype: bool
+    """
+    return bool(INSTRUMENT_RE.match(value))
 
 
 def normalize_host(raw: str) -> str:
@@ -204,15 +258,49 @@ def write_user_config(config_path: str, settings: dict) -> None:
         f"source = {toml_str(settings['source'])}",
         f"mask = {toml_str(settings['mask'])}",
         f"recursive = {'true' if settings['recursive'] else 'false'}",
+        f"verify_tls = {'true' if settings.get('verify_tls', True) else 'false'}",
         f"timeout = {settings['timeout']}",
     ]
-    for key in ("filename_prefix", "filename_suffix"):
+    for key in ("instrument", "timezone", "filename_prefix", "filename_suffix"):
         if settings.get(key):
             lines.append(f"{key} = {toml_str(settings[key])}")
         else:
             lines.append(f"# {key} = ''")
-    with open(config_path, "w", encoding="utf-8") as file:
-        file.write("\n".join(lines) + "\n")
+
+    # Written to a temporary file and moved into place, so an interrupted write
+    # cannot leave a truncated config. Token renewal rewrites this file
+    # unattended on a running instrument PC, where a power cut mid-write would
+    # otherwise cost the machine its credential and its settings, and the agent
+    # would come back up needing a full on-site re-pair. os.replace is atomic
+    # within a directory on both POSIX and Windows.
+    directory = os.path.dirname(os.path.abspath(config_path)) or "."
+    os.makedirs(directory, exist_ok=True)
+    handle, temp_path = tempfile.mkstemp(
+        dir=directory, prefix=".config.", suffix=".toml.tmp"
+    )
+    try:
+        with os.fdopen(handle, "w", encoding="utf-8") as file:
+            file.write("\n".join(lines) + "\n")
+            file.flush()
+            os.fsync(file.fileno())
+        # On Windows the replace fails while anything else holds the file open -
+        # an editor, an indexer, a virus scanner mid-scan - and those handles are
+        # transient. Retrying briefly turns "the rotated token was not saved"
+        # into a pause, which matters because the unsaved token is what the
+        # agent needs at its next restart.
+        for attempt in range(_REPLACE_ATTEMPTS):
+            try:
+                os.replace(temp_path, config_path)
+                break
+            except PermissionError:
+                if attempt == _REPLACE_ATTEMPTS - 1:
+                    raise
+                time.sleep(_REPLACE_RETRY_DELAY_S)
+    except BaseException:
+        # Leave the existing config untouched and take the partial file with us.
+        with contextlib.suppress(OSError):
+            os.unlink(temp_path)
+        raise
 
 
 def write_runtime_config(env_path: str, settings: dict, mascope_path: str) -> None:
@@ -248,10 +336,15 @@ def write_runtime_config(env_path: str, settings: dict, mascope_path: str) -> No
         f"timeout = {settings['timeout']}",
         f"source = {toml_str(settings['source'])}",
         f"recursive = {'true' if settings['recursive'] else 'false'}",
+        f"verify_tls = {'true' if settings.get('verify_tls', True) else 'false'}",
         f"host = {toml_str(settings['host'])}",
         f"access_token = {toml_str(settings['access_token'])}",
     ]
-    for key in ("filename_prefix", "filename_suffix"):
+    # The agent reads its settings from this generated file, not from
+    # config.toml, so anything the user can set has to be carried across here
+    # too - a key written to config.toml but missing from this list is silently
+    # inert.
+    for key in ("instrument", "timezone", "filename_prefix", "filename_suffix"):
         if settings.get(key):
             lines.append(f"{key} = {toml_str(settings[key])}")
     runtime_config_path = os.path.join(env_path, "prod.mascope.toml")

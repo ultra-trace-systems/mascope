@@ -121,6 +121,25 @@ class DatabaseExistsError(Exception):
 # --- Public API functions ---
 
 
+def skip_backup_log_level(unattended: bool) -> str:
+    """
+    Log level for the notice that a script is running without a pre-backup.
+
+    An interactive operator gets WARNING: it prints beside the extra
+    confirmation prompt, while there is still a chance to back out. An
+    unattended run (``--yes``) gets INFO instead - nobody is at the terminal
+    to react, and there the flag is a settled configuration choice rather than
+    a moment of risk. The nightly ``mascope-assignment-prune`` unit passes
+    ``--yes --skip-backup`` on every firing by design, so warning would mint
+    an error-monitoring event per server per night that no one can act on.
+
+    :param unattended: True when the run was started with ``--yes``.
+    :return: Loguru level name for the notice.
+    :rtype: str
+    """
+    return "INFO" if unattended else "WARNING"
+
+
 def pg_dump(
     container: str,
     user: str,

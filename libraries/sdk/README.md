@@ -14,6 +14,7 @@ Python SDK for the Mascope mass spectrometry data analysis platform. Designed fo
 - [Quick Start](#quick-start)
 - [Configuration](#configuration)
 - [High-Level Loaders](#high-level-loaders)
+- [Peak Assignments](#peak-assignments)
 - [Caching](#caching)
 - [API Reference](#api-reference)
 - [Examples](#examples)
@@ -90,8 +91,8 @@ This creates a `tutorials/` folder with the following notebooks:
 | 6   | `06_normalization.ipynb`           | Normalize intensities by TIC or reagent-ion signal      |
 | 7   | `07_background_subtraction.ipynb`  | Subtract a background sample (matched ions or m/z bins) |
 | 8   | `08_correlation_analysis.ipynb`    | Find co-varying peaks via correlation and clustering    |
-| 9   | `09_composition_assignment.ipynb`  | Assign elemental compositions to unmatched peaks        |
-| 10  | `10_batch_stages.ipynb`            | Split a batch into stages and compare per-stage averages |
+| 9   | `09_batch_stages.ipynb`            | Split a batch into stages and compare per-stage averages |
+| 10  | `10_peak_assignment.ipynb`         | Read a server-side peak-assignment run: tiers, sources, Van Krevelen |
 
 Open them in VS Code (or any Jupyter-compatible IDE) and run the cells. Each notebook is self-contained, just make sure your `.env` credentials are set up first (see [Configuration](#configuration)).
 
@@ -208,7 +209,7 @@ If omitted and your account belongs to exactly one workspace, it is auto-selecte
 
 ## High-Level Loaders
 
-The SDK provides three convenience loaders that handle dataset/batch/sample resolution, concurrent requests, and progress bars automatically. These are the recommended way to load data for analysis.
+The SDK provides four convenience loaders that handle dataset/batch/sample resolution, concurrent requests, and progress bars automatically. These are the recommended way to load data for analysis.
 
 ---
 
@@ -298,9 +299,178 @@ Key columns: `stage`, `stage_name`, `t_min`, `t_max`, plus all columns from `get
 
 ---
 
+### `load_batch_ledger`: The batch ledger
+
+Load a batch's **batch ledger** — the batch-primary record of peak assignment: one
+**batch peak** per species across the batch's samples, with the consensus formula and
+tier the samples' assignments vote for, and one **member** per sample the species was
+seen in, carrying that sample's own reading of the peak. Every processed sample folds
+in as it arrives, so the ledger is complete without a per-sample run in sight.
+
+```python
+# One row per member: the whole ledger of every matching batch, flat
+ledger = mascope.load_batch_ledger(dataset="My Dataset", batches="Uronium")
+ledger.to_csv("ledger.csv", index=False)  # a short way to any format
+
+# The species table rides along: one row per batch peak
+species = ledger.attrs["batch_peaks"]
+species.groupby("sample_batch_name")["consensus_tier"].value_counts()
+
+# Or the species table alone
+species = mascope.load_batch_ledger(dataset="My Dataset", members=False)
+```
+
+Key columns of a member row: the anchor's `batch_peak_id`, `batch_mz`,
+`consensus_formula`, `consensus_tier`, `support_fraction`, `n_present`, `curated`
+(pinned by hand for the whole batch), beside the member's `sample_item_name`,
+`sample_peak_id`, `mz`, `intensity`, `assigned_formula`, `source`, `tier`, `role`,
+`fit_score` — so a sample that dissents from the batch reads as one row saying both.
+Per batch, the same reads are `mascope.batch_peaks.list(batch_id)`,
+`.members(batch_id, sample_id=...)` and `.verdicts(batch_id)` (the batch-level verdicts
+recorded on its species). The app's *Batch peaks* pane exports the same rows as a CSV
+from its view menu.
+
+### `load_assignments`: Peak assignments across batches
+
+Load the persisted **peak-assignment** results (see [Peak assignments](#peak-assignments)) of every sample across one or more batches, concatenated into a single DataFrame enriched with batch and sample metadata — the peak-assignment counterpart of `load_peaks`.
+
+Read-only: each sample contributes its **latest completed** assignment run; samples without one are skipped (and logged), not assigned on the fly.
+
+```python
+# Assignments of every sample in matching batches
+assignments = mascope.load_assignments(dataset="My Dataset", batches="Uronium")
+
+# Confidently assigned peaks that came from the untargeted stage
+assignments = mascope.load_assignments(
+    dataset="My Dataset", tier="assigned", source="untargeted"
+)
+
+# Tier breakdown per sample
+assignments.groupby(["sample_item_name", "tier"]).size()
+```
+
+Key columns: `sample_batch_name`, `sample_item_name`, `datetime_utc`, plus all columns from `peak_assignments.get` (one row per observed peak; core rows only — fetch `alternatives`/`provenance` per assignment with `peak_assignments.detail`).
+
+---
+
 ### Confirmation prompt
 
-`load_peaks` and `load_peak_timeseries` show an interactive confirmation prompt when the number of samples exceeds `confirm_above`. Defaults are 100 for `load_peaks` and 20 for `load_peak_timeseries`. This prevents accidentally launching hundreds of concurrent requests from a notebook cell. Set `confirm_above=None` to disable.
+`load_peaks`, `load_peak_timeseries`, and `load_assignments` show an interactive confirmation prompt when the number of samples exceeds `confirm_above`. Defaults are 100 for `load_peaks` and `load_assignments`, and 20 for `load_peak_timeseries`. This prevents accidentally launching hundreds of concurrent requests from a notebook cell. Set `confirm_above=None` to disable.
+
+## Peak Assignments
+
+Mascope's **peak-centric assignment** engine assigns a composition to *every*
+observed peak of a sample — database-known targets first (Stage A), then
+untargeted composition search (Stage B) — arbitrates a single owner per peak,
+and files each assignment into a confidence tier (`assigned` | `candidate` |
+`below_assignability` | `unassigned`). The tier is read off the row's
+**evidence** — its `fit_score` weighted by the chemical plausibility of the
+assigned formula — under the run's `tier_bands`. `fit_score` is served
+alongside it, unchanged, as the pure fit measurement. Runs are launched from
+the Mascope app and persisted; the SDK reads the results (it does not trigger
+runs).
+
+The top tier used to be called `identified`. The API still accepts that
+spelling wherever a tier is sent and normalises it to `assigned`, so scripts
+written against the old vocabulary keep working.
+
+This coexists with targeted matching (`mascope.matching`, `get_peaks` match
+columns): a `database`-sourced assignment *is* the targeted result, anchored
+on the peak.
+
+```python
+# Run history of a sample, newest first
+runs = mascope.peak_assignments.list_runs(sample_id)
+
+# The whole ledger of the latest completed run: one row per observed peak.
+# Pages through the API internally; run metadata rides on df.attrs["run"].
+assignments = mascope.peak_assignments.get(sample_id)
+assignments.attrs["run"]["engine_version"]
+assignments["tier"].value_counts()
+
+# Server-side filters (a bad value raises ValidationError naming the accepted set)
+assigned = mascope.peak_assignments.get(sample_id, tier="assigned")
+stage_b = mascope.peak_assignments.get(sample_id, source="untargeted")
+curated = mascope.peak_assignments.get(sample_id, source="manual")
+
+# A specific (e.g. older) run
+old = mascope.peak_assignments.get(
+    sample_id, run_id=runs.iloc[-1]["peak_assignment_run_id"]
+)
+
+# Full detail of one assignment: alternatives considered + scoring provenance
+full = mascope.peak_assignments.detail(
+    sample_id, assignments.iloc[0]["peak_assignment_id"]
+)
+```
+
+Key `get()` columns: `sample_peak_mz`, `sample_peak_intensity`, `role` (`M0` |
+`iso_child` | `reagent` | `artifact` | `unassigned`), `assigned_formula`,
+`ion_formula`, `isotope_formula`, `source` (`database` | `untargeted` |
+`manual`), `fit_score`, `evidence`, `mz_error_ppm`, `tier`, `p_correct`, and
+`target_compound_id`/`target_ion_id` for database-sourced assignments.
+
+### Hand-curated rows (`source: manual`)
+
+A person can overrule the engine on a single row from the app's peak
+inspector — promote a close alternative, or commit a re-search hit. That row is
+persisted with `source` **`manual`**, so it **leaves** `database`/`untargeted`
+rather than joining them:
+
+```python
+# Wrong: these two no longer sum to the run
+stage_a = mascope.peak_assignments.get(sample_id, source="database")
+stage_b = mascope.peak_assignments.get(sample_id, source="untargeted")
+
+# Right: read the run once and split it locally, so nothing can fall out
+assignments = mascope.peak_assignments.get(sample_id)
+assignments.groupby("source", dropna=False).size()
+```
+
+Peaks nothing explained carry no source at all (`None`), which is why the
+groupby above passes `dropna=False`. A `manual` row is not necessarily an
+*assigned* one either: when an override displaces a compound, the isotopologue
+satellites of that compound are stripped and end up `source: manual`,
+`tier: unassigned`, with no formula.
+
+`peak_assignments.detail()` on a curated row returns a `provenance.manual`
+block — `action`, `user_id`, `at`, and `previous` (the displaced winner, kept
+verbatim), plus `manual.demoted`, the archive of the satellites the override
+stripped so committing that compound back restores them.
+
+### Which engine produced a run
+
+A run's ledger does not say who computed it — the run does. `list_runs` (and
+`df.attrs["run"]`) carries:
+
+| Column | Meaning |
+| --- | --- |
+| `engine` | `mascope` for a run this deployment computed, otherwise the external engine that published its ledger here. Never null, and `mascope` is reserved server-side so an import cannot claim it. |
+| `engine_version` | That engine's version string. |
+| `tier_bands` | The `assigned` / `candidate` evidence thresholds the run tiered with. |
+| `calibration` | What an external engine disclosed about its calibration at import. Null for `mascope` runs, whose calibration state is the sample's own. |
+
+This matters because reads default to the **latest completed run whatever its
+engine**, so a published run is what you get unless you ask for another. It is
+also what makes two engines comparable on one sample — read each run by id and
+join on `sample_peak_id`:
+
+```python
+runs = mascope.peak_assignments.list_runs(sample_id)
+runs[["engine", "engine_version", "tier_bands", "status"]]
+
+mine = mascope.peak_assignments.get(sample_id, run_id=<a mascope run id>)
+theirs = mascope.peak_assignments.get(sample_id, run_id=<an imported run id>)
+side_by_side = mine.merge(theirs, on="sample_peak_id", suffixes=("_mascope", "_ext"))
+```
+
+Compare tiers only against each run's own `tier_bands`: the same word means
+different confidence under different thresholds. An imported run's `p_correct`
+is always empty — that column is Mascope's own calibrated judgement and an
+import may not write it.
+
+For cross-sample analysis use the [`load_assignments`](#load_assignments-peak-assignments-across-batches)
+loader; for a guided walk-through see tutorial notebook `10_peak_assignment.ipynb`.
 
 ## Caching
 
@@ -362,6 +532,16 @@ comes from its flags. For example,
 | -------------------------------------- | ---------------------------- | ----------------- |
 | `match_compound(sample_id, formula)`   | Match a compound in a sample | `dict│None`       |
 | `match_compounds(sample_id, formulas)` | Match multiple compounds     | `list[dict]│None` |
+
+#### `mascope.peak_assignments`
+
+| Method                              | Description                                                       | Returns             |
+| ----------------------------------- | ----------------------------------------------------------------- | ------------------- |
+| `list_runs(sample_id)`              | List a sample's assignment runs, newest first                     | `pd.DataFrame│None` |
+| `get(sample_id, run_id=, tier=, role=, source=)` | Full run ledger, one row per peak; run metadata on `df.attrs["run"]` | `pd.DataFrame│None` |
+| `detail(sample_id, peak_assignment_id)` | One assignment in full (`alternatives`, `provenance`)          | `dict│None`         |
+
+`get` reads the latest completed run unless `run_id` is given, and pages through the API internally — the whole run comes back as one DataFrame. See [Peak Assignments](#peak-assignments).
 
 #### `mascope.ionization`
 
@@ -538,7 +718,7 @@ mascope_sdk/
 ├── exceptions.py        # Exception hierarchy
 ├── _http.py             # Low-level HTTP session (requests wrapper)
 ├── _resolve.py          # Name-to-ID resolution helpers
-├── _loaders.py          # High-level loaders (load_peaks, load_peak_timeseries, load_peaks_by_stage)
+├── _loaders.py          # High-level loaders (load_peaks, load_peak_timeseries, load_peaks_by_stage, load_assignments)
 ├── _concurrent.py       # ThreadPoolExecutor wrapper with progress bars and cancellation
 ├── _agents.py           # Internal HTTP helpers for Mascope agents (file-agent)
 ├── resources/
@@ -548,6 +728,7 @@ mascope_sdk/
 │   ├── datasets.py      # DatasetsResource
 │   ├── ionization.py    # IonizationResource
 │   ├── matching.py      # MatchingResource (compound matching)
+│   ├── peak_assignments.py  # PeakAssignmentsResource (read persisted assignment runs)
 │   ├── samples.py       # SamplesResource (peaks, spectra, timeseries)
 │   └── workspaces.py    # WorkspacesResource
 └── examples/            # Jupyter notebook examples

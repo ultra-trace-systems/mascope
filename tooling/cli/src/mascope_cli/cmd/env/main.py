@@ -19,6 +19,7 @@ from mascope_cli.cmd.env._create import (
     create_env_remote,
     validate_env_name,
 )
+from mascope_cli.cmd.env._filter import parse_option_date
 from mascope_cli.cmd.env._paths import (
     env_exists_local,
     env_exists_remote,
@@ -216,6 +217,40 @@ def sync(
             help="Skip synchronizing the PostgreSQL database.",
         ),
     ] = False,
+    from_date: Annotated[
+        str | None,
+        typer.Option(
+            "--from",
+            help=(
+                "Only sync filestore data acquired on or after this date "
+                "(YYYY-MM-DD, inclusive). Filters on the acquisition-date "
+                "directory in the filestore, not on file modification time. "
+                "Does not filter the database."
+            ),
+        ),
+    ] = None,
+    to_date: Annotated[
+        str | None,
+        typer.Option(
+            "--to",
+            help=(
+                "Only sync filestore data acquired on or before this date "
+                "(YYYY-MM-DD, inclusive). Same filter as --from."
+            ),
+        ),
+    ] = None,
+    chown: Annotated[
+        bool,
+        typer.Option(
+            "--chown",
+            help=(
+                "After syncing the filestore, chown the target env directory "
+                "to its existing owner so Mascope can use the new files. "
+                "Requires passwordless sudo on the receiving machine; falls "
+                "back to printing the command when that is unavailable."
+            ),
+        ),
+    ] = False,
     yes: Annotated[
         bool,
         typer.Option(
@@ -235,6 +270,17 @@ def sync(
     By default, both the filestore (via rsync) and the database (via
     pg_dump/pg_restore through a staging transfer directory) are synced.
     Use `--skip-filestore` or `--skip-db` to opt out of either.
+
+    `--from` / `--to` narrow the filestore transfer to samples acquired inside
+    a date window. They filter on the acquisition-date directories in the
+    filestore, never on the database — a filtered filestore plus a full
+    database leaves the target holding sample rows whose files were not
+    transferred, so add `--skip-db` if that is not what you want.
+
+    rsync does not carry ownership across, so files land owned by whoever runs
+    the receiving side. When that differs from the owner of the target env
+    directory the exact `sudo chown` to run is printed; `--chown` attempts it
+    for you where passwordless sudo is available.
 
     If the target environment directory does not exist, you will be prompted
     to create it. Pass `--yes` to create it automatically without prompting.
@@ -259,6 +305,8 @@ def sync(
         mascope env sync tof1 prod user@203.0.113.10:tof1 prod
         mascope env sync user@203.0.113.10:tof1 prod tof1 dev --skip-filestore
         mascope env sync tof1 dev test-env dev --skip-db
+        mascope env sync user@203.0.113.10:tof1 prod tof1 dev --from 2026-01-01
+        mascope env sync user@203.0.113.10:tof1 prod tof1 dev --from 2026-01-01 --to 2026-03-31 --skip-db
     """
     if source_mode not in ("dev", "prod"):
         runtime.logger.error(
@@ -271,6 +319,34 @@ def sync(
             f"Invalid TARGET_MODE '{target_mode}' — must be 'dev' or 'prod'."
         )
         raise typer.Exit(1)
+
+    parsed_from = parsed_to = None
+    try:
+        if from_date:
+            parsed_from = parse_option_date(from_date, "--from")
+        if to_date:
+            parsed_to = parse_option_date(to_date, "--to")
+    except ValueError as e:
+        runtime.logger.error(str(e))
+        raise typer.Exit(1)
+
+    if parsed_from and parsed_to and parsed_from > parsed_to:
+        runtime.logger.error(f"--from ({from_date}) is later than --to ({to_date}).")
+        raise typer.Exit(1)
+
+    if parsed_from or parsed_to:
+        if skip_filestore:
+            runtime.logger.warning(
+                "--from/--to filter the filestore only, and --skip-filestore "
+                "was given — the date range has no effect."
+            )
+        elif not skip_db:
+            runtime.logger.warning(
+                "--from/--to filter the filestore only — the database is "
+                "synced in full, so the target will hold sample rows whose "
+                "files were not transferred. Add --skip-db if that is not "
+                "what you want."
+            )
 
     # Resolve remote address before opening the mux so we know which host
     # to connect to. At most one of source/target can be remote.
@@ -340,7 +416,14 @@ def sync(
         if not skip_filestore:
             runtime.logger.info("--- Filestore sync ---")
             try:
-                sync_filestore(source_env, target_env, control_args=ctl)
+                sync_filestore(
+                    source_env,
+                    target_env,
+                    control_args=ctl,
+                    from_date=parsed_from,
+                    to_date=parsed_to,
+                    chown=chown,
+                )
             except Exception as e:
                 runtime.logger.error(str(e))
                 errors.append("filestore")

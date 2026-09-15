@@ -51,13 +51,21 @@ export async function initSocket() {
   })
   // connection status handlers
   let lastDisconnectReason = null
+  // Socket.IO retries forever with backoff (reconnectionAttempts defaults to
+  // Infinity, reconnectionDelayMax to 5 s), so notifying per attempt fills the
+  // log's 250-entry retention in about twenty minutes offline and evicts every
+  // real notification. Report the disconnection, not the retries.
+  let reconnectReported = false
   socket.on('disconnect', (reason) => {
     console.warn('⚠️ [api:sio] Socket disconnected:', reason)
     lastDisconnectReason = reason
+    reconnectReported = false
     socketConnected.value = false
   })
-  socket.io.on('reconnect_attempt', () => {
-    console.debug('🔄 [api:sio] Socket reconnect attempt')
+  socket.io.on('reconnect_attempt', (attempt) => {
+    console.debug('🔄 [api:sio] Socket reconnect attempt', attempt)
+    if (reconnectReported) return
+    reconnectReported = true
     const app = useApp()
     app.ui.notification.push({
       type: 'connection',

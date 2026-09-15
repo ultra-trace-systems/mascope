@@ -24,7 +24,6 @@ Database management:
 import json
 import os
 import platform
-import re
 import subprocess
 import time
 from pathlib import Path
@@ -32,13 +31,15 @@ from typing import Annotated, Optional
 
 import typer
 
+from mascope_cli.checkout import backend_path
 from mascope_cli.cmd import lib
 from mascope_cli.cmd.prod import auto_update, cli_drift, preflight, release_manifest
 from mascope_cli.cmd.prod import doctor as prod_doctor
 from mascope_cli.cmd.prod.db import prod_db_app
+from mascope_cli.cmd.prod.mfa import mfa_app
 from mascope_cli.pg.utils import check_data_dirs, is_container_running
 from mascope_cli.runtime import runtime
-from mascope_runtime import Runtime
+from mascope_runtime import Runtime, is_release_tag, release_sort_key
 
 
 _MODE = "prod"
@@ -55,6 +56,7 @@ _DEFAULT_UPDATE_REPO = "ultra-trace-systems/mascope"
 
 prod_app = typer.Typer()
 prod_app.add_typer(prod_db_app, name="db")
+prod_app.add_typer(mfa_app, name="mfa")
 
 
 #  --- Callback — runs before every prod subcommand ---
@@ -113,10 +115,11 @@ def _deploy_version() -> str:
     Resolve the image tag for pulling/running published production images.
 
     Published prod images exist only for master (``latest``) and release tags
-    (``vX.Y.Z``) - never for the branch-derived dev build id - so this ignores
-    the checked-out branch entirely: an explicit ``MASCOPE_VERSION`` pin wins;
-    otherwise a semver tag at HEAD selects that release; otherwise ``latest``
-    (the rolling master build).
+    (``vX.Y.Z``, including a pre-release such as ``v2.0.0-rc.1``) - never for
+    the branch-derived dev build id - so this ignores the checked-out branch
+    entirely: an explicit ``MASCOPE_VERSION`` pin wins; otherwise a release tag
+    at HEAD selects that release; otherwise ``latest`` (the rolling master
+    build).
 
     :return: The image tag to deploy.
     :rtype: str
@@ -133,22 +136,106 @@ def _deploy_version() -> str:
     # calver (e.g. v2026.7.7) in a different series from the app's release
     # image tags (vX.Y.Z), so it must never be used as a deploy tag. A
     # pip-installed CLI without a pin deploys `latest`.
-    version = runtime.parse_version(cwd=os.environ.get("MASCOPE_PATH"))
-    if re.fullmatch(r"v\d+\.\d+\.\d+", version):
+    mascope_path = os.environ.get("MASCOPE_PATH")
+    version = runtime.parse_version(cwd=mascope_path)
+    if is_release_tag(version):
         return version
+    # Falling back to `latest` is the only safe published tag, but it silently
+    # changes release channel - and a `latest` build can carry migrations the
+    # intended release has not seen - so every way of arriving here says so.
+    # `parse_version` reports a build identifier both when HEAD carries no tag
+    # and when it carries one that is not a release, so the tags themselves
+    # have to be re-read to tell those apart.
     if version == "unknown-version":
         # Git resolved nothing at all (no checkout, or a directory that is not
-        # a repository). Deploying `latest` is still the only safe published
-        # tag, but it silently changes release channel - and a `latest` build
-        # can carry migrations the pinned release has not seen - so say so.
+        # a repository).
         runtime.logger.warning(
-            f"No git checkout found at '{os.environ.get('MASCOPE_PATH')}' - "
+            f"No git checkout found at '{mascope_path}' - "
             "cannot tell which release this deployment runs, falling back to "
             "the rolling 'latest' image tag. Pin the release explicitly with "
             "MASCOPE_VERSION=vX.Y.Z, or deploy from a checkout at the release "
             "tag."
         )
+        return "latest"
+    # A tag that looks like a release but is not one this codebase recognizes
+    # (a typo, a suffix outside alpha/beta/rc, a scheme from another project).
+    # The images the operator expects may well exist - the release pipeline
+    # tags them from the release tag verbatim - so a checkout that was moved
+    # deliberately must not be read as an ordinary branch checkout.
+    refused = [
+        tag for tag in runtime.tags_at_head(cwd=mascope_path) if tag.startswith("v")
+    ]
+    if refused:
+        runtime.logger.warning(
+            f"The checkout at '{mascope_path}' is at "
+            f"{', '.join(refused)}, which is not a release tag - falling back "
+            "to the rolling 'latest' image tag. A release tag is vX.Y.Z, "
+            "optionally with an -alpha.N/-beta.N/-rc.N suffix. To deploy this "
+            "image tag anyway, pin it with MASCOPE_VERSION."
+        )
     return "latest"
+
+
+def _align_checkout(target: str, mascope_path: Optional[str]) -> None:
+    """
+    Move the deployment checkout to the release tag that is now running.
+
+    A boot redeploys whatever the checkout selects (the systemd unit runs
+    from it), so after an update the checkout must name the running release -
+    left behind, a reboot before the next update quietly redeploys the
+    previous one, and `mascope prod doctor` reports the gap as DRIFT the
+    whole time.
+
+    Best-effort by design: only a clean checkout is moved (`git checkout`
+    without force, so local modifications are never discarded), a tag the
+    checkout has not fetched yet is fetched from `origin` first, and any
+    failure downgrades to a warning naming the manual step - the stack is
+    already healthy on the new release, and alignment must not turn that
+    success into an error.
+
+    :param target: The image tag just deployed. Only a release tag
+        (``vX.Y.Z``, or a pre-release of it) aligns; ``latest`` tracks master
+        and has no tag.
+    :param mascope_path: The deployment checkout, or None when unset.
+    """
+    if not mascope_path or not is_release_tag(target):
+        return
+
+    def git(*args: str) -> subprocess.CompletedProcess:
+        return subprocess.run(
+            ["git", "-C", mascope_path, *args],
+            capture_output=True,
+            text=True,
+            timeout=120,
+        )
+
+    try:
+        head = git("rev-parse", "HEAD")
+        if head.returncode != 0:
+            return  # not a git checkout - nothing to align
+        tag = git("rev-parse", "--verify", f"refs/tags/{target}^{{commit}}")
+        if tag.returncode != 0:
+            # Routine under --auto: it learns of new releases from the GitHub
+            # releases API, so the tag is often newer than the last fetch.
+            fetch = git("fetch", "--quiet", "--no-tags", "origin", "tag", target)
+            if fetch.returncode != 0:
+                raise RuntimeError(fetch.stderr.strip() or "git fetch failed")
+            tag = git("rev-parse", "--verify", f"refs/tags/{target}^{{commit}}")
+            if tag.returncode != 0:
+                raise RuntimeError(f"tag '{target}' not found after fetching")
+        if head.stdout.strip() == tag.stdout.strip():
+            return  # the checkout already names the running release
+        checkout = git("checkout", "--quiet", target)
+        if checkout.returncode != 0:
+            raise RuntimeError(checkout.stderr.strip() or "git checkout failed")
+        runtime.logger.info(f"Moved the deployment checkout to {target}.")
+    except Exception as e:
+        runtime.logger.warning(
+            f"The stack runs {target} but the deployment checkout could not "
+            f"be moved to it ({e}). Until it is, a reboot redeploys the "
+            f"previous release and doctor reports DRIFT - run "
+            f"'git checkout {target}' in {mascope_path} to align."
+        )
 
 
 def _compose_env(building: bool = False) -> dict[str, str]:
@@ -261,6 +348,13 @@ def _run_compose(args: list[str], building: bool = False) -> None:
                         callers (CI in particular) can rely on the CLI's exit
                         status instead of scraping logs.
     """
+    # Any compose "up" needs its declared secret files present first, or compose
+    # refuses to start on a declared-but-absent secret. Centralised here so the
+    # unattended update path - which calls compose directly rather than through
+    # the `up` command - cannot skip it.
+    if args and args[0] == "up":
+        _ensure_secrets()
+
     env_vars = _compose_env(building)
     command = f"docker compose --file '{_compose_path()}' {' '.join(args)}"
 
@@ -384,6 +478,35 @@ def _warn_if_cli_stale(*, auto: bool) -> None:
         )
 
 
+def _ensure_secrets() -> None:
+    """
+    Create the auto-provisionable secret files the compose file expects but the
+    home does not have, before compose is asked to start.
+
+    Compose refuses to start when a declared secret's source file is missing, so
+    a deployment that predates a newly added secret would fail on an ordinary
+    update. Only ``AUTO_PROVISIONED_SECRETS`` are created - those introduced
+    after a deployment's initial setup, whose absence means "this release added
+    a secret". The critical long-standing secrets are left alone: a missing
+    postgres_password or jwt_secret_key is an error to surface, not to replace
+    with a fresh value that would break against the existing database or end
+    every session. Existing files are never touched, so this can never rotate a
+    key out from under a running deployment.
+    """
+    import secrets as _secrets
+
+    from mascope_cli.cmd.init import AUTO_PROVISIONED_SECRETS
+
+    secrets_dir = Path(runtime.path(".runtime", "secrets"))
+    secrets_dir.mkdir(parents=True, exist_ok=True)
+    for name in AUTO_PROVISIONED_SECRETS:
+        target = secrets_dir / name
+        if target.exists():
+            continue
+        target.write_text(_secrets.token_urlsafe(48) + "\n", encoding="utf-8")
+        runtime.logger.warning(f"Created missing secret: {target}")
+
+
 # --- Commands ---
 
 
@@ -411,7 +534,9 @@ def up(
         mascope prod up --detach
         mascope prod up --build --detach
     """
-    # Check database bind-mount dirs before starting containers
+    # Check database bind-mount dirs before starting containers. Missing secret
+    # files are provisioned by _run_compose on any "up" (including the unattended
+    # update path), so no explicit call is needed here.
     check_data_dirs(_MODE)
     args = ["up"]
     if rebuild:
@@ -500,9 +625,12 @@ def manifest(
         mascope prod manifest --version v1.3.0 --output mascope-manifest.json
     """
     app_version = version or _deploy_version()
-    backend_path = Path(os.environ["MASCOPE_PATH"]) / "server" / "backend"
+    # The Alembic head is read from the checkout being released - the same
+    # source-vs-runtime-home distinction `mascope dev migrate` makes. In a
+    # release build and on a deployed server these coincide; from a worktree
+    # they do not, and MASCOPE_PATH would stamp the wrong revision.
     try:
-        data = release_manifest.build_manifest(app_version, backend_path)
+        data = release_manifest.build_manifest(app_version, backend_path())
     except release_manifest.ManifestError as e:
         runtime.logger.error(str(e))
         raise typer.Exit(1)
@@ -622,6 +750,9 @@ def _apply_update(
         message = f"{kind.capitalize()} update to {target} applied; backend healthy."
         runtime.logger.success(message)
         auto_update.record_status(mascope_path, message)
+        # Keep the checkout naming the release that runs, so a reboot
+        # between timer windows redeploys this release, not the previous one.
+        _align_checkout(target, mascope_path)
         _run_compose(["ps"])
         # Images moved; the unattended tool cannot safely reinstall itself, so
         # record + log if the CLI now trails the checkout for the operator.
@@ -677,6 +808,8 @@ def _auto(*, pull: bool) -> None:
     """
     Unattended update: resolve the newest release, classify it, and act.
 
+    - already ahead of the newest release (a pre-release pilot, or a pin):
+      nothing to do - this never moves a deployment backwards.
     - up-to-date: nothing to do.
     - fast update: apply inside the maintenance window (health-checked); outside
       the window, do nothing and retry on the next tick.
@@ -709,6 +842,45 @@ def _auto(*, pull: bool) -> None:
             "and read access to the repository releases."
         )
         raise typer.Exit(auto_update.AUTO_ERROR)
+
+    # An unattended update only ever moves forward. `/releases/latest` excludes
+    # pre-releases, so a deployment piloting a candidate resolves a target that
+    # is BEHIND it - and nothing further down orders the two: preflight
+    # classifies on inequality of the Alembic head and of the image digest, so
+    # an older release reads as a pending update and gets applied. That silently
+    # ends the pilot at best, and at worst boots images whose Alembic scripts do
+    # not contain the revision the candidate already migrated the database to,
+    # which db_init fails and the backend never starts from.
+    #
+    # Comparing against _deploy_version() covers the pin as well as the
+    # checkout, since that is what a boot would deploy. `latest` is not a
+    # release tag, so a plain master deployment is untouched by this.
+    #
+    # Strictly behind, not "not ahead": equality means the deployment is on the
+    # newest release by NAME, which says nothing about whether it is running
+    # it. `_deploy_version` reports what a boot would deploy, so a checkout
+    # moved to vX.Y.Z whose containers still run the release before it - the
+    # drift `prod doctor` reports - reads as equal here while a genuine update
+    # is outstanding. Only preflight can tell, because only preflight compares
+    # the image digests and the applied database revision, so equality has to
+    # fall through to it.
+    current = _deploy_version()
+    if (
+        is_release_tag(current)
+        and is_release_tag(target)
+        and release_sort_key(target) < release_sort_key(current)
+    ):
+        auto_update.clear_pending(mascope_path)
+        message = (
+            f"This deployment runs {current}, which already supersedes the "
+            f"newest release of '{repo}' ({target}) - nothing to do. An "
+            "unattended update never moves a deployment backwards; leaving "
+            f"{current} is a deliberate step ('mascope prod update --version "
+            "vX.Y.Z')."
+        )
+        runtime.logger.success(message)
+        auto_update.record_status(mascope_path, message)
+        raise typer.Exit(auto_update.AUTO_OK)
 
     # Prefer the release manifest's Alembic head; fall back to image inspection.
     target_head: Optional[str] = None
@@ -798,8 +970,9 @@ def update(
         Optional[str],
         typer.Option(
             "--version",
-            help="Release to update to: vX.Y.Z or 'latest'. Defaults to the "
-            "MASCOPE_VERSION pin, or 'latest'.",
+            help="Release to update to: vX.Y.Z, a pre-release of one "
+            "(vX.Y.Z-rc.N), or 'latest'. Defaults to the MASCOPE_VERSION pin, "
+            "or 'latest'.",
         ),
     ] = None,
     check: Annotated[
@@ -899,10 +1072,11 @@ def update(
         _auto(pull=pull)
 
     if version is not None:
-        if version != "latest" and not re.fullmatch(r"v\d+\.\d+\.\d+", version):
+        if version != "latest" and not is_release_tag(version):
             runtime.logger.error(
-                f"Invalid release '{version}' - expected vX.Y.Z or 'latest'. "
-                "For other image tags, pin via the MASCOPE_VERSION env var."
+                f"Invalid release '{version}' - expected vX.Y.Z, a pre-release "
+                "of one (vX.Y.Z-rc.N, -beta.N, -alpha.N), or 'latest'. For "
+                "other image tags, pin via the MASCOPE_VERSION env var."
             )
             raise typer.Exit(1)
         # Same effect as an env pin: _deploy_version honors it for both the
@@ -924,6 +1098,9 @@ def update(
     _prune_images()  # reclaim the superseded release's images
     _run_compose(["ps"])
     runtime.logger.success(f"Production stack updated to '{target}'")
+    # Keep the checkout naming the release that runs, so a reboot redeploys
+    # this release and doctor stays clean (no-op when already checked out).
+    _align_checkout(target, os.environ.get("MASCOPE_PATH"))
     # Last, so it is the final thing the operator sees: the images moved but the
     # CLI tool did not - warn if it now trails the checkout.
     _warn_if_cli_stale(auto=False)

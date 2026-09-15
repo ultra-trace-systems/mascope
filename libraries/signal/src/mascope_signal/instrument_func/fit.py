@@ -6,10 +6,11 @@ from lmfit.models import SkewedGaussianModel, SplineModel
 from scipy.interpolate import interp1d
 from scipy.optimize import curve_fit
 from scipy.signal import find_peaks
-from scipy.stats import linregress, median_abs_deviation
+from scipy.stats import linregress
 
 from mascope_file.name import get_instrument_type
 from mascope_signal.compute import get_sum_signal
+from mascope_signal.noise import max_peak_snr
 from mascope_signal.runtime import runtime
 
 
@@ -26,6 +27,12 @@ class InsufficientPeaksError(ValueError):
 SIGMA_MULTIPLIER = 2 * np.sqrt(2 * np.log(2))
 # Minimum number of peaks required to evaluate instrument functions
 MIN_NUM_PEAKS = 3
+
+#: Minimum samples inside the +/-dmz window for a peak to be fittable. The
+#: skewed-Gaussian model has three free parameters for an Orbitrap (amplitude,
+#: centre, sigma), so anything under this cannot constrain a fit - and a
+#: single-sample window makes lmfit raise on min == max bounds.
+MIN_REGION_POINTS = 5
 NOISE_THRESHOLD_FACTOR = 5
 AMBIENT_SNR_THRESHOLD = 100
 AMBIENT_R_SQ_THRESHOLD = 0.85
@@ -130,20 +137,27 @@ def fit_instrument_functions(filename: str, dmz=0.5, r_sq_thres=0.95) -> tuple:
 def _is_ambient_tof_spectrum(spec: np.ndarray) -> tuple[bool, float]:
     """Detect if TOF spectrum should be treated as ambient using SNR.
 
-    Uses the same MAD-based SNR method as TOF blank detection, but with
-    an ambient-specific threshold.
+    Uses the same MAD-based SNR measure as TOF blank detection - the shared
+    ``max_peak_snr`` - but with an ambient-specific threshold, and it reads a
+    missing noise floor the opposite way: a spectrum whose peaks are all the
+    same height has an unbounded ratio here, not a blank one.
+
+    :param spec: Spectrum counts / intensity
+    :type spec: np.ndarray
+    :return: Whether the spectrum is ambient, and the signal-to-noise ratio it
+        was judged on
+    :rtype: tuple[bool, float]
     """
     peak_indices, _ = find_peaks(spec)
     peak_heights = spec[peak_indices]
 
-    noise_mad = median_abs_deviation(peak_heights, scale="normal")
-    noise_std = 1.4826 * noise_mad
-    noise_threshold = noise_std * NOISE_THRESHOLD_FACTOR
-
-    if noise_threshold <= 0:
+    signal_to_noise = max_peak_snr(peak_heights, NOISE_THRESHOLD_FACTOR)
+    if signal_to_noise is None:
+        # No noise floor to divide by, so the tallest peak is unbounded against
+        # it - unless it does not rise above zero either, which is no signal at
+        # all. A spectrum with no peaks never lands here: the shared measure
+        # scores it 0.0, which is what keeps np.max() off an empty array.
         signal_to_noise = float("inf") if np.max(peak_heights) > 0 else 0.0
-    else:
-        signal_to_noise = float(np.max(peak_heights) / noise_threshold)
 
     return signal_to_noise < AMBIENT_SNR_THRESHOLD, signal_to_noise
 
@@ -186,7 +200,18 @@ def _process_peak_shapes(
     :return: Tuple containing p_x, p_ys, p_mzs, and p_fwhms
     :rtype: tuple
     """
-    distance = int(dmz / np.median(np.diff(mz)))
+    # `distance` is the minimum peak separation in SAMPLES, so it must be at
+    # least 1. On a spectrum whose own m/z spacing is coarser than dmz the
+    # ratio is below 1 and int() floors it to 0, which find_peaks rejects. A
+    # spacing that is NaN (an all-NaN or single-point m/z axis) floors to
+    # nothing at all and int() raises. Both are the same condition - dmz is
+    # finer than the data - and both mean "no separation to enforce", so clamp
+    # to 1 rather than failing the whole instrument-function fit.
+    median_spacing = np.median(np.diff(mz)) if mz.size > 1 else np.nan
+    if not np.isfinite(median_spacing) or median_spacing <= 0:
+        distance = 1
+    else:
+        distance = max(1, int(dmz / median_spacing))
     peak_indices = _choose_peaks(spec, distance=distance, n_peaks=n_peaks)
 
     p_x = np.linspace(-10, 10, 101)
@@ -199,6 +224,20 @@ def _process_peak_shapes(
         region_mask = np.where((mz > p_mz_center - dmz) & (mz < p_mz_center + dmz))
         p_spec = spec[region_mask]
         p_mz = mz[region_mask]
+
+        if p_mz.size < MIN_REGION_POINTS:
+            # The +/-dmz window holds too few samples to fit a peak shape. The
+            # window is 2*dmz wide, so it holds roughly 2*dmz/spacing samples
+            # and drops under MIN_REGION_POINTS once the spacing exceeds
+            # 0.4*dmz - well before it exceeds dmz itself. At the coarse end of
+            # that band a single-sample window collapses the p_center bounds to
+            # min == max and lmfit refuses the fit outright; just inside it the
+            # fit is exactly determined and reports rsquared == 1.0, which the
+            # quality filter below cannot catch. Dismissing the peak keeps both
+            # a data condition - too few quality peaks, handled by the caller as
+            # a blank measurement - rather than a hard failure or a false pass
+            # on an otherwise readable file.
+            continue
 
         p_height = spec[p]
         if np.max(p_spec) > p_height:

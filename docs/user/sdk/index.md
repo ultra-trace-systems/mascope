@@ -33,5 +33,26 @@ AI-driven power-user path: a complement to the web app, not a replacement —
 Mascope stays the system of record, and Mascope's scoring is the only scorer
 in the loop, so results are reproducible and auditable.
 
+## Calling the API directly
+
+The SDK is a client for Mascope's HTTP API, which any language or tool can call
+as well. Each Mascope server describes that API in an
+[OpenAPI](https://www.openapis.org/) document served next to these docs,
+<a href="../openapi.json"><code>openapi.json</code></a>: import it into an API
+client such as Postman or Insomnia, or generate a client library from it. Each
+server serves the copy built with it, so the document matches the version that
+server runs and names that version in its `info.version`.
+
+- Paths are relative to your server's address: `/api/workspaces` is
+  `https://your-instance.mascope.app/api/workspaces`.
+- Authenticate the way the SDK does, with an
+  [API token](getting-started.md#generate-an-api-token) sent as
+  `Authorization: Bearer <token>` together with the header
+  `X-Service-Name: mascope_sdk`, which names the service the token was
+  generated for. A token sent without that header is refused with 401.
+- Tokens are accepted by the operations the SDK uses, which the document marks
+  with the `APIToken` scheme; the rest of the API answers only to the web app's
+  signed-in session.
+
 <!-- TODO Phase 3: publish the SDK README content into this section as the single
 source, or keep this page thin and deep-link. See the roadmap. -->

@@ -24,6 +24,7 @@ Everything below assumes an Ubuntu host provisioned with
 | Update history | `cat "$(mascope path)/.runtime/update/status.log"` |
 | Back up now | `mascope prod db backup create` |
 | **Require a new password from every user** | Manage users in the app, or `mascope prod db script run require_password_change` |
+| **Clear a lost second factor (2FA)** | Manage users in the app, or `mascope prod mfa reset <email>` |
 | **Disk monitor status / run now** | `systemctl list-timers mascope-disk-check.timer` / `sudo systemctl start mascope-disk-check.service` |
 | Disk monitor history | `journalctl -u mascope-disk-check.service` |
 | Assignment-run retention status / run now | `systemctl list-timers mascope-assignment-prune.timer` / `sudo systemctl start mascope-assignment-prune.service` |
@@ -62,7 +63,10 @@ Version  backend latest · frontend latest  DRIFT (this checkout deploys v1.6.1)
 Drift means the next `mascope prod up` - a restart, or a reboot - moves the
 stack to a different release than the one it is serving. Resolve it by bringing
 the two into line: `git checkout <tag>` for the release the server should run,
-then `mascope prod update`.
+then reinstall the CLI from that checkout, then `mascope prod update` - in that
+order, see [Rolling out a release across several
+servers](#rolling-out-a-release-across-several-servers) for why the CLI has to
+move before the stack does.
 
 ## Provisioning
 
@@ -178,12 +182,19 @@ mascope prod update --version v1.3.0 # deploy a specific pinned release
 `mascope prod update` on its own follows the rolling **`latest`** master build,
 whose version shows in the UI as a date+hash build id (e.g.
 `2026.07.08-ab12cd34`) - *not* the newest `vX.Y.Z` release. To run a pinned
-release, pass `--version vX.Y.Z`. To make a server track that release across
-future updates, check the tag out in the deployment (a pinned checkout reports
-its tag as the version):
+release, pass `--version vX.Y.Z` - a successful update then also moves the
+deployment checkout to that tag, so the server keeps tracking (and
+reporting) that release across restarts and future updates. Checking the
+tag out first is equivalent:
 
 ```sh
 git fetch --tags && git checkout v1.3.0
+
+# CLI before stack: the checkout just swapped in that release's
+# docker-compose.yaml, and a release that adds a compose secret has it created
+# only by the matching CLI.
+CFLAGS="-std=c17" uv tool install --force --reinstall --python 3.12 .   --with-executables-from mascope-cli
+
 mascope prod update          # deploys v1.3.0; the UI then shows v1.3.0
 ```
 
@@ -193,11 +204,56 @@ automatically on startup; `db_init` takes a **pre-migration dump** into
 running stack is touched. (You do **not** need `mascope prod down` first - that
 only adds downtime.)
 
+#### Running a release candidate
+
+A **pre-release** (`vX.Y.Z-rc.N`, also `-beta.N` / `-alpha.N`) deploys exactly
+like a release - `--version v2.0.0-rc.1`, or check the tag out - and the UI
+reports it as `v2.0.0-rc.1`. Nothing that follows releases on its own will
+adopt it: `releases/latest` excludes a pre-release, and that is what `--auto`,
+the update timer and the in-app **Download File Agent** button all read. So
+pair the machines of a piloting site from the pre-release's own versioned
+installer asset on its GitHub release page.
+
+Three things to get right, because a candidate is normally short-lived:
+
+- **CLI before stack**, as for any release and more so: the candidate's
+  `docker-compose.yaml` can want a secret only the matching CLI creates, and a
+  candidate cut on `develop` is further from the installed CLI than a release
+  ever is. Check the tag out, reinstall the CLI from that checkout, then
+  update - the recipe above. Deploying with `--version` alone moves the images
+  while the checkout stays put until the update succeeds, so the stack starts
+  under the *previous* checkout's compose file; prefer the tag checkout for a
+  candidate.
+- **Migrations are forward-only.** A candidate's schema changes are the
+  release's schema changes; going back to the previous release means restoring
+  the pre-migration dump `db_init` just took, losing everything written since.
+  Confirm you can restore *before* updating, not after.
+- **Pin it where the boot service reads it.** If you deploy by checking the tag
+  out, `mascope prod update` aligns the checkout for you and a reboot redeploys
+  the same candidate. If you instead pin by hand, put
+  `MASCOPE_VERSION=vX.Y.Z-rc.N` in `/etc/environment` (the unit's environment),
+  not just in your shell - a pin only your shell can see leaves the boot
+  service deploying something else against a database the candidate has already
+  migrated.
+
+You can leave the update timer enabled. `--auto` never moves a deployment
+backwards: it compares the newest release against what this deployment would
+boot, and when the candidate already supersedes it the run reports "nothing to
+do" and changes nothing. Without that check the timer would read the older
+release as a pending update and apply it - reverting the pilot silently, or
+booting images whose migrations do not know the revision the candidate has
+already written to the database. Leaving a candidate is therefore always a
+deliberate step: `mascope prod update --version vX.Y.Z`. The timer picks the
+site back up on its own once the real `vX.Y.Z` ships, because that supersedes
+the candidate.
+
 ### Unattended updates (the timer)
 
 `mascope-update.timer` runs `mascope prod update --auto` nightly. It is
 installed **disabled**. `--auto` automatically tracks the newest GitHub
-**release tag** (`vX.Y.Z`) - there is no version to pin by hand. To turn it on:
+**release tag** (`vX.Y.Z`) - there is no version to pin by hand. It only ever
+moves forward, so a deployment already running something newer than the newest
+release (a release candidate; see above) is left alone. To turn it on:
 
 1. Make sure the stack is running - the applied database revision is read from
    the live Postgres container. **No credentials are needed**: `--auto` reads
@@ -211,6 +267,7 @@ installed **disabled**. `--auto` automatically tracks the newest GitHub
 
 Each run:
 
+- **Already ahead** (this deployment supersedes the newest release) -> nothing.
 - **Up to date** -> nothing.
 - **Fast update** -> applied inside the maintenance window
   (`MASCOPE_UPDATE_WINDOW`, e.g. `2-5`), then health-checked. A failed health
@@ -219,6 +276,53 @@ Each run:
 - **Migration update** -> recorded and reported (exit 30), then applied at the
   next window once its grace period elapses (`MASCOPE_UPDATE_GRACE_DAYS`,
   default 7 days) **or** you confirm it - unless it has been snoozed.
+
+An applied update also moves the deployment checkout to the release it
+deployed, so a reboot redeploys that same release and `mascope prod doctor`
+stays clean.
+
+!!! warning "Reinstall the CLI after an unattended update"
+
+    The updater deliberately never reinstalls itself - a self-reinstall
+    mid-run is risky, more so unattended - but it *does* move the checkout,
+    which installs the new release's `docker-compose.yaml` beside the **old**
+    CLI. `prod doctor` will not catch this: it compares the image tag the
+    checkout would deploy against the running containers, and both are already
+    on the new release, so it reports clean.
+
+    The next `mascope prod up` - a restart, or a reboot - then drives the new
+    compose file with the old CLI. If the release added a compose secret, as
+    1.8.0 does with `mfa_encryption_key`, compose refuses to create the backend
+    *after* stopping the running one, and the server comes up with no backend.
+
+    So when the timer reports a release applied, reinstall the CLI from the
+    checkout before the next restart:
+
+    ```sh
+    cd "$(mascope path)"
+    CFLAGS="-std=c17" uv tool install --force --reinstall --python 3.12 .       --with-executables-from mascope-cli
+    ```
+
+    For a release with migrations this is worth doing deliberately rather than
+    leaving to the timer - see [Rolling out a release across several
+    servers](#rolling-out-a-release-across-several-servers), which puts the CLI
+    first by design.
+
+The checkout move is deliberately cautious - it never discards local
+changes - so on a checkout with modifications (or one whose `origin` cannot
+be reached to fetch the tag) the update still succeeds with a warning, and
+doctor reports the gap as DRIFT until the checkout is aligned by hand:
+
+```sh
+cd "$(mascope path)"
+git fetch --tags && git checkout vX.Y.Z   # the release the update applied
+
+# Reinstall in the same breath. The unattended updater deliberately never
+# reinstalls itself, so aligning the checkout alone leaves the new release's
+# docker-compose.yaml paired with the old CLI - and the next reboot's
+# `mascope prod up` runs that pairing.
+CFLAGS="-std=c17" uv tool install --force --reinstall --python 3.12 .   --with-executables-from mascope-cli
+```
 
 Steer a pending migration update:
 
@@ -250,6 +354,13 @@ section documents the manual per-server equivalent. The procedure per server
 cd <deployment>            # the mascope checkout, e.g. ~/mascope
 git fetch --tags origin
 git checkout vX.Y.Z        # the release you are rolling out
+
+# CLI first, stack second. The checkout above already swapped in the release's
+# docker-compose.yaml, and a release that adds a compose secret (1.8.0 adds
+# mfa_encryption_key) has that file created only by the matching CLI - the
+# older one stops the backend and then cannot recreate it.
+CFLAGS="-std=c17" uv tool install --force --reinstall --python 3.12 .   --with-executables-from mascope-cli
+
 mascope prod update        # pulls the tagged images, rolling restart (~30 s)
 ```
 
@@ -270,11 +381,17 @@ curl -sI https://<name>/ | head -1           # app serves through its proxy
 
 Two gotchas this procedure exists to avoid:
 
-- **The CLI is not refreshed by `prod update`.** It only pulls images; the
-  `mascope` binary is a `uv` tool installed by `tooling/ubuntu.sh`. If a release
-  adds or changes CLI commands, reinstall the CLI (`ubuntu.sh reinstall`, or the
-  `uv tool install` step it runs) - `prod update` now warns when the running CLI
-  has drifted from the checkout.
+- **The CLI is not refreshed by `prod update` - and it has to be refreshed
+  first.** `prod update` only pulls images; the `mascope` binary is a `uv` tool
+  installed by `tooling/ubuntu.sh`. Reinstall it between the checkout and the
+  update, as in the sequence above: the checkout brings in the release's
+  `docker-compose.yaml`, and a release that adds a compose secret (1.8.0 adds
+  `mfa_encryption_key`) has it provisioned only by the matching CLI - compose
+  then refuses to recreate the backend it has just stopped. Prefer the
+  `uv tool install` line over `ubuntu.sh reinstall`: reinstall goes through the
+  uninstall path, which deletes `.runtime/state.json` and with it the server's
+  active environment. `prod update` still warns when the running CLI has
+  drifted from the checkout - but by then the update has already run.
 - **Host env vars apply at login.** If a rollout also changes something in
   `/etc/environment` (e.g. a new `MASCOPE_*` var), start the stack from a
   **fresh** shell session, or the value interpolates empty.
@@ -308,6 +425,13 @@ restart-window issues in the error tracker so a recurrence stands out.
 backup: a local database dump (`mascope prod db backup create`, pruned by
 `LOCAL_RETENTION_DAYS`) plus an encrypted off-site copy of the dumps and
 filestore via [restic](https://restic.net/).
+
+Neither layer includes `.runtime/secrets/` - deliberately, so no backup medium
+holds both the database and the keys that make its secrets usable. The flip
+side: restoring onto a fresh host needs the secrets restored separately. Keep
+a copy of the secrets files wherever the deployment's other credentials live -
+the [two-factor encryption key](#two-factor-authentication) in particular
+cannot be regenerated, only lost.
 
 Set it up:
 
@@ -348,7 +472,9 @@ A full disk is the classic way to take the whole stack down: Postgres cannot
 write and wedges. Everything that grows lands on the host - the Postgres data,
 the filestore (uploaded raw files) and dumps under `.runtime/`, and docker's
 image store under `/var/lib/docker` - usually sharing one filesystem. Three
-guards keep it from filling silently.
+guards keep it from filling silently, and a fourth - the
+[upload disk floor](#upload-disk-floor) - refuses new uploads once the spool's
+filesystem runs short.
 
 ### The monitor (early warning)
 
@@ -421,6 +547,11 @@ mascope prod db script run require_password_change
 The script sends no live notification - there is no socket server in that process
 - so sessions already open transition when their next request is refused.
 
+Maintenance scripts like this one ship in the backend image, and
+`mascope prod db script` lists and runs them inside the backend container -
+`mascope prod db script list` shows what the deployed release offers, and both
+`list` and `run` need the stack up. The CLI itself needs no source checkout.
+
 **Time it deliberately.** Changing a password revokes that user's API access
 tokens; see below.
 
@@ -444,13 +575,119 @@ instead.
 ### Effect on API access tokens
 
 When a user changes their password, that user's access tokens are revoked. The
-file-converter token is reissued automatically, but **SDK and notebook tokens and
-instrument-agent pairings are not** - their holders must regenerate or re-pair
-them. Across a whole deployment that adds up, so schedule a deployment-wide
-requirement outside acquisition hours.
+file-converter token is reissued automatically, but **SDK and notebook tokens are
+not** - their holders must regenerate them.
+
+A **paired instrument agent is not affected**: its credential belongs to the
+machine account the pairing created, not to the person who approved it, so no
+password change touches it. The exception is an agent still running on a
+pre-registry token issued to a human before it was re-paired - that token sits on
+the person's row and is revoked with the rest. Re-pair those machines before a
+deployment-wide password requirement, not after. A **TOF agent** is always such
+an exception: it has no pairing support, so its token stays a person's for as
+long as it runs. Replace it with the File Agent before the requirement, or regenerate its
+token from that person's settings and put it in the agent's config once they
+have changed their password.
 
 Requiring the change does not revoke anything by itself; tokens are revoked per
 user, as each one complies.
+
+### Paired instrument machines
+
+An instrument agent authenticates as a **device**: approving a pairing request
+creates a registered device named after the machine, a dedicated machine account
+the agent signs in as, and a device-bound token. **Paired machines** under
+Settings lists them with their service, the instrument each agent reports
+watching, the agent release last seen and when each was last seen, and lets you
+rename or revoke one machine on its own. The instrument and the release are
+what the agent reported, and both follow what it reports now: a machine
+repointed at another instrument, or rolled back to an older agent, says so on
+its next upload rather than keeping what it first reported. A machine running
+an agent that predates the fields shows neither, which is how far an agent
+upgrade has got. Correct a wrong instrument in that machine's `config.toml`
+and restart its agent - the server takes the agent's word for what it
+watches, so correcting it anywhere else would not stick.
+
+Two consequences worth knowing before an upgrade:
+
+- **Revoking is per machine.** Revoking a device deactivates its machine account
+  and clears its tokens, stopping that machine and nothing else. *Regenerate* -
+  which replaces the tokens issued to **you** - no longer affects a paired agent,
+  because the credential is not yours.
+- **The Settings list is scoped to the devices you sponsor.** Reviewing or
+  revoking someone else's device is an API call, not a click:
+  `GET /api/auth/devices/all` and `DELETE /api/auth/devices/{id}`, within the
+  usual user-management role ceiling.
+
+#### Requiring paired credentials
+
+Agent tokens issued before the device registry existed keep working, so a
+deployment upgrading into this does not have to re-pair every machine the same
+day. Once every agent machine **has** been re-paired, close that door:
+
+```toml
+[backend]
+require_device_tokens = true
+```
+
+then `mascope prod up`. Any `file-agent`, `tof-agent` or `export-agent` bearer
+token with no device behind it is then refused with a message telling the
+operator to re-pair, instead of being accepted as a person's token. It ships
+**off**, and turning it on before a machine is re-paired stops that machine's
+uploads - so treat it as the last step of the rollout, not the first. The TOF
+agent and the export agent have no pairing support on the client side, so it
+stops those outright: replace every TOF agent with the File Agent before turning
+it on. Personal and
+SDK tokens are unaffected either way: the rule applies only to agent services.
+
+### Two-factor authentication
+
+Accounts can protect sign-in with a second factor (TOTP), and a deployment can
+require one by role - [authorization.md](authorization.md#two-factor-authentication)
+describes the feature as users and admins see it, and the
+[user guide](user/guides/two-factor.md) walks through enrolment. Three things
+concern the operator: one secret, one policy setting, and the last-resort
+reset.
+
+**The encryption key.** `.runtime/secrets/mfa_encryption_key.txt` encrypts the
+stored TOTP seeds. `mascope prod up` generates it when missing, so it appears
+on a deployment's first start once that release's CLI is installed. Two properties
+matter:
+
+- **It is not in the nightly backups** - deliberately, so a database dump (or
+  a stolen off-site copy) cannot be used to mint codes. That makes the file on
+  the host the only copy: keep one off the server, wherever the deployment's
+  other credentials live. On a server rebuilt from backups without it, every
+  enrolled account's TOTP stops verifying; recovery codes still work (their
+  hashes live in the database), so each user can sign in and enrol again - but
+  every one of them has to.
+- **Never rotate it casually.** Replacing it has exactly the same effect as
+  losing it. Unlike `jwt_secret_key.txt`, there is no routine reason to change
+  it.
+
+**Requiring it.** Set `mfa_required_min_role` under `[backend]` in the env's
+config toml (`admin` covers admins and owners, `guest` covers everyone), then
+`mascope prod up` to recreate the backend. No image rebuild is needed - the
+frontend reads the policy from the API. Two guards catch misconfiguration at
+startup rather than at someone's expense: a value that is not a role name
+stops the backend, and so does an active policy with no usable encryption key
+(which would otherwise hold every covered account at an enrolment screen that
+cannot complete).
+
+**When someone is locked out.** Recovery codes and in-app resets (Manage
+users) cover most cases. The host-level escape hatch exists for the case
+nothing in the app can reach - the only account that could reset the factor
+has lost its own authenticator and its codes:
+
+```sh
+mascope prod mfa status          # who holds a second factor + unused code counts
+mascope prod mfa reset <email>   # clear it so its holder can enrol afresh
+```
+
+The reset changes no password and reveals nothing; it only stops the second
+step being demanded, so the account's holder can sign in and set up a new
+authenticator. Open sessions are not ended - restart the backend if you need
+them closed.
 
 ## Monitoring
 
@@ -509,32 +746,99 @@ Unset or `0` (the default) keeps the errors-only behavior; values outside
 GlitchTip's Postgres growth on the monitoring box before raising it -
 transactions are far more numerous than errors.
 
-## Optional features
+## Feature settings
+
+### Peak assignment
 
 **Peak assignment** (assign a chemical composition to every peak - see
-[the user docs](user/how-it-works/peak-assignment.md)) ships **off**. A server
-that leaves it off is unaffected by it: samples process exactly as before, the
-UI is unchanged, and the `/api/peak-assignments` write routes refuse to launch
-runs (403; the read routes stay open, so results from an earlier opted-in
-period remain visible). To enable it on a deployment, set it in the env's
-config toml:
+[the user docs](user/how-it-works/peak-assignment.md)) ships **off**; a
+deployment switches it on as described under [Turning peak assignment on or
+off](#turning-peak-assignment-on-or-off). What it costs a server once on is a
+database-stage assignment of every newly processed sample, folded into its
+batch's ledger: some extra processing time, and **about 200 bytes of database
+per detected peak** - one batch-ledger member row - so roughly 0.4-1.6 MB for a
+typical sample of 2,000-8,000 peaks. That is permanent, in the database's
+volume, and grows with everything you acquire; on most instruments it is a
+fraction of the raw data the sample itself brings. Targeted matching is
+unaffected - assignment is an addition, not a replacement - and samples
+processed before it was switched on are not assigned retroactively; use
+*Rebuild batch ledger* on their batch for those.
+
+An **explicit** assignment run - *Assign peaks* on a sample, or an import from
+an external engine - writes a per-sample ledger as well: one row per detected
+peak, about 0.8 KB each, with the per-peak alternatives, error figures and
+provenance the batch ledger does not keep. Those runs are what the retention
+pass described under [Reclaiming assignment runs](#reclaiming-assignment-runs)
+bounds: it keeps the newest few per sample and engine and drops the rest. The
+batch ledger's member rows are replaced when a sample is re-folded, never
+accumulated, and the pass does not touch them. Size the database for the
+members you keep plus the runs people ask for - see [Disk space](#disk-space).
+
+Three `[meta]` settings shape the ingest-time cost without switching the
+feature off - the views, on-demand runs and imports keep working either way:
+
+```toml
+[meta]
+peak_assignment_on_ingest = false          # assign on demand only (default true)
+peak_assignment_ingest_max_peaks = 20000   # skip denser samples at ingest (default 100000; 0 = no ceiling)
+peak_assignment_ingest_ledger = "sample"   # write a per-sample run at ingest as well (default "batch")
+```
+
+`peak_assignment_on_ingest = false` is for a deployment that wants nothing
+assigned unasked: samples are assigned when someone launches a run on them or
+computes their batch's peaks. The ceiling guards against a pathological
+acquisition: a sample with hundreds of thousands of peaks is skipped at
+ingest, logged, and left for an explicit run.
+
+`peak_assignment_ingest_ledger = "sample"` restores the behaviour releases
+before the batch-primary ledger had: every ingested sample also gets a
+per-sample run, about a kilobyte per detected peak, most of it placeholder
+rows for peaks nothing assigned - on a high-throughput instrument tens of
+gigabytes a month. It buys the inspector's per-peak alternatives and error
+figures and hand curation on every sample without an explicit run. All three
+take effect on the next stack restart.
+
+#### Turning peak assignment on or off
+
+Set it in the env's config toml (see [Where a deployment's settings
+live](#where-a-deployments-settings-live)):
 
 ```toml
 [meta]
 peak_assignment = true
 ```
 
-then rebuild and restart the stack (`mascope prod up --build`). The rebuild
-matters: the frontend bakes the flag in at image build time, so a plain
-restart flips only the backend and leaves the UI on the old setting.
-`MASCOPE_PEAK_ASSIGNMENT=1` in `/etc/environment` flips the backend without
-editing the toml (remember host env vars apply at login - start the stack from
-a fresh shell), but the frontend still needs the toml value and a rebuild.
-Enabling it means every newly processed sample also gets a database-stage
-assignment run, which adds processing time and one database row per detected
-peak per run, so watch disk after turning it on (see
-[Disk space](#disk-space)). Existing samples are not assigned retroactively;
-run assignment explicitly from the UI for those.
+and restart the stack (`mascope prod up`). Samples are assigned at ingest from
+then on, the write routes accept work, and the assignment views appear in the
+UI. Setting it back to `false` and restarting reverses all three.
+
+There is also a `MASCOPE_PEAK_ASSIGNMENT` environment variable, but it is a
+**development knob, not an operator switch**: it is read by the backend only,
+and it is not forwarded into the backend container by the production compose
+file. Setting it does not move the web app, which reads the `[meta]` value - so
+on a stack it would at best leave the assignment views on screen over write
+routes answering 403. Use the toml.
+
+!!! note "One switch, both halves - no image rebuild"
+
+    Both the backend and the web app read this value at **start**, from the same
+    place: `mascope prod up` hands the frontend container the runtime config it
+    resolved, and the container publishes it to the browser
+    (`/runtime-config.js`). A restart is therefore the whole procedure, on
+    published images as much as on a source build.
+
+    Older releases baked the flag into the frontend bundle at image build time.
+    That made switching it off a two-step affair - and worse, it meant a
+    deployment whose config layers are its own (`mascope init`, no source
+    checkout) could run an image built against *different* config than its
+    backend, showing assignment views whose *Assign peaks* button answered 403.
+    If you are on such a release, upgrading is what fixes it; there is nothing
+    to reconcile by hand afterwards.
+
+A server with it off is unaffected by the feature: samples process as they did
+before it landed, the UI shows no assignment views, and the
+`/api/peak-assignments` write routes refuse to launch runs (403; the read
+routes stay open, so ledgers written while it was on remain visible).
 
 ### Reclaiming assignment runs
 
@@ -544,20 +848,56 @@ complete - and re-assigning a sample adds a whole new run beside the old one,
 so on a server where assignment is re-run routinely `peak_assignment` grows
 without bound.
 
+That re-run growth is all the pass below bounds. A sample's ingest run is its
+only run until someone re-assigns it, and one run per sample is never
+superseded, so the baseline ledger described under
+[Peak assignment](#peak-assignment) stays whatever was acquired. Batch-peak
+occurrences (`batch_peak_occurrence`, one per peak per sample for the latest
+run) are bounded the same way - replaced when a sample is re-folded, never
+accumulated - and the prune does not touch them either: a pruned run leaves
+its occurrences in place with their assignment link set to NULL.
+
 A deployment provisioned by `tooling/ubuntu.sh` handles this automatically:
 `mascope-assignment-prune.timer` runs a retention pass nightly at 03:30 and is
 **enabled by default**. Each pass keeps the newest few completed runs per
-sample (so a result can still be compared against the one it replaced) and
-drops the rest, plus failed runs past a short grace period; deleting a run
-cascades to its rows. It deletes only superseded derived data - assignments
-are recomputable by re-running assignment - and it runs whether or not the
-`peak_assignment` flag is enabled, since ledgers written before opting out
-still age out and an empty table costs one cheap query. Tune the policy in
-`/etc/mascope/prune.env` with `MASCOPE_PRUNE_KEEP_PER_SAMPLE` (default 3),
-`MASCOPE_PRUNE_KEEP_FAILED_HOURS` (default 24) and
-`MASCOPE_PRUNE_KEEP_RUNNING_HOURS` (default 72, floored at 12 so runs that may
-still be executing cannot be pruned out from under a worker); disable it
+sample *and engine* (so a result can still be compared against the one it
+replaced) and drops the rest, plus failed runs past a short grace period;
+deleting a run cascades to its rows. It deletes only superseded derived data -
+assignments are recomputable by re-running assignment - and it runs whether or
+not the `peak_assignment` flag is enabled, since ledgers written before opting
+out still age out and an empty table costs one cheap query. Tune the policy in
+`/etc/mascope/prune.env` with `MASCOPE_PRUNE_KEEP_PER_SAMPLE` (default 2),
+`MASCOPE_PRUNE_KEEP_PER_SAMPLE_TOTAL` (default 12),
+`MASCOPE_PRUNE_KEEP_FAILED_HOURS` (default 24),
+`MASCOPE_PRUNE_KEEP_RUNNING_HOURS` (default 72, minimum 12 so runs that may
+still be executing cannot be pruned out from under a worker) and
+`MASCOPE_PRUNE_KEEP_IMPORTING_HOURS` (default 24, minimum 1); disable it
 entirely with `sudo systemctl disable --now mascope-assignment-prune.timer`.
+A value **below** one of those minimums is rejected rather than raised to it:
+the pass exits non-zero and prunes nothing that night, so check
+`journalctl -u mascope-assignment-prune.service` after changing one. Leaving a
+variable unset, or setting it to something that is not an integer, uses the
+default.
+
+The keep-newest budget counts **per sample and engine**, which matters on a
+server where assignment runs are also published from an external engine rather
+than only computed in the app: on a shared budget a few republished imports
+would evict every in-app run for that sample, ledger rows cascading with them.
+Each engine ages out of its own quota instead.
+
+That split needs an outer bound, because the engine name comes from the
+importing client: one that names itself per build or per release would mint a
+fresh quota on every import and grow the table without limit, defeating the
+pass. `MASCOPE_PRUNE_KEEP_PER_SAMPLE_TOTAL` caps how many completed runs a
+sample keeps across all engines. The in-app engine is exempt from that cap -
+otherwise a burst of imports would fill it and start evicting exactly the
+history the per-engine quota exists to protect - so a sample keeps at most the
+total plus the in-app engine's own quota.
+`MASCOPE_PRUNE_KEEP_IMPORTING_HOURS` covers a different case - an import that
+was started and never finished. Such a run holds staged rows *and* blocks new
+assignment work on its sample, so it is reclaimed on its own, shorter grace; a
+client that still knows the run id can also delete it outright instead of
+waiting for the nightly pass.
 
 The same pass can always be run by hand, e.g. ahead of schedule when the disk
 monitor flags growth:
@@ -600,6 +940,86 @@ read records, so a dump the adapter cannot parse leaves the existing mirror
 serving rather than emptying it. Re-running the same source is how you update
 it; prior versions stay on disk until pruned.
 
+### Reference licence gating
+
+Every mirrored record carries a licence **tag** - a short exact string, not a
+licence document. The eight registered adapters carry six distinct tags between
+them, and a hand-authored list can also set the tag per row, in which case the
+row's own tag wins over the adapter's:
+
+| Licence tag | Default for | Note |
+|---|---|---|
+| `CC-BY-4.0` | `chebi`, `lipidmaps` | attribution required |
+| `CC0` | `coconut` | |
+| `custom` | `custom` | every hand-authored row with no `license` column of its own |
+| `hmdb-attribution` | `hmdb` | free with attribution; verify commercial terms first |
+| `open` | `norman` | |
+| `public-domain` | `comptox`, `pubchem` | |
+
+`mascope reference sources` names each source's tag and `mascope reference
+status` prints this whole table with the gate's verdict on each row (monorepo
+checkouts only, like the rest of `mascope reference`). Those two read the
+adapter registry, so they cannot fall out of date when a source is added - the
+table above is written by hand and can, which is why the allowlist is worth
+re-checking after an upgrade that adds a source.
+
+**By default peak assignment matches against every active source, whatever its
+licence.** That is the behaviour every deployment has always had, and it is
+unchanged.
+
+A deployment that must not match against some of them restricts assignment to
+an allowlist of tags in the env's config toml. The gate is an **exact string
+match** on the tag, so the allowlist has to name every tag you want kept -
+anything left out is dropped, and dropped silently:
+
+```toml
+[backend]
+# Declines HMDB, keeps the other five tags. An example, not a default.
+reference_licenses = ["public-domain", "CC-BY-4.0", "CC0", "open", "custom"]
+```
+
+Write it that way round - start from the full list and delete the tags you
+decline - rather than allowlisting the two or three you had in mind. An
+allowlist of `["public-domain", "CC0", "CC-BY-4.0"]` reads as harmless and
+also drops every `norman` record, plus every hand-authored row that carries no
+licence of its own - which on most deployments is the target list loaded with
+`reference_sync custom` above.
+
+Restart the backend to apply it (`mascope prod up`); no rebuild is needed -
+this is backend-only and never reaches the browser. The gate gets applied at
+the database stage of assignment: records whose licence is not listed are not
+matched, so they never produce an identity, an alternative, or a score.
+Annotation of a formula you look up by hand is *not* gated - that reads the
+mirror directly - so removing a source from the gate is not the same as not
+loading it. If you must not hold the data at all, do not ingest it.
+
+Only add the line when you mean to restrict something. Narrowing the gate makes
+assignment quietly find less, and nothing in the UI says why a peak went
+unidentified. Two places do say so:
+
+- `mascope reference status` (monorepo checkouts only, like the rest of
+  `mascope reference`) prints the effective set and, for each active source,
+  whether Stage A matches all, some, or none of its records. It reports the
+  **per-record** licences, which the `custom` adapter lets a hand-authored list
+  set per row, so a list can be partly matched. It then repeats the tag table
+  above with each tag marked matched or not, so the tags an allowlist leaves
+  out are named on screen - including tags belonging to a source this
+  deployment has not loaded yet.
+- Every assignment run records the set in force when it ran, as
+  `reference_licenses` in the run's `config` - served by
+  `GET /api/peak-assignments/sample/{id}/runs`, and by the SDK's
+  `mascope.peak_assignments.list_runs(sample_id)`. `null` means the run was
+  ungated. This is how you tell, months later, what a result was allowed to
+  match - and it is the way to check the gate on a server, where
+  `mascope reference` is not installed. The backend log names the set on each
+  expansion too.
+
+An empty list is refused at startup rather than honoured: `reference_licenses =
+[]` reads like "no restriction" but would block every record. Delete the line
+to allow every licence. The list is also not something an API client can set -
+it is deployment configuration, so a caller cannot widen the gate its own run
+is matched under.
+
 ### Upload size cap
 
 A single resumable (tus) upload is capped at 5 GB by default, so one runaway
@@ -609,19 +1029,85 @@ one may be. Instruments producing larger single files can raise it in the
 env's config toml:
 
 ```toml
-[backend]
+[meta]
 tus_max_upload_gb = 20
 ```
 
 Clients see the cap as the standard `Tus-Max-Size` header; an upload declared
 larger than the cap is refused up front with HTTP 413.
 
+The web uploader sizes its own client-side limit from the same setting, so
+raising the cap lifts it for browser uploads too, on a stack restart and
+nothing more - the frontend container publishes the runtime config it was
+started with, on a pulled release image as much as on a local build (like
+`peak_assignment`). The SDK and instrument-agent paths pick the new cap up on
+the same restart.
+
+The setting used to live under `[backend]`. A config toml that still has it
+there keeps working - it is promoted to `[meta]` at startup with a warning -
+but move it, because only the `[meta]` copy reaches the web app.
+
+### Upload disk floor
+
+The per-upload cap bounds one transfer; it does not bound how much disk several
+concurrent uploads take together. A resumable upload is therefore also refused
+at creation, with HTTP 507, when admitting it would leave less than
+`tus_min_free_disk_gb` (10 GB by default, matching the disk monitor's own
+threshold) free on the filesystem holding the upload spool:
+
+```toml
+[backend]
+tus_min_free_disk_gb = 20
+```
+
+Set it to `0` to disable the check. The refusal happens before any bytes move,
+and clients retry it, so a squeeze that clears on its own costs nothing but a
+delay. If uploads are being refused, free space on `$MASCOPE_PATH` - see
+[Disk space](#disk-space) for what grows there.
+
+Upload spool entries left behind by clients that started an upload and never
+finished it are deleted once they have gone 24 hours without progress, checked
+whenever a new upload is admitted. Only untouched entries are swept, so a slow
+multi-hour transfer is never reaped.
+
+### Legal and support links
+
+The sign-in screen and the About tab of the home menu link a privacy
+notice, terms of service and a support contact. The documents are published
+outside the product, so the links are settings in the env's config toml. The
+defaults are:
+
+```toml
+[meta]
+privacy_notice_url = "https://ultratrace.eu/mascope/privacy"
+terms_url = ""                                 # empty: no link is shown
+support_url = "mailto:support@ultratrace.eu"
+```
+
+A deployment operated by someone other than Ultra Trace should point these at
+its own privacy notice and support desk. An empty string hides a link. The
+privacy notice and terms take an `http(s)://` URL and the support contact an
+`http(s)://` or `mailto:` one; anything else is refused when the config loads,
+naming the setting, rather than ending up in a link. Like the other `[meta]`
+settings, a change takes a stack restart - the frontend container publishes the
+runtime config it was started with.
+
+The About tab also shows the licence and the notices - NOTICE together with
+the third-party attributions. Those need no setting: each image generates its
+own at build time (the npm packages in the web app's bundle; for the bundled
+user documentation, the packages that build it and the assets vendored under
+`docs/user/assets`, by the licence files kept beside them; the Python
+distributions installed in the server image). A new vendored asset needs its
+licence file next to it, or the docs build has nothing to carry for it.
+
+### Where a deployment's settings live
+
 | Path | What |
 |---|---|
 | `/etc/environment` | `MASCOPE_PATH`, `LD_PRELOAD` (read by the systemd units) |
 | `/etc/mascope/update.env` | update window / grace / repo, update disk floor (chmod 600) |
 | `/etc/mascope/disk-check.env` | disk-monitor thresholds + alert URL (chmod 600) |
-| `$MASCOPE_PATH/.runtime/secrets/` | `postgres_password.txt`, `jwt_secret_key.txt`, `server_owner_secret_key.txt`, TLS cert/key, `backup.env` |
+| `$MASCOPE_PATH/.runtime/secrets/` | `postgres_password.txt`, `jwt_secret_key.txt`, `server_owner_secret_key.txt`, `mfa_encryption_key.txt`, TLS cert/key, `backup.env` |
 | `$MASCOPE_PATH/.runtime/database/backups/prod/` | database dumps (incl. pre-migration) |
 | `$MASCOPE_PATH/.runtime/update/` | `state.json` (pending update), `status.log` |
 
@@ -653,9 +1139,23 @@ grace period, or a confirm, and never applies while snoozed. Run
 `snooze_until` / `confirmed` state. `mascope prod update --confirm` applies it at
 the next window.
 
+**`mascope prod db script` cannot find a mascope Python / lists no scripts.**
+The scripts are discovered and run inside the backend container, so the stack
+must be up: `mascope prod ps`, then `mascope prod up --detach`. The nightly
+`mascope-assignment-prune.service` is affected the same way - a firing while
+the stack is down fails, and the next one runs the pass again.
+
 **Backend unhealthy after an update.** The updater stops and leaves the stack in
 place (no automatic rollback). Investigate with `mascope prod logs backend`. To
 roll back manually: if a migration ran, first restore the pre-migration dump
 (`mascope prod db backup list`, then `mascope prod db restore <dump> --yes`),
 then redeploy the previous release with
 `mascope prod update --version v<previous>`.
+
+**Two-factor codes stopped working for everyone** (typically after a rebuild or
+a restore onto a fresh host). The seeds in the database no longer decrypt:
+`mfa_encryption_key.txt` is missing, or is not the file the seeds were
+encrypted under. Recovery codes still work. Put the original key file back and
+restart the backend; if it is gone for good, each enrolled account signs in
+with a recovery code (or is reset - see
+[Two-factor authentication](#two-factor-authentication)) and enrols again.

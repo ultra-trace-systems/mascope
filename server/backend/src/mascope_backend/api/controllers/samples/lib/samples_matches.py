@@ -9,6 +9,7 @@ from __future__ import annotations
 import pandas as pd
 from sqlalchemy import and_, label, select
 
+from mascope_backend.api.lib.utils import strings_json_safe
 from mascope_backend.api.new.match.params.lib import apply_match_params
 from mascope_backend.db import (
     MatchCollection,
@@ -26,6 +27,7 @@ async def query_peak_matches(
     sample_item_id: str,
     instrument: str,
     peak_ids: list[str],
+    instrument_type: str | None = None,
 ) -> list[list[dict]]:
     """Query and group match data for a list of peaks.
 
@@ -35,6 +37,9 @@ async def query_peak_matches(
     :param sample_item_id: The sample to query matches for.
     :param instrument: Instrument name (passed through for match filtering).
     :param peak_ids: Ordered list of peak IDs to align results to.
+    :param instrument_type: The class the reader recorded for the sample's
+        file, carried into the frame so the match defaults do not have to be
+        read back out of the instrument name.
     :return: Per-peak list of match dictionaries.
     """
     async with async_session() as session:
@@ -56,10 +61,15 @@ async def query_peak_matches(
                 TargetCompound.target_compound_name,
                 TargetCompound.target_compound_formula,
                 TargetCollection.target_collection_id,
+                TargetCollection.target_collection_name,
                 label(
                     "instrument",
                     instrument,  # type: ignore
                 ),  # Add instrument as a column for filtering logic
+                label(
+                    "instrument_type",
+                    instrument_type,  # type: ignore
+                ),  # ... and its class, which the name need not say
             )
             .select_from(MatchIsotope)
             .join(
@@ -134,6 +144,26 @@ async def query_peak_matches(
         )
         .reset_index()
     )
+
+    # Names for the collections behind each match, element-wise aligned with
+    # target_collection_ids. Resolved here, from the row the id came from,
+    # rather than left to the caller: the id is only resolvable through the
+    # target collection listing, which bearer-token clients (the SDK) cannot
+    # read. Names are not unique - target_collection_id stays the join key.
+    collection_names = dict(
+        zip(match_df["target_collection_id"], match_df["target_collection_name"])
+    )
+    agg.insert(
+        agg.columns.get_loc("target_collection_ids") + 1,
+        "target_collection_names",
+        agg["target_collection_ids"].apply(
+            lambda ids: [collection_names.get(i) for i in ids]
+        ),
+    )
+
+    # target_compound_name is nullable, so under pandas 3 the NULLs arrive as
+    # NaN rather than None and would break serialization of the response.
+    agg = strings_json_safe(agg)
 
     grouped = agg.groupby("sample_peak_id", sort=False)
     peak_id_to_match = {

@@ -12,7 +12,10 @@ class CheminfoQueryBody(BaseModel):
     )
     formula_ranges: str = Field(
         cheminfo_config.DEFAULT_FORMULA_RANGE,
-        description="The formula range to query, defaults to 'C0-100 H0-100 O0-100 N0-100'",
+        description=(
+            "Element count ranges permitted in candidate formulas, e.g. "
+            "'C0-80 H0-160 O0-50 N0-20'. Defaults to the server's configured range."
+        ),
     )
     ionization_mechanism_ids: list[str] = Field(
         ..., description="The ionization mechanism IDs to query against"

@@ -2,6 +2,7 @@ import json
 
 from sqlalchemy import select, update
 
+from mascope_backend.accounts import ACCOUNT_TYPE_MACHINE
 from mascope_backend.api.lib.api_features import api_controller
 from mascope_backend.api.new.auth.access_token.validation import (
     validate_service_access_token,
@@ -13,6 +14,12 @@ from mascope_backend.api.new.auth.strategies.database import (
 )
 from mascope_backend.db import AccessToken, User, async_session
 from mascope_backend.runtime import runtime
+
+
+#: The service whose token the converter fetches to write back an upload's
+#: results. Minted for a person at login; a machine account never logs in, so
+#: it is minted at pairing and re-minted on demand here when missing/expired.
+_FILE_CONVERTER_SERVICE = "file-converter"
 
 
 @api_controller()
@@ -42,18 +49,35 @@ async def get_access_token(user: User, service_name: str) -> str:
         )
         token = token_query.scalars().first()
 
-        if not token:
-            raise InvalidTokenException(
-                "You don't have access to this service. Please log in to Mascope again to refresh your access."
-            )
-
+    had_token = token is not None
+    if token is not None:
         try:
             await validate_service_access_token(token.token, service_name)
             return token.token
-        except InvalidTokenException as e:
-            raise InvalidTokenException(
-                "Your access to this service has expired. Please log in to Mascope again to refresh your access."
-            ) from e
+        except InvalidTokenException:
+            token = None  # expired/invalid; fall through to mint-or-raise
+
+    # A machine account (instrument agent) never logs in, so its
+    # file-converter token is never minted or refreshed by a sign-in. Mint it
+    # on demand here so an upload is never refused for the want of one - at
+    # first upload, and again if the token has lapsed.
+    if (
+        service_name == _FILE_CONVERTER_SERVICE
+        and getattr(user, "account_type", None) == ACCOUNT_TYPE_MACHINE
+    ):
+        return await create_access_token(user=user, service_name=service_name)
+
+    # Which of the two is decided by whether a token was found at all, not by
+    # `token`, which the except branch above has already cleared - reading it
+    # here would report every expired token as "no access" and leave the
+    # expiry message unreachable.
+    if had_token:
+        raise InvalidTokenException(
+            "Your access to this service has expired. Please log in to Mascope again to refresh your access."
+        )
+    raise InvalidTokenException(
+        "You don't have access to this service. Please log in to Mascope again to refresh your access."
+    )
 
 
 @api_controller()
@@ -86,7 +110,10 @@ async def generate_access_token(user, service_name: str):
 
 @api_controller()
 async def create_access_token(
-    user, service_name: str, description: str | None = None
+    user,
+    service_name: str,
+    description: str | None = None,
+    device_id: int | None = None,
 ) -> str:
     """
     Creates a new access token WITHOUT removing the user's existing tokens
@@ -100,6 +127,9 @@ async def create_access_token(
     :param description: Optional label stamped on the token (e.g. the
         paired machine's hostname)
     :type description: str, optional
+    :param device_id: The paired machine holding this token, when the token
+        is bound to a registered device
+    :type device_id: int, optional
     :return: The raw token string
     :rtype: str
     """
@@ -109,7 +139,11 @@ async def create_access_token(
         await session.execute(
             update(AccessToken)
             .where(AccessToken.token == token)
-            .values(service_name=service_name, description=description)
+            .values(
+                service_name=service_name,
+                description=description,
+                device_id=device_id,
+            )
         )
         await session.commit()
     runtime.logger.debug(
