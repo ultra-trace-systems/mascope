@@ -99,8 +99,11 @@ each element's most abundant isotope — and the offsets count from it, as in an
 table. It is the row that carries a compound's assignment, the peak its isotopologues
 fold under in the ledgers, and the peak a verdict is recorded on. For most ions it is
 also the tallest peak of the cluster; for a bromine- or chlorine-rich ion it is the
-lightest, and the tallest peak is its M+2. Abundances in the inspector are fractions of
-the family's most abundant isotopologue, so nothing reads above 100 %.
+lightest, and the tallest peak is its M+2. For an ion made with an isotopically labelled
+reagent, such as 15N-nitrate, the labelled atom is at its label: the M0 is the labelled
+peak, and the reagent's unlabelled remainder, a small peak one mass unit below it, reads
+M-1. Abundances in the inspector are fractions of the family's most abundant
+isotopologue, so nothing reads above 100 %.
 
 ## Chemical plausibility — the Seven Golden Rules
 
