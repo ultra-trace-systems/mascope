@@ -9,6 +9,7 @@ import pytest
 
 from mascope_tools.composition.grid import (
     NeutralGrid,
+    admits,
     build_neutral_grid,
 )
 from mascope_tools.composition.models import CompositionSearchConfig
@@ -139,6 +140,75 @@ class TestUnsaturation:
     def test_nothing_is_computed_when_the_search_does_not_ask(self):
         grid = grid_for("C0-6 H0-14 O0-2", 0.0, 200.0, use_unsaturation=False)
         assert grid.unsaturation is None
+
+
+class TestWhatTheGridAdmits:
+    """One composition asked the question a grid answers for a mass range."""
+
+    def test_every_row_a_grid_holds_is_admitted(self):
+        config = CompositionSearchConfig(
+            ionizations="+H+",
+            element_count_ranges="C1-6 H0-14 N0-1 O0-3",
+            use_unsaturation=True,
+            min_unsaturation=0.0,
+            max_unsaturation=3.0,
+            only_integer_unsaturation=True,
+        )
+        grid = build_neutral_grid(config, 0.0, 250.0)
+        assert grid is not None
+        for row in range(len(grid)):
+            assert admits(config, grid.composition(row))
+
+    def test_a_composition_the_same_walk_leaves_out_is_not(self):
+        # The walk's complement over the same box: every composition of these
+        # counts that the grid does not hold, whatever the reason, is refused.
+        config = CompositionSearchConfig(
+            ionizations="+H+",
+            element_count_ranges="C1-3 H0-4 O0-2",
+            use_unsaturation=True,
+            min_unsaturation=0.0,
+            max_unsaturation=1.0,
+            only_integer_unsaturation=True,
+        )
+        grid = build_neutral_grid(config, 0.0, 200.0)
+        assert grid is not None
+        held = {
+            tuple(sorted(grid.composition(row).items())) for row in range(len(grid))
+        }
+        for carbon in range(5):
+            for hydrogen in range(6):
+                for oxygen in range(4):
+                    composition = {
+                        symbol: count
+                        for symbol, count in (
+                            ("C", carbon),
+                            ("H", hydrogen),
+                            ("O", oxygen),
+                        )
+                        if count
+                    }
+                    expected = tuple(sorted(composition.items())) in held
+                    assert admits(config, composition) is expected, composition
+
+    def test_an_element_the_box_does_not_hold_is_refused(self):
+        config = CompositionSearchConfig(
+            ionizations="+H+", element_count_ranges="C1-10 H0-20 O0-5"
+        )
+        assert admits(config, {"C": 3, "H": 4, "O": 1})
+        assert not admits(config, {"C": 3, "H": 7, "N": 1, "O": 1})
+
+    def test_the_unsaturation_window_applies_only_where_the_search_uses_it(self):
+        # C2H6O has an unsaturation of 0, under a minimum of 1.
+        box = "C1-10 H0-20 O0-5"
+        kept = CompositionSearchConfig(ionizations="+H+", element_count_ranges=box)
+        cut = CompositionSearchConfig(
+            ionizations="+H+",
+            element_count_ranges=box,
+            use_unsaturation=True,
+            min_unsaturation=1.0,
+        )
+        assert admits(kept, {"C": 2, "H": 6, "O": 1})
+        assert not admits(cut, {"C": 2, "H": 6, "O": 1})
 
 
 class TestTheCompositionOfARow:

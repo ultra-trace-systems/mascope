@@ -366,6 +366,51 @@ class TestWhatTheEarlierPassesDecided:
         run(rows)
         assert expected in rules_on(rows, "pa-1")
 
+    @pytest.mark.parametrize(
+        "formula, alternative, via, detail",
+        [
+            (
+                "C6H12O6",
+                "C6H15NO6",
+                "+H+",
+                "the same ion reads as C6H15NO6 through a channel donating no "
+                "nitrogen, and no channel of this run fixes the count",
+            ),
+            # A reference mirror's row read through a channel donating none is
+            # in doubt from the other side, and the sentence says which.
+            (
+                "C3H7NO",
+                "C3H4O",
+                "+NH4+",
+                "the same ion reads as C3H4O through a channel that donates "
+                "nitrogen, and no channel of this run fixes the count",
+            ),
+        ],
+    )
+    def test_the_nitrogen_reason_names_the_side_the_doubt_is_from(
+        self, formula, alternative, via, detail
+    ):
+        cross_channel = {
+            "channels": ["+H+"],
+            "capped": True,
+            "ambiguous_nitrogen": {"alternative": alternative, "via": via},
+        }
+        rows = [
+            row(
+                "pa-1",
+                formula,
+                tier="candidate",
+                provenance={"cross_channel": cross_channel},
+            )
+        ]
+        run(rows)
+        (reason,) = [
+            reason
+            for reason in rows[0]["provenance"]["tier_reasons"]
+            if reason["rule"] == REASON_AMBIGUOUS_NITROGEN
+        ]
+        assert reason["detail"] == detail
+
     def test_this_pass_does_not_count_their_caps_as_its_own(self):
         # They already took the tier. Counting it again would report the run
         # demoting a row twice.
