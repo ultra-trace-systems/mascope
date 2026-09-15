@@ -7,6 +7,25 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
 ## [1.8.1] - 2026.09.16
 ### Changed
 
+- **The assignment mass gate judges a row at its own m/z where the run's
+  calibration drifts with mass.** A run measures its mass calibration over its
+  own corroborated commits and caps an uncorroborated row that sits more than
+  three widths from it. That centre was one offset for the whole range, and on
+  an Orbitrap the residual below about m/z 120 is closer to a fixed offset in
+  mDa, which grows in ppm as the mass falls: on one instrument every sample's
+  commits sit near 0 ppm above m/z 120 and at -1.4 ppm below m/z 80, so a
+  small ion on calibration read four widths off it. The run now also fits
+  `ppm = a + b * 1000 / mz` over its committed monoisotopic rows and judges at
+  that line where peaky's rules accept it: the slope beyond three standard
+  errors, the residual RMS at most 0.8 of the constant model's, `|b|` at most
+  0.5 mDa, five kept rows in each half of the fitted range, and the centre
+  held at the edges of the m/z the rows covered. Anything else keeps the
+  constant centre exactly. The width stays one number, floored by 0.03 mDa at
+  low mass where a trend is judged. `config.mass_calibration` records the
+  `centre` it judged at (`trend` or `constant`), the `trend` and the rule that
+  refused one (`trend_refused`). In `mascope_tools`, `mass_accuracy` gains
+  `fit_mass_trend`, `MassTrend` and `trend_width_floor_ppm`.
+
 - **A reference list's match now has its nitrogen count questioned like a
   search result's.** The reagent-nitrogen rule caps a reading whose ion reads
   equally well as a neutral with a different nitrogen count, the nitrogen

@@ -2474,11 +2474,19 @@ async def _run_sample_assignment(
             fallback_sigma_ppm=resolved_profile.fallback_sigma_ppm,
         )
         if mass_calibration["applied"]:
+            trend = mass_calibration["trend"]
+            centre = (
+                f"a centre following {trend['offset_mda']:+.3f} mDa over m/z "
+                f"{trend['mz_lo']:.0f}-{trend['mz_hi']:.0f}"
+                if trend
+                else f"a constant centre ({mass_calibration['trend_refused']})"
+            )
             runtime.logger.info(
                 f"Sample '{sample.sample_item_name}' calibrates at "
                 f"{mass_calibration['mu_ppm']:+.3f} ppm, width "
                 f"{mass_calibration['sigma_ppm']:.3f} ppm over "
-                f"{mass_calibration['anchors']} corroborated commits; "
+                f"{mass_calibration['anchors']} corroborated commits, judged at "
+                f"{centre}; "
                 f"{mass_calibration['capped']} of "
                 f"{mass_calibration['committed'] - mass_calibration['corroborated']} "
                 "uncorroborated commits capped off calibration"

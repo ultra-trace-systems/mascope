@@ -242,7 +242,11 @@ What caps a row at candidate:
   the same ion as acrolein with ammonium - and questions its nitrogen count whichever
   side of that split the list chose. The calibration check treats it like a search result
   unless one of its isotopologues tracks its mass error. Those reference matches also play
-  no part in measuring the sample's own mass accuracy.
+  no part in measuring the sample's own mass accuracy. The calibration's centre can follow
+  the mass range: where the run's assignments show their mass error changing with m/z the
+  way a fixed offset in millidaltons does, growing in ppm as the mass falls, each ion is
+  measured from the centre at its own m/z, so a small ion a couple of ppm out can sit
+  exactly on calibration.
 
 What a row that keeps its tier kept it on: **second channel** (the same neutral committed
 through two or more of the run's ionization channels), **no close rival** (the evidence
