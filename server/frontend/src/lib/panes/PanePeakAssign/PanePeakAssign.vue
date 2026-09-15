@@ -395,10 +395,22 @@ const corroborationTooltip = computed(() => {
   )
 })
 
-// Compact substitution label (e.g. "[15N]", "[81Br][2H]") from the full
+// Compact substitution label (e.g. "[13C]", "[81Br]2") from the full
 // isotopologue formula; falls back to the M0/M+1 offset label.
+//
+// Counted from the family's M0, which for a labelled ion is a bracketed line
+// itself: the ion formula names the labels, so the 15N-nitrate ion's labelled
+// line reads "M0" and the reagent's unlabelled remainder below it "[14N]". Every
+// row the engine writes carries its ion formula; the M0's stands in for a row
+// that recorded none, and the measurement's for a derived family whose rows name
+// no ion.
 const isoLabel = (iso) =>
-  iso.isotope_formula ? formatIsotopeFormula(iso.isotope_formula) : iso.isotope_label || '-'
+  iso.isotope_formula
+    ? formatIsotopeFormula(
+        iso.isotope_formula,
+        iso.ion_formula ?? m0.value?.ion_formula ?? measured.value?.ion_formula
+      )
+    : iso.isotope_label || '-'
 
 // Theoretical (predicted) relative abundance of an isotopologue, as a fraction
 // of the family's most abundant isotopologue - the way an isotope table gives
