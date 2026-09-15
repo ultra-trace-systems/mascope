@@ -1039,6 +1039,118 @@ async def fetch_mechanisms_by_notation(
     ]
 
 
+async def _resolve_secondary_channels(
+    sample, resolved_profile: ResolvedProfile, peaks_df: pd.DataFrame
+) -> tuple[ResolvedProfile, list[SimpleNamespace]]:
+    """Which of the profile's opportunistic channels this sample runs.
+
+    The profile names what the source can produce, the spectrum says whether it
+    does, and the mechanism table says whether this deployment can express it.
+    All three have to agree before a channel is searched. A run and the run-less
+    ingest fold resolve them here alike.
+
+    :param sample: The sample view row.
+    :param resolved_profile: The sample's resolved chemistry.
+    :param peaks_df: The sample's peaks, whose spectrum is asked for each
+        channel's carrier.
+    :return: The resolution carrying the channel evidence, and the deployment's
+        mechanism rows for the profile's secondary channels.
+    """
+    secondary_mechanisms = await fetch_mechanisms_by_notation(
+        [
+            channel.notation
+            for channel in secondary_channels(resolved_profile.profile.name)
+        ],
+        sample.polarity,
+    )
+    resolved_profile = with_secondary_channels(
+        resolved_profile,
+        peaks_df["mz"].to_numpy(),
+        peaks_df["intensity"].to_numpy(),
+        [m.ionization_mechanism for m in secondary_mechanisms],
+    )
+    return resolved_profile, secondary_mechanisms
+
+
+def _searched_mechanisms(
+    mechanisms: list[SimpleNamespace],
+    secondary_mechanisms: list[SimpleNamespace],
+    resolved_profile: ResolvedProfile,
+) -> list[SimpleNamespace]:
+    """The mechanisms a sample's channels are searched and read through.
+
+    The mode's own mechanisms decide whether there is anything to search at all;
+    the opportunistic channels are an addition to a sample's chemistry, not a
+    substitute for it. A mode that declares nothing is one nobody has configured,
+    and searching it through a channel the source happens to show would assign a
+    sample whose ionization is unknown. The cross-channel pass reads the same
+    set as the untargeted search: which channels a neutral COULD have been seen
+    through is what makes seeing it in one of them evidence or not.
+
+    :param mechanisms: The mode's own polarity-matching mechanisms.
+    :param secondary_mechanisms: The deployment's rows for the profile's
+        secondary channels (:func:`_resolve_secondary_channels`).
+    :param resolved_profile: The resolution that says which of those this
+        sample runs.
+    :return: The mode's mechanisms and the secondary ones the sample runs, or
+        none when the mode declares none.
+    """
+    if not mechanisms:
+        return []
+    return mechanisms + [
+        mechanism
+        for mechanism in secondary_mechanisms
+        if mechanism.ionization_mechanism in resolved_profile.minor_channels
+    ]
+
+
+def _read_nitrogen_counts(
+    stage_a_assignments: list[dict],
+    stage_b_assignments: list[dict],
+    *,
+    searched_mechanisms: list[SimpleNamespace],
+    resolved_profile: ResolvedProfile,
+    max_alternatives: int,
+) -> tuple[int, dict]:
+    """Give each reference mirror row its ion's family, then read every channel.
+
+    An election carries the readings it displaced and a matched row carries
+    none, so the cross-channel pass could not ask a list's formula what it asks
+    the search's without the family written first. It is built under the
+    untargeted search's own box and filter, whether or not that stage ran, so it
+    is the family the search would have held. A run and the run-less ingest fold
+    both call this, so a reference-list row capped for its nitrogen count in a
+    run is capped on the batch ledger too.
+
+    :param stage_a_assignments: Stage A's rows, mirror rows modified in place.
+    :param stage_b_assignments: The untargeted stage's rows; none on the fold.
+    :param searched_mechanisms: :func:`_searched_mechanisms`.
+    :param resolved_profile: The sample's resolved chemistry.
+    :param max_alternatives: Cap on stored alternatives per row.
+    :return: How many mirror rows carry same-ion readings, and the cross-channel
+        pass's summary.
+    """
+    notations, mechanism_id_by_notation = _untargeted_ionization_notations(
+        searched_mechanisms
+    )
+    mirror_families = record_mirror_same_ion_readings(
+        stage_a_assignments,
+        mechanism_id_by_notation=mechanism_id_by_notation,
+        search_config=resolved_profile.search_config(notations),
+        heuristics_config=resolved_profile.heuristics_config(),
+        formula_formatter=to_custom_element_format,
+        max_alternatives=max_alternatives,
+    )
+    cross_channel = apply_cross_channel(
+        stage_a_assignments + stage_b_assignments,
+        notation_by_id={
+            mechanism_id: notation
+            for notation, mechanism_id in mechanism_id_by_notation.items()
+        },
+    )
+    return mirror_families, cross_channel
+
+
 async def _fetch_known_target_isotopes(
     sample: Sample,
     isotope_abundance_threshold: float,
@@ -2119,22 +2231,9 @@ async def _run_sample_assignment(
             instrument_type=instrument_type,
             polarity=sample.polarity,
         )
-        # -- Opportunistic channels: the profile names what the source can
-        # produce, the spectrum says whether it does, and the mechanism table
-        # says whether this deployment can express it. All three have to agree
-        # before a channel is searched.
-        secondary_mechanisms = await fetch_mechanisms_by_notation(
-            [
-                channel.notation
-                for channel in secondary_channels(resolved_profile.profile.name)
-            ],
-            sample.polarity,
-        )
-        resolved_profile = with_secondary_channels(
-            resolved_profile,
-            peaks_df["mz"].to_numpy(),
-            peaks_df["intensity"].to_numpy(),
-            [m.ionization_mechanism for m in secondary_mechanisms],
+        # -- Opportunistic channels (:func:`_resolve_secondary_channels`).
+        resolved_profile, secondary_mechanisms = await _resolve_secondary_channels(
+            sample, resolved_profile, peaks_df
         )
         if resolved_profile.unavailable_channels:
             # Once per run, and only for a channel the sample actually shows:
@@ -2225,24 +2324,10 @@ async def _run_sample_assignment(
         scoring = pattern_scoring_for(
             match_params, mass_accuracy, resolved_profile.fallback_sigma_ppm
         )
-        # The mode's own mechanisms decide whether there is anything to search
-        # at all; the opportunistic channels are an addition to a sample's
-        # chemistry, not a substitute for it. A mode that declares nothing is
-        # one nobody has configured, and searching it through a channel the
-        # source happens to show would assign a sample whose ionization is
-        # unknown. Resolved here rather than inside the untargeted branch
-        # because the cross-channel pass below reads the same set: which
-        # channels a neutral COULD have been seen through is what makes seeing
-        # it in one of them evidence or not.
-        searched_mechanisms = (
-            mechanisms
-            + [
-                mechanism
-                for mechanism in secondary_mechanisms
-                if mechanism.ionization_mechanism in resolved_profile.minor_channels
-            ]
-            if mechanisms
-            else []
+        # Resolved here rather than inside the untargeted branch because the
+        # cross-channel pass below reads the same set.
+        searched_mechanisms = _searched_mechanisms(
+            mechanisms, secondary_mechanisms, resolved_profile
         )
         if config.run_untargeted:
             eligible_df = peaks_df[
@@ -2405,33 +2490,16 @@ async def _run_sample_assignment(
                 f"{mass_calibration['committed']} commits, too few to measure a "
                 "mass calibration; no row is gated on one"
             )
-        # -- The other readings of each reference mirror row's ion. An election
-        # carries the readings it displaced and a matched row carries none, so
-        # the pass below could not ask a list's formula what it asks the
-        # search's. Built under the untargeted search's own box and filter,
-        # whether or not that stage ran, so the family is the one it would
-        # have held.
-        searched_notations, searched_mechanism_ids = _untargeted_ionization_notations(
-            searched_mechanisms
-        )
-        mirror_families = record_mirror_same_ion_readings(
-            stage_a_assignments,
-            mechanism_id_by_notation=searched_mechanism_ids,
-            search_config=resolved_profile.search_config(searched_notations),
-            heuristics_config=resolved_profile.heuristics_config(),
-            formula_formatter=to_custom_element_format,
-            max_alternatives=config.max_alternatives,
-        )
         # -- What the sample's other channels say about each committed neutral,
         # and the nitrogen a reagent adduct can hide. After the mass gate
         # because both only ever demote, so the order cannot change a tier -
         # only which pass is recorded as having taken it.
-        cross_channel = apply_cross_channel(
-            stage_a_assignments + stage_b_assignments,
-            notation_by_id={
-                mechanism_id: notation
-                for notation, mechanism_id in searched_mechanism_ids.items()
-            },
+        mirror_families, cross_channel = _read_nitrogen_counts(
+            stage_a_assignments,
+            stage_b_assignments,
+            searched_mechanisms=searched_mechanisms,
+            resolved_profile=resolved_profile,
+            max_alternatives=config.max_alternatives,
         )
         runtime.logger.info(
             f"Sample '{sample.sample_item_name}' corroborates "
@@ -2673,6 +2741,14 @@ async def _fold_sample_peaks_without_run(
     ``test_fold_without_run`` pins that the gate runs here, and
     ``test_mass_gate`` pins which Stage A rows it may act on.
 
+    The reagent-N rule runs here too, for the same reason
+    (:func:`_read_nitrogen_counts`): a reference mirror's row whose ion reads as
+    a neutral with a different nitrogen count through another of the channels a
+    run would read is capped at candidate on this ledger as in a run. What can
+    fix the count differs, since a second channel here can only be another of
+    Stage A's commits, so this path can cap a row that a run's untargeted
+    readings would have corroborated.
+
     :param sample_item_id: The sample to fold.
     :param defer_consensus_to: As for ``fold_sample_into_batch_peaks``: a
         whole-batch walk collects the anchors touched and recomputes once.
@@ -2740,6 +2816,21 @@ async def _fold_sample_peaks_without_run(
         stage_a_accuracy=mass_accuracy,
         fallback_sigma_ppm=resolved_profile.fallback_sigma_ppm,
     )
+    # ...and the run's nitrogen check, through the channels a run would read,
+    # so a reference-list row whose ion reads as well another way is not held
+    # at a tier a run takes from it.
+    resolved_profile, secondary_mechanisms = await _resolve_secondary_channels(
+        sample, resolved_profile, peaks_df
+    )
+    _, cross_channel = _read_nitrogen_counts(
+        stage_a,
+        [],
+        searched_mechanisms=_searched_mechanisms(
+            mechanisms, secondary_mechanisms, resolved_profile
+        ),
+        resolved_profile=resolved_profile,
+        max_alternatives=config.max_alternatives,
+    )
     assigned = claimed_peak_ids | {row["sample_peak_id"] for row in stage_a}
     unassigned = build_unassigned_assignments(
         peaks_df[~peaks_df["sample_peak_id"].isin(assigned)],
@@ -2749,8 +2840,9 @@ async def _fold_sample_peaks_without_run(
     runtime.logger.info(
         f"Stage A assigned {len(stage_a)} of {len(peaks_df)} peaks of sample "
         f"'{sample.sample_item_name}' ({len(reagent)} claimed by the reagent "
-        f"pre-pass, {len(artifact)} by the artifact one); folding into the "
-        "batch ledger without a run"
+        f"pre-pass, {len(artifact)} by the artifact one, "
+        f"{cross_channel['capped']} capped for an unfixable nitrogen count); "
+        "folding into the batch ledger without a run"
     )
     from mascope_backend.api.new.peak_assignments.batch_peaks_controller import (
         fold_sample_into_batch_peaks,
