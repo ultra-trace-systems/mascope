@@ -2737,9 +2737,9 @@ async def _fold_sample_peaks_without_run(
     calibration) is skipped with a log line and nothing is written.
 
     The mass gate runs here as it does in a run, over the commits this path
-    has. Every commit here is a Stage A one, but not every Stage A commit is
-    curated. A target library row is never capped. A reference mirror's row is
-    judged like a search result unless an isotopologue tracks it
+    has. Every commit here is a Stage A one, and any of them off calibration is
+    capped unless an isotopologue tracks it. A target library row anchors the
+    calibration and a reference mirror's row does not
     (``mass_gate.CORROBORATED_CURATED``). Without the gate here, such a row
     would hold a tier on this ledger that the gate takes from it in a run. The
     two calibrations are fitted over different commits, since a run also has
