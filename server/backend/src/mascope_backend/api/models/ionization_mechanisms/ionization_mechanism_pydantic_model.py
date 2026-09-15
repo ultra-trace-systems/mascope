@@ -6,6 +6,7 @@ with validation rules and business logic constraints.
 """
 
 import re
+from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
@@ -182,6 +183,14 @@ class IonizationMechanismUpdate(IonizationMechanismBaseValidator, BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
 
+# Columns `sort` accepts (see mascope_backend.api.lib.sorting).
+IONIZATION_MECHANISM_SORT_COLUMNS = (
+    "ionization_mechanism_id",
+    "ionization_mechanism_polarity",
+    "ionization_mechanism",
+)
+
+
 class GetIonizationMechanismsQueryParams(QueryParamsModel):
     """Query parameters for filtering and paginating ionization mechanism listings."""
 
@@ -194,7 +203,9 @@ class GetIonizationMechanismsQueryParams(QueryParamsModel):
         description="Filter by the chemical formula modification of the ionization mechanism. Can specify multiple values.",
     )
 
-    sort: str | None = Field("ionization_mechanism", description="Field to sort by")
+    sort: Literal[IONIZATION_MECHANISM_SORT_COLUMNS] | None = Field(
+        "ionization_mechanism", description="Field to sort by"
+    )
     order: str | None = Field(
         "asc",
         description="Order of sorting ('asc' for ascending, 'desc' for descending)",

@@ -20,8 +20,10 @@ from mascope_backend.api.lib.api_features import api_controller
 from mascope_backend.api.lib.exceptions.api_exceptions import (
     NotFoundException,
 )
+from mascope_backend.api.lib.sorting import order_by_column
 from mascope_backend.api.lib.utils import strings_json_safe
 from mascope_backend.api.models.match.ions.match_ion_pydantic_model import (
+    MATCH_ION_SORT_COLUMNS,
     MatchIonBase,
 )
 from mascope_backend.db import (
@@ -210,12 +212,9 @@ async def get_match_ions(
 
         # Step 10: Apply sorting
         if sort:
-            sort_expression = getattr(MatchIon, sort, None)
-            if sort_expression:
-                if order == "desc":
-                    query = query.order_by(sort_expression.desc())
-                else:
-                    query = query.order_by(sort_expression.asc())
+            query = query.order_by(
+                order_by_column(MatchIon, sort, order, MATCH_ION_SORT_COLUMNS)
+            )
 
         # Step 11: Count total
         count_stmt = select(func.count()).select_from(query.subquery())

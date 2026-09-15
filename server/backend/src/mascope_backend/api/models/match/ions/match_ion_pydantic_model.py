@@ -1,4 +1,4 @@
-from typing import List, Optional
+from typing import List, Literal, Optional
 
 from pydantic import BaseModel, Field
 
@@ -16,6 +16,19 @@ class MatchIonBase(BaseModel):
     sample_peak_intensity_sum: float = Field(
         ..., description="Intensity of the sample peak"
     )
+
+
+# Columns `sort` accepts (see mascope_backend.api.lib.sorting).
+MATCH_ION_SORT_COLUMNS = (
+    "match_ion_id",
+    "sample_item_id",
+    "target_ion_id",
+    "match_score",
+    "match_category",
+    "sample_peak_intensity_sum",
+    "match_ion_utc_created",
+    "match_ion_utc_modified",
+)
 
 
 class GetMatchIonsQueryParams(QueryParamsModel):
@@ -55,7 +68,7 @@ class GetMatchIonsQueryParams(QueryParamsModel):
         False,
         description="Flag to to include ionization mechanism details.",
     )
-    sort: Optional[str] = Field(
+    sort: Literal[MATCH_ION_SORT_COLUMNS] | None = Field(
         None, description="The column name to sort the results by."
     )
     order: Optional[str] = Field(

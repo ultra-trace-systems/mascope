@@ -2,12 +2,14 @@ import asyncio
 from datetime import datetime
 
 import numpy as np
-from sqlalchemy import Float, Integer, and_, asc, cast, desc, func, select
+from sqlalchemy import Float, Integer, and_, cast, func, select
 
 import mascope_signal.compute as m_compute
 from mascope_backend.api.controllers.samples.lib.samples_fetch import fetch_sample
 from mascope_backend.api.lib.api_features import api_controller
 from mascope_backend.api.lib.exceptions.api_exceptions import NotFoundException
+from mascope_backend.api.lib.sorting import order_by_column
+from mascope_backend.api.models.samples.sample_pydantic_model import SAMPLE_SORT_COLUMNS
 from mascope_backend.api.models.target.collections.config import (
     target_collection_config,
 )
@@ -140,10 +142,7 @@ async def get_samples(
             stmt = stmt.filter(MatchSample.match_category >= match_category_min)
 
         # Apply sorting
-        if order == "desc":
-            stmt = stmt.order_by(desc(getattr(Sample, sort)))
-        else:
-            stmt = stmt.order_by(asc(getattr(Sample, sort)))
+        stmt = stmt.order_by(order_by_column(Sample, sort, order, SAMPLE_SORT_COLUMNS))
 
         result = await session.execute(stmt)
         rows = result.all()

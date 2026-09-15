@@ -5,6 +5,8 @@ Defines data models for target collection related requests and responses
 with validation rules and business logic constraints.
 """
 
+from typing import Literal
+
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from mascope_backend.api.models.base_pydantic_model import QueryParamsModel
@@ -149,6 +151,16 @@ class TargetCollectionUpdate(TargetCollectionValidator, TargetCollectionBase):
         return values
 
 
+# Columns `sort` accepts (see mascope_backend.api.lib.sorting).
+TARGET_COLLECTION_SORT_COLUMNS = (
+    "target_collection_id",
+    "target_collection_name",
+    "target_collection_description",
+    "target_collection_type",
+    "workspace_id",
+)
+
+
 class GetTargetCollectionsQueryParams(QueryParamsModel):
     target_collection_name: str | None = Field(
         None,
@@ -165,7 +177,7 @@ class GetTargetCollectionsQueryParams(QueryParamsModel):
         None,
         description="Filter by workspace ID. Null-workspace (global) collections are always included.",
     )
-    sort: str | None = Field(
+    sort: Literal[TARGET_COLLECTION_SORT_COLUMNS] | None = Field(
         None,
         description="The column name by which you want to sort the results. The column name should be one of the fields of target_collection.",
     )
@@ -198,6 +210,13 @@ class GetTargetCollectionsQueryParams(QueryParamsModel):
         return target_collection_types
 
 
+# Columns `sort` accepts (see mascope_backend.api.lib.sorting).
+TARGET_COLLECTION_IN_SAMPLE_BATCH_SORT_COLUMNS = (
+    "target_collection_id",
+    "sample_batch_id",
+)
+
+
 class GetTargetCollectionsInSampleBatchQueryParams(QueryParamsModel):
     sample_batch_id: str | None = Field(
         None,
@@ -207,7 +226,7 @@ class GetTargetCollectionsInSampleBatchQueryParams(QueryParamsModel):
         None,
         description="The target collection ID filter for which you want to fetch the associated sample batches ids.",
     )
-    sort: str | None = Field(
+    sort: Literal[TARGET_COLLECTION_IN_SAMPLE_BATCH_SORT_COLUMNS] | None = Field(
         None,
         description="The column name by which you want to sort the results. The column name should be either sample_batch_id or target_collection_id.",
     )

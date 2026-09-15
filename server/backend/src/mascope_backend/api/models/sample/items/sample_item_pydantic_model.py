@@ -7,7 +7,7 @@ with validation rules and business logic constraints.
 
 import re
 from datetime import datetime
-from typing import Dict, Optional
+from typing import Dict, Literal, Optional
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
@@ -206,6 +206,25 @@ class GetSampleItemsQueryValidator:
         return sample_item_types
 
 
+# Columns `sort` accepts (see mascope_backend.api.lib.sorting).
+SAMPLE_ITEM_SORT_COLUMNS = (
+    "sample_item_id",
+    "sample_batch_id",
+    "sample_file_id",
+    "sample_item_name",
+    "sample_item_type",
+    "locked",
+    "filter_id",
+    "tic",
+    "polarity",
+    "ionization_mode_id",
+    "t0",
+    "t1",
+    "sample_item_utc_created",
+    "sample_item_utc_modified",
+)
+
+
 class GetSampleItemsQueryParams(GetSampleItemsQueryValidator, QueryParamsModel):
     """
     This model defines the query parameters that can be passed to the GET /api/sample/items endpoint
@@ -229,7 +248,7 @@ class GetSampleItemsQueryParams(GetSampleItemsQueryValidator, QueryParamsModel):
         default=None,
         description="Filter by ion polarity modes (+, -). Can specify multiple polarities.",
     )
-    sort: str | None = Field(
+    sort: Literal[SAMPLE_ITEM_SORT_COLUMNS] | None = Field(
         "sample_item_utc_created",
         description="Column name by which to sort the results. Default is 'sample_item_utc_created'",
     )

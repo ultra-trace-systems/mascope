@@ -6,6 +6,7 @@ with validation rules and business logic constraints.
 """
 
 from datetime import datetime
+from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
@@ -193,6 +194,20 @@ class DatasetUpdate(DatasetBaseValidator, BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
 
+# Columns `sort` accepts (see mascope_backend.api.lib.sorting).
+DATASET_SORT_COLUMNS = (
+    "dataset_id",
+    "workspace_id",
+    "dataset_name",
+    "dataset_description",
+    "dataset_type",
+    "locked",
+    "instrument",
+    "dataset_utc_created",
+    "dataset_utc_modified",
+)
+
+
 class GetDatasetsQueryParams(DatasetBaseValidator, QueryParamsModel):
     """
     Query parameters for filtering and paginating dataset listings.
@@ -212,7 +227,7 @@ class GetDatasetsQueryParams(DatasetBaseValidator, QueryParamsModel):
     instrument: list[str] | None = Field(
         None, description="Filter by associated instruments. Can specify many"
     )
-    sort: str | None = Field(
+    sort: Literal[DATASET_SORT_COLUMNS] | None = Field(
         "dataset_utc_created",
         description=(
             "Column name by which you want to sort the results. "

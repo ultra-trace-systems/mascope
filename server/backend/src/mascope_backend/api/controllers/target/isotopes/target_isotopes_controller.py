@@ -2,11 +2,15 @@
 Target isotope service layer.
 """
 
-from sqlalchemy import asc, desc, func, select
+from sqlalchemy import func, select
 from sqlalchemy.orm import joinedload
 
 from mascope_backend.api.lib.api_features import api_controller
 from mascope_backend.api.lib.exceptions.api_exceptions import NotFoundException
+from mascope_backend.api.lib.sorting import order_by_column
+from mascope_backend.api.models.target.isotopes.target_isotope_pydantic_model import (
+    TARGET_ISOTOPE_SORT_COLUMNS,
+)
 from mascope_backend.api.new.ionization.modes.util import (
     fetch_batch_ionization_mechanism_ids,
 )
@@ -211,10 +215,9 @@ async def get_target_isotopes(
 
         # Step 4: Apply sorting
         if sort:
-            if order == "desc":
-                stmt = stmt.order_by(desc(getattr(TargetIsotope, sort)))
-            else:
-                stmt = stmt.order_by(asc(getattr(TargetIsotope, sort)))
+            stmt = stmt.order_by(
+                order_by_column(TargetIsotope, sort, order, TARGET_ISOTOPE_SORT_COLUMNS)
+            )
 
         # Step 5: Get total count
         total = await session.scalar(select(func.count()).select_from(stmt))

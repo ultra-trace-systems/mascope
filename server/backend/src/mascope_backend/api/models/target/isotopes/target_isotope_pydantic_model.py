@@ -5,10 +5,23 @@ Defines data models for target isotope related requests and responses
 with validation rules and business logic constraints.
 """
 
+from typing import Literal
+
 from pydantic import Field, field_validator
 
 from mascope_backend.api.models.base_pydantic_model import QueryParamsModel
 from mascope_backend.api.models.target.isotopes.config import target_isotope_config
+
+
+# Columns `sort` accepts (see mascope_backend.api.lib.sorting).
+TARGET_ISOTOPE_SORT_COLUMNS = (
+    "target_isotope_id",
+    "target_ion_id",
+    "target_isotope_formula",
+    "mz",
+    "relative_abundance",
+    "resolution",
+)
 
 
 class GetTargetIsotopesQueryParams(QueryParamsModel):
@@ -51,7 +64,9 @@ class GetTargetIsotopesQueryParams(QueryParamsModel):
         False,
         description="Flag to include ionization mechanism details including polarity.",
     )
-    sort: str | None = Field(None, description="Field to sort by.")
+    sort: Literal[TARGET_ISOTOPE_SORT_COLUMNS] | None = Field(
+        None, description="Field to sort by."
+    )
     order: str | None = Field(None, description="Order of sorting ('asc' or 'desc').")
     page: int | None = Field(None, description="Pagination page number.")
     limit: int | None = Field(None, description="Number of items per page.")

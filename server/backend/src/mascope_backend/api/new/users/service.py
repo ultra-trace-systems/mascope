@@ -8,11 +8,12 @@ with custom operations and integrations, including role filtering, validation, e
 
 from typing import Optional, Union
 
-from sqlalchemy import asc, desc, func, select
+from sqlalchemy import func, select
 
 from mascope_backend.accounts import ACCOUNT_TYPE_MACHINE, refuse_machine_account
 from mascope_backend.api.lib.api_features import api_controller
 from mascope_backend.api.lib.exceptions.api_exceptions import NotFoundException
+from mascope_backend.api.lib.sorting import order_by_column
 from mascope_backend.api.new.auth.config import auth_settings
 from mascope_backend.api.new.roles.exceptions import InvalidRoleException
 from mascope_backend.api.new.users.first_owner.util import (
@@ -27,6 +28,7 @@ from mascope_backend.api.new.users.password.generate import (
     generate_random_password,
 )
 from mascope_backend.api.new.users.schemas import (
+    USER_SORT_COLUMNS,
     UserCreate,
     UserPublic,
     UserRead,
@@ -103,9 +105,7 @@ async def get_users(
         # Step 2: Apply sorting
         if sort:
             query = query.order_by(
-                desc(getattr(User, sort))
-                if order == "desc"
-                else asc(getattr(User, sort))
+                order_by_column(User, sort, order, USER_SORT_COLUMNS)
             )
 
         # Step 3: Get total count for pagination

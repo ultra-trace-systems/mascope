@@ -1,3 +1,5 @@
+from typing import Literal
+
 from pydantic import BaseModel, ConfigDict, Field
 
 from mascope_backend.api.models.base_pydantic_model import QueryParamsModel
@@ -13,6 +15,15 @@ class TargetIonUpdate(BaseModel):
     )
 
     model_config = ConfigDict(from_attributes=True)
+
+
+# Columns `sort` accepts (see mascope_backend.api.lib.sorting).
+TARGET_ION_SORT_COLUMNS = (
+    "target_ion_id",
+    "target_compound_id",
+    "ionization_mechanism_id",
+    "target_ion_formula",
+)
 
 
 class GetTargetIonsQueryParams(QueryParamsModel):
@@ -39,7 +50,9 @@ class GetTargetIonsQueryParams(QueryParamsModel):
         False,
         description="Flag to to include ionization mechanism details.",
     )
-    sort: str | None = Field(None, description="Field to sort by.")
+    sort: Literal[TARGET_ION_SORT_COLUMNS] | None = Field(
+        None, description="Field to sort by."
+    )
     order: str | None = Field(None, description="Order of sorting ('asc' or 'desc').")
     page: int | None = Field(None, description="Pagination page.")
     limit: int | None = Field(None, description="Number of items per page.")

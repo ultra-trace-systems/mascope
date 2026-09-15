@@ -1,4 +1,4 @@
-from typing import List, Optional
+from typing import List, Literal, Optional
 
 from pydantic import BaseModel, Field
 
@@ -20,6 +20,19 @@ class MatchCollectionBase(BaseModel):
     )
 
 
+# Columns `sort` accepts (see mascope_backend.api.lib.sorting).
+MATCH_COLLECTION_SORT_COLUMNS = (
+    "match_collection_id",
+    "sample_item_id",
+    "target_collection_id",
+    "match_score",
+    "match_category",
+    "sample_peak_intensity_sum",
+    "match_collection_utc_created",
+    "match_collection_utc_modified",
+)
+
+
 class GetMatchCollectionsQueryParams(QueryParamsModel):
     sample_item_id: Optional[str] = Field(
         None, description="Filter collections by sample item ID"
@@ -34,7 +47,7 @@ class GetMatchCollectionsQueryParams(QueryParamsModel):
         None,
         description="Filter match collections by match_category to include match collections with specified match category and higher",
     )
-    sort: Optional[str] = Field(
+    sort: Literal[MATCH_COLLECTION_SORT_COLUMNS] | None = Field(
         None, description="The column name to sort the results by."
     )
     order: Optional[str] = Field(

@@ -1,4 +1,4 @@
-from typing import List, Optional
+from typing import List, Literal, Optional
 
 from pydantic import BaseModel, Field
 
@@ -16,6 +16,19 @@ class MatchCompoundBase(BaseModel):
     sample_peak_intensity_sum: float = Field(
         ..., description="Sum of the intensity of the sample peak"
     )
+
+
+# Columns `sort` accepts (see mascope_backend.api.lib.sorting).
+MATCH_COMPOUND_SORT_COLUMNS = (
+    "match_compound_id",
+    "sample_item_id",
+    "target_compound_id",
+    "match_score",
+    "match_category",
+    "sample_peak_intensity_sum",
+    "match_compound_utc_created",
+    "match_compound_utc_modified",
+)
 
 
 class GetMatchCompoundsQueryParams(QueryParamsModel):
@@ -44,7 +57,7 @@ class GetMatchCompoundsQueryParams(QueryParamsModel):
         False,
         description="Flag to include target compound name, used for BatchOverview.",
     )
-    sort: Optional[str] = Field(
+    sort: Literal[MATCH_COMPOUND_SORT_COLUMNS] | None = Field(
         None, description="The column name to sort the results by."
     )
     order: Optional[str] = Field(
