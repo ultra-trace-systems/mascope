@@ -367,9 +367,13 @@ peaks, so the focused peak's m/z is read in the same place on every card. Its la
 count from the monoisotopic peak, the way an isotope table does - a bromine-rich ion reads
 M0, M+2, M+4, M+6, with M0 the lightest peak of the cluster rather than the tallest - and
 its abundances are fractions of the most abundant isotopologue, so nothing reads above
-100 %. When none of the predicted isotopologues pairs with the family's main peak, the
-card keeps the pattern's numbers and adds a *main peak* line saying which prediction came
-nearest, how far away it lies, and whether it paired with a peak elsewhere.
+100 %. Where a line's isotopologue formula is known, the line is named by how it differs
+from the monoisotopic peak instead, such as `[13C]` or `[81Br]2`. For an ion made with a
+labelled reagent such as 15N-nitrate, whose monoisotopic peak is the labelled one, the
+reagent's unlabelled remainder - its M-1 - reads `[14N]`, its labelled atom at 14N. When
+none of the predicted isotopologues pairs with the family's main peak, the card keeps the
+pattern's numbers and adds a *main peak* line saying which prediction came nearest, how
+far away it lies, and whether it paired with a peak elsewhere.
 
 The sample browser marks each sample's assignment status with a tag badge in a column of
 its own, after the sample name by default (the table-controls cog moves or hides it like
