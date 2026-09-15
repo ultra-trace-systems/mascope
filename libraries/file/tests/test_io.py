@@ -785,8 +785,10 @@ class TestLiveStoreListing:
         ds.to_zarr(peak_timeseries_zarr_path, mode="w")
         _drop_from_consolidated_metadata(peak_timeseries_zarr_path, "sparsity/")
 
-        assert "sparsity" not in zarr.open(peak_timeseries_zarr_path, mode="r")
-        assert "sparsity" in m_io.open_zarr_store(peak_timeseries_zarr_path)
+        consolidated = zarr.open(peak_timeseries_zarr_path, mode="r")
+        assert "sparsity" not in consolidated
+        live = m_io.open_zarr_store(peak_timeseries_zarr_path)
+        assert "sparsity" in live
 
         shutil.rmtree(peak_timeseries_zarr_path)
 

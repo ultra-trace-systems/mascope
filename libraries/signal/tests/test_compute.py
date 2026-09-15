@@ -43,7 +43,8 @@ class TestGetSumSignalCaching:
         assert os.path.exists(cache_path)
         # The sum-signal cache is the most frequently created store in the
         # filestore, so it has to honour the zarr v2 pin like every other one.
-        assert zarr.open(cache_path, mode="r").metadata.zarr_format == 2
+        cache_store = zarr.open(cache_path, mode="r")
+        assert cache_store.metadata.zarr_format == 2
 
     def test_get_sum_signal_recovers_from_contains_group_error(
         self,
