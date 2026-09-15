@@ -1015,7 +1015,8 @@ class TestBatchCacheStore:
         var_path = os.path.join(
             m_name.get_batch_cache_path(batch_id), "batch_peaks.zarr"
         )
-        assert zarr.open(var_path, mode="r").metadata.zarr_format == 2
+        store = zarr.open(var_path, mode="r")
+        assert store.metadata.zarr_format == 2
         assert "zarr.json" not in os.listdir(var_path)
 
         m_io.delete_batch_cache(batch_id)
