@@ -28,9 +28,12 @@ step PRs land on the epic and are named here as they merge.
 | 2.5a fix - the reference seed out of the mass widths | #2113 | measured: Stage A's width is fitted over the target library's lines alone, only the target library's rows count as curated for the mass gate (decision 3's second addendum), the ingest fold runs the gate, and Stage A falls back to the instrument class's width as the untargeted stage does. With the seed loaded, every set's search width and Stage A anchor count equal the pre-seed round's (F2 6.54 -> 2.62 ppm, gate 6.75 -> 2.62). G2 same formula rises on E, F1 and F2 (40.5 -> 45.2, 22.8 -> 23.6, 17.4 -> 18.8) and holds on the Orbitrap sets (C2 83.3 -> 82.6, D 84.0 -> 83.9). All 3,883 peaks that change owner had been moved by the seed, and 3,866 go back to their pre-seed owner. Of the 30 mirror rows the estimate named, the gate caps 4 and the narrower width holds the other 26 below its cap |
 | 2.5b - Stage A window per source, polarity, radical filter, deactivate, the isoprene lift (seed proposal phase 3) | #2116 (schema and CLI), #2117 (engine, lists) | measured: #2116 records each source's window, radical allowance and polarity on its row (a database mirror at today's window, a list unbounded, existing rows backfilled at today's window), lets `reference sync` set them (`--polarity` included), has `reference seed` write and refresh them, and adds `reference deactivate`. #2117 makes Stage A read all three under the context's ceiling (every shipped context opens Si, P, F, Cl, Br and I at C40/700 Da; `none` sets none) and lifts the isoprene list, D7/D8 (Fromme et al. 2019) and L3-L5; the monoterpene HOM list matches both polarities (decision 17's addendum). With the seed refreshed, G2 same formula rises on every set (A 95.4 -> 97.1, B 93.5 -> 95.1, C2 82.6 -> 87.1, D 83.9 -> 85.5, E 45.2 -> 54.8, F1 23.6 -> 27.6, F2 18.8 -> 26.1); D3-D8, the phosphates and TFA resolve on every sample the reference commits them on, the siloxanes mostly at candidate tier by the evidence's own reading (decision 18); G6 on A falls 87 -> 50 with its grid part 69 -> 5. 987 owners change, 125 towards the reference and 9 away (5 new siloxane isotopologue claims on B, 4 isoprene nitrates on F2). IBr2- commits as an analyte on 8 reagent peaks, read at the gate |
 | 2.5c - the same-ion ambiguity on a Stage A mirror row | #2118 | measured: a reference mirror's M0 row carries the readings of its ion the untargeted search would have held, as `same_ion` alternatives (2,725 rows over the 43 samples), and the reagent-N rule asks it from both sides, since a list can put the nitrogen on the analyte; a second channel fixes the count either way and a target library row stays exempt. It moves tiers and nothing else: no formula, role or owner change on 48,894 peaks, G2 identical on every set, no untargeted or target library row touched. The rule reaches 746 mirror rows and caps 167 from assigned (A 24, B 67, F2 76) with 25 isotopologues. All nine same-ion steals on B carry their ammonium reading: two are capped and seven fixed by the same neutral's urea adduct. G1 A 24.3 -> 23.2, B 36.8 -> 37.0 (conditioned 11.6 -> 11.7), F2 97.5 -> 97.3; on B the cap takes 50 rows the reference confirms, 18 of them Keller's amines through `+H+` |
+| 2.5d - review of the curated lists | - | planned: the calibrant and diagnostic lists the ionization modes attach are audited before their rows count as curated, and decision 3's exemption is revisited on the reviewed lists; the nitrate monitor's two workaround entries are already fixed on the testbed (the section after step 2.2b) |
+| 2.4e - isotopologue claims under interference | - | planned, after 2.5d: a line an assigned formula's envelope predicts, where the evidence is in doubt, becomes a candidate isotopologue of that formula rather than a new M0 (decision 18's addendum), and the tracking test allows for overlap and low intensity |
+| 2.4f - an oxygen-free neutral in a nitrate cluster | - | planned, after 2.5d: a nitrate cluster reading whose neutral carries no oxygen is not held at assigned; carbonate is measured beside it for the plan owner |
 | 2.6 - frontend: profile, reasons, roles | - | planned |
 | 2.7 - stage 2 gate, engine 0.5.0 | - | planned |
-| 2.2b - mass-dependent centre for the mass gate | #2131 | measured: a run's mass gate judges a row at its own m/z where the run's commits demand a centre that follows `ppm = a + b * 1000 / mz`, accepted on peaky's rules; the line is fitted over every committed monoisotopic row (the plan owner's answer, recorded in the step), and the constant centre and the width stay the anchors'. A takes a line on all six samples (-0.113 to -0.137 mDa over m/z 57 to about 500) and C2 on one (-0.077); every other run keeps the constant centre and records the rule that refused the line. It moves no tier, formula, role, owner or cap on 48,894 peaks, and G1, G1 conditioned and G2 are identical on every set: every row that crosses three widths was already below assignability. What moves is `mass_z` - 2,316 rows on A, 130 on C2 - and A's seven itemised curated rows come inside three widths (-3.49..-4.38 to -0.80..-1.62). Lifting the target library's exemption from the cap would now move three isotopologues, the plan owner's question in the PR |
+| 2.2b - mass-dependent centre for the mass gate | #2131 | measured: a run's mass gate judges a row at its own m/z where the run's commits demand a centre that follows `ppm = a + b * 1000 / mz`, accepted on peaky's rules; the line is fitted over every committed monoisotopic row (the plan owner's answer, recorded in the step), and the constant centre and the width stay the anchors'. A takes a line on all six samples (-0.113 to -0.137 mDa over m/z 57 to about 500) and C2 on one (-0.077); every other run keeps the constant centre and records the rule that refused the line. It moves no tier, formula, role, owner or cap on 48,894 peaks, and G1, G1 conditioned and G2 are identical on every set: every row that crosses three widths was already below assignability. What moves is `mass_z` - 2,316 rows on A, 130 on C2 - and A's seven itemised curated rows come inside three widths (-3.49..-4.38 to -0.80..-1.62). The plan owner kept the target library's exemption from the cap for now, to be revisited after 2.5d's review (decision 3's third addendum) |
 | 2.7a - reference refresh: peaky's branch rebased on main 0.8.0, re-pinned, the 43 runs re-published | - | planned: the reference stays at `cc07ce1` until then; the gate is read against both |
 | 3.1 - series detection on the batch ledger | - | planned |
 | 3.2 - time-series coherence | - | planned |
@@ -735,6 +738,71 @@ The confidence layer. This is where "assigned" starts meaning something.
 - **Size.** L (three PRs: the pure measurements in `mascope_tools`, the
   backend tiering, the reasons in the inspector). Depends on 2.1-2.3.
 
+### 2.4e Isotopologue claims under interference
+
+- **What.** Two changes, measured together because they meet on the same
+  lines:
+  - **The claim.** An M0 the envelope-neighbour rule flags today - a line a
+    committed formula's envelope predicts on the peak, tall enough to account
+    for it - is claimed as that formula's isotopologue at candidate tier when
+    the formula is assigned, instead of standing as an M0 capped below
+    assigned. Where the formula is itself at candidate the M0 stays as it is
+    and is reported beside. This is decision 18's addendum made mechanical:
+    under doubt, a candidate isotopologue of an assigned formula rather than a
+    new M0.
+  - **The tracking test.** Whether an isotopologue's mass error tracks its
+    parent's is judged with what the line can deliver: the bar widens for a
+    line near the noise floor, and for a line inside the resolving power of
+    another line, which pushes the two centroids apart. A doublet partner -
+    13C2 beside 18O, 2H beside 13C - is then neither read as a coincidence and
+    capped, nor taken as the corroboration a tracking line gives.
+- **Why.** On step 2.2b's round, with set C read on the round after the
+  monitor fix here and in 2.4f, 862 M0 rows sit on a line a committed
+  formula's envelope predicts (A 70, B 305, C 20, C2 1, D 101, E 38, F1 187,
+  F2 140), all at candidate or below by the rule. On 356 of them the formula
+  is assigned, and on the Orbitrap sets the reference reads 183 of the 497 as
+  isotopologues. Set C's strongest line shows both halves:
+  - its 18O M+2 line is committed as C9H13N2 through the labelled nitrate on
+    four of five samples, and its 2H M+1 line as C8H13N3 through carbonate on
+    two;
+  - its 13C2 and 18O M+2 lines, 11.6 ppm apart in theory, measure 14.3 to
+    15.2 ppm apart, each pushed 1.2 to 2.1 ppm from its place.
+
+  Isotopologues that do not track their parent with another line within 20
+  ppm: A 13, B 68, C 11, C2 9 and D 38, of them at assigned A 5, B 21, C 7,
+  C2 4 and D 3.
+- **Verify.** The 862 rows by what they become; gate metric G6 falls; G1
+  conditioned and G2 inside their bounds on the Orbitrap sets; every row the
+  reference confirms as an M0 that the claim takes as an isotopologue,
+  reported; set C's doublet lines read as its strongest line's isotopologues
+  at the tier the rule gives; the gate's isotopologue caps re-counted by
+  overlap and intensity.
+- **Size.** M. After 2.5d, whose curated formulas predict many of the
+  envelopes; on the reference frozen at `cc07ce1` (decision 16).
+
+### 2.4f An oxygen-free neutral in a nitrate cluster
+
+- **What.** A nitrate cluster (`+NO3-`, its labelled form, `+(HNO3)NO3-`)
+  holds on to the neutral's oxygen-bearing functional groups, so a reading
+  through one whose neutral carries no oxygen is not held at assigned. It is
+  measured two ways and chosen on the numbers: as a cap with its own tier
+  reason, and as a restriction on the search, where the channel does not
+  propose such a neutral and the peak goes to its next reading. Carbonate
+  (`+CO3-`) is measured beside it and decided by the plan owner.
+- **Why.** The plan owner's reading of set C's strongest line: its 18O line
+  committed as C9H13N2 through the labelled nitrate names a neutral with
+  nothing for nitrate to attach to. On step 2.2b's round, the nitrate-cluster
+  M0 rows whose neutral has no oxygen are C 12 of 282, C2 27 of 222 and F2 115
+  of 3,607, 11 of them at assigned, and the reference reads 11 of C's as
+  isotopologue lines of other ions. Carbonate is less clear-cut: C 93 of 280,
+  C2 30 of 96, E 16, F1 84 and F2 89, and on C and C2 the reference commits
+  the same oxygen-free formula on 19 of their 22 assigned rows.
+- **Verify.** The rows each form takes, by set, tier and what the reference
+  commits on the peak; what the restricted search elects instead; G1
+  conditioned and G2; the carbonate answer recorded.
+- **Size.** S. After 2.5d, and independent of 2.4e, though read after it the
+  rows 2.4e claims are no longer M0s.
+
 ### 2.5 The reference seed and the Stage A window
 
 This step is the reference-database seed proposal, adopted as a track that
@@ -920,6 +988,45 @@ its own status.
   ammonium; opt-in production loading; radicals and clusters off by
   default; widen the window together with the seed) are taken there and
   assumed here, and decision 15 records the list format.
+
+### 2.5d Review of the curated lists
+
+- **What.** Before a list's rows count as curated, every collection attached
+  to the gate samples' batches is audited, which includes the calibrant and
+  diagnostic collections the ionization modes name.
+  - **Flag** an entry whose formula is odd-electron; whose matched ion goes
+    through a mechanism the mode does not declare, or is reachable only as a
+    workaround for one; whose ion another channel of the same sample reads as
+    a different neutral; and one that never matches.
+  - **Fix or remove** each flagged entry on the testbed with the plan owner,
+    and record the verdict and its reason. The lists on the internal server
+    the testbed is cloned from are the plan owner's to change.
+  - **Decide how calibrant and diagnostic lists count.** The modes attach
+    them automatically, and they hold instrument and reagent lines as well as
+    analytes. Today their rows count as curated identities: exempt from the
+    radical rule, the formula-shape signatures, the reagent-N rule and the
+    mass gate's cap, and anchoring Stage A's width and the run's calibration.
+  - **Then revisit decision 3's exemption** on the reviewed lists.
+- **Why.** The gate batches carry no targets list at all: every target
+  library row on the 43 samples comes from 12 collections the modes attach, 5
+  of calibrants and 7 of diagnostics, holding 47 compounds. Six entries were
+  odd-electron formulas written so that one of the mode's mechanisms reaches
+  an ion:
+  - C11H15O4 and C10H15O, on nitrate modes that declared no carbonate channel,
+    for C10H14O's carbonate cluster;
+  - HCO3 and CHO3 for CO3-, HS3 for S3-, and Br for Br2-.
+
+  On step 2.2b's round they committed 31 M0 rows under the curated exemption
+  (C 5, C2 18, F1 8), and C11H15O4 held set C's strongest line. The first two
+  are fixed on the testbed (the section after step 2.2b): that line now reads
+  as the reference reads it, and G1 conditioned on C falls from 1.2 to 0.2.
+- **Verify.** Every flagged entry on the gate batches with its verdict; the
+  gate re-run on the reviewed lists and read against the round before; the
+  curated rows beyond three widths and the rows the exemption protects,
+  re-counted; decision 3's exemption answered.
+- **Size.** S-M: mostly curation and a round. If deciding how calibrant and
+  diagnostic lists count changes the engine, that is its own PR. On the
+  reference frozen at `cc07ce1` (decision 16).
 
 ### 2.6 Frontend: profile, reasons, roles
 
@@ -3312,6 +3419,23 @@ belongs in the fitted axis once anchors reach below m/z 100, which is step
    - **The ingest fold.** The run-less ingest fold now runs the gate too.
      Its premise that every Stage A commit is curated was pinned by a test
      for exactly this case.
+   *Third addendum (2026-09-15, taken by the plan owner on #2131's question):
+   the exemption stays for now, and is revisited after step 2.5d.*
+   - **The evidence.** With the centre at A's line (step 2.2b), no target
+     library row on A sits beyond three widths. The three the exemption still
+     protects at assigned are isotopologue lines whose monoisotopic rows are
+     on calibration, and read one by one their mass errors say nothing
+     against the identity. C3H4O4's M+2 on F2 is a line at 1e-5 to 1e-4 of
+     the base peak whose error scatters from -1.9 to +12.3 ppm between
+     samples. C11H15O4's 13C2 M+2 is one half of a partly resolved pair with
+     its own 18O line, which pushes the two apart.
+   - **What was wrong was the entry.** C11H15O4 was written so that
+     deprotonation reaches C10H14O's carbonate cluster, on modes that
+     declared no carbonate channel. It is fixed on the testbed (the section
+     after step 2.2b).
+   - **The caveat, as the plan owner put it:** the exemption is kept, and
+     treated critically. A curated row is only as good as its list, and step
+     2.5d audits the lists before the exemption is weighed again.
 4. **The cap.** Every peak by default, with the 5,000 ceiling as the hard
    bound; ingest-time runs are Stage A only, so the cost lands on explicit
    runs.
@@ -3622,6 +3746,12 @@ belongs in the fitted axis once anchors reach below m/z 100, which is step
     commits them on, and most sit at candidate or below assignability by
     the evidence's own tier, with no rule capping them - which is what the
     tiers are for.
+    *Addendum (2026-09-15, the plan owner on #2131).* The same principle
+    decides what a doubtful line becomes. Where a line could be an
+    isotopologue of an assigned formula but the evidence is in doubt - a line
+    overlapping another, or near the noise floor - it is claimed as a
+    candidate-tier isotopologue of that formula rather than committed as a new
+    M0 (step 2.4e).
 
 ## Risks
 
@@ -4654,7 +4784,47 @@ Across the 43 runs, 15 target library rows sit beyond three widths, against
 
 Lifting the exemption from the cap alone, the target library rows still
 anchoring the fit, would move those three isotopologues to candidate and
-nothing else. Whether to is the plan owner's question in #2131.
+nothing else. The plan owner kept it for now (decision 3's third addendum).
+
+#### The nitrate monitor's workaround entries, fixed on the testbed (2026-09-15)
+
+Reading those three rows led to the entry behind one of them. Set C's
+strongest line, C11H14O4- at m/z 210.0898, was committed from the target
+library as deprotonated C11H15O4, an odd-electron neutral. The reference reads
+the same ion as C10H14O clustered with carbonate, and deprotonated C10H14O is
+on all five samples. The entry came from the diagnostics collection shared by
+the two 15N-nitrate modes. Those modes declared only the labelled nitrate and
+deprotonation, and a match uses only the mode's own mechanisms, so an
+odd-electron formula was the one way to reach the carbonate cluster's line.
+Its neighbour in the collection, C10H15O, was the same kind of entry.
+
+On the plan owner's word the testbed's data was changed, not the code:
+- **The change.** Both modes declare `+CO3-`, and the collection holds
+  C10H14O in place of C11H15O4, with C10H15O removed. The edits went through
+  the app's own mode and collection updates, which flag the modes' batches
+  for rematch. The internal server the testbed is cloned from is unchanged.
+- **Set C, re-run on step 2.2b's build and read against its round.** 48 rows
+  change, all on set C. The strongest line is C10H14O through carbonate on
+  all five samples, assigned, and corroborated by the same neutral's
+  deprotonated line, which is now a target library row too.
+  - 612 rows are at assigned (602 before), and G1 holds at 20.3.
+  - G1 conditioned falls from 1.2 to 0.2 (n 486 -> 489), and the same-ion
+    splits on C go from 5 to 0.
+  - G2 and its denominator are unchanged, and G6 goes from 53 to 55 (7 at
+    assigned before and after).
+- **Declaring carbonate reaches the reference lists too.** Stage A now
+  matches their carbonate readings. Malonic acid's goes from an untargeted
+  candidate to assigned on all five samples, where the reference commits the
+  same reading. C10H16's carbonate cluster, an oxygen-free neutral, is
+  assigned on one sample: one of step 2.4f's cases.
+- **Removing C10H15O mattered.** While it stayed in the collection, its
+  carbonate line landed on the strongest line's 2H isotopologue as an M0 on
+  one sample and counted there as a curated anchor. That gave the sample's
+  Stage A the eight anchors a fitted width needs, and the fitted width put the
+  strongest line's fit below the assigned band. Removing the entry took both
+  back.
+
+The next step reads set C against this round, not against step 2.2b's.
 
 ## Not in this plan
 
