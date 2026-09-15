@@ -564,6 +564,22 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
   remainder as its "M0". The monoisotopic line is now the isotopologue whose
   brackets name exactly the labels in the ion's formula.
 
+- **The isotopologue tables now count a labelled ion's lines from its labelled
+  line.** The peak inspector's isotopologue table, the ledger's unfolded
+  isotopologue rows, the assignment time series, and the match tab's isotope
+  table and spectrum headings labelled each line by the isotopes in its
+  brackets, and the line without a bracket "M0". A labelled reagent's atom is
+  bracketed like any substituted isotope, so for a 15N-nitrate ion the reagent's
+  unlabelled remainder, 2% of the labelled line and one mass unit below it, read
+  "M0", and the ion's own line read "[15N]". Each line is now labelled by how it
+  differs from the line whose brackets name exactly the ion's labels, the M0 the
+  assignment engine counts from: that line reads "M0", its 13C line "[13C]", and
+  the remainder "[14N]", its labelled atom at 14N. An ion without a label reads
+  as before. A run stored before the engine counted a labelled ion from its
+  labelled line keeps the rows it wrote, so where it made the remainder the
+  family's M0 row, the table now labels that row "[14N]"; re-running the sample
+  commits the labelled line as the M0.
+
 - **A loaded reference database no longer widens the mass width a TOF sample is
   scored and gated at.** Stage A matches a reference list's formulas in the
   same frame as the workspace's target library. On a TOF most of those pairings

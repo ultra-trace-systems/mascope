@@ -1796,6 +1796,109 @@ describe('PanePeakAssign batch curation on a derived row', () => {
   })
 })
 
+// The isotopologue table labels each line by how it differs from the family's M0.
+// A labelled reagent's atom is bracketed like any substituted isotope, so for the
+// 15N-nitrate ion C9H16O7^N- the M0 is [15N]C9H16O7-, and the only line without
+// a bracket, C9H16NO7-, is the reagent's unlabelled remainder one mass unit
+// below it. Read off the brackets alone, that remainder was the "M0" and the M0
+// was "[15N]"; the ion formula on the rows says which brackets are labels.
+describe('PanePeakAssign isotopologue labels', () => {
+  const ION = 'C9H16O7^N-'
+
+  /** A labelled family as the engine commits it: every row names its ion. */
+  function labelledFamily() {
+    const m0 = {
+      ...assignment({ formula: 'C9H16O4', tier: 'assigned', mz: 251.0903 }),
+      ion_formula: ION,
+      isotope_label: 'M0',
+      isotope_formula: '[15N]C9H16O7-'
+    }
+    const line = (id, mz, label, formula) => ({
+      ...isotopologue(m0),
+      peak_assignment_id: id,
+      sample_peak_id: `p-${id}`,
+      sample_peak_mz: mz,
+      isotope_label: label,
+      isotope_formula: formula
+    })
+    return [
+      line('pa-rem', 250.0932, 'M-1', 'C9H16NO7-'),
+      m0,
+      line('pa-13c', 252.0936, 'M+1', '[13C][15N]C8H16O7-')
+    ]
+  }
+
+  const labels = (wrapper) =>
+    wrapper.findAll('.isotopologues .iso-label').map((cell) => cell.text())
+
+  it('counts a labelled family from its labelled line, the remainder at 14N', async () => {
+    familyRows = labelledFamily()
+    focusedAssignment = familyRows[1]
+    const wrapper = await mountPane()
+
+    expect(labels(wrapper)).toEqual(['[14N]', 'M0', '[13C]'])
+  })
+
+  // An imported run need not repeat the ion formula on every isotopologue.
+  it("reads a row that names no ion through its M0's", async () => {
+    familyRows = labelledFamily().map((row) =>
+      row.role === 'iso_child' ? { ...row, ion_formula: null } : row
+    )
+    focusedAssignment = familyRows[1]
+    const wrapper = await mountPane()
+
+    expect(labels(wrapper)).toEqual(['[14N]', 'M0', '[13C]'])
+  })
+
+  // A derived family's formulas come from the measurement, which names the ion
+  // it measured; the rows themselves may name none.
+  it("reads a derived family's measured formulas through the measured ion", async () => {
+    runRecord = { engine: 'batch' }
+    const [remainder, m0] = labelledFamily().map((row) => ({
+      ...row,
+      ion_formula: null,
+      isotope_label: null,
+      isotope_formula: null
+    }))
+    familyRows = [remainder, m0]
+    focusedAssignment = m0
+    evidenceKey = m0.peak_assignment_id
+    evidenceRecord = {
+      peak_assignment_id: m0.peak_assignment_id,
+      sample_peak_id: m0.sample_peak_id,
+      ion_formula: ION,
+      isotopologues: [
+        { isotope_label: 'M-1', isotope_formula: 'C9H16NO7-', sample_peak_id: 'p-pa-rem' },
+        { isotope_label: 'M0', isotope_formula: '[15N]C9H16O7-', sample_peak_id: 'p-1' }
+      ]
+    }
+    const wrapper = await mountPane()
+
+    expect(labels(wrapper)).toEqual(['[14N]', 'M0'])
+  })
+
+  it('keeps the brackets of an unlabelled family', async () => {
+    const m0 = {
+      ...assignment({ formula: 'CHBr3', tier: 'assigned', mz: 328.6817 }),
+      ion_formula: 'CHBr4-',
+      isotope_formula: 'CHBr4-'
+    }
+    familyRows = [
+      m0,
+      {
+        ...isotopologue(m0),
+        sample_peak_mz: 332.6776,
+        isotope_label: 'M+4',
+        isotope_formula: '[81Br]2CHBr2-'
+      }
+    ]
+    focusedAssignment = m0
+    const wrapper = await mountPane()
+
+    expect(labels(wrapper)).toEqual(['M0', '[81Br]2'])
+  })
+})
+
 describe('PanePeakAssign on-demand evidence for a derived row', () => {
   const derivedM0 = () => ({
     ...assignment({ formula: 'C6H12O6', tier: 'assigned' }),

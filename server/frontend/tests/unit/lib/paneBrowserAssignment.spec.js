@@ -957,6 +957,91 @@ describe('PaneBrowserAssignment adduct corroboration', () => {
   })
 })
 
+// An unfolded isotopologue row is labelled by how it differs from its family's
+// M0. For the 15N-nitrate ion C9H16O7^N- the M0 is the bracketed [15N]C9H16O7-,
+// and the one line without a bracket, C9H16NO7-, is the reagent's unlabelled
+// remainder: read off the brackets alone it was labelled "M0", indented under
+// the family's real one. The ion formula on the rows says which brackets are
+// labels.
+describe('PaneBrowserAssignment isotopologue labels', () => {
+  const ION = 'C9H16O7^N-'
+
+  beforeEach(() => {
+    runList = [{ peak_assignment_run_id: 'run-1', status: 'completed' }]
+  })
+
+  /** The labelled family, every row naming its ion unless `children` says otherwise. */
+  const labelledFamily = (children = [{}, {}]) => {
+    const fam = family({
+      id: 'n',
+      mz: 251.0903,
+      intensity: 1000,
+      formula: 'C9H16O4',
+      children: [
+        { sample_peak_mz: 250.0932, isotope_label: 'M-1', isotope_formula: 'C9H16NO7-' },
+        { sample_peak_mz: 252.0936, isotope_label: 'M+1', isotope_formula: '[13C][15N]C8H16O7-' }
+      ].map((child, index) => ({ ion_formula: ION, ...child, ...children[index] }))
+    })
+    Object.assign(fam.parent, { ion_formula: ION, isotope_formula: '[15N]C9H16O7-' })
+    return fam
+  }
+
+  // The shared stubs render no cell, so the rows are passed down to the Column
+  // stub, as the corroboration tests do, to read the label the cell shows.
+  async function renderedLabels(...families) {
+    const tableRows = ref([])
+    seed(...families)
+    const wrapper = mount(PaneBrowserAssignment, {
+      global: {
+        directives: { tooltip: {}, help: {} },
+        stubs: {
+          ...GLOBAL_STUBS,
+          DataTable: {
+            ...GLOBAL_STUBS.DataTable,
+            watch: {
+              value: { handler: (value) => (tableRows.value = value), immediate: true }
+            }
+          },
+          Column: {
+            setup: () => ({ rows: tableRows }),
+            template:
+              '<div class="col"><template v-for="(row, i) in rows" :key="i">' +
+              '<slot name="body" :data="row" /></template></div>'
+          }
+        }
+      }
+    })
+    wrapper.vm.showIsotopologues = true
+    await wrapper.vm.$nextTick()
+    return wrapper.findAll('.child-label').map((cell) => cell.text())
+  }
+
+  it('counts a labelled family from its labelled line, the remainder at 14N', async () => {
+    expect(await renderedLabels(labelledFamily())).toEqual(['[14N]', '[13C]'])
+  })
+
+  it("reads an isotopologue that names no ion through its M0's", async () => {
+    const fam = labelledFamily([{ ion_formula: null }, { ion_formula: undefined }])
+
+    expect(await renderedLabels(fam)).toEqual(['[14N]', '[13C]'])
+  })
+
+  it('keeps the brackets of an unlabelled family', async () => {
+    const bromine = family({
+      id: 'br',
+      mz: 328.6817,
+      intensity: 176,
+      formula: 'CHBr3',
+      children: [
+        { sample_peak_mz: 330.6797, isotope_formula: '[81Br]CHBr3-' },
+        { sample_peak_mz: 332.6776, isotope_formula: '[81Br]2CHBr2-' }
+      ].map((child) => ({ ion_formula: 'CHBr4-', ...child }))
+    })
+
+    expect(await renderedLabels(bromine)).toEqual(['[81Br]', '[81Br]2'])
+  })
+})
+
 // A dash in the P(correct) column has several different causes and only one of
 // them is about the instrument's calibration. Naming the wrong one is worse than
 // naming none: "no calibration curve for this instrument" on a hand-assigned row

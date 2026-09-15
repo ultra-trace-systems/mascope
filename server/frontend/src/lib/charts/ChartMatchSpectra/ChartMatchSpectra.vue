@@ -89,6 +89,15 @@ const isotopeCharts = computed(() => {
   })
 })
 
+// The isotope's compact label, counted from the ion's M0, which the ion formula
+// names for a labelled ion (see formatIsotopeFormula). The isotope rows carry no
+// ion formula of their own; they are the visualized ion's.
+const isotopeLabel = (isotope) =>
+  formatIsotopeFormula(
+    isotope.target_isotope_formula,
+    app.data.match.visualized.ion?.target_ion_formula
+  )
+
 // compute match category with UI match params
 const getIsotopeCategory = (isotope) => {
   if (!isotope?.match) return 0
@@ -169,7 +178,7 @@ const layout = computed(() => {
             :match-category="getIsotopeCategory(isotopeChart)"
             :alarming="isotopeChart.match?.alarming"
           />
-          {{ formatIsotopeFormula(isotopeChart.target_isotope_formula) }}:
+          {{ isotopeLabel(isotopeChart) }}:
           {{ num.mz.format(isotopeChart.mz) }}
         </h3>
         <!--
