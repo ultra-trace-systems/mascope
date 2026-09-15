@@ -4,6 +4,7 @@ import { ref } from 'vue'
 import Button from 'primevue/button'
 
 import { copyText } from '@/lib/clipboard'
+import { useApp } from '@/stores'
 
 const { field, tooltip } = defineProps({
   field: {
@@ -21,9 +22,17 @@ const emit = defineEmits(['copy'])
 // a temporary text field on <body>: the fallback copy puts its field in here.
 const root = ref()
 
+// A copy that fails has to say so: the button looks the same either way, and a
+// one-time value such as a generated password is shown only once.
 async function copyField(text) {
   const copied = await copyText(String(text), root.value)
-  if (!copied) console.warn('Could not copy the field to the clipboard')
+  if (!copied) {
+    useApp().ui.notification.push({
+      type: 'copy_to_clipboard',
+      status: 'warning',
+      message: 'Could not copy to the clipboard'
+    })
+  }
   return copied
 }
 </script>

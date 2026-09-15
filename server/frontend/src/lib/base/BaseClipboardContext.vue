@@ -48,28 +48,14 @@ const show = (severity, message) => {
   }, 3500)
 }
 
-// The paste event carries what was pasted, in any context. Reading the clipboard
-// instead needs the async Clipboard API, which a page served over plain HTTP
-// does not have and a browser may refuse or ask permission for; it is left as
-// the fallback for an event that brings no clipboard data.
-async function pastedText(event) {
-  if (event?.clipboardData) return event.clipboardData.getData('text/plain')
-  if (!navigator.clipboard?.readText) return null
-  try {
-    return await navigator.clipboard.readText()
-  } catch (err) {
-    console.warn('Failed to read the clipboard', err)
-    return null
-  }
-}
-
-async function process(event) {
-  const text = await pastedText(event)
-  if (text === null) {
-    show(
-      'error',
-      'Could not read the clipboard. Paste with Ctrl+V (Cmd+V on a Mac) into this area.'
-    )
+// A browser's paste event carries what was pasted, in any context and without
+// asking for clipboard permission - unlike the async Clipboard API, which a page
+// served over plain HTTP does not have. The data can be read only while the
+// event is being dispatched, so it is taken before anything is awaited.
+function process(event) {
+  const text = event.clipboardData?.getData('text/plain')
+  if (text === undefined) {
+    show('error', 'Could not read what was pasted')
     return
   }
   let result

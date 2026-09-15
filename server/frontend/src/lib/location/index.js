@@ -279,7 +279,12 @@ export const useLocation = defineStore('app.location', () => {
     } else {
       // The address bar does not carry the location, so the link is shown for
       // copying by hand.
-      logger.warn('clipboard write failed')
+      logger.warn('clipboard write failed', {
+        data: {
+          secureContext: window.isSecureContext,
+          clipboardApi: Boolean(navigator.clipboard?.writeText)
+        }
+      })
       ui.notification.push({
         type: 'shared_link',
         status: 'warning',
