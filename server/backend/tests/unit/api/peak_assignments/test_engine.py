@@ -7,6 +7,7 @@ untargeted composition results onto assignment rows (Stage B). Pure
 DataFrame/dict logic - no database access.
 """
 
+import inspect
 import json
 
 import pandas as pd
@@ -112,9 +113,13 @@ class TestTierForEvidence:
     def test_the_bands_are_keyword_only(self):
         # They read in the opposite order to the band names, which is exactly how
         # a positional call written in band order used to invert them and tier a
-        # whole run wrong. Passing them positionally must now be impossible.
-        with pytest.raises(TypeError):
-            tier_for_evidence(0.85, CANDIDATE, ASSIGNED)
+        # whole run wrong. Passing them positionally must now be impossible, which
+        # is what a keyword-only parameter guarantees - checked on the signature
+        # itself, so the test names both bands rather than just provoking a
+        # TypeError that any extra positional argument would raise.
+        parameters = inspect.signature(tier_for_evidence).parameters
+        for band in ("candidate_threshold", "assigned_threshold"):
+            assert parameters[band].kind is inspect.Parameter.KEYWORD_ONLY
 
 
 class TestEvidenceFor:
