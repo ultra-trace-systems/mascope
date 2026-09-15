@@ -23,7 +23,11 @@ from fastapi_users.authentication import Strategy
 from fastapi_users.router.common import ErrorCode
 
 from mascope_backend.accounts import ACCOUNT_TYPE_MACHINE
-from mascope_backend.api.new.auth import auth_backend_jwt, fastapi_users
+from mascope_backend.api.new.auth import (
+    auth_backend_jwt,
+    fastapi_users,
+    get_enabled_backends,
+)
 from mascope_backend.api.new.auth.mfa.cookie import set_pending_cookie
 from mascope_backend.api.new.auth.mfa.pending import create_pending_token
 from mascope_backend.api.new.users.user_manager.dependencies import get_user_manager
@@ -34,8 +38,12 @@ from mascope_backend.runtime import runtime
 
 login_router = APIRouter()
 
+# Credentials are chosen by get_enabled_backends, as on every other
+# authenticated route. Without it fastapi-users tries each backend in turn, so a
+# bare API token would authenticate here with no X-Service-Name or token_access
+# check; logout is not token_access, so a token is refused with 401 instead.
 _current_user_token = fastapi_users.authenticator.current_user_token(
-    active=True, verified=False
+    active=True, verified=False, get_enabled_backends=get_enabled_backends
 )
 
 
