@@ -72,13 +72,6 @@ _BATCH_SCOPED = {
     "/api/match/samples",
 }
 
-#: Filters that match no rows, for routes whose response validation fails on
-#: rows other suites seed (mechanism names such as "[M+H]+ <id>" that the read
-#: schema refuses). The ORDER BY still reaches Postgres; only the rows go.
-_MATCH_NOTHING = {
-    "/api/ionization_mechanisms": {"ionization_mechanism": ["-no-such-mechanism"]},
-}
-
 
 def _sort_routes():
     """``(path, {param: schema})`` for GET routes without path parameters whose
@@ -134,12 +127,7 @@ def _valid_sort_requests():
             for order in ("asc", "desc"):
                 yield pytest.param(
                     path,
-                    {
-                        **required,
-                        **_MATCH_NOTHING.get(path, {}),
-                        "sort": value,
-                        "order": order,
-                    },
+                    {**required, "sort": value, "order": order},
                     id=f"{path}?sort={value}&order={order}",
                 )
 

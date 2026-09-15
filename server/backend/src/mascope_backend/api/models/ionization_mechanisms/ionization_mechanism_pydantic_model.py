@@ -110,8 +110,8 @@ class IonizationMechanismBaseValidator:
         return self
 
 
-class IonizationMechanismBase(IonizationMechanismBaseValidator, BaseModel):
-    """Base model with common fields for IonizationMechanism schemas."""
+class IonizationMechanismFields(BaseModel):
+    """The fields every IonizationMechanism schema carries, without validation."""
 
     ionization_mechanism_polarity: str = Field(
         ..., description="Polarity of the ionization mechanism ('+' or '-')"
@@ -122,6 +122,12 @@ class IonizationMechanismBase(IonizationMechanismBaseValidator, BaseModel):
     )
 
     model_config = ConfigDict(from_attributes=True)
+
+
+class IonizationMechanismBase(
+    IonizationMechanismBaseValidator, IonizationMechanismFields
+):
+    """Base model with common fields for IonizationMechanism schemas."""
 
 
 class IonizationMechanismCreate(IonizationMechanismBase):
@@ -162,8 +168,16 @@ class IonizationMechanismCreate(IonizationMechanismBase):
         return values
 
 
-class IonizationMechanismRead(IonizationMechanismBase):
-    """Model used for reading ionization mechanisms, includes database fields."""
+class IonizationMechanismRead(IonizationMechanismFields):
+    """
+    Model used for reading ionization mechanisms, includes database fields.
+
+    Not validated: a stored row is reported as it is. The create and update
+    validators have tightened over time and nothing rewrites existing rows to
+    match, so re-running them here would turn one row written under older
+    rules into a 400 for the whole listing - including for the frontend,
+    which loads it. What may be written is enforced where it is written.
+    """
 
     ionization_mechanism_id: str = Field(
         ..., description="Unique identifier for the ionization mechanism"
