@@ -962,9 +962,46 @@ and `build.ps1` uses its default region.
 
 CI authenticates with OIDC federation - there is no Azure client secret to
 rotate. That is why the job declares `environment: release-signing`: without
-an environment the OIDC subject is `repo:<org>/<repo>:ref:refs/tags/<TAG>`, a
-different string on every release, and Entra matches federated-credential
-subjects exactly, with no wildcards.
+an environment the OIDC subject ends in `:ref:refs/tags/<TAG>`, a different
+string on every release, and Entra matches federated-credential subjects
+exactly, with no wildcards.
+
+The repository uses GitHub's immutable OIDC subject format, which identifies
+the owner and repository by numeric ID as well as by name, so the federated
+credential on the signing app registration must trust exactly:
+
+```text
+repo:ultra-trace-systems@162320857/mascope@767603004:environment:release-signing
+```
+
+The plain `repo:ultra-trace-systems/mascope:environment:release-signing` form
+does not match. A mismatch fails the "Log in to Azure" step with
+`AADSTS700213: No matching federated identity record found`, and that step
+logs the subject it presented. To check the prefix currently in effect:
+
+```sh
+gh api repos/ultra-trace-systems/mascope/actions/oidc/customization/sub
+```
+
+To add the credential from PowerShell, put the JSON in a file (PowerShell
+strips the inner quotes of an inline JSON argument before `az` sees it):
+
+```powershell
+@'
+{
+  "name": "github-release-signing-immutable",
+  "issuer": "https://token.actions.githubusercontent.com",
+  "subject": "repo:ultra-trace-systems@162320857/mascope@767603004:environment:release-signing",
+  "audiences": ["api://AzureADTokenExchange"]
+}
+'@ | Set-Content -Encoding utf8 credential.json
+az ad app federated-credential create --id <application-client-id> --parameters "@credential.json"
+```
+
+`--id` is the app registration's Application (client) ID, the value stored in
+the `AZURE_CLIENT_ID` secret. `az ad app list --show-mine` lists only apps you
+own, so look the app up in the Entra portal under App registrations → All
+applications if it does not appear there.
 
 **Three files are signed per release, and the order is load-bearing:** the
 PyInstaller exe first, while it is still a standalone PE, then the uninstaller
