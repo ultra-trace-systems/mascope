@@ -153,3 +153,10 @@ It comes preloaded with the published demo dataset and login `demo@mascope.app` 
   backend pytest, library pytest, CLI pytest, frontend unit, the dependency
   licence check, and the demo-stack e2e suite on every PR; releases are gated on
   `tooling/smoke-test.sh`.
+- The golden-dataset reproducibility check
+  (`.github/workflows/reproducibility.yaml`) is required on PRs into `master`
+  but does not run on PRs into `develop`. If a change can move the pipeline's
+  output (raw reading, peak detection, calibration, matching), dispatch it on
+  your branch before merging:
+  `gh workflow run reproducibility.yaml --ref <branch>`. When the numbers move
+  on purpose, the goldens need a new demo bundle (`docs/demo_dataset.md`).
