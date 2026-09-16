@@ -30,7 +30,7 @@ step PRs land on the epic and are named here as they merge.
 | 2.5c - the same-ion ambiguity on a Stage A mirror row | #2118 | measured: a reference mirror's M0 row carries the readings of its ion the untargeted search would have held, as `same_ion` alternatives (2,725 rows over the 43 samples), and the reagent-N rule asks it from both sides, since a list can put the nitrogen on the analyte; a second channel fixes the count either way and a target library row stays exempt. It moves tiers and nothing else: no formula, role or owner change on 48,894 peaks, G2 identical on every set, no untargeted or target library row touched. The rule reaches 746 mirror rows and caps 167 from assigned (A 24, B 67, F2 76) with 25 isotopologues. All nine same-ion steals on B carry their ammonium reading: two are capped and seven fixed by the same neutral's urea adduct. G1 A 24.3 -> 23.2, B 36.8 -> 37.0 (conditioned 11.6 -> 11.7), F2 97.5 -> 97.3; on B the cap takes 50 rows the reference confirms, 18 of them Keller's amines through `+H+` |
 | 2.5d - review of the curated lists | #2136 (a library entry's line whatever its spelling), #2137 (the cap on library rows, the plan) | measured: the 46 entries the gate's modes attach were audited against the step's four flags, and the plan owner's verdicts taken on each. The four odd-electron workaround entries left the lists (HCO3 and CHO3 for CO3-, HS3 for S3-, Br for Br2-); the entries that never commit a row stay, with their reasons - reagent lines the pre-pass claims first, or compounds absent or out of range; no entry is left whose ion another channel of the same sample reads as a different neutral. Removing the workaround entries cost C2 its Stage A offset: four to five of its eleven or twelve matched lines were theirs, so it scores at the class width with no offset while its own runs sit at -1.1 ppm, and 146 rows leave assigned, 106 of them rows the reference commits the same formula on (the section after this step has the two ways back). The audit found an engine defect, fixed in #2136: a reference list's copy of a library reading took the entry's line, on the spelling or on a shade better fit - 63 rows on four sets, 12 density caps lifted, no tier moved. Decision 3's exemption is lifted from the cap in #2137 (its fourth addendum): a library line off calibration is capped unless an isotopologue tracks it, which moves the three isotopologues that exemption protected from assigned to candidate and nothing else |
 | 2.5e - an offset from the reagent lines where the library is thin | #2140 | measured: where Stage A matches fewer than eight library lines, both stages score at the median error of every line the reagent pre-pass claimed, isotopologues included, where it claimed three or more and the median is beyond the width the sample is scored at; the width stays the class's. Only C2 reaches it, at -1.25 to -1.26 ppm over seven lines where its commits sit at -1.10 to -1.13: 114 of the 146 monoisotopic rows 2.5d took from assigned come back, 100 of them on the reference's formula, its assigned rows go from 181 to 321, G1 30.9 -> 20.6 (conditioned 0.0 -> 0.8 over 257 rows) and G2 86.4 -> 87.5. The other seven sets are identical row for row. Every run keeps its calibration's offset and width and the gate caps the same rows; on C2 the re-elections move the calibration's line through m/z, which three samples now refuse and two fit shallower |
-| 2.5f - a list hit meets the untargeted grid | - | planned, after 2.5d and independent of 2.5e, in two PRs: first the untargeted enumeration runs over Stage A's peaks too and a list hit's candidate density counts the grid's rivals beside the known set's, so the density rule reaches it with no election changed; then the list formula is one candidate in the arbitration carrying a prior, a grid rival may win the peak, and the assigned tier comes from the same rules for every row, the mass gate already reading a library row like any other since 2.5d (decision 3's fifth addendum); the first PR was to come before 2.4e, which reads assigned tiers, and 2.4e went first on the plan owner's word, so the first PR re-reads its claims; the second where the measurement puts it |
+| 2.5f - a list hit meets the untargeted grid | #2148 (the measurement) | first PR measured: a run that searches asks the grid about every monoisotopic list hit, scores the box's candidates for its peak beside the list's reading on the search's own fit, and counts the closed-shell ones the evidence cannot separate into the hit's density (decision 3's sixth addendum: a radical is no plausible rival), so the density rule holds a lone list hit with a rival at candidate and names the rivals; no election or owner changes. 146 list hits at assigned have such a rival, almost all from the monoterpene HOM list on the TOF sets: 113 go to candidate (F1 85, F2 24, E 2, B 1, C 1), where the reference commits the list's formula on 2 and is silent on 105, and a second channel keeps 33. Four lines 2.4e had claimed for F1 list hits unwind. G2 is identical on every set; F1's G1 conditioned goes from 50.7 to 48.6. The measurement costs 49 s over the 43 runs. The second PR, the list formula as one candidate with a prior, waits on the prior's weight |
 | 2.4e - isotopologue claims under interference | #2143 | measured: a monoisotopic row the envelope-neighbour rule flags under a neighbour held at assigned is read as that neighbour's isotopologue at candidate, the reading it displaced first among its alternatives, unless it is a target library compound, another channel committed its neutral, the neighbour already holds a line there, or its error does not follow the neighbour's within what the line can deliver; the ledger's passes then run again over the claims. An isotopologue's tracking allows for its line's noise below a signal-to-noise of 15 and for a peak within two widths of it: a line only that far off is in doubt and held at candidate, never lower, and one further off is held at candidate at least. Of the 861 flagged rows, 252 are claimed (184 tracking, 68 in doubt) and 578 stay under a neighbour below assigned; the reference had read 67 of the claims as the same formula's isotopologues and 6, all on B and five of them 2H lines, as the M0 the claim displaced. G6 falls from 681 to 596, and no monoisotopic row changes formula or tier, so G1, G1 conditioned and G2 are identical on every set. Set C's 18O, 2H and 13C2 lines of its strongest ion are all its candidate isotopologues. 69 isotopologues go from assigned to candidate, 25 of them lines the reference confirms, and the calibration refits on the three samples where a claimed row had been an anchor. Taken ahead of 2.5f's first PR |
 | 2.4f - an oxygen-free neutral in a nitrate cluster | #2147 | measured: a row read as nitrate clustered with a neutral that has no oxygen - through the plain or labelled ion, or their nitric acid clusters - is held at candidate with the reason `oxygen_free_cluster`, its isotopologues with it; a target library compound is exempt, a reference list's row is not, and no second channel lifts it. Measured two ways with carbonate beside it, the plan owner took the cap and left carbonate out (decision 18's third addendum). The rule names 134 rows on the three nitrate sets and takes 10 from assigned, all on F2, where the reference commits the same reading on one; nothing else moves on 48,894 peaks, G2 is identical on every set, and F2's G1 conditioned goes from 77.6 to 78.6. Restricting the search instead read 75 of F2's 115 rows as the same ion without its proton, 18 of them at assigned; carbonate would have taken 27 rows from assigned, 20 of them on the reference's own formula |
 | 2.6 - frontend: profile, reasons, roles | - | planned |
@@ -1257,6 +1257,30 @@ its own status.
   owner's word, so the first PR also reports the claims whose neighbour it
   takes below assigned, which a run then leaves as the rows they were. On the
   reference frozen at `cc07ce1` (decision 16).
+- **As built, the measurement (2026-09-16).** #2148, measured on step 2.4f's
+  round (*After step 2.5f's first PR*).
+  - **The question put to the grid.** A run that searches enumerates, for every
+    monoisotopic Stage A row, the formulas the element box holds for its peak.
+    It uses the search's own window, channels and heuristic filter, and scores
+    them beside the list's reading with the search's own fit and the whole
+    spectrum as context. Nothing is committed or claimed. On the gate the
+    reading's fit on that scale equals Stage A's, and run over the search's own
+    rows the count equals the density the search stored on all but F1's densest
+    peaks, where more candidates compete than the scorer keeps.
+  - **What counts as a rival.** A closed-shell formula the evidence cannot
+    separate from the list's reading, on the plan owner's answer (decision 3's
+    sixth addendum). The reading's own ion split another way is the
+    nitrogen-ambiguity rule's question, and a formula the known set already
+    counted is not counted twice.
+  - **Into the density.** The rivals are added to the row's
+    `candidate_density`, and the density rule reads it as it reads an
+    election's: a lone list hit with a rival is held at candidate, a second
+    channel keeps it, and the reason names the rivals.
+  - **The record.** The row carries `provenance.grid_rivals` (the known set's
+    count, the rivals added and the first five named, the reading's fit on the
+    search's scale, whether the box holds the formula), and the run carries
+    `search_scope.list_hits`. The run-less ingest fold runs no search, so its
+    list hits keep the known set's count.
 
 ### 2.6 Frontend: profile, reasons, roles
 
@@ -3693,6 +3717,15 @@ belongs in the fitted axis once anchors reach below m/z 100, which is step
    makes the list formula one candidate with a prior, judged by the same
    rules as every row. The fourth addendum lifted the cap's exemption; this
    one reaches the tier a list hit earns against the grid.
+   *Sixth addendum (2026-09-16, the plan owner on step 2.5f's measurement):
+   a radical is no plausible rival to a list hit.* The rivals the grid adds to
+   a list hit's density are closed-shell formulas only. A radical is never held
+   at assigned (the radical rule), and counting radicals would have held 173
+   list hits at candidate instead of 113, including 18 on D that the
+   reference commits and whose every rival was a radical. An election's own
+   density still counts every rival; on step 2.4f's round 173 search rows sit
+   at candidate over radical rivals alone (F1 71, F2 66, B 20, E 12), which is
+   left open.
 4. **The cap.** Every peak by default, with the 5,000 ceiling as the hard
    bound; ingest-time runs are Stage A only, so the cost lands on explicit
    runs.
@@ -5542,6 +5575,102 @@ sulfur (nitrogen 45, both 40, sulfur 35), and 2 are a reference list's ClI.
   77.6 -> 78.6; G2 identical everywhere.
 - **The carbonate answer:** not judged by the rule, on the plan owner's
   answer (decision 18's third addendum).
+
+### After step 2.5f's first PR, a list hit's rivals (2026-09-16)
+
+#2148 asks the grid about every list hit of a run that searches (the step's
+as-built note). The step was measured offline first, over step 2.4f's round:
+- its own rows' densities reproduced;
+- the reading's fit compared with Stage A's;
+- both ways of counting rivals.
+
+The plan owner took closed-shell rivals (decision 3's sixth addendum), and the
+gate ran on `step-2.5f-list-hit-rivals-2026.09.16-49121c8`, read against step
+2.4f's round.
+
+**The measurement reproduces the search.**
+- **The search's own rows.** Over the round's 26,452 search rows, the count
+  equals the density the search stored on 24,084 of 24,445 measured rows. Six
+  sets agree exactly and B differs on one row. F1 differs on 360, always lower,
+  all above m/z 564 where a peak holds 67 or more candidates, more than the
+  scorer keeps.
+- **One scale.** A list reading's fit on the search's scale equals Stage A's:
+  the median difference is 0.000 on every set.
+- **Radicals as rivals.** Counting them too would have held 173 list hits at
+  candidate: A 4, B 6, C 2, D 19, E 5, F1 106, F2 31. The reference commits the
+  list's formula on 24 of them, 18 on D, where every rival was a radical.
+
+**Stage A monoisotopic rows with a closed-shell rival**, at any tier: A 43 of
+402, B 130 of 956, C 25 of 304, C2 9 of 221, D 76 of 953, E 88 of 298, F1 601
+of 1,375, F2 790 of 1,626.
+
+**The list hits at assigned with a rival, by set, list and a second channel:**
+
+| set | with a rival | held at candidate | kept by a second channel | lists |
+|---|---|---|---|---|
+| A | 1 | 0 | 1 | cyclic siloxanes |
+| B | 1 | 1 | 0 | linear siloxanes |
+| C | 3 | 1 | 2 | atmospheric organics |
+| C2 | 0 | 0 | 0 | - |
+| D | 2 | 0 | 2 | monoterpene HOM |
+| E | 2 | 2 | 0 | monoterpene HOM |
+| F1 | 102 | 85 | 17 | monoterpene HOM 99, atmospheric organics, contaminants, nitroaromatics 1 each |
+| F2 | 35 | 24 | 11 | monoterpene HOM 34, contaminants 1 |
+
+- **What moves.** Exactly the 113 list hits the table holds at candidate,
+  each by the density rule alone; no target library row has a rival at
+  assigned.
+  - The reference commits the list's formula on 2 (C 1, F1 1), one of the
+    rivals' on 1, another formula on 3, an isotopologue line on 2, and nothing
+    on 105.
+  - B's is the linear siloxane C12H36O4Si5 through the uronium cluster, a
+    formula outside the searched box, against C24H28O8 through a proton at
+    +0.30 ppm, which fits better (0.92 against 0.84): a box can build a rival
+    for a formula it cannot hold.
+  - C's is C8H12O5 through the labelled nitrate, against C16H12OS without its
+    proton at 0.775 to its 0.778; the reference commits C8H12O5.
+- **The claims it unwinds.** Four lines on F1 that step 2.4e had claimed for a
+  list hit now held at candidate go back to their search readings, below
+  assigned. Three isotopologues of held list hits follow them to candidate.
+  Nothing else moves on the 48,894 peaks.
+- **The metrics.**
+  - F1: assigned 758 -> 673, G1 95.1 -> 94.7, G1 conditioned 50.7 -> 48.6 (n
+    75 -> 70), G6 at assigned 4 -> 2.
+  - Assigned F2 686 -> 662, E 225 -> 223, B 4,065 -> 4,064, C 612 -> 611.
+  - G2 is identical on every set, and G1 conditioned on the Orbitrap sets: A
+    2.5, B 11.7, C 0.2, C2 0.8, D 1.0.
+- **The runs' records.**
+  - The pattern scoring and the calibration's offset, width, anchors and line
+    are identical on all 43 runs. On the two F1 runs whose claims unwound, the
+    isotopologue counts and the committed monoisotopic count move with them.
+  - `config.tiering`: capped 3,260 -> 3,373, density 2,285 -> 2,403, claimed
+    252 -> 248.
+  - `search_scope.list_hits` counts the rows as Stage A built them, before 20
+    were read as other formulas' isotopologues: A 407 measured and 44 with a
+    rival, B 957 and 130, C 306 and 25, C2 221 and 9, D 955 and 76, E 300 and
+    89, F1 1,381 and 604, F2 1,628 and 790.
+- **The run time.** The measurement took 49 s over the 43 runs, at most 4.2 s
+  a run. The runs took 792 s where today's five rounds before took 730 to
+  774 s.
+
+**For the plan owner.**
+- **The second PR.** The election, with the list formula as one candidate
+  carrying a prior, waits on the prior's weight (the step's size note).
+- **Where the rivals live.** On the Orbitrap sets few list hits at assigned
+  have a closed-shell rival (A 1, B 1, C 3, C2 0, D 2). On the TOF sets they
+  are common, since the window and the width are wide there, and the monoterpene
+  HOM list carries almost all of them.
+- **Elections' own density** still counts radical rivals (decision 3's sixth
+  addendum).
+
+#### Verify, item by item
+
+- **The Stage A rows at assigned with a grid rival inside the width, by set,
+  by list and by whether a second channel holds the neutral:** the table.
+- **The rows the density rule caps and what the reference commits on their
+  peaks:** the 113 above.
+- **The run time:** 49 s of measurement over the 43 runs.
+- **The claims whose neighbour it takes below assigned:** the four on F1.
 
 ## Not in this plan
 
