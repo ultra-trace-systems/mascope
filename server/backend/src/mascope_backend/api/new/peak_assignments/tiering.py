@@ -97,6 +97,7 @@ from mascope_backend.api.new.peak_assignments.cross_channel import (
     donates_nitrogen,
 )
 from mascope_backend.api.new.peak_assignments.engine import (
+    GRID_RIVALS,
     ROLE_ISO_CHILD,
     ROLE_M0,
     SOURCE_DATABASE,
@@ -428,10 +429,20 @@ def density_reason(row: dict) -> dict | None:
         return None
     if is_corroborated(row):
         return None
+    grid = _provenance(row).get(GRID_RIVALS)
+    added = grid.get("added") if isinstance(grid, dict) else None
+    searched = ""
+    if isinstance(added, int) and added:
+        named = ", ".join(
+            str(rival.get("formula")) for rival in (grid.get("rivals") or [])[:3]
+        )
+        searched = f", {added} of them from the formula search" + (
+            f" ({named}{', ...' if added > 3 else ''})" if named else ""
+        )
     return _reason(
         REASON_CANDIDATE_DENSITY,
-        f"{density} formulas this peak's evidence could not separate, and no "
-        "second channel of this run committed the same neutral",
+        f"{density} formulas this peak's evidence could not separate{searched}, "
+        "and no second channel of this run committed the same neutral",
         caps=True,
     )
 
