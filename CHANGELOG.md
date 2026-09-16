@@ -7,6 +7,17 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
 ## [1.8.1] - 2026.09.16
 ### Changed
 
+- **A compound matched from a list meets the formula search's rivals for its
+  peak.** When a run searches formulas, it now also asks the search about
+  every peak it assigned from the target library or a reference list: the
+  formulas the element ranges hold for that mass are scored beside the
+  list's, and the closed-shell ones the evidence cannot tell apart are added
+  to the row's candidate density. The density rule then holds such a row at
+  candidate unless a second ionization channel committed the same neutral,
+  and its reason names the rivals. Radicals do not count, and no peak changes
+  its formula. The row records `provenance.grid_rivals`, and the run records
+  `search_scope.list_hits`.
+
 - **A nitrate cluster of a neutral with no oxygen is no longer held at
   assigned.** Nitrate holds on to a molecule by hydrogen bonds from its
   oxygen-bearing groups, so a run now caps at candidate a row read through a
