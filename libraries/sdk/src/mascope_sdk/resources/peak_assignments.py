@@ -368,11 +368,16 @@ class PeakAssignmentsResource(BaseResource):
         a reason that would take the top tier - a radical neutral, a peak whose
         evidence left rivals standing with nothing else corroborating it, a
         formula shaped like a mass fit, a peak a committed neighbour's envelope
-        already predicts, or a demote an earlier pass made. A row with no such
+        already predicts, an isotopologue whose mass error does not follow its
+        monoisotopic row's, or a demote an earlier pass made. A row with no such
         reason lists what it kept its tier ON instead. Rules only ever demote,
         and the run's ``config.tiering`` records the rule set's version and the
         thresholds it judged at - a tier is only comparable across two runs
-        together with those.
+        together with those. A peak read as an assigned neighbour's
+        isotopologue (rule ``envelope_claim``) carries
+        ``provenance.envelope_claim``: the line, its predicted and observed
+        height, how its mass error follows the neighbour's, and the reading it
+        displaced, which is also its first alternative.
 
         On a hand-curated row (``source`` ``manual``) the provenance also
         carries a ``manual`` block recording who changed what: ``action``,

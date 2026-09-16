@@ -31,8 +31,11 @@ export const TIER_REASON_LABELS = Object.freeze({
   corroborated: 'second channel',
   no_close_rival: 'no close rival',
   not_measured: 'not measured',
-  // An isotopologue is judged through its M0.
-  inherited_from_owner: 'follows its M0'
+  // An isotopologue is judged through its M0, and on its own line.
+  inherited_from_owner: 'follows its M0',
+  envelope_claim: "read as a neighbour's line",
+  isotopologue_in_doubt: 'line in doubt',
+  isotopologue_untracked: 'off its M0'
 })
 
 /**

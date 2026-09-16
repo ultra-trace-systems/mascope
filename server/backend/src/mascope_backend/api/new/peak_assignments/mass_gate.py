@@ -29,6 +29,16 @@ against every sample rather than a library somebody assembled for this data.
 The formula stays on the row either way: what the run is withdrawing is its
 confidence, not its reading.
 
+An isotopologue that does not track its parent is not ``assigned`` either,
+wherever it sits. Whether it tracks is judged twice. Within the class's
+precision it tracks, and corroborates. Beyond that, a line can still miss its
+parent by no more than it can deliver - a line near the noise floor is placed
+less well than the class's precision says, and a line with another peak close
+beside it is pushed off its place - and such a line is in doubt: held at
+``candidate``, and never taken lower for a distance its own quality explains.
+A line that misses by more than that too is a peak the matching window happened
+to reach, capped like any other commit and at ``candidate`` at least.
+
 What this is worth, measured rather than assumed: on the 43-sample gate it caps
 51 rows of the 10,935 at the top tier - three of them the target library's,
 which its curation used to spare - demotes none that the reference confirms,
@@ -44,9 +54,12 @@ tiers read; it is not what will move the agreement metrics.
 
 from __future__ import annotations
 
+import math
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, replace
 
 import numpy as np
+import pandas as pd
 
 from mascope_backend.api.new.peak_assignments.engine import (
     ROLE_ISO_CHILD,
@@ -54,6 +67,7 @@ from mascope_backend.api.new.peak_assignments.engine import (
     SampleMassAccuracy,
     is_target_library_row,
 )
+from mascope_backend.api.new.peak_assignments.envelope_claims import is_claimed
 from mascope_backend.api.new.peak_assignments.tiers import (
     TIER_BELOW_ASSIGNABILITY,
     TIER_CANDIDATE,
@@ -101,9 +115,39 @@ BELOW_ASSIGNABILITY_Z = 6.0
 #: corroboration by instrument class rather than counting it.
 TRACKING_SIGMAS = 3.0
 
-#: The reason a capped row carries, which is the vocabulary step 2.4's
-#: ``tier_reasons`` will collect.
+#: The signal-to-noise at which the class's precision describes a line. Below
+#: it a line is placed less well, by the square root of how much fainter it is.
+#: Measured on the gate's Orbitrap sets, over the isotopologues the reference
+#: engine confirms, the child-minus-parent error narrows as 1.15 / sqrt(SNR)
+#: ppm - a width of 0.47 ppm at SNR 5-10, 0.30 at 10-20, 0.21 at 20-50 and 0.15
+#: above - which is the Orbitrap class's 0.3 ppm at 15.
+PRECISION_SNR = 15.0
+
+#: How close another peak has to sit to a line, in the line's own FWHM, to move
+#: its centroid. Two lines of one ion 1.3 FWHM apart in theory measured 1.6 to
+#: 1.7 FWHM apart on the gate's broad-window nitrate set: the push itself
+#: widens the spacing it is judged on, so the reach is taken past it.
+OVERLAP_REACH_FWHM = 2.0
+
+#: How far such a peak can push the line, in the line's FWHM, when it is at
+#: least as tall as the line; a shorter one pushes in proportion to its height.
+#: The 13C2 and 18O lines of that set's strongest ion, about 8.7 ppm wide and
+#: about as tall as each other, sit 1.2 to 2.1 ppm off their places.
+OVERLAP_PUSH_FWHM = 0.25
+
+#: How an isotopologue's mass error follows its parent's.
+#: Inside the class's precision: the two lines measure one axis.
+TRACKING_TRACKS = "tracks"
+#: Beyond it, but by no more than the line's noise and neighbours explain.
+TRACKING_IN_DOUBT = "in_doubt"
+#: Beyond that too, or with an error missing on either side.
+TRACKING_UNTRACKED = "untracked"
+
+#: The reasons a capped row carries, which is the vocabulary step 2.4's
+#: ``tier_reasons`` collects.
 REASON_OFF_CALIBRATION = "off_calibration"
+REASON_ISOTOPOLOGUE_IN_DOUBT = "isotopologue_in_doubt"
+REASON_ISOTOPOLOGUE_UNTRACKED = "isotopologue_untracked"
 
 #: A curated identity: the row won its peak for a compound of the workspace's
 #: own target library, so a library somebody assembled for this data - not this
@@ -325,6 +369,230 @@ def tracks_its_parent(
     return abs(child - parent) <= float(tolerance_ppm)
 
 
+@dataclass(frozen=True)
+class LineQuality:
+    """How well one peak can place its line.
+
+    :param snr: The peak's own signal-to-noise, where the file records one.
+    :param push_ppm: How far the tallest other peak within
+        :data:`OVERLAP_REACH_FWHM` of it can move its centroid.
+    """
+
+    snr: float | None = None
+    push_ppm: float = 0.0
+
+    @property
+    def noise_ratio(self) -> float:
+        """How much wider this line's own noise makes it, in variance.
+
+        One for a line at or above :data:`PRECISION_SNR` and for a line whose
+        noise nobody measured, which the class's precision then describes.
+        """
+        if self.snr is None or not math.isfinite(self.snr) or self.snr <= 0:
+            return 1.0
+        return max(1.0, PRECISION_SNR / float(self.snr))
+
+
+#: A line the run has nothing to read with: the class's precision describes it,
+#: and nothing beside it is known to push it.
+UNREAD_LINE = LineQuality()
+
+
+class SpectrumLines:
+    """Every peak of one sample, read for how well each can place its line.
+
+    :param peak_ids: The peaks' ids.
+    :param mz: Their m/z, in the same order.
+    :param intensity: Their intensities, in the quantity the run assigned on.
+    :param snr: Their signal-to-noise, or None where the file records none.
+    :param resolution: The file's resolving power as a function of m/z, or None
+        where the run could not read one. Without it no line is read as pushed.
+    """
+
+    def __init__(
+        self,
+        peak_ids: Sequence,
+        mz: Sequence[float],
+        intensity: Sequence[float],
+        snr: Sequence[float] | None = None,
+        resolution: Callable[[float], float] | None = None,
+    ):
+        mz_values = np.asarray(mz, dtype=float)
+        order = np.argsort(mz_values, kind="stable")
+        self._mz = mz_values[order]
+        self._intensity = np.nan_to_num(np.asarray(intensity, dtype=float)[order])
+        self._snr = None if snr is None else np.asarray(snr, dtype=float)[order]
+        self._position = {str(peak_ids[index]): at for at, index in enumerate(order)}
+        self._resolution = resolution
+        self._read: dict[str, LineQuality] = {}
+
+    @classmethod
+    def from_peaks(
+        cls,
+        peaks_df: pd.DataFrame,
+        resolution: Callable[[float], float] | None = None,
+    ) -> SpectrumLines:
+        """Read a sample's peak frame, as the service loads it."""
+        return cls(
+            peaks_df["sample_peak_id"].astype(str).tolist(),
+            peaks_df["mz"].to_numpy(),
+            peaks_df["intensity"].to_numpy(),
+            (
+                peaks_df["signal_to_noise"].to_numpy()
+                if "signal_to_noise" in peaks_df.columns
+                else None
+            ),
+            resolution,
+        )
+
+    def fwhm_ppm(self, mz: float) -> float | None:
+        """A line's full width at half maximum at ``mz``, or None if unknown."""
+        if self._resolution is None:
+            return None
+        try:
+            resolving_power = float(self._resolution(float(mz)))
+        except (TypeError, ValueError, ZeroDivisionError, ArithmeticError):
+            return None
+        if not math.isfinite(resolving_power) or resolving_power <= 0:
+            return None
+        return 1e6 / resolving_power
+
+    def of(self, peak_id) -> LineQuality:
+        """How well the peak with this id can place its line."""
+        key = str(peak_id)
+        quality = self._read.get(key)
+        if quality is None:
+            position = self._position.get(key)
+            if position is None:
+                quality = UNREAD_LINE
+            else:
+                snr = None if self._snr is None else float(self._snr[position])
+                quality = LineQuality(
+                    snr=snr if snr is not None and math.isfinite(snr) else None,
+                    push_ppm=self._push_ppm(position),
+                )
+            self._read[key] = quality
+        return quality
+
+    def _push_ppm(self, position: int) -> float:
+        mz = float(self._mz[position])
+        fwhm = self.fwhm_ppm(mz)
+        if fwhm is None:
+            return 0.0
+        reach = mz * fwhm * 1e-6 * OVERLAP_REACH_FWHM
+        low = int(np.searchsorted(self._mz, mz - reach, side="left"))
+        high = int(np.searchsorted(self._mz, mz + reach, side="right"))
+        others = np.delete(self._intensity[low:high], position - low)
+        tallest = float(others.max()) if others.size else 0.0
+        if tallest <= 0:
+            return 0.0
+        own = float(self._intensity[position])
+        return OVERLAP_PUSH_FWHM * fwhm * (1.0 if own <= 0 else min(1.0, tallest / own))
+
+    def snapshot(self) -> dict:
+        """What the run had to read its lines with, for its record."""
+        return {
+            "noise": self._snr is not None and bool(np.isfinite(self._snr).any()),
+            "resolution": self._resolution is not None,
+            "precision_snr": PRECISION_SNR,
+            "overlap_reach_fwhm": OVERLAP_REACH_FWHM,
+            "overlap_push_fwhm": OVERLAP_PUSH_FWHM,
+        }
+
+
+def line_tolerance_ppm(
+    precision_ppm: float,
+    child: LineQuality = UNREAD_LINE,
+    parent: LineQuality = UNREAD_LINE,
+) -> float:
+    """How far two lines of one ion can miss each other on their own quality.
+
+    The class's bar (:func:`tracking_tolerance_ppm`) widened by what each line
+    can deliver: its noise in quadrature, as the bar's own width is, and each
+    neighbour's push on top, since a push is a shift rather than a scatter.
+    Equal to the class's bar for two lines the class's precision describes.
+
+    :param precision_ppm: The instrument class's precision.
+    :param child: The isotopologue's line.
+    :param parent: Its parent's.
+    :return: The widest miss the two lines' own quality explains.
+    """
+    noise = math.sqrt((child.noise_ratio + parent.noise_ratio) / 2.0)
+    return (
+        tracking_tolerance_ppm(precision_ppm) * noise + child.push_ppm + parent.push_ppm
+    )
+
+
+def tracking_of(
+    child_error_ppm: float | None,
+    parent_error_ppm: float | None,
+    *,
+    precision_ppm: float,
+    child: LineQuality = UNREAD_LINE,
+    parent: LineQuality = UNREAD_LINE,
+) -> str:
+    """How an isotopologue's mass error follows its parent's.
+
+    :param child_error_ppm: The isotopologue's own mass error.
+    :param parent_error_ppm: Its parent's.
+    :param precision_ppm: The instrument class's precision.
+    :param child: How well the isotopologue's peak places its line.
+    :param parent: How well its parent's does.
+    :return: :data:`TRACKING_TRACKS`, :data:`TRACKING_IN_DOUBT` or
+        :data:`TRACKING_UNTRACKED`.
+    """
+    if child_error_ppm is None or parent_error_ppm is None:
+        return TRACKING_UNTRACKED
+    child_error, parent_error = float(child_error_ppm), float(parent_error_ppm)
+    if not (math.isfinite(child_error) and math.isfinite(parent_error)):
+        return TRACKING_UNTRACKED
+    miss = abs(child_error - parent_error)
+    if miss <= tracking_tolerance_ppm(precision_ppm):
+        return TRACKING_TRACKS
+    if miss <= line_tolerance_ppm(precision_ppm, child, parent):
+        return TRACKING_IN_DOUBT
+    return TRACKING_UNTRACKED
+
+
+def isotopologue_tracking(
+    assignments: list[dict],
+    *,
+    precision_ppm: float,
+    lines: SpectrumLines | None = None,
+) -> dict[str, str]:
+    """How every committed isotopologue with an owner follows it.
+
+    :param assignments: Every row built for this sample.
+    :param precision_ppm: The instrument class's precision.
+    :param lines: The sample's peaks, read for their quality; without them
+        every line is one the class's precision describes.
+    :return: :func:`tracking_of`'s answer keyed by ``peak_assignment_id``.
+    """
+    by_id = {
+        str(row["peak_assignment_id"]): row
+        for row in assignments
+        if row.get("peak_assignment_id")
+    }
+    tracking: dict[str, str] = {}
+    for row in assignments:
+        owner_id = row.get("owner_peak_assignment_id")
+        if not is_committed(row) or row.get("role") != ROLE_ISO_CHILD or not owner_id:
+            continue
+        owner = by_id.get(str(owner_id)) or {}
+        tracking[str(row["peak_assignment_id"])] = tracking_of(
+            row.get("mz_error_ppm"),
+            owner.get("mz_error_ppm"),
+            precision_ppm=precision_ppm,
+            child=UNREAD_LINE if lines is None else lines.of(row.get("sample_peak_id")),
+            parent=(
+                UNREAD_LINE
+                if lines is None or not owner
+                else lines.of(owner.get("sample_peak_id"))
+            ),
+        )
+    return tracking
+
+
 def corroboration_of(
     assignments: list[dict],
     *,
@@ -340,8 +608,10 @@ def corroboration_of(
       TRACKS ITS PARENT'S, so the spectrum agrees in a second place rather than
       in a place the matching window happened to reach. Both rows of such a
       pair are corroborated by it; a child that does not track corroborates
-      nothing, including itself. Answered ahead of curation, since it is the
-      answer the cap reads.
+      nothing, including itself. Nor does a line a claim read as the ion's
+      (:mod:`envelope_claims`), even where it tracks: the run committed it as
+      something else first, which is the doubt the claim records. Answered
+      ahead of curation, since it is the answer the cap reads.
     - :data:`CORROBORATED_CURATED` - Stage A matched it to a compound of the
       workspace's target library (:func:`engine.is_target_library_row`), so the
       formula was proposed by a library assembled for this data rather than by
@@ -369,7 +639,7 @@ def corroboration_of(
     confirmed_owners: set[str] = set()
     for row in assignments:
         owner_id = row.get("owner_peak_assignment_id")
-        if not is_committed(row) or not owner_id:
+        if not is_committed(row) or not owner_id or is_claimed(row):
             continue
         if tracks_its_parent(
             row.get("mz_error_ppm"), error_by_id.get(str(owner_id)), tolerance
@@ -479,6 +749,7 @@ def apply_mass_gate(
     *,
     stage_a_accuracy: SampleMassAccuracy | None = None,
     fallback_sigma_ppm: float,
+    lines: SpectrumLines | None = None,
 ) -> dict:
     """Record every commit's ``mass_z`` and cap the outliers no envelope confirms.
 
@@ -487,10 +758,13 @@ def apply_mass_gate(
     ledger (which M0 kept an isotopologue, which peak Stage A claimed), so no
     stage can answer it alone.
 
-    Nothing is capped when the run measured no calibration - a sample with too
-    few corroborated commits to fit an offset and a width has not earned the
-    right to demote anything, and standing down is recorded rather than being
-    indistinguishable from a run that found nothing to demote.
+    Nothing is capped for its distance when the run measured no calibration - a
+    sample with too few corroborated commits to fit an offset and a width has
+    not earned the right to demote anything on it, and standing down is
+    recorded rather than being indistinguishable from a run that found nothing
+    to demote. An isotopologue that does not track its parent is held at
+    ``candidate`` either way, since that compares two of the run's own lines
+    and needs no calibration.
 
     :param assignments: Every row built for this sample, modified in place.
     :param stage_a_accuracy: What Stage A measured, for the run's record. It is
@@ -501,6 +775,9 @@ def apply_mass_gate(
     :param fallback_sigma_ppm: The instrument class's width, which is both the
         other half of that floor and the precision an isotopologue has to track
         its parent within (``profiles.resolve_fallback_sigma_ppm``).
+    :param lines: The sample's peaks, read for how well each places its line.
+        Without them every line is one the class's precision describes, so no
+        isotopologue is in doubt: it tracks or it does not.
     :return: A JSON-serializable summary for the run's config.
     """
     # The width the untargeted search actually scored a mass error at, rebuilt
@@ -511,6 +788,9 @@ def apply_mass_gate(
         float(fallback_sigma_ppm),
     )
     corroboration = corroboration_of(assignments, precision_ppm=fallback_sigma_ppm)
+    tracking = isotopologue_tracking(
+        assignments, precision_ppm=fallback_sigma_ppm, lines=lines
+    )
     calibration = fit_run_mass_accuracy(assignments, corroboration)
     if calibration.sigma_ppm is not None:
         calibration = replace(
@@ -528,11 +808,21 @@ def apply_mass_gate(
         "applied": calibration.measured,
         "committed": len(corroboration),
         "corroborated": sum(1 for value in corroboration.values() if value),
+        # Rows capped for their distance from the centre.
         "capped": 0,
         "below_assignability": 0,
         # Of the capped rows, the target library's: its rows anchor the fit
         # above, and this is what judging them against it cost.
         "capped_curated": 0,
+        # How the committed isotopologues follow their parents, what the run
+        # read their lines with, and the ones held at candidate for it alone.
+        "isotopologues": {
+            outcome: sum(1 for value in tracking.values() if value == outcome)
+            for outcome in (TRACKING_TRACKS, TRACKING_IN_DOUBT, TRACKING_UNTRACKED)
+        },
+        "lines": (lines or SpectrumLines([], [], [])).snapshot(),
+        "capped_in_doubt": 0,
+        "capped_untracked": 0,
     }
     if stage_a_accuracy is not None:
         # What Stage A had to score the untargeted search with, beside what the
@@ -548,26 +838,58 @@ def apply_mass_gate(
             continue
         corroborated = corroboration[row_id]
         gate: dict = {"corroborated_by": corroborated}
+        followed = tracking.get(row_id)
+        if followed is not None:
+            gate["tracking"] = followed
         z = calibration.z_of(row.get("mz_error_ppm"), peak_mz(row))
         provenance = row.setdefault("provenance", {})
         if z is not None:
             provenance["mass_z"] = round(z, 2)
-            capped = (
-                None if corroborated == CORROBORATED_ISOTOPOLOGUE else _cap_for(abs(z))
-            )
-            # Only ever downwards. A row the bands already put below the cap is
-            # not lifted onto it, and the gate's word for such a row is silence:
-            # it did not decide that tier and must not appear to have.
-            if capped is not None and TIER_RANK[row["tier"]] > TIER_RANK[capped]:
-                row["tier"] = capped
-                gate["capped"] = capped
-                gate["reason"] = REASON_OFF_CALIBRATION
+        capped, reason = _cap_of(corroborated, followed, z)
+        # Only ever downwards. A row the bands already put below the cap is not
+        # lifted onto it, and the gate's word for such a row is silence: it did
+        # not decide that tier and must not appear to have.
+        if capped is not None and TIER_RANK[row["tier"]] > TIER_RANK[capped]:
+            row["tier"] = capped
+            gate["capped"] = capped
+            gate["reason"] = reason
+            if reason == REASON_OFF_CALIBRATION:
                 summary["capped"] += 1
                 summary["capped_curated"] += corroborated == CORROBORATED_CURATED
                 if capped == TIER_BELOW_ASSIGNABILITY:
                     summary["below_assignability"] += 1
+            elif reason == REASON_ISOTOPOLOGUE_IN_DOUBT:
+                summary["capped_in_doubt"] += 1
+            else:
+                summary["capped_untracked"] += 1
         provenance["mass_gate"] = gate
     return summary
+
+
+def _cap_of(
+    corroborated: str | None, followed: str | None, z: float | None
+) -> tuple[str | None, str | None]:
+    """The strongest tier a commit may hold here, and the reason it is held.
+
+    :param corroborated: What :func:`corroboration_of` answered for the row.
+    :param followed: How it follows its parent, for an isotopologue.
+    :param z: Its distance from the run's centre, where one was measured.
+    """
+    if corroborated == CORROBORATED_ISOTOPOLOGUE or followed == TRACKING_TRACKS:
+        # A pair of lines that measure one axis. A line that tracks and still
+        # corroborates nothing is one a claim read as the ion's, and its claim
+        # already holds it at candidate.
+        return None, None
+    if followed == TRACKING_IN_DOUBT:
+        # Its distance from the centre is no more telling than its distance from
+        # its parent, which its own line explains.
+        return TIER_CANDIDATE, REASON_ISOTOPOLOGUE_IN_DOUBT
+    distance = None if z is None else _cap_for(abs(z))
+    if distance is not None:
+        return distance, REASON_OFF_CALIBRATION
+    if followed == TRACKING_UNTRACKED:
+        return TIER_CANDIDATE, REASON_ISOTOPOLOGUE_UNTRACKED
+    return None, None
 
 
 def _cap_for(abs_z: float) -> str | None:
