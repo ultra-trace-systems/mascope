@@ -43,7 +43,11 @@ measurement.
 formulas, and nothing outside the peak corroborates it. Density is measured in
 the finder over the full candidate list (``arbitration.candidate_density``),
 which is the only place it can be: the row stores at most
-``max_alternatives`` of the competitors, so counting those counts the cap.
+``max_alternatives`` of the competitors, so counting those counts the cap. A
+list hit's density counts the known set's formulas and, in a run that
+searches, the formula search's closed-shell rivals for its peak
+(``engine.record_grid_rivals``), so the rule reaches a list hit as it reaches
+an election; the reason names the search's rivals.
 
 The implausibility signatures - ``oxygen_lattice`` and ``carbon_free``; the
 carbon cluster was withdrawn on the measurement - are named formula shapes that
