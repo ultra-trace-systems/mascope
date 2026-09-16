@@ -4945,8 +4945,8 @@ latest round - set C on the second monitor re-run, every other set on step
 - **The entries' own rows** go to unassigned. The reference leaves the same
   peaks unassigned, and reads F1's Br2- lines as reagent.
 - **C2's assigned rows fall from 312 to 181.** Of the 146 that leave the tier,
-  the reference commits the same formula on 106. Six of them are HS3's own
-  rows; the rest is Stage A. Four
+  the reference commits the same formula on 107, and on 106 of them once they
+  had moved. Six of the 146 are HS3's own rows; the rest is Stage A. Four
   to five of each C2 sample's 11 to 12 matched library lines were the removed
   entries' ions, so every sample drops below the eight a fitted width and
   offset need. Stage A then scores the search at the instrument class's 0.583
