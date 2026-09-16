@@ -458,6 +458,8 @@ _AVG_CENTROID_EXCLUSIVE_MIN_SIDE = 0.35  # min fraction of the scans on each sid
 _AVG_CENTROID_EXCLUSIVE_MIN_ALTERNATIONS = (
     2  # side changes along the scans; a hand-over is 1
 )
+# min per-scan S:N on each side; below it a real ion's label often misses a scan
+_AVG_CENTROID_EXCLUSIVE_MIN_SN = 10.0
 _ZEROFILL_GAP_FACTOR = 4.0  # profile m/z gap > this * median = a cluster boundary
 _ZEROFILL_EDGE_PPM = 2.0  # place baseline zeros this far outside each cluster edge
 
@@ -1509,10 +1511,17 @@ class OpenTFRawBackend:
         ``_AVG_CENTROID_EXCLUSIVE_COVERAGE`` of the scans, which only decides
         when they overlap in scans; and, walking the scans in order, the side
         holding more intensity must change at least
-        ``_AVG_CENTROID_EXCLUSIVE_MIN_ALTERNATIONS`` times. The per-scan
-        intensities are carried along the cluster on both sides of the pair
-        under test, so a fence of satellites cannot chain through a peak pair
-        by pair.
+        ``_AVG_CENTROID_EXCLUSIVE_MIN_ALTERNATIONS`` times. All of that reads
+        a scan without a label as a scan without the ion, which holds only
+        for an ion well above the noise: each side's intensity-weighted
+        per-scan S:N must reach ``_AVG_CENTROID_EXCLUSIVE_MIN_SN``. Below it
+        a real ion's label misses scans routinely, so two weak neighbours --
+        the 18O and 13C2 isotopologues of one ion, say, a FWHM apart -- that
+        take turns clearing the noise look exactly like one alternating ion.
+        The per-scan intensities are carried along the cluster on both sides
+        of the pair under test, so a fence of satellites cannot chain through
+        a peak pair by pair, and each side's S:N is weighed over the same
+        bins.
         """
         if masses.size <= 1:
             return masses, intensities, resolutions, sn, present
@@ -1538,17 +1547,25 @@ class OpenTFRawBackend:
                     )
                 return acc
 
-            # `left` accumulates the cluster ending at bin `left_end`. The
-            # next pair either begins at that bin, carrying the cluster
-            # forward, or starts one of its own, running back over the merged
-            # pairs whose decisions are final by now.
-            left, left_end = None, -1
+            def per_scan_sn(first: int, last: int) -> float:
+                """Intensity-weighted per-scan S:N over bins ``first`` to ``last``."""
+                part = slice(first, last + 1)
+                total = intensities[part].sum()
+                if total <= 0:
+                    return 0.0
+                return float((sn[part] * intensities[part]).sum() / total)
+
+            # `left` accumulates the cluster from bin `left_start` to bin
+            # `left_end`. The next pair either begins at that bin, carrying the
+            # cluster forward, or starts one of its own, running back over the
+            # merged pairs whose decisions are final by now.
+            left, left_start, left_end = None, -1, -1
             for i in exclusive:
                 if left is None or left_end != i:
-                    start = i
-                    while start > 0 and merge[start - 1]:
-                        start -= 1
-                    left = per_scan(start, i)
+                    left_start = i
+                    while left_start > 0 and merge[left_start - 1]:
+                        left_start -= 1
+                    left = per_scan(left_start, i)
                 # The right side runs forward over the pairs already merged
                 # unconditionally, so a bin that will join it either way is
                 # weighed now rather than slipping in afterwards.
@@ -1568,11 +1585,13 @@ class OpenTFRawBackend:
                     and side >= min_side
                     and np.count_nonzero(held) >= min_covered
                     and alternations >= _AVG_CENTROID_EXCLUSIVE_MIN_ALTERNATIONS
+                    and min(per_scan_sn(left_start, i), per_scan_sn(i + 1, end))
+                    >= _AVG_CENTROID_EXCLUSIVE_MIN_SN
                 ):
                     merge[i] = True
                     left += right
                 else:
-                    left = right
+                    left, left_start = right, i + 1
                 left_end = end
         starts = np.concatenate(([0], np.flatnonzero(~merge) + 1))
         isum = np.add.reduceat(intensities, starts)

@@ -6,6 +6,24 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
 
 ### Fixed
 
+- **Orbitrap peak detection no longer joins two weak neighbouring peaks into
+  one.** 1.8.0 began merging two averaged centroids up to one and a half peak
+  widths apart when the scans hold one or the other and alternate between
+  them, which is how a dominant ion whose measured position jitters from scan
+  to scan looks. Near the noise, though, a real ion's label misses scans
+  routinely, so two weak neighbours that take turns clearing it look the
+  same: the 18O and 13C2 isotopologues of one ion, 12 to 13 ppm apart, came
+  out as one centroid between them, and a matched isotope moved by several
+  ppm, gained up to half again its intensity, or was matched to the wrong
+  target. On the published demo dataset, whose files hold four scans each,
+  the rule joined 40 such pairs across 38 of the 161 files, and the nightly
+  reproducibility check failed on the 1.8.0 release. Both sides must now
+  reach a per-scan signal-to-noise of 10. On that dataset a peak misses at
+  least one scan in under 3% of cases from there up, against half of them at
+  3 to 4; the jittering dominant ions the rule exists for sit far above it,
+  and on the demo dataset it now joins nothing. Peak lists detected with
+  1.8.0 keep the joined peaks until peak detection is re-run for the sample.
+
 - **One stored row the current rules refuse no longer breaks the listing it
   is in.** Reading ionization mechanisms, datasets and sample batches re-ran
   the *create* validators over every row of the response. Those rules have
