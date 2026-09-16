@@ -43,12 +43,12 @@ class CalibrationConfig(BaseModel):
     # Below this many points the residual says little: two calibrants that
     # disagree split the difference, and one zeroes its own residual. Such a
     # fit is only trusted while it moves the axis no further than
-    # LOW_POINT_MAX_PRE_FIT_MZ_ERROR_PPM - one- and two-point fits are the
+    # LOW_POINT_MAX_AXIS_CORRECTION_PPM - one- and two-point fits are the
     # norm for narrow-range and EasyIC modes and are healthy when the
     # correction is small, while the one-point fits that anchored to the wrong
     # peak moved the axis 76-81 ppm and reported a zero residual.
     MIN_VERIFIED_CALIBRATION_POINTS: int = 3
-    LOW_POINT_MAX_PRE_FIT_MZ_ERROR_PPM: float = 5.0
+    LOW_POINT_MAX_AXIS_CORRECTION_PPM: float = 5.0
     # A fit on MIN_VERIFIED_CALIBRATION_POINTS or more must also draw them
     # from this many ions, or it is one ion's isotopes agreeing with each
     # other.

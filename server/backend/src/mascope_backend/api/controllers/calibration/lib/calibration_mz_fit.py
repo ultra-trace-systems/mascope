@@ -1116,6 +1116,24 @@ def _finite_or_none(value) -> float | None:
     return value if math.isfinite(value) else None
 
 
+def axis_correction_ppm(fit: dict | None) -> float | None:
+    """
+    How far a fit puts the m/z axis from the acquisition axis, in ppm.
+
+    Known for Orbitrap fits only: their ``calibration_factor`` is cumulative
+    over every apply since the axis was last reset, so it measures the total
+    correction regardless of what earlier fits did to the stored axis.
+
+    :param fit: A fit dict as the handler returns it.
+    :return: Signed correction in ppm, or None when the fit carries no factor.
+    """
+    par = (fit or {}).get("par")
+    factor = par.get("calibration_factor") if isinstance(par, dict) else None
+    if factor is None:
+        return None
+    return _finite_or_none((float(factor) - 1.0) * 1e6)
+
+
 def fit_quality(
     stats: list[dict] | None, params: MzCalibrationParams | None
 ) -> dict | None:
@@ -1220,20 +1238,32 @@ def calibration_quality_issues(quality: dict | None, filename: str) -> list[dict
 
     n_points = quality.get("n_points") or 0
     min_points = calibration_config.MIN_VERIFIED_CALIBRATION_POINTS
-    max_shift = calibration_config.LOW_POINT_MAX_PRE_FIT_MZ_ERROR_PPM
-    pre_fit = quality.get("pre_fit_mz_error_ppm")
+    max_shift = calibration_config.LOW_POINT_MAX_AXIS_CORRECTION_PPM
+    # How far the fit puts the axis from the acquisition axis. The pre-fit
+    # error measures that only on a file no fit has moved yet: an Orbitrap
+    # apply rescales the stored axis in place, so a refit of a file a wrong
+    # fit displaced sees that fit's peak on its target and a pre-fit error
+    # near zero. The Orbitrap fit's cumulative factor is the correction from
+    # the acquisition axis whatever came before (see axis_correction_ppm), so
+    # it is used where recorded. TOF fits never get here on fewer than three
+    # points.
+    shift_ppm = quality.get("axis_correction_ppm")
+    if shift_ppm is None:
+        shift_ppm = quality.get("pre_fit_mz_error_ppm")
     points = f"{n_points} calibration point{'' if n_points == 1 else 's'}"
     if n_points == 0:
         issues.append({"code": "points", "message": "Fitted on no calibration points."})
-    elif n_points < min_points and (pre_fit is None or abs(pre_fit) > max_shift):
-        shift = "an unrecorded amount" if pre_fit is None else f"{abs(pre_fit):.2f} ppm"
+    elif n_points < min_points and (shift_ppm is None or abs(shift_ppm) > max_shift):
+        shift = (
+            "an unrecorded amount" if shift_ppm is None else f"{abs(shift_ppm):.2f} ppm"
+        )
         issues.append(
             {
                 "code": "points",
                 "message": (
-                    f"Fitted on {points} but moved the m/z axis by {shift}; "
-                    f"below {min_points} points a correction of at most "
-                    f"{max_shift:g} ppm is trusted."
+                    f"Fitted on {points} but moves the m/z axis {shift} from "
+                    f"the acquisition axis; below {min_points} points a "
+                    f"correction of at most {max_shift:g} ppm is trusted."
                 ),
             }
         )
