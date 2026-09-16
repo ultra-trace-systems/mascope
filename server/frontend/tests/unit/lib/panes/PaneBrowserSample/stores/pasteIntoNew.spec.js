@@ -38,6 +38,7 @@ beforeEach(async () => {
   vi.stubGlobal('navigator', {})
   document.execCommand = vi.fn(() => true)
   app.data.dataset.focusedId = null
+  app.data.dataset.focused = null
   app.data.workspace.focused.is_system = false
   app.data.dataset.create.mockResolvedValue({ data: { dataset_id: 'ds-new' } })
   app.data.batch.create.mockResolvedValue({ data: { sample_batch_id: 'b-new' } })
@@ -177,8 +178,65 @@ describe('paste into a new batch', () => {
     expect(app.data.batch.focusWhenPresent).toHaveBeenCalledWith({ sample_batch_id: 'b-new' })
   })
 
+  it('is not offered in the system workspace', async () => {
+    await clipboard.cut(SAMPLES)
+    app.data.workspace.focused.is_system = true
+    expect(paste.batchValid).toBe(false)
+  })
+
+  it('is not offered in an acquisition dataset', async () => {
+    await clipboard.cut(SAMPLES)
+    app.data.dataset.focused = { dataset_id: 'ds-focused', dataset_type: 'ACQUISITION' }
+    expect(paste.batchValid).toBe(false)
+  })
+
+  it('is offered in an analysis dataset', async () => {
+    await clipboard.cut(SAMPLES)
+    app.data.dataset.focused = { dataset_id: 'ds-focused', dataset_type: 'ANALYSIS' }
+    expect(paste.batchValid).toBe(true)
+  })
+
   it('is not offered for a copied batch', async () => {
     await clipboard.copy(BATCH)
     expect(paste.batchValid).toBe(false)
+  })
+})
+
+// A paste cannot be taken back once its requests are out, so the dialog stays
+// put until it settles; reopening it meanwhile would let the settling paste
+// write its created batch into the next one.
+describe('a paste in progress', () => {
+  beforeEach(() => {
+    app.data.dataset.focusedId = 'ds-focused'
+  })
+
+  it('keeps the dialog open and unchanged until it settles', async () => {
+    let finish
+    app.data.batch.create.mockReturnValue(
+      new Promise((resolve) => {
+        finish = () => resolve({ data: { sample_batch_id: 'b-new' } })
+      })
+    )
+    await clipboard.cut(SAMPLES)
+    paste.open({ dataset: false })
+    paste.dialog.batchName = 'Afternoon'
+    const running = paste.execute()
+    expect(paste.dialog.pending).toBe(true)
+
+    paste.close()
+    expect(paste.dialog.visible).toBe(true)
+    paste.open({ dataset: false })
+    expect(paste.dialog.batchName).toBe('Afternoon')
+
+    finish()
+    await running
+    expect(paste.dialog.visible).toBe(false)
+
+    // a fresh paste starts clean
+    paste.open({ dataset: false })
+    expect(paste.dialog.createdBatchId).toBeNull()
+    expect(paste.dialog.batchName).toBe('')
+    paste.close()
+    expect(paste.dialog.visible).toBe(false)
   })
 })
