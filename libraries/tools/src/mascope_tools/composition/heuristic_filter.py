@@ -797,6 +797,86 @@ def neutral_is_closed_shell(formula: str) -> bool:
     return float(dbe).is_integer()
 
 
+#: Reagent anions that hold on to a neutral by hydrogen bonds from its
+#: oxygen-bearing groups, written as the anion's composition. Nitrate is one:
+#: modelling of the oxidised molecules a nitrate source detects puts the bar at
+#: two hydrogen-bond donor groups, hydroperoxides in that study (Hyttinen et al.,
+#: J. Phys. Chem. A 119 (2015) 6339-6345, DOI 10.1021/acs.jpca.5b01818). A
+#: neutral with no oxygen has none of those groups, so a reading that clusters
+#: nitrate with one names an ion the source is unlikely to make.
+#:
+#: Carbonate is not among them. On the assignment gate the reference engine
+#: commits the same oxygen-free neutral on 20 of the 27 carbonate clusters such a
+#: rule would take from assigned.
+OXYGEN_BOUND_ANIONS: frozenset[str] = frozenset({"NO3"})
+
+
+@lru_cache(maxsize=512)
+def clusters_on_oxygen(notation: str | None) -> bool:
+    """Whether a channel is a cluster of an anion that holds on to oxygen.
+
+    Read off the mechanism, as :func:`mechanism_mass_contribution` is, so every
+    spelling of the cluster a deployment may hold is recognised: the anion alone
+    (``+NO3-``), with its conjugate acid (``+(HNO3)NO3-``), and with a labelled
+    reagent's atom in place of the ordinary one (``+[15N]O3-``, ``+^NO3-``).
+
+    :param notation: A mechanism's Mascope notation.
+    :return: True for such a cluster. False for any other channel, and for a
+        notation nobody can parse, so an unreadable mechanism is never judged.
+    """
+    if not notation:
+        return False
+    try:
+        mechanism = parse_ionization(notation)
+        moiety = ionization_composition(mechanism.formula)
+    except Exception:  # noqa: BLE001 - a mechanism nobody can parse holds on to nothing
+        return False
+    if not mechanism.addition or mechanism.charge >= 0 or not moiety:
+        return False
+    counts: dict[str, int] = {}
+    for symbol, n in moiety.items():
+        element = (
+            CUSTOM_ELEMENTS[symbol].base_element
+            if symbol in CUSTOM_ELEMENTS
+            else symbol
+        )
+        counts[element] = counts.get(element, 0) + n
+    return any(_is_acid_cluster(counts, anion) for anion in OXYGEN_BOUND_ANIONS)
+
+
+def _is_acid_cluster(counts: dict[str, int], anion: str) -> bool:
+    """Whether element counts are the anion with n of its conjugate acids.
+
+    :param counts: A moiety's element counts, labels folded into their elements.
+    :param anion: The anion's composition (``"NO3"``).
+    :return: True for ``A``, ``(HA)A``, ``(HA)2A`` and so on.
+    """
+    unit = {symbol: n for symbol, n in parse_composition(anion).items() if n}
+    key = min(symbol for symbol in unit if symbol != "H")
+    units, remainder = divmod(counts.get(key, 0), unit[key])
+    if units < 1 or remainder:
+        return False
+    expected = {symbol: n * units for symbol, n in unit.items()}
+    expected["H"] = expected.get("H", 0) + units - 1
+    return {symbol: n for symbol, n in expected.items() if n} == counts
+
+
+def oxygen_free_cluster(formula: str | None, notation: str | None) -> bool:
+    """Whether a reading clusters an oxygen-bound anion with an oxygen-free neutral.
+
+    :param formula: The reading's neutral formula.
+    :param notation: The mechanism it was read through.
+    :return: True when the channel is such a cluster (:func:`clusters_on_oxygen`)
+        and the neutral carries no oxygen. False otherwise, and for a formula
+        that cannot be parsed, which is never judged on a test that could not
+        run.
+    """
+    if not formula or not clusters_on_oxygen(notation):
+        return False
+    counts = element_counts(str(formula))
+    return counts is not None and not counts.get("O", 0)
+
+
 def elect_same_ion_families(
     candidates: list[dict[str, Any]],
 ) -> list[dict[str, Any]]:
