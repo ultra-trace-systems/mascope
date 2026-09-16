@@ -168,6 +168,18 @@ labels:
    either but change side once, and joining them would report a mass about
    2 ppm off both. A calibration step without conversion parameters is a
    hand-over too, so only the frequency key rejoins one.
+   Every one of those tests reads a scan without a label as a scan without
+   the ion, which only holds well above the noise, so each side's
+   intensity-weighted per-scan S:N must also reach
+   `_AVG_CENTROID_EXCLUSIVE_MIN_SN` (10). On the published demo dataset
+   (161 files of four scans each), a peak at per-scan S:N 3 to 4 misses at
+   least one scan in half the cases and one at 4 to 5 in 15%, against under
+   3% from S:N 10 up. Without the floor, two weak neighbours taking turns
+   above the noise -- the 18O and 13C2 isotopologues of one ion, 12 to 13 ppm
+   apart, or two unrelated ions 15 ppm apart -- passed every other gate as a
+   clean alternation over four scans: the rule joined 40 such pairs across
+   38 of those files, moving matched isotopes by up to 7 ppm or onto the
+   wrong target, and joins none with it.
    Measured over a 183-file fleet corpus against Thermo, the per-side floor
    is what keeps the rule specific: without it the share of strong centroids
    matching a Thermo centroid fell by more than 0.02 in 31 files, with it in

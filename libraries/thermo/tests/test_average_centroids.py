@@ -136,15 +136,20 @@ def _all_labels(scans: dict[int, dict]) -> np.ndarray:
     return np.concatenate([scans[n]["labels"]["mz"] for n in SCANS])
 
 
-def _scans_of(per_scan: list[list[tuple[float, float]]]) -> dict:
+def _scans_of(per_scan: list[list[tuple]]) -> dict:
     """One calibration throughout; ``per_scan[i]`` gives the ``(mz, intensity)``
-    labels of scan ``i + 1``, so a peak's scans and per-scan intensity can be
-    set one at a time. The number of scans is the length of ``per_scan``."""
+    or ``(mz, intensity, sn)`` labels of scan ``i + 1``, so a peak's scans,
+    per-scan intensity and S:N can be set one at a time (S:N 4000 unless
+    given). The number of scans is the length of ``per_scan``."""
     params = {"Conversion Parameter B:": B_REF, "Conversion Parameter C:": C_REF}
     scans = {}
     for n, peaks in enumerate(per_scan, start=1):
-        labels = _labels([mz for mz, _ in peaks], resolution=JITTER_RESOLUTION)
-        labels["intensity"] = np.array([i for _, i in peaks], dtype=float)
+        labels = _labels([p[0] for p in peaks], resolution=JITTER_RESOLUTION)
+        labels["intensity"] = np.array([p[1] for p in peaks], dtype=float)
+        if any(len(p) > 2 for p in peaks):
+            labels["signal_to_noise"] = np.array(
+                [p[2] if len(p) > 2 else 4000.0 for p in peaks], dtype=float
+            )
         scans[n] = {"labels": labels, "params": params}
     return scans
 
@@ -539,3 +544,78 @@ def test_a_pair_after_a_wide_gap_is_weighed_on_its_own_cluster():
 
     assert masses.size == 3
     np.testing.assert_allclose(intensities, [8e5, 1.6e6, 8e5])
+
+
+@pytest.mark.parametrize(
+    ("sn", "expected"),
+    [(9.9, [2e5, 2e5]), (10.0, [4e5])],
+    ids=["below the S:N floor", "at the S:N floor"],
+)
+def test_weak_neighbours_taking_turns_above_the_noise_stay_two(sn, expected):
+    # Two labels 1.2 FWHM apart over four scans, one in scans 1 and 4 and the
+    # other in scans 2 and 3: no shared scan, every scan covered, two scans a
+    # side and two side changes, so only the S:N floor is left to decide. Near
+    # the noise a real ion's label misses scans routinely, and two weak ions
+    # that take turns clearing it -- the 18O and 13C2 isotopologues of one
+    # ion, say -- look like this without any jitter; well above it, a scan
+    # without the label is a scan without the ion.
+    a = 61.0397
+    b = _fwhm_apart(a, 1.2)
+    scans = _scans_of([[(b, 1e5, sn)], [(a, 1e5, sn)], [(a, 1e5, sn)], [(b, 1e5, sn)]])
+
+    masses, intensities, _, _ = _backend(scans).average_centroids([1, 2, 3, 4], ppm=1)
+
+    np.testing.assert_allclose(intensities, expected)
+
+
+def test_exclusive_merge_needs_both_sides_above_the_s_n_floor():
+    # The same alternation with one side strong and the other at S:N 3: the
+    # weak side's missing scans say nothing about where the ion was, so the
+    # pair stays two however strong the other side is.
+    a = 61.0397
+    b = _fwhm_apart(a, 1.2)
+    scans = _scans_of([[(b, 1e5, 3.0)], [(a, 1e5)], [(a, 1e5)], [(b, 1e5, 3.0)]])
+
+    masses, intensities, _, _ = _backend(scans).average_centroids([1, 2, 3, 4], ppm=1)
+
+    assert masses.size == 2
+    np.testing.assert_allclose(intensities, [2e5, 2e5])
+
+
+def test_a_refused_neighbour_does_not_lend_its_s_n_to_the_next_pair():
+    # A is a strong ion in every scan; B, 1.2 FWHM up, is weak and in the odd
+    # scans; C, another 1.2 FWHM up, is strong and in the even ones. A and B
+    # share scans, so that pair is refused and B starts the cluster C is
+    # weighed against. B and C alternate cleanly, but B alone is under the S:N
+    # floor, so they stay apart; weighed with A's S:N as well they would merge.
+    a = 61.0397
+    b, c = _fwhm_apart(a, 1.2), _fwhm_apart(a, 2.4)
+    scans = _scans_of(
+        [[(a, 1e5), (b, 1e5, 3.0)] if n % 2 else [(a, 1e5), (c, 1e5)] for n in range(8)]
+    )
+
+    masses, intensities, _, _ = _backend(scans).average_centroids(JITTER_SCANS, ppm=1)
+
+    assert masses.size == 3
+    np.testing.assert_allclose(intensities, [8e5, 4e5, 4e5])
+
+
+def test_a_side_s_n_is_weighted_by_intensity():
+    # A and B alternate at S:N 12. B carries a faint label 0.4 FWHM above it,
+    # at S:N 2 and a tenth of its intensity, which joins B unconditionally.
+    # Weighted by intensity, as the merged peak reports it, that side stays at
+    # S:N 11 and the ion merges; a plain mean over the two bins would put it
+    # at 7 and let a faint shoulder veto the merge.
+    a = 61.0397
+    b, shoulder = _fwhm_apart(a, 1.2), _fwhm_apart(a, 1.6)
+    scans = _scans_of(
+        [
+            [(b, 9e4, 12.0), (shoulder, 1e4, 2.0)] if n % 2 else [(a, 1e5, 12.0)]
+            for n in range(8)
+        ]
+    )
+
+    masses, intensities, _, _ = _backend(scans).average_centroids(JITTER_SCANS, ppm=1)
+
+    assert masses.size == 1
+    assert intensities[0] == pytest.approx(8e5)
