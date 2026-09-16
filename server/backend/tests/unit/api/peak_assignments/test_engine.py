@@ -24,6 +24,7 @@ from mascope_backend.api.new.peak_assignments.engine import (
     TIER_BELOW_ASSIGNABILITY,
     TIER_CANDIDATE,
     TIER_UNASSIGNED,
+    ReagentOffset,
     build_unassigned_assignments,
     evidence_for,
     fit_isotope_formula,
@@ -1387,6 +1388,45 @@ class TestScoreIonsByFit:
         assert self._fit_of(lines, fallback_sigma_ppm=5.0)["probe"] == pytest.approx(
             self._fit_of(lines)["probe"]
         )
+
+    def test_a_library_too_thin_to_fit_an_offset_scores_at_the_reagent_lines(self):
+        # The labelled-nitrate set once its workaround entries were gone: too
+        # few library lines to fit an offset, and the source's own lines put
+        # the axis 1.26 ppm low, where the sample's commits sit too. A line
+        # there is on the axis; scored at zero, it was 1.26 ppm off it.
+        lines = [("lib0", -1.2), ("lib1", -1.3), ("lib2", -1.25), ("probe", -1.26)]
+        reading = ReagentOffset(-1.26, 7, taken=True)
+
+        corrected = self._fit_of(lines, fallback_sigma_ppm=0.3, reagent_offset=reading)
+        uncorrected = self._fit_of(lines, fallback_sigma_ppm=0.3)
+
+        probe = pd.DataFrame(
+            [self._iso("probe", 1.0, -1.26, 1000.0, 0.9, snr=50.0, peak_id="probe")]
+        )
+        assert corrected["probe"] == pytest.approx(
+            ion_score_v2(probe, sigma_ppm=0.3, mu=-1.26)
+        )
+        assert corrected["probe"] > uncorrected["probe"]
+
+    def test_a_reading_not_taken_leaves_the_sample_uncorrected(self):
+        lines = [("lib0", 0.3), ("lib1", 0.2), ("probe", 0.3)]
+        inside = ReagentOffset(0.3, 9, taken=False)
+
+        assert self._fit_of(lines, fallback_sigma_ppm=0.3, reagent_offset=inside)[
+            "probe"
+        ] == pytest.approx(self._fit_of(lines, fallback_sigma_ppm=0.3)["probe"])
+
+    def test_a_fitted_offset_is_not_replaced_by_the_reagent_lines(self):
+        # The uronium set's lines sit at -0.9 ppm while its library and its
+        # commits sit at zero: pooled or preferred, they would move a sample
+        # that measures its own offset away from it.
+        lines = [(f"lib{i}", 0.1 if i % 2 else -0.1) for i in range(10)]
+        lines.append(("probe", 0.0))
+        reading = ReagentOffset(-0.93, 10, taken=True)
+
+        assert self._fit_of(lines, fallback_sigma_ppm=0.3, reagent_offset=reading)[
+            "probe"
+        ] == pytest.approx(self._fit_of(lines)["probe"])
 
 
 class TestUntargetedMatches:
