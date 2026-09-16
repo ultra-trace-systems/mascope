@@ -14,6 +14,7 @@ import {
 // them has a name here, so none falls through to its raw key on screen.
 const SERVER_RULES = [
   'odd_electron',
+  'oxygen_free_cluster',
   'candidate_density',
   'envelope_neighbour',
   'oxygen_lattice',
