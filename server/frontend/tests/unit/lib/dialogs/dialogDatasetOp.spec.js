@@ -10,7 +10,7 @@ const dataset = vi.hoisted(() => ({
   create: vi.fn(),
   update: vi.fn(),
   delete: vi.fn(),
-  lazyFocus: vi.fn()
+  focusWhenPresent: vi.fn()
 }))
 
 vi.mock('@/stores', () => ({
@@ -86,6 +86,35 @@ describe('DialogDatasetOp', () => {
     await flushPromises()
 
     expect(dataset.update).toHaveBeenCalledOnce()
+    expect(closed(wrapper)).toBe(true)
+  })
+
+  // The new dataset reaches the list through a socket creation event, which
+  // resolves no lazy focus, so the dialog has to ask for it to be opened once
+  // it is there.
+  it('opens the dataset it created', async () => {
+    dataset.create.mockResolvedValue({ data: { dataset_id: 'ds-new' } })
+    const wrapper = mount(DialogDatasetOp, {
+      props: { action: null },
+      global: { plugins: [PrimeVue], stubs }
+    })
+    await wrapper.setProps({ action: 'create' })
+    await flushPromises()
+    await wrapper
+      .findAllComponents({ name: 'InputText' })[0]
+      .vm.$emit('update:modelValue', 'Spring run')
+    await flushPromises()
+
+    const create = wrapper
+      .findAllComponents({ name: 'Button' })
+      .find((c) => c.props('label') === 'Create')
+    await create.trigger('click')
+    await flushPromises()
+
+    expect(dataset.create).toHaveBeenCalledWith(
+      expect.objectContaining({ dataset_name: 'Spring run' })
+    )
+    expect(dataset.focusWhenPresent).toHaveBeenCalledWith({ dataset_id: 'ds-new' })
     expect(closed(wrapper)).toBe(true)
   })
 })
