@@ -44,19 +44,18 @@ export const usePasteIntoNew = defineStore('browser.sample.pasteIntoNew', () => 
     dialog.dataset = dataset
     // a pasted batch is its own batch; samples need one to go into
     dialog.batch = samplesPaste.value
-    // a copied batch keeps its name, so it is the natural name for its dataset
-    dialog.datasetName = batchPaste.value ? clipboard.batch.sample_batch_name : ''
+    dialog.datasetName = ''
     dialog.batchName = ''
     dialog.createdDatasetId = null
     dialog.createdBatchId = null
     dialog.visible = true
   }
 
-  // The batch name may be left blank when the dataset is new too; one name
-  // then serves both.
-  const batchName = computed(() => dialog.batchName.trim() || dialog.datasetName.trim())
+  // Every container this paste creates is named by the user; nothing is named
+  // for them.
   const invalid = computed(
-    () => (dialog.dataset && !dialog.datasetName.trim()) || (dialog.batch && !batchName.value)
+    () =>
+      (dialog.dataset && !dialog.datasetName.trim()) || (dialog.batch && !dialog.batchName.trim())
   )
 
   // Open a container this paste created, once it is in its store's list. It
@@ -123,7 +122,7 @@ export const usePasteIntoNew = defineStore('browser.sample.pasteIntoNew', () => 
         if (!dialog.createdBatchId) {
           const response = await app.data.batch.create({
             dataset_id,
-            sample_batch_name: batchName.value,
+            sample_batch_name: dialog.batchName.trim(),
             sample_batch_description: '',
             sample_batch_type: DEFAULT_SAMPLE_BATCH_TYPE,
             polarity: ANALYSIS_POLARITY,
@@ -161,7 +160,6 @@ export const usePasteIntoNew = defineStore('browser.sample.pasteIntoNew', () => 
     datasetValid,
     batchValid,
     invalid,
-    batchName,
     open,
     execute
   }
