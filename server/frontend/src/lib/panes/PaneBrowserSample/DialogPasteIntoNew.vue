@@ -62,9 +62,7 @@ const where = computed(() =>
           :autofocus="!paste.dialog.dataset"
           style="width: 100%"
         />
-        <label for="paste-new-batch-name">
-          Batch name{{ paste.dialog.dataset ? ' (defaults to the dataset name)' : '' }}
-        </label>
+        <label for="paste-new-batch-name">Batch name</label>
       </FloatLabel>
       <menu>
         <Button

@@ -86,6 +86,10 @@ describe('paste into a new dataset', () => {
     paste.open({ dataset: true })
     expect(paste.dialog.batch).toBe(true)
     paste.dialog.datasetName = ' Campaign '
+    // no name is filled in for the batch, and none is made up for it
+    expect(paste.invalid).toBe(true)
+    paste.dialog.batchName = ' Run 1 '
+    expect(paste.invalid).toBe(false)
     await paste.execute()
     await arrived()
 
@@ -93,9 +97,8 @@ describe('paste into a new dataset', () => {
       dataset_name: 'Campaign',
       dataset_description: ''
     })
-    // one name serves both when the batch name is left blank
     expect(app.data.batch.create).toHaveBeenCalledWith(
-      expect.objectContaining({ dataset_id: 'ds-new', sample_batch_name: 'Campaign' })
+      expect.objectContaining({ dataset_id: 'ds-new', sample_batch_name: 'Run 1' })
     )
     expect(app.data.sample.copy).toHaveBeenCalledWith({
       sample_item_ids: ['s1', 's2'],
@@ -107,12 +110,15 @@ describe('paste into a new dataset', () => {
     expect(paste.dialog.visible).toBe(false)
   })
 
-  it('copies a batch into a new dataset named after it, keeping its name', async () => {
+  it('copies a batch into a new dataset the user names, keeping its own name', async () => {
     await clipboard.copy(BATCH)
 
     paste.open({ dataset: true })
     expect(paste.dialog.batch).toBe(false)
-    expect(paste.dialog.datasetName).toBe('Morning QC')
+    // the dataset is not named after the batch
+    expect(paste.dialog.datasetName).toBe('')
+    expect(paste.invalid).toBe(true)
+    paste.dialog.datasetName = 'Campaign'
     await paste.execute()
     await arrived()
 
@@ -138,6 +144,7 @@ describe('paste into a new dataset', () => {
 
     paste.open({ dataset: true })
     paste.dialog.datasetName = 'Campaign'
+    paste.dialog.batchName = 'Run 0'
     await paste.execute()
 
     expect(paste.dialog.visible).toBe(true)
@@ -160,6 +167,7 @@ describe('paste into a new dataset', () => {
     await clipboard.cut(SAMPLES)
     paste.open({ dataset: true })
     paste.dialog.datasetName = 'Campaign'
+    paste.dialog.batchName = 'Run 1'
 
     await clipboard.clear()
     await paste.execute()
